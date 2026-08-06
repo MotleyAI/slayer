@@ -37,13 +37,10 @@ from slayer.core.enums import TimeGranularity
 from slayer.core.models import ModelMeasure
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.sql.naming import assert_unique_cte_names
+from slayer.sql.render.cte_assembly import CteEntry, assemble_with_chain
 
 from tests._cross_model_chain import _gen
 from tests._dev1746_fixtures import cte_names_in_order
-
-#: Imported lazily so a missing implementation fails these tests rather than
-#: erroring collection for the whole module.
-_ASSEMBLER_MODULE = "slayer.sql.render.cte_assembly"
 
 DIALECTS = ["postgres", "sqlite", "duckdb", "tsql", "bigquery"]
 
@@ -103,30 +100,22 @@ def _mixed_query() -> SlayerQuery:
 class TestWithChainAssembler:
 
     @staticmethod
-    def _mod():
-        import importlib
-
-        return importlib.import_module(_ASSEMBLER_MODULE)
-
-    @staticmethod
     def _sel(from_: str = "t") -> exp.Select:
         return exp.Select().select(exp.column("a")).from_(from_)
 
-    def _entry(self, name: str, deps: list[str]):
-        mod = self._mod()
-        return mod.CteEntry(name=name, query=self._sel(), depends_on=deps)
+    def _entry(self, name: str, deps: list[str]) -> CteEntry:
+        return CteEntry(name=name, query=self._sel(), depends_on=deps)
 
     def test_dependencies_precede_their_dependents(self) -> None:
         """The one hard ordering rule: a CTE is emitted after everything it
         declares a dependency on. SQL requires it — a CTE cannot reference a
         later sibling."""
-        mod = self._mod()
         entries = [
             self._entry("c", ["b"]),
             self._entry("b", ["a"]),
             self._entry("a", []),
         ]
-        out = mod.assemble_with_chain(entries=entries, final=self._sel("c"))
+        out = assemble_with_chain(entries=entries, final=self._sel("c"))
         names = [cte.alias_or_name for cte in out.args["with_"].expressions]
         assert names.index("a") < names.index("b") < names.index("c"), names
 
@@ -134,14 +123,19 @@ class TestWithChainAssembler:
         """The tiebreak. Two CTEs with no dependency between them must come out
         in the order the caller declared them — otherwise emitted SQL would
         vary run to run for the same plan."""
-        mod = self._mod()
         entries = [self._entry(n, []) for n in ("first", "second", "third")]
-        out = mod.assemble_with_chain(entries=entries, final=self._sel("first"))
+        out = assemble_with_chain(entries=entries, final=self._sel("first"))
         names = [cte.alias_or_name for cte in out.args["with_"].expressions]
         assert names == ["first", "second", "third"], names
 
     def test_ordering_is_deterministic_across_repeated_assembly(self) -> None:
-        mod = self._mod()
+        """The same entries must assemble the same way every time.
+
+        Asserted against the expected order rather than only against a second
+        run: comparing two runs to each other proves they agree but not that
+        they agree on the RIGHT thing, and a set-based implementation could
+        still be stable within one process while varying across them.
+        """
 
         def build() -> list[str]:
             entries = [
@@ -149,44 +143,58 @@ class TestWithChainAssembler:
                 self._entry("cm", []),
                 self._entry("base", []),
             ]
-            out = mod.assemble_with_chain(entries=entries, final=self._sel("base"))
+            out = assemble_with_chain(entries=entries, final=self._sel("base"))
             return [cte.alias_or_name for cte in out.args["with_"].expressions]
 
-        assert build() == build(), "assembly order is not deterministic"
+        # ``wm`` depends on ``base``, so ``base`` is pulled ahead of it; ``cm``
+        # depends on nothing and keeps its declared position between them.
+        expected = ["base", "wm", "cm"]
+        first_run = build()
+        second_run = build()
+        assert first_run == expected, first_run
+        assert second_run == expected, second_run
 
     def test_a_dependency_cycle_raises(self) -> None:
         """A cycle cannot be emitted as a WITH chain at all. Failing loudly
         beats emitting a plausible-looking order that references forward."""
-        mod = self._mod()
         entries = [self._entry("a", ["b"]), self._entry("b", ["a"])]
+        final = self._sel("a")
         with pytest.raises(ValueError, match="(?i)cycle"):
-            mod.assemble_with_chain(entries=entries, final=self._sel("a"))
+            assemble_with_chain(entries=entries, final=final)
 
     def test_an_unknown_dependency_raises(self) -> None:
         """Declaring a dependency on a CTE that was never supplied is a wiring
         bug; silently ignoring it would emit SQL referencing a missing table."""
-        mod = self._mod()
         entries = [self._entry("a", ["nope"])]
+        final = self._sel("a")
         with pytest.raises(ValueError, match="(?i)unknown|missing|nope"):
-            mod.assemble_with_chain(entries=entries, final=self._sel("a"))
+            assemble_with_chain(entries=entries, final=final)
 
     def test_duplicate_names_raise(self) -> None:
-        mod = self._mod()
         entries = [self._entry("dup", []), self._entry("dup", [])]
+        final = self._sel("dup")
         with pytest.raises(ValueError, match="(?i)duplicate|dup"):
-            mod.assemble_with_chain(entries=entries, final=self._sel("dup"))
+            assemble_with_chain(entries=entries, final=final)
+
+    def test_a_final_select_that_already_has_ctes_is_rejected(self) -> None:
+        """The assembler owns the WITH clause. Silently discarding one the
+        caller had attached would leave its references dangling — a live hazard
+        for the transform chains, which build a statement that already has CTEs
+        before wrapping it, and which adopt this assembler next."""
+        final = self._sel("seed").with_("seed", as_=self._sel())
+        entries = [self._entry("a", [])]
+        with pytest.raises(ValueError, match="(?i)already carries"):
+            assemble_with_chain(entries=entries, final=final)
 
     def test_no_entries_yields_the_final_select_unwrapped(self) -> None:
         """No CTEs means no WITH clause — not an empty one, which is invalid."""
-        mod = self._mod()
-        out = mod.assemble_with_chain(entries=[], final=self._sel())
+        out = assemble_with_chain(entries=[], final=self._sel())
         assert out.args.get("with_") is None, out.sql()
 
     def test_assembled_statement_is_a_select_not_a_string(self) -> None:
         """The point of §5.6: the chain is AST all the way, so a caller can keep
         transforming it (pagination, outer wraps) without re-parsing."""
-        mod = self._mod()
-        out = mod.assemble_with_chain(
+        out = assemble_with_chain(
             entries=[self._entry("a", [])], final=self._sel("a"),
         )
         assert isinstance(out, exp.Select), type(out)
@@ -195,9 +203,8 @@ class TestWithChainAssembler:
     def test_assembled_statement_round_trips_through_every_dialect(
         self, dialect: str,
     ) -> None:
-        mod = self._mod()
         entries = [self._entry("base", []), self._entry("wm", ["base"])]
-        out = mod.assemble_with_chain(entries=entries, final=self._sel("wm"))
+        out = assemble_with_chain(entries=entries, final=self._sel("wm"))
         rendered = out.sql(dialect=dialect)
         parsed = sqlglot.parse(rendered, dialect=dialect)
         assert len(parsed) == 1, f"[{dialect}] did not round-trip:\n{rendered}"
@@ -205,9 +212,8 @@ class TestWithChainAssembler:
 
     def test_quoted_and_mixed_case_names_survive_assembly(self) -> None:
         """A quoted alias must stay one identifier through assembly."""
-        mod = self._mod()
         entries = [self._entry("MixedCase", []), self._entry("other", ["MixedCase"])]
-        out = mod.assemble_with_chain(entries=entries, final=self._sel("other"))
+        out = assemble_with_chain(entries=entries, final=self._sel("other"))
         names = [cte.alias_or_name for cte in out.args["with_"].expressions]
         assert names == ["MixedCase", "other"], names
 
@@ -215,11 +221,11 @@ class TestWithChainAssembler:
         """DEV-1726: two names differing only in case collide on a folding
         dialect. The belt catches it in emitted SQL; the assembler must not be
         the thing that introduces it."""
-        mod = self._mod()
         entries = [self._entry("dup", []), self._entry("DUP", [])]
-        out = mod.assemble_with_chain(entries=entries, final=self._sel("dup"))
+        out = assemble_with_chain(entries=entries, final=self._sel("dup"))
+        rendered = out.sql(dialect="snowflake")
         with pytest.raises(ValueError):
-            assert_unique_cte_names(out.sql(dialect="snowflake"), dialect="snowflake")
+            assert_unique_cte_names(rendered, dialect="snowflake")
 
 
 # =========================================================================== #
@@ -259,8 +265,11 @@ class TestAssembledChainForRealQueries:
         sql = await _gen(_two_cross_model_measures_query(), dialect="postgres")
         names = [n for n in cte_names_in_order(sql) if n.startswith("_cm_")]
         assert len(names) == 2, f"expected two _cm_ CTEs, got {names}"
-        assert "sum" in names[0] and "avg" in names[1], (
-            f"_cm_ CTEs are not in measure-declaration order: {names}"
+        assert "sum" in names[0], (
+            f"the first _cm_ CTE is not the sum measure: {names}"
+        )
+        assert "avg" in names[1], (
+            f"the second _cm_ CTE is not the avg measure: {names}"
         )
 
     @pytest.mark.parametrize("dialect", DIALECTS)

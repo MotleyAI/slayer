@@ -61,9 +61,7 @@ from slayer.sql.naming import canonical_aggregate_alias
 from slayer.core.time_bounds import strip_frame_bounds
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.scope import ModelScope, StageColumn, StageSchema
-from slayer.engine.aggregate_input_paths import (
-    compute_aggregate_input_join_paths,
-)
+from slayer.engine.isolation import IsolationKind, classify_isolation
 from slayer.engine.binding import (
     BoundExpr as BinderBoundExpr,
     BoundFilter,
@@ -1505,65 +1503,20 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     cross_model_plans = []
     host_slots_for_classifier = projection.registry.slots
     for slot in agg_slots:
-        # DEV-1714 Stage 10 — a windowed slot renders via its own ``_wm_`` CTE
-        # (host-rooted range join), never a cross-model ``_cm_`` CTE, even when
-        # its ``Column.filter`` crosses a join (which would otherwise trip the
-        # host-rooted isolation trigger below).
-        if slot.id in windowed_slot_ids:
+        # ONE trigger decision (P-C / DEV-1688 seam). The windowed skip, the
+        # target-rooted branch and the host-rooted crossing trigger were three
+        # predicates here that each knew about the others by omission; they are
+        # one classifier now, and the cardinality-aware inlining decision has a
+        # single place to land.
+        kind = classify_isolation(
+            slot=slot,
+            windowed_slot_ids=windowed_slot_ids,
+            bundle=bundle,
+            disable_host_rooted_isolation=disable_host_rooted_isolation,
+        )
+        if kind in (IsolationKind.NONE, IsolationKind.WINDOWED):
             continue
         key = slot.key
-        if not isinstance(key, AggregateKey):
-            continue
-        agg_path = getattr(key.source, "path", ())
-        # DEV-1503 / DEV-1709 — Law-3 trigger predicate. Invoke the
-        # cross-model planner when the aggregate's source carries a
-        # non-empty join path (target-rooted, existing behaviour) OR when
-        # ANY other input of a LOCAL aggregate crosses a join (host-rooted
-        # isolation): ``Column.filter`` (typed ``referenced_join_paths``
-        # from binder time — DEV-1503), source ``Column.sql``, positional
-        # args incl. the explicit first/last time arg, kwargs (column
-        # refs, user template fragments, and non-overridden model-default
-        # ``AggregationParam`` fragments) — DEV-1709's widened trigger,
-        # computed plan-time by ``compute_aggregate_input_join_paths``.
-        has_crossing_filter = (
-            key.column_filter_key is not None
-            and bool(key.column_filter_key.referenced_join_paths)
-        )
-        has_crossing_input = (
-            not disable_host_rooted_isolation
-            and not agg_path
-            and (
-                has_crossing_filter
-                or bool(compute_aggregate_input_join_paths(
-                    key=key,
-                    anchor_model=bundle.source_model,
-                    anchor_relation=(
-                        bundle.source_model.name
-                        if bundle.source_model is not None else ""
-                    ),
-                    bundle=bundle,
-                ))
-            )
-        )
-        # DEV-1747 D2 — the third branch: a HOST-grain aggregate over a joined
-        # source. Its crossing IS the path, so it isolates HOST-rooted (the
-        # crossed join is pulled INTO the CTE, which is grouped on the query
-        # grain) rather than target-rooted, which for a host-grain sort key
-        # would degenerate to a scalar CROSS JOIN.
-        is_host_grain = (
-            bool(agg_path) and getattr(key, "grain", "target") == "host"
-        )
-        if not agg_path and not has_crossing_input:
-            continue
-        if is_host_grain and disable_host_rooted_isolation:
-            # The recursion guard, for the same reason it applies to the
-            # crossing-input branch: inside the nested sub-plan the CTE is
-            # already this aggregate's own scope, so it renders inline
-            # (base-pull). Isolating again would nest the same key forever.
-            # Target-rooted cross-model aggregates are deliberately NOT
-            # suppressed — inlining a joined SUM into the host base would
-            # multiply it by the join's fan-out.
-            continue
         # DEV-1450 #2: re-rooting (C1) is owned by the strategy. We hand it
         # the host query, the public projection, and a sub-plan builder so it
         # can compile a nested re-rooted PlannedQuery when the host carries

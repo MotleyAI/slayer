@@ -45,6 +45,7 @@ from typing import AsyncIterator, List
 import pytest
 
 from slayer.core.enums import TimeGranularity
+from slayer.core.keys import TransformKey
 from slayer.core.models import ModelMeasure
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.planned import PlannedQuery, ValueSlot
@@ -69,7 +70,11 @@ from tests._dev1746_fixtures import (
     outer_select_aliases,
     seed_dev1746_sqlite,
 )
-from tests._engine_helpers import _engine_generate, _join_aliases
+from tests._engine_helpers import (
+    _engine_generate,
+    _extract_cte_body,
+    _join_aliases,
+)
 
 
 def _chain_bundle() -> ResolvedSourceBundle:
@@ -246,6 +251,142 @@ class TestB7DeclarationOrderProjection:
             "status", "cm_first", "local_second",
         ], f"row keys: {list(resp.data[0].keys())}"
 
+    async def test_a_slot_that_is_both_projected_and_a_transform_operand(
+        self,
+    ) -> None:
+        """A slot can be publicly projected AND consumed as a transform input.
+
+        This is the shape where the projection's occurrence count and the slot's
+        rendered columns could disagree, which is what the combined SELECT's
+        leftover guard exists to catch.
+
+        Three things have to line up for the test to mean anything, so each is
+        asserted rather than assumed:
+
+        * the measure and the transform's operand must be ONE slot (same key →
+          same slot), otherwise there is no slot reached by both paths;
+        * the query must take the CROSS-MODEL path, because the guard lives in
+          the combined-SELECT builder — a purely local transform never reaches
+          it;
+        * the assertion must be on the COMBINED select (which becomes the
+          transform chain's ``base`` CTE), because a leftover column appended
+          there would be trimmed by the outer wrap and never show up in the
+          outermost SELECT.
+        """
+        query = SlayerQuery(
+            source_model="orders_x",
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"),
+                granularity=TimeGranularity.MONTH,
+            )],
+            measures=[
+                ModelMeasure(
+                    formula="customers_v2.lifetime_value:sum", name="ltv",
+                ),
+                ModelMeasure(
+                    formula="cumsum(customers_v2.lifetime_value:sum)",
+                    name="running",
+                ),
+            ],
+        )
+        planned = plan_query(query=query, bundle=_chain_bundle())
+
+        # (1) One slot, reached by both.
+        slots = {s.id: s for s in _all_slots(planned)}
+        ltv_sid = next(
+            sid for sid in planned.projection
+            if slots[sid].public_name == "ltv"
+        )
+        running_sid = next(
+            sid for sid in planned.projection
+            if slots[sid].public_name == "running"
+        )
+        operand_key = slots[running_sid].key.input
+        operand_sid = next(
+            (sid for sid, s in slots.items() if s.key == operand_key), None,
+        )
+        assert operand_sid == ltv_sid, (
+            f"precondition: the transform's operand must be the SAME slot as "
+            f"the projected measure, or this shape does not exercise the "
+            f"guard. operand={operand_sid} projected={ltv_sid}"
+        )
+
+        # (2) The cross-model path — the guard lives in that builder.
+        assert planned.cross_model_aggregate_plans, (
+            "precondition: this query must take the cross-model path"
+        )
+        assert planned.transform_layers, (
+            "precondition: this query must carry a transform chain"
+        )
+
+        # The transform slot is IN the projection but is rendered by a later
+        # step CTE, not by the combined SELECT. That is why the combined
+        # projection loop skips a slot with no rendered columns instead of
+        # treating it as a dropped column: making that case raise — the
+        # symmetric-looking guard — would reject every transform query.
+        assert running_sid in planned.projection, planned.projection
+        assert isinstance(slots[running_sid].key, TransformKey), (
+            f"expected a transform slot, got {type(slots[running_sid].key).__name__}"
+        )
+
+        sql = await _gen(query, dialect="postgres")
+
+        # (3) The combined SELECT — the transform chain's ``base`` CTE.
+        # ``\bbase`` and not ``base``: the latter also matches the host ``_base``
+        # CTE, which is a different scope and carries none of these columns.
+        base_body = _extract_cte_body(sql, r"\bbase")
+        # Parsed, not regexed: an ``AS "..."`` scan misses a column projected
+        # without an alias and would also match a CAST's type name or an alias
+        # inside a nested subquery.
+        base_aliases = _alias_suffixes(outer_select_aliases(base_body))
+        assert base_aliases == ["created_at", "ltv"], (
+            f"the combined SELECT must carry the grain and exactly ONE column "
+            f"for the shared slot: {base_aliases}. A leftover would be appended "
+            f"here and then trimmed by the outer wrap, invisible from the "
+            f"outermost SELECT.\n{base_body}"
+        )
+
+        emitted = _alias_suffixes(outer_select_aliases(sql))
+        assert emitted == ["created_at", "ltv", "running"], (
+            f"expected each declared name once, in declaration order: "
+            f"{emitted}\n\n{sql}"
+        )
+
+    @pytest.mark.parametrize("direction", ["asc", "desc"])
+    async def test_combined_order_by_suppresses_the_tsql_nulls_emulation(
+        self, direction: str,
+    ) -> None:
+        """The combined ORDER BY must go through the generator's ``_ordered``.
+
+        On T-SQL an unset ``nulls_first`` makes sqlglot emulate NULLS ordering
+        with ``ORDER BY CASE WHEN <alias> IS NULL THEN 1 ELSE 0 END, <alias>``,
+        and the bracketed alias inside that CASE mis-resolves against the FROM
+        scope — SQL Server rejects it with ``Invalid column name``. The
+        generator has ``_ordered`` precisely to pin ``nulls_first`` and suppress
+        the wrapper.
+
+        This became reachable only when the combined ORDER BY moved from text to
+        AST: the string form never built an ``Ordered`` node, so there was
+        nothing for sqlglot to emulate around. Both directions are covered
+        because the wrapper appears on ASC only — every other ordering test in
+        this PR used ``desc`` and would not have caught it.
+        """
+        query = SlayerQuery(
+            source_model="orders_x",
+            dimensions=[ColumnRef(name="customers_v2.status")],
+            measures=[ModelMeasure(
+                formula="customers_v2.lifetime_value:sum", name="ltv",
+            )],
+            order=[OrderItem(
+                column="customers_v2.lifetime_value:sum", direction=direction,
+            )],
+        )
+        sql = await _gen(query, dialect="tsql")
+        assert "CASE WHEN" not in sql.upper(), (
+            f"[{direction}] the T-SQL NULLS-emulation wrapper is back; its "
+            f"bracketed alias does not resolve at the ORDER BY scope:\n{sql}"
+        )
+
     async def test_hidden_slots_are_absent_from_the_projection(self) -> None:
         """Unified trimming: an order-only aggregate never reaches the public
         projection because it is not in ``projection`` at all."""
@@ -382,11 +523,10 @@ class TestProjectionInvariant:
                 for s in planned.aggregate_slots
             ]
         corrupted = planned.model_copy(update=update)
+        bundle = _chain_bundle()
         gen = SQLGenerator(dialect="postgres")
         with pytest.raises((AssertionError, ValueError)) as excinfo:
-            gen.generate_from_planned(
-                planned_query=corrupted, bundle=_chain_bundle(),
-            )
+            gen.generate_from_planned(planned_query=corrupted, bundle=bundle)
         message = str(excinfo.value).lower()
         assert "hidden" in message, (
             "the belt fired, but not for the hidden slot — the message does not "
@@ -848,9 +988,15 @@ class TestB11JoinOrdering:
 
         def _wrapped(self_frame, parsed):
             result = original(self_frame, parsed)
-            registered.extend(
-                "__".join(p) for p in self_frame.join_paths.as_list()
-            )
+            # Only the HOST scope. The generator also builds throwaway frames
+            # (agg-kwarg resolution, explicit time columns, Mode-A entry) whose
+            # join_paths are documented as intentionally discarded — a path
+            # registered there need not appear in the base FROM, so recording
+            # them would make this property false for a correct generator.
+            if self_frame.root_relation == "orders_x":
+                registered.extend(
+                    "__".join(p) for p in self_frame.join_paths.as_list()
+                )
             return result
 
         monkeypatch.setattr(

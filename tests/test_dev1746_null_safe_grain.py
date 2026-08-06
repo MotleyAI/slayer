@@ -31,9 +31,6 @@ Execution coverage is SQLite in-suite (the DuckDB counterpart lives in
 cover — the dotted-alias mangling itself — is asserted as emission per §5.13,
 because neither SQLite nor DuckDB mangles dots.
 
-The new shared builder is imported inside the tests that exercise it directly,
-so a missing implementation fails those tests rather than erroring collection
-for the whole module.
 """
 
 from __future__ import annotations
@@ -51,6 +48,10 @@ from slayer.core.models import ModelMeasure
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.dialects import get_dialect
+from slayer.sql.render.joins import (
+    build_grain_joinback_condition,
+    grain_alias_column,
+)
 from slayer.sql.scope_check import assert_scope_closed
 
 from tests._cross_model_chain import _gen
@@ -65,11 +66,6 @@ from tests._dev1746_fixtures import (
     src_subquery_on_predicate,
 )
 from tests._engine_helpers import _norm
-
-#: The module under construction. Imported lazily inside tests so a missing
-#: implementation fails the builder tests, not module collection.
-_BUILDER_MODULE = "slayer.sql.render.joins"
-
 
 # --------------------------------------------------------------------------- #
 # Fixtures
@@ -412,18 +408,11 @@ class TestSharedGrainJoinBackBuilder:
     covers today's three callers, which all compare projected aliases.
     """
 
-    @staticmethod
-    def _import():
-        import importlib
-
-        return importlib.import_module(_BUILDER_MODULE)
-
     def test_builder_returns_none_for_an_empty_grain(self) -> None:
         """Zero-column grain → no predicate at all; the caller emits CROSS JOIN.
         Returning a truthy ``TRUE`` instead would silently turn every scalar CMA
         into an inner-join-shaped ON clause."""
-        mod = self._import()
-        assert mod.build_grain_joinback_condition(
+        assert build_grain_joinback_condition(
             pairs=[], dialect=get_dialect("postgres"),
         ) is None
 
@@ -443,11 +432,10 @@ class TestSharedGrainJoinBackBuilder:
     ) -> None:
         """One builder, every dialect's own null-safe spelling — including the
         expanded ``a = b OR (a IS NULL AND b IS NULL)`` fallback on T-SQL."""
-        mod = self._import()
         strategy = get_dialect(dialect)
-        left = mod.grain_alias_column(alias="orders.status", table="_base")
-        right = mod.grain_alias_column(alias="orders.status", table="_cm_x")
-        cond = mod.build_grain_joinback_condition(
+        left = grain_alias_column(alias="orders.status", table="_base")
+        right = grain_alias_column(alias="orders.status", table="_cm_x")
+        cond = build_grain_joinback_condition(
             pairs=[(left, right)], dialect=strategy,
         )
         assert cond is not None
@@ -460,11 +448,10 @@ class TestSharedGrainJoinBackBuilder:
     def test_dotted_alias_stays_one_identifier(self, dialect: str) -> None:
         """The B2 defect in miniature: a dotted PUBLIC ALIAS is one identifier,
         never a ``table.column`` reference. Built as AST it cannot decompose."""
-        mod = self._import()
         strategy = get_dialect(dialect)
-        left = mod.grain_alias_column(alias="orders.customers.status", table="_base")
-        cond = mod.build_grain_joinback_condition(
-            pairs=[(left, mod.grain_alias_column(
+        left = grain_alias_column(alias="orders.customers.status", table="_base")
+        cond = build_grain_joinback_condition(
+            pairs=[(left, grain_alias_column(
                 alias="orders.customers.status", table="_cm_x"))],
             dialect=strategy,
         )
@@ -480,16 +467,19 @@ class TestSharedGrainJoinBackBuilder:
 
     def test_alias_containing_a_quote_is_not_injectable(self) -> None:
         """An embedded quote must survive as data inside one identifier."""
-        mod = self._import()
         weird = 'orders."evil'
-        col = mod.grain_alias_column(alias=weird, table="_base")
+        col = grain_alias_column(alias=weird, table="_base")
         assert col.name == weird, col.name
         rendered = col.sql(dialect="postgres")
         assert rendered.startswith('_base.'), rendered
         # Re-parsing must give back exactly one column with the same name.
         reparsed = sqlglot.parse_one(f"SELECT {rendered}", dialect="postgres")
         cols = list(reparsed.find_all(exp.Column))
-        assert len(cols) == 1 and cols[0].name == weird, (
+        assert len(cols) == 1, (
+            f"identifier did not survive a round trip as ONE column: "
+            f"{rendered!r} -> {[c.name for c in cols]}"
+        )
+        assert cols[0].name == weird, (
             f"identifier did not survive a round trip: {rendered!r} -> "
             f"{[c.name for c in cols]}"
         )
@@ -497,21 +487,19 @@ class TestSharedGrainJoinBackBuilder:
     def test_case_sensitive_alias_is_quoted(self) -> None:
         """Mixed-case aliases must stay quoted, or a case-folding dialect
         resolves them to a different column."""
-        mod = self._import()
-        col = mod.grain_alias_column(alias="Orders.Status", table="_base")
+        col = grain_alias_column(alias="Orders.Status", table="_base")
         rendered = col.sql(dialect="postgres")
         assert '"Orders.Status"' in rendered, rendered
 
     def test_composite_grain_ands_every_pair(self) -> None:
-        mod = self._import()
         strategy = get_dialect("postgres")
         pairs = [
-            (mod.grain_alias_column(alias="a", table="_base"),
-             mod.grain_alias_column(alias="a", table="_cm_x")),
-            (mod.grain_alias_column(alias="b", table="_base"),
-             mod.grain_alias_column(alias="b", table="_cm_x")),
+            (grain_alias_column(alias="a", table="_base"),
+             grain_alias_column(alias="a", table="_cm_x")),
+            (grain_alias_column(alias="b", table="_base"),
+             grain_alias_column(alias="b", table="_cm_x")),
         ]
-        cond = mod.build_grain_joinback_condition(pairs=pairs, dialect=strategy)
+        cond = build_grain_joinback_condition(pairs=pairs, dialect=strategy)
         assert cond is not None
         rendered = cond.sql(dialect="postgres")
         assert rendered.count("IS NOT DISTINCT FROM") == 2, rendered
@@ -520,16 +508,16 @@ class TestSharedGrainJoinBackBuilder:
     def test_builder_accepts_arbitrary_expression_operands(self) -> None:
         """Codex D2: the core API takes expressions, so a caller can compare a
         CAST or any resolved reference — not only a projected alias."""
-        mod = self._import()
         strategy = get_dialect("postgres")
         left = exp.cast(exp.column("x", table="_base"), "DATE")
         right = exp.column("y", table="_cm_x")
-        cond = mod.build_grain_joinback_condition(
+        cond = build_grain_joinback_condition(
             pairs=[(left, right)], dialect=strategy,
         )
         assert cond is not None
         rendered = cond.sql(dialect="postgres")
-        assert "CAST(" in rendered and "IS NOT DISTINCT FROM" in rendered, rendered
+        assert "CAST(" in rendered, rendered
+        assert "IS NOT DISTINCT FROM" in rendered, rendered
 
 
 # =========================================================================== #
@@ -558,8 +546,11 @@ class TestDialectEmission:
         ``a = b OR (a IS NULL AND b IS NULL)`` must appear."""
         sql = await _gen(_cm_shared_grain_query(), dialect="tsql")
         on = _norm(joinback_on_predicate_for(sql, prefix="_cm_", dialect="tsql"))
-        assert " OR " in on and "IS NULL" in on, (
-            f"tsql join-back is missing the expanded null-safe form:\n{on}"
+        assert " OR " in on, (
+            f"tsql join-back is missing the expanded null-safe disjunction:\n{on}"
+        )
+        assert "IS NULL" in on, (
+            f"tsql join-back is missing the expanded null-safe NULL tests:\n{on}"
         )
 
     async def test_mysql_null_safe_operator_is_emitted(self) -> None:

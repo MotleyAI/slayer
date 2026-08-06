@@ -48,21 +48,12 @@ class CteEntry(BaseModel):
     depends_on: List[str] = []
 
 
-def assemble_with_chain(
-    *, entries: Sequence[CteEntry], final: exp.Select,
-) -> exp.Select:
-    """Attach ``entries`` to ``final`` as a WITH clause in dependency order.
+def _index_entries(entries: Sequence[CteEntry]) -> Dict[str, CteEntry]:
+    """Name → entry, rejecting a duplicate name or a dangling dependency.
 
-    Returns ``final`` unchanged when there are no entries — an empty ``WITH`` is
-    not valid SQL.
-
-    Raises ``ValueError`` on a duplicate name, a dependency naming a CTE that
-    was not supplied, or a cycle. All three are wiring bugs whose SQL would be
-    invalid or silently wrong, so they fail here rather than at the database.
+    Both are wiring bugs whose SQL would be invalid or silently wrong, so they
+    fail here rather than at the database.
     """
-    if not entries:
-        return final
-
     by_name: Dict[str, CteEntry] = {}
     for entry in entries:
         if entry.name in by_name:
@@ -70,7 +61,6 @@ def assemble_with_chain(
                 f"duplicate CTE name {entry.name!r} in one WITH chain",
             )
         by_name[entry.name] = entry
-
     for entry in entries:
         unknown = [d for d in entry.depends_on if d not in by_name]
         if unknown:
@@ -78,10 +68,16 @@ def assemble_with_chain(
                 f"CTE {entry.name!r} declares unknown dependencies "
                 f"{unknown!r}; known CTEs are {sorted(by_name)}",
             )
+    return by_name
 
-    # Depth-first emit in declaration order: the first entry that is ready goes
-    # first, and a dependency is emitted immediately before the entry needing
-    # it. Declaration order is preserved wherever dependencies permit.
+
+def _topological_order(
+    *, entries: Sequence[CteEntry], by_name: Dict[str, CteEntry],
+) -> List[CteEntry]:
+    """Depth-first emit in declaration order: the first entry that is ready goes
+    first, and a dependency is emitted immediately before the entry needing it.
+    Declaration order is preserved wherever dependencies permit.
+    """
     ordered: List[CteEntry] = []
     emitted: set[str] = set()
     visiting: List[str] = []
@@ -90,7 +86,9 @@ def assemble_with_chain(
         if entry.name in emitted:
             return
         if entry.name in visiting:
-            cycle = " -> ".join([*visiting[visiting.index(entry.name):], entry.name])
+            cycle = " -> ".join(
+                [*visiting[visiting.index(entry.name):], entry.name],
+            )
             raise ValueError(f"dependency cycle between CTEs: {cycle}")
         visiting.append(entry.name)
         for dep in entry.depends_on:
@@ -101,9 +99,35 @@ def assemble_with_chain(
 
     for entry in entries:
         _visit(entry)
+    return ordered
+
+
+def assemble_with_chain(
+    *, entries: Sequence[CteEntry], final: exp.Select,
+) -> exp.Select:
+    """Attach ``entries`` to ``final`` as a WITH clause in dependency order.
+
+    Returns ``final`` unchanged when there are no entries — an empty ``WITH`` is
+    not valid SQL.
+
+    ``final`` must not already carry a WITH clause. The assembler owns the
+    statement's CTE list, and silently discarding one the caller had attached
+    would leave its references dangling — a live hazard for the transform
+    chains, which build a statement that already has CTEs before wrapping it.
+    """
+    if final.args.get("with_") is not None:
+        raise ValueError(
+            "assemble_with_chain owns the WITH clause, but `final` already "
+            "carries one; merge those CTEs into `entries` (with their "
+            "dependencies declared) rather than attaching them beforehand",
+        )
+    if not entries:
+        return final
+
+    by_name = _index_entries(entries)
+    ordered = _topological_order(entries=entries, by_name=by_name)
 
     out = final.copy()
-    out.set("with_", None)
     for entry in ordered:
         out = out.with_(entry.name, as_=entry.query.copy(), copy=False)
     return out
