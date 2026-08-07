@@ -173,10 +173,14 @@ class TestLeafKinds:
             ),
             target_path=TARGET,
         )
-        assert a == b and hash(a) == hash(b), (
-            "two orderings of the same paths rerooted to keys that do not "
-            "intern — identity depends on the canonical form the validator "
+        assert a == b, (
+            "two orderings of the same paths rerooted to keys that compare "
+            "unequal — identity depends on the canonical form the validator "
             "produces, which model_copy would have skipped"
+        )
+        assert hash(a) == hash(b), (
+            "the keys compare equal but hash differently, so they still land "
+            "in different registry buckets and mint two slots for one value"
         )
 
 
@@ -405,8 +409,9 @@ class TestTotalityAndFailClosed:
         class NotAKey:
             path = ("customers",)
 
+        not_a_key = NotAKey()
         with pytest.raises(TypeError):
-            reroot_value_key(NotAKey(), target_path=TARGET)
+            reroot_value_key(not_a_key, target_path=TARGET)
 
     def test_empty_target_path_is_identity(self) -> None:
         """``target_path == ()`` is the filtered-local case — the empty prefix

@@ -408,13 +408,13 @@ class TestRejectRemoved:
     async def test_no_unresolvable_order_column_error(
         self, model: str, name: str,
     ) -> None:
-        from slayer.core.errors import UnresolvableOrderColumnError
-
-        try:
-            await _sql(_grouped_order_query(
-                model=model, name=name, direction="asc",
-            ))
-        except UnresolvableOrderColumnError as exc:  # pragma: no cover - failure path
-            pytest.fail(
-                f"grouped joined ORDER BY on {model}.{name} still rejects: {exc}"
-            )
+        # No try/except: an ``UnresolvableOrderColumnError`` here IS the
+        # failure this test exists to catch, and letting it propagate gives the
+        # real traceback instead of a re-worded ``pytest.fail`` (Sonar S8714).
+        sql = await _sql(_grouped_order_query(
+            model=model, name=name, direction="asc",
+        ))
+        assert order_by_text(sql), (
+            f"grouped joined ORDER BY on {model}.{name} emitted no sort term:"
+            f"\n{sql}"
+        )

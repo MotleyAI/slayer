@@ -371,10 +371,10 @@ class TestPreboundQueryInvariants:
     def test_filter_texts_must_be_parallel(self) -> None:
         from slayer.engine.prebound import PreboundQuery
 
+        filters = [self._filter(), self._filter()]
         with pytest.raises(ValidationError) as exc:
             PreboundQuery(
-                bound_filters=[self._filter(), self._filter()],
-                bound_filter_texts=["only one"],
+                bound_filters=filters, bound_filter_texts=["only one"],
             )
         assert "parallel" in str(exc.value)
 
@@ -390,11 +390,10 @@ class TestPreboundQueryInvariants:
     def test_n_date_range_cannot_exceed_the_filters_it_slices(self) -> None:
         from slayer.engine.prebound import PreboundQuery
 
+        filters = [self._filter()]
         with pytest.raises(ValidationError):
             PreboundQuery(
-                bound_filters=[self._filter()],
-                bound_filter_texts=[None],
-                n_date_range=2,
+                bound_filters=filters, bound_filter_texts=[None], n_date_range=2,
             )
 
     def test_the_grain_prefix_cannot_exceed_the_measures(self) -> None:

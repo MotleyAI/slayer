@@ -127,9 +127,13 @@ class TestRoutingSurvivesReroot:
         # forward CTE, and the predicate is host-evaluable by construction, so
         # the host must keep applying it — otherwise rows the user excluded
         # come back carrying a NULL measure.
-        assert not plan.where_filter_ids and not plan.having_filter_ids, (
-            "a re-rooted plan told the host base to skip a filter that only "
-            "the CTE applies"
+        assert not plan.where_filter_ids, (
+            f"a re-rooted plan routed {plan.where_filter_ids} to a forward "
+            f"CTE's WHERE that does not exist, so the host base skips it"
+        )
+        assert not plan.having_filter_ids, (
+            f"a re-rooted plan routed {plan.having_filter_ids} to a forward "
+            f"CTE's HAVING that does not exist"
         )
         # The audit has to be backed by something: the sub-plan must actually
         # carry the filter it claims is applied, or "applied" is a label on
