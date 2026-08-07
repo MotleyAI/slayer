@@ -345,7 +345,7 @@ class TsqlDialect(SqlDialect):
         it on a deep chain. The returned value is still dotted.
         """
         return fit_identifier(
-            name, limit=self.max_identifier_bytes, expand=encode_alias,
+            name=name, limit=self.max_identifier_bytes, expand=encode_alias,
         )
 
     def emit_alias(self, alias: str) -> str:
@@ -376,7 +376,7 @@ class TsqlDialect(SqlDialect):
         still dotted, so this pass mangles it — yielding what ``emit_alias``
         returns, with no double-encoding.
         """
-        sql = super().rewrite_emitted_sql(sql, aliases=aliases)
+        sql = super().rewrite_emitted_sql(sql=sql, aliases=aliases)
         return _TSQL_DOTTED_ALIAS_RE.sub(
             lambda m: f"[{encode_alias(m.group(1))}]", sql
         )
@@ -400,6 +400,6 @@ class TsqlDialect(SqlDialect):
         """
         mapping = self.decode_alias_map(aliases)
         return [
-            self._rekey_row(row, mapping, fallback=decode_alias)
+            self._rekey_row(row=row, mapping=mapping, fallback=decode_alias)
             for row in rows
         ]

@@ -658,13 +658,41 @@ class TestCteNames:
         second = gen._cte_name("_cm_", TWIN_A)  # hits the memo, must not raise
         assert second == first
 
-    def test_cte_allocator_resets_per_statement(self) -> None:
+    async def test_cte_allocator_resets_per_statement(self, chain) -> None:
         """One generator instance generates many statements; allocation is
-        per-statement, so names must not accumulate across calls."""
+        per-statement, so an owner allocated before ``generate()`` must not
+        still hold its name afterwards.
+
+        The reset has to be exercised THROUGH ``generate()``, and with a
+        DIFFERENT owner: re-generating the same statement proves nothing,
+        because ``_cte_name`` is idempotent for one owner and would pass even
+        if the dict were never cleared.
+        """
+        engine, _ = chain
+        prepared = await engine._prepare_pipeline(
+            query=_repro_query(), named_queries={}, runtime_kwarg={},
+        )
         gen = SQLGenerator(dialect="postgres")
-        gen._cte_name("_cm_", TWIN_A)
-        gen._cte_names = {}
-        gen._cte_name("_cm_", TWIN_A)  # would raise if state leaked wrongly
+        stale = gen._cte_name(prefix="_cm_", alias=TWIN_A)
+        assert stale.casefold() in gen._cte_names
+
+        gen.generate(enriched=prepared.enriched)
+        assert stale.casefold() not in gen._cte_names, (
+            "CTE allocation leaked across statements"
+        )
+
+    def test_cte_allocator_detects_case_folded_collision(self) -> None:
+        """CTE names are emitted UNQUOTED, so the server folds them: on
+        Postgres ``_wm_Foo`` and ``_wm_foo`` are the SAME identifier, and
+        allocating both would silently point one reference at the other's CTE.
+        Comparing the literal spellings misses it.
+        """
+        gen = SQLGenerator(dialect="postgres")
+        first = gen._cte_name(prefix="_wm_", alias="Foo")
+        with pytest.raises(IdentifierCollisionError) as exc:
+            gen._cte_name(prefix="_wm_", alias="foo")
+        assert "CTE name" in str(exc.value)
+        assert first == "_wm_Foo"
 
     def test_cte_name_helper_is_pure_and_bounded(self) -> None:
         from slayer.sql.generator import _cte_name_from_alias
@@ -709,6 +737,47 @@ class TestCteNames:
 
         got = _cte_name_from_alias("_cm_", LONG_EMAIL + ".lifetimeValue_sum", limit=63)
         assert re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", got), got
+
+    async def test_self_join_transform_cte_names_are_fitted(self, tmp_path) -> None:
+        """``shifted_<name>`` / ``sjoin_<name>`` are CTE names built from a
+        USER-supplied transform name, so a long one busts the budget just like
+        an alias-derived CTE. They used to be f-string-built and so escaped
+        both the fitting and the collision check.
+        """
+        long_transform_name = "revenue_" + "x" * 70  # 78 chars, way over 63
+        storage = YAMLStorage(base_dir=str(tmp_path))
+        await storage.save_datasource(DatasourceConfig(
+            name=DS, type="postgres", host="localhost", port=5432,
+            database="x", username="u", password="p",
+        ))
+        await storage.save_model(SlayerModel(
+            name="ShiftOrders", sql_table="orders", data_source=DS,
+            default_time_dimension="created_at",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Column(name="revenue", sql="revenue", type=DataType.DOUBLE),
+            ],
+        ))
+        engine = SlayerQueryEngine(storage=storage)
+        prepared = await engine._prepare_pipeline(
+            query=SlayerQuery(
+                source_model="ShiftOrders",
+                time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
+                measures=[
+                    {"formula": "revenue:sum"},
+                    {"formula": "time_shift(revenue:sum, -1)", "name": long_transform_name},
+                ],
+            ),
+            named_queries={}, runtime_kwarg={},
+        )
+        sql = prepared.sql
+        assert "shifted_" in sql, f"fixture must emit a self-join CTE\n{sql}"
+        for name, _ in _cte_names(sqlglot.parse_one(sql, dialect="postgres")):
+            assert _nbytes(name) <= 63, f"CTE {name!r} is {_nbytes(name)} bytes\n{sql}"
+        # The unfitted forms must not survive anywhere — definition or reference.
+        assert f"shifted_{long_transform_name}" not in sql
+        assert f"sjoin_{long_transform_name}" not in sql
 
 
 # ===========================================================================
@@ -979,6 +1048,55 @@ class TestEngineContract:
         resp = await engine.execute(query=_repro_query(), dry_run=True)
         for key in resp.attributes.dimensions:
             assert key in resp.columns
+
+    async def test_get_column_types_decodes_fitted_aliases(
+        self, chain, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``get_column_types`` probes with generated SQL, so its metadata keys
+        are the EMITTED (fitted) aliases while the lookup below uses the
+        canonical ``EnrichedMeasure.alias``. Without a decode pass an
+        over-limit measure silently drops out of the type map.
+        """
+        engine, _ = chain
+        over_limit = "totalAmount_" + "x" * 60   # 72-char measure name
+
+        captured: dict[str, str] = {}
+
+        class _FakeClient:
+            async def get_column_types(self, sql: str) -> dict[str, str]:
+                # Echo back what a server would: keys exactly as emitted.
+                for name, _ in _projection_aliases(
+                    next(iter(sqlglot.parse_one(sql, dialect="postgres").find_all(exp.Select)))
+                ):
+                    captured[name] = "double precision"
+                return dict(captured)
+
+            async def aclose(self) -> None:  # pragma: no cover — not reached
+                pass
+
+        model = SlayerModel(
+            name="TypeProbe", sql_table="invoices", data_source=DS,
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name=over_limit, sql="total_amount", type=DataType.DOUBLE),
+            ],
+        )
+        await engine.storage.save_model(model)
+        monkeypatch.setattr(
+            engine, "_sql_clients", {k: _FakeClient() for k in ("x",)},
+        )
+        monkeypatch.setattr(
+            "slayer.engine.query_engine._sql_client_cache_key", lambda ds: "x",
+        )
+
+        types = await engine.get_column_types(model_name="TypeProbe")
+        assert captured, "probe must have emitted at least one alias"
+        emitted = [k for k in captured if _nbytes(k) > 63]
+        assert not emitted, f"probe SQL should carry fitted aliases, got {emitted}"
+        assert over_limit in types, (
+            f"over-limit measure dropped from the type map; probe keys were "
+            f"{sorted(captured)}"
+        )
 
 
 # ===========================================================================

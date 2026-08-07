@@ -524,7 +524,7 @@ class SqlDialect(BaseModel):
         under-limit alias produces byte-identical SQL on every dialect,
         including the ones that separately mangle dots.
         """
-        return fit_identifier(name, limit=self.max_identifier_bytes)
+        return fit_identifier(name=name, limit=self.max_identifier_bytes)
 
     def emit_alias(self, alias: str) -> str:
         """The FINAL identifier a canonical alias reaches the SQL as.
@@ -634,7 +634,7 @@ class SqlDialect(BaseModel):
         mapping = self.alias_rewrite_map(aliases)
         if not mapping:
             return sql
-        return substitute_quoted(sql, mapping, quote=self.quote_identifier)
+        return substitute_quoted(sql=sql, mapping=mapping, quote=self.quote_identifier)
 
     def decode_result_keys(
         self,
@@ -655,7 +655,7 @@ class SqlDialect(BaseModel):
         mapping = self.decode_alias_map(aliases)
         if not mapping:
             return rows
-        return [self._rekey_row(row, mapping) for row in rows]
+        return [self._rekey_row(row=row, mapping=mapping) for row in rows]
 
     def register_udfs(self, dbapi_connection) -> None:
         """Default: no-op. SQLite overrides to register Python aggregate

@@ -284,7 +284,7 @@ def _cte_name_from_alias(prefix: str, alias: str, *, limit: int | None = None) -
     """
     sanitized = alias.replace(".", "__")
     sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", sanitized)
-    return fit_identifier(prefix + sanitized, limit=limit)
+    return fit_identifier(name=prefix + sanitized, limit=limit)
 
 
 def _alias_prefixes(model_name: str) -> list:
@@ -430,12 +430,19 @@ class SQLGenerator:
         silently references the wrong CTE. Repeat calls with the same
         ``(prefix, alias)`` are the same name, not a collision — several code
         paths re-derive a CTE's name to reference it.
+
+        Keyed CASEFOLDED, because unquoted is exactly the case that the server
+        folds: ``_wm_Foo`` and ``_wm_foo`` are one identifier on Postgres (and
+        on Snowflake), so comparing the literal spellings would wave through a
+        pair that silently resolves to the same CTE. Unlike the projection
+        aliases, there is no quoted variant to exempt here — these are never
+        quoted — so casefolding is exact rather than merely conservative.
         """
         name = _cte_name_from_alias(
-            prefix, alias, limit=self._dialect.max_identifier_bytes,
+            prefix=prefix, alias=alias, limit=self._dialect.max_identifier_bytes,
         )
         owner = (prefix, alias)
-        prior = self._cte_names.setdefault(name, owner)
+        prior = self._cte_names.setdefault(name.casefold(), owner)
         if prior != owner:
             raise IdentifierCollisionError(
                 first=f"{prior[0]}{prior[1]}", second=f"{prefix}{alias}",
@@ -802,7 +809,7 @@ class SQLGenerator:
         # --- Cross-model measure CTEs ---
         seen_cm_ctes: set = set()
         for cm in enriched.cross_model_measures:
-            cte_name = self._cte_name("_cm_", cm.alias)
+            cte_name = self._cte_name(prefix="_cm_", alias=cm.alias)
             if cte_name in seen_cm_ctes:
                 measure_cte_refs.append((cte_name, cm.alias, None))
                 continue
@@ -887,7 +894,7 @@ class SQLGenerator:
         for measure in enriched.measures:
             if not _is_windowed_measure(measure):
                 continue
-            cte_name = self._cte_name("_wm_", measure.alias)
+            cte_name = self._cte_name(prefix="_wm_", alias=measure.alias)
             ctes.append((cte_name, self._generate_window_measure_cte(enriched=enriched, measure=measure)))
             measure_cte_refs.append((cte_name, measure.alias, None))
 
@@ -895,7 +902,7 @@ class SQLGenerator:
         for measure in enriched.measures:
             if not _has_cross_model_filter(measure):
                 continue
-            cte_name = self._cte_name("_fm_", measure.alias)
+            cte_name = self._cte_name(prefix="_fm_", alias=measure.alias)
 
             # Measure aggregation without CASE WHEN (the join IS the filter)
             unfiltered = copy.copy(measure)
@@ -1681,7 +1688,11 @@ class SQLGenerator:
             for t in deferred_self_joins:
                 src_cte = ctes[-1][0]
 
-                shift_name = f"shifted_{t.name}"
+                # DEV-1756: these are CTE names built from a USER-supplied
+                # transform name, so they need the same length fitting and
+                # collision check as every other CTE. Allocated once and reused
+                # for the definition and every reference below.
+                shift_name = self._cte_name(prefix="shifted_", alias=t.name)
                 shifted_sql = self._generate_shifted_base(
                     enriched=enriched, transform=t,
                 )
@@ -1703,7 +1714,7 @@ class SQLGenerator:
                 join_cols = ", ".join(
                     f'{src_cte}.{self._q(a)}' for a in sorted(available_aliases)
                 )
-                join_layer = f"sjoin_{t.name}"
+                join_layer = self._cte_name(prefix="sjoin_", alias=t.name)
                 join_sql = (
                     f"SELECT {join_cols}, {col_sql} AS {self._q(t.alias)}\n"
                     f"FROM {src_cte}\n"
@@ -1821,9 +1832,9 @@ class SQLGenerator:
         layer_num: int,
     ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
         partition_aliases = getattr(transform, "partition_aliases", []) or []
-        reset_alias = self._cte_name("_cp_reset_", transform.alias)
-        reset_cte = self._cte_name(f"cp_reset_{layer_num}_", transform.alias)
-        value_cte = self._cte_name(f"cp_value_{layer_num}_", transform.alias)
+        reset_alias = self._cte_name(prefix="_cp_reset_", alias=transform.alias)
+        reset_cte = self._cte_name(prefix=f"cp_reset_{layer_num}_", alias=transform.alias)
+        value_cte = self._cte_name(prefix=f"cp_value_{layer_num}_", alias=transform.alias)
 
         def _quoted_col(name: str) -> exp.Column:
             return exp.Column(this=exp.to_identifier(name, quoted=True))

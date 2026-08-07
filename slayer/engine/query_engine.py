@@ -2053,6 +2053,15 @@ class SlayerQueryEngine:
             logger.warning("get_column_types probe failed for model '%s'", model_name)
             return {}
 
+        # DEV-1756: ``sql`` was generated with length-fitted aliases, so the
+        # probe's metadata keys are the EMITTED names while ``em.alias`` below
+        # is canonical. Decode first or an over-limit measure silently drops
+        # out of the type map. Same hook and alias set ``_run_and_build`` uses.
+        if raw_types:
+            raw_types = get_dialect(dialect).decode_result_keys(
+                [raw_types], aliases=all_projection_aliases(enriched),
+            )[0]
+
         # Map qualified aliases (e.g., "orders.revenue_max") back to bare measure names
         result: dict[str, str] = {}
         for em in enriched.measures:
@@ -3360,6 +3369,19 @@ class SlayerQueryEngine:
         # prevent — two distinct aliases landing on the identical short because
         # a user-declared cross-model ``name`` bypassed the flattening above
         # and happened to match another column's canonical flat.
+        #
+        # Keyed on the CASEFOLDED short, which is deliberately CONSERVATIVE
+        # rather than exact. Since ``_short_sql`` quotes mixed-case shorts,
+        # ``Foo`` (emitted ``"Foo"``, case-preserved) and ``foo`` (emitted bare,
+        # folded) do in fact resolve to different columns on every dialect, so
+        # casefolding rejects a pair that would work. The exact rule is
+        # dialect-dependent — a quoted ``"EMAIL"`` collides with a bare
+        # ``email`` on upper-folding backends (Snowflake, Oracle) but not on
+        # lower-folding ones — and modelling that needs a fold-direction per
+        # dialect, which SLayer does not carry. Erring toward a loud error on a
+        # rare case-differing pair is the right side to be wrong on here: the
+        # alternative normalisation admits a silent duplicate output name on
+        # exactly the backends this machinery exists to protect.
         short_owner: dict[str, str] = {}
         for alias, short, _, _, _, _ in column_map:
             prior_alias = short_owner.setdefault(short.casefold(), alias)

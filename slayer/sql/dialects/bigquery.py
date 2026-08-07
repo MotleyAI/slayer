@@ -142,7 +142,7 @@ class BigqueryDialect(SqlDialect):
         the mangling.
         """
         return fit_identifier(
-            name, limit=self.max_identifier_bytes, expand=encode_alias,
+            name=name, limit=self.max_identifier_bytes, expand=encode_alias,
         )
 
     def emit_alias(self, alias: str) -> str:
@@ -169,7 +169,7 @@ class BigqueryDialect(SqlDialect):
         Because the fitted form is mangled by this same pass rather than
         arriving pre-mangled, there is no double-encoding.
         """
-        sql = super().rewrite_emitted_sql(sql, aliases=aliases)
+        sql = super().rewrite_emitted_sql(sql=sql, aliases=aliases)
         return _DOTTED_ALIAS_RE.sub(
             lambda m: f"`{encode_alias(m.group(1))}`", sql
         )
@@ -193,7 +193,7 @@ class BigqueryDialect(SqlDialect):
         """
         mapping = self.decode_alias_map(aliases)
         return [
-            self._rekey_row(row, mapping, fallback=decode_alias)
+            self._rekey_row(row=row, mapping=mapping, fallback=decode_alias)
             for row in rows
         ]
 
