@@ -3408,7 +3408,7 @@ class SlayerQueryEngine:
         # token inside ``inner_sql``, so this pass can only reach the wrapper's
         # own references.
         wrapped_sql = get_dialect(dialect).rewrite_emitted_sql(
-            wrapped_sql, aliases=all_projection_aliases(enriched),
+            sql=wrapped_sql, aliases=all_projection_aliases(enriched),
         )
 
         # One Column per result column — each is potentially both a dimension

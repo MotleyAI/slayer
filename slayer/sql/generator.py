@@ -686,7 +686,7 @@ class SQLGenerator:
         # SELECT and truncate exactly like user-declared aliases, so a filtered
         # list would leave their references pointing at an unfitted name.
         sql = self._dialect.rewrite_emitted_sql(
-            sql, aliases=all_projection_aliases(enriched),
+            sql=sql, aliases=all_projection_aliases(enriched),
         )
         return sql
 
