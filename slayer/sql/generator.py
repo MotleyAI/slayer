@@ -373,10 +373,12 @@ def _collapses_to_ranked_cte(planned_query) -> bool:
     visible_row_ids = [s.id for s in planned_query.row_slots if not s.hidden]
     if grain_ids != visible_row_ids:
         return False
-    if any(s.hidden for s in planned_query.row_slots):
-        # A hidden row slot is filter/order scaffolding ``_base`` would still
-        # have to materialise; the ranked CTE does not project it.
-        return False
+    # HIDDEN row slots are deliberately not a reason to refuse. They are filter
+    # scaffolding — a ``WHERE customers.tier = 'gold'`` interns ``tier`` as a
+    # hidden ROW slot — and ``_base`` does not project or group by them either:
+    # the no-transform aux pass is ``aggregates_only``, and a transform layer is
+    # already excluded above. The ranked CTE applies the very same ROW filters
+    # (``where_filter_ids``), so the two renderings agree.
     return list(planned_query.projection) == [
         *grain_ids, plan.aggregate_slot_id,
     ]
@@ -1821,6 +1823,21 @@ class SQLGenerator:
             # rows under the same names. So emit it directly.
             return self._render_collapsed_ranked_plan(
                 planned_query=planned_query, bundle=bundle,
+            )
+        if as_cte_body and planned_query.ranked_aggregate_plans:
+            # The residual, made loud. Anything a ranked sub-plan cannot collapse
+            # would go through ``_render_with_cross_model_plans`` and emit its own
+            # ``WITH`` — a nested one, which SQL Server rejects, and which sqlglot
+            # otherwise FLATTENS into the parent chain where the two ``_base``
+            # CTEs then collide. Both outcomes are invalid SQL that no unit test
+            # reads, so a shape that escapes the collapse must stop here rather
+            # than reach a database.
+            raise NotImplementedError(
+                "A re-rooted cross-model first/last whose sub-plan needs more "
+                "than the ranked CTE itself is not yet supported: the sub-plan "
+                "renders into a CTE body, which cannot carry a WITH of its own. "
+                "Split the measure into an earlier stage, or drop the part of "
+                "the query the sub-plan cannot express in one SELECT.",
             )
 
         if (
@@ -3538,22 +3555,32 @@ class SQLGenerator:
     #
     # Every first/last aggregate is now excluded from ``base_render_order`` by
     # ``isolated_slot_ids``, so ``_has_first_last_aggregate`` cannot return True
-    # and nothing below is entered. A runtime probe over the whole unit suite
-    # confirms it: the only callers left are the unit tests that pin these
+    # and nothing in this block is entered. A runtime probe over the whole unit
+    # suite confirms it: the only callers left are the unit tests that pin these
     # helpers directly.
     #
-    # The inventory PR 6 deletes:
+    # WHOLLY UNREACHABLE — PR 6 deletes outright:
     #   _build_first_last_base_select, _has_first_last_aggregate,
     #   _build_ranked_subquery_from_planned, _build_unfiltered_rn_columns,
     #   _build_filtered_rn_columns, _iter_first_last_leaves,
-    #   _resolve_ranking_time_column_from_planned, _resolve_explicit_time_col,
-    #   _explicit_time_arg_of, FirstLastRenderState (+ its rn_suffix_map /
-    #   filtered_rn_map / filtered_match_map / agg_synth_alias /
+    #   _resolve_ranking_time_column_from_planned, FirstLastRenderState (+ its
+    #   rn_suffix_map / filtered_rn_map / filtered_match_map / agg_synth_alias /
     #   value_alias_by_sql fields), ``_build_agg``'s first/last branch and its
-    #   rn_suffix_map / filtered_* parameters, the rn threading through
-    #   ``_render_aggregate_composite_expr``, and
+    #   rn_suffix_map / filtered_* parameters, and the rn threading through
+    #   ``_render_aggregate_composite_expr``.
+    #
+    # STILL CALLED, but only ever on the no-op path — PR 6 removes the dead
+    # branch rather than the function:
+    #   _resolve_explicit_time_col / _explicit_time_arg_of, reached from
+    #   ``_build_agg_render_spec_from_planned`` for EVERY aggregate. No
+    #   first/last reaches that builder any more (the ranked renderer resolves
+    #   its value itself, precisely so the plan owns the ranking column), so
+    #   both return ``None`` on every production call — measured: 2876 calls
+    #   across the unit suite, zero non-``None`` results outside the four unit
+    #   tests that invoke the builder directly. The same holds for
     #   ``_resolve_agg_inputs_via_scope``'s ``_resolve_first_last_time_arg``
-    #   sub-pass.
+    #   sub-pass, which walks a ``base_render_order`` that no longer contains a
+    #   ranked slot.
     # =====================================================================
 
     def _build_first_last_base_select(  # NOSONAR(S3776) — single conceptual unit: dimension/td/derived-dim classification pass + agg-spec synth + ranked-subquery wrap + outer SELECT/GROUP BY assembly. Splitting forces shared mutable state (partition_exprs / extra_projections / outer_ref_by_sid / synth_by_sid) across helpers without simplifying anything.
@@ -4665,62 +4692,11 @@ class SQLGenerator:
             cast_derived=False,
         )
 
-        where_parts: List[exp.Expression] = []
-        # A measure's ``Column.filter`` is a predicate on the rows this
-        # aggregate ranks, so in its own scope it simply removes them — BEFORE
-        # the ranking, which is what the retired sentinel rank column plus its
-        # match flag were emulating from outside.
-        if local_key.column_filter_key is not None:
-            cfk_sql = local_key.column_filter_key.canonical_sql
-            if cfk_sql:
-                where_parts.append(self._enter_mode_a_predicate(
-                    sql=cfk_sql, scope=ranked_scope,
-                    location=f"Column.filter on model {root_model.name!r}",
-                ))
-        for filter_text in plan.target_model_filters:
-            if not filter_text:
-                continue
-            where_parts.append(self._enter_mode_a_predicate(
-                sql=filter_text, scope=ranked_scope,
-                location=f"SlayerModel.filters on model {root_model.name!r}",
-            ))
-
-        # Host filters this CTE also evaluates. The two roots need different
-        # renderers for the same reason ``_wm_`` and ``_cm_`` do: a host-rooted
-        # CTE binds them in the host's own scope (so they render byte-identically
-        # to the copy ``_base`` keeps), while a target-rooted one re-anchors each
-        # leaf against the target.
-        if plan.target_path:
-            self._register_routed_filter_joins(
-                planned_query=planned_query,
-                filter_ids=list(plan.where_filter_ids),
-                scope=ranked_scope,
-                target_path=plan.target_path,
-            )
-            routed_where = self._collect_routed_filters(
-                planned_query=planned_query,
-                filter_ids=plan.where_filter_ids,
-                target_relation=root_relation,
-                target_model=root_model,
-                bundle=bundle,
-            )
-        else:
-            skip_ids = {
-                fp.id for fp in planned_query.filters_by_phase
-            } - set(plan.where_filter_ids)
-            self._resolve_where_filter_joins_via_scope(
-                planned_query=planned_query, scope=ranked_scope,
-                skip_filter_ids=skip_ids,
-            )
-            routed_where, _routed_having = self._build_where_having_from_planned(
-                planned_query=planned_query,
-                source_relation=root_relation,
-                source_model=root_model,
-                bundle=bundle,
-                skip_filter_ids=skip_ids,
-            )
-        if routed_where is not None:
-            where_parts.append(routed_where)
+        where_parts = self._ranked_cte_where(
+            plan=plan, local_key=local_key, planned_query=planned_query,
+            bundle=bundle, root_model=root_model, root_relation=root_relation,
+            scope=ranked_scope,
+        )
 
         from_expr, joins = self._build_from_and_joins(
             source_model=root_model, source_relation=root_relation,
@@ -4755,6 +4731,82 @@ class SQLGenerator:
         return build_ranked_cte_select(
             inner=inner, grain=grain, pick=pick, agg_alias=full_agg_alias,
         )
+
+    def _ranked_cte_where(
+        self,
+        *,
+        plan,
+        local_key,
+        planned_query,
+        bundle,
+        root_model,
+        root_relation: str,
+        scope: ScopeFrame,
+    ) -> List[exp.Expression]:
+        """Every predicate a ranked CTE applies to the rows it ranks.
+
+        All of them narrow the row set BEFORE the ranking, which is the whole
+        difference from the shape this replaces: a filtered first/last used to
+        rank every row and mask the non-matching ones with a sentinel rank
+        column plus a match flag, because the ranking was shared with the rest
+        of the query and could not simply drop rows.
+
+        Entering each through ``scope`` registers the joins it crosses (Law 1),
+        so the CTE's FROM is assembled from a set nothing can be missing from.
+        """
+        parts: List[exp.Expression] = []
+        if local_key.column_filter_key is not None:
+            cfk_sql = local_key.column_filter_key.canonical_sql
+            if cfk_sql:
+                parts.append(self._enter_mode_a_predicate(
+                    sql=cfk_sql, scope=scope,
+                    location=f"Column.filter on model {root_model.name!r}",
+                ))
+        for filter_text in plan.target_model_filters:
+            if not filter_text:
+                continue
+            parts.append(self._enter_mode_a_predicate(
+                sql=filter_text, scope=scope,
+                location=f"SlayerModel.filters on model {root_model.name!r}",
+            ))
+
+        # Host filters this CTE also evaluates. The two roots need different
+        # renderers for the same reason ``_wm_`` and ``_cm_`` do: a host-rooted
+        # CTE binds them in the host's own scope (so they render
+        # byte-identically to the copy ``_base`` keeps), while a target-rooted
+        # one re-anchors each leaf against the target.
+        if plan.target_path:
+            self._register_routed_filter_joins(
+                planned_query=planned_query,
+                filter_ids=list(plan.where_filter_ids),
+                scope=scope,
+                target_path=plan.target_path,
+            )
+            routed = self._collect_routed_filters(
+                planned_query=planned_query,
+                filter_ids=plan.where_filter_ids,
+                target_relation=root_relation,
+                target_model=root_model,
+                bundle=bundle,
+            )
+        else:
+            skip_ids = {
+                fp.id for fp in planned_query.filters_by_phase
+            } - set(plan.where_filter_ids)
+            self._resolve_where_filter_joins_via_scope(
+                planned_query=planned_query, scope=scope,
+                skip_filter_ids=skip_ids,
+            )
+            routed, _having = self._build_where_having_from_planned(
+                planned_query=planned_query,
+                source_relation=root_relation,
+                source_model=root_model,
+                bundle=bundle,
+                skip_filter_ids=skip_ids,
+            )
+        if routed is not None:
+            parts.append(routed)
+        return parts
 
     def _render_collapsed_ranked_plan(self, *, planned_query, bundle) -> str:
         """Emit a whole plan AS its single ranked CTE body (D9).

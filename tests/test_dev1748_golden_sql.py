@@ -11,16 +11,15 @@ asks for. It also reaches where execution cannot: BigQuery and T-SQL mangle
 dotted aliases at emission, and Snowflake-style null-safe equality never runs in
 the SQLite/DuckDB integration suites.
 
-The baseline is recorded against the PRE-rewrite code. When the rewrite lands,
-every entry it moves is listed in ``ALLOWED_DELTAS`` with a reason, approved,
-re-blessed, and the manifest emptied again.
+The baseline was first recorded against the PRE-rewrite code; the B9 rewrite
+moved all 170 entries, and they were re-blessed through ``ALLOWED_DELTAS`` and
+the manifest emptied again. It now records the POST-rewrite emission, so a diff
+here is a NEW change and goes through the same loop.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
-import os
 from pathlib import Path
 
 import pytest
@@ -29,6 +28,7 @@ from slayer.core.query import SlayerQuery
 
 from tests._dev1748_fixtures import BIG_AMOUNT_THRESHOLD, dev1748_models
 from tests._engine_helpers import _engine_generate
+from tests._golden_harness import GoldenSuite, load_or_regenerate, record_raise
 
 
 GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1748_first_last_baseline.json"
@@ -129,8 +129,10 @@ def _cases() -> dict:
             dimensions=["status"],
             measures=[{"formula": "amount:last(created_alias)", "name": "l"}],
         ),
-        # The DEV-1476 remnant. Records a raise today; flips to SQL when the
-        # ranked CTE resolves its ranking key through its own scope.
+        # The DEV-1476 remnant. Recorded a raise before B9 — the ranking ran
+        # in the host base, which could not pull the residual join — and emits
+        # real SQL now that the ranked CTE resolves its ranking key through its
+        # own scope.
         "time_arg/joined_derived_column": _q(
             dimensions=["status"],
             measures=[
@@ -168,6 +170,15 @@ def _cases() -> dict:
         "cross_model/rerooted_by_a_target_side_dim": _q(
             dimensions=["customers.regions.name"],
             measures=[{"formula": "customers.spend:last", "name": "l"}],
+        ),
+        # A row filter interns a HIDDEN row slot in the re-rooted sub-plan.
+        # That used to stop the sub-plan collapsing to its ranked CTE, and the
+        # statement came out with TWO CTEs named ``_base`` — invalid on every
+        # dialect, and invisible to a reader looking for a nested ``WITH``.
+        "cross_model/rerooted_with_a_row_filter": _q(
+            dimensions=["customers.regions.name"],
+            measures=[{"formula": "customers.spend:last", "name": "l"}],
+            filters=["customers.tier == 'gold'"],
         ),
         # --- composition ---
         "composite/arithmetic_of_two_ranked": _q(
@@ -219,12 +230,7 @@ def _cases() -> dict:
 
 
 async def _generate_one(query: SlayerQuery, dialect: str):
-    """Emitted SQL, or a structured record of the raised error.
-
-    The record keeps the COMPLETE message rather than the type alone: a type
-    name lets any NEW failure in the same case pass unnoticed, which is the
-    blind spot this harness exists to close.
-    """
+    """Emitted SQL, or a structured record of the raised error."""
     models = dev1748_models()
     try:
         return await _engine_generate(
@@ -232,138 +238,47 @@ async def _generate_one(query: SlayerQuery, dialect: str):
             dialect=dialect, validate=False,
         )
     except Exception as exc:  # noqa: BLE001 — the exception itself is contract
-        return {"error": type(exc).__name__, "message": str(exc)}
+        return record_raise(exc)
 
 
-def _render(value) -> str:
-    if isinstance(value, dict):
-        return f"RAISED {value.get('error')}: {value.get('message')}"
-    return str(value)
+async def _render(case_id: str, dialect: str):
+    return await _generate_one(_cases()[case_id], dialect)
 
 
-def _build_baseline() -> dict:
-    # conftest's autouse ``_enable_scope_validation`` is FUNCTION-scoped and so
-    # is not in effect while a module-scoped fixture runs. Set it explicitly, or
-    # a shape that trips ScopeLeakError during a test would have been recorded
-    # as valid SQL and every run would "fail" with a spurious diff.
-    previous = os.environ.get("SLAYER_VALIDATE_SCOPES")
-    os.environ["SLAYER_VALIDATE_SCOPES"] = "1"
-
-    async def _run() -> dict:
-        out: dict = {}
-        for case_id, query in _cases().items():
-            for dialect in DIALECTS:
-                out[f"{case_id}::{dialect}"] = await _generate_one(query, dialect)
-        return out
-
-    try:
-        return asyncio.run(_run())
-    finally:
-        if previous is None:
-            os.environ.pop("SLAYER_VALIDATE_SCOPES", None)
-        else:
-            os.environ["SLAYER_VALIDATE_SCOPES"] = previous
-
-
-def _expected_keys() -> set:
-    return {f"{c}::{d}" for c in _cases() for d in DIALECTS}
-
-
-def _merge_regenerated(
-    *, existing: dict | None, fresh: dict, allowed: dict, expected: set,
-) -> dict:
-    """Fold ``fresh`` into ``existing``, honouring the allowed-delta manifest.
-
-    Only keys named in ``allowed`` may overwrite a value already in the golden
-    file — that restriction IS the mechanism. Keys for newly added cases fold in
-    unconditionally (no prior approval to protect); keys for removed cases are
-    pruned.
-    """
-    if existing is None:
-        return dict(fresh)
-
-    unknown = sorted(set(allowed) - expected)
-    if unknown:
-        raise AssertionError(
-            f"ALLOWED_DELTAS names keys that are not in the matrix: {unknown}"
-        )
-
-    merged = {k: v for k, v in existing.items() if k in expected}
-    for key, value in fresh.items():
-        if key not in merged or key in allowed:
-            merged[key] = value
-    return merged
+def _suite() -> GoldenSuite:
+    return GoldenSuite(
+        case_ids=sorted(_cases()), dialects=DIALECTS, allowed=ALLOWED_DELTAS,
+    )
 
 
 @pytest.fixture(scope="module")
 def baseline() -> dict:
-    if os.environ.get("SLAYER_UPDATE_GOLDEN"):
-        existing = (
-            json.loads(GOLDEN_PATH.read_text()) if GOLDEN_PATH.exists() else None
-        )
-        GOLDEN_PATH.parent.mkdir(parents=True, exist_ok=True)
-        GOLDEN_PATH.write_text(
-            json.dumps(
-                _merge_regenerated(
-                    existing=existing, fresh=_build_baseline(),
-                    allowed=ALLOWED_DELTAS, expected=_expected_keys(),
-                ),
-                indent=2, sort_keys=True,
-            ) + "\n"
-        )
-    if not GOLDEN_PATH.exists():
-        pytest.fail(
-            f"golden baseline missing at {GOLDEN_PATH}; generate it with "
-            f"SLAYER_UPDATE_GOLDEN=1"
-        )
-    return json.loads(GOLDEN_PATH.read_text())
+    return load_or_regenerate(
+        path=GOLDEN_PATH, case_ids=sorted(_cases()), dialects=DIALECTS,
+        render=_render, allowed=ALLOWED_DELTAS,
+    )
 
 
 @pytest.mark.parametrize("case_id", sorted(_cases()))
 @pytest.mark.parametrize("dialect", DIALECTS)
 def test_emitted_sql_matches_golden(case_id: str, dialect: str, baseline) -> None:
-    key = f"{case_id}::{dialect}"
-    assert key in baseline, (
-        f"{key} is not in the golden baseline — a new case must be added "
-        f"deliberately (SLAYER_UPDATE_GOLDEN=1) and reviewed"
-    )
-    actual = asyncio.run(_generate_one(_cases()[case_id], dialect))
-    assert actual == baseline[key], (
-        f"emitted SQL changed for {key}.\n"
-        f"--- golden ---\n{_render(baseline[key])}\n"
-        f"--- actual ---\n{_render(actual)}\n"
-        f"If this change is intended, get it approved per the DEV-1742 "
-        f"per-test protocol, add {key!r} to ALLOWED_DELTAS with the reason, "
-        f"regenerate with SLAYER_UPDATE_GOLDEN=1, then delete the entry."
+    _suite().assert_matches(
+        key=f"{case_id}::{dialect}",
+        actual=asyncio.run(_generate_one(_cases()[case_id], dialect)),
+        baseline=baseline,
     )
 
 
 def test_baseline_covers_every_case_and_dialect(baseline) -> None:
-    missing = _expected_keys() - set(baseline)
-    assert not missing, f"golden baseline is missing entries: {sorted(missing)}"
+    _suite().assert_covers_every_case(baseline)
 
 
 def test_baseline_has_no_orphan_entries(baseline) -> None:
-    orphans = set(baseline) - _expected_keys()
-    assert not orphans, (
-        f"golden baseline has entries for cases that no longer exist: "
-        f"{sorted(orphans)}; regenerate to prune them"
-    )
+    _suite().assert_no_orphans(baseline)
 
 
-def test_allowed_deltas_name_real_keys() -> None:
-    unknown = sorted(set(ALLOWED_DELTAS) - _expected_keys())
-    assert not unknown, (
-        f"ALLOWED_DELTAS names keys that are not in the matrix: {unknown}"
-    )
-
-
-def test_allowed_deltas_carry_a_reason() -> None:
-    blank = sorted(k for k, v in ALLOWED_DELTAS.items() if not str(v).strip())
-    assert not blank, (
-        f"every allowed delta must say WHY the SQL is permitted to change: "
-        f"{blank}"
-    )
+def test_allowed_deltas_are_honest() -> None:
+    _suite().assert_allowed_deltas_are_honest()
 
 
 def test_every_case_actually_ranks(baseline) -> None:
@@ -371,11 +286,16 @@ def test_every_case_actually_ranks(baseline) -> None:
     emission; one that stopped emitting a ranking at all would still "match
     golden" forever once the degenerate form was blessed.
 
-    Stated as ROW_NUMBER-or-a-recorded-raise rather than ROW_NUMBER alone,
-    because two cases legitimately record an error today."""
+    NO entry is a recorded raise any more — the last one (the DEV-1476 remnant)
+    started emitting SQL when B9 landed — so the check is unconditional. Stating
+    that explicitly matters: a tolerated error arm would let a future shape
+    degrade to a raise and be blessed as "one of the known ones"."""
     for key, value in baseline.items():
-        if isinstance(value, dict):
-            continue  # a recorded raise — its message is the contract
+        assert not isinstance(value, dict), (
+            f"{key} records a raise:\nEvery case in this "
+            f"matrix emits SQL today; a new error entry is a regression, not a "
+            f"baseline update."
+        )
         assert "ROW_NUMBER" in value.upper(), (
             f"{key} emits no ranking at all:\n{value}"
         )

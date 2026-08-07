@@ -920,11 +920,11 @@ class TestTimeArgJoinDiscovery:
         assert seen == [], f"cross-model arg was resolved: {seen!r}"
 
     def test_residual_path_bearing_columnsqlkey_skipped_without_raise(self) -> None:
-        # PINS SUPERSEDED MACHINERY. ``_resolve_agg_inputs_via_scope``'s
-        # first/last sub-pass is production-unreferenced since DEV-1748 — a
-        # ranked aggregate never reaches ``base_render_order``, so this walker
-        # never sees one. Kept until PR 6 deletes the helper, per P-J, so the
-        # deletion is reviewed as a deletion rather than smuggled in here.
+        # PINS A DEAD BRANCH. ``_resolve_agg_inputs_via_scope`` still runs, but
+        # its first/last sub-pass never sees one since DEV-1748 — a ranked
+        # aggregate is excluded from ``base_render_order``, which is what this
+        # walker iterates. Kept until PR 6 removes the sub-pass, per P-J, so the
+        # removal is reviewed as a removal rather than smuggled in here.
         #
         # A path-bearing ColumnSqlKey time arg (a hop PAST the target, the shape
         # the render seam raises DEV-1526 on) must be SKIPPED by discovery — no
@@ -1092,13 +1092,14 @@ class TestResolveExplicitTimeColViaResolver:
             )
 
     def test_path_bearing_columnsqlkey_raises_dev1526_with_bundle(self) -> None:
-        # PINS SUPERSEDED MACHINERY. ``_resolve_explicit_time_col`` is
-        # production-unreferenced since DEV-1748 — the ranked CTE resolves its
-        # ranking key through its own scope, which is what removed the
-        # limitation this guard describes (see the un-xfailed
+        # PINS A DEAD BRANCH. ``_resolve_explicit_time_col`` is still called
+        # for every aggregate, but no first/last reaches it since DEV-1748, so
+        # this guard cannot fire outside a direct unit call like this one. The
+        # ranked CTE resolves its ranking key through its own scope, which is
+        # what removed the limitation the guard describes (see the un-xfailed
         # ``test_a_joined_derived_time_arg_ranks_by_the_joined_expression`` in
-        # tests/test_dev1748_first_last_matrix.py). Kept until PR 6 deletes the
-        # helper, per P-J.
+        # tests/test_dev1748_first_last_matrix.py). Kept until PR 6 removes the
+        # branch, per P-J.
         #
         # The residual-hop guard fires BEFORE resolution even when a bundle is
         # available — the existing guard pin (test_reroot_aggregate_key.py) runs

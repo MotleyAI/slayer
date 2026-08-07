@@ -87,9 +87,7 @@ def _ranking_key_name(key: ValueKey) -> str:
     return type(key).__name__
 
 
-def _resolves_on(
-    *, key: ValueKey, model: SlayerModel, bundle: ResolvedSourceBundle,
-) -> bool:
+def _resolves_on(*, key: ValueKey, model: SlayerModel) -> bool:
     """Whether ``key`` names something reachable FROM ``model``.
 
     A shallow check on purpose: a local leaf must be a column of the model, and
@@ -166,9 +164,7 @@ def resolve_ranking_time_key(
         # source itself undergoes — done in lockstep so the ORDER BY and the
         # value cannot end up rooted at different relations.
         rerooted = reroot_value_key(arg, target_path=target_path)
-        if target_path and not _resolves_on(
-            key=rerooted, model=root_model, bundle=bundle,
-        ):
+        if target_path and not _resolves_on(key=rerooted, model=root_model):
             # A HOST column as the ranking key of a TARGET-rooted CTE. The rows
             # being ranked are the target's, and a host column is not one of
             # their attributes — the relationship runs the other way, usually
@@ -389,7 +385,17 @@ def build_target_ranked_plan(
             target_path=target_path,
         ),
         where_filter_ids=list(cross_model_plan.where_filter_ids),
-        having_filter_ids=list(cross_model_plan.having_filter_ids),
+        # A ranked CTE NEVER emits a HAVING, so it must not claim one. The
+        # strategy routes an aggregate-phase filter there for a plain
+        # cross-model CTE; on a ranked one the same predicate goes to the outer
+        # combined SELECT instead, because this CTE is LEFT JOINed back and
+        # dropping its row would resurrect the host row carrying NULL
+        # (DEV-1503). ``where``/``having`` are INSTRUCTIONS about where a filter
+        # is evaluated — carrying an id the renderer ignores would be an
+        # instruction nothing follows. The audit (``applied_filter_ids``) keeps
+        # the full record, and ``_assert_ranked_having_is_covered`` proves the
+        # predicate really is applied somewhere.
+        having_filter_ids=[],
         applied_filter_ids=list(cross_model_plan.applied_filter_ids),
         target_model_filters=list(cross_model_plan.target_model_filters),
         dropped_filter_warnings=list(cross_model_plan.dropped_filter_warnings),

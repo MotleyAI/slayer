@@ -1507,6 +1507,7 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
 
     cross_model_plans = []
     ranked_plans: List[RankedAggregatePlan] = []
+    ranked_having_ids: Set[BoundFilterId] = set()
     # ROW-phase filters (user filters AND the model's own ``filters``) are what
     # a ranked CTE re-evaluates over its own rows. Computed once: every ranked
     # plan inherits the same list, and the host base keeps applying them too
@@ -1585,6 +1586,11 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
             ),
         )
         if kind is IsolationKind.RANKED_TARGET and plan.rerooted_plan is None:
+            # What the strategy WOULD have made this CTE evaluate as HAVING. The
+            # ranked plan drops it (a ranked CTE never emits one); this records
+            # it so the coverage guard below can prove the predicate is still
+            # applied by some scope rather than silently dropped.
+            ranked_having_ids.update(plan.having_filter_ids)
             # D1: the FORWARD cross-model first/last becomes a ranked plan —
             # same CTE, rooted at the target, but ranking rather than a plain
             # aggregation. A RE-ROOTED one keeps its ``CrossModelAggregatePlan``:
@@ -1688,6 +1694,12 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         slots=[*row_slots, *agg_slots, *combined_slots],
     )
 
+    _assert_ranked_having_is_covered(
+        ranked_having_ids=ranked_having_ids,
+        outer_where_filter_ids=outer_where_filter_ids,
+        cross_model_plans=cross_model_plans,
+    )
+
     empty_base_plan = _plan_empty_base_grain(
         projection=projection.public_projection,
         agg_slots=agg_slots,
@@ -1722,6 +1734,40 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         filter_reachability=filter_reachability,
         empty_base_plan=empty_base_plan,
     )
+
+
+def _assert_ranked_having_is_covered(
+    *,
+    ranked_having_ids: Set[BoundFilterId],
+    outer_where_filter_ids: List[BoundFilterId],
+    cross_model_plans: List[CrossModelAggregatePlan],
+) -> None:
+    """Every filter the strategy routed to a RANKED CTE's HAVING must still be
+    evaluated somewhere (DEV-1748).
+
+    A ranked CTE emits no HAVING — the predicate belongs on the outer combined
+    SELECT, because the CTE is LEFT JOINed back and dropping its row would
+    resurrect the host row carrying NULL. Two scopes pick these up in practice:
+    the outer WHERE (when the filter references the ranked aggregate itself) and
+    a sibling ``_cm_`` CTE (when it references a different aggregate on the same
+    target, which has a plan of its own).
+
+    No query is known to escape both. The guard exists because the failure mode
+    if one did is a filter that silently stops applying — a wrong answer with no
+    error — and that is worth converting into a loud one.
+    """
+    covered = set(outer_where_filter_ids)
+    for plan in cross_model_plans:
+        covered.update(plan.having_filter_ids)
+        covered.update(plan.where_filter_ids)
+    orphaned = sorted(ranked_having_ids - covered)
+    if orphaned:
+        raise RuntimeError(
+            f"Filter(s) {orphaned} were routed to a ranked first/last CTE's "
+            f"HAVING, which a ranked CTE never emits, and no other scope "
+            f"evaluates them. Applying nothing would silently widen the "
+            f"result; planner/renderer drift (DEV-1748).",
+        )
 
 
 def _plan_empty_base_grain(
@@ -2475,6 +2521,25 @@ def _host_model_name(
     return "(stage)"
 
 
+def _composite_reads_an_isolated_cte(
+    *,
+    key: ValueKey,
+    slot_by_key: Dict[ValueKey, SlotId],
+    isolated_slot_ids: AbstractSet[SlotId],
+) -> bool:
+    """Whether any aggregate leaf of a composite lives in an isolated CTE.
+
+    One such leaf is enough: the composite then cannot be evaluated inside
+    ``_base`` at all, because that leaf's value is a column of a CTE joined back
+    to it. Falling back to a host-base scope would silently substitute a plain
+    aggregate for the cross-model, rolling, or ranked one.
+    """
+    for dep in walk_value_keys(key):
+        if isinstance(dep, AggregateKey) and slot_by_key.get(dep) in isolated_slot_ids:
+            return True
+    return False
+
+
 def _classify_order_scope(
     *,
     slot: ValueSlot,
@@ -2503,17 +2568,14 @@ def _classify_order_scope(
         return OrderScope.WINDOWED_CTE
     if isinstance(slot.key, TransformKey):
         return OrderScope.TRANSFORM_STEP
-    if isinstance(slot.key, (ArithmeticKey, ScalarCallKey)):
-        for dep in walk_value_keys(slot.key):
-            if not isinstance(dep, AggregateKey):
-                continue
-            dep_sid = slot_by_key.get(dep)
-            if (
-                dep_sid in cross_model_slot_ids
-                or dep_sid in windowed_slot_ids
-                or dep_sid in ranked_slot_ids
-            ):
-                return OrderScope.OUTER_COMPOSITE
+    if isinstance(slot.key, (ArithmeticKey, ScalarCallKey)) and _composite_reads_an_isolated_cte(
+        key=slot.key,
+        slot_by_key=slot_by_key,
+        isolated_slot_ids=(
+            cross_model_slot_ids | windowed_slot_ids | set(ranked_slot_ids)
+        ),
+    ):
+        return OrderScope.OUTER_COMPOSITE
     if slot.hidden or slot.id not in public_projection:
         return OrderScope.HOST_BASE_HIDDEN
     return OrderScope.HOST_BASE

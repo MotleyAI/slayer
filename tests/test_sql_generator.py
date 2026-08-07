@@ -6792,7 +6792,8 @@ class TestDev1501HiddenFirstLastRender:
             assert "HAVING" not in sql.upper(), sql
             tail = sql[sql.rfind("WHERE"):]
             assert tail.startswith("WHERE"), sql
-            assert names[0] in tail and "> 100" in tail, sql
+            assert names[0] in tail, sql
+            assert "> 100" in tail, sql
             # Hidden materialised alias must not surface in result keys.
             assert set(res.columns) == {"orders.status", "orders._count"}, (
                 f"Hidden filter aggregate leaked: {res.columns!r}\nSQL:\n{sql}"
@@ -6895,7 +6896,8 @@ class TestDev1501HiddenFirstLastRender:
             # the collapse this test exists to catch.
             lc = _re.search(r'(_rk_\w+)\."orders\.lc"', norm)
             lu = _re.search(r'(_rk_\w+)\."orders\.lu"', norm)
-            assert lc is not None and lu is not None, sql
+            assert lc is not None, sql
+            assert lu is not None, sql
             assert lc.group(1) != lu.group(1), sql
 
 
@@ -6925,11 +6927,13 @@ class TestDev1501HiddenFirstLastRender:
             assert len(names) == 1, sql
             rk_body = _norm(_extract_cte_body(sql, _re.escape(names[0])))
             assert "WHERE orders.status = 'paid'" in rk_body, sql
-            assert "_last_rn_f0" not in sql and "_match_f0" not in sql, sql
+            assert "_last_rn_f0" not in sql, sql
+            assert "_match_f0" not in sql, sql
             # The predicate on the ranked value lands on the outer SELECT.
             assert "HAVING" not in sql.upper(), sql
             tail = sql[sql.rfind("WHERE"):]
-            assert tail.startswith("WHERE") and names[0] in tail, sql
+            assert tail.startswith("WHERE"), sql
+            assert names[0] in tail, sql
 
     async def test_filtered_first_last_in_nested_having_uses_filtered_rn(
         self, generator: SQLGenerator
@@ -7112,7 +7116,8 @@ class TestDev1501HiddenFirstLastRender:
             assert len(names) == 1, sql
             rk_body = _norm(_extract_cte_body(sql, _re.escape(names[0])))
             assert "WHERE orders.status = 'paid'" in rk_body, sql
-            assert "_last_rn_f0" not in sql and "_match_f0" not in sql, sql
+            assert "_last_rn_f0" not in sql, sql
+            assert "_match_f0" not in sql, sql
             assert _re.search(
                 rf'{_re.escape(names[0])}\."[^"]+" \+ 1 AS "orders\.plus1"',
                 _norm(sql),
@@ -7168,7 +7173,8 @@ class TestDev1501HiddenFirstLastRender:
                 f"({left!r}):\n{sql}"
             )
             lc = _re.search(r'(_rk_\w+)\."orders\.lc"', _norm(sql))
-            assert lc is not None and lc.group(1) == left, (
+            assert lc is not None, sql
+            assert lc.group(1) == left, (
                 f"the projected ``lc`` and the composite's created_at operand "
                 f"are one aggregate and must share one CTE:\n{sql}"
             )
@@ -7226,13 +7232,15 @@ class TestDev1501HiddenFirstLastRender:
             # ``_cm_`` CTE the cross-model SUM, the ``_rk_`` CTE the ranking.
             base_sql = _extract_cte_body(sql, r"_base")
             assert "ROW_NUMBER" not in base_sql, base_sql
-            assert "_cm_" in sql and "_rk_" in sql, sql
+            assert "_cm_" in sql, sql
+            assert "_rk_" in sql, sql
             assert "ROW_NUMBER" in _extract_cte_body(sql, r"_rk_\w+"), sql
             # The predicate on the ranked value is an outer WHERE, never a
             # HAVING that a LEFT JOIN back would turn into a NULL row.
             assert "HAVING" not in sql.upper(), sql
             tail = sql[sql.rfind("WHERE"):]
-            assert tail.startswith("WHERE") and "> 100" in tail, sql
+            assert tail.startswith("WHERE"), sql
+            assert "> 100" in tail, sql
 
     async def test_cross_model_filtered_last_in_having(
         self, generator: SQLGenerator
@@ -7293,11 +7301,13 @@ class TestDev1501HiddenFirstLastRender:
             # The target's own rows are narrowed BEFORE the ranking.
             assert "FROM customers AS customers" in rk_body, rk_body
             assert "WHERE customers.active = TRUE" in rk_body, rk_body
-            assert "_last_rn_f0" not in sql and "_match_f0" not in sql, sql
+            assert "_last_rn_f0" not in sql, sql
+            assert "_match_f0" not in sql, sql
             assert "HAVING" not in sql.upper(), sql
             tail = sql[sql.rfind("WHERE"):]
             assert tail.startswith("WHERE"), sql
-            assert names[0] in tail and "> 50" in tail, sql
+            assert names[0] in tail, sql
+            assert "> 50" in tail, sql
 
     async def test_derived_time_arg_pulls_in_referenced_join(
         self, generator: SQLGenerator,
@@ -9157,7 +9167,9 @@ class TestIsolatedFilteredMeasureCTEs:
         # since ascending is the absence of DESC.
         cm_body = _norm(_extract_cte_body(sql, r"_rk_\w*earliest_reserve\w*"))
 
-        assert "ORDER BY claim_amount.updated_at )" in cm_body, (
+        assert _re.search(
+            r"ORDER BY claim_amount\.updated_at\s*\)", cm_body,
+        ), (
             f"expected ascending ranking on the explicit time column:\n{cm_body}"
         )
         _assert_valid_sql(sql)

@@ -28,9 +28,11 @@ built around one thing a wrong implementation would get wrong:
 * ``NULL`` status — a NULL GRAIN member, so the null-safe join-back (P-I) has
   something to match.
 
-``order_tags`` is the 1:N fan-out: order 1 carries three tags and every other
-order carries one, so a join pulled in for one measure is visible in another's
-value if it leaks into the wrong scope.
+``order_tags`` is the 1:N fan-out: order 15 carries FOUR tag rows (``rush``
+twice, plus ``gift`` and ``fragile``) while orders 1, 2 and 16 carry one each.
+The duplicate ``rush`` is what makes multiply-per-match observable — a join
+pulled in for one measure changes another's value if it leaks into the wrong
+scope.
 
 ``empty_orders`` is a structurally identical but EMPTY table. An ungrouped
 aggregate over it must still return exactly one row carrying NULL — the
@@ -186,7 +188,7 @@ def seed_dev1748_sqlite(db_path: str) -> None:
             # filt — the NEWEST row does not match; an older one does.
             (13, 102, "filt", "2024-01-13", "2024-01-14", FILT_MATCHING),
             (14, 102, "filt", "2024-02-13", "2024-02-14", FILT_NEWER_NONMATCHING),
-            # fan — order 15 carries three tags.
+            # fan — order 15 carries four tag rows (``rush`` twice).
             (15, 102, "fan", "2024-01-15", "2024-01-16", FAN_FIRST),
             (16, 102, "fan", "2024-03-15", "2024-03-16", FAN_LAST),
         ],

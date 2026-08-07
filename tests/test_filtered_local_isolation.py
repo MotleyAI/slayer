@@ -823,7 +823,8 @@ def _assert_single_ranked_host(planned) -> None:
         f"got {planned.ranked_aggregate_plans}"
     )
     plan = planned.ranked_aggregate_plans[0]
-    assert plan.root_model == "orders" and plan.target_path == (), plan
+    assert plan.root_model == "orders", plan
+    assert plan.target_path == (), plan
 
 
 def _assert_single_host_rooted(plans) -> CrossModelAggregatePlan:

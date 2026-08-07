@@ -531,13 +531,16 @@ def test_local_agg_formula_scalar_kwarg_literal() -> None:
 # ===========================================================================
 # Section G — reworded residual-hop guard (DEV-1526 pointer)
 # ===========================================================================
-# PINS SUPERSEDED MACHINERY. ``_resolve_explicit_time_col`` is production-
-# unreferenced since DEV-1748: a ranked CTE resolves its ranking key through
-# its OWN scope, which pulls the residual join this guard exists to refuse.
-# The end-to-end proof is the un-xfailed
+# PINS A DEAD BRANCH. ``_resolve_explicit_time_col`` is still CALLED — every
+# aggregate reaches it through ``_build_agg_render_spec_from_planned`` — but no
+# first/last does since DEV-1748, so it returns ``None`` on every production
+# call and the residual-hop guard below can no longer fire outside a direct
+# unit call like this one. The ranked CTE resolves its ranking key through its
+# OWN scope, which pulls the residual join this guard exists to refuse; the
+# end-to-end proof is the un-xfailed
 # ``test_a_joined_derived_time_arg_ranks_by_the_joined_expression`` in
-# tests/test_dev1748_first_last_matrix.py. Kept until PR 6 deletes the helper,
-# per P-J, so the deletion is reviewed as a deletion.
+# tests/test_dev1748_first_last_matrix.py. Kept until PR 6 removes the branch,
+# per P-J, so the removal is reviewed as a removal.
 #
 # After the unified reroot, a path-bearing ``ColumnSqlKey`` reaching
 # ``_resolve_explicit_time_col`` is the deeper-hop RESIDUAL case (source

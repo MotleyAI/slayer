@@ -44,6 +44,7 @@ from slayer.engine.isolation import IsolationKind, classify_isolation
 from slayer.engine.planned import OrderScope, RankedAggregatePlan
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.stage_planner import plan_query
+from slayer.sql.naming import assert_unique_cte_names
 
 from tests._dev1748_fixtures import (
     BIG_AMOUNT_THRESHOLD,
@@ -387,10 +388,14 @@ class TestThePlanNode:
         This used to emit ``ORDER BY <target>.<host column>``: a reference to a
         column that does not exist on the relation it names, which fails at the
         database with nothing pointing at the measure that caused it."""
+        # Hoisted so the ONLY call that can raise inside ``pytest.raises`` is
+        # the one under test (Sonar S5778) — a query-validation error would
+        # otherwise pass this test for the wrong reason.
+        query = _q(measures=[
+            {"formula": "customers.spend:last(created_at)", "name": "l"},
+        ])
         with pytest.raises(ValueError) as excinfo:
-            _plan(_q(measures=[
-                {"formula": "customers.spend:last(created_at)", "name": "l"},
-            ]))
+            _plan(query)
         message = str(excinfo.value)
         assert "'created_at'" in message
         assert "'customers'" in message
@@ -793,6 +798,33 @@ class TestFilterRouting:
         assert "'paid'" in base, base
         assert "'paid'" in ranked, ranked
 
+    async def test_a_host_model_filter_applies_inside_the_ranked_cte(self) -> None:
+        """A ``SlayerModel.filters`` entry on the HOST narrows the rows the
+        ranking runs over, not just the host base.
+
+        It reaches the CTE as a ROW-phase filter ID like any other — the model's
+        filters are entries of ``filters_by_phase``, unlike a TARGET model's,
+        which are not in the host's filter list at all and ride on the plan as
+        text. Without it, a row the query excludes could still win rank 1 and
+        the answer would come back as a value the user filtered away."""
+        models = dev1748_models()
+        orders = models[0].model_copy(update={"filters": ["status != 'nomatch'"]})
+        sql = await _engine_generate(
+            query=_q(
+                dimensions=["status"],
+                measures=[{"formula": "amount:last", "name": "l"}],
+            ),
+            model=orders, extra_models=models[1:],
+            dialect="postgres", validate=False,
+        )
+        inner = _the_ranked_body(sql).find(exp.Subquery)
+        assert inner is not None, sql
+        where = inner.this.args.get("where")
+        assert where is not None, sql
+        assert "'nomatch'" in where.sql(dialect="postgres"), sql
+        # ...and the host base keeps its own copy (B6).
+        assert "'nomatch'" in _cte_body(sql, "_base").sql(dialect="postgres"), sql
+
     async def test_a_target_model_filter_applies_inside_the_ranked_target_cte(
         self,
     ) -> None:
@@ -811,7 +843,78 @@ class TestFilterRouting:
         inner = _the_ranked_body(sql).find(exp.Subquery)
         assert inner is not None, sql
         where = inner.this.args.get("where")
-        assert where is not None and "tier" in where.sql(dialect="postgres"), sql
+        assert where is not None, sql
+        assert "tier" in where.sql(dialect="postgres"), sql
+
+
+class TestNoFilterIsSilentlyDropped:
+    """A ranked CTE emits no HAVING, so a filter the cross-model strategy routes
+    there has to be picked up by another scope or it stops applying — a wrong
+    answer with no error.
+
+    The plan therefore does not carry the instruction at all, and the planner
+    proves the predicate survives. These pin both halves on the shapes that
+    reach the HAVING route: a filter on the ranked aggregate itself, and one on
+    a DIFFERENT aggregate on the same target."""
+
+    @staticmethod
+    def _routing(planned):
+        ranked_having = {
+            i for p in planned.ranked_aggregate_plans for i in p.having_filter_ids
+        }
+        covered = set(planned.outer_where_filter_ids)
+        for p in planned.cross_model_aggregate_plans:
+            covered.update(p.having_filter_ids)
+            covered.update(p.where_filter_ids)
+        agg_ids = {
+            fp.id for fp in planned.filters_by_phase if fp.phase is Phase.AGGREGATE
+        }
+        return ranked_having, covered, agg_ids
+
+    def test_a_filter_on_the_ranked_aggregate_reaches_the_outer_where(self) -> None:
+        planned = _plan(_q(
+            measures=[{"formula": "customers.spend:last", "name": "l"}],
+            filters=[f"customers.spend:last > {BIG_AMOUNT_THRESHOLD}"],
+        ))
+        ranked_having, covered, agg_ids = self._routing(planned)
+        assert agg_ids, "no aggregate-phase filter was bound"
+        assert ranked_having == set(), planned.ranked_aggregate_plans
+        assert agg_ids <= set(planned.outer_where_filter_ids)
+        assert agg_ids <= covered
+
+    def test_a_filter_on_a_sibling_aggregate_reaches_that_siblings_cte(
+        self,
+    ) -> None:
+        """The other HAVING-route shape: the predicate names a DIFFERENT
+        aggregate on the same target, which has an isolated CTE of its own and
+        evaluates it there. The ranked plan must claim none of it."""
+        planned = _plan(_q(
+            measures=[{"formula": "customers.spend:last", "name": "l"}],
+            filters=[f"customers.spend:sum > {BIG_AMOUNT_THRESHOLD}"],
+        ))
+        ranked_having, covered, agg_ids = self._routing(planned)
+        assert agg_ids, "no aggregate-phase filter was bound"
+        assert ranked_having == set(), planned.ranked_aggregate_plans
+        assert agg_ids <= covered
+        cm_having = {
+            i for p in planned.cross_model_aggregate_plans
+            for i in p.having_filter_ids
+        }
+        assert agg_ids <= cm_having, (
+            "the sibling's own CTE must evaluate it"
+        )
+
+    async def test_the_predicate_survives_into_the_emitted_sql(self) -> None:
+        """The end of the chain: both shapes emit the comparison."""
+        for filter_text in (
+            f"customers.spend:last > {BIG_AMOUNT_THRESHOLD}",
+            f"customers.spend:sum > {BIG_AMOUNT_THRESHOLD}",
+        ):
+            sql = await _sql(_q(
+                measures=[{"formula": "customers.spend:last", "name": "l"}],
+                filters=[filter_text],
+            ))
+            assert f"> {BIG_AMOUNT_THRESHOLD}" in sql, (filter_text, sql)
 
 
 class TestCrossModelAndRerooting:
@@ -857,6 +960,70 @@ class TestCrossModelAndRerooting:
             )
             assert not list(cte.this.find_all(exp.With)), (
                 f"CTE {cte.alias_or_name!r} contains a WITH node:\n{sql}"
+            )
+
+    @pytest.mark.parametrize("dialect", ["postgres", "tsql", "sqlite"])
+    async def test_a_rerooted_ranked_plan_with_a_row_filter_stays_one_with(
+        self, dialect: str,
+    ) -> None:
+        """A row filter interns a HIDDEN row slot in the re-rooted sub-plan, and
+        that used to stop the sub-plan collapsing to its ranked CTE.
+
+        The consequence was not a nested ``WITH`` — sqlglot flattens one into
+        the parent chain — but something a reader would never spot: TWO CTEs
+        named ``_base``, which is invalid SQL on every dialect. A hidden row
+        slot is filter scaffolding that ``_base`` neither projects nor groups
+        by, and the ranked CTE applies the very same ROW filters, so it is not a
+        reason to refuse the collapse.
+
+        Asserted as CTE-name uniqueness rather than "no nested WITH", because
+        the flattening means the nested WITH is not what a reviewer would
+        find."""
+        models = dev1748_models()
+        sql = await _engine_generate(
+            query=_q(
+                dimensions=["customers.regions.name"],
+                measures=[{"formula": "customers.spend:last", "name": "l"}],
+                filters=["customers.tier == 'gold'"],
+            ),
+            model=models[0], extra_models=models[1:],
+            dialect=dialect, validate=False,
+        )
+        assert_unique_cte_names(sql=sql, dialect=dialect)
+        names = _cte_names(sql, dialect=dialect)
+        assert names.count("_base") == 1, names
+        for cte in _ctes(sql, dialect=dialect):
+            assert not list(cte.this.find_all(exp.With)), (
+                f"CTE {cte.alias_or_name!r} carries a WITH:\n{sql}"
+            )
+        # The ranking is still there, and the filter narrows the ranked rows.
+        cm = next(c for c in _ctes(sql, dialect=dialect) if c.alias_or_name.startswith("_cm_"))
+        body = cm.this.sql(dialect=dialect)
+        assert "ROW_NUMBER" in body, body
+        assert "'gold'" in body, body
+
+    async def test_a_subplan_that_cannot_collapse_fails_loudly(self) -> None:
+        """The residual, and why it is a raise.
+
+        A sub-plan renders into a CTE BODY, which cannot carry a ``WITH`` of its
+        own — SQL Server rejects a nested one outright, and sqlglot's flattening
+        turns it into a duplicate ``_base`` instead. Every shape reachable today
+        collapses (a 192-shape sweep found none that does not), so this guard is
+        a belt. It is a raise rather than a best-effort render because the
+        alternative is invalid SQL that no unit test reads."""
+        from slayer.sql.generator import SQLGenerator
+
+        planned = _plan(_q(
+            dimensions=["status"],
+            measures=[{"formula": "amount:last", "name": "l"}],
+            order=[{"column": "l", "direction": "desc"}],
+        ))
+        # An ORDER BY is one of the collapse's disqualifiers, so this plan is a
+        # stand-in for any sub-plan that needs more than its ranked CTE.
+        gen = SQLGenerator(dialect="tsql")
+        with pytest.raises(NotImplementedError, match="cannot carry a WITH"):
+            gen.generate_from_planned(
+                planned, bundle=dev1748_bundle(), as_cte_body=True,
             )
 
     async def test_the_rerooted_cte_body_is_the_ranking_itself(self) -> None:
