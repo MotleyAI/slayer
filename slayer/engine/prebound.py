@@ -81,11 +81,16 @@ class PreboundQuery(BaseModel):
     # ``None`` for a synthesized date-range bound. Carried so the cross-model
     # routing can report a filter the way the caller wrote it.
     bound_filter_texts: List[Optional[str]] = Field(default_factory=list)
-    n_date_range: int = 0
+    # Every count here is a LIST SLICE bound. A negative one is not a smaller
+    # slice, it is a slice from the other end — ``bound_filters[:-1]`` silently
+    # drops the LAST filter and keeps the rest, which is a wrong answer rather
+    # than an error. Constrained at the field so no construction site can pass
+    # one (Codex).
+    n_date_range: int = Field(default=0, ge=0)
     order_specs: List[OrderSpec] = Field(default_factory=list)
     main_time_key: Optional[TimeTruncKey] = None
-    n_dims: int = 0
-    n_time_dimensions: int = 0
+    n_dims: int = Field(default=0, ge=0)
+    n_time_dimensions: int = Field(default=0, ge=0)
     limit: Optional[int] = None
     offset: Optional[int] = None
     distinct_dimension_values: bool = True

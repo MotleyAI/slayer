@@ -33,6 +33,9 @@ Refs: DEV-1747 (D1), DEV-1742 §5.4 / P-D / P-E.
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
+
+from slayer.core.keys import Phase
 
 from slayer.core.enums import TimeGranularity
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
@@ -343,3 +346,65 @@ class TestStrictCarrier:
             f"the nested planner was handed a SlayerQuery ({seen!r}); §5.4 "
             f"requires the typed pre-bound carrier"
         )
+
+
+class TestPreboundQueryInvariants:
+    """The seam's job is to make a malformed hand-off impossible, so its own
+    shape has to be checked rather than trusted (Codex).
+
+    Every count on ``PreboundQuery`` is a LIST-SLICE bound and the filter texts
+    are read positionally with ``zip``. Both failure modes are silent: a
+    negative count slices from the other end, and a short text list truncates
+    the routing loop. Neither raises on its own.
+    """
+
+    @staticmethod
+    def _filter(text: str = "status == 'A'"):
+        from slayer.engine.binding import BoundFilter
+        from slayer.core.keys import ColumnKey
+        return BoundFilter(
+            value_key=ColumnKey(path=(), leaf="status"),
+            phase=Phase.ROW,
+            referenced_keys=(ColumnKey(path=(), leaf="status"),),
+        )
+
+    def test_filter_texts_must_be_parallel(self) -> None:
+        from slayer.engine.prebound import PreboundQuery
+
+        with pytest.raises(ValidationError) as exc:
+            PreboundQuery(
+                bound_filters=[self._filter(), self._filter()],
+                bound_filter_texts=["only one"],
+            )
+        assert "parallel" in str(exc.value)
+
+    def test_parallel_lists_are_accepted(self) -> None:
+        """The control — the guard must not reject the valid shape."""
+        from slayer.engine.prebound import PreboundQuery
+
+        pq = PreboundQuery(
+            bound_filters=[self._filter()], bound_filter_texts=["status == 'A'"],
+        )
+        assert len(pq.bound_filter_texts) == len(pq.bound_filters)
+
+    def test_n_date_range_cannot_exceed_the_filters_it_slices(self) -> None:
+        from slayer.engine.prebound import PreboundQuery
+
+        with pytest.raises(ValidationError):
+            PreboundQuery(
+                bound_filters=[self._filter()],
+                bound_filter_texts=[None],
+                n_date_range=2,
+            )
+
+    @pytest.mark.parametrize(
+        "field", ["n_date_range", "n_dims", "n_time_dimensions"],
+    )
+    def test_slice_bounds_cannot_be_negative(self, field: str) -> None:
+        """``bound_filters[:-1]`` is not an empty slice — it keeps everything
+        but the last element. A negative count would therefore drop a filter
+        or a dimension and report nothing."""
+        from slayer.engine.prebound import PreboundQuery
+
+        with pytest.raises(ValidationError):
+            PreboundQuery(**{field: -1})
