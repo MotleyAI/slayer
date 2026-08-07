@@ -434,6 +434,63 @@ class TestInvalidateEngine:
         engine_factory.reset_cache()
 
 
+class TestLogSafety:
+    """Cache keys carry the connection string, which for username/password
+    dialects is rendered with the password in plaintext. None of it may reach
+    a log line."""
+
+    @staticmethod
+    def _pg_with_password(password: str) -> DatasourceConfig:
+        return DatasourceConfig(
+            name="pg", type="postgres", host="h", username="u",
+            password=password, database="db",
+        )
+
+    def test_loggable_key_hides_the_connection_string(self) -> None:
+        secret = "hunter2-plaintext"  # NOSONAR(S2068) — test fixture
+        ds = self._pg_with_password(secret)
+        key = engine_factory._cache_key(
+            datasource=ds, connection_string=ds.get_connection_string(),
+        )
+        assert secret in key[0], "precondition: the raw key does carry the password"
+        rendered = engine_factory.loggable_key(key)
+        for fragment in (secret, "u", "postgresql://"):
+            assert fragment not in rendered
+
+    def test_loggable_key_is_stable_and_distinguishing(self) -> None:
+        """Useful for correlating log lines: same key -> same id, different
+        credentials -> different id."""
+        alice = self._pg_with_password("alice-pw")  # NOSONAR(S2068) — test fixture
+        # A separate object carrying the same values: the id must follow the
+        # credentials, not the identity of the config object.
+        alice_again = self._pg_with_password("alice-pw")  # NOSONAR(S2068) — test fixture
+        bob = self._pg_with_password("bob-pw")  # NOSONAR(S2068) — test fixture
+
+        def log_id(ds):
+            return engine_factory.loggable_key(engine_factory._cache_key(
+                datasource=ds, connection_string=ds.get_connection_string(),
+            ))
+
+        assert log_id(alice) == log_id(alice_again)
+        assert log_id(alice) != log_id(bob)
+
+    def test_reset_disposal_reason_carries_no_credentials(self) -> None:
+        """``reset_cache(dispose=True)`` builds its reason string from the
+        cache key; ``_dispose_quietly`` writes that into a warning when
+        ``dispose()`` raises."""
+        secret = "reset-time-secret"  # NOSONAR(S2068) — test fixture
+        engine_factory.reset_cache()
+        engine_factory.get_engine(self._pg_with_password(secret))
+        reasons: list[str] = []
+        with patch.object(
+            engine_factory, "_dispose_quietly",
+            side_effect=lambda *, engine, reason: reasons.append(reason),
+        ):
+            engine_factory.reset_cache(dispose=True)
+        assert reasons, "precondition: disposal ran"
+        assert not any(secret in reason for reason in reasons), reasons
+
+
 class TestResetCacheDisposal:
 
     def test_reset_disposes_only_when_asked(self) -> None:

@@ -258,7 +258,7 @@ class BigqueryDialect(SqlDialect):
                 f"oauth_credentials_json instead."
             )
         return sa.create_engine(
-            connection_string,
+            url=connection_string,
             credentials_info=credentials_info,
             pool_pre_ping=True,
         )
@@ -315,7 +315,7 @@ class BigqueryDialect(SqlDialect):
                 f"a usable authorized-user grant: {exc}"
             ) from exc
         return sa.create_engine(
-            url.update_query_dict({"user_supplied_client": "true"}),
+            url=url.update_query_dict({"user_supplied_client": "true"}),
             connect_args={"client": bigquery.Client(
                 project=project, credentials=credentials,
             )},

@@ -24,8 +24,7 @@ from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery
 from slayer.engine.enriched import EnrichedQuery
 from slayer.engine.enrichment import enrich_query
-from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.query_engine import _sql_client_cache_key
+from slayer.engine.query_engine import SlayerQueryEngine, _sql_client_cache_key
 from slayer.sql.dialects import (
     BigqueryDialect,
     PostgresDialect,
@@ -814,7 +813,10 @@ def test_credential_fingerprint_differs_between_oauth_users() -> None:
     alice = dialect.credential_fingerprint(_oauth_ds(refresh_token="rtok-alice"))
     bob = dialect.credential_fingerprint(_oauth_ds(refresh_token="rtok-bob"))
     assert alice != bob
-    assert alice and bob
+    # Neither may collapse to the empty "no credentials" fingerprint, which
+    # would drop both users into the Application-Default-Credentials bucket.
+    assert alice != ""
+    assert bob != ""
 
 
 def test_credential_fingerprint_differs_between_oauth_and_service_account() -> None:
@@ -884,6 +886,8 @@ def test_build_engine_oauth_validates_before_importing_optional_driver() -> None
     'bigquery' extra is absent, so validation precedes the google.* imports."""
     ds = DatasourceConfig(name="bq", type="bigquery", oauth_credentials_json="not json")
     dialect = BigqueryDialect()
-    with patch.dict("sys.modules", {"google.cloud": None, "google.oauth2.credentials": None}):
-        with pytest.raises(ValueError, match="is not valid JSON"):
-            dialect.build_engine(ds, connection_string="bigquery://p/d")
+    with (
+        patch.dict("sys.modules", {"google.cloud": None, "google.oauth2.credentials": None}),
+        pytest.raises(ValueError, match="is not valid JSON"),
+    ):
+        dialect.build_engine(ds, connection_string="bigquery://p/d")

@@ -31,7 +31,7 @@ import sqlalchemy.event as sa_event
 
 from slayer.core.models import DatasourceConfig
 from slayer.sql.dialects import dialect_for_ds_type
-from slayer.sql.dialects.base import SqlDialect
+from slayer.sql.dialects.base import SqlDialect, _digest
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +101,18 @@ def _max_cached_engines() -> int:
     return value
 
 
+def loggable_key(key: EngineCacheKey) -> str:
+    """A short, stable id for a cache key that is safe to put in a log line.
+
+    ``key[0]`` is the connection string, and for username/password dialects
+    ``DatasourceConfig.get_connection_string`` renders it with
+    ``hide_password=False`` — so the raw key carries a plaintext password and
+    must never be logged. Digesting the whole key keeps entries correlatable
+    across log lines while reducing every leg to non-reversible hex.
+    """
+    return _digest("\x00".join(key))
+
+
 def _dispose_quietly(*, engine: sa.Engine, reason: str) -> None:
     """Release an engine's pooled connections, logging rather than raising.
 
@@ -108,6 +120,9 @@ def _dispose_quietly(*, engine: sa.Engine, reason: str) -> None:
     pool; connections checked out by an in-flight query are detached and
     closed when returned. So this is safe to call on an engine another caller
     still holds a reference to — it reclaims sockets without breaking them.
+
+    ``reason`` reaches a log line, so callers must keep secrets out of it —
+    see :func:`loggable_key` for cache keys.
     """
     try:
         engine.dispose()
@@ -351,4 +366,4 @@ def reset_cache(*, dispose: bool = False) -> None:
         _engine_cache.clear()
     if dispose:
         for key, engine in dropped:
-            _dispose_quietly(engine=engine, reason=f"cache reset ({key[0]})")
+            _dispose_quietly(engine=engine, reason=f"cache reset ({loggable_key(key)})")
