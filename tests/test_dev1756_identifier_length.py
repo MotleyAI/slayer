@@ -790,6 +790,44 @@ class TestVirtualModelShorts:
                 f"or Postgres folds it out from under the reference\n{vm.sql}"
             )
 
+    @pytest.mark.parametrize("dialect", [
+        "postgres", "mysql", "snowflake", "tsql", "bigquery", "duckdb",
+        "sqlite", "clickhouse", "redshift", "oracle", "trino", "spark",
+    ])
+    @pytest.mark.parametrize("short", [
+        "status",                 # plain lowercase -> bare on both sides
+        "SandboxConsumer__name",  # mixed case -> quoted on both sides
+        "order",                  # reserved in SLayer's common set
+        "index",                  # reserved NATIVELY in mysql/tsql, not in ours
+        "int",                    # ditto
+        "rows",                   # ditto (also bigquery)
+        "_fit_a1b2c3d4_tail",     # the shape fit_identifier emits
+    ])
+    def test_short_spelling_matches_the_reference_on_every_dialect(
+        self, dialect: str, short: str,
+    ) -> None:
+        """``AS <short>`` must be spelled exactly as a downstream
+        ``Column(sql=short)`` reference to it will be, on every dialect.
+
+        Two independent axes, both dialect-driven:
+          * CASE — a bare mixed-case short is folded by the server while the
+            reference is quoted (the DEV-1756 defect), and quoting a lowercase
+            one breaks the mirror image on upper-folding backends.
+          * RESERVED / UNSAFE — ``index``/``int``/``rows`` are reserved in
+            MySQL but not in ``SLAYER_RESERVED_KEYWORDS``; the reference side
+            quotes them and a bare ``AS index`` is a syntax error. Checking
+            SLayer's set alone is not enough.
+        """
+        gen = SQLGenerator(dialect=dialect)
+        ident = exp.Identifier(this=short, quoted=False)
+        SQLGenerator._maybe_quote_ident(ident)
+        wrapper = ident.sql(dialect=gen.dialect)
+        reference = gen._parse(short).sql(dialect=gen.dialect)
+        assert wrapper == reference, (
+            f"[{dialect}] wrapper emits {wrapper!r} but a downstream reference "
+            f"to the same column emits {reference!r}"
+        )
+
     async def test_lowercase_short_stays_bare(self, chain) -> None:
         """The Snowflake/Oracle mirror image: an all-lowercase short must NOT
         be quoted, or the case-sensitive definition stops matching the bare
@@ -898,7 +936,8 @@ class TestVirtualModelShorts:
         assert len(set(truncated)) == len(truncated), (
             f"two shorts collapse onto one 63-byte name: {names}"
         )
-        assert long_a not in vm.sql and long_b not in vm.sql, vm.sql
+        assert long_a not in vm.sql, vm.sql
+        assert long_b not in vm.sql, vm.sql
 
     async def test_nested_dag_two_levels_agree(self, chain) -> None:
         """Two stages: stage 2 references stage 1's virtual-model columns."""

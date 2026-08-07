@@ -81,7 +81,6 @@ from slayer.sql.dialects._identifier_fit import fit_identifier
 from slayer.sql import engine_factory
 from slayer.sql.engine_factory import _runtime_fingerprint
 from slayer.sql.generator import SQLGenerator
-from slayer.sql.reserved_keywords import SLAYER_RESERVED_KEYWORDS
 from slayer.sql.session_policy import ScopedTable, apply_session_policy
 from slayer.storage.base import StorageBackend
 
@@ -3321,28 +3320,37 @@ class SlayerQueryEngine:
         # their dotted aliases mangled. Hardcoded ANSI double quotes
         # would either fail to parse (MySQL) or reference an alias the
         # mangled inner subquery doesn't expose (T-SQL).
-        # DEV-1686: the inner ``alias`` is always dialect-quoted; the ``short``
-        # output alias is quoted under exactly the policy the DOWNSTREAM
-        # reference uses, because the two have to agree.
+        # DEV-1686: the inner ``alias`` is always dialect-quoted. The ``short``
+        # output alias instead has to be spelled EXACTLY as the downstream
+        # reference to it will be, because the two must resolve to the same
+        # column. So rather than approximate that policy, run the short through
+        # the same two mechanisms the reference side uses:
         #
-        # A downstream ``Column(sql=short)`` is parsed by the generator, where
-        # ``_quote_mixed_case_identifiers`` (DEV-1645) quotes a leaf iff it
-        # contains an uppercase letter, and ``prequote_reserved_identifiers``
-        # (DEV-1686) quotes reserved words. So:
-        #   * reserved / mixed-case -> quoted BOTH sides. This is the DEV-1756
-        #     fix: emitted bare, a mixed-case short was case-folded by Postgres
-        #     while the outer stage referenced it quoted, making any
-        #     query-backed model with a mixed-case join path or column
-        #     unqueryable (``UndefinedColumnError``, seen on a live server).
-        #   * all-lowercase -> bare BOTH sides, so it folds consistently.
-        # Quoting unconditionally instead breaks the lowercase case on
-        # UPPER-folding backends (Snowflake, Oracle): the wrapper would define a
-        # case-sensitive ``"status"`` while the bare reference resolves as
-        # ``STATUS``.
+        #   * ``_maybe_quote_ident`` — DEV-1645's rule, quote iff the name
+        #     contains an uppercase letter. This is the DEV-1756 fix: emitted
+        #     bare, a mixed-case short was case-folded by Postgres while the
+        #     outer stage referenced it quoted, making any query-backed model
+        #     with a mixed-case join path or column unqueryable
+        #     (``UndefinedColumnError``, seen on a live server).
+        #   * ``Identifier.sql(dialect=...)`` — sqlglot adds quotes for words
+        #     reserved IN THE TARGET DIALECT (``install_reserved_keywords``
+        #     unions SLayer's set into each generator's native one) and for
+        #     names that are not safe bare identifiers.
+        #
+        # Both axes must be dialect-driven, not hardcoded. Checking only
+        # ``SLAYER_RESERVED_KEYWORDS`` misses MySQL-native words like ``index``
+        # / ``int`` / ``rows``, which the reference side quotes and a bare
+        # ``AS index`` makes a syntax error; and a name like ``1abc`` or
+        # ``foo bar`` (``Column.name`` only forbids ``.`` and ``:``) needs
+        # quoting on shape alone.
+        #
+        # Quoting UNCONDITIONALLY is wrong in the other direction: it defines a
+        # case-sensitive ``"status"`` while the bare reference still resolves as
+        # ``STATUS`` on upper-folding backends (Snowflake, Oracle).
         def _short_sql(short: str) -> str:
-            if short.lower() in SLAYER_RESERVED_KEYWORDS or any(c.isupper() for c in short):
-                return exp.Identifier(this=short, quoted=True).sql(dialect=dialect)
-            return short
+            ident = exp.Identifier(this=short, quoted=False)
+            SQLGenerator._maybe_quote_ident(ident)
+            return ident.sql(dialect=dialect)
 
         # DEV-1756: the shorts share one output-column namespace, and each also
         # becomes a ``Column.name`` on the virtual model. Validate the whole
