@@ -2057,10 +2057,11 @@ class SlayerQueryEngine:
         # probe's metadata keys are the EMITTED names while ``em.alias`` below
         # is canonical. Decode first or an over-limit measure silently drops
         # out of the type map. Same hook and alias set ``_run_and_build`` uses.
-        if raw_types:
-            raw_types = get_dialect(dialect).decode_result_keys(
-                [raw_types], aliases=all_projection_aliases(enriched),
-            )[0]
+        # Unconditional — the hook returns its input untouched when nothing was
+        # shortened, so an empty ``raw_types`` needs no guard.
+        raw_types = get_dialect(dialect).decode_result_keys(
+            [raw_types], aliases=all_projection_aliases(enriched),
+        )[0]
 
         # Map qualified aliases (e.g., "orders.revenue_max") back to bare measure names
         result: dict[str, str] = {}
