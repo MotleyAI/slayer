@@ -25,7 +25,7 @@ Dormant in 7a — no engine wiring. Stage 7b's engine cutover flips
 
 from __future__ import annotations
 
-from typing import Dict, FrozenSet, List, Optional, Tuple, Union
+from typing import Dict, FrozenSet, List, Optional, Set, Tuple, Union
 
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat
@@ -33,7 +33,6 @@ from slayer.core.errors import (
     AmbiguousReferenceError,
     DistinctDimensionValuesError,
     UnknownReferenceError,
-    UnresolvableOrderColumnError,
 )
 from slayer.core.keys import (
     AggregateKey,
@@ -45,7 +44,6 @@ from slayer.core.keys import (
     LiteralKey,
     Phase,
     ScalarCallKey,
-    StarKey,
     TimeTruncKey,
     TransformKey,
     ValueKey,
@@ -78,7 +76,6 @@ from slayer.engine.cross_model_planner import (
     IsolatedCteCrossModelPlanner,
 )
 from slayer.engine.measure_expansion import expand_model_measures
-from slayer.engine.response_meta import _infer_aggregated_format
 from slayer.engine.filter_reachability import (
     compute_key_join_paths,
     key_has_host_local_ref,
@@ -91,6 +88,7 @@ from slayer.engine.planned import (
     FilterPhase,
     FilterReachability,
     OrderEntry,
+    OrderScope,
     PlannedQuery,
     SlotId,
     SrcFilterRewrite,
@@ -108,6 +106,12 @@ from slayer.engine.planning import (
     lower_sugar_transforms,
     rewrite_rank_partition_keys,
 )
+from slayer.engine.prebound import (
+    PreboundQuery,
+    StrictQueryCarrier,
+    measure_key_format_description,
+    measure_key_type,
+)
 from slayer.engine.source_bundle import (
     ResolvedSourceBundle,
     _apply_extension_overlay,
@@ -122,7 +126,13 @@ from slayer.sql.sql_expr import has_window_function
 from slayer.sql.sql_predicate import parse_sql_predicate
 
 
-__all__ = ["plan_query", "plan_stages"]
+__all__ = [
+    "PreboundQuery",
+    "StrictQueryCarrier",
+    "bind_query_inputs",
+    "plan_query",
+    "plan_stages",
+]
 
 
 # Stage 7b.10 — TIME_NEEDING transform ops that require a resolvable
@@ -643,52 +653,48 @@ def _reject_measure_refs_in_order(
             )
 
 
-def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-1503 addition is a small trigger-predicate branch + a kwarg pass-through; the function's pre-existing complexity is owned by the multi-stage scope / bundle / projection / filter-routing wiring it orchestrates and is tracked as a separate refactor.
+def _resolve_scope(
+    *,
+    query: SlayerQuery,
+    bundle: ResolvedSourceBundle,
+    stage_schemas: Optional[Dict[str, StageSchema]],
+) -> Union[ModelScope, StageSchema]:
+    """Default binding scope: an upstream ``StageSchema`` when the query's
+    ``source_model`` names a sibling stage, else a ``ModelScope`` over the
+    bundle's host model."""
+    source = query.source_model
+    if isinstance(source, str) and source in (stage_schemas or {}):
+        return (stage_schemas or {})[source]
+    return ModelScope(source_model=bundle.source_model)
+
+
+def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages are strictly sequential and share the growing `declared_measures` / `bound_filters` / `order_specs` triple: parse+bind, time-key attachment, sugar lowering, rank-partition validation. Splitting them would thread the same three lists through four signatures without removing a branch.
     *,
     query: SlayerQuery,
     bundle: ResolvedSourceBundle,
     scope: Optional[Union[ModelScope, StageSchema]] = None,
-    cross_model_planner: Optional[CrossModelPlanner] = None,
     stage_schemas: Optional[Dict[str, StageSchema]] = None,
-    disable_host_rooted_isolation: bool = False,
-) -> PlannedQuery:
-    """Compile one ``SlayerQuery`` into a typed ``PlannedQuery``.
+) -> PreboundQuery:
+    """Parse and bind every text surface of a ``SlayerQuery`` (DEV-1742 §5.4).
 
-    ``scope`` defaults to a ``ModelScope`` over ``bundle.source_model``;
-    pass an explicit ``StageSchema`` to bind against an upstream stage.
-    ``stage_schemas`` is a name → StageSchema map used by
-    ``plan_stages`` to wire multi-stage references.
+    This is the ONLY door into the parser. ``plan_query`` calls it when no
+    ``prebound`` is supplied; a caller that already holds typed keys builds a
+    ``PreboundQuery`` structurally and skips it entirely, which is what makes
+    re-rooting free of formula-text round-trips (P-E).
 
-    ``disable_host_rooted_isolation`` (DEV-1503; renamed and widened by
-    DEV-1709) suppresses the HOST-ROOTED half of the Law-3 trigger — the
-    isolation of a LOCAL aggregate whose ``Column.filter`` or any other
-    input (source ``Column.sql``, positional args, kwargs) crosses a join.
-    It never affects target-rooted isolation (``source.path`` non-empty).
-    Threaded through ``subplan_builder`` whenever a cross-model strategy
-    recurses for a host-rooted (or target-rooted) nested sub-plan, so the
-    sub-plan's same crossing measure is rendered inline (not infinitely
-    re-isolated) and so re-rooting of a genuine cross-model aggregate
-    doesn't redundantly isolate the target's own filter joins.
+    The returned keys are fully normalized — time keys attached, ``change`` /
+    ``change_pct`` sugar lowered, rank ``partition_by`` columns validated and
+    rewritten to their time buckets — so planning sees exactly one key shape.
+
+    Model filters are deliberately NOT included: they are a property of the
+    SCOPE, not the query, and ``plan_query`` lifts them from ``scope``
+    directly so a pre-bound caller inherits its own model's filters rather
+    than the host's.
     """
-    stage_schemas = stage_schemas or {}
-    cross_model_planner = (
-        cross_model_planner or IsolatedCteCrossModelPlanner()
-    )
-
     if scope is None:
-        source = query.source_model
-        if isinstance(source, str) and source in stage_schemas:
-            scope = stage_schemas[source]
-        else:
-            scope = ModelScope(source_model=bundle.source_model)
-
-    # The generator must render this stage's FROM / joins against the SAME
-    # model the binder used. For a ModelScope that's the (possibly overlaid /
-    # synthetic) host; for a StageSchema chain stage it's None (the generator
-    # builds a synthetic model from the upstream schema).
-    render_source_model = (
-        scope.source_model if isinstance(scope, ModelScope) else None
-    )
+        scope = _resolve_scope(
+            query=query, bundle=bundle, stage_schemas=stage_schemas,
+        )
 
     # DEV-1543: raw-rows mode rejects measure references in filters / order.
     # Runs BEFORE binding so the targeted, actionable error wins over the
@@ -764,7 +770,6 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     # (which has not been deduped, unlike bound_filters) — CR PR #153
     # thread r3350000254.
     bound_filter_texts: List[Optional[str]] = []
-    text_filter_entries: List[FilterPhase] = []
 
     # 1. date_range filters (one per TD with a 2-element date_range)
     for td in (query.time_dimensions or []):
@@ -777,12 +782,11 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         bound_filter_texts.append(None)
     n_date_range = len(bound_filters)
 
-    # 2. SlayerModel.filters — Mode-A SQL, always-applied WHERE.
-    if isinstance(scope, ModelScope) and scope.source_model is not None:
-        for j, mf in enumerate(scope.source_model.filters or []):
-            text_filter_entries.append(_validate_model_filter(
-                mf=mf, idx=j, model=scope.source_model,
-            ))
+    # 2. SlayerModel.filters — Mode-A SQL, always-applied WHERE. Lifted from
+    #    the SCOPE in ``plan_query``, not here (§5.4): they belong to the model
+    #    being planned against, so a re-rooted sub-plan must pick up the
+    #    TARGET's model filters rather than inherit the host's through the
+    #    carrier.
 
     # 3. user query filters (Mode-B DSL).
     #
@@ -1101,6 +1105,97 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         for spec in order_specs
     ]
 
+    return PreboundQuery(
+        declared_measures=declared_measures,
+        bound_filters=bound_filters,
+        bound_filter_texts=bound_filter_texts,
+        n_date_range=n_date_range,
+        order_specs=order_specs,
+        main_time_key=active_td_key,
+        n_dims=n_dims,
+        n_time_dimensions=n_tds,
+        limit=query.limit,
+        offset=query.offset,
+        distinct_dimension_values=query.distinct_dimension_values,
+    )
+
+
+def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-1503 addition is a small trigger-predicate branch + a kwarg pass-through; the function's pre-existing complexity is owned by the multi-stage scope / bundle / projection / filter-routing wiring it orchestrates and is tracked as a separate refactor.
+    *,
+    query: Union[SlayerQuery, StrictQueryCarrier],
+    bundle: ResolvedSourceBundle,
+    scope: Optional[Union[ModelScope, StageSchema]] = None,
+    cross_model_planner: Optional[CrossModelPlanner] = None,
+    stage_schemas: Optional[Dict[str, StageSchema]] = None,
+    disable_host_rooted_isolation: bool = False,
+    prebound: Optional[PreboundQuery] = None,
+) -> PlannedQuery:
+    """Compile one query into a typed ``PlannedQuery``.
+
+    ``scope`` defaults to a ``ModelScope`` over ``bundle.source_model``;
+    pass an explicit ``StageSchema`` to bind against an upstream stage.
+    ``stage_schemas`` is a name → StageSchema map used by
+    ``plan_stages`` to wire multi-stage references.
+
+    ``prebound`` (DEV-1742 §5.4) supplies the bind product directly, skipping
+    the parser. ``query`` is then a ``StrictQueryCarrier`` holding only the
+    post-bind scalars the planner still needs — anything else it is asked for
+    raises, so a new read cannot silently fall back to a default.
+
+    ``disable_host_rooted_isolation`` (DEV-1503; renamed and widened by
+    DEV-1709) suppresses the HOST-ROOTED half of the Law-3 trigger — the
+    isolation of a LOCAL aggregate whose ``Column.filter`` or any other
+    input (source ``Column.sql``, positional args, kwargs) crosses a join.
+    It never affects target-rooted isolation (``source.path`` non-empty).
+    Threaded through ``subplan_builder`` whenever a cross-model strategy
+    recurses for a host-rooted (or target-rooted) nested sub-plan, so the
+    sub-plan's same crossing measure is rendered inline (not infinitely
+    re-isolated) and so re-rooting of a genuine cross-model aggregate
+    doesn't redundantly isolate the target's own filter joins.
+    """
+    stage_schemas = stage_schemas or {}
+    cross_model_planner = (
+        cross_model_planner or IsolatedCteCrossModelPlanner()
+    )
+
+    if scope is None:
+        scope = _resolve_scope(
+            query=query, bundle=bundle, stage_schemas=stage_schemas,
+        )
+
+    # The generator must render this stage's FROM / joins against the SAME
+    # model the binder used. For a ModelScope that's the (possibly overlaid /
+    # synthetic) host; for a StageSchema chain stage it's None (the generator
+    # builds a synthetic model from the upstream schema).
+    render_source_model = (
+        scope.source_model if isinstance(scope, ModelScope) else None
+    )
+
+    if prebound is None:
+        prebound = bind_query_inputs(
+            query=query, bundle=bundle, scope=scope,
+            stage_schemas=stage_schemas,
+        )
+    declared_measures = list(prebound.declared_measures)
+    bound_filters = list(prebound.bound_filters)
+    bound_filter_texts = list(prebound.bound_filter_texts)
+    n_date_range = prebound.n_date_range
+    order_specs = list(prebound.order_specs)
+    active_td_key = prebound.main_time_key
+    n_dims = prebound.n_dims
+    n_tds = prebound.n_time_dimensions
+    distinct_dimension_values = prebound.distinct_dimension_values
+
+    # SlayerModel.filters — Mode-A SQL, always-applied WHERE. Scope-derived
+    # (see ``bind_query_inputs``), so a pre-bound sub-plan picks up its OWN
+    # model's filters.
+    text_filter_entries: List[FilterPhase] = []
+    if isinstance(scope, ModelScope) and scope.source_model is not None:
+        for j, mf in enumerate(scope.source_model.filters or []):
+            text_filter_entries.append(_validate_model_filter(
+                mf=mf, idx=j, model=scope.source_model,
+            ))
+
     source_col_names = _source_column_names(scope)
     host_model_name = _host_model_name(scope)
 
@@ -1142,7 +1237,7 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     # raw-rows query materialised a hidden aggregate and emitted
     # ``GROUP BY ... HAVING ...``, the exact auto-aggregation the flag exists
     # to turn off.
-    if query.distinct_dimension_values is False and agg_slots:
+    if distinct_dimension_values is False and agg_slots:
         offender = _canonical_name(agg_slots[0].key)
         raise DistinctDimensionValuesError(
             f"distinct_dimension_values=False rejects measure references, but "
@@ -1202,17 +1297,17 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     #     bare reference is legal);
     #   * LOCAL row column, GROUPED query -> the bare reference is NOT legal
     #     (the column is not in GROUP BY), so it materialises as a hidden
-    #     ``<col>:max`` aggregate slot and the order entry is repointed at it.
-    #     MAX is order-preserving per group and portable across every Tier-1
-    #     dialect;
-    #   * JOINED row column, GROUPED query -> still
-    #     ``UnresolvableOrderColumnError``. A host-rooted MAX over a joined
-    #     column is not expressible today: an ``AggregateKey`` with a
-    #     non-empty ``source.path`` always routes to a TARGET-rooted CTE
-    #     (Law 3), which for a host-grain sort key degenerates to a scalar
-    #     CROSS JOIN — every group would get the same global value and the
-    #     sort would silently do nothing. Failing loudly beats sorting by a
-    #     constant. Full support (host-rooted crossing MAX) is DEV-1735;
+    #     direction-aware aggregate slot (``:min`` for ASC, ``:max`` for DESC)
+    #     and the order entry is repointed at it. Both are order-preserving
+    #     per group and portable across every Tier-1 dialect;
+    #   * JOINED row column, GROUPED query -> the same wrap, marked
+    #     ``grain="host"`` (DEV-1747 D2). The marker is what separates WHERE
+    #     the value is READ (through the join, per ``source.path``) from WHERE
+    #     it is GROUPED (per host row-group). Without it a path-bearing source
+    #     always routed to a TARGET-rooted CTE, which for a host-grain sort key
+    #     degenerates to a scalar CROSS JOIN — every group gets the same global
+    #     value and the sort silently does nothing. That case used to be
+    #     rejected outright rather than sorted wrongly;
     #   * transform / composite -> materialised as a hidden slot and ordered at
     #     the outer wrap (DEV-1733), same Law-2 discipline as aggregates.
     #
@@ -1222,11 +1317,14 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     # it, and a sort must not fail because ``max`` is not whitelisted on the
     # column being sorted.
     _has_grouping = bool(agg_slots) or (
-        bool(query.dimensions or query.time_dimensions)
-        and query.distinct_dimension_values
+        bool(n_dims or n_tds) and distinct_dimension_values
     )
-    # ORDER BY targets rewritten to a hidden aggregate: original key -> MAX key.
-    order_key_remap: Dict[ValueKey, ValueKey] = {}
+    # ORDER BY targets rewritten to a hidden aggregate wrap, keyed by
+    # (original key, DIRECTION). DEV-1747 D10 makes the wrap direction-aware,
+    # so ``ORDER BY a ASC, a DESC`` needs MIN(a) and MAX(a) — two different
+    # values over one column. Keying by the value key alone would collapse them
+    # onto whichever slot was interned first.
+    order_key_remap: Dict[Tuple[ValueKey, str], ValueKey] = {}
     for spec in order_specs:
         okey = spec.bound.value_key
         osid = projection.registry.find_by_key(okey)
@@ -1238,29 +1336,35 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
             if not _has_grouping:
                 continue  # raw-rows query -> split emission, no wrap needed
             path = _row_key_path(okey)
-            if path:
-                # ``UnresolvableOrderColumnError`` formats ``qualifier.column``;
-                # pass the bare leaf as ``column`` and the joined path as the
-                # qualifier so the message reads ``customers.regions.name`` and
-                # not a duplicated ``customers.customers.regions.name``.
-                disp = _partition_key_display(okey)
-                raise UnresolvableOrderColumnError(
-                    column=disp.rsplit(".", 1)[-1], qualifier=".".join(path),
-                )
             # A TimeTruncKey is not a legal aggregate source; wrap its
             # underlying column instead. DATE_TRUNC is monotonic
-            # non-decreasing, so MAX(col) and MAX(trunc(col)) sort a group
-            # identically.
+            # non-decreasing, so the wrap over the trunc and over the raw
+            # column sort a group identically.
             src = okey.column if isinstance(okey, TimeTruncKey) else okey
-            max_key = AggregateKey(source=src, agg="max")
-            if projection.registry.find_by_key(max_key) is None:
+            # DEV-1747 D10 — ASC orders each group by its MINIMUM and DESC by
+            # its MAXIMUM: the extreme the direction actually puts first.
+            # An unconditional MAX (the pre-DEV-1747 behaviour) sorts ASC by
+            # each group's LARGEST member, which is not what the user asked
+            # for whenever groups overlap in range.
+            wrap_key = AggregateKey(
+                source=src,
+                agg="min" if spec.direction == "asc" else "max",
+                # DEV-1747 D2 — a JOINED sort key is host-grain: it must be
+                # computed in a CTE rooted at the HOST with the crossed join
+                # pulled inside, grouped on the query grain. Routing it to a
+                # target-rooted CTE (which a bare path-bearing source does)
+                # degenerates to a scalar CROSS JOIN, giving every group the
+                # same global value.
+                grain="host" if path else "target",
+            )
+            if projection.registry.find_by_key(wrap_key) is None:
                 projection.registry.intern(
-                    key=max_key,
-                    declared_name=_canonical_name(max_key),
+                    key=wrap_key,
+                    declared_name=_canonical_name(wrap_key),
                     hidden=True,
-                    phase=max_key.phase,
+                    phase=wrap_key.phase,
                 )
-            order_key_remap[okey] = max_key
+            order_key_remap[(okey, spec.direction)] = wrap_key
         # DEV-1733: TransformKey / ArithmeticKey / ScalarCallKey — an inline
         # transform or composite expression referenced only in ORDER BY. These
         # materialise as hidden slots (a step CTE on the transform path, a
@@ -1337,6 +1441,16 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         if isinstance(query.source_model, str)
         else host_model_name
     )
+    # The post-bind ``query.*`` surface a re-rooted sub-plan is allowed to see.
+    # Built here so the SAME object carries the typed bind product into the
+    # cross-model strategy and back out through ``subplan_builder`` (§5.4).
+    host_carrier = StrictQueryCarrier(
+        source_model=(
+            query.source_model if isinstance(query.source_model, str) else None
+        ),
+        name=query.name,
+        prebound=prebound,
+    )
     filter_reachability: List[FilterReachability] = []
     # One expansion cache for the whole plan — the two visitors ask for the
     # same derived column's expansion, and so does every filter that mentions it.
@@ -1375,6 +1489,9 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
                 bf, projection.registry,
             )),
             text=ftext,
+            # §5.4 — the typed predicate, so a sub-plan that inherits this
+            # filter re-roots the KEY rather than re-parsing ``text``.
+            bound=bf,
             crossed_join_paths=(
                 summary.crossed_join_paths if summary is not None else ()
             ),
@@ -1427,7 +1544,7 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
             host_filters=host_filter_routings,
             public_alias=slot.public_name,
             hidden=slot.hidden,
-            host_query=query if reroot_enabled else None,
+            host_query=host_carrier if reroot_enabled else None,
             public_projection=(
                 projection.public_projection if reroot_enabled else None
             ),
@@ -1435,6 +1552,9 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
                 (lambda q, b: plan_query(
                     query=q, bundle=b, cross_model_planner=cross_model_planner,
                     disable_host_rooted_isolation=True,
+                    # The carrier IS the hand-off: its ``prebound`` is the
+                    # typed sub-query the strategy re-rooted structurally.
+                    prebound=q.prebound,
                 ))
                 if reroot_enabled else None
             ),
@@ -1443,9 +1563,11 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
 
     order_entries = []
     for spec in order_specs:
-        # A grouped row-column sort key was rewritten to a hidden ``:max``
-        # aggregate above; order on that slot, not the bare row key.
-        okey = order_key_remap.get(spec.bound.value_key, spec.bound.value_key)
+        # A grouped row-column sort key was rewritten to a hidden direction-
+        # aware aggregate wrap above; order on that slot, not the bare row key.
+        okey = order_key_remap.get(
+            (spec.bound.value_key, spec.direction), spec.bound.value_key,
+        )
         sid = projection.registry.find_by_key(okey)
         if sid is None:
             # DEV-1733: an order target that reached here without a slot would
@@ -1463,13 +1585,27 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
                 f"arithmetic / scalar expression, a dimension, or declare the "
                 f"expression as a measure and order by its name."
             )
-        order_entries.append(
-            OrderEntry(slot_id=sid, direction=spec.direction),
-        )
+        order_slot = projection.registry.get(sid)
+        order_entries.append(OrderEntry(
+            slot_id=sid,
+            direction=spec.direction,
+            scope=_classify_order_scope(
+                slot=order_slot,
+                cross_model_slot_ids={
+                    p.aggregate_slot_id for p in cross_model_plans
+                },
+                windowed_slot_ids=set(windowed_slot_ids),
+                public_projection=projection.public_projection,
+                slot_by_key={
+                    s.key: s.id for s in projection.registry.slots
+                },
+            ),
+            phase=order_slot.key.phase,
+        ))
 
     transform_layers = _emit_transform_layers(slots=projection.registry.slots)
     stage_schema = _emit_stage_schema(
-        query=query, projection=projection,
+        stage_name=query.name, projection=projection,
     )
     # Stage 7b.10 — the active TD's slot id (``active_td_slot_id``) is resolved
     # right after projection above so the windowed-plan builder can use it.
@@ -1527,12 +1663,12 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         filters_by_phase=filters_by_phase,
         projection=projection.public_projection,
         order=order_entries,
-        limit=query.limit,
-        offset=query.offset,
+        limit=prebound.limit,
+        offset=prebound.offset,
         stage_schema=stage_schema,
         active_time_dimension_slot_id=active_td_slot_id,
         render_source_model=render_source_model,
-        distinct_dimension_values=query.distinct_dimension_values,
+        distinct_dimension_values=distinct_dimension_values,
         frame_bound_columns=frame_bound_columns,
         outer_where_filter_ids=outer_where_filter_ids,
         filter_reachability=filter_reachability,
@@ -1847,123 +1983,30 @@ def _format_description_for_dimension(
     return col.format, col.description
 
 
-_COUNT_AGGREGATIONS: FrozenSet[str] = frozenset(
-    {"count", "count_distinct", "count_distinct_approx"}
-)
-_FLOAT_AGGREGATIONS: FrozenSet[str] = frozenset({
-    "avg", "weighted_avg", "median",
-    "stddev_samp", "stddev_pop", "var_samp", "var_pop",
-    "corr", "covar_samp", "covar_pop", "percentile",
-})
-
-
-def _infer_aggregated_type(
-    *,
-    model: SlayerModel,
-    measure_name: Optional[str],
-    aggregation: str,
-) -> Optional[DataType]:
-    """Type for an aggregated measure slot. Mirrors
-    ``_infer_aggregated_format`` (decision #2 of the Stage B plan):
-
-    * ``*:count`` (measure_name=``"*"``) → ``INT``
-    * ``count`` / ``count_distinct`` / ``count_distinct_approx`` → ``INT``
-    * ``avg`` / ``weighted_avg`` / ``median`` / parametric / stat aggs →
-      ``DOUBLE``
-    * ``sum`` / ``min`` / ``max`` / ``first`` / ``last`` → inherit from
-      source column type (DOUBLE if absent).
-    """
-    if measure_name == "*":
-        return DataType.INT
-    if aggregation in _COUNT_AGGREGATIONS:
-        return DataType.INT
-    if aggregation in _FLOAT_AGGREGATIONS:
-        return DataType.DOUBLE
-    # sum / min / max / first / last — preserve source column type.
-    if measure_name is None:
-        return None
-    col = model.get_column(measure_name)
-    if col is not None and col.type is not None:
-        return col.type
-    return None
-
-
 def _format_description_for_measure_formula(
     *, scope: Union[ModelScope, StageSchema], bound,
 ) -> Tuple[Optional[NumberFormat], Optional[str]]:
-    """Lift ``format`` / ``description`` for a measure formula. The
-    aggregation-aware format comes from ``_infer_aggregated_format`` when
-    the bound expression is a bare local aggregate; description follows
-    the source ``Column`` (sum / min / max preserve documentation).
-    """
+    """Scope adapter over ``measure_key_format_description`` — a StageSchema
+    scope has no source model to lift a column's display contract from."""
     if not isinstance(scope, ModelScope) or scope.source_model is None:
         return None, None
-    if not isinstance(bound.value_key, AggregateKey):
-        return None, None
-    src = bound.value_key.source
-    if isinstance(src, StarKey):
-        # ``*:count`` — INTEGER format inferred by helper; no description.
-        return (
-            _infer_aggregated_format(
-                model=scope.source_model,
-                measure_name="*",
-                aggregation=bound.value_key.agg,
-            ),
-            None,
-        )
-    if not isinstance(src, (ColumnKey, ColumnSqlKey)):
-        return None, None
-    if getattr(src, "path", ()):  # cross-model — handled by response_meta
-        return None, None
-    bare = getattr(src, "leaf", None) or getattr(src, "column_name", None)
-    if bare is None:
-        return None, None
-    fmt = _infer_aggregated_format(
-        model=scope.source_model,
-        measure_name=bare,
-        aggregation=bound.value_key.agg,
+    return measure_key_format_description(
+        model=scope.source_model, key=bound.value_key,
     )
-    col = scope.source_model.get_column(bare)
-    desc = col.description if col is not None else None
-    return fmt, desc
 
 
 def _type_for_measure_formula(
     *, scope: Union[ModelScope, StageSchema], bound,
 ) -> Optional[DataType]:
-    """Lift ``type`` for a measure-formula slot.
+    """Scope adapter over ``measure_key_type``.
 
-    Mirrors ``_format_description_for_measure_formula`` — sources the
-    type from ``_infer_aggregated_type`` for local aggregates so the
-    migrated query-backed virtual model carries ``*:count → INT``,
-    ``avg → DOUBLE``, ``sum → source column type``. Declared
-    ``ModelMeasure.type`` overrides — that flow runs through
-    ``expand_model_measures`` so the bound key already carries the
-    declared type via the source column lookup.
+    Declared ``ModelMeasure.type`` overrides — that flow runs through
+    ``expand_model_measures`` so the bound key already carries the declared
+    type via the source column lookup.
     """
     if not isinstance(scope, ModelScope) or scope.source_model is None:
         return None
-    if not isinstance(bound.value_key, AggregateKey):
-        return None
-    src = bound.value_key.source
-    if isinstance(src, StarKey):
-        return _infer_aggregated_type(
-            model=scope.source_model,
-            measure_name="*",
-            aggregation=bound.value_key.agg,
-        )
-    if not isinstance(src, (ColumnKey, ColumnSqlKey)):
-        return None
-    if getattr(src, "path", ()):  # cross-model — handled elsewhere
-        return None
-    bare = getattr(src, "leaf", None) or getattr(src, "column_name", None)
-    if bare is None:
-        return None
-    return _infer_aggregated_type(
-        model=scope.source_model,
-        measure_name=bare,
-        aggregation=bound.value_key.agg,
-    )
+    return measure_key_type(model=scope.source_model, key=bound.value_key)
 
 
 def _joined_column_type(
@@ -2377,6 +2420,43 @@ def _host_model_name(
     return "(stage)"
 
 
+def _classify_order_scope(
+    *,
+    slot: ValueSlot,
+    cross_model_slot_ids: Set[SlotId],
+    windowed_slot_ids: Set[SlotId],
+    public_projection: List[SlotId],
+    slot_by_key: Dict[ValueKey, SlotId],
+) -> OrderScope:
+    """Name the scope that PRODUCES ``slot``'s value (DEV-1747 §5.10).
+
+    Order matters. A slot can satisfy more than one test — the DEV-1735 order
+    wrap is both hidden and cross-model — and the producing scope is the
+    narrower fact, so isolated scopes are checked before the host base.
+
+    A composite is classified OUTER_COMPOSITE when any operand lives in an
+    isolated CTE: it cannot be evaluated inside ``_base`` at all, and falling
+    back to a host-base scope would silently substitute a plain aggregate for
+    the cross-model or rolling one.
+    """
+    if slot.id in cross_model_slot_ids:
+        return OrderScope.CROSS_MODEL_CTE
+    if slot.id in windowed_slot_ids:
+        return OrderScope.WINDOWED_CTE
+    if isinstance(slot.key, TransformKey):
+        return OrderScope.TRANSFORM_STEP
+    if isinstance(slot.key, (ArithmeticKey, ScalarCallKey)):
+        for dep in walk_value_keys(slot.key):
+            if not isinstance(dep, AggregateKey):
+                continue
+            dep_sid = slot_by_key.get(dep)
+            if dep_sid in cross_model_slot_ids or dep_sid in windowed_slot_ids:
+                return OrderScope.OUTER_COMPOSITE
+    if slot.hidden or slot.id not in public_projection:
+        return OrderScope.HOST_BASE_HIDDEN
+    return OrderScope.HOST_BASE
+
+
 def _bucket_slots(slots: List[ValueSlot]):
     row: List[ValueSlot] = []
     agg: List[ValueSlot] = []
@@ -2393,7 +2473,7 @@ def _bucket_slots(slots: List[ValueSlot]):
 
 def _emit_stage_schema(
     *,
-    query: SlayerQuery,
+    stage_name: Optional[str],
     projection,
 ) -> StageSchema:
     """Build the StageSchema from the projection plan.
@@ -2444,8 +2524,9 @@ def _emit_stage_schema(
             format=slot.format,
             description=slot.description,
         ))
-    relation_name = query.name or "(unnamed_stage)"
-    return StageSchema(relation_name=relation_name, columns=columns)
+    return StageSchema(
+        relation_name=stage_name or "(unnamed_stage)", columns=columns,
+    )
 
 
 def _emit_transform_layers(*, slots: List[ValueSlot]) -> List[TransformLayer]:

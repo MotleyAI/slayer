@@ -23,7 +23,8 @@ yet. Stage 7b's engine cutover routes through them.
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
+from enum import Enum
+from typing import Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -65,6 +66,7 @@ __all__ = [
     "FilterPhase",
     "JoinRequirement",
     "OrderEntry",
+    "OrderScope",
     "PlannedQuery",
     "SlotId",
     "TransformLayer",
@@ -183,8 +185,15 @@ class CrossModelAggregatePlan(BaseModel):
       table row: cross-model agg-ref on the same target).
     - ``target_model_filters`` — the target model's own
       ``SlayerModel.filters`` (always-applied WHERE).
-    ``applied_filter_ids`` is the audit union of where + having for
-    backward compatibility with the spec's external surface.
+
+    ``applied_filter_ids`` is the AUDIT: which host filters some scope
+    evaluates. On the forward path that is exactly ``where ∪ having``. On a
+    RE-ROOTED plan the two diverge on purpose — ``rerooted_plan`` carries the
+    filters itself, and there is no forward CTE to route to, so where/having
+    are empty while the audit still records them. The distinction matters
+    because where/having are also an instruction to the host base to SKIP the
+    filter; a re-rooted CTE duplicates a host-evaluable predicate rather than
+    relocating it, so the host must keep applying it (DEV-1747 B6).
 
     ``hidden=True`` is used for order-only / filter-only refs whose
     aggregate value is materialised but not surfaced in the public
@@ -376,11 +385,52 @@ class FilterPhase(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class OrderScope(str, Enum):
+    """WHERE the ordered value lives — the one thing a renderer needs to know
+    to build a sort term (DEV-1747 §5.10).
+
+    Every render site used to re-derive this, and they disagreed: one
+    dispatched on the slot KIND, one ran a five-way precedence chain over
+    alias maps, and one knew about neither. Naming the producing scope in the
+    plan is what lets a single resolver replace all of them (P-D).
+    """
+
+    #: Materialised in ``_base`` and projected publicly.
+    HOST_BASE = "host_base"
+    #: Materialised in ``_base`` but trimmed from the public projection —
+    #: an order-only aggregate or an unprojected host dimension.
+    HOST_BASE_HIDDEN = "host_base_hidden"
+    #: Lives in a cross-model / host-rooted isolated (``_cm_``) CTE.
+    CROSS_MODEL_CTE = "cross_model_cte"
+    #: Lives in a windowed (``_wm_``) CTE.
+    WINDOWED_CTE = "windowed_cte"
+    #: Produced by a step of the transform chain.
+    TRANSFORM_STEP = "transform_step"
+    #: A composite whose operands span scopes, so it can only be evaluated in
+    #: the outer combined SELECT — never inside ``_base``.
+    OUTER_COMPOSITE = "outer_composite"
+
+
 class OrderEntry(BaseModel):
-    """One entry in the ORDER BY of a planned query."""
+    """One entry in the ORDER BY of a planned query.
+
+    ``scope`` and ``phase`` are REQUIRED and have no default: a planner path
+    that forgets to classify must fail at construction rather than fall through
+    to the ``_base.``-qualified branch, which is how an order term silently
+    attached to the wrong scope.
+    """
 
     slot_id: SlotId
     direction: str  # "asc" or "desc"
+    scope: OrderScope
+    phase: Phase
+    #: Null-ordering policy. ``"default"`` is NULLs last, which is what SLayer
+    #: means by unstated on every dialect — a semantic layer whose NULLs sort
+    #: first on SQLite and last on Postgres answers the same question two ways.
+    #: The dialect strategy owns the SPELLING (P-H) — an explicit clause, an
+    #: emulation, or T-SQL's native pin where the emulation does not run — so
+    #: no render site emits a NULLS clause of its own.
+    nulls: Literal["default", "first", "last"] = "default"
 
     @field_validator("direction")
     @classmethod

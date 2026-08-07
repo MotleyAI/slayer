@@ -380,6 +380,14 @@ def canonical_aggregate_alias(  # NOSONAR(S3776) — sequential dispatch over th
         } or None,
     )
 
+    # DEV-1747 D2 — a host-grain aggregate is a DIFFERENT value from the
+    # target-grain one over the same column (per host group vs global), and
+    # ``grain`` is part of the key's identity, so the two intern as separate
+    # slots. Without a distinct alias those slots would collide on one output
+    # column name and the renderer would emit whichever it wrote last.
+    if getattr(key, "grain", "target") == "host":
+        canonical = f"{canonical}_host"
+
     # --- prefix, per profile ---
     if profile in ("cte_schema", "declared_name"):
         return canonical

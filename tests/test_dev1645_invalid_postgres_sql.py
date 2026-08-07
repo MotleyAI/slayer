@@ -28,7 +28,6 @@ import pytest
 import sqlglot
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.errors import UnresolvableOrderColumnError
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.sql.generator import SQLGenerator
@@ -219,36 +218,48 @@ class TestFlavorAOrderByUnprojected:
             query=query, model=accts, extra_models=[clusters],
         ))
         # The typed pipeline sorts on the cross-model CTE's own canonical
-        # output column rather than the user's rename. Both name the same
-        # value (the outer SELECT projects that column AS "accts.sc"), and the
-        # CTE is CROSS JOINed into the combined SELECT, so Postgres resolves
-        # the reference against the FROM inputs. What this test guards is the
-        # WHOLE-QUOTED composite form at the combined-CTE ORDER BY site — a
-        # split ``_cm_x.accts.clusters.score_sum`` would be a nonexistent
-        # column — not which of the two equivalent names is chosen.
-        assert 'ORDER BY "accts.clusters.score_sum" DESC' in sql, sql
+        # output column, QUALIFIED by the CTE that emits it. It used to be the
+        # bare name, which resolved only by falling through to an input column
+        # of the FROM — legal on Postgres, not everywhere, and ambiguous the
+        # moment two scopes project the same name. What this test guards is
+        # the WHOLE-QUOTED composite form at the combined-CTE ORDER BY site —
+        # a split ``_cm_x.accts.clusters.score_sum`` names a column that does
+        # not exist.
+        assert (
+            'ORDER BY _cm_accts__clusters__score_sum."accts.clusters.score_sum" DESC'
+        ) in sql, sql
         assert "ORDER BY accts." not in sql, sql
+        assert '"accts.clusters.score_sum"' in sql, sql
 
-    async def test_orderby_unresolvable_joined_column_rejected(self) -> None:
-        """Ordering by an unprojected multi-hop joined column whose join was
-        never pulled into scope cannot bind to any FROM table — reject at
-        compile time rather than emit invalid SQL (DEV-1645, user decision on
-        Codex review of PR #224)."""
+    async def test_orderby_unprojected_joined_column_resolves_host_rooted(
+        self,
+    ) -> None:
+        """DEV-1645 rejected an unprojected multi-hop joined ORDER BY because it
+        could not bind to any FROM table. DEV-1747 D2 gives it a binding: a
+        HOST-rooted CTE computes the per-group extreme over the crossed join and
+        the outer query orders on that CTE's column, so nothing is unbound."""
         orders, joined = _orders_customers_regions()
         query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "amount:sum", "name": "rev"}],
             order=[OrderItem(column=ColumnRef(name="name", model="customers.regions"), direction="desc")],
         )
-        with pytest.raises(UnresolvableOrderColumnError):
-            await _engine_generate(query=query, model=orders, extra_models=joined)
+        sql = _norm(await _engine_generate(
+            query=query, model=orders, extra_models=joined,
+        ))
+        # The sort key's join lives in the CTE, never in the host base — that
+        # containment is what keeps ``SUM(orders.amount)`` unmultiplied.
+        base = sql.split("_cm_")[0]
+        assert "JOIN" not in base.upper(), sql
+        assert "MAX(customers__regions.name)" in sql, sql
+        assert "ORDER BY _cm_" in sql, sql
 
-    async def test_orderby_joined_column_rejected_even_when_filter_pulls_join_in(self) -> None:
-        """An unprojected joined ORDER BY is rejected even when a filter pulls
-        the join into the base FROM: the compiler's outer-wrapping layers
-        (measure CTEs, pagination, first/last ranked, projection trim) relocate
-        the ORDER BY into a scope where the joined table is unbound, so resolving
-        it is unsafe. Project the column or order by a projected field instead."""
+    async def test_orderby_joined_column_resolves_when_filter_pulls_join_in(
+        self,
+    ) -> None:
+        """The same resolution when a filter already pulled the join into the
+        host base. The CTE re-applies the filter rather than depending on the
+        base's copy, so the two scopes agree on which rows the extreme is over."""
         orders, joined = _orders_customers_regions()
         query = SlayerQuery(
             source_model="orders",
@@ -256,15 +267,18 @@ class TestFlavorAOrderByUnprojected:
             filters=["customers.regions.name == 'US'"],
             order=[OrderItem(column=ColumnRef(name="name", model="customers.regions"), direction="desc")],
         )
-        with pytest.raises(UnresolvableOrderColumnError):
-            await _engine_generate(query=query, model=orders, extra_models=joined)
+        sql = _norm(await _engine_generate(
+            query=query, model=orders, extra_models=joined,
+        ))
+        assert sql.count("customers__regions.name = 'US'") == 2, sql
+        assert "ORDER BY _cm_" in sql, sql
 
-    async def test_orderby_joined_column_rejected_in_cte_wrapped_scope(self) -> None:
-        """A joined column can be resolved in the base SELECT (joins in FROM),
-        but NOT in a CTE-wrapped scope (measure CTEs / windowed measures order
-        from `_base`, where the join alias is unbound). Even when a filter pulls
-        the join in, ordering by that joined column in the combined-CTE path must
-        reject rather than emit an unbound reference (Codex review of PR #224)."""
+    async def test_orderby_joined_column_resolves_in_cte_wrapped_scope(
+        self,
+    ) -> None:
+        """The CTE-wrapped (windowed-measure) path. The sort key's CTE groups on
+        the query grain and joins back NULL-safely, so the outer ORDER BY names a
+        column the wrapper actually projects."""
         orders, joined = _orders_customers_regions()
         query = SlayerQuery(
             source_model="orders",
@@ -273,14 +287,18 @@ class TestFlavorAOrderByUnprojected:
             filters=["customers.regions.name == 'US'"],  # pulls the join into resolved_joins
             order=[OrderItem(column=ColumnRef(name="name", model="customers.regions"), direction="desc")],
         )
-        with pytest.raises(UnresolvableOrderColumnError):
-            await _engine_generate(query=query, model=orders, extra_models=joined)
+        sql = _norm(await _engine_generate(
+            query=query, model=orders, extra_models=joined,
+        ))
+        assert "IS NOT DISTINCT FROM" in sql, sql
+        assert 'ORDER BY "orders.customers.regions.name_max_host" DESC' in sql, sql
 
-    async def test_orderby_joined_column_rejected_in_first_last_ranked_scope(self) -> None:
-        """first/last measures wrap the FROM (with its joins) in a ranked
-        subquery that only re-exposes model.* — so the outer ORDER BY can't see
-        a joined column even when a filter pulled the join in. Must reject, not
-        emit an unbound reference (Codex review of PR #224)."""
+    async def test_orderby_joined_column_resolves_in_first_last_ranked_scope(
+        self,
+    ) -> None:
+        """The first/last ranked-subquery path. The ranked wrap only re-exposes
+        ``model.*``, which is precisely why the sort key cannot be a bare joined
+        reference — it is computed in its own CTE instead."""
         orders, joined = _orders_customers_regions()
         query = SlayerQuery(
             source_model="orders",
@@ -288,47 +306,31 @@ class TestFlavorAOrderByUnprojected:
             filters=["customers.regions.name == 'US'"],  # pulls the join into resolved_joins
             order=[OrderItem(column=ColumnRef(name="name", model="customers.regions"), direction="desc")],
         )
-        with pytest.raises(UnresolvableOrderColumnError):
-            await _engine_generate(query=query, model=orders, extra_models=joined)
+        sql = _norm(await _engine_generate(
+            query=query, model=orders, extra_models=joined,
+        ))
+        assert "_last_rn" in sql, sql
+        assert "ORDER BY _cm_" in sql, sql
 
 
 # ============================================================================
-# Flavor A — DEFERRED capability: joined / cross-model ORDER BY resolution
+# Flavor A — joined / cross-model ORDER BY resolution (was DEFERRED)
 # ============================================================================
 
-class TestFlavorAJoinedOrderByDeferred:
+class TestFlavorAJoinedOrderByResolves:
     """Ordering by an unprojected JOINED column in a GROUPED query.
 
-    DEV-1645 originally rejected every unprojected joined/cross-model ORDER BY
-    (``UnresolvableOrderColumnError``). DEV-1703 Phase 1 narrowed that: an
-    order-only ref now resolves like a filter ref, so a joined sort key in a
-    RAW-ROWS query pulls its join (Law 1) and split-emits, and a LOCAL row
-    column in a grouped query materialises a hidden ``:max`` wrap.
+    DEV-1645 rejected every unprojected joined / cross-model ORDER BY. DEV-1703
+    Phase 1 narrowed that (raw-rows split emission; a grouped LOCAL column's
+    hidden wrap), and DEV-1747 D2 closed the remainder.
 
-    All three queries below are GROUPED with a JOINED sort key — the one shape
-    still rejected, because it has no host-rooted representation today (see
-    ``_REASON``). They stay ``strict=True`` so they flip to XPASS the moment
-    DEV-1735 lands, prompting removal of the xfail and the reject. The
-    companion tests in ``TestFlavorAOrderByUnprojected`` pin the reject
-    contract; ``tests/test_dev1712_order_only_hidden_slots.py`` pins the
-    resolved shapes."""
+    These three cases were ``xfail(strict=True)`` aspiring to a BARE split
+    reference, ``ORDER BY customers__regions.name``. That aspiration was wrong
+    for a grouped query — the column is not in GROUP BY, so a bare reference is
+    invalid SQL on every Tier-1 dialect. The shape below is what the value
+    actually requires: computed per group in its own scope, then joined back."""
 
-    _REASON = (
-        "DEV-1735: joined ORDER BY resolution in a GROUPED query is deferred. "
-        "DEV-1703 Phase 1 resolved the raw-rows case (Law-1 join pull + split "
-        "emission) and the grouped LOCAL case (hidden ``:max`` wrap), but a "
-        "grouped JOINED sort key has no host-rooted representation — an "
-        "AggregateKey with a non-empty source.path always routes to a "
-        "target-rooted CTE, which degenerates to a scalar CROSS JOIN whose "
-        "value is constant per group, so the sort would silently do nothing. "
-        "Rejecting loudly is preferred until DEV-1735 lands host-rooted "
-        "crossing MAX."
-    )
-
-    @pytest.mark.xfail(strict=True, reason=_REASON)
-    async def test_joined_orderby_with_filter_in_scope_should_resolve(self) -> None:
-        """A filter pulls the join into the base FROM; ordering by that joined
-        column should resolve to the canonical ``__`` alias."""
+    async def test_joined_orderby_with_filter_in_scope_resolves(self) -> None:
         orders, joined = _orders_customers_regions()
         query = SlayerQuery(
             source_model="orders",
@@ -339,12 +341,13 @@ class TestFlavorAJoinedOrderByDeferred:
         sql = _norm(await _engine_generate(
             query=query, model=orders, extra_models=joined,
         ))
-        assert "ORDER BY customers__regions.name" in sql
+        assert "MAX(customers__regions.name)" in sql, sql
 
-    @pytest.mark.xfail(strict=True, reason=_REASON)
-    async def test_joined_orderby_without_filter_should_pull_join_and_resolve(self) -> None:
-        """Ordering by a joined column with no other reference should pull the
-        join in (like filters do) and resolve, rather than reject."""
+    async def test_joined_orderby_without_filter_pulls_join_into_the_cte(
+        self,
+    ) -> None:
+        """With nothing else referencing the join, it is pulled into the sort
+        key's CTE — and only there."""
         orders, joined = _orders_customers_regions()
         query = SlayerQuery(
             source_model="orders",
@@ -354,12 +357,10 @@ class TestFlavorAJoinedOrderByDeferred:
         sql = _norm(await _engine_generate(
             query=query, model=orders, extra_models=joined,
         ))
-        assert "ORDER BY customers__regions.name" in sql
+        assert "MAX(customers__regions.name)" in sql, sql
+        assert "JOIN" not in sql.split("_cm_")[0].upper(), sql
 
-    @pytest.mark.xfail(strict=True, reason=_REASON)
-    async def test_joined_orderby_in_cte_wrapped_scope_should_resolve(self) -> None:
-        """A windowed-measure (combined-CTE) query that filters on and orders by
-        a joined column should eventually resolve it in the outer scope."""
+    async def test_joined_orderby_in_cte_wrapped_scope_resolves(self) -> None:
         orders, joined = _orders_customers_regions()
         query = SlayerQuery(
             source_model="orders",
@@ -371,13 +372,7 @@ class TestFlavorAJoinedOrderByDeferred:
         sql = _norm(await _engine_generate(
             query=query, model=orders, extra_models=joined,
         ))
-        # Assert on the ORDER BY clause specifically (not a bare substring that
-        # the ``== 'US'`` filter's WHERE would satisfy): the aspiration is that
-        # the joined sort key resolves to the ``__`` path alias. On the typed
-        # pipeline the ORDER BY still emits the unprojected dotted alias
-        # ``"customers.regions.name"`` (the DEV-1645 gap → Stages 8-9), so this
-        # correctly xfails until joined ORDER BY resolution lands.
-        assert "ORDER BY customers__regions.name" in sql
+        assert 'ORDER BY "orders.customers.regions.name_max_host" DESC' in sql, sql
 
 
 # ============================================================================

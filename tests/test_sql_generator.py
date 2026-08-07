@@ -2154,10 +2154,22 @@ class TestRankFamilyTransforms:
         sql = await _generate(generator, query, orders_model)
         # PARTITION BY column order is semantically irrelevant; the typed
         # planner emits the keys in sorted order (customer_id before status).
-        assert (
+        #
+        # Compared against the re-emitted Window node rather than the raw text:
+        # the transform chain is assembled as AST (DEV-1747 D8), so an OVER
+        # clause this long is line-broken by sqlglot's pretty printer, and
+        # collapsing whitespace still leaves the spaces it puts inside the
+        # parens. The claim here is the window's SHAPE, not its line breaks.
+        window = next(
+            w
+            for w in sqlglot.parse_one(sql, read="postgres").find_all(
+                sqlglot.exp.Window,
+            )
+            if isinstance(w.this, sqlglot.exp.Rank)
+        )
+        assert window.sql(dialect="postgres") == (
             'RANK() OVER (PARTITION BY "orders.customer_id", "orders.status" '
             'ORDER BY "orders.revenue_sum" DESC)'
-            in _norm(sql)
         )
 
     async def test_percent_rank_default(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
@@ -7517,8 +7529,10 @@ class TestDev1501BroadTriggerAndGuards:
 
         History: this raised ``NotImplementedError``, then (DEV-1712 Stage 8) a
         plan-time ``ValueError``. DEV-1703 Phase 1 resolves it instead — the
-        column materialises as a hidden ``customer_id:max`` aggregate and the
-        ORDER BY names that alias. The invariant this test has always really
+        column materialises as a hidden aggregate wrap and the ORDER BY names
+        that alias — ``customer_id:min`` here, since DEV-1747 D10 made the wrap
+        direction-aware and this order is ASC. The invariant this test has always
+        really
         been about is preserved and pinned explicitly below: the sort key must
         NEVER reach GROUP BY, because widening the grain would change both the
         row count and every other measure's value.
@@ -7541,7 +7555,7 @@ class TestDev1501BroadTriggerAndGuards:
             )
             resp = await engine.execute(query, dry_run=True)
             sql = resp.sql
-            assert _re.search(r"MAX\(\s*orders\.customer_id\s*\)", sql), sql
+            assert _re.search(r"MIN\(\s*orders\.customer_id\s*\)", sql), sql
             # The sort key must not widen the grain: GROUP BY stays on status.
             inner = sqlglot.parse_one(sql, dialect="postgres").find(sqlglot.exp.Group)
             assert inner is not None, sql

@@ -100,7 +100,23 @@ def classify_isolation(
         return IsolationKind.NONE
 
     if getattr(key.source, "path", ()):
-        # The source names another model: the aggregate's rows live there.
+        # The source names another model: the aggregate's rows live there —
+        # UNLESS it is marked host-grain (DEV-1747 D2), which separates where a
+        # value is READ from where it is GROUPED. A joined ORDER BY wrap reads
+        # through the join but must be computed per HOST row-group, so its
+        # crossing IS the path and it belongs on the host-rooted route. Sending
+        # it to a target-rooted CTE would collapse it to a scalar CROSS JOIN:
+        # every group gets the same value and the sort silently does nothing.
+        if getattr(key, "grain", "target") == "host":
+            # Same recursion guard as the crossing-input branch below — inside
+            # the nested sub-plan the CTE is already this aggregate's own scope,
+            # so it renders inline (base-pull) rather than isolating forever.
+            if disable_host_rooted_isolation:
+                return IsolationKind.NONE
+            return IsolationKind.HOST_ROOTED
+        # Target-rooted isolation is deliberately NOT suppressed by the guard:
+        # inlining a joined SUM into the host base would multiply it by the
+        # join's fan-out.
         return IsolationKind.TARGET_ROOTED
 
     if disable_host_rooted_isolation:

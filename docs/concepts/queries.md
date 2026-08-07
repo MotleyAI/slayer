@@ -128,9 +128,23 @@ What each shape of an *undeclared* order target does:
 | An inline **transform** (`rank(amount:sum)`, `cumsum(...)`, `change(...)`, `lag`/`lead`/`ntile`) | Computed hidden, sorted on, stripped. |
 | An inline **composite** (`revenue:sum / cnt:sum`, `abs(amount:sum)`, `change(amount:sum) / 2`) | Computed hidden, sorted on, stripped. |
 | A **windowed** aggregate (`amount:sum(window='90d')`), alone or inside a composite | Computed hidden in its own rolling-window CTE, sorted on, stripped. |
-| A raw row column, in a **raw-rows** query (`distinct_dimension_values: false`, no measures) | Sorted on directly (`ORDER BY orders.created_at`). |
-| A raw row column, in an **aggregated / dedup** query | Rejected (HTTP 400): it isn't in the `GROUP BY`. Add it to `dimensions`, or order by an aggregate of it (`created_at:max`). |
-| A **joined** row column (`customers.regions.name`) not projected | Rejected (HTTP 400): project it (add to `dimensions`) or order by a projected field. |
+| A raw row column, in a **raw-rows** query (`distinct_dimension_values: false`, no measures) | Sorted on directly (`ORDER BY orders.created_at`). Applies to a **joined** column (`customers.regions.name`) and to a derived column whose `sql` reaches through a join — the join is pulled in for the sort. |
+| A raw row column, in an **aggregated / dedup** query | Sorted on **per group**: ASC by each group's minimum, DESC by each group's maximum. The wrap is implicit — you do not write `created_at:min`. |
+| A **joined** row column (`customers.regions.name`) in an aggregated query | Same per-group wrap, computed in a CTE rooted at the source model with the join pulled inside, so each group gets its own extreme rather than one global value. |
+
+Ordering by an undeclared row column in a grouped query is **not** the same as
+ordering by the column itself — there is no single value per group to sort by.
+SLayer picks the extreme the direction puts first: `asc` sorts each group by its
+`min`, `desc` by its `max`. Write `{"column": "created_at:max", "direction": "asc"}`
+explicitly if you want the other one.
+
+NULLs sort **last** in both directions, on every database, so the same query
+returns the same row order regardless of backend. (SQL Server is the one
+exception: its native ordering is used because the portable emulation makes the
+statement fail there.)
+
+An order target that names nothing SLayer can resolve is an error, never a
+silently unsorted result.
 
 Transform and composite order targets accept the full formula syntax, so
 `{"column": "revenue:sum / cnt:sum"}` and `{"column": "change(revenue:sum)"}` both

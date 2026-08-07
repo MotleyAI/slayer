@@ -354,15 +354,31 @@ def key_has_host_local_ref(
     return _walk(key)
 
 
-def path_is_reachable(*, path: Path, target_path: Path) -> bool:
+def path_is_reachable(
+    *,
+    path: Path,
+    target_path: Path,
+    reachable_paths: "Optional[frozenset]" = None,
+) -> bool:
     """The ONE reachability rule, for every key kind.
 
-    ``path`` is reachable from a CTE rooted at ``target_path`` iff it is a
-    prefix of it. A path DEEPER than the target is not available (the target's
-    scope stops there); a SIBLING branch that happens to share a model name is
-    not available either, which is precisely what the old flat membership test
-    got wrong.
+    A FORWARD-path CTE selects from the bare target and carries only the
+    host→target hops, so ``path`` is reachable iff it is a PREFIX of
+    ``target_path``. A path deeper than the target is not available (the
+    target's scope stops there); a sibling branch that happens to share a model
+    name is not available either, which is precisely what the old flat
+    membership test got wrong.
+
+    A RE-ROOTED CTE (DEV-1747 D6) is planned against the TARGET as its own
+    root, so the target's WHOLE join graph is in scope and the prefix test no
+    longer describes it: a host-side sibling branch can be reachable from the
+    target by a different route entirely. That question is about the model
+    graph, not about string prefixes, so the caller — which holds the bundle —
+    walks it and passes the answer in as ``reachable_paths``. Membership then
+    replaces the prefix test outright.
     """
+    if reachable_paths is not None:
+        return tuple(path) in reachable_paths
     return tuple(path) == tuple(target_path[: len(path)])
 
 
