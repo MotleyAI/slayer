@@ -676,6 +676,15 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             # Partial failure — at least one model failed to persist.
             # Mirror the CLI's exit-1 behaviour by surfacing 422 with the
             # full IdempotentIngestResult body (additions/to_delete/errors).
+            #
+            # ``result.skipped`` deliberately does NOT trigger 422,
+            # even though it DOES make `slayer ingest` exit 1. The divergence
+            # is intentional: a CLI exit code is a nag aimed at a human or a
+            # build log, and it has an obvious remedy (`--exclude <name>`). A
+            # REST client cannot act on that hint, and a datasource with one
+            # permanently unmodellable object would otherwise return 422 on
+            # every ingest forever, burying a successful partial ingest behind
+            # an error status. Skips travel in the 200 body instead.
             raise HTTPException(
                 status_code=422, detail=result.model_dump(mode="json")
             )
