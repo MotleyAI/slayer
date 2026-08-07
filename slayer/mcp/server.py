@@ -31,6 +31,7 @@ from slayer.engine.ingestion import (
     _friendly_db_error,
     _get_schemas,
     _hidden_internal_line,
+    _unhide_hint,
     list_ingestable_objects,
 )
 from slayer.engine.profiling import handle_edit_refresh
@@ -257,13 +258,19 @@ def _render_skipped_section(skipped: list[Any]) -> list[str]:
     return out
 
 
-def _render_hidden_internals_section(hidden: list[Any]) -> list[str]:
+def _render_hidden_internals_section(
+    hidden: list[Any], *, data_source: str | None = None
+) -> list[str]:
     """Recognised ELT/migration bookkeeping modelled ``hidden`` (DEV-1759).
 
     Reported for the same reason the CLI reports it: the models exist and are
     queryable, they are just absent from ``models_summary``. Staying silent
     here would leave the agent that ran the ingest unable to tell a hidden
     model from one that was never created.
+
+    The hint is datasource-qualified via the shared ``_unhide_hint`` — an agent
+    executes it verbatim, and these names collide across datasources by
+    construction rather than by accident.
     """
     if not hidden:
         return []
@@ -273,7 +280,7 @@ def _render_hidden_internals_section(hidden: list[Any]) -> list[str]:
         f"(excluded from models_summary; still queryable by name):",
     ]
     out.extend(f"- {_hidden_internal_line(entry)}" for entry in hidden)
-    out.append("  Use edit_model(name, hidden=false) to surface one.")
+    out.append(f"  Use {_unhide_hint(data_source)} to surface one.")
     return out
 
 
@@ -336,7 +343,9 @@ def _render_ingest_result(
     lines.extend(_render_drift_section(list(result.to_delete)))
     # Same order as the CLI renderer, so the two surfaces read alike.
     lines.extend(_render_skipped_section(skipped))
-    lines.extend(_render_hidden_internals_section(hidden_internals))
+    lines.extend(
+        _render_hidden_internals_section(hidden_internals, data_source=ds.name)
+    )
     lines.extend(_render_errors_section(list(result.errors)))
     if not lines:
         lines.append("Datasource already in sync — no changes.")

@@ -137,8 +137,13 @@ Hidden (3) — recognised ELT/migration internals (excluded from models_summary;
   - _dlt_loads: dlt
   - _dlt_pipeline_state: dlt
   - _dlt_version: dlt
-  --surface-internals ingests NEW internals visible; use edit_model(hidden=false) to unhide an existing one.
+  --surface-internals ingests NEW internals visible; use edit_model("<model>", data_source="my_postgres", hidden=false) to unhide an existing one.
 ```
+
+The hint names the datasource because these models collide across datasources
+by construction — every dlt-loaded database has its own `_dlt_loads`, so a bare
+`edit_model("_dlt_loads", hidden=false)` resolves by [datasource
+priority](../concepts/models.md) and can un-hide the wrong one.
 
 A `__`-sanitized table also shows the model name it was given, since that is
 what `edit_model` takes: `- _dlt_loads__x (model: _dlt_loads_x): dlt`.

@@ -861,11 +861,32 @@ class TestRenderer:
         """`--surface-internals` alone is a half-truth on a re-ingest: it only
         affects models this run CREATES. A user staring at an already-hidden
         model needs to be pointed at `edit_model` instead."""
-        _print_ingest_drift_and_errors(_result_with_hidden())
+        _print_ingest_drift_and_errors(_result_with_hidden(), data_source="ds")
         out = capsys.readouterr().out
 
         assert "--surface-internals" in out
         assert "hidden=false" in out
+
+    def test_hint_is_datasource_qualified(self, capsys) -> None:
+        """A BARE model name resolves across datasources by the priority list
+        and raises `AmbiguousModelError` when that picks no winner. Internals
+        are the worst case: `_dlt_loads` exists verbatim in every dlt-loaded
+        database, so two dlt datasources collide by construction and the
+        unqualified hint either fails or un-hides the wrong model."""
+        _print_ingest_drift_and_errors(_result_with_hidden(), data_source="warehouse")
+        out = capsys.readouterr().out
+
+        assert 'edit_model("<model>", data_source="warehouse", hidden=false)' in out
+
+    def test_hint_degrades_when_the_datasource_is_unknown(self, capsys) -> None:
+        """Neither result shape carries the datasource, so it has to come from
+        the caller. Omitting it must still print an actionable hint rather than
+        `data_source="None"`."""
+        _print_ingest_drift_and_errors(_result_with_hidden())
+        out = capsys.readouterr().out
+
+        assert 'edit_model("<model>", hidden=false)' in out
+        assert "data_source=" not in out
 
     def test_nothing_printed_when_no_internals(self, capsys) -> None:
         _print_ingest_drift_and_errors(_result_with_hidden(hidden_internals=[]))
@@ -1505,6 +1526,57 @@ class TestMcpIngestReporting:
         assert "edit_model" in out
         assert "hidden=false" in out
         assert "--surface-internals" not in out
+
+    async def test_hint_names_the_ingested_datasource(
+        self, workspace: Path
+    ) -> None:
+        """An agent runs this hint verbatim, and these names collide across
+        datasources by construction — every dlt-loaded database has its own
+        `_dlt_loads`. An unqualified `edit_model` therefore resolves by
+        priority and can un-hide a DIFFERENT datasource's model."""
+        _, ds = _ds(workspace, _MIXED)
+        storage = await _storage_with(workspace, ds)
+
+        out = await self._ingest_via_mcp(storage)
+
+        assert 'edit_model("<model>", data_source="ds", hidden=false)' in out
+
+    async def test_two_datasources_share_internal_names(
+        self, workspace: Path
+    ) -> None:
+        """The collision this guards against, made real: two dlt pipelines in
+        one store both produce `_dlt_loads`, so the hint must name which one
+        the agent just ingested."""
+        _, ds_a = _ds(workspace, _MIXED, name="a.db")
+        db_b = str(workspace / "b.db")
+        conn = sqlite3.connect(db_b)
+        conn.executescript(_MIXED)
+        conn.commit()
+        conn.close()
+        ds_b = DatasourceConfig(name="second", type="sqlite", database=db_b)
+
+        storage = YAMLStorage(base_dir=str(workspace / "storage"))
+        await storage.save_datasource(ds_a)
+        await storage.save_datasource(ds_b)
+        await ingest_datasource_idempotent(datasource=ds_a, storage=storage)
+        await ingest_datasource_idempotent(datasource=ds_b, storage=storage)
+
+        # Same model name really does exist under both datasources.
+        for name in ("ds", "second"):
+            model = await storage.get_model("_dlt_loads", data_source=name)
+            assert model is not None and model.hidden is True, name
+
+        from slayer.mcp.server import create_mcp_server
+
+        mcp = create_mcp_server(storage=storage)
+        blocks, _ = await mcp.call_tool(
+            name="ingest_datasource_models",
+            arguments={"datasource_name": "second", "schema_name": ""},
+        )
+        out = blocks[0].text
+
+        assert 'data_source="second"' in out
+        assert 'data_source="ds"' not in out
 
     async def test_skipped_objects_are_reported_too(
         self, workspace: Path

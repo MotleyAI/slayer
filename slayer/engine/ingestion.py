@@ -1834,8 +1834,8 @@ def _print_report_section(
 def _hidden_internal_line(entry) -> str:
     """``<table>: <tool>``, disambiguating the model name when it differs.
 
-    The section's own advice is ``edit_model(hidden=false)``, which takes the
-    MODEL name — so for a ``__``-sanitized table (live ``_dlt_loads__x`` →
+    The section's own advice is ``edit_model(..., hidden=false)``, which takes
+    the MODEL name — so for a ``__``-sanitized table (live ``_dlt_loads__x`` →
     model ``_dlt_loads_x``) printing the table name alone names something the
     user cannot act on.
     """
@@ -1845,8 +1845,28 @@ def _hidden_internal_line(entry) -> str:
     return f"{target}: {entry.tool}"
 
 
+def _unhide_hint(data_source: str | None = None) -> str:
+    """The ``edit_model`` invocation that un-hides one recognised internal.
+
+    Qualified with ``data_source`` whenever the caller knows it, which every
+    ingest path does. A BARE model name resolves across datasources by the
+    priority list and raises ``AmbiguousModelError`` when that picks no unique
+    winner — and an internal is the worst possible case for that, because these
+    names are not incidental collisions: ``_dlt_loads`` exists verbatim in every
+    dlt-loaded database, so two dlt datasources collide by construction. An
+    unqualified hint therefore fails, or silently un-hides the other
+    datasource's model, exactly in the multi-pipeline setup this feature is
+    aimed at.
+
+    Shared with the MCP renderer so both surfaces advise the same call.
+    """
+    if data_source:
+        return f'edit_model("<model>", data_source="{data_source}", hidden=false)'
+    return 'edit_model("<model>", hidden=false)'
+
+
 def _print_ingest_drift_and_errors(
-    result, *, file: TextIO | None = None
+    result, *, file: TextIO | None = None, data_source: str | None = None
 ) -> None:
     """Render the non-addition sections of an ingest.
 
@@ -1856,6 +1876,10 @@ def _print_ingest_drift_and_errors(
     no ``to_delete`` and no ``errors`` at all. Reaching either directly would
     kill that path with an ``AttributeError`` unrelated to anything it was
     trying to report.
+
+    ``data_source`` qualifies the un-hide hint; see ``_unhide_hint``. Optional
+    rather than required because neither result shape carries the datasource,
+    so it has to come from the caller — every in-tree one passes it.
     """
     out = file if file is not None else sys.stdout
     _print_report_section(
@@ -1892,7 +1916,7 @@ def _print_ingest_drift_and_errors(
         # run CREATES, so it cannot surface one an earlier run already hid.
         footer=(
             "  --surface-internals ingests NEW internals visible; use "
-            "edit_model(hidden=false) to unhide an existing one."
+            f"{_unhide_hint(data_source)} to unhide an existing one."
         ),
         out=out,
     )
@@ -1990,7 +2014,7 @@ async def ingest_all_datasources_idempotent(
 
         for addition in result.additions:
             _print_ingest_addition(addition, file=out)
-        _print_ingest_drift_and_errors(result, file=out)
+        _print_ingest_drift_and_errors(result, file=out, data_source=name)
         summary.succeeded.append(name)
         summary.drift_pending.extend(result.to_delete)
         print(f"Datasource '{name}': ingested", file=out)

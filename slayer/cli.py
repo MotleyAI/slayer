@@ -1445,7 +1445,7 @@ def _run_ingest(args):
 
     for addition in result.additions:
         _print_ingest_addition(addition)
-    _print_ingest_drift_and_errors(result)
+    _print_ingest_drift_and_errors(result, data_source=args.datasource)
     # A skip means we declined to ingest a perfectly valid object, so it fails
     # the command — `--exclude <name>` is the documented way to make it green.
     if result.errors or result.skipped:
@@ -2040,7 +2040,7 @@ def _run_datasources_create(args, storage):
     # After persistence, so the sections read as commentary on what was just
     # written. Exit stays 0 either way — creating the datasource is this
     # command's job and it succeeded (the DEV-1741 carve-out).
-    _print_ingest_drift_and_errors(report)
+    _print_ingest_drift_and_errors(report, data_source=ds.name)
 
 
 def _run_datasources_create_demo(args, storage):  # NOSONAR S3776 — linear demo-bootstrap flow (build → confirm → save → optional ingest); branches are sequential UX guards, not nested logic

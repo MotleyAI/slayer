@@ -95,7 +95,7 @@ tables — prefixes `_dlt_`, `_airbyte_`, plus exact names like
 `meta.internal_table` with the tool that matched. Hidden, not skipped: the model
 is absent from `models_summary` and search but stays queryable by name and
 usable as a join target, so `_dlt_loads` still answers freshness questions.
-Hiding happens only at creation, so `edit_model(name, hidden=false)` survives
+Hiding happens only at creation, so `edit_model(name, data_source=..., hidden=false)` survives
 every later re-ingest. `slayer ingest --surface-internals` ingests newly created
 internals visible instead. Every ingest surface reports what it hid — the CLI
 and `datasources create --ingest` print a `Hidden (N)` section,
