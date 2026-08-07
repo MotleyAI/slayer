@@ -1020,11 +1020,12 @@ class TestCrossModelAndRerooting:
         ))
         # An ORDER BY is one of the collapse's disqualifiers, so this plan is a
         # stand-in for any sub-plan that needs more than its ranked CTE.
+        # Generator and bundle are hoisted so the ONLY call that can raise
+        # inside ``pytest.raises`` is the one under test (Sonar S5778).
         gen = SQLGenerator(dialect="tsql")
+        bundle = dev1748_bundle()
         with pytest.raises(NotImplementedError, match="cannot carry a WITH"):
-            gen.generate_from_planned(
-                planned, bundle=dev1748_bundle(), as_cte_body=True,
-            )
+            gen.generate_from_planned(planned, bundle=bundle, as_cte_body=True)
 
     async def test_the_rerooted_cte_body_is_the_ranking_itself(self) -> None:
         """The positive half of the collapse: the re-rooted CTE does not merely
