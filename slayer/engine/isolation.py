@@ -56,10 +56,20 @@ class IsolationKind(str, Enum):
     #: inputs (a ``Column.filter``, the source's ``Column.sql``, an arg or a
     #: kwarg) cross a join and so need their own rows.
     HOST_ROOTED = "host_rooted"
+    #: Its own ``_rk_`` CTE rooted at the HOST: a ``first`` / ``last`` whose
+    #: rows live on the host but which needs its OWN ROW ORDERING.
+    RANKED_HOST = "ranked_host"
+    #: Its own ``_rk_`` CTE rooted at the TARGET the aggregate's source names.
+    RANKED_TARGET = "ranked_target"
 
     @property
     def needs_own_cte(self) -> bool:
         return self is not IsolationKind.NONE
+
+    @property
+    def is_ranked(self) -> bool:
+        """Whether this kind compiles to a ranked (``first``/``last``) CTE."""
+        return self in (IsolationKind.RANKED_HOST, IsolationKind.RANKED_TARGET)
 
 
 def may_inline_crossing_inputs(crossed_paths: Sequence[Tuple[str, ...]]) -> bool:  # NOSONAR(S1172) — crossed_paths is the documented DEV-1688 seam; the cardinality-aware decision reads it, hardcoded False until then.
@@ -98,6 +108,26 @@ def classify_isolation(
     key = slot.key
     if not isinstance(key, AggregateKey):
         return IsolationKind.NONE
+
+    if key.agg in ("first", "last"):
+        # Its own ROW ORDERING is one of the three things P-C says an aggregate
+        # can need its own rows for, so a first/last isolates whatever its
+        # inputs do — the trigger the pre-B9 classifier had no case for, which
+        # is why one first/last used to wrap the whole host base in a ranking
+        # instead.
+        #
+        # Deliberately ahead of the crossing-input branch: a crossing first/last
+        # already isolated, and routing it to the ranked CTE rather than the
+        # generic one is what lets the ranked scope apply its own predicate and
+        # rank in one place. Deliberately ahead of ``disable_host_rooted_isolation``
+        # too: that guard exists because a CROSSING aggregate re-appears in its
+        # own nested sub-plan and would isolate forever. A ranked plan is
+        # RENDERED, never re-planned, and inside a sub-plan it still needs its
+        # own row ordering — suppressing it there would leave the sub-plan's
+        # first/last with no ranking at all.
+        if getattr(key.source, "path", ()):
+            return IsolationKind.RANKED_TARGET
+        return IsolationKind.RANKED_HOST
 
     if getattr(key.source, "path", ()):
         # The source names another model: the aggregate's rows live there —

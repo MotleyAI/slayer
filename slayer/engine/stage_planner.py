@@ -25,7 +25,7 @@ Dormant in 7a — no engine wiring. Stage 7b's engine cutover flips
 
 from __future__ import annotations
 
-from typing import Dict, FrozenSet, List, Optional, Set, Tuple, Union
+from typing import AbstractSet, Dict, FrozenSet, List, Optional, Set, Tuple, Union
 
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat
@@ -90,11 +90,16 @@ from slayer.engine.planned import (
     OrderEntry,
     OrderScope,
     PlannedQuery,
+    RankedAggregatePlan,
     SlotId,
     SrcFilterRewrite,
     TransformLayer,
     ValueSlot,
     WindowedAggregatePlan,
+)
+from slayer.engine.ranked_planner import (
+    build_host_ranked_plan,
+    build_target_ranked_plan,
 )
 from slayer.engine.planning import (
     DeclaredMeasure,
@@ -1501,6 +1506,14 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         ))
 
     cross_model_plans = []
+    ranked_plans: List[RankedAggregatePlan] = []
+    # ROW-phase filters (user filters AND the model's own ``filters``) are what
+    # a ranked CTE re-evaluates over its own rows. Computed once: every ranked
+    # plan inherits the same list, and the host base keeps applying them too
+    # (B6 — a LEFT JOIN back propagates a value, never an exclusion).
+    row_phase_filter_ids: List[BoundFilterId] = [
+        fp.id for fp in filters_by_phase if fp.phase == Phase.ROW
+    ]
     host_slots_for_classifier = projection.registry.slots
     for slot in agg_slots:
         # ONE trigger decision (P-C / DEV-1688 seam). The windowed skip, the
@@ -1515,6 +1528,18 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
             disable_host_rooted_isolation=disable_host_rooted_isolation,
         )
         if kind in (IsolationKind.NONE, IsolationKind.WINDOWED):
+            continue
+        if kind is IsolationKind.RANKED_HOST:
+            # Its rows are the host's; nothing about the cross-model decision
+            # table applies, so it never reaches the strategy.
+            ranked_plans.append(build_host_ranked_plan(
+                slot=slot,
+                row_slots=row_slots,
+                public_projection=projection.public_projection,
+                source_model=reachability_anchor_model,
+                bundle=bundle,
+                where_filter_ids=row_phase_filter_ids,
+            ))
             continue
         key = slot.key
         # DEV-1450 #2: re-rooting (C1) is owned by the strategy. We hand it
@@ -1559,6 +1584,25 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
                 if reroot_enabled else None
             ),
         )
+        if kind is IsolationKind.RANKED_TARGET and plan.rerooted_plan is None:
+            # D1: the FORWARD cross-model first/last becomes a ranked plan —
+            # same CTE, rooted at the target, but ranking rather than a plain
+            # aggregation. A RE-ROOTED one keeps its ``CrossModelAggregatePlan``:
+            # its ranked plan belongs to the nested sub-plan, in the sub-plan's
+            # own coordinate system, and is built by that recursion.
+            #
+            # The strategy still runs either way. Re-rooting is its decision to
+            # make, and the routing it produces on the forward path — which host
+            # filter this CTE evaluates as WHERE, as HAVING, which is
+            # unreachable — is the same decision table a ranked CTE needs.
+            ranked_plans.append(build_target_ranked_plan(
+                slot=slot,
+                cross_model_plan=plan,
+                row_slots=row_slots,
+                public_projection=projection.public_projection,
+                bundle=bundle,
+            ))
+            continue
         cross_model_plans.append(plan)
 
     order_entries = []
@@ -1594,6 +1638,7 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
                 cross_model_slot_ids={
                     p.aggregate_slot_id for p in cross_model_plans
                 },
+                ranked_slot_ids={p.aggregate_slot_id for p in ranked_plans},
                 windowed_slot_ids=set(windowed_slot_ids),
                 public_projection=projection.public_projection,
                 slot_by_key={
@@ -1639,6 +1684,7 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     outer_where_filter_ids = _plan_outer_where_filters(
         filters_by_phase=filters_by_phase,
         cross_model_plans=cross_model_plans,
+        ranked_plans=ranked_plans,
         slots=[*row_slots, *agg_slots, *combined_slots],
     )
 
@@ -1647,6 +1693,7 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         agg_slots=agg_slots,
         cross_model_plans=cross_model_plans,
         windowed_plans=windowed_plans,
+        ranked_plans=ranked_plans,
         order_entries=order_entries,
         filters_by_phase=filters_by_phase,
         outer_where_filter_ids=outer_where_filter_ids,
@@ -1658,6 +1705,7 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         aggregate_slots=agg_slots,
         cross_model_aggregate_plans=cross_model_plans,
         windowed_aggregate_plans=windowed_plans,
+        ranked_aggregate_plans=ranked_plans,
         combined_expression_slots=combined_slots,
         transform_layers=transform_layers,
         filters_by_phase=filters_by_phase,
@@ -1685,6 +1733,7 @@ def _plan_empty_base_grain(
     order_entries: list,
     filters_by_phase: list,
     outer_where_filter_ids: List[BoundFilterId],
+    ranked_plans: Optional[list] = None,
 ) -> "EmptyBaseGrainPlan | None":
     """Decide the DEV-1503 empty-base spine at plan time (§5.12).
 
@@ -1700,6 +1749,7 @@ def _plan_empty_base_grain(
     """
     isolated = {p.aggregate_slot_id for p in cross_model_plans}
     isolated |= {p.aggregate_slot_id for p in windowed_plans}
+    isolated |= {p.aggregate_slot_id for p in (ranked_plans or [])}
     if not projection or any(sid not in isolated for sid in projection):
         return None
     # A host-LOCAL aggregate would have to be computed in ``_base``, which then
@@ -1729,15 +1779,17 @@ def _plan_outer_where_filters(
     filters_by_phase: List[FilterPhase],
     cross_model_plans: List[CrossModelAggregatePlan],
     slots: List[ValueSlot],
+    ranked_plans: Optional[List["RankedAggregatePlan"]] = None,
 ) -> List[BoundFilterId]:
     """AGGREGATE-phase filters that must be applied on the OUTER combined
-    SELECT instead of as HAVING inside a ``_cm_*`` CTE (DEV-1503).
+    SELECT instead of as HAVING inside a ``_cm_*`` / ``_rk_*`` CTE (DEV-1503).
 
     A filter qualifies when its value-key tree references an aggregate that was
-    isolated into a CTE with its own root (``cte_root_model is not None``).
-    That CTE LEFT JOINs back to ``_base``, so a HAVING inside it drops CTE rows
-    and the join then resurfaces the host row carrying a NULL aggregate. The
-    same predicate on the outer, non-aggregating SELECT drops the row.
+    isolated into a CTE with its own root (``cte_root_model is not None``), or
+    into a ranked one — every ranked CTE has its own root by construction. That
+    CTE LEFT JOINs back to ``_base``, so a HAVING inside it drops CTE rows and
+    the join then resurfaces the host row carrying a NULL aggregate. The same
+    predicate on the outer, non-aggregating SELECT drops the row.
 
     Returned in ``filters_by_phase`` order so the emitted WHERE conjunct order
     is stable.
@@ -1746,6 +1798,9 @@ def _plan_outer_where_filters(
         p.aggregate_slot_id
         for p in cross_model_plans
         if p.cte_root_model is not None
+    }
+    isolated_agg_slot_ids |= {
+        p.aggregate_slot_id for p in (ranked_plans or [])
     }
     if not isolated_agg_slot_ids:
         return []
@@ -2427,6 +2482,7 @@ def _classify_order_scope(
     windowed_slot_ids: Set[SlotId],
     public_projection: List[SlotId],
     slot_by_key: Dict[ValueKey, SlotId],
+    ranked_slot_ids: AbstractSet[SlotId] = frozenset(),
 ) -> OrderScope:
     """Name the scope that PRODUCES ``slot``'s value (DEV-1747 §5.10).
 
@@ -2441,6 +2497,8 @@ def _classify_order_scope(
     """
     if slot.id in cross_model_slot_ids:
         return OrderScope.CROSS_MODEL_CTE
+    if slot.id in ranked_slot_ids:
+        return OrderScope.RANKED_CTE
     if slot.id in windowed_slot_ids:
         return OrderScope.WINDOWED_CTE
     if isinstance(slot.key, TransformKey):
@@ -2450,7 +2508,11 @@ def _classify_order_scope(
             if not isinstance(dep, AggregateKey):
                 continue
             dep_sid = slot_by_key.get(dep)
-            if dep_sid in cross_model_slot_ids or dep_sid in windowed_slot_ids:
+            if (
+                dep_sid in cross_model_slot_ids
+                or dep_sid in windowed_slot_ids
+                or dep_sid in ranked_slot_ids
+            ):
                 return OrderScope.OUTER_COMPOSITE
     if slot.hidden or slot.id not in public_projection:
         return OrderScope.HOST_BASE_HIDDEN

@@ -671,17 +671,20 @@ class TestHostModelFiltersInteractions:
 
 
 class TestFirstLastNoNestedCmaPlans:
-    """``_build_base_select_for_planned`` raises NotImplementedError when
-    ``skip_cross_model_aggs=True`` AND any local first/last aggregate is in
-    base_render_order. The isolated filtered-local first/last case routes
-    through that combination — so the host-rooted sub-plan MUST NOT contain
-    any nested cross-model aggregate plans, or the renderer crashes.
+    """A filtered-local first/last isolates FLATLY — one ranked plan, no nested
+    sub-plan at all.
 
-    Pin this structurally on the sub-plan; the rendering test that proves
-    the SQL emits ``_last_rn`` inside the _cm_ CTE lives in
-    ``test_sql_generator.py::TestIsolatedFilteredMeasureCTEs``."""
+    It used to be a host-rooted ``_cm_`` plan wrapping a re-rooted sub-plan that
+    carried the ranking, and this class pinned the one thing that made that
+    legal: the sub-plan had to contain no nested cross-model plan of its own, or
+    the generator hit ``first/last`` + ``skip_cross_model_aggs`` and raised.
 
-    def test_filtered_local_first_last_sub_plan_is_clean(self):
+    ``RankedAggregatePlan`` removes the nesting rather than constraining it. The
+    aggregate's ``Column.filter`` is a predicate inside its own CTE, which is
+    where the crossing it introduces belongs — so there is no second plan to
+    keep clean."""
+
+    def test_filtered_local_first_last_isolates_without_nesting(self):
         host = _claim_amount(with_time=True, with_filter_first=True)
         q = SlayerQuery(
             source_model="claim_amount",
@@ -695,17 +698,17 @@ class TestFirstLastNoNestedCmaPlans:
             ],
         )
         planned = plan_query(query=q, bundle=_bundle(host))
-        assert len(planned.cross_model_aggregate_plans) == 1
-        plan = planned.cross_model_aggregate_plans[0]
-        assert plan.rerooted_plan is not None
-        # The host-rooted sub-plan carries the local first/last aggregate.
-        # It must not contain any nested cross-model aggregate plans —
-        # otherwise the generator's first/last + skip_cross_model_aggs
-        # combination would raise NotImplementedError.
-        assert plan.rerooted_plan.cross_model_aggregate_plans == [], (
-            f"Filtered-local first/last sub-plan must be clean of nested CMA plans; "
-            f"got {plan.rerooted_plan.cross_model_aggregate_plans}"
+        assert planned.cross_model_aggregate_plans == []
+        assert len(planned.ranked_aggregate_plans) == 1
+        plan = planned.ranked_aggregate_plans[0]
+        assert plan.root_model == "claim_amount"
+        assert plan.target_path == ()
+        # The measure's crossing ``Column.filter`` rides on the aggregate's own
+        # key, which this plan names — nothing about it needs a second plan.
+        slot = next(
+            s for s in planned.aggregate_slots if s.id == plan.aggregate_slot_id
         )
+        assert slot.key.column_filter_key is not None
 
 
 # ---------------------------------------------------------------------------
@@ -803,6 +806,26 @@ def _s5_plans(formula: str, *, dimensions=None, **plan_kwargs):
     return planned, planned.cross_model_aggregate_plans
 
 
+def _assert_single_ranked_host(planned) -> None:
+    """A first/last isolates through the RANKED route (DEV-1748).
+
+    Its crossing input still triggers isolation — the widened Law-3 verdict is
+    unchanged — but the kind is ranked, because needing its own ROW ORDERING is
+    the stronger reason and subsumes the crossing one. Asserted flatly: there is
+    no nested sub-plan on this route, so there is nothing to recurse into.
+    """
+    assert planned.cross_model_aggregate_plans == [], (
+        f"a ranked aggregate must not ALSO produce a cross-model plan; "
+        f"got {planned.cross_model_aggregate_plans}"
+    )
+    assert len(planned.ranked_aggregate_plans) == 1, (
+        f"Expected exactly one ranked isolation plan; "
+        f"got {planned.ranked_aggregate_plans}"
+    )
+    plan = planned.ranked_aggregate_plans[0]
+    assert plan.root_model == "orders" and plan.target_path == (), plan
+
+
 def _assert_single_host_rooted(plans) -> CrossModelAggregatePlan:
     assert len(plans) == 1, (
         f"Expected exactly one host-rooted isolation plan; got {len(plans)}: {plans}"
@@ -857,18 +880,18 @@ class TestWidenedLaw3TriggerCrossingInputs:
         _assert_single_host_rooted(plans)
 
     def test_derived_source_first_last_triggers(self):
-        _, plans = _s5_plans("region_pay:last(orders.created_at)")
-        _assert_single_host_rooted(plans)
+        planned, _ = _s5_plans("region_pay:last(orders.created_at)")
+        _assert_single_ranked_host(planned)
 
     # -- positional args incl. explicit time arg (D2) --------------------
 
     def test_structural_time_arg_triggers(self):
-        _, plans = _s5_plans("amount:last(customers.signup_at)")
-        _assert_single_host_rooted(plans)
+        planned, _ = _s5_plans("amount:last(customers.signup_at)")
+        _assert_single_ranked_host(planned)
 
     def test_derived_time_arg_triggers(self):
-        _, plans = _s5_plans("amount:last(cross_time)")
-        _assert_single_host_rooted(plans)
+        planned, _ = _s5_plans("amount:last(cross_time)")
+        _assert_single_ranked_host(planned)
 
     # -- kwargs ----------------------------------------------------------
 

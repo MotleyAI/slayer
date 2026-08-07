@@ -27,28 +27,32 @@ The two sites migrated here are the ones inside ``_render_cross_model_cte``:
 
 * a **crossing value** — the aggregated expression itself crosses a join.
 
-``_build_first_last_base_select``'s copy of this flow is deliberately NOT
-migrated here: PR 5 rewrites that machinery wholesale as ``RankedAggregatePlan``,
-and moving the same state twice is what this PR's sequencing exists to avoid.
-That corner is recorded in the PR-5 handoff, and the test at the bottom of this
-module pins it as a known, deliberate exception rather than leaving it silent.
+The generator's own ``_val_`` flow for the host-rooted ranked path was the last
+holdout; ``RankedAggregatePlan`` (DEV-1748) replaced it, so ``ScopeFrame`` is now
+the single materialiser on every isolated-CTE path. The class at the bottom of
+this module pinned that deferral and now pins its removal — the boundary was
+asserted rather than assumed, so it could not drift silently in either
+direction.
 
 Both dedup on the resolved SQL text — ``ScopeFrame``'s key is
-``(scope_id, rendered_ast, dialect)`` — so the migration is byte-preserving for
-every shape that materialises through ONE of the two sites. That is asserted
-directly below.
+``(scope_id, rendered_ast, dialect)`` — so the migration was byte-preserving for
+every shape that materialises through ONE of the two sites.
 
-One shape is NOT byte-preserving, and it is a defect the migration fixes:
-when a first/last cross-model aggregate is grouped by the same crossing
-expression it aggregates, both sites fire and each keeps its own dedup map, so
-the expression is projected twice (``_val_0`` and ``_val_1``). ``ScopeFrame``
-holds one table per scope, so they collapse to one. See
-``TestDedupParity::test_one_expression_is_materialised_once_per_scope`` — it is
-a newly surfaced divergence for the PR's approval list, not a ratified B-item.
+One shape was NOT, and it is a defect the migration fixes: when a first/last
+cross-model aggregate is grouped by the same crossing expression it aggregates,
+both sites fired and each kept its own dedup map, so the expression was
+projected twice (``_val_0`` and ``_val_1``). ``ScopeFrame`` holds one table per
+scope, so they collapse to one. See
+``TestDedupParity::test_one_expression_is_materialised_once_per_scope``.
+
+The pinned CTE bodies below are the DEV-1748 ranked (``_rk_``) shape. They were
+the pre-B9 ``_cm_`` bodies when this module landed; the aggregate they describe
+is the same one, compiled by the route P-C requires for it.
 """
 
 from __future__ import annotations
 
+import re as _re
 from typing import List, Optional, Tuple
 
 import pytest
@@ -69,28 +73,28 @@ from tests._engine_helpers import _extract_cte_body, _norm
 CROSSING_GRAIN_CTE = _norm(
     """
     SELECT _val_0 AS "orders_x.customers_v2.deep_pop",
-      MAX(CASE WHEN _first_rn = 1 THEN customers_v2.lifetime_value END)
-        AS "orders_x.customers_v2.lifetime_value_first"
-    FROM ( SELECT customers_v2.*, regions.population AS _val_0,
+      MAX(CASE WHEN _rk_rn = 1 THEN _val_1 END) AS "orders_x.f"
+    FROM ( SELECT regions.population AS _val_0,
+      customers_v2.lifetime_value AS _val_1,
       ROW_NUMBER() OVER (PARTITION BY regions.population
-        ORDER BY customers_v2.signup_at ASC) AS _first_rn
+        ORDER BY customers_v2.signup_at) AS _rk_rn
       FROM customers AS customers_v2
       LEFT JOIN regions AS regions ON customers_v2.region_id = regions.id
-    ) AS customers_v2 GROUP BY _val_0
+    ) AS _rk_src GROUP BY _val_0
     """
 )
 
 CROSSING_VALUE_CTE = _norm(
     """
-    SELECT customers_v2.status AS "orders_x.customers_v2.status",
-      MAX(CASE WHEN _first_rn = 1 THEN customers_v2._val_0 END)
-        AS "orders_x.customers_v2.deep_weight_first"
-    FROM ( SELECT customers_v2.*, regions.weight AS _val_0,
+    SELECT _val_0 AS "orders_x.customers_v2.status",
+      MAX(CASE WHEN _rk_rn = 1 THEN _val_1 END) AS "orders_x.f"
+    FROM ( SELECT customers_v2.status AS _val_0,
+      regions.weight AS _val_1,
       ROW_NUMBER() OVER (PARTITION BY customers_v2.status
-        ORDER BY customers_v2.signup_at ASC) AS _first_rn
+        ORDER BY customers_v2.signup_at) AS _rk_rn
       FROM customers AS customers_v2
       LEFT JOIN regions AS regions ON customers_v2.region_id = regions.id
-    ) AS customers_v2 GROUP BY customers_v2.status
+    ) AS _rk_src GROUP BY _val_0
     """
 )
 
@@ -266,7 +270,7 @@ class TestMigrationIsBytePreserving:
 
     async def test_crossing_grain_cte_is_unchanged(self) -> None:
         sql = await _gen(_crossing_grain_query(), dialect="postgres")
-        body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
+        body = _norm(_extract_cte_body(sql, r"_rk_\w+"))
         assert body == CROSSING_GRAIN_CTE, (
             "the crossing-grain CTE changed shape. The two materialisers dedup "
             "on the same key (resolved SQL text), so the migration must be "
@@ -276,7 +280,7 @@ class TestMigrationIsBytePreserving:
 
     async def test_crossing_value_cte_is_unchanged(self) -> None:
         sql = await _gen(_crossing_value_query(), dialect="postgres")
-        body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
+        body = _norm(_extract_cte_body(sql, r"_rk_\w+"))
         assert body == CROSSING_VALUE_CTE, (
             f"the crossing-value CTE changed shape.\n\nactual:\n{body}\n\n"
             f"expected:\n{CROSSING_VALUE_CTE}"
@@ -323,8 +327,8 @@ class TestDedupParity:
             )],
         )
         sql = await _gen(query, dialect="postgres")
-        body = _extract_cte_body(sql, r"_cm_\w+")
-        assert body.count("AS _val_") == 1, (
+        body = _extract_cte_body(sql, r"_rk_\w+")
+        assert body.count("regions.weight AS _val_") == 1, (
             "the same crossing expression was materialised more than once in "
             f"one scope — the two materialisers still hold separate dedup "
             f"tables:\n{body}"
@@ -346,12 +350,9 @@ class TestDedupParity:
             ],
         )
         sql = await _gen(query, dialect="postgres")
-        for pattern in (
-            r"_cm_\w*deep_weight_first\w*",
-            r"_cm_\w*deep_weight_last\w*",
-        ):
+        for pattern in (r"_rk_\w*a\b", r"_rk_\w*b\b"):
             body = _extract_cte_body(sql, pattern)
-            assert body.count("AS _val_") == 1, (
+            assert body.count("regions.weight AS _val_") == 1, (
                 f"each scope must project its own single materialisation:\n{body}"
             )
 
@@ -359,15 +360,19 @@ class TestDedupParity:
 # =========================================================================== #
 # The deliberate PR-5 exception, pinned rather than left implicit.
 # =========================================================================== #
-class TestRankedBaseMaterialiserStillDeferred:
-    """``_build_first_last_base_select`` keeps its own ``_val_`` flow until PR 5
-    replaces it with ``RankedAggregatePlan``.
+class TestRankedPathUsesTheOneMaterialiser:
+    """The HOST-rooted ranked path, which kept the generator's own ``_val_``
+    flow until ``RankedAggregatePlan`` (DEV-1748) replaced it.
+
+    This class asserted the DEFERRAL — that ``ScopeFrame`` did NOT materialise
+    here — precisely so the boundary between the two PRs could not move
+    silently. It now asserts the migration, which is the same claim with the
+    sign flipped: there is ONE materialiser per scope, and this path uses it.
 
     To reach that code the aggregate must be rooted at the HOST — a
-    ``customers_v2.…`` measure is cross-model and goes through
-    ``_render_cross_model_cte`` instead. So the host model gets a derived column
-    whose SQL crosses into the joined model, and the first/last aggregate is
-    taken over THAT.
+    ``customers_v2.…`` measure is cross-model and roots at the target instead.
+    So the host model gets a derived column whose SQL crosses into the joined
+    model, and the first/last aggregate is taken over THAT.
     """
 
     _HOST_CROSSING_COLUMN = [
@@ -397,15 +402,15 @@ class TestRankedBaseMaterialiserStillDeferred:
         )
         assert "ROW_NUMBER() OVER" in sql, sql
 
-    async def test_the_ranked_base_path_is_still_consumer_free(
+    async def test_every_val_alias_here_comes_from_scopeframe(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """The deferral itself, pinned rather than assumed.
+        """The migration, pinned in the same terms the deferral was.
 
-        This shape's ``_val_`` alias must still come from the generator's own
-        materialiser, NOT from ``ScopeFrame``. When PR 5 migrates it this test
-        flips — which is the point: the boundary between the two PRs is
-        asserted, so it cannot drift silently.
+        Every ``_val_`` alias this shape emits must be one ``ScopeFrame``
+        minted. A generator-local materialiser coming back would show up as an
+        alias in the SQL that the spy never saw — which is the failure this
+        catches, and the reason the assertion is by SET rather than by count.
         """
         spy = _MaterializeSpy()
         spy.install(monkeypatch)
@@ -413,9 +418,10 @@ class TestRankedBaseMaterialiserStillDeferred:
             self._query(), orders_extra=self._HOST_CROSSING_COLUMN,
             dialect="postgres",
         )
-        assert "_val_" in sql, sql
-        assert not spy.aliases, (
-            "ScopeFrame materialised for the ranked BASE path. That migration "
-            "belongs to PR 5 (RankedAggregatePlan); if it landed early, move "
-            f"this test rather than deleting it. aliases={spy.aliases}"
+        emitted = set(_re.findall(r"\b_val_\d+\b", sql))
+        assert emitted, sql
+        assert emitted <= set(spy.aliases), (
+            f"a _val_ alias in the emitted SQL was not minted by ScopeFrame — "
+            f"a second materialiser is back. emitted={sorted(emitted)} "
+            f"scopeframe={sorted(set(spy.aliases))}\n{sql}"
         )

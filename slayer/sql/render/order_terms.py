@@ -77,6 +77,7 @@ class OrderEnv(BaseModel):
     host_base_hidden: Dict[str, exp.Expression] = Field(default_factory=dict)
     cross_model_cte: Dict[str, exp.Expression] = Field(default_factory=dict)
     windowed_cte: Dict[str, exp.Expression] = Field(default_factory=dict)
+    ranked_cte: Dict[str, exp.Expression] = Field(default_factory=dict)
     transform_step: Dict[str, exp.Expression] = Field(default_factory=dict)
     outer_composite: Dict[str, exp.Expression] = Field(default_factory=dict)
     #: Owns the null-ordering spelling (P-H). Defaults to the portable base.

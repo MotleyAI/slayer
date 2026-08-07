@@ -920,6 +920,12 @@ class TestTimeArgJoinDiscovery:
         assert seen == [], f"cross-model arg was resolved: {seen!r}"
 
     def test_residual_path_bearing_columnsqlkey_skipped_without_raise(self) -> None:
+        # PINS SUPERSEDED MACHINERY. ``_resolve_agg_inputs_via_scope``'s
+        # first/last sub-pass is production-unreferenced since DEV-1748 — a
+        # ranked aggregate never reaches ``base_render_order``, so this walker
+        # never sees one. Kept until PR 6 deletes the helper, per P-J, so the
+        # deletion is reviewed as a deletion rather than smuggled in here.
+        #
         # A path-bearing ColumnSqlKey time arg (a hop PAST the target, the shape
         # the render seam raises DEV-1526 on) must be SKIPPED by discovery — no
         # raise, no bogus registration. Built by hand: this residual shape only
@@ -1086,6 +1092,14 @@ class TestResolveExplicitTimeColViaResolver:
             )
 
     def test_path_bearing_columnsqlkey_raises_dev1526_with_bundle(self) -> None:
+        # PINS SUPERSEDED MACHINERY. ``_resolve_explicit_time_col`` is
+        # production-unreferenced since DEV-1748 — the ranked CTE resolves its
+        # ranking key through its own scope, which is what removed the
+        # limitation this guard describes (see the un-xfailed
+        # ``test_a_joined_derived_time_arg_ranks_by_the_joined_expression`` in
+        # tests/test_dev1748_first_last_matrix.py). Kept until PR 6 deletes the
+        # helper, per P-J.
+        #
         # The residual-hop guard fires BEFORE resolution even when a bundle is
         # available — the existing guard pin (test_reroot_aggregate_key.py) runs
         # bundle=None; this fixes the ordering with a bundle set.
@@ -1242,12 +1256,15 @@ async def test_e2e_local_derived_crossing_time_arg() -> None:
 
 
 async def test_e2e_time_arg_join_dedup_with_dimension() -> None:
-    """Codex F6 dedup, updated for DEV-1709 (Stage 5): the crossing time
-    arg isolates the aggregate into a host-rooted ``_cm_*`` CTE, so the
-    ``customers`` join now appears once PER SCOPE — once in the host base
-    (the dimension's row-level pull) and once inside the CTE (the time
-    arg's pull, deduped against the CTE's own dimension pull) — never
-    twice within one scope.
+    """Codex F6 dedup: the crossing time arg isolates the aggregate into its own
+    CTE, so the ``customers`` join appears once PER SCOPE — once in the host
+    base (the dimension's row-level pull) and once inside the CTE (the time
+    arg's pull, deduped against the CTE's own dimension pull) — never twice
+    within one scope.
+
+    The CTE is a ranked ``_rk_`` one rather than the generic ``_cm_`` one it was
+    under DEV-1709: a first/last now isolates because it RANKS, which subsumes
+    the crossing-input trigger that used to be its only reason.
     """
     engine = await _multi_hop_engine()
     resp = await engine.execute(SlayerQuery(
@@ -1256,8 +1273,8 @@ async def test_e2e_time_arg_join_dedup_with_dimension() -> None:
         measures=[{"formula": "amount:last(customers.signup_at)"}],
     ))
     assert resp.data, resp.sql
-    assert "_cm_" in resp.sql, (
-        f"crossing time arg must isolate (DEV-1709):\n{resp.sql}"
+    assert "_rk_" in resp.sql, (
+        f"crossing time arg must isolate:\n{resp.sql}"
     )
     joins = re.findall(r"JOIN\s+customers\b", resp.sql, re.I)
     assert len(joins) == 2, (
