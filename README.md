@@ -87,9 +87,7 @@ Read more on how to get started with [MCP](https://docs.motley.ai/slayer/getting
 
 ### Known limitations
 
-SLayer currently has no caching or pre-aggregation engine. This could affect performance for high-concurrency use cases or with large datasets.
-Adding a caching layer is on the [roadmap](https://github.com/MotleyAI/slayer?tab=readme-ov-file#roadmap).
-
+SLayer has [query caching](https://docs.motley.ai/slayer/concepts/query-cache/) but no support for cached pre-aggregations yet. This could affect performance for high-concurrency use cases or with large datasets. Please raise an issue in the GitHub repo if you need cached pre-aggregations. 
 
 ## Interfaces
 
@@ -366,9 +364,11 @@ See the [documentation page for storage backends](https://docs.motley.ai/slayer/
 |   7   | Schema drift detection                          |   ✅    |
 |   8   | Unpivoting                                      |   ❌    |
 |   9   | Asof joins                                      |   ❌    |
-|   10  | Caching / pre-aggregations                      |   ❌    |
-|   11  | Access controls & governance                    |   ❌    |
-|   12  | Chart generation (eCharts)                      |   ❌    |
+|   10  | Query Caching                                   |   ✅    |
+|   11  | Cached pre-aggregations                         |   ❌    |
+|   12  | Row-Level Security                              |   ✅    |
+|   13  | Access controls & governance                    |   ❌    |
+|   14  | Chart generation                                |   ❌    |
 
 ## Examples
 
