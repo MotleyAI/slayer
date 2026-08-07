@@ -397,6 +397,18 @@ class TestPreboundQueryInvariants:
                 n_date_range=2,
             )
 
+    def test_the_grain_prefix_cannot_exceed_the_measures(self) -> None:
+        """``n_dims`` + ``n_time_dimensions`` is a PREFIX length into
+        ``declared_measures``. Slicing past the end returns a shorter list
+        rather than raising, so an over-count silently plans fewer dimensions
+        than were declared — and misclassifies the measures it does reach on
+        the way (CodeRabbit)."""
+        from slayer.engine.prebound import PreboundQuery
+
+        with pytest.raises(ValidationError) as exc:
+            PreboundQuery(declared_measures=[], n_dims=1, n_time_dimensions=1)
+        assert "grain members" in str(exc.value)
+
     @pytest.mark.parametrize(
         "field", ["n_date_range", "n_dims", "n_time_dimensions"],
     )

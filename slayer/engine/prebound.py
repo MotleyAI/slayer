@@ -116,6 +116,20 @@ class PreboundQuery(BaseModel):
                 f"PreboundQuery.n_date_range={self.n_date_range} exceeds the "
                 f"{len(self.bound_filters)} bound filters it slices.",
             )
+        # ``n_dims`` and ``n_time_dimensions`` are the DIMENSION prefix lengths
+        # of ``declared_measures``; the rest of the list is measures. Python
+        # slicing past the end returns a SHORTER list rather than raising, so
+        # an over-count silently plans fewer dimensions than the caller
+        # declared — and the measures it does reach are misclassified as
+        # dimensions on the way (CodeRabbit).
+        grain = self.n_dims + self.n_time_dimensions
+        if grain > len(self.declared_measures):
+            raise ValueError(
+                f"PreboundQuery declares {self.n_dims} dimensions + "
+                f"{self.n_time_dimensions} time dimensions = {grain} grain "
+                f"members, but carries only {len(self.declared_measures)} "
+                f"declared measures for them to be a prefix of.",
+            )
         return self
 
 

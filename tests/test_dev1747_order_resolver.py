@@ -39,6 +39,16 @@ from tests._dev1747_fixtures import (
 )
 from tests._engine_helpers import _engine_generate
 
+from slayer.core.keys import Phase
+from slayer.engine.planned import OrderEntry, OrderScope
+from slayer.engine.stage_planner import plan_query
+from slayer.sql.generator import generate_from_planned
+from slayer.sql.render.order_terms import (
+    OrderEnv,
+    OrderSlotNotMaterialisedError,
+    resolve_order_term,
+)
+
 _MEASURE = [{"formula": "amount:sum", "name": "rev"}]
 
 _MONTH = TimeDimension(
@@ -294,14 +304,6 @@ class TestOrderTargetMatrix:
 # ---------------------------------------------------------------------------
 class TestUnresolvableRaises:
     def test_resolver_raises_when_the_scope_lookup_misses(self) -> None:
-        from slayer.core.keys import Phase
-        from slayer.engine.planned import OrderEntry, OrderScope
-        from slayer.sql.render.order_terms import (
-            OrderEnv,
-            OrderSlotNotMaterialisedError,
-            resolve_order_term,
-        )
-
         entry = OrderEntry(
             slot_id="missing", direction="asc",
             scope=OrderScope.CROSS_MODEL_CTE, phase=Phase.AGGREGATE,
@@ -319,14 +321,6 @@ class TestUnresolvableRaises:
         over its source text. A ``return None`` in ONE arm is enough to
         reintroduce the silent drop, and a per-scope loop is what catches an
         arm added later without one."""
-        from slayer.core.keys import Phase
-        from slayer.engine.planned import OrderEntry, OrderScope
-        from slayer.sql.render.order_terms import (
-            OrderEnv,
-            OrderSlotNotMaterialisedError,
-            resolve_order_term,
-        )
-
         for scope in OrderScope:
             entry = OrderEntry(
                 slot_id="missing", direction="asc",
@@ -348,10 +342,6 @@ class TestUnresolvableRaises:
         and rendering. Injecting at the PLAN is what makes the injection
         path-independent; every renderer reads the same field.
         """
-        from slayer.engine.stage_planner import plan_query
-        from slayer.sql.generator import generate_from_planned
-        from slayer.sql.render.order_terms import OrderSlotNotMaterialisedError
-
         plan = plan_query(query=_D4_SHAPES[shape], bundle=dev1747_bundle())
         assert plan.order, f"{shape} planned no order entry — test is vacuous"
         broken = plan.model_copy(update={
