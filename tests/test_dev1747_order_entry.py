@@ -24,6 +24,7 @@ Refs: DEV-1747 (D3, D5), DEV-1742 §5.10 / P-D.
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.core.enums import TimeGranularity
@@ -53,7 +54,7 @@ class TestOrderEntryShape:
     def test_scope_is_required(self) -> None:
         """No default. A planner path that forgets to classify must fail at
         construction, not silently order against ``_base``."""
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             OrderEntry(slot_id="s1", direction="asc")  # type: ignore[call-arg]
 
     def test_nulls_defaults_to_dialect_default(self) -> None:
@@ -68,7 +69,7 @@ class TestOrderEntryShape:
     def test_nulls_rejects_an_unknown_policy(self) -> None:
         from slayer.core.keys import Phase
 
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             OrderEntry(
                 slot_id="s1", direction="asc", scope=OrderScope.HOST_BASE,
                 phase=Phase.ROW, nulls="sometimes",  # type: ignore[arg-type]
@@ -78,7 +79,7 @@ class TestOrderEntryShape:
         """The existing contract must survive the enrichment."""
         from slayer.core.keys import Phase
 
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             OrderEntry(
                 slot_id="s1", direction="ASC",  # type: ignore[arg-type]
                 scope=OrderScope.HOST_BASE, phase=Phase.ROW,
@@ -328,7 +329,8 @@ class TestHostGrainMarker:
             s.key for s in plan.aggregate_slots
             if isinstance(s.key, AggregateKey) and s.hidden
         ]
-        assert wraps and wraps[0].grain == "target"
+        assert wraps, "no hidden aggregate wrap was interned"
+        assert wraps[0].grain == "target"
 
     def test_host_grain_and_target_grain_are_distinct_identities(self) -> None:
         """A user-declared ``customers.regions.name:max`` measure and the

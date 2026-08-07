@@ -1506,11 +1506,22 @@ def _maybe_reroot_cross_model_plan(  # NOSONAR(S3776) — one re-rooting decisio
         crossed = [p for p in hf.crossed_join_paths if p]
         if not crossed:
             continue  # host-local -> applied at the host base only
-        if not all(p in reachable_paths for p in crossed):
+        # Through the shared predicate, not a second copy of the membership
+        # half: the rule lives in ONE place precisely so the two cannot drift.
+        if not all(
+            path_is_reachable(
+                path=p, target_path=target_path,
+                reachable_paths=reachable_paths,
+            )
+            for p in crossed
+        ):
             continue
         if any(not _is_forward(p) for p in crossed):
             needs_reroot = True
             break
+
+    if not needs_reroot:
+        return _forward_only()
 
     routes = _route_host_filters(
         host_filters=host_filters,
@@ -1518,11 +1529,20 @@ def _maybe_reroot_cross_model_plan(  # NOSONAR(S3776) — one re-rooting decisio
         target_path=target_path,
         host_model=host_model,
         terminal_model=target_model,
-        reachable_paths=reachable_paths if needs_reroot else None,
+        reachable_paths=reachable_paths,
     )
+    if not (grain_declared or routes.applied):
+        # The re-rooted shape lost, so the plan that ships is the FORWARD one
+        # and its routing must be classified under the forward PREFIX rule.
+        # Returning ``make_plan(routes)`` here shipped a forward plan carrying
+        # re-rooted-coordinate routing: a path that is a strict prefix of
+        # ``target_path`` is reachable under the prefix rule but absent from
+        # ``reachable_paths``, so the filter the forward CTE can evaluate was
+        # dropped from it AND warned about. That is the same "classified
+        # against a coordinate system that no longer applies" failure D6
+        # exists to remove — one branch below it, doing it again.
+        return _forward_only()
     plan = make_plan(routes)
-    if not needs_reroot or not (grain_declared or routes.applied):
-        return plan
 
     # The CTE applies exactly what the routing says it applies — one decision,
     # consumed, never re-derived. ``routing_by_id`` maps those ids back to the
@@ -1603,7 +1623,9 @@ def _maybe_reroot_cross_model_plan(  # NOSONAR(S3776) — one re-rooting decisio
             sub_agg_sid = s.id
             break
     if sub_agg_sid is None:
-        return plan
+        # Same abandon, same reason: no sub-plan means the FORWARD plan ships,
+        # so it must carry forward-coordinate routing.
+        return _forward_only()
 
     # DEV-1747 B6/D6 — the AUDIT survives the reroot; the ROUTING does not,
     # because they are different statements and the reroot changes only one.

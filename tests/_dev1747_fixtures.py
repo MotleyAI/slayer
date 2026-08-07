@@ -203,6 +203,11 @@ def _orders_model(*, data_source: str = "test") -> SlayerModel:
             # A NON-crossing derived column — the control. Ordering by it must
             # keep working exactly as it does today.
             Column(name="amount_x2", type=DataType.DOUBLE, sql="amount * 2"),
+            # A derived column over ANOTHER derived column. Only the expanding
+            # resolver inlines the sibling; resolving the raw ``Column.sql``
+            # emits the bare name ``amount_x2``, which is not a database column
+            # — so this is what tells the two render paths apart.
+            Column(name="amount_x4", type=DataType.DOUBLE, sql="amount_x2 * 2"),
         ],
         joins=[
             ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),

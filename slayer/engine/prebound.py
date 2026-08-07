@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from typing import FrozenSet, List, Optional, Tuple
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat
@@ -89,6 +89,29 @@ class PreboundQuery(BaseModel):
     limit: Optional[int] = None
     offset: Optional[int] = None
     distinct_dimension_values: bool = True
+
+    @model_validator(mode="after")
+    def _filter_texts_are_parallel(self) -> "PreboundQuery":
+        """``bound_filter_texts`` is positionally parallel to
+        ``bound_filters``, and nothing downstream would notice if it were not:
+        the routing pass reads them with ``zip``, which silently TRUNCATES to
+        the shorter list. A short texts list would therefore drop host-filter
+        routings entirely rather than raise — the exact silent-narrowing class
+        this seam exists to make impossible, so the invariant is enforced here
+        rather than trusted at each construction site.
+        """
+        if len(self.bound_filter_texts) != len(self.bound_filters):
+            raise ValueError(
+                f"PreboundQuery.bound_filter_texts must be parallel to "
+                f"bound_filters: got {len(self.bound_filter_texts)} texts for "
+                f"{len(self.bound_filters)} filters.",
+            )
+        if self.n_date_range > len(self.bound_filters):
+            raise ValueError(
+                f"PreboundQuery.n_date_range={self.n_date_range} exceeds the "
+                f"{len(self.bound_filters)} bound filters it slices.",
+            )
+        return self
 
 
 class StrictQueryCarrier(BaseModel):

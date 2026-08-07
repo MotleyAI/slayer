@@ -126,7 +126,13 @@ class TestLeafKinds:
 
     def test_sql_expr_key_strips_referenced_join_paths(self) -> None:
         """§5.4 lists ``SqlExprKey`` paths explicitly. A standalone fragment
-        anchored at the query root must be re-anchored at the target."""
+        anchored at the query root must be re-anchored at the target.
+
+        The EXACT-match path (``("customers",)`` under target ``("customers",)``)
+        does not survive as ``()``: the field is documented as "non-anchor
+        join-path prefixes", and ``()`` is its "same-model filter, no crossing"
+        marker. Carrying an empty tuple in the list said the opposite of what
+        the strip means (CodeRabbit)."""
         out = reroot_value_key(
             SqlExprKey(
                 canonical_sql="customers__regions.name = 'US'",
@@ -135,7 +141,43 @@ class TestLeafKinds:
             target_path=TARGET,
         )
         assert out.canonical_sql == "customers__regions.name = 'US'"
-        assert out.referenced_join_paths == ((), ("regions",))
+        assert out.referenced_join_paths == (("regions",),)
+
+    def test_stripping_re_canonicalises_for_identity(self) -> None:
+        """``model_copy`` skips validators in Pydantic v2, and the ``before``
+        validator is what sorts and de-duplicates the paths — while
+        ``__hash__`` / ``__eq__`` read the tuple directly.
+
+        So a strip that leaves two paths sharing a residual, or leaves them out
+        of sorted order, produces a key that will not intern against its own
+        equal. Both inputs below reroot to the same residual set; the two
+        results must be equal AND hash equal, or the registry mints two slots
+        for one value."""
+        a = reroot_value_key(
+            SqlExprKey(
+                canonical_sql="x",
+                # ``("customers", "regions")`` and a bare ``("regions",)``
+                # collapse onto the SAME residual after the strip.
+                referenced_join_paths=(("customers", "regions"), ("regions",)),
+            ),
+            target_path=TARGET,
+        )
+        assert a.referenced_join_paths == (("regions",),), (
+            f"duplicate residuals survived the strip: {a.referenced_join_paths}"
+        )
+
+        b = reroot_value_key(
+            SqlExprKey(
+                canonical_sql="x",
+                referenced_join_paths=(("regions",), ("customers", "regions")),
+            ),
+            target_path=TARGET,
+        )
+        assert a == b and hash(a) == hash(b), (
+            "two orderings of the same paths rerooted to keys that do not "
+            "intern — identity depends on the canonical form the validator "
+            "produces, which model_copy would have skipped"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -374,9 +416,16 @@ class TestTotalityAndFailClosed:
         )
         assert reroot_value_key(key, target_path=()) == key
 
-    def test_reroot_is_idempotent_at_the_fixed_point(self) -> None:
-        """Rerooting an ALREADY-local key again must not strip a second time —
-        otherwise a double-dispatch anywhere in the planner corrupts the ref."""
+    def test_reroot_strips_one_prefix_per_application(self) -> None:
+        """Each call strips exactly ONE matching prefix.
+
+        Rerooting is therefore NOT idempotent for a path that repeats the
+        target hop, so the planner must dispatch it exactly once. Pinned so a
+        double-dispatch shows up as a corrupted ref rather than a silent no-op.
+
+        (The name and docstring used to claim the opposite — "must not strip a
+        second time" — while the assertions required the strip. A reader would
+        have taken the stated invariant as a real contract; CodeRabbit.)"""
         once = reroot_value_key(
             ColumnKey(path=("customers", "customers"), leaf="x"), target_path=TARGET,
         )

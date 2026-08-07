@@ -812,13 +812,25 @@ def _reroot_sql_expr_key(
     model instead and must NOT come through here — see the note in
     :func:`reroot_value_key`.
     """
-    return key.model_copy(update={
-        "referenced_join_paths": tuple(
-            path[len(target_path):]
-            if tuple(path[: len(target_path)]) == target_path else path
-            for path in key.referenced_join_paths
-        ),
-    })
+    stripped = [
+        path[len(target_path):]
+        if tuple(path[: len(target_path)]) == target_path else path
+        for path in key.referenced_join_paths
+    ]
+    # Constructed, NOT ``model_copy``: the ``before`` validator is what sorts
+    # and de-duplicates ``referenced_join_paths``, and ``model_copy`` skips
+    # validators in Pydantic v2. Stripping can produce both — two distinct
+    # paths can share a residual, and the residuals need not stay in sorted
+    # order — and ``__hash__`` / ``__eq__`` read the tuple directly, so two
+    # semantically equal keys would fail to intern (CodeRabbit).
+    #
+    # An EXACT match strips to ``()``, which is not a join-path prefix at all
+    # but the documented "same-model filter" marker, so it is dropped rather
+    # than carried as an empty tuple.
+    return SqlExprKey(
+        canonical_sql=key.canonical_sql,
+        referenced_join_paths=[p for p in stripped if p],
+    )
 
 
 def reroot_value_key(

@@ -296,14 +296,19 @@ class TestUnresolvableRaises:
     def test_resolver_raises_when_the_scope_lookup_misses(self) -> None:
         from slayer.core.keys import Phase
         from slayer.engine.planned import OrderEntry, OrderScope
-        from slayer.sql.render.order_terms import OrderEnv, resolve_order_term
+        from slayer.sql.render.order_terms import (
+            OrderEnv,
+            OrderSlotNotMaterialisedError,
+            resolve_order_term,
+        )
 
         entry = OrderEntry(
             slot_id="missing", direction="asc",
             scope=OrderScope.CROSS_MODEL_CTE, phase=Phase.AGGREGATE,
         )
-        with pytest.raises(Exception) as exc:
-            resolve_order_term(entry=entry, env=OrderEnv())
+        env = OrderEnv()
+        with pytest.raises(OrderSlotNotMaterialisedError) as exc:
+            resolve_order_term(entry=entry, env=env)
         assert "missing" in str(exc.value), (
             "the error must name the unresolvable slot so the wiring bug is "
             "findable; a bare exception is barely better than the silent drop"
@@ -316,15 +321,20 @@ class TestUnresolvableRaises:
         arm added later without one."""
         from slayer.core.keys import Phase
         from slayer.engine.planned import OrderEntry, OrderScope
-        from slayer.sql.render.order_terms import OrderEnv, resolve_order_term
+        from slayer.sql.render.order_terms import (
+            OrderEnv,
+            OrderSlotNotMaterialisedError,
+            resolve_order_term,
+        )
 
         for scope in OrderScope:
             entry = OrderEntry(
                 slot_id="missing", direction="asc",
                 scope=scope, phase=Phase.AGGREGATE,
             )
-            with pytest.raises(Exception):
-                resolve_order_term(entry=entry, env=OrderEnv())
+            env = OrderEnv()
+            with pytest.raises(OrderSlotNotMaterialisedError):
+                resolve_order_term(entry=entry, env=env)
 
     @pytest.mark.parametrize("shape", sorted(_D4_SHAPES))
     def test_no_render_path_silently_drops_an_unresolvable_term(
@@ -340,6 +350,7 @@ class TestUnresolvableRaises:
         """
         from slayer.engine.stage_planner import plan_query
         from slayer.sql.generator import generate_from_planned
+        from slayer.sql.render.order_terms import OrderSlotNotMaterialisedError
 
         plan = plan_query(query=_D4_SHAPES[shape], bundle=dev1747_bundle())
         assert plan.order, f"{shape} planned no order entry — test is vacuous"
@@ -349,8 +360,9 @@ class TestUnresolvableRaises:
                 for entry in plan.order
             ],
         })
-        with pytest.raises(Exception) as exc:
-            generate_from_planned(broken, bundle=dev1747_bundle())
+        bundle = dev1747_bundle()
+        with pytest.raises(OrderSlotNotMaterialisedError) as exc:
+            generate_from_planned(broken, bundle=bundle)
         assert "no_such_slot" in str(exc.value), (
             f"{shape} raised without naming the slot: {exc.value}"
         )

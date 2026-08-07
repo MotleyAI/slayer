@@ -2649,11 +2649,15 @@ class SQLGenerator:
             )
 
         def _resolve_source(key) -> None:
-            if isinstance(key.source, ColumnSqlKey):
-                scope.resolve(key.source)  # register-only; render re-expands
-            elif getattr(key.source, "path", ()):
-                # DEV-1747 D2 — the host-grain source IS the crossing input.
-                scope.resolve(key.source)  # register-only
+            # Two shapes, one action. A DERIVED source (``ColumnSqlKey``) may
+            # cross inside its ``Column.sql``; a PATH-BEARING one crosses by
+            # the path itself, which is what a host-grain aggregate's source
+            # does (DEV-1747 D2). Either way the scope only needs the
+            # register-only resolve — the render re-expands.
+            if isinstance(key.source, ColumnSqlKey) or getattr(
+                key.source, "path", (),
+            ):
+                scope.resolve(key.source)
 
         def _resolve_kwargs(key) -> None:
             kw: Dict[str, ResolvedAggKwarg] = {}
@@ -8873,24 +8877,12 @@ class SQLGenerator:
             # rooted at the ``__``-path alias of the owning joined model, with
             # ``is_root=False`` so a further-joined ref carries the full prefix
             # (``B`` reaching ``C`` → ``B__C``).
-            if key.path:
-                owner_model = bundle.get_referenced_model(key.path[-1])
-                if owner_model is None:
-                    continue
-                owner_relation = "__".join(key.path)
-            else:
-                owner_model = source_model
-                owner_relation = source_relation
-            expanded_sql = self._expand_derived_column_sql(
-                source_model=owner_model, source_relation=owner_relation,
-                column_name=key.column_name, bundle=bundle, is_root=not key.path,
+            expr = self._derived_column_expr(
+                key=key, source_model=source_model,
+                source_relation=source_relation, bundle=bundle,
             )
-            col = next(
-                (c for c in owner_model.columns if c.name == key.column_name), None,
-            )
-            expr = _wrap_cast_for_type(
-                self._parse(expanded_sql), col.type if col is not None else None,
-            )
+            if expr is None:
+                continue
             derived_expr_by_sid[sid] = expr
             _add(key.path)  # the join to the owning model itself (cross-model)
             for p in self._joined_paths_in_sql(
@@ -8899,6 +8891,42 @@ class SQLGenerator:
             ):
                 _add(p)
         return derived_expr_by_sid
+
+    def _derived_column_expr(
+        self, *, key, source_model, source_relation: str, bundle,
+    ) -> "Optional[exp.Expression]":
+        """The rendered expression for a derived (``ColumnSqlKey``) column.
+
+        The ONE expansion, so a derived column renders identically wherever it
+        appears (P-G). A derived column's ``Column.sql`` may reference ANOTHER
+        derived column on the same model (``amount_x4 = amount_x2 * 2``), which
+        only :meth:`_expand_derived_column_sql` inlines — resolving the raw
+        ``Column.sql`` instead emits the sibling's NAME, and no such database
+        column exists. The projection path always expanded; the ORDER BY path
+        resolved raw, so an unprojected derived sort key emitted SQL that
+        failed at the database (CodeRabbit, DEV-1747).
+
+        ``None`` when the owning model is not in the bundle — the caller
+        decides whether that is a skip or an error.
+        """
+        if key.path:
+            owner_model = bundle.get_referenced_model(key.path[-1])
+            if owner_model is None:
+                return None
+            owner_relation = "__".join(key.path)
+        else:
+            owner_model = source_model
+            owner_relation = source_relation
+        expanded_sql = self._expand_derived_column_sql(
+            source_model=owner_model, source_relation=owner_relation,
+            column_name=key.column_name, bundle=bundle, is_root=not key.path,
+        )
+        col = next(
+            (c for c in owner_model.columns if c.name == key.column_name), None,
+        )
+        return _wrap_cast_for_type(
+            self._parse(expanded_sql), col.type if col is not None else None,
+        )
 
     def _expand_column_filter_sql(
         self,
@@ -10693,13 +10721,12 @@ class SQLGenerator:
                 source_relation=source_relation, bundle=bundle,
             )
 
-        # A LOCAL DERIVED column (``ColumnSqlKey``, path empty). Emitted
-        # through the planned-dim helper, so its expansion is quoted
-        # identically to a projected dimension (DEV-1645 mixed-case-safe) —
-        # and, when the ``Column.sql`` reaches through a join, comes out as the
-        # same ``customers__regions.name`` reference the bare joined sort key
-        # emits. That equality is the point of D9: the two spellings name one
-        # column and must sort the same way.
+        # A LOCAL DERIVED column (``ColumnSqlKey``, path empty). Rendered
+        # through the SAME expansion a projected derived dimension gets, which
+        # is what makes the two spellings of one column sort identically (D9)
+        # — and what stops a derived column defined over ANOTHER derived column
+        # from emitting the sibling's name, which is not a database column at
+        # all (CodeRabbit).
         #
         # This used to build a throwaway ``ScopeFrame`` here purely to DETECT
         # the crossing at render time, and raised when it found one, because
@@ -10708,14 +10735,16 @@ class SQLGenerator:
         # to a sort key exactly as it does to a projected dimension.
         if (
             source_model is not None
+            and bundle is not None
             and isinstance(row_key, ColumnSqlKey)
             and not row_key.path
         ):
-            return self._joined_or_local_dim_expr(
-                path=(), leaf=row_key.column_name,
-                source_model=source_model,
+            expr = self._derived_column_expr(
+                key=row_key, source_model=source_model,
                 source_relation=source_relation, bundle=bundle,
             )
+            if expr is not None:
+                return expr
 
         # Defensive: any other hidden shape should have been rejected at plan
         # time (transform / composite / joined / grouped-row).

@@ -262,7 +262,8 @@ class TestUnreachableWarns:
 
     def test_warning_carries_a_reason(self) -> None:
         warning = _sole_plan(FILTER_UNREACHABLE).dropped_filter_warnings[0]
-        assert warning.reason and "reach" in warning.reason.lower()
+        assert warning.reason, "the warning carries no reason at all"
+        assert "reach" in warning.reason.lower(), warning.reason
 
     async def test_exactly_one_warning_per_filter_per_execute(self) -> None:
         """The boundary dedups per filter identity. Two cross-model measures
@@ -300,10 +301,11 @@ class TestUnreachableWarns:
             db = os.path.join(d, "dev1747.db")
             seed_dev1747_sqlite(db)
             engine = await make_sqlite_engine(d, db)
+            query = _query(FILTER_UNREACHABLE)
             with warnings.catch_warnings():
                 warnings.simplefilter("error", UnreachableFilterDroppedWarning)
                 with pytest.raises(UnreachableFilterDroppedWarning):
-                    await engine.execute(_query(FILTER_UNREACHABLE))
+                    await engine.execute(query)
 
     async def test_two_textually_distinct_filters_warn_separately(self) -> None:
         """Identity is per FILTER, not per text-dedup bucket — two different
@@ -757,8 +759,9 @@ class TestRerootedAggregateRefFilter:
             db = os.path.join(d, "dev1747.db")
             seed_dev1747_sqlite(db)
             engine = await make_sqlite_engine(d, db)
+            query = _query(FILTER_AGGREGATE_REF)
             with pytest.raises(NotImplementedError) as exc:
-                await engine.execute(_query(FILTER_AGGREGATE_REF))
+                await engine.execute(query)
         assert "not inline HAVING" in str(exc.value), exc.value
 
 

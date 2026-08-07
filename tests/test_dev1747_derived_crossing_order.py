@@ -40,10 +40,17 @@ from tests._dev1747_fixtures import (
     dev1747_models,
     make_sqlite_engine,
     order_by_text,
+    outermost_select,
     response_column_values,
     seed_dev1747_sqlite,
 )
 from tests._engine_helpers import _engine_generate
+
+
+def _squash(sql: str) -> str:
+    """Collapse whitespace — sqlglot pretty-prints a long expression across
+    lines in one context and inline in another; that is not the subject."""
+    return " ".join(sql.split())
 
 _MEASURE = [{"formula": "amount:sum", "name": "rev"}]
 
@@ -149,8 +156,11 @@ class TestUngroupedDerivedCrossing:
         and force grouping the query never asked for."""
         sql = await _sql(_ungrouped("asc"))
         upper = sql.upper()
-        assert "MIN(" not in upper and "MAX(" not in upper, (
-            f"ungrouped sort key must not be aggregate-wrapped:\n{sql}"
+        assert "MIN(" not in upper, (
+            f"ungrouped sort key was wrapped in MIN:\n{sql}"
+        )
+        assert "MAX(" not in upper, (
+            f"ungrouped sort key was wrapped in MAX:\n{sql}"
         )
 
     async def test_ungrouped_derived_matches_the_bare_joined_shape(self) -> None:
@@ -231,3 +241,74 @@ class TestRenderTimeProbeRemoved:
         assert plan.order[0].scope in (
             OrderScope.HOST_BASE, OrderScope.HOST_BASE_HIDDEN,
         )
+
+
+# ---------------------------------------------------------------------------
+# Group 4 — a derived column defined over ANOTHER derived column
+# ---------------------------------------------------------------------------
+class TestDerivedOfDerivedSortKey:
+    """``amount_x4`` is ``amount_x2 * 2``, and ``amount_x2`` is ``amount * 2``.
+
+    Only the EXPANDING resolver inlines the sibling. The projection path always
+    used it; the hidden sort-key path resolved the raw ``Column.sql`` instead
+    and emitted the sibling's NAME — and ``amount_x2`` is not a column in the
+    database, so the statement failed there rather than here (CodeRabbit).
+
+    The two paths now share one expansion, which is the only thing that keeps
+    them from drifting again.
+    """
+
+    @staticmethod
+    def _sort_term(sql: str) -> str:
+        terms = order_by_text(sql)
+        assert terms, f"no ORDER BY emitted:\n{sql}"
+        return terms
+
+    async def test_hidden_derived_of_derived_expands_its_sibling(self) -> None:
+        sql = await _sql(_ungrouped("asc", column="amount_x4"))
+        term = self._sort_term(sql)
+        assert "amount_x2" not in term, (
+            f"the sort term names the DERIVED sibling, which is not a database "
+            f"column — the statement would fail at the DB:\n{sql}"
+        )
+        assert "orders.amount" in term, (
+            f"the sort term does not reach the real underlying column:\n{sql}"
+        )
+
+    async def test_it_matches_what_the_projection_would_emit(self) -> None:
+        """P-G over the two paths: the same derived column must render the same
+        expression whether it is projected or only sorted on. Compared to the
+        PROJECTED expansion rather than to a literal, so the two cannot drift
+        apart again without this failing."""
+        hidden_sql = await _sql(_ungrouped("asc", column="amount_x4"))
+        projected_sql = await _sql(SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status"), ColumnRef(name="amount_x4")],
+            distinct_dimension_values=False,
+            order=[OrderItem(column=ColumnRef(name="amount_x4"), direction="asc")],
+        ))
+        # The projected query sorts by the ALIAS, so compare the sort term
+        # against the projected SELECT expression for the same column.
+        projected_expr = next(
+            (
+                s.this.sql(dialect="postgres")
+                for s in outermost_select(projected_sql).expressions
+                if s.alias_or_name == "orders.amount_x4"
+            ),
+            None,
+        )
+        assert projected_expr, f"amount_x4 was not projected:\n{projected_sql}"
+        hidden_term = self._sort_term(hidden_sql).replace(" ASC", "").strip()
+        assert _squash(hidden_term) == _squash(projected_expr), (
+            f"hidden sort key renders {hidden_term!r}, projection renders "
+            f"{projected_expr!r}"
+        )
+
+    async def test_it_executes(self) -> None:
+        """The end of the argument: the statement the DB actually runs. Under
+        the old form SQLite raises ``no such column: amount_x2``."""
+        response = await _execute(_ungrouped("asc", column="amount_x4"))
+        # 4 raw rows, ordered by amount * 4 ascending: 11, 13, 17, 19.
+        assert response_column_values(response.data, "orders.status") == [
+            "A", "A", "B", "N",
+        ]
