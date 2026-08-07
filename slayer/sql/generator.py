@@ -26,7 +26,12 @@ from slayer.core.enums import (
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from slayer.core.errors import AggregationNotAllowedError, UnresolvableOrderColumnError
-from slayer.core.keys import _FrozenKey, _reroot_path_ref, reroot_aggregate_key
+from slayer.core.keys import (
+    _FrozenKey,
+    _reroot_path_ref,
+    column_path,
+    reroot_aggregate_key,
+)
 from slayer.core.models import Aggregation
 from slayer.core.refs import agg_kwarg_canonical_str
 from slayer.core.time_bounds import strip_frame_bounds
@@ -65,6 +70,14 @@ from slayer.sql.render.order_terms import (
     HOST_BASE_SCOPES,
     OrderEnv,
     resolve_order_term,
+)
+from slayer.sql.render.ranked import (
+    RANKED_CTE_PREFIX,
+    RankedGrainProjection,
+    build_rank_column,
+    build_ranked_cte_select,
+    build_ranked_pick,
+    ranked_ordered,
 )
 from slayer.sql.render.value_expr import (
     render_arithmetic,
@@ -309,6 +322,66 @@ def _render_scalar_literal(v: Any) -> exp.Expression:
     if isinstance(v, (int, float, Decimal)):
         return exp.Literal.number(str(v))
     return exp.Literal.string(str(v))
+
+
+def _strip_declared_cast(expr: exp.Expression) -> exp.Expression:
+    """Unwrap one declared-type ``CAST`` a derived-column expansion added.
+
+    Used for a ranked aggregate's ORDER BY column. The CAST exists to make a
+    PROJECTED value match its declared type; an ordering key is compared only
+    to itself, and on SQLite the cast is not merely redundant — ``TIMESTAMP``
+    carries numeric affinity, so it truncates every date to its year and ties
+    the partition.
+    """
+    return expr.this if isinstance(expr, exp.Cast) else expr
+
+
+def _collapses_to_ranked_cte(planned_query) -> bool:
+    """Whether this whole plan IS one ranked CTE (DEV-1748 D9).
+
+    True when the ONLY thing the plan computes is one ranked aggregate at
+    exactly the grain the plan groups by, with nothing layered on top: no other
+    isolated aggregate, no host-local aggregate that would need a ``_base`` of
+    its own, no combined expression, no transform, no outer WHERE, no
+    pagination, and a projection that is precisely the grain plus the aggregate.
+
+    Under those conditions the ranked CTE's body already produces the plan's
+    rows under the plan's names, so emitting ``_base`` + a combined SELECT
+    around it adds a ``WITH`` and nothing else. Every clause here is a case
+    where it would add something more, and the collapse would silently drop it.
+    """
+    plans = planned_query.ranked_aggregate_plans
+    if len(plans) != 1:
+        return False
+    if (
+        planned_query.cross_model_aggregate_plans
+        or planned_query.windowed_aggregate_plans
+        or planned_query.combined_expression_slots
+        or planned_query.transform_layers
+        or planned_query.outer_where_filter_ids
+        or planned_query.order
+        or planned_query.limit is not None
+        or planned_query.offset is not None
+    ):
+        return False
+    plan = plans[0]
+    if plan.hidden or plan.having_filter_ids:
+        return False
+    if len(planned_query.aggregate_slots) != 1:
+        return False
+    grain_ids = [m.host_slot_id for m in plan.grain]
+    visible_row_ids = [s.id for s in planned_query.row_slots if not s.hidden]
+    if grain_ids != visible_row_ids:
+        return False
+    # HIDDEN row slots are deliberately not a reason to refuse. They are filter
+    # scaffolding — a ``WHERE customers.tier = 'gold'`` interns ``tier`` as a
+    # hidden ROW slot — and ``_base`` does not project or group by them either:
+    # the no-transform aux pass is ``aggregates_only``, and a transform layer is
+    # already excluded above. The ranked CTE applies the very same ROW filters
+    # (``where_filter_ids``), so the two renderings agree.
+    return list(planned_query.projection) == [
+        *grain_ids, plan.aggregate_slot_id,
+    ]
 
 
 def _wrap_cast_for_type(expr: exp.Expression, dt: Optional[DataType]) -> exp.Expression:
@@ -1633,7 +1706,9 @@ class SQLGenerator:
     # so silent parity drift is impossible.
     # ======================================================================
 
-    def generate_from_planned(self, planned_query, *, bundle) -> str:
+    def generate_from_planned(
+        self, planned_query, *, bundle, as_cte_body: bool = False,
+    ) -> str:
         """Render a typed ``PlannedQuery`` to SQL (public entry).
 
         DEV-1708 (D-E): installs a fresh generation-wide ``AliasAllocator`` for
@@ -1643,13 +1718,19 @@ class SQLGenerator:
         rerooted sub-generation (``_render_rerooted_cross_model_cte`` →
         ``generate_from_planned``) is a self-contained statement and gets its
         own allocator, with the parent's restored afterwards.
+
+        ``as_cte_body`` says the result is about to become a CTE DEFINITION
+        rather than a statement, which forbids a ``WITH`` of its own (SQL Server
+        rejects a nested one outright). Only the caller knows that, so only the
+        caller can say it — see :func:`_collapses_to_ranked_cte` for the one
+        shape that currently needs it.
         """
         self._assert_projection_is_public(planned_query)
         prev_allocator = getattr(self, "_gen_allocator", None)
         self._gen_allocator = self._new_allocator()
         try:
             return self._generate_from_planned_impl(
-                planned_query, bundle=bundle,
+                planned_query, bundle=bundle, as_cte_body=as_cte_body,
             )
         finally:
             self._gen_allocator = prev_allocator
@@ -1691,6 +1772,7 @@ class SQLGenerator:
         planned_query,
         *,
         bundle,
+        as_cte_body: bool = False,
     ) -> str:
         """Render a typed ``PlannedQuery`` to SQL.
 
@@ -1727,9 +1809,41 @@ class SQLGenerator:
             )
         source_relation = planned_query.source_relation
 
+        if as_cte_body and _collapses_to_ranked_cte(planned_query):
+            # D9. A re-rooted cross-model CTE renders its sub-plan as a COMPLETE
+            # statement and splices it into a CTE body, so a sub-plan that
+            # emitted ``_base`` plus a combined SELECT would put a ``WITH``
+            # inside a CTE — which SQL Server rejects outright. It never
+            # happened before because no sub-plan ever contained an isolated
+            # aggregate; a re-rooted first/last is the first one that does.
+            #
+            # It also never needs to: when the sub-plan's only isolated
+            # aggregate IS its answer, at its own grain, the ranked CTE's body
+            # and the statement the long way round would produce are the same
+            # rows under the same names. So emit it directly.
+            return self._render_collapsed_ranked_plan(
+                planned_query=planned_query, bundle=bundle,
+            )
+        if as_cte_body and planned_query.ranked_aggregate_plans:
+            # The residual, made loud. Anything a ranked sub-plan cannot collapse
+            # would go through ``_render_with_cross_model_plans`` and emit its own
+            # ``WITH`` — a nested one, which SQL Server rejects, and which sqlglot
+            # otherwise FLATTENS into the parent chain where the two ``_base``
+            # CTEs then collide. Both outcomes are invalid SQL that no unit test
+            # reads, so a shape that escapes the collapse must stop here rather
+            # than reach a database.
+            raise NotImplementedError(
+                "A re-rooted cross-model first/last whose sub-plan needs more "
+                "than the ranked CTE itself is not yet supported: the sub-plan "
+                "renders into a CTE body, which cannot carry a WITH of its own. "
+                "Split the measure into an earlier stage, or drop the part of "
+                "the query the sub-plan cannot express in one SELECT.",
+            )
+
         if (
             planned_query.cross_model_aggregate_plans
             or planned_query.windowed_aggregate_plans
+            or planned_query.ranked_aggregate_plans
         ):
             return self._render_with_cross_model_plans(
                 planned_query=planned_query, bundle=bundle,
@@ -3433,6 +3547,42 @@ class SQLGenerator:
             filtered_match_map[m.alias] = match_alias
         return rn_exprs, filtered_rn_map, filtered_match_map
 
+    # =====================================================================
+    # SUPERSEDED by ``RankedAggregatePlan`` (DEV-1748 B9) — production-
+    # UNREFERENCED, deleted in PR 6 (P-J: superseded code stops being reachable
+    # in the PR that replaces it, and is removed in the one that closes the
+    # series, so neither change has to be reviewed alongside the other).
+    #
+    # Every first/last aggregate is now excluded from ``base_render_order`` by
+    # ``isolated_slot_ids``, so ``_has_first_last_aggregate`` cannot return True
+    # and nothing in this block is entered. A runtime probe over the whole unit
+    # suite confirms it: the only callers left are the unit tests that pin these
+    # helpers directly.
+    #
+    # WHOLLY UNREACHABLE — PR 6 deletes outright:
+    #   _build_first_last_base_select, _has_first_last_aggregate,
+    #   _build_ranked_subquery_from_planned, _build_unfiltered_rn_columns,
+    #   _build_filtered_rn_columns, _iter_first_last_leaves,
+    #   _resolve_ranking_time_column_from_planned, FirstLastRenderState (+ its
+    #   rn_suffix_map / filtered_rn_map / filtered_match_map / agg_synth_alias /
+    #   value_alias_by_sql fields), ``_build_agg``'s first/last branch and its
+    #   rn_suffix_map / filtered_* parameters, and the rn threading through
+    #   ``_render_aggregate_composite_expr``.
+    #
+    # STILL CALLED, but only ever on the no-op path — PR 6 removes the dead
+    # branch rather than the function:
+    #   _resolve_explicit_time_col / _explicit_time_arg_of, reached from
+    #   ``_build_agg_render_spec_from_planned`` for EVERY aggregate. No
+    #   first/last reaches that builder any more (the ranked renderer resolves
+    #   its value itself, precisely so the plan owns the ranking column), so
+    #   both return ``None`` on every production call — measured: 2876 calls
+    #   across the unit suite, zero non-``None`` results outside the four unit
+    #   tests that invoke the builder directly. The same holds for
+    #   ``_resolve_agg_inputs_via_scope``'s ``_resolve_first_last_time_arg``
+    #   sub-pass, which walks a ``base_render_order`` that no longer contains a
+    #   ranked slot.
+    # =====================================================================
+
     def _build_first_last_base_select(  # NOSONAR(S3776) — single conceptual unit: dimension/td/derived-dim classification pass + agg-spec synth + ranked-subquery wrap + outer SELECT/GROUP BY assembly. Splitting forces shared mutable state (partition_exprs / extra_projections / outer_ref_by_sid / synth_by_sid) across helpers without simplifying anything.
         self,
         *,
@@ -4305,6 +4455,391 @@ class SQLGenerator:
         # text as a multi-part reference on BigQuery.
         return outer, grain_aliases
 
+    def _ranked_scope_expr(
+        self,
+        *,
+        key,
+        root_model,
+        root_relation: str,
+        bundle,
+        scope: ScopeFrame,
+        cast_derived: bool = True,
+    ) -> exp.Expression:
+        """One value expression anchored in a ranked CTE's own scope.
+
+        Built through the SAME helpers the host ``_base`` uses, which is what
+        makes a grain member compare equal to the ``_base`` column it joins back
+        to: two spellings of "the same dimension" that differ only in a CAST
+        stop being the same value the moment a dialect rounds them differently.
+
+        ``cast_derived=False`` for the RANKING column, which is compared only to
+        itself and so needs no agreement with anything. It also must not carry
+        the declared-type CAST: SQLite's ``TIMESTAMP`` has numeric affinity, so
+        ``CAST(DATE(created_at) AS TIMESTAMP)`` truncates every date to its year
+        and ties the whole partition.
+
+        Registering the joins the expression crosses into ``scope`` is a side
+        effect here rather than a separate pass (Law 1), so the CTE's FROM can
+        never be missing one.
+        """
+        from slayer.core.enums import TimeGranularity
+        from slayer.core.keys import ColumnKey, ColumnSqlKey, TimeTruncKey
+
+        def _register(expr: exp.Expression, path: Tuple[str, ...]) -> None:
+            if path:
+                scope.join_paths.add(path)
+            for p in self._joined_paths_in_sql(
+                sql_expr=expr, source_relation=root_relation,
+                source_model=root_model, bundle=bundle,
+            ):
+                scope.join_paths.add(p)
+
+        if isinstance(key, TimeTruncKey):
+            raw = self._raw_time_col_expr_for_planned(
+                time_column=key.column, source_model=root_model,
+                source_relation=root_relation, bundle=bundle,
+            )
+            _register(raw, column_path(key.column))
+            return self._build_date_trunc(
+                col_expr=raw, granularity=TimeGranularity(key.granularity),
+            )
+        if isinstance(key, ColumnKey):
+            expr = self._joined_or_local_dim_expr(
+                path=key.path, leaf=key.leaf, source_model=root_model,
+                source_relation=root_relation, bundle=bundle,
+            )
+            _register(expr, key.path)
+            return expr
+        if isinstance(key, ColumnSqlKey):
+            expr = self._derived_column_expr(
+                key=key, source_model=root_model,
+                source_relation=root_relation, bundle=bundle,
+            )
+            if expr is None:
+                raise ValueError(
+                    f"Derived column {key.column_name!r} on model "
+                    f"{key.path[-1] if key.path else root_model.name!r} is not "
+                    f"in the resolved source bundle.",
+                )
+            _register(expr, key.path)
+            return expr if cast_derived else _strip_declared_cast(expr)
+        raise NotImplementedError(
+            f"Ranked CTE cannot anchor a {type(key).__name__} — the grain and "
+            f"the ranking column are columns, truncated time columns, or "
+            f"derived columns.",
+        )
+
+    def _ranked_value_expr(
+        self, *, key, root_model, root_relation: str, bundle, scope: ScopeFrame,
+    ) -> exp.Expression:
+        """The value a ranked aggregate picks, anchored in its own scope.
+
+        Deliberately NOT ``_build_agg_render_spec_from_planned``: that builder
+        resolves an explicit time arg on the way past, and the ranking column is
+        plan data now (``RankedAggregatePlan.ranking_time_key``). Going through
+        it would re-derive at render time the one thing the plan exists to
+        decide — and would keep the residual-path raise alive on a path that no
+        longer has the limitation it describes.
+        """
+        from slayer.core.keys import ColumnKey, ColumnSqlKey, StarKey
+
+        source = key.source
+        if isinstance(source, StarKey):
+            raise ValueError(
+                f"Aggregation {key.agg!r} not allowed with measure "
+                f"'*' — use '*:count' for COUNT(*)."
+            )
+        if not isinstance(source, (ColumnKey, ColumnSqlKey)):
+            raise NotImplementedError(
+                f"AggregateKey source {type(source).__name__} not supported.",
+            )
+        leaf = (
+            source.leaf if isinstance(source, ColumnKey) else source.column_name
+        )
+        col = next((c for c in root_model.columns if c.name == leaf), None)
+        if col is None:
+            raise ValueError(
+                f"Aggregate source column {leaf!r} not found on model "
+                f"{root_model.name!r}",
+            )
+        if isinstance(source, ColumnSqlKey) and col.sql is not None:
+            sql_text = self._expand_derived_column_sql(
+                source_model=root_model, source_relation=root_relation,
+                column_name=col.name, bundle=bundle,
+            )
+        else:
+            sql_text = col.sql if col.sql else col.name
+        expr = self._resolve_sql(
+            sql=sql_text, name=col.name, model_name=root_relation,
+            type=col.type,
+        )
+        for p in self._joined_paths_in_sql(
+            sql_expr=expr, source_relation=root_relation,
+            source_model=root_model, bundle=bundle,
+        ):
+            scope.join_paths.add(p)
+        return expr
+
+    def _render_ranked_cte_from_planned(
+        self,
+        *,
+        plan,
+        agg_slot,
+        bundle,
+        planned_query,
+        slots_by_id: Dict[str, Any],
+        host_source_model,
+        host_source_relation: str,
+        full_agg_alias: str,
+    ) -> Tuple[exp.Select, List[str]]:
+        """Render one ``_rk_`` ranked (``first`` / ``last``) CTE (DEV-1748, B9).
+
+        Two SELECTs: an inner one that projects the grain, the value and one
+        ``ROW_NUMBER`` over the rows this aggregate is allowed to see, and an
+        outer one that picks rank 1 per grain. Returns ``(cte_query,
+        grain_aliases)`` — the aliases the caller joins back on.
+
+        The whole aggregate lives here, so the host base is untouched: adding a
+        ``first`` to a query cannot change what its siblings compute, and the
+        rn-suffix scheme that used to disambiguate several rankings sharing one
+        scope has nothing left to disambiguate.
+        """
+        from slayer.core.keys import AggregateKey, reroot_aggregate_key
+
+        key = agg_slot.key
+        if not isinstance(key, AggregateKey):
+            raise RuntimeError(
+                f"RankedAggregatePlan {plan.aggregate_slot_id!r} references a "
+                f"non-aggregate slot.",
+            )
+
+        if plan.target_path:
+            root_model = bundle.get_referenced_model(plan.root_model)
+            if root_model is None:
+                raise ValueError(
+                    f"Ranked CTE root {plan.root_model!r} is not in the "
+                    f"resolved source bundle.",
+                )
+            root_relation = plan.root_model
+        else:
+            root_model = host_source_model
+            root_relation = host_source_relation
+
+        allocator = self._gen_allocator or self._new_allocator()
+        self._reserve_model_column_names(allocator, root_model)
+
+        def _frame() -> ScopeFrame:
+            return ScopeFrame(
+                scope_id=allocator.next_scope_id(root_relation),
+                root_model=root_model,
+                root_relation=root_relation,
+                bundle=bundle,
+                dialect=self._dialect,
+                allocator=allocator,
+            )
+
+        # Law 2's producer/consumer pair. The inner scope PRODUCES every value
+        # the outer one reads, so a value that is both the grain and the ranked
+        # expression is materialised once — the two used to keep separate alias
+        # maps and project it twice.
+        ranked_scope = _frame()
+        cte_scope = _frame()
+
+        # The aggregate in the ranked scope's coordinates. For a target-rooted
+        # plan that means stripping the host prefix from the source (and from
+        # every embedded ref) in one pass, exactly as the cross-model CTE does.
+        local_key = reroot_aggregate_key(key, target_path=plan.target_path)
+
+        grain: List[RankedGrainProjection] = []
+        partition_by: List[exp.Expression] = []
+        for member in plan.grain:
+            host_slot = slots_by_id.get(member.host_slot_id)
+            if host_slot is None:
+                raise RuntimeError(
+                    f"RankedAggregatePlan grain references host slot "
+                    f"{member.host_slot_id!r}, which this plan does not carry.",
+                )
+            expr = self._ranked_scope_expr(
+                key=member.ranked_key, root_model=root_model,
+                root_relation=root_relation, bundle=bundle, scope=ranked_scope,
+            )
+            # PARTITION BY takes the RAW expression: it is evaluated inside the
+            # ranked scope, where the joins it crosses are bound. The outer
+            # SELECT takes the materialised alias, because out there they are
+            # not.
+            partition_by.append(expr.copy())
+            grain.append(RankedGrainProjection(
+                output_alias=self._full_alias_for_slot(
+                    slot=host_slot,
+                    source_relation=host_source_relation,
+                    alias_index={},
+                ),
+                inner_ref=ranked_scope.materialize_for(
+                    expr, consumer=cte_scope,
+                ),
+            ))
+
+        value_ref = ranked_scope.materialize_for(
+            self._ranked_value_expr(
+                key=local_key, root_model=root_model,
+                root_relation=root_relation, bundle=bundle, scope=ranked_scope,
+            ),
+            consumer=cte_scope,
+        )
+        ranking_time = self._ranked_scope_expr(
+            key=plan.ranking_time_key, root_model=root_model,
+            root_relation=root_relation, bundle=bundle, scope=ranked_scope,
+            cast_derived=False,
+        )
+
+        where_parts = self._ranked_cte_where(
+            plan=plan, local_key=local_key, planned_query=planned_query,
+            bundle=bundle, root_model=root_model, root_relation=root_relation,
+            scope=ranked_scope,
+        )
+
+        from_expr, joins = self._build_from_and_joins(
+            source_model=root_model, source_relation=root_relation,
+            joined_paths=ranked_scope.join_paths.as_list(), bundle=bundle,
+        )
+        inner = exp.Select()
+        # A NAMED projection list, never ``<relation>.*`` — the projection
+        # boundary (P-B) is what keeps the rank column's name private and what
+        # removes the need for a materialiser bolted on outside the scope.
+        ranked_scope.apply_materializations(inner)
+        inner = inner.select(build_rank_column(
+            partition_by=partition_by,
+            ranking_time=ranked_ordered(
+                ranking_time=ranking_time,
+                agg=plan.agg,
+                native_nulls_first=self._dialect.native_nulls_first(
+                    descending=plan.agg == "last",
+                ),
+            ),
+        ))
+        inner = inner.from_(from_expr)
+        for join_expr, on_expr, join_type in joins:
+            inner = inner.join(join_expr, on=on_expr, join_type=join_type)
+        if where_parts:
+            inner = inner.where(
+                exp.and_(*where_parts) if len(where_parts) > 1 else where_parts[0],
+            )
+
+        pick = _wrap_cast_for_type(
+            build_ranked_pick(value_ref=value_ref), agg_slot.type,
+        )
+        return build_ranked_cte_select(
+            inner=inner, grain=grain, pick=pick, agg_alias=full_agg_alias,
+        )
+
+    def _ranked_cte_where(
+        self,
+        *,
+        plan,
+        local_key,
+        planned_query,
+        bundle,
+        root_model,
+        root_relation: str,
+        scope: ScopeFrame,
+    ) -> List[exp.Expression]:
+        """Every predicate a ranked CTE applies to the rows it ranks.
+
+        All of them narrow the row set BEFORE the ranking, which is the whole
+        difference from the shape this replaces: a filtered first/last used to
+        rank every row and mask the non-matching ones with a sentinel rank
+        column plus a match flag, because the ranking was shared with the rest
+        of the query and could not simply drop rows.
+
+        Entering each through ``scope`` registers the joins it crosses (Law 1),
+        so the CTE's FROM is assembled from a set nothing can be missing from.
+        """
+        parts: List[exp.Expression] = []
+        if local_key.column_filter_key is not None:
+            cfk_sql = local_key.column_filter_key.canonical_sql
+            if cfk_sql:
+                parts.append(self._enter_mode_a_predicate(
+                    sql=cfk_sql, scope=scope,
+                    location=f"Column.filter on model {root_model.name!r}",
+                ))
+        for filter_text in plan.target_model_filters:
+            if not filter_text:
+                continue
+            parts.append(self._enter_mode_a_predicate(
+                sql=filter_text, scope=scope,
+                location=f"SlayerModel.filters on model {root_model.name!r}",
+            ))
+
+        # Host filters this CTE also evaluates. The two roots need different
+        # renderers for the same reason ``_wm_`` and ``_cm_`` do: a host-rooted
+        # CTE binds them in the host's own scope (so they render
+        # byte-identically to the copy ``_base`` keeps), while a target-rooted
+        # one re-anchors each leaf against the target.
+        if plan.target_path:
+            self._register_routed_filter_joins(
+                planned_query=planned_query,
+                filter_ids=list(plan.where_filter_ids),
+                scope=scope,
+                target_path=plan.target_path,
+            )
+            routed = self._collect_routed_filters(
+                planned_query=planned_query,
+                filter_ids=plan.where_filter_ids,
+                target_relation=root_relation,
+                target_model=root_model,
+                bundle=bundle,
+            )
+        else:
+            skip_ids = {
+                fp.id for fp in planned_query.filters_by_phase
+            } - set(plan.where_filter_ids)
+            self._resolve_where_filter_joins_via_scope(
+                planned_query=planned_query, scope=scope,
+                skip_filter_ids=skip_ids,
+            )
+            routed, _having = self._build_where_having_from_planned(
+                planned_query=planned_query,
+                source_relation=root_relation,
+                source_model=root_model,
+                bundle=bundle,
+                skip_filter_ids=skip_ids,
+            )
+        if routed is not None:
+            parts.append(routed)
+        return parts
+
+    def _render_collapsed_ranked_plan(self, *, planned_query, bundle) -> str:
+        """Emit a whole plan AS its single ranked CTE body (D9).
+
+        The collapse is not an optimisation. It is what keeps a re-rooted
+        cross-model first/last emitting valid SQL Server, where a ``WITH``
+        nested inside a CTE definition is rejected outright — see the caller.
+        :func:`_collapses_to_ranked_cte` owns the precondition.
+        """
+        source_model = bundle.source_model
+        source_relation = planned_query.source_relation
+        plan = planned_query.ranked_aggregate_plans[0]
+        slots_by_id = {
+            s.id: s
+            for s in (
+                list(planned_query.row_slots) + list(planned_query.aggregate_slots)
+            )
+        }
+        agg_slot = slots_by_id[plan.aggregate_slot_id]
+        cte_query, _grain_aliases = self._render_ranked_cte_from_planned(
+            plan=plan,
+            agg_slot=agg_slot,
+            bundle=bundle,
+            planned_query=planned_query,
+            slots_by_id=slots_by_id,
+            host_source_model=source_model,
+            host_source_relation=source_relation,
+            full_agg_alias=self._full_alias_for_slot(
+                slot=agg_slot, source_relation=source_relation, alias_index={},
+            ),
+        )
+        return cte_query.sql(dialect=self.dialect, pretty=True)
+
     def _render_with_cross_model_plans(  # NOSONAR(S3776) — orchestration of host ``_base`` CTE + per-plan ``_cm_*`` CTEs + combined SELECT + transform-chain step CTEs + outer ORDER BY/LIMIT wrap. Each block is a coherent compilation stage sharing planned_query / slots_by_id / cma_slot_ids / seen_base_ids state; extracting per-stage helpers would scatter the cross-cutting state.
         self,
         *,
@@ -4366,6 +4901,15 @@ class SQLGenerator:
         windowed_slot_ids = {
             p.aggregate_slot_id for p in planned_query.windowed_aggregate_plans
         }
+        # DEV-1748 (B9) — ranked (``first`` / ``last``) aggregate slots render
+        # via their own ``_rk_`` CTEs. Same treatment as the two above: out of
+        # ``_base``, joined back on the grain. One first/last used to wrap the
+        # ENTIRE base in a ranking, which is what made a sibling aggregate's
+        # value depend on whether a first/last was in the query at all.
+        ranked_slot_ids = {
+            p.aggregate_slot_id for p in planned_query.ranked_aggregate_plans
+        }
+        isolated_slot_ids = cma_slot_ids | windowed_slot_ids | ranked_slot_ids
 
         # DEV-1503 / DEV-1745 (P-D) — the outer combined-SELECT WHERE wrapper is
         # routed by the PLANNER (``_plan_outer_where_filters``), which knows
@@ -4428,16 +4972,13 @@ class SQLGenerator:
                     # lives in a ``_wm_`` CTE joined back to ``_base``, so
                     # rendering the composite inside ``_base`` would silently
                     # substitute a PLAIN aggregate for the rolling one.
-                    if s is not None and (
-                        s.id in cma_slot_ids or s.id in windowed_slot_ids
-                    ):
+                    if s is not None and s.id in isolated_slot_ids:
                         outer_composite_slot_ids.add(slot.id)
                         break
         base_projection = [
             sid for sid in planned_query.projection
-            if sid not in cma_slot_ids
+            if sid not in isolated_slot_ids
             and sid not in outer_composite_slot_ids
-            and sid not in windowed_slot_ids
         ]
 
         # Hidden ORDER-BY-only LOCAL slots (``ORDER BY revenue:sum`` with
@@ -4451,9 +4992,8 @@ class SQLGenerator:
         for order_entry in planned_query.order:
             sid = order_entry.slot_id
             if (
-                sid in cma_slot_ids
+                sid in isolated_slot_ids
                 or sid in outer_composite_slot_ids
-                or sid in windowed_slot_ids
                 or sid in seen_base_ids
             ):
                 # DEV-1714: a windowed slot lives in its ``_wm_`` CTE, never
@@ -4499,7 +5039,7 @@ class SQLGenerator:
                 include_order=include_order,
                 aggregates_only=aggregates_only,
             ):
-                if sid in cma_slot_ids or sid in seen_base_ids:
+                if sid in isolated_slot_ids or sid in seen_base_ids:
                     continue
                 slot = slots_by_id.get(sid)
                 if slot is None:
@@ -4532,11 +5072,7 @@ class SQLGenerator:
                     # Promoting it into ``_base`` would emit a dead PLAIN
                     # aggregate under the windowed slot's alias, which the outer
                     # composite would then read instead of the rolling value.
-                    if (
-                        dep.id in cma_slot_ids
-                        or dep.id in windowed_slot_ids
-                        or dep.id in seen_base_ids
-                    ):
+                    if dep.id in isolated_slot_ids or dep.id in seen_base_ids:
                         continue
                     base_render_order.append(dep.id)
                     seen_base_ids.add(dep.id)
@@ -4875,6 +5411,43 @@ class SQLGenerator:
                 (a, a) for a in grain_aliases
             ]
 
+        # DEV-1748 (B9) — per-plan ``_rk_`` ranked first/last CTEs. Rooted where
+        # the ranked rows live (the host, or the join target), grouped at the
+        # query grain, joined back on it. Names are minted through the same
+        # collision-aware allocator the other two prefixes use, so two measures
+        # whose aliases lossy-sanitise alike get distinct CTEs (P-F).
+        rk_ctes: List[Tuple[str, exp.Expression]] = []
+        rk_cte_name_for_plan: Dict[str, str] = {}
+        rk_agg_col_for_plan: Dict[str, str] = {}
+        rk_joinback_pairs_for_plan: Dict[str, List[Tuple[str, str]]] = {}
+        rk_allocator = self._gen_allocator or self._new_allocator()
+        for plan in planned_query.ranked_aggregate_plans:
+            agg_slot = slots_by_id.get(plan.aggregate_slot_id)
+            if agg_slot is None or not isinstance(agg_slot.key, AggregateKey):
+                raise RuntimeError(
+                    f"RankedAggregatePlan {plan.aggregate_slot_id!r} references "
+                    f"a missing or non-aggregate slot.",
+                )
+            full_agg_alias = self._full_alias_for_slot(
+                slot=agg_slot, source_relation=source_relation, alias_index={},
+            )
+            cte_name = cte_name_from_alias(
+                RANKED_CTE_PREFIX, full_agg_alias, allocator=rk_allocator,
+            )
+            cte_query, grain_aliases = self._render_ranked_cte_from_planned(
+                plan=plan, agg_slot=agg_slot, bundle=bundle,
+                planned_query=planned_query, slots_by_id=slots_by_id,
+                host_source_model=source_model,
+                host_source_relation=source_relation,
+                full_agg_alias=full_agg_alias,
+            )
+            rk_ctes.append((cte_name, cte_query))
+            rk_cte_name_for_plan[plan.aggregate_slot_id] = cte_name
+            rk_agg_col_for_plan[plan.aggregate_slot_id] = full_agg_alias
+            rk_joinback_pairs_for_plan[plan.aggregate_slot_id] = [
+                (a, a) for a in grain_aliases
+            ]
+
         # DEV-1745 (W5): dropped-filter warnings are NOT emitted here. This
         # emission fired once per cross-model plan — so nested subplans
         # double-fired for one user filter — and never fired at all on a path
@@ -4909,7 +5482,17 @@ class SQLGenerator:
             if planned_query.transform_layers
             else base_projection
         )
+        # Deduped, because a C13 slot appears once per DECLARED NAME in the
+        # projection and its alias list already carries one entry per name.
+        # Visiting it twice and emitting the whole list each time renders N²
+        # columns, which the projection-consumption check below then rejects —
+        # a query mixing a two-name measure with any isolated aggregate used to
+        # fail outright.
+        _seen_host_ids: Set[str] = set()
         for sid in host_combined_ids:
+            if sid in _seen_host_ids:
+                continue
+            _seen_host_ids.add(sid)
             aliases = aliases_by_slot_id.get(sid, [])
             for full_alias in aliases:
                 _emit(sid, grain_alias_column(alias=full_alias, table="_base"))
@@ -4941,6 +5524,14 @@ class SQLGenerator:
                 outer_composite_cm_map[plan.aggregate_slot_id] = (
                     wm_cte_name_for_plan[plan.aggregate_slot_id],
                     wm_agg_col_for_plan[plan.aggregate_slot_id],
+                )
+            # A ranked operand resolves the same way (DEV-1748): its value is a
+            # column of a joined-in CTE, so a composite over it evaluates in the
+            # combined SELECT, never in ``_base``.
+            for plan in planned_query.ranked_aggregate_plans:
+                outer_composite_cm_map[plan.aggregate_slot_id] = (
+                    rk_cte_name_for_plan[plan.aggregate_slot_id],
+                    rk_agg_col_for_plan[plan.aggregate_slot_id],
                 )
 
             def _render_outer_composite(cslot) -> exp.Expression:
@@ -5090,6 +5681,28 @@ class SQLGenerator:
                 )
             combined_aliases_by_slot_id[plan.aggregate_slot_id] = list(full_aliases)
 
+        # DEV-1748 (B9) — ranked side. Identical to the windowed one above: one
+        # occurrence per declared user alias (C13), the hidden order-only case
+        # trimmed from the projection while its CTE stays joined.
+        for plan in planned_query.ranked_aggregate_plans:
+            agg_slot = slots_by_id[plan.aggregate_slot_id]
+            cte_name = rk_cte_name_for_plan[plan.aggregate_slot_id]
+            agg_col = rk_agg_col_for_plan[plan.aggregate_slot_id]
+            if plan.hidden and not planned_query.transform_layers:
+                combined_aliases_by_slot_id[plan.aggregate_slot_id] = []
+                continue
+            public_names = list(agg_slot.public_aliases) or (
+                [agg_slot.public_name] if agg_slot.public_name else []
+            )
+            full_aliases = [f"{source_relation}.{p}" for p in public_names] or [agg_col]
+            for full in full_aliases:
+                col = grain_alias_column(alias=agg_col, table=cte_name)
+                _emit(
+                    plan.aggregate_slot_id,
+                    col if full == agg_col else col.as_(full, quoted=True),
+                )
+            combined_aliases_by_slot_id[plan.aggregate_slot_id] = list(full_aliases)
+
         # Grain join-backs (P-I). Both plan kinds join back identically — on the
         # shared grain, null-safely, so a NULL dimension value or a nullable
         # truncated time bucket keeps its aggregate instead of dropping it. An
@@ -5164,6 +5777,12 @@ class SQLGenerator:
                 wm_joinback_pairs_for_plan.get(plan.aggregate_slot_id, []),
             )
             for plan in planned_query.windowed_aggregate_plans
+        ] + [
+            (
+                rk_cte_name_for_plan[plan.aggregate_slot_id],
+                rk_joinback_pairs_for_plan.get(plan.aggregate_slot_id, []),
+            )
+            for plan in planned_query.ranked_aggregate_plans
         ]
         for cte_name, joinback_pairs in joinback_specs:
             if cte_name in joined_cte_names:
@@ -5210,6 +5829,15 @@ class SQLGenerator:
                 agg_col_alias = agg_col_alias_for_plan[plan.aggregate_slot_id]
                 cross_model_agg_slot_to_cm[plan.aggregate_slot_id] = (
                     cte_name, agg_col_alias,
+                )
+            # DEV-1748: a ranked aggregate is isolated for the same reason and
+            # resolves the same way. Its filter is HERE rather than a HAVING
+            # inside the CTE precisely because the join back is a LEFT JOIN —
+            # dropping the CTE row would resurrect the host row with a NULL.
+            for plan in planned_query.ranked_aggregate_plans:
+                cross_model_agg_slot_to_cm[plan.aggregate_slot_id] = (
+                    rk_cte_name_for_plan[plan.aggregate_slot_id],
+                    rk_agg_col_for_plan[plan.aggregate_slot_id],
                 )
             for fp in outer_where_filters:
                 rendered = self._render_filter_for_outer_wrapper(
@@ -5270,7 +5898,11 @@ class SQLGenerator:
                     "CTEs.",
                 )
             return self._render_cross_model_transform_chain(
-                prelude_ctes=[("_base", base_select), *cm_ctes],
+                # ``_rk_`` CTEs join into the combined SELECT, which becomes the
+                # chain's base, so they belong in the prelude alongside the
+                # ``_cm_`` ones. Like those they are rooted at a real relation
+                # and depend on nothing.
+                prelude_ctes=[("_base", base_select), *cm_ctes, *rk_ctes],
                 combined_select=combined_select,
                 planned_query=planned_query,
                 slots_by_id=slots_by_id,
@@ -5290,6 +5922,11 @@ class SQLGenerator:
         cte_entries += [
             CteEntry(name=name, query=query, depends_on=["_base"])
             for name, query in wm_ctes
+        ]
+        # A ``_rk_`` CTE is rooted at a real relation, never at ``_base``, so it
+        # declares no dependency — the same as a ``_cm_`` one.
+        cte_entries += [
+            CteEntry(name=name, query=query) for name, query in rk_ctes
         ]
         combined_statement = assemble_with_chain(
             entries=cte_entries, final=combined_select,
@@ -5316,6 +5953,11 @@ class SQLGenerator:
             order_env.windowed_cte[plan.aggregate_slot_id] = grain_alias_column(
                 alias=wm_agg_col_for_plan[plan.aggregate_slot_id],
                 table=wm_cte_name_for_plan[plan.aggregate_slot_id],
+            )
+        for plan in planned_query.ranked_aggregate_plans:
+            order_env.ranked_cte[plan.aggregate_slot_id] = grain_alias_column(
+                alias=rk_agg_col_for_plan[plan.aggregate_slot_id],
+                table=rk_cte_name_for_plan[plan.aggregate_slot_id],
             )
         # A PROJECTED outer composite orders on its combined-SELECT alias; an
         # order-only one has no alias and renders INLINE, so no synthetic
@@ -5684,7 +6326,9 @@ class SQLGenerator:
             rerooted_bundle = bundle.model_copy(
                 update={"source_model": target_model},
             )
-        cte_sql = self.generate_from_planned(sub_plan, bundle=rerooted_bundle)
+        cte_sql = self.generate_from_planned(
+            sub_plan, bundle=rerooted_bundle, as_cte_body=True,
+        )
 
         sub_slots_by_id = {
             s.id: s

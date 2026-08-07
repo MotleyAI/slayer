@@ -68,6 +68,8 @@ __all__ = [
     "OrderEntry",
     "OrderScope",
     "PlannedQuery",
+    "RankedAggregatePlan",
+    "RankedGrainMember",
     "SlotId",
     "TransformLayer",
     "ValueSlot",
@@ -329,6 +331,87 @@ class SrcFilterRewrite(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# RankedAggregatePlan — DEV-1748
+# ---------------------------------------------------------------------------
+
+
+class RankedGrainMember(BaseModel):
+    """One member of a ranked aggregate's grain, in BOTH coordinate systems.
+
+    ``host_slot_id`` names the host row slot the CTE joins back to;
+    ``ranked_key`` is the same value anchored in the RANKED scope, which for a
+    target-rooted plan is a different expression against a different root.
+
+    Carried as one list because the renderer derives two things from it that
+    must agree: the ``PARTITION BY`` the ranking runs over, and the join-back
+    predicate. Deriving them separately is how a partition and a grain drift
+    apart — and a partition COARSER than the grain silently returns more than
+    one row per group, which the LEFT JOIN then multiplies into the host.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    host_slot_id: SlotId
+    ranked_key: ValueKey
+
+
+class RankedAggregatePlan(BaseModel):
+    """Plan for one ``first`` / ``last`` aggregate slot (DEV-1748, B9).
+
+    A ranked aggregate needs its OWN ROW ORDERING, which is one of the three
+    things P-C says an aggregate can need its own rows for — so like a crossing
+    aggregate (``_cm_``) and a windowed one (``_wm_``) it compiles to a
+    plan-shaped CTE rooted where its rows live and joined back on the query
+    grain null-safely. The host base keeps only purely-local aggregates, so
+    adding a first/last cannot change host cardinality.
+
+    It replaces a shape that did the opposite: ONE first/last anywhere wrapped
+    the entire host base in a ``ROW_NUMBER`` subquery, so every sibling
+    aggregate in the query was computed over the ranked row set, and several
+    rankings shared one scope — which is what the retired rn-suffix scheme
+    (``_last_rn_2``) and the filtered sentinel columns (``_last_rn_f0`` plus a
+    ``_match_f0`` flag consulted by alias) existed to disambiguate. One
+    aggregate per CTE removes the need for all of it.
+
+    ``ranking_time_key`` is resolved at PLAN time (P-D) and anchored in the
+    ranked scope's coordinates; the renderer emits it and never re-derives the
+    precedence. A measure's ``Column.filter`` is not carried here — it lives on
+    the aggregate's own key, and the renderer applies it as a predicate inside
+    this CTE, which is what "filtered variants are plan data" means.
+
+    Filter routing uses the same vocabulary, and the same audit-versus-
+    instruction distinction, as ``CrossModelAggregatePlan``: ``where`` and
+    ``having`` are instructions about where a filter is EVALUATED, while
+    ``applied_filter_ids`` only records that some scope evaluates it.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    aggregate_slot_id: SlotId
+    #: ``first`` ranks ascending, ``last`` descending. The direction is not a
+    #: separate field because it is not a separate decision.
+    agg: Literal["first", "last"]
+    #: The model the ranked rows come FROM — the host for a local aggregate,
+    #: the join target for a cross-model one.
+    root_model: str
+    datasource: str
+    #: The host-relative join path to ``root_model``; empty when host-rooted.
+    target_path: Tuple[str, ...] = ()
+    join_chain: List[JoinRequirement] = Field(default_factory=list)
+    ranking_time_key: ValueKey
+    grain: List[RankedGrainMember] = Field(default_factory=list)
+    where_filter_ids: List[BoundFilterId] = Field(default_factory=list)
+    having_filter_ids: List[BoundFilterId] = Field(default_factory=list)
+    applied_filter_ids: List[BoundFilterId] = Field(default_factory=list)
+    target_model_filters: List[str] = Field(default_factory=list)
+    dropped_filter_warnings: List[UnreachableFilterDroppedWarning] = Field(
+        default_factory=list,
+    )
+    public_alias: Optional[str] = None
+    hidden: bool = False
+
+
+# ---------------------------------------------------------------------------
 # TransformLayer
 # ---------------------------------------------------------------------------
 
@@ -404,6 +487,8 @@ class OrderScope(str, Enum):
     CROSS_MODEL_CTE = "cross_model_cte"
     #: Lives in a windowed (``_wm_``) CTE.
     WINDOWED_CTE = "windowed_cte"
+    #: Lives in a ranked (``_rk_``) first/last CTE.
+    RANKED_CTE = "ranked_cte"
     #: Produced by a step of the transform chain.
     TRANSFORM_STEP = "transform_step"
     #: A composite whose operands span scopes, so it can only be evaluated in
@@ -514,6 +599,13 @@ class PlannedQuery(BaseModel):
     aggregate_slots: List[ValueSlot] = Field(default_factory=list)
     cross_model_aggregate_plans: List[CrossModelAggregatePlan] = Field(default_factory=list)
     windowed_aggregate_plans: List["WindowedAggregatePlan"] = Field(default_factory=list)
+    # DEV-1748 (B9) — one entry per ``first`` / ``last`` aggregate slot. A
+    # sibling of ``windowed_aggregate_plans``: both name aggregates that need
+    # their own rows and therefore their own CTE, joined back on the query
+    # grain (P-C). A RE-ROOTED cross-model first/last is NOT here — it stays on
+    # ``CrossModelAggregatePlan``, whose nested sub-plan carries the ranked plan
+    # instead, in the sub-plan's own coordinate system.
+    ranked_aggregate_plans: List["RankedAggregatePlan"] = Field(default_factory=list)
     combined_expression_slots: List[ValueSlot] = Field(default_factory=list)
     transform_layers: List[TransformLayer] = Field(default_factory=list)
     filters_by_phase: List[FilterPhase] = Field(default_factory=list)

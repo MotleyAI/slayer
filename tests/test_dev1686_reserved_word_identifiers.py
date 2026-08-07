@@ -266,13 +266,22 @@ class TestReservedStringReparsePaths:
         _assert_parses(sql)
 
     async def test_first_last_measure_on_reserved_model(self) -> None:
+        """The ranked CTE's own scope quotes the reserved relation everywhere it
+        names it — the FROM, the ranked value, and the ranking column.
+
+        This used to assert ``"grant".*``: the ranked wrap re-exported the whole
+        source relation. It projects a NAMED list now (P-B), so the star is gone
+        and each reference is checked directly, which is the stronger claim —
+        a star hides whether the individual refs were quoted at all."""
         install_reserved_keywords()
         q = SlayerQuery(
             source_model="grant", dimensions=["namespace"],
             measures=[{"formula": "amount:last"}],
         )
         sql = _norm(await _gen(q, _grant_model(), extra_models=[_merchant_model()]))
-        assert '"grant".*' in sql, sql
+        assert 'FROM "Grant" AS "grant"' in sql, sql
+        assert '"grant".amount' in sql, sql
+        assert 'ORDER BY "grant".created_at' in sql, sql
         _assert_parses(sql)
 
     async def test_where_filter_on_reserved_model(self) -> None:

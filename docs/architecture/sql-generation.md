@@ -117,6 +117,12 @@ filters route to the combined-SELECT outer `WHERE` (`Phase.POST`). `sum`/`avg`
 local measures only; other shapes raise at plan time (`_guard_windowed_measures`
 in `stage_planner.py`).
 
+And one `_rk_*` CTE per `RankedAggregatePlan` — a `first`/`last` measure. Rooted
+at the host or at the join target, it ranks its own rows and picks rank 1 per
+grain, then joins back on that grain like the other two. See
+[Ranked aggregates](ranked-aggregates.md). Any of the three plan kinds routes
+the whole query through this renderer.
+
 ### Frame bounds vs population filters (DEV-1732)
 
 `_src` inherits the host's ROW-phase filters **minus their frame bounds** — a

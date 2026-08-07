@@ -21,8 +21,6 @@ change in PRs 5 and 6 fail with a diff rather than pass silently.
 from __future__ import annotations
 
 import asyncio
-import json
-import os
 from pathlib import Path
 
 import pytest
@@ -31,6 +29,11 @@ from slayer.core.query import SlayerQuery
 
 from tests._dev1747_fixtures import dev1747_models
 from tests._engine_helpers import _engine_generate
+from tests._golden_harness import (
+    GoldenSuite,
+    load_or_regenerate,
+    record_raise,
+)
 
 
 GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1747_sql_baseline.json"
@@ -180,138 +183,51 @@ async def _generate_one(query: SlayerQuery, dialect: str):
             dialect=dialect, validate=False,
         )
     except Exception as exc:  # noqa: BLE001 — the exception itself is contract
-        return {"error": type(exc).__name__, "message": str(exc)}
+        return record_raise(exc)
 
 
-def _render(value) -> str:
-    if isinstance(value, dict):
-        return f"RAISED {value.get('error')}: {value.get('message')}"
-    return str(value)
+async def _generate_for(case_id: str, dialect: str):
+    return await _generate_one(_cases()[case_id], dialect)
 
 
-def _build_baseline() -> dict:
-    # conftest's autouse ``_enable_scope_validation`` is FUNCTION-scoped and so
-    # is not in effect while a module-scoped fixture runs. Set it explicitly, or
-    # a shape that trips ScopeLeakError during a test would have been recorded
-    # as valid SQL and every run would "fail" with a spurious diff.
-    previous = os.environ.get("SLAYER_VALIDATE_SCOPES")
-    os.environ["SLAYER_VALIDATE_SCOPES"] = "1"
-
-    async def _run() -> dict:
-        out: dict = {}
-        for case_id, query in _cases().items():
-            for dialect in DIALECTS:
-                out[f"{case_id}::{dialect}"] = await _generate_one(query, dialect)
-        return out
-
-    try:
-        return asyncio.run(_run())
-    finally:
-        if previous is None:
-            os.environ.pop("SLAYER_VALIDATE_SCOPES", None)
-        else:
-            os.environ["SLAYER_VALIDATE_SCOPES"] = previous
-
-
-def _expected_keys() -> set:
-    return {f"{c}::{d}" for c in _cases() for d in DIALECTS}
-
-
-def _merge_regenerated(
-    *, existing: dict | None, fresh: dict, allowed: dict, expected: set,
-) -> dict:
-    """Fold ``fresh`` into ``existing``, honouring the allowed-delta manifest.
-
-    Only keys named in ``allowed`` may overwrite a value already in the golden
-    file — that restriction IS the mechanism. Keys for newly added cases fold in
-    unconditionally (no prior approval to protect); keys for removed cases are
-    pruned.
-    """
-    if existing is None:
-        return dict(fresh)
-
-    unknown = sorted(set(allowed) - expected)
-    if unknown:
-        raise AssertionError(
-            f"ALLOWED_DELTAS names keys that are not in the matrix: {unknown}"
-        )
-
-    merged = {k: v for k, v in existing.items() if k in expected}
-    for key, value in fresh.items():
-        if key not in merged or key in allowed:
-            merged[key] = value
-    return merged
+def _suite() -> GoldenSuite:
+    return GoldenSuite(
+        case_ids=sorted(_cases()), dialects=DIALECTS, allowed=ALLOWED_DELTAS,
+    )
 
 
 @pytest.fixture(scope="module")
 def baseline() -> dict:
-    if os.environ.get("SLAYER_UPDATE_GOLDEN"):
-        existing = (
-            json.loads(GOLDEN_PATH.read_text()) if GOLDEN_PATH.exists() else None
-        )
-        GOLDEN_PATH.parent.mkdir(parents=True, exist_ok=True)
-        GOLDEN_PATH.write_text(
-            json.dumps(
-                _merge_regenerated(
-                    existing=existing, fresh=_build_baseline(),
-                    allowed=ALLOWED_DELTAS, expected=_expected_keys(),
-                ),
-                indent=2, sort_keys=True,
-            ) + "\n"
-        )
-    if not GOLDEN_PATH.exists():
-        pytest.fail(
-            f"golden baseline missing at {GOLDEN_PATH}; generate it with "
-            f"SLAYER_UPDATE_GOLDEN=1"
-        )
-    return json.loads(GOLDEN_PATH.read_text())
+    return load_or_regenerate(
+        path=GOLDEN_PATH, case_ids=sorted(_cases()), dialects=DIALECTS,
+        render=_generate_for, allowed=ALLOWED_DELTAS,
+    )
 
 
 @pytest.mark.parametrize("case_id", sorted(_cases()))
 @pytest.mark.parametrize("dialect", DIALECTS)
 def test_emitted_sql_matches_golden(case_id: str, dialect: str, baseline) -> None:
-    key = f"{case_id}::{dialect}"
-    assert key in baseline, (
-        f"{key} is not in the golden baseline — a new case must be added "
-        f"deliberately (SLAYER_UPDATE_GOLDEN=1) and reviewed"
-    )
-    actual = asyncio.run(_generate_one(_cases()[case_id], dialect))
-    assert actual == baseline[key], (
-        f"emitted SQL changed for {key}.\n"
-        f"--- golden ---\n{_render(baseline[key])}\n"
-        f"--- actual ---\n{_render(actual)}\n"
-        f"If this change is intended, get it approved per the DEV-1742 "
-        f"per-test protocol, add {key!r} to ALLOWED_DELTAS with the reason, "
-        f"regenerate with SLAYER_UPDATE_GOLDEN=1, then delete the entry."
+    _suite().assert_matches(
+        key=f"{case_id}::{dialect}",
+        actual=asyncio.run(_generate_one(_cases()[case_id], dialect)),
+        baseline=baseline,
     )
 
 
 def test_baseline_covers_every_case_and_dialect(baseline) -> None:
-    missing = _expected_keys() - set(baseline)
-    assert not missing, f"golden baseline is missing entries: {sorted(missing)}"
+    _suite().assert_covers_every_case(baseline)
 
 
 def test_baseline_has_no_orphan_entries(baseline) -> None:
-    orphans = set(baseline) - _expected_keys()
-    assert not orphans, (
-        f"golden baseline has entries for cases that no longer exist: "
-        f"{sorted(orphans)}; regenerate to prune them"
-    )
+    _suite().assert_no_orphans(baseline)
 
 
 def test_allowed_deltas_name_real_keys() -> None:
-    unknown = sorted(set(ALLOWED_DELTAS) - _expected_keys())
-    assert not unknown, (
-        f"ALLOWED_DELTAS names keys that are not in the matrix: {unknown}"
-    )
+    _suite().assert_allowed_deltas_name_real_keys()
 
 
 def test_allowed_deltas_carry_a_reason() -> None:
-    blank = sorted(k for k, v in ALLOWED_DELTAS.items() if not str(v).strip())
-    assert not blank, (
-        f"every allowed delta must say WHY the SQL is permitted to change: "
-        f"{blank}"
-    )
+    _suite().assert_allowed_deltas_carry_a_reason()
 
 
 def test_ordering_cases_actually_emit_an_order_by(baseline) -> None:

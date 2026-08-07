@@ -248,11 +248,11 @@ class TestDev1702B2ForwardMaterialization:
         query = SlayerQuery(
             source_model="orders_x",
             measures=[ModelMeasure(
-                formula="customers_v2.deep_pop:last(orders_x.created_at)")],
+                formula="customers_v2.deep_pop:last(customers_v2.signup_at)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
-        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        cm_body = _extract_cte_body(sql, r"_rk_\w+")
         norm = _norm(cm_body)
         # Ranked subquery present, pulls the further join inside it.
         assert "ROW_NUMBER()" in norm, norm
@@ -263,7 +263,7 @@ class TestDev1702B2ForwardMaterialization:
         # the ranked subquery alias), not the crossing ref.
         assert _re.search(r"regions\.population AS _val_\d+", inner), inner
         assert _re.search(
-            r"MAX\(CASE WHEN _last_rn = 1 THEN (?:\w+\.)?_val_\d+", outer), outer
+            r"MAX\(CASE WHEN _rk_rn = 1 THEN (?:\w+\.)?_val_\d+", outer), outer
         assert "regions.population" not in outer, outer
 
     async def test_forward_last_crossing_time_arg_registers_join(self) -> None:
@@ -279,7 +279,7 @@ class TestDev1702B2ForwardMaterialization:
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
-        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        cm_body = _extract_cte_body(sql, r"_rk_\w+")
         norm = _norm(cm_body)
         _outer, inner = _split_at_ranked_subquery(norm)
         # The time arg's crossed join is registered inside the ranked subquery,
@@ -303,11 +303,11 @@ class TestDev1702B2ForwardMaterialization:
         query = SlayerQuery(
             source_model="orders_x",
             measures=[ModelMeasure(
-                formula="customers_v2.deep_pop_flt:last(orders_x.created_at)")],
+                formula="customers_v2.deep_pop_flt:last(customers_v2.signup_at)")],
         )
         sql = await _gen(query, customers_extra=customers_extra)
         assert_scope_closed(sql)
-        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        cm_body = _extract_cte_body(sql, r"_rk_\w+")
         norm = _norm(cm_body)
         outer, inner = _split_at_ranked_subquery(norm)
         # BOTH the value's join (regions) and the filter's deeper join
@@ -318,9 +318,18 @@ class TestDev1702B2ForwardMaterialization:
         assert "regions.population" not in outer, outer
         assert "regions__countries.gdp" not in outer, outer
 
-    async def test_routed_having_binds_same_val_alias(self) -> None:
-        """A HAVING on the forward crossing first/last measure binds to the same
-        rn state + materialised value the projection uses (no raw ref leak)."""
+    async def test_filter_on_a_ranked_measure_lands_on_the_outer_select(
+        self,
+    ) -> None:
+        """A filter on the forward crossing first/last measure is applied where
+        the ranked value is READABLE — the combined SELECT — and nowhere else.
+
+        It used to be a HAVING inside the CTE. That is the DEV-1503 failure: the
+        CTE is LEFT JOINed back, so dropping its row resurrects the host row
+        carrying NULL instead of removing it. The predicate must therefore sit
+        on the outer, non-aggregating SELECT, where it drops the row for real.
+        Neither the raw crossing column nor a HAVING may appear anywhere.
+        """
         query = SlayerQuery(
             source_model="orders_x",
             dimensions=["customers_v2.status"],
@@ -330,14 +339,15 @@ class TestDev1702B2ForwardMaterialization:
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
-        cm_body = _extract_cte_body(sql, r"_cm_\w+")
-        norm = _norm(cm_body)
-        assert "HAVING" in norm, norm
-        # The HAVING aggregate must bind to the materialised value alias, not
-        # the raw crossing column (which is out of scope in the CTE's outer).
-        having = norm[norm.find("HAVING"):]
-        assert "regions.population" not in having, having
-        assert _re.search(r"_val_\d+", having), having
+        norm = _norm(sql)
+        assert "HAVING" not in norm, norm
+        rk_name = _re.search(r"(_rk_\w+) AS \(", norm)
+        assert rk_name is not None, norm
+        # The outer WHERE reads the ranked CTE's own output column.
+        tail = norm[norm.rfind("WHERE"):]
+        assert tail.startswith("WHERE"), norm
+        assert rk_name.group(1) in tail, tail
+        assert "regions.population" not in tail, tail
 
     async def test_compound_routed_having_nested_arith_registers_join(self) -> None:
         """Codex F4: the routed-filter pre-pass walks the FULL ValueKey tree.
@@ -359,9 +369,19 @@ class TestDev1702B2ForwardMaterialization:
         having = norm[norm.find("HAVING"):]
         assert "SUM(regions.population) + 1 > 5" in having, having
 
-    async def test_local_value_first_last_no_spurious_materialization(self) -> None:
-        """A forward first/last whose source is LOCAL to the target emits NO
-        ``_val_`` materialisation (the value is already star-projected)."""
+    async def test_local_value_first_last_is_materialised_exactly_once(
+        self,
+    ) -> None:
+        """A forward first/last whose source is LOCAL to the target crosses the
+        ranked scope's projection boundary exactly once.
+
+        This asserted NO materialisation at all: the ranked subquery re-exported
+        ``<target>.*``, so a target-local value was already there and only a
+        CROSSING one needed a ``_val_``. The scope projects a NAMED list now
+        (P-B), so every value it publishes is materialised — the claim that
+        still matters, and the one a duplicate-projection bug would break, is
+        that it is published ONCE.
+        """
         query = SlayerQuery(
             source_model="orders_x",
             dimensions=["customers_v2.status"],
@@ -370,9 +390,12 @@ class TestDev1702B2ForwardMaterialization:
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
-        cm_body = _extract_cte_body(sql, r"_cm_\w+")
-        assert "_val_" not in cm_body, cm_body
-        assert "customers_v2.lifetime_value" in cm_body, cm_body
+        cm_body = _extract_cte_body(sql, r"_rk_\w+")
+        _outer, inner = _split_at_ranked_subquery(_norm(cm_body))
+        projected = _re.findall(r"customers_v2\.lifetime_value AS (_val_\d+)", inner)
+        assert len(projected) == 1, inner
+        vals = _re.findall(r"AS (_val_\d+)", inner)
+        assert len(vals) == len(set(vals)), inner
 
 
 # =========================================================================== #
@@ -492,7 +515,7 @@ class TestAllocatorDeterminism:
         query = SlayerQuery(
             source_model="orders_x",
             measures=[ModelMeasure(
-                formula="customers_v2.deep_pop:last(orders_x.created_at)")],
+                formula="customers_v2.deep_pop:last(customers_v2.signup_at)")],
         )
         sql1 = await _gen(query)
         sql2 = await _gen(query)
@@ -505,8 +528,10 @@ class TestAllocatorDeterminism:
         query = SlayerQuery(
             source_model="orders_x",
             measures=[
-                ModelMeasure(formula="customers_v2.deep_pop:last(orders_x.created_at)"),
-                ModelMeasure(formula="customers_v2.deep_weight:last(orders_x.created_at)"),
+                ModelMeasure(
+                    formula="customers_v2.deep_pop:last(customers_v2.signup_at)"),
+                ModelMeasure(
+                    formula="customers_v2.deep_weight:last(customers_v2.signup_at)"),
             ],
         )
         sql1 = await _gen(query)
@@ -514,7 +539,7 @@ class TestAllocatorDeterminism:
         assert sql1 == sql2
         assert_scope_closed(sql1)
         # Within-scope: no CTE body defines the same _val alias twice.
-        for pat in (r"_cm_\w*deep_pop\w*", r"_cm_\w*deep_weight\w*"):
+        for pat in (r"_rk_\w*deep_pop\w*", r"_rk_\w*deep_weight\w*"):
             body = _extract_cte_body(sql1, pat)
             vals = _re.findall(r"AS (_val_\d+)", body)
             assert len(vals) == len(set(vals)), f"dup _val in {pat}: {vals}"

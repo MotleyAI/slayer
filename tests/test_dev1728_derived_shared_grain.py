@@ -240,10 +240,17 @@ class TestForwardDerivedGrainShape:
 # first / last over a derived shared grain (Law-2 materialisation).
 # =========================================================================== #
 class TestFirstLastDerivedGrain:
-    async def test_target_local_grain_no_materialisation(self) -> None:
-        """A first/last aggregate grouped by a TARGET-LOCAL derived grain needs
-        NO ``_val_`` materialisation — the grain's refs are re-exported by
-        ``target.*`` inside the ranked subquery (byte-parity with a base col)."""
+    async def test_target_local_grain_is_partitioned_and_published_once(
+        self,
+    ) -> None:
+        """A first/last grouped by a TARGET-LOCAL derived grain partitions on
+        the raw expression and publishes it once under the dotted host alias.
+
+        This asserted NO ``_val_`` at all, because the ranked subquery
+        re-exported ``target.*`` and a target-local grain was already in scope
+        outside it. The scope projects a NAMED list now (P-B), so a target-local
+        grain crosses the boundary exactly like a crossing one — and the raw
+        expression still drives ``PARTITION BY``, where the join is bound."""
         query = SlayerQuery(
             source_model="orders_x",
             dimensions=["customers_v2.ltv_x2"],
@@ -251,12 +258,19 @@ class TestFirstLastDerivedGrain:
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
-        cm_body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
-        # The grain expression drives PARTITION BY and outer GROUP BY directly.
-        assert "customers_v2.lifetime_value * 2" in cm_body, cm_body
-        assert "PARTITION BY" in cm_body, cm_body
-        # No spurious grain materialisation for a target-local grain.
-        assert "_val_" not in cm_body, cm_body
+        cm_body = _norm(_extract_cte_body(sql, r"_rk_\w+"))
+        outer, inner = _split_at_ranked_subquery(cm_body)
+        assert (
+            "PARTITION BY CAST(customers_v2.lifetime_value * 2 AS DOUBLE PRECISION)"
+            in inner
+        ), inner
+        assert _re.search(
+            r"CAST\(customers_v2\.lifetime_value \* 2 AS DOUBLE PRECISION\) "
+            r"AS _val_\d+",
+            inner,
+        ), inner
+        assert _re.search(
+            r"_val_\d+ AS \"orders_x\.customers_v2\.ltv_x2\"", outer), outer
 
     async def test_crossing_grain_materialised_in_ranked_subquery(self) -> None:
         """A first/last aggregate grouped by a CROSSING derived grain
@@ -270,7 +284,7 @@ class TestFirstLastDerivedGrain:
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
-        cm_body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
+        cm_body = _norm(_extract_cte_body(sql, r"_rk_\w+"))
         outer, inner = _split_at_ranked_subquery(cm_body)
         # F1: the crossed join lives INSIDE the ranked subquery, not outside.
         assert "LEFT JOIN regions AS regions" in inner, inner
@@ -299,7 +313,7 @@ class TestFirstLastDerivedGrain:
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
-        cm_body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
+        cm_body = _norm(_extract_cte_body(sql, r"_rk_\w+"))
         outer, inner = _split_at_ranked_subquery(cm_body)
         assert "LEFT JOIN regions AS regions" in inner, inner
         # The crossing derived TIME grain is materialised as a _val_ projection
@@ -325,7 +339,7 @@ class TestFirstLastDerivedGrain:
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
-        cm_body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
+        cm_body = _norm(_extract_cte_body(sql, r"_rk_\w+"))
         outer, inner = _split_at_ranked_subquery(cm_body)
         # The materialised value is the CAST-wrapped arithmetic expression
         # (identical to the host base's wrapping); the outer projection + the
@@ -365,7 +379,7 @@ class TestFirstLastDerivedGrain:
         )
         sql = await _gen(query, customers_extra=customers_extra)
         assert_scope_closed(sql)
-        cm_body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
+        cm_body = _norm(_extract_cte_body(sql, r"_rk_\w+"))
         # The materialised grain must use a NON-colliding alias (not _val_0).
         vals = _re.findall(r"AS (_val_\d+)", cm_body)
         assert vals, cm_body
@@ -385,7 +399,7 @@ class TestFirstLastDerivedGrain:
         )
         sql = await _gen(query, customers_extra=customers_extra)
         assert_scope_closed(sql)
-        cm_body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
+        cm_body = _norm(_extract_cte_body(sql, r"_rk_\w+"))
         vals = _re.findall(r"AS (_val_\d+)", cm_body)
         assert vals, cm_body
         assert "_val_0" not in vals, cm_body
