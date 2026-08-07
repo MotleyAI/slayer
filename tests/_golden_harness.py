@@ -217,11 +217,13 @@ class GoldenSuite:
             f"{sorted(orphans)}; regenerate to prune them"
         )
 
-    def assert_allowed_deltas_are_honest(self) -> None:
+    def assert_allowed_deltas_name_real_keys(self) -> None:
         unknown = sorted(set(self.allowed) - self.expected)
         assert not unknown, (
             f"ALLOWED_DELTAS names keys that are not in the matrix: {unknown}"
         )
+
+    def assert_allowed_deltas_carry_a_reason(self) -> None:
         blank = sorted(k for k, v in self.allowed.items() if not str(v).strip())
         assert not blank, (
             f"every allowed delta must say WHY the SQL is permitted to change: "

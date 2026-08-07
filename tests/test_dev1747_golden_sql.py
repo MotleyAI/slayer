@@ -222,8 +222,12 @@ def test_baseline_has_no_orphan_entries(baseline) -> None:
     _suite().assert_no_orphans(baseline)
 
 
-def test_allowed_deltas_are_honest() -> None:
-    _suite().assert_allowed_deltas_are_honest()
+def test_allowed_deltas_name_real_keys() -> None:
+    _suite().assert_allowed_deltas_name_real_keys()
+
+
+def test_allowed_deltas_carry_a_reason() -> None:
+    _suite().assert_allowed_deltas_carry_a_reason()
 
 
 def test_ordering_cases_actually_emit_an_order_by(baseline) -> None:
