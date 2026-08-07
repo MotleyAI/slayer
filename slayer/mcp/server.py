@@ -30,6 +30,7 @@ from slayer.engine.ingestion import (
     _empty_ingest_message as _shared_empty_ingest_message,
     _friendly_db_error,
     _get_schemas,
+    _hidden_internal_line,
     list_ingestable_objects,
 )
 from slayer.engine.profiling import handle_edit_refresh
@@ -242,6 +243,40 @@ def _render_drift_section(to_delete: list[Any]) -> list[str]:
     return out
 
 
+def _render_skipped_section(skipped: list[Any]) -> list[str]:
+    """Objects that produced no model at all (DEV-1741).
+
+    The CLI points at ``--exclude`` here; this tool has no such argument, so
+    the line states the outcome and stops rather than naming a flag the agent
+    cannot pass.
+    """
+    if not skipped:
+        return []
+    out = ["", f"Skipped ({len(skipped)}) — not modellable, no model created:"]
+    out.extend(f"- {entry.table_name}: {entry.reason}" for entry in skipped)
+    return out
+
+
+def _render_hidden_internals_section(hidden: list[Any]) -> list[str]:
+    """Recognised ELT/migration bookkeeping modelled ``hidden`` (DEV-1759).
+
+    Reported for the same reason the CLI reports it: the models exist and are
+    queryable, they are just absent from ``models_summary``. Staying silent
+    here would leave the agent that ran the ingest unable to tell a hidden
+    model from one that was never created.
+    """
+    if not hidden:
+        return []
+    out = [
+        "",
+        f"Hidden ({len(hidden)}) — recognised ELT/migration internals "
+        f"(excluded from models_summary; still queryable by name):",
+    ]
+    out.extend(f"- {_hidden_internal_line(entry)}" for entry in hidden)
+    out.append("  Use edit_model(name, hidden=false) to surface one.")
+    return out
+
+
 def _render_errors_section(errors: list[Any]) -> list[str]:
     if not errors:
         return []
@@ -258,7 +293,17 @@ def _render_ingest_result(
 ) -> str:
     """Render an ``IdempotentIngestResult`` for the MCP ``ingest_datasource_models`` tool."""
     additions = list(result.additions)
-    if not additions and not result.to_delete and not result.errors:
+    # Read defensively, matching the CLI renderer: this is called with more
+    # than one result shape, and an older one may carry neither attribute.
+    skipped = list(getattr(result, "skipped", None) or [])
+    hidden_internals = list(getattr(result, "hidden_internals", None) or [])
+    if (
+        not additions
+        and not result.to_delete
+        and not result.errors
+        and not skipped
+        and not hidden_internals
+    ):
         # Two distinct cases produce an empty result:
         #   1. The schema actually has no tables (the agent should look
         #      elsewhere — show the "Try schema_name=..." hint).
@@ -266,6 +311,12 @@ def _render_ingest_result(
         #      query-backed (silently skipped by the additive pass) — no
         #      additive work to do, but the existing models are healthy.
         # Probe the live table count so we don't misdirect the agent.
+        #
+        # Skips and hidden internals are part of the guard, not just of the
+        # output below: a steady-state re-ingest of a dlt-loaded schema
+        # produces no additions at all, so reaching this branch would answer
+        # "already in sync" and swallow both sections on every run after the
+        # first — the silence class DEV-1741 exists to kill.
         tables, _err = _fetch_tables(ds=ds, schema_name=schema_name or None)
         if tables is None or not tables:
             return _empty_ingest_message(schema_name=schema_name, ds=ds)
@@ -283,6 +334,9 @@ def _render_ingest_result(
     lines.extend(_render_updated_section(updated))
     lines.extend(_render_unchanged_section(unchanged))
     lines.extend(_render_drift_section(list(result.to_delete)))
+    # Same order as the CLI renderer, so the two surfaces read alike.
+    lines.extend(_render_skipped_section(skipped))
+    lines.extend(_render_hidden_internals_section(hidden_internals))
     lines.extend(_render_errors_section(list(result.errors)))
     if not lines:
         lines.append("Datasource already in sync — no changes.")

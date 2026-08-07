@@ -89,7 +89,7 @@ Model names cannot contain `__` (reserved for join-path aliases), but
 `reports__patient__drug` → model `reports_patient_drug`, `sql_table` unchanged.
 
 Auto-ingestion sets `hidden: true` on recognised ELT/migration bookkeeping
-tables — prefixes `_dlt_`, `_airbyte_`, `sqlite_`, plus exact names like
+tables — prefixes `_dlt_`, `_airbyte_`, plus exact names like
 `alembic_version`, `flyway_schema_history`, `databasechangelog`,
 `django_migrations`, `schema_migrations`, `_fivetran_audit` — and records
 `meta.internal_table` with the tool that matched. Hidden, not skipped: the model
@@ -97,7 +97,10 @@ is absent from `models_summary` and search but stays queryable by name and
 usable as a join target, so `_dlt_loads` still answers freshness questions.
 Hiding happens only at creation, so `edit_model(name, hidden=false)` survives
 every later re-ingest. `slayer ingest --surface-internals` ingests newly created
-internals visible instead.
+internals visible instead. Every ingest surface reports what it hid — the CLI
+and `datasources create --ingest` print a `Hidden (N)` section,
+`ingest_datasource_models` returns one, and `POST /ingest` carries
+`hidden_internals` in the 200 body.
 
 ## Query-backed models
 

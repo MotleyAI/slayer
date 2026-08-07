@@ -157,7 +157,6 @@ Matching is case-insensitive and applies to the **live object name**, so a
 |------|---------|------|
 | prefix `_dlt_` | `_dlt_loads`, `_dlt_pipeline_state`, `_dlt_version`, … | dlt |
 | prefix `_airbyte_` | `_airbyte_destination_state`, `_airbyte_raw_*` | Airbyte |
-| prefix `sqlite_` | `sqlite_sequence`, `sqlite_stat1`…`sqlite_stat4` | SQLite |
 | exact | `_fivetran_audit`, `_fivetran_audit_warning` | Fivetran |
 | exact | `flyway_schema_history`, `schema_version` | Flyway |
 | exact | `databasechangelog`, `databasechangeloglock` | Liquibase |
@@ -169,11 +168,14 @@ Matching is case-insensitive and applies to the **live object name**, so a
 | exact | `__efmigrationshistory`, `__migrationhistory` | Entity Framework |
 | exact | `knex_migrations`, `knex_migrations_lock` | Knex |
 
-Prefix rules are limited to namespaces the vendor reserves by contract. Fivetran
-and Singer get no prefix rule because their real surface is *columns* on your
-tables (`_fivetran_synced`, `_sdc_batched_at`, …), not tables. PostGIS
-(`spatial_ref_sys`, `geometry_columns`, …) and `pg_stat_statements` are
-deliberately not matched.
+Prefix rules are limited to namespaces the vendor reserves by contract, in every
+warehouse it loads into. Fivetran and Singer get no prefix rule because their
+real surface is *columns* on your tables (`_fivetran_synced`, `_sdc_batched_at`,
+…), not tables. There is no `sqlite_` rule either: SQLite's own internals are
+filtered out by the inspector before SLayer sees them, so such a rule could only
+ever fire on a *non*-SQLite database, where `sqlite_backup` is an ordinary
+table. PostGIS (`spatial_ref_sys`, `geometry_columns`, …) and
+`pg_stat_statements` are deliberately not matched.
 
 Hiding happens **when the model is created**. A re-ingest never re-hides a model
 you un-hid, and never retro-hides one that already existed — so `edit_model(name,

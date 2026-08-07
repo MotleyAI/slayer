@@ -96,7 +96,8 @@ async def _storage_with(workspace: Path, ds: DatasourceConfig) -> YAMLStorage:
 
 
 class TestMatcherPrefixes:
-    """Three namespaces are reserved by contract, so a prefix match is safe."""
+    """Both surviving prefixes are reserved by a VENDOR, in every warehouse it
+    loads into — so a prefix match is safe and needs no dialect."""
 
     @pytest.mark.parametrize(
         "name",
@@ -111,12 +112,6 @@ class TestMatcherPrefixes:
     )
     def test_airbyte_prefix_covers_state_and_raw(self, name: str) -> None:
         assert internal_table_rule(name) == "airbyte"
-
-    @pytest.mark.parametrize(
-        "name", ["sqlite_sequence", "sqlite_stat1", "sqlite_stat4"]
-    )
-    def test_sqlite_prefix(self, name: str) -> None:
-        assert internal_table_rule(name) == "sqlite"
 
 
 class TestMatcherExactNames:
@@ -160,7 +155,7 @@ class TestMatcherCaseInsensitivity:
             ("SequelizeMeta", "sequelize"),
             ("Alembic_Version", "alembic"),
             ("_DLT_LOADS", "dlt"),
-            ("SQLite_Sequence", "sqlite"),
+            ("_AirByte_Raw_Users", "airbyte"),
         ],
     )
     def test_case_variants_match(self, name: str, tool: str) -> None:
@@ -203,6 +198,57 @@ class TestMatcherNegatives:
 
     def test_empty_name_does_not_match(self) -> None:
         assert internal_table_rule("") is None
+
+
+class TestNoSqlitePrefixRule:
+    """There is deliberately no `sqlite_` prefix rule, and adding one back
+    could only ever hide real data.
+
+    SQLite does reserve the namespace, but the objects it reserves it FOR never
+    reach the scan — SQLAlchemy's SQLite inspector defaults to
+    `sqlite_include_internal=False`, so `get_table_names()` filters
+    `sqlite_sequence` and friends out first. `test_sqlite_internals_never_reach_the_scan`
+    pins that upstream behaviour, since the argument for having no rule rests
+    on it. The rule could therefore only fire on a NON-SQLite datasource, where
+    nothing reserves the prefix and `sqlite_backup` is an ordinary table.
+    """
+
+    @pytest.mark.parametrize(
+        "name",
+        ["sqlite_sequence", "sqlite_stat1", "sqlite_stat4", "sqlite_backup"],
+    )
+    def test_sqlite_prefixed_names_do_not_match(self, name: str) -> None:
+        assert internal_table_rule(name) is None
+
+    def test_sqlite_internals_never_reach_the_scan(self, workspace: Path) -> None:
+        """AUTOINCREMENT makes SQLite create a real `sqlite_sequence` table.
+        It is in `sqlite_master` and still never becomes a candidate — which is
+        why deleting the rule costs nothing."""
+        db_path, ds = _ds(
+            workspace,
+            """
+            CREATE TABLE orders (id INTEGER PRIMARY KEY AUTOINCREMENT, amount REAL);
+            INSERT INTO orders (amount) VALUES (1.0);
+            """,
+        )
+        conn = sqlite3.connect(db_path)
+        live = {r[0] for r in conn.execute("SELECT name FROM sqlite_master")}
+        conn.close()
+        assert "sqlite_sequence" in live  # the engine really did create it
+
+        report = ingest_datasource_report(datasource=ds)
+        assert {o.name for o in report.objects} == {"orders"}
+        assert {m.name for m in report.models} == {"orders"}
+        assert report.hidden_internals == []
+        assert report.skipped == []
+
+    def test_a_user_table_named_sqlite_something_is_impossible_on_sqlite(
+        self, workspace: Path
+    ) -> None:
+        """The other half of the argument: on SQLite nobody can create one, so
+        the rule had no legitimate target there either."""
+        with pytest.raises(sqlite3.OperationalError, match="reserved for internal use"):
+            _ds(workspace, "CREATE TABLE sqlite_backup (id INTEGER PRIMARY KEY);")
 
 
 # ---------------------------------------------------------------------------
@@ -295,6 +341,33 @@ class TestMatchesTheLiveObjectName:
         entry = next(iter(report.hidden_internals))
         assert entry.table_name == "_dlt_loads__x"
         assert entry.model_name == "_dlt_loads_x"
+
+
+class TestSqlitePrefixOnAnotherEngine:
+    def test_sqlite_named_table_stays_visible_on_duckdb(
+        self, workspace: Path
+    ) -> None:
+        """The only case a `sqlite_` rule could ever have reached, on a real
+        non-SQLite engine. `sqlite_backup` is an ordinary DuckDB table and must
+        stay visible; a dlt table in the same database is still hidden, so the
+        removal is surgical rather than a blanket loosening."""
+        pytest.importorskip("duckdb")
+        import duckdb
+
+        db_path = str(workspace / "live.duckdb")
+        con = duckdb.connect(db_path)
+        con.execute("CREATE TABLE sqlite_backup (id INTEGER PRIMARY KEY)")
+        con.execute("CREATE TABLE _dlt_loads (load_id VARCHAR)")
+        con.close()
+
+        ds = DatasourceConfig(name="ds", type="duckdb", database=db_path)
+        report = ingest_datasource_report(datasource=ds)
+        by_name = {m.name: m for m in report.models}
+
+        assert by_name["sqlite_backup"].hidden is False
+        assert by_name["sqlite_backup"].meta is None
+        assert by_name["_dlt_loads"].hidden is True
+        assert {h.table_name for h in report.hidden_internals} == {"_dlt_loads"}
 
 
 class TestSkipAndHideAreDisjoint:
@@ -1344,3 +1417,172 @@ class TestDriftScope:
         entry = next(e for e in to_delete if e.model_name == "_dlt_version")
         assert entry.tool == "delete_model"
         assert entry.data_source == "ds"
+
+
+# ---------------------------------------------------------------------------
+# The MCP ingest tool's own report
+# ---------------------------------------------------------------------------
+
+
+class TestMcpIngestReporting:
+    """`ingest_datasource_models` is the surface this issue is about.
+
+    The model list is the menu handed to an agent over MCP, so the agent that
+    ran the ingest is precisely the one that needs telling which tables were
+    modelled hidden — otherwise it cannot distinguish a hidden model from one
+    that was never created, and re-ingests forever chasing the difference.
+    Every other path (`slayer ingest`, `datasources create --ingest`,
+    ingest-on-startup) renders through `_print_ingest_drift_and_errors`; this
+    one has its own renderer, which reported neither hidden internals nor
+    DEV-1741's skips.
+    """
+
+    async def _ingest_via_mcp(self, storage, *, schema_name: str = "") -> str:
+        from slayer.mcp.server import create_mcp_server
+
+        mcp = create_mcp_server(storage=storage)
+        blocks, _ = await mcp.call_tool(
+            name="ingest_datasource_models",
+            arguments={"datasource_name": "ds", "schema_name": schema_name},
+        )
+        return blocks[0].text
+
+    async def test_first_ingest_reports_hidden_internals(
+        self, workspace: Path
+    ) -> None:
+        _, ds = _ds(workspace, _MIXED)
+        storage = await _storage_with(workspace, ds)
+
+        out = await self._ingest_via_mcp(storage)
+
+        assert "Hidden (4)" in out
+        assert "- _dlt_loads: dlt" in out
+        assert "- alembic_version: alembic" in out
+        # And the real table is still reported as created, not swallowed.
+        assert "orders" in out
+
+    async def test_steady_state_re_ingest_still_reports_them(
+        self, workspace: Path
+    ) -> None:
+        """The sharp edge. A no-op re-ingest produces no additions, no drift
+        and no errors, so the early return answered "already in sync" and
+        swallowed the section on every run after the first."""
+        _, ds = _ds(workspace, _MIXED)
+        storage = await _storage_with(workspace, ds)
+
+        await self._ingest_via_mcp(storage)
+        second = await self._ingest_via_mcp(storage)
+
+        assert "already in sync" not in second
+        assert "Hidden (4)" in second
+        assert "- _dlt_version: dlt" in second
+
+    async def test_report_names_the_model_when_it_differs(
+        self, workspace: Path
+    ) -> None:
+        """The advice is `edit_model(hidden=false)`, which takes the MODEL
+        name — for a `__`-sanitized table the live name alone names something
+        the agent cannot act on."""
+        _, ds = _ds(
+            workspace, "CREATE TABLE _dlt_loads__x (id INTEGER PRIMARY KEY);"
+        )
+        storage = await _storage_with(workspace, ds)
+
+        out = await self._ingest_via_mcp(storage)
+
+        assert "- _dlt_loads__x (model: _dlt_loads_x): dlt" in out
+
+    async def test_report_points_at_the_escape_hatch(
+        self, workspace: Path
+    ) -> None:
+        """`--surface-internals` is a CLI flag this tool does not accept, so
+        the agent-facing hint must name the MCP tool that does work."""
+        _, ds = _ds(workspace, _MIXED)
+        storage = await _storage_with(workspace, ds)
+
+        out = await self._ingest_via_mcp(storage)
+
+        assert "edit_model" in out
+        assert "hidden=false" in out
+        assert "--surface-internals" not in out
+
+    async def test_skipped_objects_are_reported_too(
+        self, workspace: Path
+    ) -> None:
+        """DEV-1741's skips were dropped by this renderer for the same reason.
+        `_dlt_loads_x` reserves the unsanitized name, so `_dlt_loads__x` is
+        skipped rather than modelled."""
+        _, ds = _ds(
+            workspace,
+            """
+            CREATE TABLE _dlt_loads_x (id INTEGER PRIMARY KEY);
+            CREATE TABLE _dlt_loads__x (id INTEGER PRIMARY KEY);
+            """,
+        )
+        storage = await _storage_with(workspace, ds)
+
+        out = await self._ingest_via_mcp(storage)
+
+        assert "Skipped (1)" in out
+        assert "_dlt_loads__x" in out
+        # No `--exclude` in sight: this tool has no such argument.
+        assert "--exclude" not in out
+
+    async def test_nothing_printed_when_there_are_no_internals(
+        self, workspace: Path
+    ) -> None:
+        _, ds = _ds(workspace, "CREATE TABLE orders (id INTEGER PRIMARY KEY);")
+        storage = await _storage_with(workspace, ds)
+
+        out = await self._ingest_via_mcp(storage)
+
+        assert "Hidden" not in out
+        assert "Skipped" not in out
+
+    async def test_empty_schema_message_survives(self, workspace: Path) -> None:
+        """Widening the early-return guard must not cost the empty-schema
+        hint, which is the branch that tells an agent to try another schema."""
+        _, ds = _ds(workspace, "CREATE TABLE placeholder (id INTEGER);")
+        storage = await _storage_with(workspace, ds)
+        conn = sqlite3.connect(str(workspace / "live.db"))
+        conn.execute("DROP TABLE placeholder")
+        conn.commit()
+        conn.close()
+
+        out = await self._ingest_via_mcp(storage)
+
+        assert "Hidden" not in out
+        assert "already in sync" not in out
+
+    def test_renderer_tolerates_a_result_lacking_the_attributes(self) -> None:
+        """Mirrors the CLI renderer's defensiveness — this one is called with
+        more than one result shape."""
+        from slayer.mcp.server import (
+            _render_hidden_internals_section,
+            _render_skipped_section,
+        )
+
+        legacy = SimpleNamespace(additions=[], to_delete=[], errors=[])
+        assert _render_skipped_section(
+            list(getattr(legacy, "skipped", None) or [])
+        ) == []
+        assert _render_hidden_internals_section(
+            list(getattr(legacy, "hidden_internals", None) or [])
+        ) == []
+
+    def test_section_renders_whole_lines(self) -> None:
+        """Asserted as whole lines on purpose: `"dlt" in out` is satisfied by
+        the substring inside `_dlt_loads`, so a renderer that dropped the
+        `tool` field would still pass a naive containment check."""
+        from slayer.mcp.server import _render_hidden_internals_section
+
+        lines = _render_hidden_internals_section([
+            InternalTable(
+                table_name="_dlt_loads", model_name="_dlt_loads",
+                tool="dlt", kind="table",
+            ),
+        ])
+
+        assert "Hidden (1) — recognised ELT/migration internals " \
+               "(excluded from models_summary; still queryable by name):" in lines
+        assert "- _dlt_loads: dlt" in lines
