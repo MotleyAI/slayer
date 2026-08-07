@@ -31,6 +31,9 @@ from slayer.core.enums import TimeGranularity
 from slayer.engine.planned import OrderEntry, OrderScope
 from slayer.engine.stage_planner import plan_query
 from tests._dev1747_fixtures import dev1747_bundle
+from slayer.core.keys import AggregateKey
+from slayer.core.keys import ColumnKey
+from slayer.core.keys import Phase
 
 _MEASURE = [{"formula": "amount:sum", "name": "rev"}]
 
@@ -58,7 +61,6 @@ class TestOrderEntryShape:
             OrderEntry(slot_id="s1", direction="asc")  # type: ignore[call-arg]
 
     def test_nulls_defaults_to_dialect_default(self) -> None:
-        from slayer.core.keys import Phase
 
         entry = OrderEntry(
             slot_id="s1", direction="asc",
@@ -67,7 +69,6 @@ class TestOrderEntryShape:
         assert entry.nulls == "default"
 
     def test_nulls_rejects_an_unknown_policy(self) -> None:
-        from slayer.core.keys import Phase
 
         with pytest.raises(ValidationError):
             OrderEntry(
@@ -77,7 +78,6 @@ class TestOrderEntryShape:
 
     def test_direction_validation_still_applies(self) -> None:
         """The existing contract must survive the enrichment."""
-        from slayer.core.keys import Phase
 
         with pytest.raises(ValidationError):
             OrderEntry(
@@ -206,7 +206,6 @@ class TestScopeClassification:
 # ---------------------------------------------------------------------------
 class TestPhaseAndDirection:
     def test_row_target_carries_row_phase(self) -> None:
-        from slayer.core.keys import Phase
 
         entry = _sole_entry(SlayerQuery(
             source_model="orders",
@@ -217,7 +216,6 @@ class TestPhaseAndDirection:
         assert entry.phase is Phase.ROW
 
     def test_aggregate_target_carries_aggregate_phase(self) -> None:
-        from slayer.core.keys import Phase
 
         entry = _sole_entry(SlayerQuery(
             source_model="orders",
@@ -249,7 +247,6 @@ class TestPhaseAndDirection:
 # ---------------------------------------------------------------------------
 class TestDirectionAwareWrapIsPlanned:
     def _wrap_aggs(self, direction: str) -> list[str]:
-        from slayer.core.keys import AggregateKey
 
         plan = _plan(SlayerQuery(
             source_model="orders",
@@ -273,7 +270,6 @@ class TestDirectionAwareWrapIsPlanned:
     def test_same_column_both_directions_plans_two_slots(self) -> None:
         """MIN(a) and MAX(a) are different values, so they must be different
         slots. Keying the order remap by key alone collapses them."""
-        from slayer.core.keys import AggregateKey
 
         plan = _plan(SlayerQuery(
             source_model="orders",
@@ -297,7 +293,6 @@ class TestDirectionAwareWrapIsPlanned:
 # ---------------------------------------------------------------------------
 class TestHostGrainMarker:
     def test_joined_order_wrap_is_marked_host_grain(self) -> None:
-        from slayer.core.keys import AggregateKey
 
         plan = _plan(SlayerQuery(
             source_model="orders",
@@ -317,7 +312,6 @@ class TestHostGrainMarker:
         assert wraps[0].source.path == ("customers", "regions")
 
     def test_local_wrap_keeps_the_default_grain(self) -> None:
-        from slayer.core.keys import AggregateKey
 
         plan = _plan(SlayerQuery(
             source_model="orders",
@@ -336,7 +330,6 @@ class TestHostGrainMarker:
         """A user-declared ``customers.regions.name:max`` measure and the
         synthetic host-grain wrap mean different things (global vs per-group),
         so they must not intern onto one slot."""
-        from slayer.core.keys import AggregateKey, ColumnKey
 
         source = ColumnKey(path=("customers", "regions"), leaf="name")
         target_rooted = AggregateKey(source=source, agg="max")

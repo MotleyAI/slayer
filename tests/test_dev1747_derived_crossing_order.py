@@ -45,6 +45,9 @@ from tests._dev1747_fixtures import (
     seed_dev1747_sqlite,
 )
 from tests._engine_helpers import _engine_generate
+from slayer.engine.planned import OrderScope
+from slayer.engine.stage_planner import plan_query
+from slayer.sql.generator import SQLGenerator
 
 
 def _squash(sql: str) -> str:
@@ -211,7 +214,6 @@ class TestRenderTimeProbeRemoved:
         isolate the probe, whereas "this method is not called" is exactly the
         claim.
         """
-        from slayer.sql.generator import SQLGenerator
 
         assert hasattr(SQLGenerator, "_apply_order_limit_from_planned"), (
             "the method was deleted; P-J defers deletion to PR 6"
@@ -233,8 +235,6 @@ class TestRenderTimeProbeRemoved:
         """Plan-level: the order entry's scope is decided before rendering
         (P-D). A HOST_BASE_HIDDEN scope on the ungrouped derived entry is what
         tells the renderer to split-emit rather than probe."""
-        from slayer.engine.planned import OrderScope
-        from slayer.engine.stage_planner import plan_query
 
         plan = plan_query(query=_ungrouped("asc"), bundle=dev1747_bundle())
         assert plan.order, "plan carries no order entries"

@@ -48,6 +48,10 @@ from slayer.sql.render.order_terms import (
     OrderSlotNotMaterialisedError,
     resolve_order_term,
 )
+from slayer.sql.dialects.base import SqlDialect
+from slayer.sql.dialects.tsql import TsqlDialect
+from slayer.sql.generator import SQLGenerator
+import pydantic
 
 _MEASURE = [{"formula": "amount:sum", "name": "rev"}]
 
@@ -230,7 +234,6 @@ class TestOrderTargetMatrix:
         case is unreachable — pinned here so a future relaxation of that
         validator cannot open the hole silently. The nearest REACHABLE shape
         (``_1``) must still emit a quoted identifier, not a bare token."""
-        import pydantic
 
         with pytest.raises(pydantic.ValidationError):
             ColumnRef(name="1")
@@ -367,7 +370,6 @@ class TestNullOrdering:
     def test_dialect_hook_covers_every_direction_and_policy(
         self, direction: str, policy: str,
     ) -> None:
-        from slayer.sql.dialects.base import SqlDialect
 
         ordered = SqlDialect().build_ordered(
             exp.column("a", quoted=True),
@@ -383,7 +385,6 @@ class TestNullOrdering:
     ) -> None:
         """T-SQL's ORDER BY resolver mis-resolves the bracketed alias INSIDE
         sqlglot's CASE-WHEN nulls emulation, so the pin suppresses it."""
-        from slayer.sql.dialects.tsql import TsqlDialect
 
         ordered = TsqlDialect().build_ordered(
             exp.column("a", quoted=True),
@@ -450,7 +451,6 @@ class TestSingleResolver:
     async def test_superseded_resolver_is_never_called(
         self, method: str, shape: str, monkeypatch,
     ) -> None:
-        from slayer.sql.generator import SQLGenerator
 
         assert hasattr(SQLGenerator, method), (
             f"{method} has been deleted; P-J defers deletion to PR 6, so "

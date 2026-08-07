@@ -49,6 +49,9 @@ from tests._dev1747_fixtures import (
     make_sqlite_engine,
     seed_dev1747_sqlite,
 )
+from slayer.engine import cross_model_planner
+from slayer.engine.cross_model_planner import IsolatedCteCrossModelPlanner
+import inspect
 
 #: A cross-model aggregate PLUS a dimension one hop PAST the target, which is
 #: what makes the planner re-root the CTE at ``customers`` instead of using the
@@ -176,7 +179,6 @@ def _classifier_spy(monkeypatch) -> list:
     calls it, and a future move of the call site into another module would make
     this spy silently record nothing, which the vacuity assertions below catch.
     """
-    from slayer.engine import cross_model_planner
 
     calls: list = []
     original = cross_model_planner.classify_host_filter
@@ -347,7 +349,6 @@ class TestInternalFailuresRaise:
         still swallows there, the swallowed exception escapes here. A grep for
         the symbol would instead pass the moment someone renamed it.
         """
-        from slayer.engine import cross_model_planner
 
         monkeypatch.setattr(cross_model_planner, "_REROOT_BIND_ERRORS", ())
         plan = _sole_plan(FILTER_REACHABLE, FILTER_HOST_LOCAL, FILTER_UNREACHABLE)
@@ -364,7 +365,6 @@ class TestInternalFailuresRaise:
         ``_plan_filtered_local``, so a target-rooted query would leave this
         sentinel untripped and the test would assert nothing.
         """
-        from slayer.engine import cross_model_planner
 
         assert hasattr(cross_model_planner, "_classify_subplan_filters"), (
             "the helper was deleted; P-J defers deletion to PR 6"
@@ -392,9 +392,7 @@ class TestInternalFailuresRaise:
         """Scoped to the reroot functions rather than the whole module, so an
         unrelated ``except Exception`` elsewhere in the file cannot fail this
         (or, worse, be deleted to make it pass)."""
-        import inspect
 
-        from slayer.engine import cross_model_planner
 
         for name in (
             "_maybe_reroot_cross_model_plan",
@@ -413,7 +411,6 @@ class TestInternalFailuresRaise:
 
     def test_planner_failure_propagates_rather_than_warning(self, monkeypatch) -> None:
         """A genuine internal error must not be reported as an expected drop."""
-        from slayer.engine import cross_model_planner
 
         boom = RuntimeError("planner exploded")
 
@@ -483,7 +480,6 @@ class TestFilteredLocalDispatchAccounting:
         )
 
     def _dispatch_spy(self, monkeypatch) -> list:
-        from slayer.engine.cross_model_planner import IsolatedCteCrossModelPlanner
 
         calls: list = []
         original = IsolatedCteCrossModelPlanner._dispatch_filtered_local

@@ -47,6 +47,9 @@ from slayer.core.keys import (
 # test) so the whole module reports ONE clear collection error while it does
 # not exist yet, rather than N identical failures.
 from slayer.core.keys import reroot_value_key  # noqa: E402
+from slayer.core.keys import ValueKey
+from slayer.core.keys import reroot_aggregate_key
+from typing import get_args
 
 TARGET = ("customers",)
 DEEP_TARGET = ("customers", "regions")
@@ -349,9 +352,7 @@ class TestTotalityAndFailClosed:
         fails this test the day it is added, which is the whole point of a
         total visitor.
         """
-        from typing import get_args
 
-        from slayer.core.keys import ValueKey
 
         samples = {
             ColumnKey: ColumnKey(path=("customers",), leaf="tier"),
@@ -521,7 +522,6 @@ class TestPublicResultKeysUnchanged:
         """``reroot_aggregate_key`` stays (P-J state 1) but must become a thin
         wrapper, so the two cannot drift into two reroot semantics — which is
         precisely the drift §5.4 exists to end."""
-        from slayer.core.keys import reroot_aggregate_key
 
         key = AggregateKey(
             source=ColumnKey(path=("customers",), leaf="spend"),

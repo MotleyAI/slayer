@@ -41,6 +41,13 @@ from slayer.core.enums import TimeGranularity
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.stage_planner import plan_query
 from tests._dev1747_fixtures import dev1747_bundle
+from slayer.core.keys import AggregateKey, ColumnKey, reroot_value_key
+from slayer.engine import cross_model_planner
+from slayer.engine import stage_planner
+from slayer.engine.binding import BoundFilter
+from slayer.engine.prebound import PreboundQuery
+from slayer.engine.stage_planner import StrictQueryCarrier
+from slayer.engine.stage_planner import bind_query_inputs
 
 _SHAPES = {
     "plain": SlayerQuery(
@@ -119,7 +126,6 @@ class TestPreboundEquivalence:
         """Extract the bind product from a normal plan, feed it back through
         ``prebound=``, and require an identical plan. Any divergence means the
         seam is a second planner rather than the same one."""
-        from slayer.engine.stage_planner import bind_query_inputs
 
         query = _SHAPES[shape]
         expected = _plan(query)
@@ -137,7 +143,6 @@ class TestPreboundEquivalence:
         """The fields ``plan_query`` reads off ``query`` AFTER binding. A
         missing one silently inherits a default — which is exactly the class of
         bug the strict carrier below is meant to make impossible."""
-        from slayer.engine.stage_planner import bind_query_inputs
 
         prebound = bind_query_inputs(
             query=_SHAPES["ordered_paginated"], bundle=dev1747_bundle(),
@@ -151,7 +156,6 @@ class TestPreboundEquivalence:
         """``_resolve_main_time_dimension`` takes the whole ``query``; the
         prebound path must supply the resolved key instead of re-deriving it
         from a text carrier."""
-        from slayer.engine.stage_planner import bind_query_inputs
 
         prebound = bind_query_inputs(
             query=_SHAPES["time_dimension"], bundle=dev1747_bundle(),
@@ -172,14 +176,12 @@ class TestNoTextRoundTrip:
         """Scoped spy: the HOST query parses legitimately, so a global counter
         would be meaningless. The sentinel raises only once the reroot has
         begun building its nested plan."""
-        from slayer.engine import cross_model_planner
 
         real_builder_calls: list[int] = []
         original = cross_model_planner._maybe_reroot_cross_model_plan
 
         def _wrapped(**kwargs):
             real_builder_calls.append(1)
-            from slayer.engine import stage_planner
 
             def _boom(*_a, **_kw):
                 raise AssertionError(
@@ -222,7 +224,6 @@ class TestNoTextRoundTrip:
         ``_local_agg_formula`` on the HOST-rooted one. Exercising a single
         shape would leave the other's serializer free to stay live.
         """
-        from slayer.engine import cross_model_planner
 
         patched = []
         for symbol in ("_local_agg_formula", "_reroot_ref", "_render_ref_formula"):
@@ -251,7 +252,6 @@ class TestNoTextRoundTrip:
         """The observable end state: the nested plan's aggregate slot carries
         the RE-ROOTED typed key, byte-identical to what the visitor produces —
         not something re-derived from a string."""
-        from slayer.core.keys import AggregateKey, ColumnKey, reroot_value_key
 
         plan = _plan(self._reroot_query())
         cma = plan.cross_model_aggregate_plans[0]
@@ -277,14 +277,12 @@ class TestStrictCarrier:
         """The guard Codex asked for: if ``plan_query`` grows a new post-bind
         ``query.*`` read and the seam does not carry it, the reroot must FAIL
         rather than silently plan against a default."""
-        from slayer.engine.stage_planner import StrictQueryCarrier
 
         carrier = StrictQueryCarrier(source_model="orders")
         with pytest.raises(AttributeError):
             _ = carrier.some_field_the_seam_never_approved
 
     def test_approved_attributes_pass_through(self) -> None:
-        from slayer.engine.stage_planner import StrictQueryCarrier
 
         carrier = StrictQueryCarrier(source_model="orders")
         assert carrier.source_model == "orders"
@@ -298,8 +296,6 @@ class TestStrictCarrier:
         nothing about the live path (an import, a comment, or a branch that is
         never taken all satisfy a grep).
         """
-        from slayer.engine import cross_model_planner
-        from slayer.engine.stage_planner import StrictQueryCarrier
 
         built: list = []
 
@@ -322,7 +318,6 @@ class TestStrictCarrier:
         """The seam's boundary condition. A nested ``plan_query`` given a real
         ``SlayerQuery`` would re-bind formula text no matter how the keys were
         built upstream."""
-        from slayer.engine import cross_model_planner
 
         seen: list = []
         original = cross_model_planner.IsolatedCteCrossModelPlanner.plan
@@ -360,8 +355,6 @@ class TestPreboundQueryInvariants:
 
     @staticmethod
     def _filter(text: str = "status == 'A'"):
-        from slayer.engine.binding import BoundFilter
-        from slayer.core.keys import ColumnKey
         return BoundFilter(
             value_key=ColumnKey(path=(), leaf="status"),
             phase=Phase.ROW,
@@ -369,7 +362,6 @@ class TestPreboundQueryInvariants:
         )
 
     def test_filter_texts_must_be_parallel(self) -> None:
-        from slayer.engine.prebound import PreboundQuery
 
         filters = [self._filter(), self._filter()]
         with pytest.raises(ValidationError) as exc:
@@ -380,7 +372,6 @@ class TestPreboundQueryInvariants:
 
     def test_parallel_lists_are_accepted(self) -> None:
         """The control — the guard must not reject the valid shape."""
-        from slayer.engine.prebound import PreboundQuery
 
         pq = PreboundQuery(
             bound_filters=[self._filter()], bound_filter_texts=["status == 'A'"],
@@ -388,7 +379,6 @@ class TestPreboundQueryInvariants:
         assert len(pq.bound_filter_texts) == len(pq.bound_filters)
 
     def test_n_date_range_cannot_exceed_the_filters_it_slices(self) -> None:
-        from slayer.engine.prebound import PreboundQuery
 
         filters = [self._filter()]
         with pytest.raises(ValidationError):
@@ -402,7 +392,6 @@ class TestPreboundQueryInvariants:
         rather than raising, so an over-count silently plans fewer dimensions
         than were declared — and misclassifies the measures it does reach on
         the way (CodeRabbit)."""
-        from slayer.engine.prebound import PreboundQuery
 
         with pytest.raises(ValidationError) as exc:
             PreboundQuery(declared_measures=[], n_dims=1, n_time_dimensions=1)
@@ -415,7 +404,6 @@ class TestPreboundQueryInvariants:
         """``bound_filters[:-1]`` is not an empty slice — it keeps everything
         but the last element. A negative count would therefore drop a filter
         or a dimension and report nothing."""
-        from slayer.engine.prebound import PreboundQuery
 
         with pytest.raises(ValidationError):
             PreboundQuery(**{field: -1})

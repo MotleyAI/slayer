@@ -37,6 +37,10 @@ from tests._dev1747_fixtures import (
     with_node_of,
 )
 from tests._engine_helpers import _engine_generate
+from slayer.sql import generator
+from slayer.sql.generator import SQLGenerator
+from slayer.sql.render import cte_assembly
+import inspect
 
 #: A LOCAL (single-model) transform chain — no cross-model measure, so it takes
 #: the f-string splice path rather than the cross-model one PR 3 already fixed.
@@ -83,8 +87,6 @@ def _assembler_spy(monkeypatch) -> list:
     nothing and every assertion downstream would pass vacuously. The vacuity
     guard is the ``assert entries`` in each caller.
     """
-    from slayer.sql import generator
-    from slayer.sql.render import cte_assembly
 
     seen: list = []
     original = cte_assembly.assemble_with_chain
@@ -152,9 +154,7 @@ class TestNoTextRoundTrip:
     async def test_window_transform_renderer_returns_ast(self) -> None:
         """``_render_window_transform_sql`` returns a string today, which is
         what forces a parse at the assembler seam."""
-        import inspect
 
-        from slayer.sql.generator import SQLGenerator
 
         signature = inspect.signature(SQLGenerator._render_window_transform_sql)
         assert signature.return_annotation is not str, (
@@ -173,7 +173,6 @@ class TestNoTextRoundTrip:
         round-trips — the very thing D8 removes. A raising sentinel scoped to
         this render is the exact claim: zero.
         """
-        from slayer.sql.generator import SQLGenerator
 
         def _boom(self, sql):  # noqa: ANN001 - signature mirrors the seam
             raise AssertionError(
