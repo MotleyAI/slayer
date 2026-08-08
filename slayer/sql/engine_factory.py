@@ -36,39 +36,23 @@ from slayer.sql.dialects.base import SqlDialect, _digest
 logger = logging.getLogger(__name__)
 
 
-#: Identity of a cached engine: URL + runtime fields + credentials. Exported so
-#: callers that key their own caches by engine identity stay in lockstep with
-#: this module instead of hard-coding the arity.
+#: (connection_string, runtime_fingerprint, credential_fingerprint). Exported so
+#: callers keying their own caches by engine identity don't hard-code the arity.
 EngineCacheKey = tuple[str, str, str]
 
-# Engine cache. Key = (connection_string, runtime_fingerprint, credential_fingerprint).
-# The credential leg is load-bearing for security: a dialect whose secret is not
-# in the URL (BigQuery's service-account / OAuth credentials) would otherwise
-# have two differently-authenticated callers share one engine, silently running
-# one identity's queries under the other's credentials.
-#
-# Ordered least- to most-recently-used, and bounded: once credentials are part
-# of the key, cardinality follows the number of distinct *identities*, not
-# datasources. A deployment handing SLayer per-end-user credentials would
-# otherwise accumulate one engine — and one connection pool — per user who ever
-# ran a query, for the life of the process.
+# LRU-ordered, bounded. The credential leg is a security boundary: where the
+# secret isn't in the URL (BigQuery), two identities would otherwise share one
+# engine. Including it also makes cardinality track users, hence the cap.
 _engine_cache: "OrderedDict[EngineCacheKey, sa.Engine]" = OrderedDict()
 
-# Guards every read, recency bump, insert, eviction and reset of the cache
-# above. Engines are reached from worker threads (``_run_sync_in_thread`` in
-# slayer.sql.client) as well as from the event loop, so the lookup/move_to_end
-# pair is not safe unsynchronised: an ``invalidate_engine`` landing between the
-# two raises KeyError, and two threads missing at once build two pools for one
-# key and silently orphan the loser.
-#
-# Never held across engine construction or ``dispose()`` — both do real I/O,
-# and serialising unrelated datasources behind them would cost more than the
-# race it prevents.
+# Engines are reached from worker threads as well as the event loop, so the
+# lookup/move_to_end pair needs guarding: an interleaved invalidate raises
+# KeyError, and simultaneous misses orphan a pool. Never held across engine
+# construction or dispose() — both do I/O.
 _cache_lock = threading.Lock()
 
-#: Cap on simultaneously cached engines. Sized for "every datasource, times a
-#: working set of active users" rather than for a whole user base; a miss costs
-#: one engine construction, so over-eviction degrades latency, not correctness.
+#: Sized for "datasources x working set of active users". A miss costs one
+#: engine build, so over-eviction hurts latency, not correctness.
 DEFAULT_MAX_CACHED_ENGINES = 64
 
 #: Env override for :data:`DEFAULT_MAX_CACHED_ENGINES`. ``0`` disables caching.
@@ -76,11 +60,7 @@ MAX_CACHED_ENGINES_ENV = "SLAYER_MAX_CACHED_ENGINES"
 
 
 def _max_cached_engines() -> int:
-    """Resolve the cache cap, falling back to the default on junk input.
-
-    Read per call rather than at import so tests and hosts can retune it
-    without reloading the module.
-    """
+    """Cache cap, defaulting on junk input. Read per call so it stays retunable."""
     raw = os.environ.get(MAX_CACHED_ENGINES_ENV)
     if raw is None:
         return DEFAULT_MAX_CACHED_ENGINES
@@ -102,13 +82,11 @@ def _max_cached_engines() -> int:
 
 
 def loggable_key(key: EngineCacheKey) -> str:
-    """A short, stable id for a cache key that is safe to put in a log line.
+    """Short, stable, log-safe id for a cache key.
 
-    ``key[0]`` is the connection string, and for username/password dialects
-    ``DatasourceConfig.get_connection_string`` renders it with
-    ``hide_password=False`` — so the raw key carries a plaintext password and
-    must never be logged. Digesting the whole key keeps entries correlatable
-    across log lines while reducing every leg to non-reversible hex.
+    ``key[0]`` is the connection string, rendered with ``hide_password=False``
+    — so the raw key must never reach a log line. The digest stays correlatable
+    across lines without being reversible.
     """
     return _digest("\x00".join(key))
 
@@ -116,13 +94,9 @@ def loggable_key(key: EngineCacheKey) -> str:
 def _dispose_quietly(*, engine: sa.Engine, reason: str) -> None:
     """Release an engine's pooled connections, logging rather than raising.
 
-    ``Engine.dispose()`` closes checked-in connections and swaps in a fresh
-    pool; connections checked out by an in-flight query are detached and
-    closed when returned. So this is safe to call on an engine another caller
-    still holds a reference to — it reclaims sockets without breaking them.
-
-    ``reason`` reaches a log line, so callers must keep secrets out of it —
-    see :func:`loggable_key` for cache keys.
+    Safe on an engine someone still holds: ``dispose()`` swaps in a fresh pool
+    and lets in-flight connections close on return. ``reason`` is logged, so
+    keep secrets out of it — see :func:`loggable_key`.
     """
     try:
         engine.dispose()
@@ -131,11 +105,10 @@ def _dispose_quietly(*, engine: sa.Engine, reason: str) -> None:
 
 
 def _take_evictions_over_limit() -> list[sa.Engine]:
-    """Pop least-recently-used entries until the cache fits its cap.
+    """Pop LRU entries until the cache fits its cap.
 
-    Returns the evicted engines rather than disposing them, because callers
-    run this holding ``_cache_lock`` and ``dispose()`` closes sockets. Dispose
-    the result after releasing the lock.
+    Returns them instead of disposing: callers hold ``_cache_lock``, and
+    ``dispose()`` does I/O. Dispose after releasing.
     """
     limit = _max_cached_engines()
     evicted: list[sa.Engine] = []
@@ -152,11 +125,9 @@ def _cache_key(datasource: DatasourceConfig, connection_string: str) -> EngineCa
     with it; a divergence between the two caches means a caller can get a client
     whose engine was built for different credentials.
 
-    ``datasource`` is read, not retained. Only ``get_engine`` snapshots it
-    first, because only there does a slow engine build sit between the key and
-    the credentials it claims to describe. Callers that compute a key and use
-    it immediately are safe: a config mutated underneath them yields a key that
-    simply misses and rebuilds.
+    Only ``get_engine`` snapshots ``datasource`` first — it is the one caller
+    with a slow build between the key and the credentials it describes. Callers
+    that use the key immediately just miss and rebuild.
     """
     return (
         connection_string,
@@ -275,16 +246,13 @@ def get_engine(datasource: DatasourceConfig) -> sa.Engine:
     apply the wrong USE statements.
 
     The cap is re-applied on hits as well as inserts, so lowering
-    ``SLAYER_MAX_CACHED_ENGINES`` — or setting it to ``0`` to turn caching off
-    — takes effect on the next call instead of waiting for a miss.
+    ``SLAYER_MAX_CACHED_ENGINES`` takes effect on the next call, not the next
+    miss.
     """
-    # Snapshot first: DatasourceConfig is mutable, and the key is computed long
-    # before _build_engine re-reads the credentials — engine construction sits
-    # between them. A rotation landing in that window would cache an engine
-    # under a fingerprint that doesn't describe what it authenticates as, which
-    # is the exact confusion the credential leg of the key exists to prevent.
-    # Shallow copy suffices: every field is a scalar, so this is already
-    # detached from later writes to the caller's object.
+    # DatasourceConfig is mutable and the build sits between the key and the
+    # dialect's second read of the credentials; a rotation in that window would
+    # cache an engine under a fingerprint that misdescribes it. Shallow is
+    # enough — every field is a scalar.
     snapshot = datasource.model_copy()
     connection_string = snapshot.get_connection_string()
     cache_key = _cache_key(datasource=snapshot, connection_string=connection_string)
@@ -294,28 +262,25 @@ def get_engine(datasource: DatasourceConfig) -> sa.Engine:
             trimmed, reuse = [], False
         else:
             _engine_cache.move_to_end(cache_key)
-            # Re-apply the cap on the hit path too. A cache that only trims on
-            # insert stays oversized until the next miss, and a cap of 0 would
-            # keep serving entries admitted before it was set.
+            # Trim here too, else a lowered cap waits for the next miss.
             trimmed = _take_evictions_over_limit()
-            # A cap of 0 trims the entry we just touched, which is what "no
-            # caching" has to mean: fall through and build instead of handing
-            # back an engine we are about to dispose.
+            # A cap of 0 trims the entry we just touched: fall through and
+            # build rather than hand back an engine we are about to dispose.
             reuse = cache_key in _engine_cache
     for stale in trimmed:
         _dispose_quietly(engine=stale, reason="cache limit lowered")
     if reuse:
         return cached
-    # Built outside the lock — construction does real work (BigQuery mints an
-    # API client), and every other datasource would queue behind it.
+    # Built outside the lock: construction does I/O, and every other datasource
+    # would queue behind it.
     engine = _build_engine(
         datasource=snapshot, connection_string=connection_string,
     )
     with _cache_lock:
         winner = _engine_cache.get(cache_key)
         if winner is not None:
-            # Another caller built the same engine while we were constructing.
-            # Converge on theirs so one key never backs two live pools.
+            # Someone else built it first; converge so one key never backs
+            # two live pools.
             _engine_cache.move_to_end(cache_key)
             loser, engine = engine, winner
         else:
@@ -333,15 +298,11 @@ def invalidate_engine(datasource: DatasourceConfig) -> bool:
     """Drop and dispose the cached engine for ``datasource``. Returns whether
     one was cached.
 
-    Meant for the case where the *credentials* an engine was built with have
-    stopped working — a revoked OAuth grant, a rotated service-account key.
-    Those engines are poisoned for good: the credential object is baked in at
-    construction, so every retry through the cache fails identically until
-    someone throws the engine away. Retrying a transient network blip, by
-    contrast, wants the pool kept.
-
-    ``get_engine`` rebuilds on the next call, picking up whatever credentials
-    the datasource now carries.
+    For credentials that have stopped working — revoked grant, rotated key.
+    Such engines are poisoned permanently (the credentials are baked in at
+    construction), so retrying through the cache fails identically until one is
+    thrown away; a transient blip, by contrast, wants the pool kept.
+    ``get_engine`` then rebuilds from whatever the datasource now carries.
     """
     connection_string = datasource.get_connection_string()
     cache_key = _cache_key(datasource=datasource, connection_string=connection_string)
@@ -356,10 +317,9 @@ def invalidate_engine(datasource: DatasourceConfig) -> bool:
 def reset_cache(*, dispose: bool = False) -> None:
     """Discard every cached engine.
 
-    ``dispose`` defaults to False to preserve the long-standing test-fixture
-    behaviour of dropping references without touching pools. Hosts tearing a
-    process down want ``dispose=True`` so server-side connections close
-    promptly instead of waiting on garbage collection.
+    ``dispose`` defaults to False, preserving the test-fixture behaviour of
+    dropping references only. Pass True when tearing a process down, so
+    server-side connections close promptly rather than at GC.
     """
     with _cache_lock:
         dropped = list(_engine_cache.items())

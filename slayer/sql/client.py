@@ -529,18 +529,14 @@ class SlayerSQLClient:
         return self._sync_engine
 
     def _discard_sync_engine_on_auth_failure(self, exc: BaseException) -> bool:
-        """Drop the sync engine when the failure was a credential rejection.
-        Returns whether ``exc`` was one.
+        """Drop the sync engine on a credential rejection; returns whether
+        ``exc`` was one.
 
-        The credentials an engine authenticates with are fixed at construction
-        (BigQuery bakes a client object into the engine), so a revoked OAuth
-        grant or rotated key poisons that engine permanently — every later call
-        through the cache reproduces the same failure. Evicting means the next
-        call rebuilds from whatever credentials the datasource now carries,
-        which is exactly what a caller that just refreshed its grant expects.
-
-        Best-effort and non-fatal: the original error is what the caller needs
-        to see, so a failure to clean up must not displace it.
+        An engine's credentials are fixed at construction, so a revoked grant
+        poisons it permanently — every later call through the cache fails the
+        same way. Evicting lets the next one rebuild from whatever the
+        datasource now carries. Best-effort: cleanup must not displace the
+        original error.
         """
         if not _is_auth_failure(exc):
             return False
@@ -556,11 +552,11 @@ class SlayerSQLClient:
         return True
 
     async def _discard_engines_on_auth_failure(self, exc: BaseException) -> None:
-        """Async-path cleanup: the sync engine, plus this client's async one.
+        """Async-path cleanup: the sync engine plus this client's async one.
 
-        Native-async dialects hold a second pool that ``invalidate_engine``
-        knows nothing about, and disposing it needs a loop — hence the split
-        from the sync variant, which ``execute_sync`` uses.
+        Native-async dialects hold a second pool ``invalidate_engine`` knows
+        nothing about, and disposing it needs a loop — hence the split from the
+        sync variant used by ``execute_sync``.
         """
         if not self._discard_sync_engine_on_auth_failure(exc):
             return
@@ -648,9 +644,8 @@ class SlayerSQLClient:
     ) -> list[dict[str, Any]]:
         """Execute SQL synchronously (for CLI, notebooks, tests).
 
-        Only the sync engine is discarded on a credential rejection: this
-        method has no loop to dispose an async pool on, and the paths that do
-        (``execute`` / ``get_column_types``) handle it.
+        Discards only the sync engine on a credential rejection — no loop here
+        to dispose an async pool on; ``execute`` / ``get_column_types`` cover that.
         """
         try:
             return _execute_with_retry_sync(
@@ -713,14 +708,11 @@ def _is_transient_db_error(exc: BaseException) -> bool:
     return any(sig in msg for sig in _TRANSIENT_DB_ERROR_SIGNALS)
 
 
-# Credential rejection, as opposed to a transient blip. Distinct from
-# _TRANSIENT_DB_ERROR_SIGNALS on purpose: retrying these is pointless (the
-# credentials are baked into the engine, so every attempt fails identically),
-# and the right response is to throw the engine away rather than sleep.
-#
-# Deliberately narrow. Postgres' table-level "permission denied for table"
-# is NOT here — the credentials worked fine, the grant didn't, and evicting
-# a healthy engine over it is pure pool churn.
+# Credential rejection, deliberately distinct from _TRANSIENT_DB_ERROR_SIGNALS:
+# retrying is pointless (the credentials are baked into the engine), so the
+# response is to throw the engine away rather than sleep. Kept narrow —
+# Postgres' table-level "permission denied for table" is absent on purpose,
+# since the credentials worked and evicting over it is pure pool churn.
 _AUTH_ERROR_SIGNALS = (
     "invalid_grant",                      # OAuth refresh token revoked / expired
     "invalid_client",
@@ -734,8 +726,8 @@ _AUTH_ERROR_SIGNALS = (
     "invalid username or password",
 )
 
-# Matched by class name so this stays dependency-free — google-auth and
-# google-api-core ship only with the optional 'bigquery' extra.
+# Matched by class name to stay dependency-free: google-auth ships only with
+# the optional 'bigquery' extra.
 _AUTH_ERROR_TYPE_NAMES = frozenset({
     "RefreshError",             # google.auth.exceptions
     "DefaultCredentialsError",  # google.auth.exceptions
@@ -744,11 +736,10 @@ _AUTH_ERROR_TYPE_NAMES = frozenset({
 
 
 def _is_auth_failure(exc: BaseException) -> bool:
-    """Return True when the server rejected the *credentials* themselves.
+    """True when the server rejected the *credentials* themselves.
 
-    Walks the cause/context chain (plus SQLAlchemy's ``orig``) because the
-    signal is almost always a driver exception wrapped one or two layers deep
-    by the time it surfaces.
+    Walks the cause/context chain plus SQLAlchemy's ``orig`` — the signal
+    surfaces wrapped a layer or two deep.
     """
     seen: set[int] = set()
     pending: list[BaseException] = [exc]

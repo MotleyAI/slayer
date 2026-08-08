@@ -210,27 +210,18 @@ class BigqueryDialect(SqlDialect):
         *,
         connection_string: str,
     ) -> "sa.Engine | None":
-        """Construct the SQLAlchemy engine for whichever auth path the
-        datasource configures.
+        """Build the engine for whichever auth path is configured, in order:
 
-        Three paths, in precedence order:
-
-        1. ``oauth_credentials_json`` — a per-end-user OAuth grant. Queries
-           run as that user against their own BigQuery permissions. See
+        1. ``oauth_credentials_json`` — per-end-user grant, see
            :meth:`_build_oauth_engine`.
-        2. ``credentials_json`` — inline service-account key. ``sqlalchemy
-           -bigquery`` accepts a ``credentials_info`` kwarg on
-           ``create_engine``, a dict matching the key file's shape, so the
-           BigQuery client builds credentials from it directly with no temp
-           file. One shared identity for every caller.
-        3. Neither — return ``None`` so ``engine_factory`` falls back to the
-           default ``create_engine`` and the BigQuery client picks up
-           Application Default Credentials.
+        2. ``credentials_json`` — service-account key, passed straight through
+           as ``credentials_info``. One shared identity for every caller.
+        3. Neither — ``None``, so the factory falls back to a plain
+           ``create_engine`` and the client picks up ADC.
 
-        Setting both (1) and (2) is a configuration error rather than a
-        silent precedence win: the two mean different identities, and
-        guessing which one the caller meant is how a per-user query
-        quietly runs as the shared service account.
+        Setting both is an error rather than a silent precedence win: they are
+        different identities, and guessing is how a per-user query quietly runs
+        as the service account.
         """
         if datasource.oauth_credentials_json and datasource.credentials_json:
             raise ValueError(
@@ -271,24 +262,16 @@ class BigqueryDialect(SqlDialect):
     ) -> "sa.Engine":
         """Build an engine bound to a caller-supplied OAuth user grant.
 
-        ``sqlalchemy-bigquery`` has no kwarg for OAuth credentials — its
-        ``credentials_info``/``credentials_path``/``credentials_base64``
-        kwargs all route to ``service_account.Credentials``. The supported
-        escape hatch is its ``user_supplied_client`` URL flag: with it set,
-        ``create_connect_args`` skips building a client of its own and takes
-        ours from ``connect_args={"client": ...}``. Without the flag the
-        driver would first construct an Application-Default-Credentials
-        client (failing outright where no ADC exists) before ours displaced
-        it, so the flag is load-bearing, not decorative.
+        ``sqlalchemy-bigquery`` has no OAuth kwarg — every credentials kwarg it
+        has routes to ``service_account.Credentials``. Its ``user_supplied_client``
+        URL flag is the supported escape hatch: with it set, the driver takes our
+        client from ``connect_args`` instead of first building an ADC one (which
+        fails outright where no ADC exists), so the flag is load-bearing.
 
-        The BigQuery project is not part of an OAuth grant the way it is
-        part of a service-account key, so it has to come from the
-        connection string's host (``bigquery://<project>/<dataset>``), or
-        from the grant's ``quota_project_id`` when it carries one.
-
-        Config is validated before the ``google.*`` imports so a
-        misconfigured datasource reports *that* rather than a missing
-        optional dependency — those ship only with the 'bigquery' extra.
+        A grant carries no project, so it comes from the URL host or the grant's
+        ``quota_project_id``. Config is validated before the ``google.*``
+        imports — they ship only with the 'bigquery' extra, and a misconfigured
+        datasource should report that, not a missing dependency.
         """
         info = _parse_credentials_object(
             raw=datasource.oauth_credentials_json,
@@ -323,16 +306,13 @@ class BigqueryDialect(SqlDialect):
         )
 
     def credential_fingerprint(self, datasource: "DatasourceConfig") -> str:
-        """Identity of both BigQuery auth paths, so cached engines never
-        cross between a service account and an end user, or between two
-        end users.
+        """Identity across both auth paths, so a cached engine never crosses
+        between a service account and an end user, or between two end users.
 
-        The OAuth half deliberately digests the *durable* grant rather than
-        the raw JSON: an access token rotates, and keying on it would mint
-        (and leak) a fresh engine on every refresh. Dropping the rotating
-        fields is only safe while a refresh token pins the identity —
-        without one the access token IS the whole identity, and removing it
-        would let two different users share one engine.
+        The OAuth half digests the *durable* grant: keying on a rotating access
+        token would mint a fresh engine per refresh. Dropping those fields is
+        only safe while a refresh token pins the identity — without one the
+        access token is the whole identity.
         """
         material = [datasource.credentials_json or ""]
         raw_oauth = datasource.oauth_credentials_json

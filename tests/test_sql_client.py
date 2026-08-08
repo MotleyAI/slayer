@@ -450,9 +450,8 @@ class TestBuildTypeProbeSQL:
 
 
 class TestIsAuthFailure:
-    """Credential rejection is classified separately from transient errors:
-    retrying it is pointless (the credentials are baked into the engine), and
-    the right response is to throw the engine away."""
+    """Credential rejection is classified apart from transient errors: retrying
+    is pointless, so the engine gets thrown away instead."""
 
     def test_oauth_invalid_grant_is_auth_failure(self) -> None:
         assert _is_auth_failure(Exception("('invalid_grant: Token has been expired or revoked.')"))
@@ -461,7 +460,7 @@ class TestIsAuthFailure:
         assert _is_auth_failure(Exception('FATAL:  password authentication failed for user "svc"'))
 
     def test_signal_found_through_sqlalchemy_orig(self) -> None:
-        """Drivers surface wrapped; the signal is a layer or two down."""
+        """Drivers surface wrapped; the signal sits a layer or two down."""
         inner = Exception("invalid_grant")
         wrapped = sqlalchemy.exc.OperationalError("SELECT 1", {}, inner)
         assert _is_auth_failure(wrapped)
@@ -473,8 +472,8 @@ class TestIsAuthFailure:
         assert _is_auth_failure(outer)
 
     def test_google_refresh_error_matched_by_type_name(self) -> None:
-        """google-auth ships only with the optional 'bigquery' extra, so the
-        classifier matches on class name rather than importing it."""
+        """google-auth ships only with the optional extra, so the classifier
+        matches on class name."""
         class RefreshError(Exception):
             pass
         assert _is_auth_failure(RefreshError("bad news"))
@@ -484,8 +483,7 @@ class TestIsAuthFailure:
             assert not _is_auth_failure(Exception(message)), message
 
     def test_table_permission_denied_is_not_an_auth_failure(self) -> None:
-        """The credentials worked; the grant didn't. Evicting a healthy engine
-        over this is pure pool churn."""
+        """The credentials worked; the grant didn't. Evicting is pool churn."""
         assert not _is_auth_failure(Exception("permission denied for table orders"))
 
     def test_cyclic_cause_chain_terminates(self) -> None:
@@ -530,8 +528,8 @@ class TestClientDiscardsEngineOnAuthFailure:
         assert client._sync_engine is engine
 
     async def test_async_engine_is_disposed_too(self) -> None:
-        """Native-async dialects hold a second pool that ``invalidate_engine``
-        knows nothing about; it has to go as well."""
+        """Native-async dialects hold a second pool ``invalidate_engine`` knows
+        nothing about."""
         client = self._client()
         async_engine = AsyncMock()
         client._async_engine = async_engine
@@ -545,8 +543,8 @@ class TestClientDiscardsEngineOnAuthFailure:
         assert client._async_engine is None
 
     async def test_get_column_types_also_discards(self) -> None:
-        """It runs its own SQL against the same cached engine, so it needs the
-        same cleanup ``execute`` gets."""
+        """Runs its own SQL on the same cached engine, so it needs the same
+        cleanup ``execute`` gets."""
         client = self._client()
         client._sync_engine = object()
         with (
@@ -562,8 +560,8 @@ class TestClientDiscardsEngineOnAuthFailure:
         assert client._sync_engine is None
 
     def test_execute_sync_also_discards(self) -> None:
-        """The sync path shares the factory-cached engine. It cannot dispose an
-        async pool (no loop to do it on), so it only drops the sync one."""
+        """Shares the factory-cached engine, but has no loop to dispose an async
+        pool on — so it drops only the sync one."""
         client = self._client()
         client._sync_engine = object()
         with (
@@ -591,8 +589,7 @@ class TestClientDiscardsEngineOnAuthFailure:
         assert client._sync_engine is engine
 
     async def test_cleanup_failure_does_not_mask_the_original_error(self) -> None:
-        """The auth error is what the caller needs to see; a failed eviction
-        must not displace it."""
+        """A failed eviction must not displace the auth error."""
         client = self._client()
         with (
             patch.object(sql_client.SlayerSQLClient, "_execute", side_effect=Exception("invalid_grant")),

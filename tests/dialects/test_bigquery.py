@@ -668,12 +668,9 @@ def test_build_engine_with_non_object_credentials_json_raises(payload: str) -> N
 
 
 # ---------------------------------------------------------------------------
-# build_engine — per-end-user OAuth grant
-#
-# ``sqlalchemy-bigquery`` routes every credentials kwarg it has to
-# ``service_account.Credentials``, so OAuth user grants have to go through
-# its ``user_supplied_client`` escape hatch instead. These tests pin that
-# wiring and the mutual exclusion with the service-account path.
+# build_engine — per-end-user OAuth grant. Every credentials kwarg the driver
+# has routes to service_account.Credentials, so grants go through its
+# user_supplied_client escape hatch; these pin that wiring.
 # ---------------------------------------------------------------------------
 
 
@@ -699,9 +696,8 @@ def _oauth_ds(name: str = "bq", **overrides) -> DatasourceConfig:
 
 
 def test_build_engine_oauth_uses_user_supplied_client() -> None:
-    """OAuth path must set the ``user_supplied_client`` URL flag AND pass the
-    client via ``connect_args``. Without the flag, ``sqlalchemy-bigquery``
-    builds an ADC client first (and raises where no ADC exists)."""
+    """Needs both the ``user_supplied_client`` flag and the client in
+    ``connect_args``; without the flag the driver builds an ADC client first."""
     dialect = BigqueryDialect()
     captured: dict = {}
 
@@ -733,8 +729,8 @@ def test_build_engine_oauth_uses_user_supplied_client() -> None:
 
 
 def test_build_engine_oauth_without_project_raises() -> None:
-    """An OAuth grant carries no project, so omitting it from the connection
-    string is a config error rather than a confusing downstream 404."""
+    """A grant carries no project, so omitting it is a config error rather than
+    a confusing downstream 404."""
     dialect = BigqueryDialect()
     ds = _oauth_ds()
     with pytest.raises(ValueError, match="must be given in the connection string"):
@@ -742,8 +738,7 @@ def test_build_engine_oauth_without_project_raises() -> None:
 
 
 def test_build_engine_oauth_falls_back_to_quota_project() -> None:
-    """A grant carrying ``quota_project_id`` supplies the project when the
-    connection string doesn't."""
+    """``quota_project_id`` supplies the project when the URL doesn't."""
     dialect = BigqueryDialect()
     with (
         patch("slayer.sql.dialects.bigquery.sa.create_engine", return_value=object()),
@@ -757,8 +752,8 @@ def test_build_engine_oauth_falls_back_to_quota_project() -> None:
 
 
 def test_build_engine_rejects_both_credential_kinds() -> None:
-    """Setting both is a config error, not a silent precedence win: guessing
-    is how a per-user query quietly runs as the shared service account."""
+    """Guessing between the two is how a per-user query quietly runs as the
+    shared service account."""
     ds = DatasourceConfig(
         name="bq",
         type="bigquery",
@@ -771,8 +766,8 @@ def test_build_engine_rejects_both_credential_kinds() -> None:
 
 
 def test_build_engine_rejects_oauth_grant_in_credentials_json() -> None:
-    """An authorized-user grant in ``credentials_json`` cannot work — the
-    driver hands it to ``from_service_account_info``. Say so up front."""
+    """The driver hands ``credentials_json`` to ``from_service_account_info``,
+    so a grant there cannot work. Say so up front."""
     ds = DatasourceConfig(
         name="bq", type="bigquery", credentials_json=json.dumps(_oauth_info()),
     )
@@ -801,8 +796,7 @@ def test_build_engine_oauth_malformed_raises(payload: str, message: str) -> None
 
 
 def test_credential_fingerprint_empty_without_credentials() -> None:
-    """ADC datasources keep the empty fingerprint, so their cache key shape
-    is unchanged."""
+    """ADC datasources keep the empty fingerprint."""
     ds = DatasourceConfig(name="bq", type="bigquery", database="p")
     assert BigqueryDialect().credential_fingerprint(ds) == ""
 
@@ -830,8 +824,7 @@ def test_credential_fingerprint_differs_between_oauth_and_service_account() -> N
 
 
 def test_credential_fingerprint_stable_across_token_refresh() -> None:
-    """A refreshed access token is the same user. Keying on it would mint —
-    and leak — a fresh engine on every refresh."""
+    """Same user. Keying on the token would leak a fresh engine per refresh."""
     dialect = BigqueryDialect()
     before = dialect.credential_fingerprint(_oauth_ds(token="access-1", expiry="2026-01-01"))
     after = dialect.credential_fingerprint(_oauth_ds(token="access-2", expiry="2026-01-02"))
@@ -839,8 +832,8 @@ def test_credential_fingerprint_stable_across_token_refresh() -> None:
 
 
 def test_credential_fingerprint_keeps_token_when_no_refresh_token() -> None:
-    """Without a refresh token the access token IS the whole identity, so it
-    must stay in the digest or two users collide on one engine."""
+    """With no refresh token the access token is the whole identity, so it must
+    stay in the digest or two users collide."""
     dialect = BigqueryDialect()
     info = _oauth_info()
     info.pop("refresh_token")
@@ -853,18 +846,15 @@ def test_credential_fingerprint_keeps_token_when_no_refresh_token() -> None:
 
 
 def test_credential_fingerprint_leaks_no_secret_material() -> None:
-    """The fingerprint lands in an in-memory cache key and log lines; it must
-    not be reversible to the grant."""
+    """It lands in cache keys and logs, so it must not be reversible."""
     fp = BigqueryDialect().credential_fingerprint(_oauth_ds())
     for secret in ("rtok-alice", "csecret", "access-token-1"):
         assert secret not in fp
 
 
 def test_credential_fingerprint_tolerates_malformed_oauth_json() -> None:
-    """The fingerprint runs on every cache-key lookup, so a stored grant that
-    won't parse has to yield a digest rather than raise — otherwise a bad
-    datasource breaks engine lookup instead of reaching ``build_engine``'s
-    clear error."""
+    """Runs on every cache-key lookup, so an unparseable grant must yield a
+    digest rather than raise — ``build_engine`` is where it earns its error."""
     ds = DatasourceConfig(
         name="bq", type="bigquery", oauth_credentials_json="not json at all",
     )
@@ -882,8 +872,8 @@ def test_credential_fingerprint_distinguishes_malformed_payloads() -> None:
 
 
 def test_build_engine_oauth_validates_before_importing_optional_driver() -> None:
-    """Config errors must surface as themselves even where the optional
-    'bigquery' extra is absent, so validation precedes the google.* imports."""
+    """Config errors must surface as themselves even without the optional
+    'bigquery' extra, so validation precedes the google.* imports."""
     ds = DatasourceConfig(name="bq", type="bigquery", oauth_credentials_json="not json")
     dialect = BigqueryDialect()
     with (

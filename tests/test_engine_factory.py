@@ -240,9 +240,8 @@ class TestCallSiteMigration:
 
 
 class TestCredentialKeying:
-    """The cache key's credential leg. Without it, two callers whose only
-    difference is *who they authenticate as* share one engine — and one
-    silently runs the other's queries under the wrong identity."""
+    """The credential leg of the cache key. Without it, two callers who differ
+    only in *who they authenticate as* share one engine."""
 
     @staticmethod
     def _bq(name: str, credentials_json: str | None) -> DatasourceConfig:
@@ -280,9 +279,8 @@ class TestCredentialKeying:
 
 
 class TestCacheBounding:
-    """Per-identity keys make cache cardinality track *users*, not
-    datasources, so the cache has to be bounded and evictions must actually
-    release the pooled connections."""
+    """Per-identity keys make cardinality track users, not datasources — so the
+    cache must be bounded and evictions must release their pools."""
 
     @staticmethod
     def _lite(n: int) -> DatasourceConfig:
@@ -301,8 +299,8 @@ class TestCacheBounding:
         engine_factory.reset_cache()
 
     def test_reuse_refreshes_recency(self, monkeypatch) -> None:
-        """A hit must move the entry to the MRU end, otherwise the cap
-        degenerates into FIFO and evicts the hottest engine."""
+        """A hit must move the entry to the MRU end, else the cap degenerates
+        into FIFO and evicts the hottest engine."""
         engine_factory.reset_cache()
         monkeypatch.setenv(engine_factory.MAX_CACHED_ENGINES_ENV, "2")
         first, second, third = (self._lite(i) for i in range(3))
@@ -326,8 +324,7 @@ class TestCacheBounding:
         engine_factory.reset_cache()
 
     def test_dispose_failure_does_not_break_caching(self, monkeypatch) -> None:
-        """A pool that refuses to close must not take the whole factory with
-        it — the new engine still has to reach the caller."""
+        """A pool that refuses to close must not take the factory with it."""
         engine_factory.reset_cache()
         monkeypatch.setenv(engine_factory.MAX_CACHED_ENGINES_ENV, "1")
         first, second = self._lite(0), self._lite(1)
@@ -337,9 +334,8 @@ class TestCacheBounding:
         engine_factory.reset_cache()
 
     def test_lowering_the_limit_trims_on_the_next_hit(self, monkeypatch) -> None:
-        """A cache that only trims on insert stays oversized until the next
-        miss. Re-applying the cap on hits makes the new bound take effect on
-        the next call."""
+        """Trimming only on insert leaves the cache oversized until the next
+        miss."""
         engine_factory.reset_cache()
         sources = [self._lite(i) for i in range(4)]
         for ds in sources:
@@ -358,8 +354,7 @@ class TestCacheBounding:
         engine_factory.reset_cache()
 
     def test_hit_trim_disposes_outside_the_lock(self, monkeypatch) -> None:
-        """Trimmed engines are disposed after ``_cache_lock`` is released —
-        ``dispose()`` closes sockets and must not run under the lock."""
+        """``dispose()`` does I/O, so it must not run under the lock."""
         engine_factory.reset_cache()
         cold, hot = self._lite(0), self._lite(1)
         engine_factory.get_engine(cold)
@@ -377,9 +372,8 @@ class TestCacheBounding:
         engine_factory.reset_cache()
 
     def test_zero_limit_bypasses_reuse_on_a_hit(self, monkeypatch) -> None:
-        """With caching off, a previously-cached key must not be served from
-        the cache — the entry is dropped and a fresh engine built, rather than
-        handing back one we are about to dispose."""
+        """With caching off, an already-cached key must be dropped and rebuilt,
+        not handed back moments before we dispose it."""
         engine_factory.reset_cache()
         ds = self._lite(0)
         first = engine_factory.get_engine(ds)
@@ -404,9 +398,8 @@ class TestCacheBounding:
 
 
 class TestInvalidateEngine:
-    """Credentials baked into an engine can be revoked out from under it.
-    Those engines are poisoned permanently, so retrying through the cache
-    reproduces the failure forever unless something evicts them."""
+    """Credentials baked into an engine can be revoked out from under it, and
+    retrying through the cache then fails forever unless something evicts."""
 
     @staticmethod
     def _lite() -> DatasourceConfig:
@@ -435,9 +428,8 @@ class TestInvalidateEngine:
 
 
 class TestLogSafety:
-    """Cache keys carry the connection string, which for username/password
-    dialects is rendered with the password in plaintext. None of it may reach
-    a log line."""
+    """Cache keys carry the connection string, password and all. None of it may
+    reach a log line."""
 
     @staticmethod
     def _pg_with_password(password: str) -> DatasourceConfig:
@@ -458,8 +450,8 @@ class TestLogSafety:
             assert fragment not in rendered
 
     def test_loggable_key_is_stable_and_distinguishing(self) -> None:
-        """Useful for correlating log lines: same key -> same id, different
-        credentials -> different id."""
+        """Same credentials -> same id, different -> different, so log lines
+        stay correlatable."""
         alice = self._pg_with_password("alice-pw")  # NOSONAR(S2068) — test fixture
         # A separate object carrying the same values: the id must follow the
         # credentials, not the identity of the config object.
@@ -475,9 +467,8 @@ class TestLogSafety:
         assert log_id(alice) != log_id(bob)
 
     def test_reset_disposal_reason_carries_no_credentials(self) -> None:
-        """``reset_cache(dispose=True)`` builds its reason string from the
-        cache key; ``_dispose_quietly`` writes that into a warning when
-        ``dispose()`` raises."""
+        """``reset_cache(dispose=True)`` builds its reason from the cache key,
+        and ``_dispose_quietly`` logs that when ``dispose()`` raises."""
         secret = "reset-time-secret"  # NOSONAR(S2068) — test fixture
         engine_factory.reset_cache()
         engine_factory.get_engine(self._pg_with_password(secret))
@@ -509,7 +500,7 @@ class TestResetCacheDisposal:
 
 class TestCacheConcurrency:
     """Engines are reached from worker threads as well as the event loop, so
-    the cache's read/bump/insert sequences need one lock around them."""
+    read/bump/insert needs one lock around it."""
 
     @staticmethod
     def _lite(n: int) -> DatasourceConfig:
@@ -519,10 +510,10 @@ class TestCacheConcurrency:
     def _join_all(threads: list[threading.Thread], *, timeout: float = 10.0) -> None:
         """Join every worker and fail if any is still running.
 
-        Without this, ``join(timeout=...)`` silently returns on a deadlocked
-        worker and the test passes — which is the one failure mode adding a
-        lock introduces. Workers are daemons so a genuine deadlock trips this
-        assertion instead of hanging the whole pytest process.
+        ``join(timeout=...)`` returns silently on a deadlocked worker, so
+        without this the test would pass on the one failure mode a lock
+        introduces. Workers are daemons, so a deadlock trips the assertion
+        rather than hanging pytest.
         """
         for thread in threads:
             thread.join(timeout=timeout)
@@ -530,8 +521,8 @@ class TestCacheConcurrency:
         assert not stuck, f"workers still running after {timeout}s (deadlock?): {stuck}"
 
     def test_concurrent_misses_yield_one_shared_engine(self) -> None:
-        """Two threads missing on the same key must converge on one pool, and
-        the losing engine must be disposed rather than orphaned."""
+        """Two threads missing on one key must converge on a single pool, and
+        the loser must be disposed rather than orphaned."""
         engine_factory.reset_cache()
         ds = self._lite(0)
         built: list[sa.Engine] = []
@@ -606,9 +597,8 @@ class TestCacheConcurrency:
 
 
 class TestConfigSnapshot:
-    """``get_engine`` snapshots the config before deriving anything from it.
-    A ``DatasourceConfig`` is mutable, and engine construction sits between the
-    cache key and the dialect's second read of the credentials."""
+    """``DatasourceConfig`` is mutable, and the build sits between the cache key
+    and the dialect's second read of the credentials — hence the snapshot."""
 
     @staticmethod
     def _oauth_ds(refresh_token: str) -> DatasourceConfig:
@@ -623,9 +613,8 @@ class TestConfigSnapshot:
         )
 
     def test_rotation_mid_build_cannot_desync_key_from_engine(self) -> None:
-        """A grant refresh landing while the engine is under construction must
-        not leave that engine cached under a fingerprint describing the *other*
-        set of credentials — the confusion the credential leg exists to stop."""
+        """A refresh landing mid-build must not leave the engine cached under a
+        fingerprint describing the *other* credentials."""
         engine_factory.reset_cache()
         ds = self._oauth_ds("before")
         key_for_before = engine_factory._cache_key(
@@ -651,8 +640,8 @@ class TestConfigSnapshot:
         engine_factory.reset_cache()
 
     def test_caller_mutation_does_not_leak_into_the_cached_engine(self) -> None:
-        """Mutating the config after the call is self-correcting: the next
-        lookup keys off the new credentials, misses, and rebuilds."""
+        """Mutating after the call is self-correcting: the next lookup keys off
+        the new credentials, misses, and rebuilds."""
         engine_factory.reset_cache()
         ds = self._oauth_ds("before")
         with patch.object(
@@ -667,9 +656,8 @@ class TestConfigSnapshot:
         engine_factory.reset_cache()
 
     def test_snapshot_is_detached_from_the_callers_object(self) -> None:
-        """Sanity-check the copy depth: every field is scalar, so a shallow
-        model_copy already detaches. If a mutable field is ever added, this is
-        where the assumption breaks."""
+        """Every field is scalar, so a shallow copy already detaches. Add a
+        mutable field and this is where the assumption breaks."""
         ds = self._oauth_ds("before")
         snapshot = ds.model_copy()
         ds.oauth_credentials_json = "mutated"
