@@ -62,6 +62,52 @@ Dialect-specific behavior (SQLite UDFs, ClickHouse `quantile`, the MySQL
 `median` `NotImplementedError`, and so on) is therefore emitted by exactly one
 code path.
 
+### The single `ValueKey` renderer (P-G, DEV-1763)
+
+Every `ValueKey` tree — WHERE/HAVING predicates, AGGREGATE-phase composites,
+POST-phase filters, the DEV-1503 outer combined WHERE, and cross-model CTE
+routed filters — renders through one function,
+`slayer.sql.render.value_expr.render_value_key(key, ctx)`, parameterised by a
+`RenderContext` rather than by call site. This is what keeps the same
+`ScalarCallKey` from emitting `IFNULL(...)` on one path (invalid on Postgres)
+and `COALESCE(...)` on another. The context carries per-concern facilities:
+
+- **`FilterFacilities`** — the WHERE/HAVING `agg_builder` HAVING seam (renders a
+  local aggregate as its *expression*, not its SELECT alias, so HAVING works on
+  backends that reject aliases there), the filter-side CAST policy
+  (`cast_column_sql`), and the DEV-1539 comparison grouping
+  (`paren_comparison_operands`).
+- **`CompositeFacilities`** — the AGGREGATE-composite `agg_builder`; the
+  composite *structure* renders through `render_value_key` while the aggregate
+  *leaf* delegates to `_build_agg`.
+- **`AliasFacilities`** — POST-phase / outer-wrapper *alias-exclusive*
+  resolution: the five slotted kinds come back as their materialised alias
+  (table-qualified via `table_by_slot_id`), never rebuilt from source.
+
+A missing facility or an unmaterialised slot raises
+`RenderContextMissingFacilityError` — the renderer fails closed rather than
+degrading quietly, which is how the five predecessor copies drifted apart.
+
+`render_value_key` is the sole production path. The generator's five legacy
+per-path renderers (`_render_value_key_for_filter`,
+`_render_value_key_against_aliases`, `_render_filter_for_outer_wrapper`,
+`_render_aggregate_composite_expr`, `_render_filter_value_key_in_target_scope`)
+remain in `slayer/sql/generator.py` but are **production-unreferenced** (P-J
+state 1) — their only surviving references are two documented dead-code sites
+that PR 6 (DEV-1749) deletes along with the renderers themselves:
+
+- `_render_aggregate_composite_expr` — the dead first/last base SELECT
+  (`_build_first_last_base_select`).
+- `_render_filter_value_key_in_target_scope` — the `first_last_state` escape
+  hatch in `_collect_routed_filters` (fed only by the production-dead
+  cross-model first/last CTE branch; `FirstLastRenderState` is at zero
+  production calls post-DEV-1748).
+
+`tests/test_dev1763_call_site_migration.py` proves this state-1 inventory two
+ways: runtime raising-sentinels (each legacy renderer patched to raise, run
+against production shapes) and a static `ast` walk asserting the exact allowed
+external-reference set per renderer.
+
 !!! note "Historical: the synthetic-`EnrichedMeasure` adapter"
 
     `generate_from_planned` originally consumed `PlannedQuery` at the top but

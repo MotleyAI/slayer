@@ -51,8 +51,18 @@ from sqlglot import exp
 from slayer.core.enums import DataType
 from slayer.core.errors import (
     DistinctDimensionValuesError,
+    RenderContextMissingFacilityError,
     UnknownReferenceError,
 )
+
+# DEV-1763: the composite renderer now routes through ``render_value_key`` on a
+# scope-less context, so a bare ROW-column operand fails closed with
+# ``RenderContextMissingFacilityError`` (a ``ValueError``) rather than the
+# legacy terminal ``NotImplementedError``. Both REJECT — the security-relevant
+# contract is "raises, never stringified" — so the row-operand guards below
+# accept either. (The legacy path still raises ``NotImplementedError`` and its
+# own direct tests stay pinned — P-J state 1.)
+_ROW_OPERAND_REJECTED = (NotImplementedError, RenderContextMissingFacilityError)
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -1104,7 +1114,7 @@ class TestStillRejected:
             measures=[ModelMeasure(formula="*:count")],
             order=[OrderItem(column=formula, direction="desc")],
         )
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(_ROW_OPERAND_REJECTED):
             await _sql(engine, query)
 
     async def test_arithmetic_with_row_operand_raises(self, engine) -> None:
@@ -1116,7 +1126,7 @@ class TestStillRejected:
             measures=[ModelMeasure(formula="*:count")],
             order=[OrderItem(column="amount:sum / id", direction="desc")],
         )
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(_ROW_OPERAND_REJECTED):
             await _sql(engine, query)
 
     def test_hidden_order_branch_rejects_unlisted_slot_kinds(self) -> None:
