@@ -7096,26 +7096,16 @@ class SQLGenerator:
                 location=f"Column.filter on model {scope.root_model.name!r}",
             )
 
-    def _reroot_routed_filter_key(self, key, *, target_relation: str, target_model):
-        """Re-root a routed filter key to the cross-model CTE's LOCAL scope so
-        ``render_value_key`` resolves each leaf against the target relation the
-        way the legacy target-scope renderer did (DEV-1763 P-G).
+    def _reroot_routed_leaf(self, key, *, target_relation: str, target_model):
+        """Re-root a routed COLUMN leaf (``ColumnKey`` / ``ColumnSqlKey``) to the
+        CTE-local scope, or return ``None`` when ``key`` is not a column leaf.
 
-        Host-rooted ``ColumnKey`` / ``ColumnSqlKey`` refs carry a ``__``-path;
-        inside the CTE the join to the target is direct, so their path is
-        stripped and they anchor at ``target_relation`` (``is_root=True`` for
-        derived columns). An intermediate-hop path (not ending at the target),
-        or a derived column owned by another model, keeps the legacy
-        ``NotImplementedError``. ``AggregateKey`` leaves are left intact — the
-        HAVING seam reroots them via ``reroot_aggregate_key``."""
-        from slayer.core.keys import (
-            ArithmeticKey,
-            BetweenKey,
-            ColumnKey,
-            ColumnSqlKey,
-            InKey,
-            ScalarCallKey,
-        )
+        Host-rooted refs carry a ``__``-path; inside the CTE the join to the
+        target is direct, so the path is stripped and the ref anchors at
+        ``target_relation`` (``is_root=True`` for derived columns). An
+        intermediate-hop path (not ending at the target), or a derived column
+        owned by another model, keeps the legacy ``NotImplementedError``."""
+        from slayer.core.keys import ColumnKey, ColumnSqlKey
 
         if isinstance(key, ColumnKey):
             if key.path and key.path[-1] != target_relation:
@@ -7137,6 +7127,28 @@ class SQLGenerator:
                 ColumnSqlKey(path=(), model=key.model, column_name=key.column_name)
                 if key.path else key
             )
+        return None
+
+    def _reroot_routed_filter_key(self, key, *, target_relation: str, target_model):
+        """Re-root a routed filter key to the cross-model CTE's LOCAL scope so
+        ``render_value_key`` resolves each leaf against the target relation the
+        way the legacy target-scope renderer did (DEV-1763 P-G).
+
+        Column leaves reroot via :meth:`_reroot_routed_leaf`; composites rebuild
+        with rerooted children. ``AggregateKey`` leaves are left intact — the
+        HAVING seam reroots them via ``reroot_aggregate_key``."""
+        from slayer.core.keys import (
+            ArithmeticKey,
+            BetweenKey,
+            InKey,
+            ScalarCallKey,
+        )
+
+        leaf = self._reroot_routed_leaf(
+            key, target_relation=target_relation, target_model=target_model,
+        )
+        if leaf is not None:
+            return leaf
         if isinstance(key, ArithmeticKey):
             return ArithmeticKey(
                 op=key.op,
@@ -7232,7 +7244,6 @@ class SQLGenerator:
         if not filter_ids:
             return None
         wanted = set(filter_ids)
-        parts: List[exp.Expression] = []
 
         # ESCAPE HATCH: ``first_last_state`` (rn maps / agg-synth-alias /
         # value-alias) is fed only by the production-dead ``is_first_or_last``
@@ -7240,22 +7251,11 @@ class SQLGenerator:
         # calls). Keep the legacy renderer for it; PR 6 (DEV-1749) deletes the
         # branch, the ``FirstLastRenderState`` type, and this hatch together.
         if first_last_state is not None:
-            for fp in planned_query.filters_by_phase:
-                if fp.id not in wanted or fp.expression is None:
-                    continue
-                ast = self._render_filter_value_key_in_target_scope(
-                    value_key=fp.expression.value_key,
-                    target_relation=target_relation,
-                    target_model=target_model,
-                    planned_query=planned_query,
-                    bundle=bundle,
-                    first_last_state=first_last_state,
-                )
-                if ast is not None:
-                    parts.append(ast)
-            if not parts:
-                return None
-            return exp.and_(*parts) if len(parts) > 1 else parts[0]
+            return self._collect_routed_filters_first_last(
+                planned_query=planned_query, wanted=wanted,
+                target_relation=target_relation, target_model=target_model,
+                bundle=bundle, first_last_state=first_last_state,
+            )
 
         allocator = self._new_allocator()
         scope = ScopeFrame(
@@ -7279,6 +7279,7 @@ class SQLGenerator:
                 paren_comparison_operands=False,
             ),
         )
+        parts: List[exp.Expression] = []
         for fp in planned_query.filters_by_phase:
             if fp.id not in wanted or fp.expression is None:
                 continue
@@ -7288,6 +7289,32 @@ class SQLGenerator:
                 target_model=target_model,
             )
             parts.append(render_value_key(local_key, ctx))
+        if not parts:
+            return None
+        return exp.and_(*parts) if len(parts) > 1 else parts[0]
+
+    def _collect_routed_filters_first_last(
+        self, *, planned_query, wanted, target_relation: str, target_model,
+        bundle, first_last_state,
+    ) -> Optional[exp.Expression]:
+        """The DEV-1763 escape hatch: the production-dead cross-model first/last
+        CTE routed-filter path, still on the legacy target-scope renderer so its
+        rn-state threading is preserved verbatim. PR 6 deletes this whole path
+        with ``FirstLastRenderState``."""
+        parts: List[exp.Expression] = []
+        for fp in planned_query.filters_by_phase:
+            if fp.id not in wanted or fp.expression is None:
+                continue
+            ast = self._render_filter_value_key_in_target_scope(
+                value_key=fp.expression.value_key,
+                target_relation=target_relation,
+                target_model=target_model,
+                planned_query=planned_query,
+                bundle=bundle,
+                first_last_state=first_last_state,
+            )
+            if ast is not None:
+                parts.append(ast)
         if not parts:
             return None
         return exp.and_(*parts) if len(parts) > 1 else parts[0]

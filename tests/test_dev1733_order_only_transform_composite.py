@@ -54,15 +54,6 @@ from slayer.core.errors import (
     RenderContextMissingFacilityError,
     UnknownReferenceError,
 )
-
-# DEV-1763: the composite renderer now routes through ``render_value_key`` on a
-# scope-less context, so a bare ROW-column operand fails closed with
-# ``RenderContextMissingFacilityError`` (a ``ValueError``) rather than the
-# legacy terminal ``NotImplementedError``. Both REJECT — the security-relevant
-# contract is "raises, never stringified" — so the row-operand guards below
-# accept either. (The legacy path still raises ``NotImplementedError`` and its
-# own direct tests stay pinned — P-J state 1.)
-_ROW_OPERAND_REJECTED = (NotImplementedError, RenderContextMissingFacilityError)
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -70,6 +61,15 @@ from slayer.sql.scope_check import assert_scope_closed
 from slayer.storage.yaml_storage import YAMLStorage
 
 _MONTH = [TimeDimension(dimension="created_at", granularity="month")]
+
+# DEV-1763: the composite renderer routes through ``render_value_key`` on a
+# scope-less context, so a bare ROW-column operand fails closed with
+# ``RenderContextMissingFacilityError`` (a ``ValueError``) rather than the legacy
+# terminal ``NotImplementedError``. Both REJECT — the security-relevant contract
+# is "raises, never stringified" — so the row-operand guards below accept either.
+# (The legacy renderer still raises ``NotImplementedError``; its direct tests
+# stay pinned — P-J state 1.)
+_ROW_OPERAND_REJECTED = (NotImplementedError, RenderContextMissingFacilityError)
 
 
 # ---------------------------------------------------------------------------

@@ -361,8 +361,10 @@ _ALLOWED_EXTERNAL_CALLERS = {
     "_render_filter_for_outer_wrapper": {},
     # Production-dead first/last base SELECT — deleted with the type in PR 6.
     "_render_aggregate_composite_expr": {"_build_first_last_base_select": 1},
-    # The narrow first_last_state escape hatch — deleted in PR 6.
-    "_render_filter_value_key_in_target_scope": {"_collect_routed_filters": 1},
+    # The narrow first_last_state escape hatch (its own helper) — deleted in PR 6.
+    "_render_filter_value_key_in_target_scope": {
+        "_collect_routed_filters_first_last": 1,
+    },
 }
 
 
@@ -849,16 +851,18 @@ class TestAliasExclusiveMode:
     @pytest.mark.parametrize("label", sorted(_SLOTTED_KINDS))
     def test_miss_raises(self, label) -> None:
         key = _SLOTTED_KINDS[label]
+        ctx = self._ctx(key, present=False)
         with pytest.raises(RenderContextMissingFacilityError):
-            render_value_key(key, self._ctx(key, present=False))
+            render_value_key(key, ctx)
 
     def test_miss_does_not_fall_back_to_scope(self) -> None:
         """A miss is a promotion bug, not a cue to rebuild from source — even
         when a real scope is present, alias mode raises rather than resolving
         the key against the scope root."""
         key = ColumnKey(leaf="amount")
+        ctx = self._ctx(key, present=False, scope=_scope())
         with pytest.raises(RenderContextMissingFacilityError):
-            render_value_key(key, self._ctx(key, present=False, scope=_scope()))
+            render_value_key(key, ctx)
 
 
 class TestMixedCaseShiftedCteParity:

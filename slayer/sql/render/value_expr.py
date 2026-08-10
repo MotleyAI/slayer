@@ -293,8 +293,10 @@ def _render_via_alias(key: ValueKey, ctx: RenderContext) -> exp.Expression:
             facility="aliases",
             detail=f"{type(key).__name__} is not materialised as a slot",
         )
+    # A non-None ``alias`` guarantees ``slot_id`` was found (it is the lookup
+    # key that produced ``alias``), so the qualifier lookup needs no re-guard.
     col_ident = exp.to_identifier(alias, quoted=True)
-    table = facilities.table_by_slot_id.get(slot_id) if slot_id is not None else None
+    table = facilities.table_by_slot_id.get(slot_id)
     if table:
         return exp.Column(this=col_ident, table=exp.to_identifier(table))
     return exp.Column(this=col_ident)
@@ -595,8 +597,9 @@ def _render_filter_aggregate(
 
 
 def _render_aggregate(key: AggregateKey, ctx: RenderContext) -> exp.Expression:
-    # Precedence: the FILTER HAVING seam wins over the composite builder — a
-    # filter context sets ``filters.agg_builder`` and no composites facility.
+    """Dispatch an ``AggregateKey`` by builder precedence: the FILTER HAVING
+    seam, then the COMPOSITE builder, then the built-in fallback."""
+    # A filter context sets ``filters.agg_builder`` and no composites facility.
     if ctx.filters is not None and ctx.filters.agg_builder is not None:
         return _render_filter_aggregate(key, ctx)
 
@@ -604,8 +607,16 @@ def _render_aggregate(key: AggregateKey, ctx: RenderContext) -> exp.Expression:
     if facilities.agg_builder is not None:
         return facilities.agg_builder(key)
 
-    # No builder: handle the aggregations that need nothing beyond the source
-    # expression, and refuse the rest rather than emitting something plausible.
+    return _render_builtin_aggregate(key, ctx)
+
+
+def _render_builtin_aggregate(  # NOSONAR(S3776) — sequential fail-closed guards over the built-in agg contract (mechanism gate, then the FIELD guards that keep a filtered / parametric / cross-star aggregate from silently rendering as a plain SUM). Each guard IS a distinct wrong-number-vs-error boundary; merging them hides which one fired.
+    key: AggregateKey, ctx: RenderContext,
+) -> exp.Expression:
+    """Render an aggregate that needs no generator builder — the simple /
+    distinct built-ins over a source expression. Everything the built-in path
+    cannot faithfully emit (custom mechanisms, filtered / parametric sources,
+    cross-model stars) refuses rather than emitting something plausible."""
     if not is_builtin_agg(key.agg):
         raise RenderContextMissingFacilityError(
             key_kind=type(key).__name__,
