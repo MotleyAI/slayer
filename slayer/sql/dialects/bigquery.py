@@ -28,13 +28,14 @@ from __future__ import annotations
 import json
 import re
 from typing import TYPE_CHECKING, Any
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 import sqlalchemy as sa
 from sqlglot import exp
 
 from slayer.core.enums import TimeGranularity
 from slayer.sql.dialects._alias_mangle import decode_alias, encode_alias
+from slayer.sql.dialects._identifier_fit import fit_identifier
 from slayer.sql.dialects.base import SqlDialect, _digest
 
 if TYPE_CHECKING:
@@ -140,6 +141,7 @@ class BigqueryDialect(SqlDialect):
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
+    max_identifier_bytes: int | None = 300  # column-name limit
 
     def build_approx_count_distinct(
         self,
@@ -182,15 +184,28 @@ class BigqueryDialect(SqlDialect):
             this="DATE_TRUNC", expressions=[col_expr, week_sunday],
         )
 
-    def rewrite_emitted_sql(self, sql: str) -> str:
-        """Replace ``.`` with ``___`` inside backtick-quoted identifiers.
+    def fit_alias(self, name: str) -> str:
+        """Size the budget against the post-mangle form (``.`` -> ``___`` adds 2
+        bytes per dot); return value stays dotted for the regex below."""
+        return fit_identifier(
+            name=name, limit=self.max_identifier_bytes, expand=encode_alias,
+        )
 
-        Applied as a post-pass on the BigQuery dialect's final SQL so
-        emitted column aliases (``SELECT ... AS \\`orders._count\\``) and
-        references to those aliases
-        (``ORDER BY \\`orders._count\\``) comply with BigQuery's column-name
-        grammar.
+    def emit_alias(self, alias: str) -> str:
+        """The final identifier: length-fitted, then dot-mangled."""
+        return encode_alias(self.fit_alias(alias))
+
+    def rewrite_emitted_sql(
+        self, sql: str, *, aliases: Sequence[str] = (),
+    ) -> str:
+        """Replace ``.`` with ``___`` inside backtick-quoted identifiers, so
+        emitted aliases and their references satisfy BigQuery's grammar.
+
+        The base LENGTH pass runs first: it no-ops on under-limit aliases (SQL
+        stays byte-identical) and rewrites over-limit ones to a still-dotted
+        form that this regex then mangles — no double-encoding.
         """
+        sql = super().rewrite_emitted_sql(sql=sql, aliases=aliases)
         return _DOTTED_ALIAS_RE.sub(
             lambda m: f"`{encode_alias(m.group(1))}`", sql
         )
@@ -198,11 +213,20 @@ class BigqueryDialect(SqlDialect):
     def decode_result_keys(
         self,
         rows: list[dict[str, Any]],
+        *,
+        aliases: Sequence[str] = (),
     ) -> list[dict[str, Any]]:
-        """Reverse the BigQuery alias mangling on result-row keys so
-        consumers see SLayer's universal dotted alias shape regardless of
-        whether the query ran against BigQuery or another dialect."""
-        return [{decode_alias(k): v for k, v in row.items()} for row in rows]
+        """Reverse the BigQuery alias mangling on result-row keys so consumers
+        see SLayer's universal dotted shape whatever dialect ran the query.
+
+        Fitted keys aren't recoverable alone, so the ``emitted -> canonical``
+        map is consulted first, falling back to the ``___`` -> ``.`` bijection.
+        """
+        mapping = self.decode_alias_map(aliases)
+        return [
+            self._rekey_row(row=row, mapping=mapping, fallback=decode_alias)
+            for row in rows
+        ]
 
     def build_engine(
         self,
