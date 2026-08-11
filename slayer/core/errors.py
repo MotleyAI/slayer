@@ -152,17 +152,11 @@ class IdCollisionError(SlayerError, ValueError):
 
 
 class IdentifierCollisionError(SlayerError, ValueError):
-    """Raised when two distinct SLayer-generated names collapse onto one
-    identifier after the dialect's length fitting (DEV-1756).
+    """Two distinct SLayer-generated names collapse onto one identifier after
+    the dialect's length fitting (DEV-1756).
 
-    Fitting appends a 32-bit digest of the full original, so this is
-    astronomically unlikely — but a duplicate output name on a backend that
-    silently truncates is exactly the class of bug this machinery exists to
-    prevent, so it is raised loudly rather than left to corrupt a result set.
-    Also covers the case where an already-short name happens to equal another
-    name's fitted form, which hash width alone cannot prevent.
-
-    Multi-inherits ``ValueError`` to match the other SLayer validation errors.
+    Raised loudly rather than left to corrupt a result set. Also covers an
+    already-short name equal to another name's fitted form.
     """
 
     def __init__(

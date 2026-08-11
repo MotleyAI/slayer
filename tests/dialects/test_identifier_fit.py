@@ -1,27 +1,8 @@
 """DEV-1756: the identifier-length primitive and its dialect wiring.
 
-Postgres' NAMEDATALEN is 64, so identifiers are capped at 63 BYTES and anything
-longer is SILENTLY truncated (a NOTICE, never an error). SLayer's projection
-aliases (``<root>.<join.path>.<column>``) cross that on a 3-hop join, so two
-sibling aliases can collapse onto one effective output name.
-
-``fit_identifier`` is the shared primitive that shortens an over-limit
-identifier to a deterministic ``<head>_<hash8>_<tail>``. It is a PURE function
-of ``name`` (the digest covers the full original), which is what lets the read
-side rebuild the emitted->canonical map without threading anything through
-generation.
-
-``substitute_quoted`` is the write-side primitive: a TWO-PHASE replacement
-(canonical -> sentinel -> final) so no substitution can be re-read by a later
-one. Today the key set (over-limit) and the value set (within-limit) are
-provably disjoint, so a naive sequential replace would also be correct — the
-two-phase form is defence against that invariant being weakened later, and is
-tested directly rather than through the alias API where the disjointness makes
-a cascade unconstructible.
-
-Emission/behaviour tests for the three surfaces live in
-``tests/test_dev1756_identifier_length.py``; live execution is in the Postgres
-integration suite.
+Postgres caps identifiers at 63 bytes and silently truncates longer ones, so sibling
+aliases can collapse. ``fit_identifier`` shortens to a pure ``<head>_<hash8>_<tail>``;
+``substitute_quoted`` is the two-phase write side. Emission: ``test_dev1756_identifier_length.py``.
 """
 
 from __future__ import annotations
@@ -37,8 +18,6 @@ import pytest
 from slayer.core.errors import IdentifierCollisionError
 from slayer.sql.dialects import _ALL_DIALECTS, get_dialect
 from slayer.sql.dialects._alias_mangle import encode_alias
-
-# The feature under test.
 from slayer.sql.dialects._identifier_fit import (
     HASH_LEN,
     MIN_LIMIT,
@@ -47,16 +26,14 @@ from slayer.sql.dialects._identifier_fit import (
 )
 
 
-# The DEV-1756 repro pair: 73 and 74 bytes, sharing a 63-byte prefix.
+# Repro pair: 73 and 74 bytes, sharing a 63-byte prefix.
 LONG_NAME = "SandboxInvoiceV2.SandboxSubscription.SandboxCustomer.SandboxConsumer.name"
 LONG_EMAIL = "SandboxInvoiceV2.SandboxSubscription.SandboxCustomer.SandboxConsumer.email"
 
-# Two over-limit names that differ ONLY in the middle, so head and tail both
-# survive fitting identically — the shape needed to force a digest collision.
+# Differ only in the middle, so head and tail survive fitting identically (forces a digest collision).
 TWIN_A = "SandboxAlpha." * 3 + "111" + ".SandboxOmega" * 3
 TWIN_B = "SandboxAlpha." * 3 + "222" + ".SandboxOmega" * 3
 
-# Every limit SLayer configures on a dialect, plus Postgres' binding 63.
 ALL_LIMITS = (63, 64, 127, 128, 255, 256, 300)
 
 _UNQUOTED_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -72,11 +49,6 @@ def _dq(name: str) -> str:
     return f'"{name}"'
 
 
-# ---------------------------------------------------------------------------
-# fit_identifier — core contract
-# ---------------------------------------------------------------------------
-
-
 class TestFitIdentifierCore:
     def test_repro_pair_is_actually_over_the_postgres_limit(self) -> None:
         """Guard the premise: without this the rest of the file is vacuous."""
@@ -85,7 +57,6 @@ class TestFitIdentifierCore:
         assert LONG_NAME.encode()[:63] == LONG_EMAIL.encode()[:63]
 
     def test_under_limit_returned_unchanged(self) -> None:
-        """The common path must be a true identity — no hash, no allocation."""
         assert fit_identifier("orders.revenue_sum", limit=63) == "orders.revenue_sum"
 
     def test_exactly_at_limit_returned_unchanged(self) -> None:
@@ -97,7 +68,6 @@ class TestFitIdentifierCore:
         assert fit_identifier(name, limit=63) != name
 
     def test_none_limit_is_a_no_op(self) -> None:
-        """Unbounded dialects (SQLite/ClickHouse/Trino/...) never shorten."""
         assert fit_identifier(LONG_EMAIL, limit=None) == LONG_EMAIL
 
     @pytest.mark.parametrize("limit", ALL_LIMITS)
@@ -106,9 +76,7 @@ class TestFitIdentifierCore:
         assert _nbytes(fit_identifier(name, limit=limit)) <= limit
 
     def test_output_is_pinned_exactly(self) -> None:
-        """Pin the whole result, not `f(x) == f(x)` — which proves nothing
-        about a pure function. Also documents the head/tail split concretely:
-        27 head bytes, the 10-byte marker, 26 tail bytes."""
+        """Pin the whole result: 27 head bytes, 10-byte marker, 26 tail bytes."""
         expected = (
             "SandboxInvoiceV2.SandboxSub"
             f"_{hashlib.sha256(LONG_EMAIL.encode()).hexdigest()[:HASH_LEN]}_"
@@ -118,8 +86,6 @@ class TestFitIdentifierCore:
         assert _nbytes(expected) == 63
 
     def test_marker_is_exactly_sha256_of_the_full_original(self) -> None:
-        """Pin the digest's ALGORITHM, POSITION and INPUT — not merely that
-        eight hex characters appear somewhere."""
         got = fit_identifier(LONG_EMAIL, limit=63)
         match = _MARKER_RE.search(got)
         assert match, got
@@ -127,8 +93,7 @@ class TestFitIdentifierCore:
         assert match.group(1) == expected
 
     def test_digest_is_not_process_dependent(self) -> None:
-        """The read side recomputes the map in a DIFFERENT process, so the
-        digest must not depend on PYTHONHASHSEED (i.e. not builtin ``hash``)."""
+        """The read side recomputes in another process, so the digest must not depend on PYTHONHASHSEED."""
         env = os.environ.copy()
         env["PYTHONHASHSEED"] = "12345"
         out = subprocess.run(
@@ -142,15 +107,12 @@ class TestFitIdentifierCore:
         assert out.stdout.strip() == fit_identifier(LONG_EMAIL, limit=63)
 
     def test_head_and_tail_both_preserved(self) -> None:
-        """Readability contract: the root model AND the leaf column survive,
-        which is what makes colliding siblings tellable apart in dry_run SQL."""
         got = fit_identifier(LONG_EMAIL, limit=63)
         assert got.startswith("SandboxInvoiceV2")
         assert got.endswith("email")
 
     def test_repro_siblings_differ_outside_the_hash(self) -> None:
-        """The two aliases that collide on Postgres must stay distinguishable
-        by eye, not only by digest."""
+        """Colliding aliases stay distinguishable by eye, not only by digest."""
         a = fit_identifier(LONG_NAME, limit=63)
         b = fit_identifier(LONG_EMAIL, limit=63)
         assert a != b
@@ -167,11 +129,8 @@ class TestFitIdentifierCore:
         assert _MARKER_RE.search(got), got
 
     def test_separators_are_trimmed_next_to_the_marker(self) -> None:
-        """``head.rstrip("._")`` / ``tail.lstrip("._")`` — otherwise a budget
-        cut landing on a path separator yields ``foo._a1b2c3d4_.bar``."""
-        # 'a.' repeated: every even byte offset lands on a '.', so an untrimmed
-        # head/tail would abut the marker with a separator.
-        name = "a." * 60
+        """Head/tail are stripped of ``._`` so a cut on a separator won't yield ``foo._a1b2c3d4_.bar``."""
+        name = "a." * 60  # every even offset lands on a '.'
         got = fit_identifier(name, limit=63)
         match = _MARKER_RE.search(got)
         assert match, got
@@ -180,24 +139,17 @@ class TestFitIdentifierCore:
         assert not tail.startswith((".", "_")), got
 
     def test_minimum_budget_form_is_legal(self) -> None:
-        """At the tightest legal budget the head/tail collapse away and the
-        result is the bare ``_<digest>_`` marker — which must still be a legal
-        leading character (a bare hex digest can start with a digit)."""
+        """At the tightest budget the result is the bare ``_<digest>_`` marker, still a legal identifier."""
         got = fit_identifier(LONG_EMAIL, limit=MIN_LIMIT)
         assert _nbytes(got) <= MIN_LIMIT
         assert _UNQUOTED_IDENT_RE.match(got.replace(".", "_")), got
-
-
-# ---------------------------------------------------------------------------
-# fit_identifier — edge cases
-# ---------------------------------------------------------------------------
 
 
 class TestFitIdentifierEdges:
     def test_multibyte_never_splits_a_codepoint(self) -> None:
         name = "é" * 60  # 120 bytes of 2-byte codepoints
         got = fit_identifier(name, limit=63)
-        got.encode("utf-8").decode("utf-8")  # would raise if a codepoint split
+        got.encode("utf-8").decode("utf-8")  # raises if a codepoint was split
         assert _nbytes(got) <= 63
 
     def test_multibyte_bound_is_bytes_not_characters(self) -> None:
@@ -206,16 +158,14 @@ class TestFitIdentifierEdges:
         assert _nbytes(got) <= 63 < len(name) * 2
 
     def test_unquoted_legality_preserved_for_flat_input(self) -> None:
-        """Surfaces 3 (CTE names) and 4 (virtual-model shorts) are emitted
-        UNQUOTED, so a fitted flat name must stay a legal bare identifier."""
+        """CTE names and virtual-model shorts are emitted unquoted, so a fitted flat name stays legal."""
         flat = "_cm_" + "SandboxSubscription__SandboxCustomer__SandboxConsumer__" * 2
         got = fit_identifier(flat, limit=63)
         assert _UNQUOTED_IDENT_RE.match(got), got
 
     @pytest.mark.parametrize("limit", range(MIN_LIMIT, 40))
     def test_never_starts_with_a_digit(self, limit: int) -> None:
-        """A bare hex digest can begin with a digit, which is illegal unquoted
-        on several dialects."""
+        """A bare hex digest can begin with a digit, illegal unquoted on several dialects."""
         assert not fit_identifier(LONG_EMAIL, limit=limit)[0].isdigit()
 
     @pytest.mark.parametrize("limit", range(MIN_LIMIT, 40))
@@ -223,8 +173,6 @@ class TestFitIdentifierEdges:
         assert _nbytes(fit_identifier(LONG_EMAIL, limit=limit)) <= limit
 
     def test_head_trimmed_to_empty_still_legal(self) -> None:
-        """A name whose head budget lands entirely inside separators must not
-        yield a leading-separator-then-digit mess."""
         name = "." * 40 + "abcdefghij" * 5
         got = fit_identifier(name, limit=MIN_LIMIT)
         assert _nbytes(got) <= MIN_LIMIT
@@ -239,23 +187,18 @@ class TestFitIdentifierEdges:
             fit_identifier(LONG_EMAIL, limit=MIN_LIMIT - 1)
 
 
-# ---------------------------------------------------------------------------
 # fit_identifier — the `expand` hook (BigQuery / T-SQL dot-mangling)
-# ---------------------------------------------------------------------------
 
 
 class TestFitIdentifierExpand:
     def test_post_mangle_length_within_limit(self) -> None:
-        """BigQuery/T-SQL mangle `.` -> `___` AFTER fitting, adding 2 bytes per
-        dot. Fitting to the raw limit would then bust it, so the budget must be
-        computed against the expanded form."""
+        """Budget is computed against the expanded form since BigQuery/T-SQL mangle ``.`` -> ``___`` after fitting."""
         name = ".".join(["Sandbox" * 4] * 6)  # many dots, well over 128
         got = fit_identifier(name, limit=128, expand=encode_alias)
         assert _nbytes(encode_alias(got)) <= 128
 
     def test_expand_is_not_applied_to_the_return_value(self) -> None:
-        """``fit_identifier`` only SIZES against the expansion; the dialect's
-        own regex performs the actual mangling."""
+        """``fit_identifier`` only sizes against the expansion; the dialect does the mangling."""
         name = ".".join(["Sandbox" * 4] * 6)
         got = fit_identifier(name, limit=128, expand=encode_alias)
         assert "___" not in got
@@ -264,8 +207,7 @@ class TestFitIdentifierExpand:
         assert fit_identifier("a.b", limit=128, expand=encode_alias) == "a.b"
 
     def test_aggressively_expanding_transform_still_fits(self) -> None:
-        """The budget loop must keep shrinking until the EXPANDED form fits,
-        even when the expansion is far more aggressive than dot-mangling."""
+        """The budget loop shrinks until the expanded form fits, however aggressive the expansion."""
         def explode(s: str) -> str:
             return s + "#" * (40 * s.count("."))
 
@@ -274,9 +216,7 @@ class TestFitIdentifierExpand:
         assert _nbytes(explode(got)) <= 63
 
 
-# ---------------------------------------------------------------------------
 # substitute_quoted — the write-side primitive (two-phase)
-# ---------------------------------------------------------------------------
 
 
 class TestSubstituteQuoted:
@@ -291,9 +231,7 @@ class TestSubstituteQuoted:
         assert '"a.b"' not in got
 
     def test_chained_mapping_does_not_cascade(self) -> None:
-        """THE two-phase requirement: with ``A -> B`` and ``B -> C`` in one
-        map, the ``A`` occurrence must land on ``B`` and STOP. A naive
-        sequential ``str.replace`` would carry it on to ``C``."""
+        """Two-phase pass: ``A->B`` and ``B->C`` must not cascade A into C."""
         sql = 'SELECT "A", "B"'
         got = substitute_quoted(sql, {"A": "B", "B": "C"}, quote=_dq)
         assert got == 'SELECT "B", "C"'
@@ -305,44 +243,32 @@ class TestSubstituteQuoted:
         assert forward == reverse == 'SELECT "B", "C"'
 
     def test_swap_is_not_a_cascade(self) -> None:
-        """``A -> B`` and ``B -> A`` simultaneously — only a two-phase pass
-        gets this right."""
+        """Simultaneous ``A->B`` and ``B->A`` — only a two-phase pass gets this right."""
         got = substitute_quoted('SELECT "A", "B"', {"A": "B", "B": "A"}, quote=_dq)
         assert got == 'SELECT "B", "A"'
 
     def test_only_quoted_occurrences_are_replaced(self) -> None:
-        """A bare (unquoted) occurrence of the same text is a different
-        identifier — a table alias, say — and must be left alone."""
+        """A bare occurrence of the same text (a table alias, say) is left alone."""
         sql = 'SELECT tbl.col AS "tbl.col" FROM t'
         got = substitute_quoted(sql, {"tbl.col": "z"}, quote=_dq)
         assert got == 'SELECT tbl.col AS "z" FROM t'
 
     def test_does_not_reach_into_string_literals(self) -> None:
-        """The pass is keyed on exact quoted tokens, never on a length regex,
-        so a long run of text between two double quotes inside a literal is
-        untouched."""
+        """Keyed on exact quoted tokens, not a length regex, so quoted text inside a literal is untouched."""
         literal = "x" * 90
         sql = f'SELECT 1 AS "a.b" WHERE note LIKE \'%"{literal}"%\''
         got = substitute_quoted(sql, {"a.b": "z"}, quote=_dq)
         assert f'"{literal}"' in got
 
     def test_sentinel_cannot_leak_into_the_output(self) -> None:
-        """Whatever sentinel the two-phase pass uses must not survive, even if
-        the SQL happens to contain sentinel-looking text."""
+        """The two-phase sentinel must not survive, even if the SQL contains sentinel-looking text."""
         sql = 'SELECT "a.b", \'\\x00 0 \\x00\' AS lit'
         got = substitute_quoted(sql, {"a.b": "z"}, quote=_dq)
         assert "\x00" not in got.replace("\\x00", "")
 
 
-# ---------------------------------------------------------------------------
-# Dialect wiring
-# ---------------------------------------------------------------------------
-
-
-# Conservative universal byte budgets. NOT an exact model of each backend's
-# per-identifier-class rules: MySQL's 64-char *identifier* limit is used rather
-# than its 256-char *column-alias* limit, and Oracle assumes 12.2+ (128, not the
-# pre-12.2 30). Bytes are conservative for char-counting backends.
+# Conservative universal byte budgets, not exact per-identifier-class rules: MySQL uses its
+# 64-char identifier limit (not the 256-char column-alias one) and Oracle assumes 12.2+ (128).
 EXPECTED_LIMITS = {
     "postgres": 63,
     "mysql": 64,
@@ -370,16 +296,14 @@ class TestDialectLimits:
         assert get_dialect(name).max_identifier_bytes == expected
 
     def test_base_default_is_conservative(self) -> None:
-        """A future dialect that forgets to set the field must inherit the
-        TIGHTEST limit, not an unbounded one — over-shortening is safe."""
+        """A dialect that forgets to set the field inherits the tightest limit, not unbounded."""
         from slayer.sql.dialects.base import SqlDialect
 
         assert SqlDialect().max_identifier_bytes == 63
 
     @pytest.mark.parametrize("name", sorted(EXPECTED_LIMITS))
     def test_emit_alias_identity_under_limit(self, name: str) -> None:
-        """Only BigQuery/T-SQL transform a short alias (dot-mangling); every
-        other dialect must leave it byte-identical."""
+        """Only BigQuery/T-SQL dot-mangle a short alias; every other dialect leaves it byte-identical."""
         got = get_dialect(name).emit_alias("orders.revenue_sum")
         if name in ("bigquery", "tsql"):
             assert got == encode_alias("orders.revenue_sum")
@@ -388,8 +312,7 @@ class TestDialectLimits:
 
     @pytest.mark.parametrize("name", sorted(EXPECTED_LIMITS))
     def test_fit_alias_identity_under_limit(self, name: str) -> None:
-        """``fit_alias`` is the LENGTH-ONLY half — identity on every dialect
-        for a short alias, which is what makes the write pass a no-op."""
+        """``fit_alias`` is length-only, so a short alias is identity on every dialect."""
         assert get_dialect(name).fit_alias("orders.revenue_sum") == "orders.revenue_sum"
 
     @pytest.mark.parametrize("name", ["sqlite", "clickhouse", "trino", "presto", "databricks", "spark"])
@@ -402,8 +325,7 @@ class TestDialectLimits:
         assert _nbytes(got) <= 63
 
     def test_bigquery_emit_alias_is_mangled_and_fitted(self) -> None:
-        """BigQuery's ``emit_alias`` must be the FINAL identifier reaching the
-        SQL: length-fitted first, then dot-mangled."""
+        """``emit_alias`` is the final identifier: length-fitted first, then dot-mangled."""
         long_dotted = ".".join(["Sandbox" * 6] * 8)  # way over 300
         bq = get_dialect("bigquery")
         got = bq.emit_alias(long_dotted)
@@ -420,9 +342,7 @@ class TestDialectLimits:
         assert got == encode_alias(tsql.fit_alias(long_dotted))
 
 
-# ---------------------------------------------------------------------------
 # alias_rewrite_map — the collision guard
-# ---------------------------------------------------------------------------
 
 
 class TestAliasRewriteMap:
@@ -442,14 +362,11 @@ class TestAliasRewriteMap:
         assert get_dialect("sqlite").alias_rewrite_map([LONG_NAME, LONG_EMAIL]) == {}
 
     def test_duplicate_canonical_aliases_are_not_a_collision(self) -> None:
-        """The same alias listed twice is one name, not two."""
         pg = get_dialect("postgres")
         assert pg.alias_rewrite_map([LONG_EMAIL, LONG_EMAIL]) == pg.alias_rewrite_map([LONG_EMAIL])
 
     def test_keys_and_values_are_disjoint(self) -> None:
-        """The invariant that makes the write pass safe: every key is OVER the
-        limit and every value is WITHIN it, so no substitution can produce
-        another key. (The two-phase pass defends this if it ever weakens.)"""
+        """Every key is over the limit and every value within it, so no substitution can produce a key."""
         pg = get_dialect("postgres")
         mapping = pg.alias_rewrite_map([LONG_NAME, LONG_EMAIL, "orders.status"])
         assert mapping
@@ -458,13 +375,7 @@ class TestAliasRewriteMap:
             assert _nbytes(key) > 63 >= _nbytes(value)
 
     def test_digest_collision_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Force two distinct over-limit aliases onto one emitted name.
-
-        Note the pair differs only in the MIDDLE — head and tail both survive
-        fitting, so the repro pair (which differs in its final segment) cannot
-        be used here: it stays distinct even with a constant digest, which is
-        exactly the readability property the shape is chosen for.
-        """
+        """A constant digest forces two mid-differing over-limit aliases onto one emitted name."""
         import slayer.sql.dialects._identifier_fit as fitmod
 
         monkeypatch.setattr(fitmod, "_digest", lambda name: "deadbeef")
@@ -475,9 +386,7 @@ class TestAliasRewriteMap:
         assert TWIN_B in str(exc.value)
 
     def test_shortened_form_equal_to_an_existing_short_alias_raises(self) -> None:
-        """The guard must consider IDENTITY entries too. A short alias whose
-        spelling equals another alias's fitted form is a duplicate output name
-        that hash width alone cannot prevent."""
+        """The guard covers identity entries: a short alias equal to another's fitted form is a duplicate."""
         pg = get_dialect("postgres")
         collider = pg.fit_alias(LONG_EMAIL)  # within 63 bytes, so an identity entry
         assert pg.fit_alias(collider) == collider
@@ -501,15 +410,12 @@ class TestAliasRewriteMap:
         assert issubclass(IdentifierCollisionError, ValueError)
 
 
-# ---------------------------------------------------------------------------
 # decode_result_keys — many-to-one must not silently overwrite
-# ---------------------------------------------------------------------------
 
 
 class TestDecodeCollision:
     def test_two_keys_decoding_to_one_canonical_raises(self) -> None:
-        """A row carrying both the fitted form of an alias AND that alias's own
-        canonical spelling would silently lose one value on ``dict`` rebuild."""
+        """A row carrying both an alias's fitted form and its canonical spelling must not lose a value."""
         pg = get_dialect("postgres")
         rows = [{pg.fit_alias(LONG_EMAIL): 1, LONG_EMAIL: 2}]
         with pytest.raises(IdentifierCollisionError):
@@ -517,11 +423,7 @@ class TestDecodeCollision:
 
     @pytest.mark.parametrize("dialect", ["bigquery", "tsql"])
     def test_mangle_fallback_collision_raises(self, dialect: str) -> None:
-        """The dot-mangling dialects decode unmapped keys through
-        ``decode_alias``. That fallback must run INSIDE the duplicate check —
-        pre-decoding into a dict first would let ``orders___status`` and
-        ``orders.status`` collapse onto one key with one value silently
-        dropped, before any collision could be observed."""
+        """The ``decode_alias`` fallback runs inside the duplicate check so ``orders___status`` and ``orders.status`` collide."""
         d = get_dialect(dialect)
         rows = [{"orders___status": 1, "orders.status": 2}]
         with pytest.raises(IdentifierCollisionError):
@@ -529,7 +431,6 @@ class TestDecodeCollision:
 
     @pytest.mark.parametrize("dialect", ["bigquery", "tsql"])
     def test_mangle_fallback_preserves_every_value(self, dialect: str) -> None:
-        """No key is dropped when nothing collides."""
         d = get_dialect(dialect)
         got = d.decode_result_keys([{"a___b": 1, "c___d": 2}], aliases=[])
         assert got == [{"a.b": 1, "c.d": 2}]

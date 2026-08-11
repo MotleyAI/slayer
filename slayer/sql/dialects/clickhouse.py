@@ -21,8 +21,7 @@ class ClickhouseDialect(SqlDialect):
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
-    # DEV-1756: ClickHouse imposes no practical identifier-length limit.
-    max_identifier_bytes: int | None = None
+    max_identifier_bytes: int | None = None  # unbounded
 
     def build_median(
         self,

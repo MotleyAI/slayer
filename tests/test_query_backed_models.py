@@ -1418,11 +1418,8 @@ class TestMultiStageMeasureRename:
                 f"expected 'rev_sum' in cached columns, got: {col_names}"
             )
             sql = loaded.backing_query_sql or ""
-            # Inner-stage wrap renames `"orders.rev" AS rev`; loose match on
-            # the alias keyword + name (newline-tolerant). DEV-1756: an
-            # all-lowercase short stays BARE so it folds the same way the
-            # downstream bare reference does; only mixed-case / reserved shorts
-            # are quoted.
+            # Inner-stage wrap renames `"orders.rev" AS rev`; an all-lowercase
+            # short stays bare so it folds like the bare downstream reference.
             import re
             assert re.search(r"\bAS\s+rev\b", sql), (
                 f"expected inner-stage 'AS rev' rename in SQL:\n{sql}"

@@ -71,8 +71,7 @@ class TsqlDialect(SqlDialect):
     explain_postfix: str = "; SET SHOWPLAN_ALL OFF"
     log10_native: bool = True
     log2_native: bool = False
-    # DEV-1756: sysname is nvarchar(128), i.e. 128 characters.
-    max_identifier_bytes: int | None = 128
+    max_identifier_bytes: int | None = 128  # sysname is nvarchar(128)
 
     def build_approx_count_distinct(
         self,
@@ -338,12 +337,8 @@ class TsqlDialect(SqlDialect):
     # ------------------------------------------------------------------
 
     def fit_alias(self, name: str) -> str:
-        """DEV-1756: size the length budget against the POST-mangle form.
-
-        ``rewrite_emitted_sql`` expands every ``.`` to ``___`` after fitting,
-        adding 2 bytes per dot, so fitting to the raw 128-byte limit would bust
-        it on a deep chain. The returned value is still dotted.
-        """
+        """Size the budget against the post-mangle form (``.`` -> ``___`` adds 2
+        bytes per dot); return value stays dotted for the regex below."""
         return fit_identifier(
             name=name, limit=self.max_identifier_bytes, expand=encode_alias,
         )
@@ -357,24 +352,12 @@ class TsqlDialect(SqlDialect):
     ) -> str:
         """Replace ``.`` with ``___`` inside bracket-quoted identifiers.
 
-        T-SQL's ``ORDER BY`` resolver does not treat ``[a.b]`` as a
-        SELECT alias — it tries to resolve it as a column-name lookup
-        against the FROM scope and fails with ``Invalid column name``.
-        Mangling on emit gives the parser a single dotless identifier
-        and the alias resolves cleanly. ``decode_result_keys`` reverses
-        the mangling on result rows so consumers see SLayer's universal
-        dotted alias shape.
+        T-SQL's ``ORDER BY`` resolver treats ``[a.b]`` as a column lookup, not a
+        SELECT alias, and fails; a dotless identifier resolves cleanly. Same
+        bijection as ``BigqueryDialect``, only the regex anchor differs.
 
-        Uses the same bijection as ``BigqueryDialect`` (shared encode in
-        ``slayer.sql.dialects._alias_mangle``); only the regex anchor
-        differs.
-
-        DEV-1756: the base class's LENGTH pass runs first. An under-limit alias
-        is untouched by it (``fit_alias`` is the identity), so the regex below
-        sees exactly what it sees today and the output stays byte-identical.
-        An over-limit alias arrives as ``<head>_<hash>_<tail>`` with head/tail
-        still dotted, so this pass mangles it — yielding what ``emit_alias``
-        returns, with no double-encoding.
+        The base LENGTH pass runs first: no-op on under-limit aliases, and
+        over-limit ones arrive still-dotted for this pass — no double-encoding.
         """
         sql = super().rewrite_emitted_sql(sql=sql, aliases=aliases)
         return _TSQL_DOTTED_ALIAS_RE.sub(
@@ -387,16 +370,11 @@ class TsqlDialect(SqlDialect):
         *,
         aliases: Sequence[str] = (),
     ) -> list[dict[str, Any]]:
-        """Reverse the T-SQL alias mangling on result-row keys so
-        consumers see SLayer's universal dotted alias shape regardless
-        of whether the query ran against T-SQL or another dialect.
+        """Reverse the T-SQL alias mangling on result-row keys so consumers see
+        SLayer's universal dotted shape whatever dialect ran the query.
 
-        DEV-1756: keys produced by a length-fitted alias are not recoverable
-        from the key alone, so the ``emitted -> canonical`` map is consulted
-        first; anything outside it falls back to the pure ``___`` -> ``.``
-        bijection, preserving today's behaviour for short aliases. Both steps
-        happen inside ``_rekey_row`` in ONE pass — pre-decoding into a dict
-        first would let two keys collapse before the duplicate check ran.
+        Fitted keys aren't recoverable alone, so the ``emitted -> canonical``
+        map is consulted first, falling back to the ``___`` -> ``.`` bijection.
         """
         mapping = self.decode_alias_map(aliases)
         return [

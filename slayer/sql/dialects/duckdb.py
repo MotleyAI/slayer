@@ -21,8 +21,7 @@ class DuckdbDialect(SqlDialect):
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
-    # DEV-1756: DuckDB accepts long identifiers; 256 is a safe documented ceiling.
-    max_identifier_bytes: int | None = 256
+    max_identifier_bytes: int | None = 256  # safe documented ceiling
 
     def build_approx_count_distinct(
         self,

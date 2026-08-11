@@ -1,19 +1,7 @@
-"""DEV-1756 on a REAL Postgres server.
-
-The whole point of this issue is that byte-level emission tests pass while the
-server rejects (or worse, silently mis-answers) the query. Postgres caps
-identifiers at 63 bytes and truncates past it with only a NOTICE, so these
-failures are invisible to any test that only inspects generated SQL.
-
-Two distinct failure modes are covered:
-
-* **Collapse** — two sibling aliases share a 63-byte prefix. With the DEV-1444
-  outer wrap in play the re-projection is ambiguous (``AmbiguousColumnError``);
-  without it the two columns collapse into one in the result row.
-* **Silent loss** — a SINGLE over-limit alias with no sibling. Postgres accepts
-  the query and returns the row keyed by the truncated name, so the engine's
-  canonical-alias lookup misses and a column silently disappears. No error is
-  raised anywhere, which makes this the more dangerous of the two.
+"""DEV-1756 against a live Postgres, which truncates identifiers past 63 bytes with
+only a NOTICE, so emission tests pass while the server mis-answers. Covers two modes:
+sibling aliases collapsing at a shared 63-byte prefix, and a lone over-limit alias
+vanishing with no error (the more dangerous case).
 """
 
 import re
@@ -64,8 +52,7 @@ def _drop_db(postgresql_proc, db_name):
 
 @pytest.fixture(scope="module")
 def _chain_storage(postgresql_proc, tmp_path_factory):
-    """3-hop join chain with model names long enough that the projection
-    aliases cross Postgres' 63-byte limit."""
+    """3-hop join chain whose projection aliases cross Postgres' 63-byte limit."""
     conn, db_name = _create_db(postgresql_proc)
     try:
         cur = conn.cursor()
@@ -153,8 +140,7 @@ DEEP = "SandboxSubscription.SandboxCustomer.SandboxConsumer"
 @pytest.mark.integration
 class TestPostgresIdentifierLength:
     async def test_server_truncates_at_63_bytes(self, chain_env) -> None:
-        """Pin the premise against the actual server, so the rest of this file
-        cannot pass for the wrong reason if NAMEDATALEN ever differs."""
+        """Pin the 63-byte truncation premise against the live server."""
         client = chain_env._get_client(
             await chain_env._resolve_datasource(
                 model=await chain_env.storage.get_model("SandboxInvoiceV2", data_source=DS),
@@ -166,9 +152,7 @@ class TestPostgresIdentifierLength:
         assert len(list(rows[0])[0].encode()) == 63
 
     async def test_collapse_with_outer_wrap(self, chain_env) -> None:
-        """The exact reported failure: two 73/74-byte siblings + an ORDER BY
-        hoist that forces the DEV-1444 outer wrap. Raised AmbiguousColumnError
-        before the fix."""
+        """Two over-limit siblings + ORDER BY outer wrap; raised AmbiguousColumnError before the fix."""
         query = SlayerQuery(
             source_model="SandboxInvoiceV2",
             dimensions=[
@@ -181,8 +165,7 @@ class TestPostgresIdentifierLength:
             limit=10,
         )
         result = await chain_env.execute(query=query)
-        # Exact rows: a fitted alias that resolved to the WRONG column would
-        # still be "present with distinct values", so pin the actual pairing.
+        # Pin the exact pairing; a wrong-column alias would still be "present with distinct values".
         got = {
             (row[LONG_NAME], row[LONG_EMAIL], row["SandboxInvoiceV2.status"]):
                 (float(row["SandboxInvoiceV2.totalAmount_sum"]), row["SandboxInvoiceV2._count"])
@@ -194,8 +177,7 @@ class TestPostgresIdentifierLength:
         }
 
     async def test_collapse_without_outer_wrap(self, chain_env) -> None:
-        """No ORDER BY, so no outer wrap and no server-side error — the two
-        columns would silently collapse into one result key."""
+        """No outer wrap: the two siblings would silently collapse into one result key."""
         query = SlayerQuery(
             source_model="SandboxInvoiceV2",
             dimensions=[
@@ -212,9 +194,7 @@ class TestPostgresIdentifierLength:
         assert emails == {"ann@example.io", "bob@example.io"}
 
     async def test_silent_loss_single_over_limit_alias(self, chain_env) -> None:
-        """The dangerous mode: ONE over-limit alias, no sibling to collide
-        with. Postgres accepts the query and keys the row by the truncated
-        name, so the column silently vanishes from the response."""
+        """One over-limit alias, no sibling: Postgres keys the row by the truncated name and it vanishes."""
         query = SlayerQuery(
             source_model="SandboxInvoiceV2",
             dimensions=[ColumnRef(name=f"{DEEP}.email")],
@@ -229,8 +209,7 @@ class TestPostgresIdentifierLength:
             assert row[LONG_EMAIL] in {"ann@example.io", "bob@example.io"}
 
     async def test_values_are_correct_not_merely_present(self, chain_env) -> None:
-        """A fitted alias that pointed at the wrong column would still be
-        'present'. Pin the actual aggregate."""
+        """Pin the aggregate; a wrong-column fitted alias would still be present."""
         query = SlayerQuery(
             source_model="SandboxInvoiceV2",
             dimensions=[ColumnRef(name=f"{DEEP}.email")],
@@ -241,8 +220,7 @@ class TestPostgresIdentifierLength:
         assert totals == {"ann@example.io": 150.0, "bob@example.io": 200.0}
 
     async def test_response_columns_are_canonical(self, chain_env) -> None:
-        """Consumers must never see the shortened form — that is what the
-        read-side decode exists for."""
+        """Response exposes canonical keys while the emitted SQL carries the fitted form."""
         query = SlayerQuery(
             source_model="SandboxInvoiceV2",
             dimensions=[ColumnRef(name=f"{DEEP}.name"), ColumnRef(name=f"{DEEP}.email")],
@@ -250,12 +228,10 @@ class TestPostgresIdentifierLength:
         )
         result = await chain_env.execute(query=query)
         assert set(result.data[0]) >= {LONG_NAME, LONG_EMAIL}
-        # ...while the SQL that actually ran carries the fitted form.
         assert LONG_EMAIL not in result.sql
 
     async def test_cached_execution_round_trip(self, chain_env) -> None:
-        """The cache stores the DECODED response and re-keys on the fitted
-        SQL; a hit must return canonical keys too."""
+        """A cache hit returns canonical keys too, proving decode runs before storage."""
         query = SlayerQuery(
             source_model="SandboxInvoiceV2",
             dimensions=[ColumnRef(name=f"{DEEP}.email")],
@@ -263,34 +239,27 @@ class TestPostgresIdentifierLength:
         )
         first = await chain_env.execute(query=query, cache=True)
         second = await chain_env.execute(query=query, cache=True)
-        # Canonical on BOTH the fresh result and the cache hit — proving the
-        # decode runs before storage, not only on the way out.
         assert LONG_EMAIL in first.data[0]
         assert LONG_EMAIL in second.data[0]
         assert first.data == second.data
 
     async def test_deep_cross_model_measure_executes(self, chain_env) -> None:
-        """Surface 3: the `_cm_` CTE name is `_cm_` + the dotted alias, which
-        also crosses 63 bytes on this chain."""
+        """Surface 3: the `_cm_` cross-model CTE name also crosses 63 bytes on this chain."""
         query = SlayerQuery(
             source_model="SandboxInvoiceV2",
             dimensions=[ColumnRef(name="status")],
             measures=[{"formula": f"{DEEP}.lifetimeValue:sum"}],
         )
         result = await chain_env.execute(query=query)
-        # The construct under test must actually be present...
         assert "_cm_" in result.sql, "no cross-model CTE generated; test is vacuous"
         for name in re.findall(r"\b_cm_\w+", result.sql):
             assert len(name.encode()) <= 63, f"{name!r} exceeds the Postgres limit"
-        # ...and the value must be right, not merely non-empty.
         alias = f"SandboxInvoiceV2.{DEEP}.lifetimeValue_sum"
         assert len(result.data) == 1
         assert float(result.data[0][alias]) == 30.0
 
     async def test_nested_query_backed_model_executes(self, chain_env) -> None:
-        """Surface 4: the virtual-model short names are emitted as output
-        column aliases and referenced by the outer stage. Mixed-case shorts
-        additionally exercise the case-folding regression."""
+        """Surface 4: virtual-model short names as output aliases; mixed-case exercises case-folding."""
         stage1 = SlayerQuery(
             name="stage1",
             source_model="SandboxInvoiceV2",

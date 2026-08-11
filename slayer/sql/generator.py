@@ -268,19 +268,12 @@ def _parse_window_duration(value: str) -> list[tuple[int, str]]:
 def _cte_name_from_alias(prefix: str, alias: str, *, limit: int | None = None) -> str:
     """Build a unique CTE name from a measure alias.
 
-    Dots are replaced with ``__`` (double underscore) to avoid collision
-    with aliases that already contain underscores. E.g.:
-    - ``orders.revenue_sum``  -> ``_fm_orders__revenue_sum``
-    - ``orders_v2.revenue_sum`` -> ``_fm_orders_v2__revenue_sum``
+    Dots become ``__`` to avoid colliding with aliases that already contain
+    underscores: ``orders.revenue_sum`` -> ``_fm_orders__revenue_sum``.
 
-    DEV-1756: ``limit`` is the dialect's ``max_identifier_bytes``. The whole
-    result is fitted, PREFIX INCLUDED — a ``cp_value_12_`` prefix eats 12 of
-    Postgres' 63 bytes before the alias is even considered. CTE names are
-    emitted unquoted, so an over-limit definition and its reference would be
-    truncated to the same thing by the server today (harmless) or to a
-    collision with a sibling CTE (not harmless). Stays a pure function of
-    ``(prefix, alias, limit)``, so every call site derives the same name and
-    definition and reference cannot drift.
+    The whole result is fitted to ``limit`` (the dialect's max), prefix
+    included. Pure function of ``(prefix, alias, limit)``, so a CTE's definition
+    and every reference derive the same name.
     """
     sanitized = alias.replace(".", "__")
     sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", sanitized)
@@ -418,25 +411,16 @@ class SQLGenerator:
             self._dialect: SqlDialect = dialect
         else:
             self._dialect = get_dialect(dialect)
-        # DEV-1756: CTE-name allocation for the statement being generated,
-        # ``emitted -> (prefix, alias)``. Reset per ``generate()``.
+        # Per-statement CTE-name allocation, ``emitted -> (prefix, alias)``.
         self._cte_names: dict[str, tuple[str, str]] = {}
 
     def _cte_name(self, prefix: str, alias: str) -> str:
         """Allocate a length-fitted CTE name, refusing a collision.
 
-        DEV-1756: CTE names live in one namespace per statement and are emitted
-        UNQUOTED, so two that fit to the same string would produce a query that
-        silently references the wrong CTE. Repeat calls with the same
-        ``(prefix, alias)`` are the same name, not a collision — several code
-        paths re-derive a CTE's name to reference it.
-
-        Keyed CASEFOLDED, because unquoted is exactly the case that the server
-        folds: ``_wm_Foo`` and ``_wm_foo`` are one identifier on Postgres (and
-        on Snowflake), so comparing the literal spellings would wave through a
-        pair that silently resolves to the same CTE. Unlike the projection
-        aliases, there is no quoted variant to exempt here — these are never
-        quoted — so casefolding is exact rather than merely conservative.
+        CTE names are emitted UNQUOTED, so two that fit to the same string
+        silently reference the wrong CTE. Keyed CASEFOLDED, since the server
+        folds unquoted names. Repeat calls with the same ``(prefix, alias)``
+        return the same name, not a collision.
         """
         name = _cte_name_from_alias(
             prefix=prefix, alias=alias, limit=self._dialect.max_identifier_bytes,
@@ -643,8 +627,7 @@ class SQLGenerator:
             raise ValueError(
                 f"render_mode must be 'outer' or 'wrapped', got {render_mode!r}"
             )
-        # DEV-1756: CTE names are allocated per statement.
-        self._cte_names = {}
+        self._cte_names = {}  # reset per-statement CTE-name allocation
         has_isolated = any(_has_cross_model_filter(m) for m in enriched.measures)
         has_windowed = any(_is_windowed_measure(m) for m in enriched.measures)
         has_cross_model = bool(enriched.cross_model_measures)
@@ -675,16 +658,9 @@ class SQLGenerator:
 
         if render_mode == "outer":
             sql = self._apply_outer_projection_trim(sql=sql, enriched=enriched)
-        # Dialect-driven post-pass: the base class fits over-limit projection
-        # aliases to the dialect's identifier budget (DEV-1756); BigQuery and
-        # T-SQL additionally mangle dotted aliases. Fires for BOTH render modes
-        # — inner CTE column names are subject to the same dialect alias rules
-        # as the outer projection.
-        #
-        # The alias set is the UNFILTERED one: hidden ORDER-BY hoists and
-        # ``_inner_*`` / ``_ft*`` / ``_ts*`` entries are projected in the inner
-        # SELECT and truncate exactly like user-declared aliases, so a filtered
-        # list would leave their references pointing at an unfitted name.
+        # Dialect post-pass: fit over-limit aliases (DEV-1756), plus BigQuery/T-SQL
+        # dot-mangling. Fires for both render modes. Unfiltered alias set: hidden
+        # hoists are projected too and must be fitted with the same map.
         sql = self._dialect.rewrite_emitted_sql(
             sql=sql, aliases=all_projection_aliases(enriched),
         )
@@ -1688,10 +1664,8 @@ class SQLGenerator:
             for t in deferred_self_joins:
                 src_cte = ctes[-1][0]
 
-                # DEV-1756: these are CTE names built from a USER-supplied
-                # transform name, so they need the same length fitting and
-                # collision check as every other CTE. Allocated once and reused
-                # for the definition and every reference below.
+                # Built from a user-supplied transform name; fit + collision-check
+                # like every CTE. Allocated once, reused for def and references.
                 shift_name = self._cte_name(prefix="shifted_", alias=t.name)
                 shifted_sql = self._generate_shifted_base(
                     enriched=enriched, transform=t,

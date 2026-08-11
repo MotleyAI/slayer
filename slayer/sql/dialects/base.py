@@ -186,14 +186,9 @@ class SqlDialect(BaseModel):
     log10_native: bool = True
     log2_native: bool = True
 
-    # DEV-1756: conservative universal identifier budget, in BYTES. This is
-    # deliberately NOT an exact model of each backend's per-identifier-class
-    # rules — one number that is never too generous. Bytes are conservative for
-    # backends that count characters (MySQL, SQL Server). ``None`` means
-    # effectively unbounded, in which case every fitting hook is a no-op.
-    # The base default is the tightest Tier-1 value (Postgres' NAMEDATALEN-1),
-    # so a dialect added later without setting it over-shortens rather than
-    # silently truncating.
+    # Conservative universal identifier budget in BYTES; ``None`` = unbounded
+    # (fitting hooks become no-ops). Default is the tightest Tier-1 value
+    # (Postgres), so a new dialect over-shortens rather than silently truncating.
     max_identifier_bytes: int | None = 63
 
     @property
@@ -504,43 +499,34 @@ class SqlDialect(BaseModel):
             out += "\n" + offset_arg.sql(dialect=self.sqlglot_name, pretty=True)
         return out
 
-    # ------------------------------------------------------------------
-    # DEV-1756: identifier-length fitting
-    #
-    # Postgres truncates over-limit identifiers SILENTLY, so two long sibling
-    # aliases collapse onto one output name. Aliases stay canonical everywhere
-    # inside SLayer; they are fitted only on emission and restored on the
-    # result keys, so consumers never observe the dialect dependence.
-    # ------------------------------------------------------------------
+    # DEV-1756 identifier-length fitting. Aliases stay canonical inside SLayer,
+    # fitted only on emission and restored on the result keys.
 
     def quote_identifier(self, name: str) -> str:
         """``name`` wrapped in this dialect's identifier quotes."""
         return exp.Identifier(this=name, quoted=True).sql(dialect=self.sqlglot_name)
 
     def fit_alias(self, name: str) -> str:
-        """LENGTH-ONLY fitting. Identity when ``name`` already fits.
+        """Length-only fitting; identity when ``name`` already fits.
 
-        This — not ``emit_alias`` — drives the write pass, which is why an
-        under-limit alias produces byte-identical SQL on every dialect,
-        including the ones that separately mangle dots.
+        Drives the write pass (not ``emit_alias``), so an under-limit alias
+        produces byte-identical SQL even on dialects that mangle dots.
         """
         return fit_identifier(name=name, limit=self.max_identifier_bytes)
 
     def emit_alias(self, alias: str) -> str:
-        """The FINAL identifier a canonical alias reaches the SQL as.
+        """The final identifier a canonical alias reaches the SQL as.
 
-        Equals ``fit_alias`` here; ``BigqueryDialect`` / ``TsqlDialect``
-        compose their dot-mangling on top. Used to build the read-side map, so
-        it must match the emitted token exactly.
+        Equals ``fit_alias`` here; BigQuery/T-SQL compose dot-mangling on top.
+        Used to build the read-side map, so must match the emitted token exactly.
         """
         return self.fit_alias(alias)
 
     def alias_rewrite_map(self, aliases: Sequence[str]) -> dict[str, str]:
         """``{canonical: fitted}`` for the write pass, only where they differ.
 
-        The collision check covers EVERY alias including the identities: an
-        already-short alias whose spelling equals another's fitted form is just
-        as much a duplicate output name, and no hash width can prevent it.
+        The collision check covers every alias including identities: a short
+        alias equal to another's fitted form is just as much a duplicate.
         """
         if self.max_identifier_bytes is None:
             return {}
@@ -562,9 +548,8 @@ class SqlDialect(BaseModel):
         return {k: v for k, v in allocation.items() if k != v}
 
     def decode_alias_map(self, aliases: Sequence[str]) -> dict[str, str]:
-        """``{emitted: canonical}`` — the read-side inverse, rebuilt by simply
-        re-running the (pure) fitting rather than threading a map through
-        generation."""
+        """``{emitted: canonical}`` — read-side inverse, rebuilt by re-running
+        the pure fitting rather than threading a map through generation."""
         out: dict[str, str] = {}
         for alias in aliases:
             emitted = self.emit_alias(alias)
@@ -579,14 +564,12 @@ class SqlDialect(BaseModel):
         *,
         fallback: Callable[[str], str] | None = None,
     ) -> dict[str, Any]:
-        """Apply ``mapping`` to one row's keys, refusing to let two keys
-        collapse onto one (which would silently drop a column's values).
+        """Apply ``mapping`` to a row's keys, erroring if two keys collapse onto
+        one (silent column loss).
 
-        ``fallback`` decodes keys absent from ``mapping`` — BigQuery and T-SQL
-        pass their ``___`` -> ``.`` bijection. It must be applied HERE rather
-        than in a separate dict comprehension upstream: pre-decoding into a
-        dict would let two keys collapse before this check ever ran, which is
-        precisely the silent-column-loss this class exists to prevent.
+        ``fallback`` decodes keys absent from ``mapping`` (BigQuery/T-SQL
+        ``___`` -> ``.``). Applied here, not upstream, so the collapse check
+        sees every key.
         """
         out: dict[str, Any] = {}
         for key, value in row.items():
@@ -608,28 +591,14 @@ class SqlDialect(BaseModel):
     def rewrite_emitted_sql(
         self, sql: str, *, aliases: Sequence[str] = (),
     ) -> str:
-        """Post-pass string-level rewrite of the final generator output.
+        """Post-pass string rewrite of the final SQL; write-side companion to
+        ``rewrite_parsed_ast``, applied at the end of ``generate()``.
 
-        Symmetric companion to ``rewrite_parsed_ast`` (the input-side hook):
-        write-side, applied at the end of ``SQLGenerator.generate()`` AFTER
-        ``_apply_outer_projection_trim``.
-
-        Base impl performs the DEV-1756 length pass: each canonical alias in
-        ``aliases`` whose fitted form differs has its dialect-quoted token
-        replaced, everywhere it occurs (inner ``AS``, outer wrap projection,
-        ORDER BY, CTE column references). Driven by the query's own alias set
-        rather than a length regex, which bounds what it can touch inside a
-        string literal — see :func:`substitute_quoted`.
-
-        ``aliases`` defaults to empty, which makes this a no-op — every caller
-        that does not supply an alias set keeps today's behaviour exactly.
-
-        Contract: preserve query semantics. Suitable for alias renames,
-        identifier mangling/escape, dialect-quoting fixes. Do NOT change query
-        shape — use the typed ``build_*`` methods on this class for that.
-
-        Overrides today: ``BigqueryDialect`` / ``TsqlDialect`` compose their
-        dotted-alias mangling AFTER this length pass.
+        Base impl fits over-limit aliases (DEV-1756), replacing each canonical
+        token everywhere it occurs. Driven by the query's own alias set, not a
+        length regex, which bounds what it can touch (see :func:`substitute_quoted`).
+        Empty ``aliases`` is a no-op. Must preserve query semantics, not shape.
+        BigQuery/T-SQL compose dot-mangling after this pass.
         """
         mapping = self.alias_rewrite_map(aliases)
         if not mapping:
@@ -642,15 +611,10 @@ class SqlDialect(BaseModel):
         *,
         aliases: Sequence[str] = (),
     ) -> list[dict[str, Any]]:
-        """Reverse-pass on result-row keys to undo the write-side rewrite.
+        """Reverse the write-side rewrite on result-row keys, so consumers always
+        see SLayer's canonical alias shape regardless of dialect or shortening.
 
-        Called at the end of ``SlayerQueryEngine.execute()`` so consumers
-        always see SLayer's universal alias shape (``orders._count``,
-        ``orders.products.category``) regardless of which dialect a query ran
-        on — and regardless of whether its aliases had to be shortened.
-
-        Overrides today: ``BigqueryDialect`` / ``TsqlDialect`` additionally
-        decode the ``___`` mangling back to dots.
+        BigQuery/T-SQL additionally decode the ``___`` mangling back to dots.
         """
         mapping = self.decode_alias_map(aliases)
         if not mapping:

@@ -193,7 +193,6 @@ class SnowflakeDialect(SqlDialect):
     log10_native: bool = True
     # No native LOG2 — falls through to canonical ``LOG(2, x)`` form.
     log2_native: bool = False
-    # DEV-1756: 255-character identifier limit.
     max_identifier_bytes: int | None = 255
 
     def build_approx_count_distinct(

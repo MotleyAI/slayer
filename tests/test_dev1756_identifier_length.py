@@ -1,28 +1,8 @@
-"""DEV-1756: SLayer must bound generated identifiers to the dialect's limit.
+"""SLayer must bound generated identifiers to the dialect's limit.
 
-Postgres caps identifiers at 63 BYTES and SILENTLY truncates past it. SLayer's
-projection aliases (``<root>.<join.path>.<column>``) cross that on a 3-hop
-join, so two siblings collapse onto one effective output name:
-
-    SandboxInvoiceV2.SandboxSubscription.SandboxCustomer.SandboxConsumer.name    73 B
-    SandboxInvoiceV2.SandboxSubscription.SandboxCustomer.SandboxConsumer.email   74 B
-    -> both truncate to  ...SandboxCustomer.SandboxCon                           63 B
-
-With the DEV-1444 outer wrap in play that raises ``AmbiguousColumnError``;
-without it, the two columns silently collapse in the result row.
-
-Three surfaces are fixed here:
-
-1. Projection aliases   -- QUOTED; inner SELECT, outer wrap, ORDER BY.
-3. CTE names            -- UNQUOTED; ``_cte_name_from_alias``.
-4. Virtual-model shorts -- ``_query_as_model``'s ``_alias_to_short``.
-
-Surface 2 (join-path TABLE aliases such as
-``SandboxSubscription__SandboxCustomer__SandboxConsumer``) is DEFERRED to
-DEV-1743 and is deliberately NOT asserted on here — see ``_inscope_identifiers``.
-
-The primitive itself is unit-tested in ``tests/dialects/test_identifier_fit.py``;
-live execution against a real server is in the Postgres integration suite.
+Postgres caps identifiers at 63 bytes and silently truncates past it, so long
+projection aliases collide. Fixed here: projection aliases (quoted), CTE names
+(unquoted), virtual-model shorts. Table aliases are surface 2, deferred to DEV-1743.
 """
 
 from __future__ import annotations
@@ -48,17 +28,12 @@ DEEP = "SandboxSubscription.SandboxCustomer.SandboxConsumer"
 LONG_NAME = "SandboxInvoiceV2.SandboxSubscription.SandboxCustomer.SandboxConsumer.name"
 LONG_EMAIL = "SandboxInvoiceV2.SandboxSubscription.SandboxCustomer.SandboxConsumer.email"
 
-# Two over-limit names differing ONLY in the middle — head and tail survive
-# fitting identically, which is what makes a forced digest collision possible.
+# Two over-limit names differing only in the middle: forces a digest collision.
 TWIN_A = "SandboxAlpha." * 3 + "111" + ".SandboxOmega" * 3
 TWIN_B = "SandboxAlpha." * 3 + "222" + ".SandboxOmega" * 3
 
 
-# ---------------------------------------------------------------------------
-# Pre-change golden SQL — captured from the generator BEFORE this feature
-# existed. These pin the "no churn for the common case" guarantee far more
-# strongly than an idempotence check could.
-# ---------------------------------------------------------------------------
+# Pre-change golden SQL — pins "no churn for the common case".
 
 GOLDEN_SHORT_QUERY = {
     "postgres": (
@@ -88,8 +63,7 @@ GOLDEN_SHORT_QUERY = {
     ),
 }
 
-# The full repro (long aliases + outer wrap) on an UNBOUNDED dialect: nothing
-# may change, byte for byte.
+# Full repro on an unbounded dialect: nothing may change, byte for byte.
 GOLDEN_SQLITE_REPRO_ORDER = (
     'SELECT\n    "SandboxInvoiceV2.SandboxSubscription.SandboxCustomer.SandboxConsumer.name",\n'
     '    "SandboxInvoiceV2.SandboxSubscription.SandboxCustomer.SandboxConsumer.email",\n'
@@ -117,9 +91,7 @@ GOLDEN_SQLITE_REPRO_ORDER = (
 )
 
 
-# ---------------------------------------------------------------------------
-# Fixtures — the reported 3-hop chain, with realistic model-name lengths
-# ---------------------------------------------------------------------------
+# Fixtures — the reported 3-hop chain
 
 
 def _chain_models(
@@ -134,8 +106,7 @@ def _chain_models(
         Column(name="lifetimeValue", sql="lifetime_value", type=DataType.DOUBLE),
     ]
     if case_colliding_columns:
-        # Differs from ``email`` only by case: the derived virtual-model shorts
-        # are emitted into a namespace Postgres case-folds.
+        # Differs from ``email`` only by case; Postgres case-folds the namespace.
         consumer_columns.append(Column(name="Email", sql="email", type=DataType.TEXT))
     return [
         SlayerModel(
@@ -146,9 +117,7 @@ def _chain_models(
                 Column(name="totalAmount", sql="total_amount", type=DataType.DOUBLE),
                 Column(name="subscription_id", sql="subscription_id", type=DataType.INT),
                 *([
-                    # A root column named exactly what a deep join path flattens
-                    # to. Column names permit ``__`` (the query-backed carve-out),
-                    # so this is reachable, not contrived.
+                    # Root column named what a deep join path flattens to; names permit ``__``.
                     Column(name=decoy_root_column, sql="decoy", type=DataType.TEXT),
                 ] if decoy_root_column else []),
             ],
@@ -222,14 +191,8 @@ SHORT_QUERY = SlayerQuery(
 )
 
 
-# ---------------------------------------------------------------------------
-# Identifier-inspection helpers
-#
-# Scope note: these deliberately inspect ONLY the namespaces this issue fixes —
-# output-column aliases, ORDER BY references and CTE names. Join-path TABLE
-# aliases (``exp.TableAlias``) are surface 2, deferred to DEV-1743, and are
-# excluded so a future long join chain fails THERE rather than confusingly here.
-# ---------------------------------------------------------------------------
+# Identifier-inspection helpers — only the namespaces this issue owns (aliases,
+# ORDER BY refs, CTE names). Join-path table aliases are surface 2 (DEV-1743).
 
 
 def _nbytes(s: str) -> int:
@@ -237,8 +200,7 @@ def _nbytes(s: str) -> int:
 
 
 def _pg_effective(name: str, *, quoted: bool) -> str:
-    """What Postgres actually resolves an identifier to: truncate to 63 bytes,
-    and additionally case-fold when it was written unquoted."""
+    """What Postgres resolves an identifier to: truncate to 63 bytes, case-fold if unquoted."""
     clipped = name.encode("utf-8")[:63].decode("utf-8", "ignore")
     return clipped if quoted else clipped.lower()
 
@@ -275,8 +237,7 @@ def _cte_names(tree: exp.Expression) -> list[tuple[str, bool]]:
 
 
 def _cte_table_refs(tree: exp.Expression) -> set[str]:
-    """Names of every table reference, so a CTE reference can be matched
-    against its definition EXACTLY rather than by substring count."""
+    """Names of every table reference, to match a CTE reference to its definition exactly."""
     return {
         t.this.this
         for t in tree.find_all(exp.Table)
@@ -301,9 +262,7 @@ def _assert_within_limit(sql: str, limit: int, dialect: str = "postgres") -> Non
 
 
 def _assert_no_namespace_collision(sql: str, dialect: str = "postgres") -> None:
-    """Within each namespace, identifiers must stay distinct AFTER the backend's
-    normalization (truncate, plus case-fold when unquoted) — not merely be
-    short enough."""
+    """Identifiers in each namespace stay distinct after the backend normalizes them."""
     tree = sqlglot.parse_one(sql, dialect=dialect)
     namespaces: list[tuple[str, list[tuple[str, bool]]]] = [
         (f"select#{i}", _projection_aliases(select))
@@ -322,9 +281,7 @@ def _assert_no_namespace_collision(sql: str, dialect: str = "postgres") -> None:
 
 
 def _assert_order_by_refs_resolve(sql: str, dialect: str = "postgres") -> None:
-    """Every quoted ORDER BY reference must name a projection alias that
-    actually exists somewhere in the statement. This is the pairing check that
-    catches an ORDER BY left pointing at an unfitted alias."""
+    """Every quoted ORDER BY reference must name a projection alias that exists."""
     tree = sqlglot.parse_one(sql, dialect=dialect)
     projected = {n for select in tree.find_all(exp.Select) for n, _ in _projection_aliases(select)}
     for select in tree.find_all(exp.Select):
@@ -340,9 +297,7 @@ async def _sql(engine, model, query, *, dialect: str = "postgres", mode: str = "
     return SQLGenerator(dialect=dialect).generate(enriched=enriched, render_mode=mode)
 
 
-# ===========================================================================
-# 1. The premise — without the fix these aliases really do collide
-# ===========================================================================
+# The premise: without the fix these aliases really do collide
 
 
 class TestPremise:
@@ -357,11 +312,6 @@ class TestPremise:
 
     def test_the_two_aliases_share_a_63_byte_prefix(self) -> None:
         assert LONG_NAME.encode()[:63] == LONG_EMAIL.encode()[:63]
-
-
-# ===========================================================================
-# 2. Surface 1 — projection aliases
-# ===========================================================================
 
 
 class TestProjectionAliases:
@@ -379,8 +329,7 @@ class TestProjectionAliases:
         assert len(sqlglot.parse(sql, dialect="postgres")) == 1
 
     async def test_outer_wrap_uses_the_same_token_everywhere(self, chain) -> None:
-        """The reported failure: the inner ``AS <x>``, the outer wrap's
-        projection and the ORDER BY must all carry the IDENTICAL identifier."""
+        """Inner ``AS``, outer-wrap projection and ORDER BY carry the identical token."""
         engine, model = chain
         sql = await _sql(engine, model, _repro_query(with_order=True))
         assert ") AS _outer" in sql, "outer wrap did not fire; test is vacuous"
@@ -396,8 +345,7 @@ class TestProjectionAliases:
         _assert_order_by_refs_resolve(sql)
 
     async def test_canonical_alias_does_not_survive_anywhere(self, chain) -> None:
-        """Pairing check: if ANY occurrence were missed, the definition and its
-        references would disagree. Stronger than a max-length assertion."""
+        """Pairing check: no canonical alias survives — stronger than a max-length assertion."""
         engine, model = chain
         sql = await _sql(engine, model, _repro_query(with_order=True))
         assert LONG_NAME not in sql
@@ -405,14 +353,12 @@ class TestProjectionAliases:
 
     @pytest.mark.parametrize("dialect", sorted(GOLDEN_SHORT_QUERY))
     async def test_under_limit_query_is_byte_identical(self, chain, dialect: str) -> None:
-        """No churn for the 99% case, pinned against SQL captured BEFORE this
-        feature existed."""
+        """No churn for the common case, pinned against pre-feature SQL."""
         engine, model = chain
         assert await _sql(engine, model, SHORT_QUERY, dialect=dialect) == GOLDEN_SHORT_QUERY[dialect]
 
     async def test_unbounded_dialect_output_is_byte_identical(self, chain) -> None:
-        """SQLite has no limit, so even the full repro — long aliases, outer
-        wrap, ORDER BY — must be untouched byte for byte."""
+        """SQLite has no limit, so even the full repro is untouched byte for byte."""
         engine, model = chain
         sql = await _sql(engine, model, _repro_query(with_order=True), dialect="sqlite")
         assert sql == GOLDEN_SQLITE_REPRO_ORDER
@@ -421,19 +367,16 @@ class TestProjectionAliases:
     async def test_other_unbounded_dialects_keep_the_long_alias(self, chain, dialect: str) -> None:
         engine, model = chain
         sql = await _sql(engine, model, _repro_query(with_order=True), dialect=dialect)
-        # Inner AS + outer projection: both untouched.
-        assert sql.count(LONG_EMAIL) == 2
+        assert sql.count(LONG_EMAIL) == 2  # inner AS + outer projection, both untouched
 
     async def test_wrapped_render_mode_also_fitted(self, chain) -> None:
-        """``render_mode='wrapped'`` feeds ``_query_as_model``; its inner
-        aliases are just as subject to truncation."""
+        """``render_mode='wrapped'`` inner aliases are subject to truncation too."""
         engine, model = chain
         _assert_within_limit(await _sql(engine, model, _repro_query(), mode="wrapped"), 63)
 
 
 class TestManglingDialects:
-    """BigQuery / T-SQL already mangle dotted aliases; length-fitting must
-    compose with that, not fight it."""
+    """BigQuery / T-SQL mangle dotted aliases; length-fitting must compose with that."""
 
     @pytest.mark.parametrize("dialect,limit", [("bigquery", 300), ("tsql", 128)])
     async def test_long_alias_is_mangled_and_fitted(self, chain, dialect: str, limit: int) -> None:
@@ -443,8 +386,7 @@ class TestManglingDialects:
         assert LONG_EMAIL not in sql
 
     async def test_emit_alias_matches_what_is_in_the_sql(self, chain) -> None:
-        """``emit_alias`` is what the decode map is built from, so it must be
-        exactly the token the SQL carries."""
+        """``emit_alias`` builds the decode map, so it must be the token the SQL carries."""
         engine, model = chain
         for dialect in ("postgres", "bigquery", "tsql", "mysql"):
             sql = await _sql(engine, model, _repro_query(), dialect=dialect)
@@ -452,19 +394,12 @@ class TestManglingDialects:
             assert get_dialect(dialect).emit_alias(LONG_EMAIL) in names, dialect
 
     async def test_mangling_is_not_applied_twice(self, chain) -> None:
-        """The base length pass runs BEFORE the dot-mangle regex. If it emitted
-        an already-mangled form the regex would double-encode ``___`` to
-        ``______``."""
+        """The length pass runs before the dot-mangle regex; it must not double-encode."""
         engine, model = chain
         sql = await _sql(engine, model, _repro_query(), dialect="bigquery")
         fitted = get_dialect("bigquery").fit_alias(LONG_EMAIL)
         assert encode_alias(fitted) in sql
         assert encode_alias(encode_alias(fitted)) not in sql
-
-
-# ===========================================================================
-# 3. Read side
-# ===========================================================================
 
 
 class TestDecodeResultKeys:
@@ -490,8 +425,7 @@ class TestDecodeResultKeys:
         assert get_dialect("postgres").decode_result_keys([], aliases=[LONG_EMAIL]) == []
 
     def test_hidden_alias_is_decoded_too(self) -> None:
-        """Hidden ORDER-BY hoists are projected in the inner SELECT, so a row
-        can legitimately carry one; it must decode like any other."""
+        """A hidden ORDER-BY hoist can appear in a row and must decode like any other."""
         pg = get_dialect("postgres")
         hidden = LONG_EMAIL.replace(".email", ".totalAmount_avg")
         rows = [{pg.emit_alias(hidden): 1.0}]
@@ -504,16 +438,12 @@ class TestDecodeResultKeys:
         assert bq.decode_result_keys(rows, aliases=[long_dotted]) == [{long_dotted: 1}]
 
     def test_bigquery_falls_back_to_dot_decode_outside_the_map(self) -> None:
-        """Keys not in the length map must still get today's ``___`` -> ``.``
-        treatment, or short-alias BigQuery results would regress."""
         bq = get_dialect("bigquery")
         assert bq.decode_result_keys([{"orders___status": 1}], aliases=[]) == [{"orders.status": 1}]
 
 
 class TestDecodeWiring:
-    """The decode must be handed the FULL alias set, hidden entries included —
-    an implementation that used only the public aliases would still pass the
-    end-to-end repro."""
+    """Decode must receive the full alias set, hidden entries included."""
 
     async def test_run_and_build_passes_all_projection_aliases(
         self, chain, monkeypatch: pytest.MonkeyPatch,
@@ -544,11 +474,6 @@ class TestDecodeWiring:
         assert seen["aliases"] == expected
 
 
-# ===========================================================================
-# 4. The alias set
-# ===========================================================================
-
-
 class TestAllProjectionAliases:
     async def test_includes_public_aliases(self, chain) -> None:
         engine, model = chain
@@ -558,9 +483,7 @@ class TestAllProjectionAliases:
             assert a in every
 
     async def test_includes_hidden_order_by_hoist(self, chain) -> None:
-        """``totalAmount:avg`` is projected in the inner SELECT purely to
-        satisfy ORDER BY. It truncates like any other alias, so the pass must
-        see it."""
+        """``totalAmount:avg`` is projected only for ORDER BY; the pass must still see it."""
         engine, model = chain
         enriched = await engine._enrich(query=_repro_query(with_order=True), model=model)
         public = public_projection_aliases(enriched)
@@ -568,8 +491,7 @@ class TestAllProjectionAliases:
         assert any("totalAmount_avg" in a for a in hidden), hidden
 
     async def test_is_stable_across_calls(self, chain) -> None:
-        """Order must not depend on set iteration — the rewrite map is derived
-        from this list."""
+        """Order must be stable — the rewrite map is derived from this list."""
         engine, model = chain
         enriched = await engine._enrich(query=_repro_query(), model=model)
         first = all_projection_aliases(enriched)
@@ -580,9 +502,7 @@ class TestAllProjectionAliases:
         assert all_projection_aliases(enriched) == first
 
 
-# ===========================================================================
-# 5. Surface 3 — CTE names
-# ===========================================================================
+# CTE names (unquoted namespace)
 
 
 def _deep_cross_model_query(*, two_measures: bool = False) -> SlayerQuery:
@@ -604,9 +524,7 @@ class TestCteNames:
         _assert_within_limit(sql, 63)
 
     async def test_cte_definition_and_references_agree(self, chain) -> None:
-        """A CTE name is emitted UNQUOTED, so a truncated definition and an
-        untruncated reference would silently disagree. Compare parsed
-        identifiers, not substring counts."""
+        """A CTE name is unquoted; a truncated definition and untruncated reference must agree."""
         engine, model = chain
         sql = await _sql(engine, model, _deep_cross_model_query())
         tree = sqlglot.parse_one(sql, dialect="postgres")
@@ -618,8 +536,7 @@ class TestCteNames:
             assert name in referenced, f"CTE {name!r} defined but never referenced\n{sql}"
 
     async def test_two_deep_cross_model_ctes_stay_distinct(self, chain) -> None:
-        """Two deep cross-model measures produce two over-limit CTE names; both
-        must fit AND stay distinct after the server's truncation."""
+        """Two over-limit cross-model CTE names must fit and stay distinct after truncation."""
         engine, model = chain
         sql = await _sql(engine, model, _deep_cross_model_query(two_measures=True))
         tree = sqlglot.parse_one(sql, dialect="postgres")
@@ -630,16 +547,7 @@ class TestCteNames:
         _assert_within_limit(sql, 63)
 
     def test_cte_namespace_collision_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Forced digest collision in the CTE namespace must raise rather than
-        emit two identically-named CTEs — which would silently make one of them
-        reference the other's rows.
-
-        Driven through the allocator directly: CTE names derive from measure
-        aliases, and two aliases reachable from one query always differ in
-        their final segment, which fitting preserves. So a colliding PAIR is
-        not constructible from a natural query — the allocator is the thing
-        that has to hold the invariant.
-        """
+        """A forced digest collision in the CTE namespace must raise, not emit duplicate names."""
         import slayer.sql.dialects._identifier_fit as fitmod
 
         gen = SQLGenerator(dialect="postgres")
@@ -651,23 +559,14 @@ class TestCteNames:
         assert "CTE name" in str(exc.value)
 
     def test_cte_allocator_is_idempotent_for_the_same_owner(self) -> None:
-        """Several code paths re-derive a CTE's name in order to reference it;
-        that must not read as a collision."""
+        """Re-deriving a CTE's name for the same owner must not read as a collision."""
         gen = SQLGenerator(dialect="postgres")
         first = gen._cte_name("_cm_", TWIN_A)
         second = gen._cte_name("_cm_", TWIN_A)  # hits the memo, must not raise
         assert second == first
 
     async def test_cte_allocator_resets_per_statement(self, chain) -> None:
-        """One generator instance generates many statements; allocation is
-        per-statement, so an owner allocated before ``generate()`` must not
-        still hold its name afterwards.
-
-        The reset has to be exercised THROUGH ``generate()``, and with a
-        DIFFERENT owner: re-generating the same statement proves nothing,
-        because ``_cte_name`` is idempotent for one owner and would pass even
-        if the dict were never cleared.
-        """
+        """CTE allocation is per-statement; ``generate()`` clears an owner allocated before it."""
         engine, _ = chain
         prepared = await engine._prepare_pipeline(
             query=_repro_query(), named_queries={}, runtime_kwarg={},
@@ -682,11 +581,7 @@ class TestCteNames:
         )
 
     def test_cte_allocator_detects_case_folded_collision(self) -> None:
-        """CTE names are emitted UNQUOTED, so the server folds them: on
-        Postgres ``_wm_Foo`` and ``_wm_foo`` are the SAME identifier, and
-        allocating both would silently point one reference at the other's CTE.
-        Comparing the literal spellings misses it.
-        """
+        """CTE names are unquoted and case-folded, so ``_wm_Foo`` and ``_wm_foo`` collide."""
         gen = SQLGenerator(dialect="postgres")
         first = gen._cte_name(prefix="_wm_", alias="Foo")
         with pytest.raises(IdentifierCollisionError) as exc:
@@ -704,16 +599,12 @@ class TestCteNames:
         assert _nbytes(a) <= 63
 
     def test_cte_name_helper_counts_the_prefix(self) -> None:
-        """The budget covers the WHOLE emitted name, prefix included — a
-        ``cp_value_12_`` prefix eats 12 of the 63 bytes."""
         from slayer.sql.generator import _cte_name_from_alias
 
         assert _nbytes(_cte_name_from_alias("cp_value_12_", "a" * 60, limit=63)) <= 63
 
     def test_cte_name_helper_unbounded(self) -> None:
-        """``limit=None`` keeps today's behaviour exactly. The alias here is
-        already flat, so sanitization is a no-op and the result is a plain
-        concatenation."""
+        """``limit=None`` keeps today's behaviour exactly."""
         from slayer.sql.generator import _cte_name_from_alias
 
         assert _cte_name_from_alias("_cm_", "a" * 200, limit=None) == "_cm_" + "a" * 200
@@ -739,11 +630,7 @@ class TestCteNames:
         assert re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", got), got
 
     async def test_self_join_transform_cte_names_are_fitted(self, tmp_path) -> None:
-        """``shifted_<name>`` / ``sjoin_<name>`` are CTE names built from a
-        USER-supplied transform name, so a long one busts the budget just like
-        an alias-derived CTE. They used to be f-string-built and so escaped
-        both the fitting and the collision check.
-        """
+        """``shifted_``/``sjoin_`` CTE names come from a user transform name and must fit too."""
         long_transform_name = "revenue_" + "x" * 70  # 78 chars, way over 63
         storage = YAMLStorage(base_dir=str(tmp_path))
         await storage.save_datasource(DatasourceConfig(
@@ -775,14 +662,9 @@ class TestCteNames:
         assert "shifted_" in sql, f"fixture must emit a self-join CTE\n{sql}"
         for name, _ in _cte_names(sqlglot.parse_one(sql, dialect="postgres")):
             assert _nbytes(name) <= 63, f"CTE {name!r} is {_nbytes(name)} bytes\n{sql}"
-        # The unfitted forms must not survive anywhere — definition or reference.
+        # The unfitted forms must not survive — definition or reference.
         assert f"shifted_{long_transform_name}" not in sql
         assert f"sjoin_{long_transform_name}" not in sql
-
-
-# ===========================================================================
-# 6. Surface 4 — _query_as_model short names
-# ===========================================================================
 
 
 def _wrapper_select(vm_sql: str) -> exp.Select:
@@ -811,16 +693,7 @@ class TestVirtualModelShorts:
     async def test_short_alias_quoting_matches_the_downstream_reference(
         self, chain,
     ) -> None:
-        """The wrapper's ``AS <short>`` must be quoted exactly when the
-        downstream ``Column(sql=short)`` reference is.
-
-        Emitted bare, a MIXED-CASE short is case-folded by Postgres while the
-        outer stage references it quoted (``_quote_mixed_case_identifiers``)
-        -> ``UndefinedColumnError``. But quoting unconditionally breaks the
-        mirror image on UPPER-folding backends: a case-sensitive ``"status"``
-        would be defined while the bare reference resolves as ``STATUS``. The
-        contract is agreement, not quoting.
-        """
+        """The wrapper's ``AS <short>`` is quoted exactly when the downstream reference is."""
         engine, _ = chain
         vm = await engine._query_as_model(inner_query=_repro_query())
         gen = SQLGenerator(dialect="postgres")
@@ -875,18 +748,7 @@ class TestVirtualModelShorts:
     def test_short_spelling_matches_the_reference_on_every_dialect(
         self, dialect: str, short: str,
     ) -> None:
-        """``AS <short>`` must be spelled exactly as a downstream
-        ``Column(sql=short)`` reference to it will be, on every dialect.
-
-        Two independent axes, both dialect-driven:
-          * CASE — a bare mixed-case short is folded by the server while the
-            reference is quoted (the DEV-1756 defect), and quoting a lowercase
-            one breaks the mirror image on upper-folding backends.
-          * RESERVED / UNSAFE — ``index``/``int``/``rows`` are reserved in
-            MySQL but not in ``SLAYER_RESERVED_KEYWORDS``; the reference side
-            quotes them and a bare ``AS index`` is a syntax error. Checking
-            SLayer's set alone is not enough.
-        """
+        """``AS <short>`` spelling must match a downstream reference on every dialect (case + reserved)."""
         gen = SQLGenerator(dialect=dialect)
         ident = exp.Identifier(this=short, quoted=False)
         SQLGenerator._maybe_quote_ident(ident)
@@ -898,9 +760,7 @@ class TestVirtualModelShorts:
         )
 
     async def test_lowercase_short_stays_bare(self, chain) -> None:
-        """The Snowflake/Oracle mirror image: an all-lowercase short must NOT
-        be quoted, or the case-sensitive definition stops matching the bare
-        reference that those backends fold to upper."""
+        """Mirror image: an all-lowercase short must stay bare on upper-folding backends."""
         engine, _ = chain
         vm = await engine._query_as_model(inner_query=_repro_query())
         lower = [
@@ -915,8 +775,6 @@ class TestVirtualModelShorts:
             )
 
     async def test_inner_and_wrapper_agree_on_the_fitted_alias(self, chain) -> None:
-        """The inner SQL is fitted by ``generate()``; the wrapper references
-        those aliases. They must not drift."""
         engine, _ = chain
         vm = await engine._query_as_model(inner_query=_repro_query())
         fitted = get_dialect("postgres").fit_alias(LONG_EMAIL)
@@ -932,9 +790,7 @@ class TestVirtualModelShorts:
         assert LONG_EMAIL not in vm.sql
 
     async def test_case_colliding_shorts_raise(self, tmp_path) -> None:
-        """``email`` and ``Email`` on the deepest model produce shorts that
-        differ only by case. They are emitted into a namespace Postgres
-        case-folds, so this must be caught, not silently collapsed."""
+        """``email`` and ``Email`` yield shorts differing only by case; must be caught."""
         engine, _ = await _build_engine(tmp_path, case_colliding_columns=True)
         query = SlayerQuery(
             source_model="SandboxInvoiceV2",
@@ -948,21 +804,7 @@ class TestVirtualModelShorts:
             await engine._query_as_model(inner_query=query)
 
     async def test_two_dimensions_landing_on_one_short_raise(self, tmp_path) -> None:
-        """Two DIMENSIONS whose shorts are exactly equal must be caught.
-
-        `SandboxSubscription.SandboxCustomer.SandboxConsumer.name` flattens to
-        `SandboxSubscription__SandboxCustomer__SandboxConsumer__name`, which a
-        root column may also be named literally (column names permit `__`).
-        Both become `Column.name` on the virtual model.
-
-        Enrichment's own guard does NOT cover this: `_occupied_shorts` is
-        populated from dimensions but only checked against MEASURES, so
-        dimension-vs-dimension slips through. It also flattens without length
-        fitting, so two shorts that differ before fitting and collide after it
-        would pass there too. Hence the check at the emission boundary — and it
-        has to key on the owning alias, since comparing the two shorts to each
-        other finds them equal and waves the pair through.
-        """
+        """Two dimensions whose shorts are exactly equal must be caught at the emission boundary."""
         flat = "SandboxSubscription__SandboxCustomer__SandboxConsumer__name"
         engine, _ = await _build_engine(tmp_path, decoy_root_column=flat)
         query = SlayerQuery(
@@ -976,14 +818,7 @@ class TestVirtualModelShorts:
         assert flat in str(exc.value)
 
     async def test_caller_supplied_measure_names_are_fitted(self, chain) -> None:
-        """A measure/transform/expression ``name`` is caller-supplied and
-        bypasses ``_alias_to_short``, so it needs its own fitting.
-
-        These land in ``column_map`` verbatim, which means they reach the SQL as
-        ``AS "<name>"`` AND become ``Column.name``. Two over-limit names sharing
-        a 63-byte prefix are truncated onto one column by Postgres, and the
-        ``short_owner`` check cannot see it — they differ as Python strings.
-        """
+        """A caller-supplied measure ``name`` bypasses ``_alias_to_short`` and needs its own fitting."""
         engine, _ = chain
         long_a = "z" * 63 + "b"   # 64 bytes
         long_b = "z" * 63 + "c"   # 64 bytes, identical first 63
@@ -1000,7 +835,7 @@ class TestVirtualModelShorts:
         names = [c.name for c in vm.columns]
         for name in names:
             assert _nbytes(name) <= 63, f"{name!r} is {_nbytes(name)} bytes"
-        # The real defect: distinct AFTER the server's 63-byte truncation.
+        # The real defect: distinct after the server's 63-byte truncation.
         truncated = [n.encode()[:63] for n in names]
         assert len(set(truncated)) == len(truncated), (
             f"two shorts collapse onto one 63-byte name: {names}"
@@ -1025,9 +860,7 @@ class TestVirtualModelShorts:
         _assert_order_by_refs_resolve(resp.sql)
 
 
-# ===========================================================================
-# 7. Engine-level contract — consumers never see the shortened form
-# ===========================================================================
+# Engine-level contract: consumers never see the shortened form
 
 
 class TestEngineContract:
@@ -1052,11 +885,7 @@ class TestEngineContract:
     async def test_get_column_types_decodes_fitted_aliases(
         self, chain, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """``get_column_types`` probes with generated SQL, so its metadata keys
-        are the EMITTED (fitted) aliases while the lookup below uses the
-        canonical ``EnrichedMeasure.alias``. Without a decode pass an
-        over-limit measure silently drops out of the type map.
-        """
+        """``get_column_types`` probe keys are fitted aliases and must decode back to canonical."""
         engine, _ = chain
         over_limit = "totalAmount_" + "x" * 60   # 72-char measure name
 
@@ -1064,7 +893,7 @@ class TestEngineContract:
 
         class _FakeClient:
             async def get_column_types(self, sql: str) -> dict[str, str]:
-                # Echo back what a server would: keys exactly as emitted.
+                # Echo back server keys exactly as emitted.
                 for name, _ in _projection_aliases(
                     next(iter(sqlglot.parse_one(sql, dialect="postgres").find_all(exp.Select)))
                 ):
@@ -1099,15 +928,11 @@ class TestEngineContract:
         )
 
 
-# ===========================================================================
-# 8. Sweep — every generator shape, not just the reported one
-# ===========================================================================
+# Sweep: every generator shape, not just the reported one
 
 
 class TestSweep:
-    """Aliases can be synthesized in the generator rather than stored on the
-    enriched buckets. Assert PAIRING (no canonical over-limit alias string
-    survives) across every SQL shape the generator can build."""
+    """Assert pairing (no canonical over-limit alias survives) across every SQL shape."""
 
     @pytest.fixture
     def queries(self) -> list[SlayerQuery]:

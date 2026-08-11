@@ -1388,15 +1388,8 @@ class SlayerQueryEngine:
             )
             raise
         timing.record("execute", _t)
-        # Dialect-driven read-side decode: the base hook reverses DEV-1756
-        # identifier-length fitting, and BigQuery/T-SQL additionally reverse
-        # their alias mangling, so response keys always match SLayer's
-        # universal dotted shape whatever the backend did to them.
-        #
-        # The UNFILTERED alias set is passed, not ``expected_columns``: a row
-        # can legitimately carry a hidden ORDER-BY hoist, and the map has to be
-        # able to decode it. Recomputed from the pure fitting rather than
-        # threaded through generation.
+        # Reverse dialect alias fitting/mangling so response keys are canonical.
+        # Pass the unfiltered alias set: a row may carry a hidden ORDER-BY hoist.
         rows = get_dialect(prepared.dialect).decode_result_keys(
             rows, aliases=all_projection_aliases(prepared.enriched),
         )
@@ -2053,12 +2046,8 @@ class SlayerQueryEngine:
             logger.warning("get_column_types probe failed for model '%s'", model_name)
             return {}
 
-        # DEV-1756: ``sql`` was generated with length-fitted aliases, so the
-        # probe's metadata keys are the EMITTED names while ``em.alias`` below
-        # is canonical. Decode first or an over-limit measure silently drops
-        # out of the type map. Same hook and alias set ``_run_and_build`` uses.
-        # Unconditional — the hook returns its input untouched when nothing was
-        # shortened, so an empty ``raw_types`` needs no guard.
+        # The probe's metadata keys are the emitted (fitted) names; decode them
+        # to canonical or an over-limit measure drops out of the type map.
         raw_types = get_dialect(dialect).decode_result_keys(
             [raw_types], aliases=all_projection_aliases(enriched),
         )[0]
@@ -3231,38 +3220,19 @@ class SlayerQueryEngine:
         # from the alias by stripping the source model prefix and replacing
         # dots with underscores.
         def _alias_to_short(alias: str) -> str:
-            """Convert result alias to a flat column name for the virtual model.
+            """Flatten a result alias to the virtual model's column name, then fit it.
 
-            The query result is a self-contained table without the joins the
-            source model may have had, so dot syntax (join paths) is not
-            applicable. We use ``__`` to preserve the path information:
-
-            'orders.customers.regions.name' → 'customers__regions__name'
-            'orders.count'                  → 'count'
-
-            DEV-1756: the flattened name is then fitted to the dialect's
-            identifier budget. One more join hop than the example above crosses
-            Postgres' 63 bytes, and these names are emitted as output-column
-            aliases AND reused as the virtual model's ``Column.name``, so an
-            over-limit pair would collapse into one column.
+            The result is a self-contained table without joins, so join-path
+            dots become ``__``: 'orders.customers.regions.name' → 'customers__regions__name'.
             """
-            # Strip source model prefix
             stripped = alias.split(".", 1)[-1] if "." in alias else alias
-            # Replace remaining dots with __ to encode the original join path
             return _fit_short(stripped.replace(".", "__"))
 
         def _fit_short(name: str) -> str:
-            """DEV-1756: bound a virtual-model short to the dialect's budget.
+            """Fit a virtual-model short to the dialect's budget; identity under the limit.
 
-            Every short reaches the SQL as an output-column alias AND becomes a
-            ``Column.name`` downstream, so they all need this — not just the
-            ``_alias_to_short`` flattened ones. A measure/transform/expression
-            ``name``, or a user-declared cross-model rename, is supplied by the
-            caller and can be arbitrarily long; two such names sharing a
-            63-byte prefix are silently truncated onto one column by Postgres,
-            and the ``short_owner`` check below cannot see it because they
-            differ as Python strings. Identity under the limit, so ordinary
-            names are untouched.
+            Every short is both an output alias and a downstream ``Column.name``,
+            and caller-supplied names can be arbitrarily long.
             """
             return fit_identifier(
                 name, limit=get_dialect(dialect).max_identifier_bytes,
@@ -3315,74 +3285,29 @@ class SlayerQueryEngine:
             # leak into the virtual model's column set. Only user-declared
             # renames qualify for the bare-name short.
             if cm.user_declared and cm.name and "." not in cm.name:
-                # DEV-1756: still length-fitted. A rename the backend would
-                # truncate is not the name the user gets either way; fitting at
-                # least makes it deterministic and collision-checked.
-                short = _fit_short(cm.name)
+                short = _fit_short(cm.name)  # still fitted: deterministic + collision-checked
             else:
                 short = _alias_to_short(cm.alias)
             column_map.append((cm.alias, short, DataType.DOUBLE, cm.label, None, cm.format))
 
-        # Wrap inner SQL: SELECT <inner_alias> AS <short>, ... FROM (inner) AS _inner
-        # DEV-1571 Bug 3 follow-up: identifier quoting must match the
-        # dialect ``inner_sql`` was generated for. On MySQL the inner CTEs
-        # use backticks; on T-SQL the inner CTEs use brackets AND have
-        # their dotted aliases mangled. Hardcoded ANSI double quotes
-        # would either fail to parse (MySQL) or reference an alias the
-        # mangled inner subquery doesn't expose (T-SQL).
-        # DEV-1686: the inner ``alias`` is always dialect-quoted. The ``short``
-        # output alias instead has to be spelled EXACTLY as the downstream
-        # reference to it will be, because the two must resolve to the same
-        # column. So rather than approximate that policy, run the short through
-        # the same two mechanisms the reference side uses:
-        #
-        #   * ``_maybe_quote_ident`` — DEV-1645's rule, quote iff the name
-        #     contains an uppercase letter. This is the DEV-1756 fix: emitted
-        #     bare, a mixed-case short was case-folded by Postgres while the
-        #     outer stage referenced it quoted, making any query-backed model
-        #     with a mixed-case join path or column unqueryable
-        #     (``UndefinedColumnError``, seen on a live server).
-        #   * ``Identifier.sql(dialect=...)`` — sqlglot adds quotes for words
-        #     reserved IN THE TARGET DIALECT (``install_reserved_keywords``
-        #     unions SLayer's set into each generator's native one) and for
-        #     names that are not safe bare identifiers.
-        #
-        # Both axes must be dialect-driven, not hardcoded. Checking only
-        # ``SLAYER_RESERVED_KEYWORDS`` misses MySQL-native words like ``index``
-        # / ``int`` / ``rows``, which the reference side quotes and a bare
-        # ``AS index`` makes a syntax error; and a name like ``1abc`` or
-        # ``foo bar`` (``Column.name`` only forbids ``.`` and ``:``) needs
-        # quoting on shape alone.
-        #
-        # Quoting UNCONDITIONALLY is wrong in the other direction: it defines a
-        # case-sensitive ``"status"`` while the bare reference still resolves as
-        # ``STATUS`` on upper-folding backends (Snowflake, Oracle).
+        # Wrap inner SQL: SELECT <inner_alias> AS <short>, ... FROM (inner) AS _inner.
+        # The ``short`` output alias must be spelled EXACTLY as the downstream
+        # reference will be, so both resolve to the same column. Run it through the
+        # two mechanisms the reference side uses: ``_maybe_quote_ident`` (DEV-1645:
+        # quote iff mixed-case) and ``Identifier.sql`` (dialect-reserved words /
+        # unsafe shapes). Both dialect-driven — unconditional quoting breaks bare
+        # refs on upper-folding backends; a fixed keyword set misses native words
+        # like MySQL's ``index``.
         def _short_sql(short: str) -> str:
             ident = exp.Identifier(this=short, quoted=False)
             SQLGenerator._maybe_quote_ident(ident)
             return ident.sql(dialect=dialect)
 
-        # DEV-1756: the shorts share one output-column namespace, and each also
-        # becomes a ``Column.name`` on the virtual model. Validate the whole
-        # allocation keyed by the OWNING inner alias, which catches three
-        # things at once: two shorts that fit to the same string, two that
-        # differ only by case, and — the case ``_alias_to_short`` cannot
-        # prevent — two distinct aliases landing on the identical short because
-        # a user-declared cross-model ``name`` bypassed the flattening above
-        # and happened to match another column's canonical flat.
-        #
-        # Keyed on the CASEFOLDED short, which is deliberately CONSERVATIVE
-        # rather than exact. Since ``_short_sql`` quotes mixed-case shorts,
-        # ``Foo`` (emitted ``"Foo"``, case-preserved) and ``foo`` (emitted bare,
-        # folded) do in fact resolve to different columns on every dialect, so
-        # casefolding rejects a pair that would work. The exact rule is
-        # dialect-dependent — a quoted ``"EMAIL"`` collides with a bare
-        # ``email`` on upper-folding backends (Snowflake, Oracle) but not on
-        # lower-folding ones — and modelling that needs a fold-direction per
-        # dialect, which SLayer does not carry. Erring toward a loud error on a
-        # rare case-differing pair is the right side to be wrong on here: the
-        # alternative normalisation admits a silent duplicate output name on
-        # exactly the backends this machinery exists to protect.
+        # Validate the whole short allocation: two shorts colliding on one output
+        # name silently drop a column. Keyed CASEFOLDED — conservative, since a
+        # mixed-case short is quoted (case-preserved) and would not really collide
+        # with its folded twin, but SLayer carries no per-dialect fold direction, so
+        # a loud error beats a silent duplicate on the backends this protects.
         short_owner: dict[str, str] = {}
         for alias, short, _, _, _, _ in column_map:
             prior_alias = short_owner.setdefault(short.casefold(), alias)
@@ -3399,14 +3324,9 @@ class SlayerQueryEngine:
             for alias, short, _, _, _, _ in column_map
         ]
         wrapped_sql = f"SELECT {', '.join(rename_parts)} FROM ({inner_sql}) AS _inner"
-        # DEV-1571 Bug 2: apply the dialect's emitted-SQL rewrite (e.g.
-        # T-SQL bracket-mangling) so the rename clause's inner-alias
-        # references match what the inner subquery actually projects.
-        # DEV-1756: same alias set the inner SQL was generated with, so the
-        # wrapper's references land on the same fitted names. Safe to run over
-        # the combined string: ``generate()`` already replaced every canonical
-        # token inside ``inner_sql``, so this pass can only reach the wrapper's
-        # own references.
+        # Apply the dialect's emitted-SQL rewrite (T-SQL bracket-mangling, DEV-1756
+        # length-fitting) so the wrapper's inner-alias references match the fitted
+        # names the inner subquery projects. Same alias set the inner SQL used.
         wrapped_sql = get_dialect(dialect).rewrite_emitted_sql(
             sql=wrapped_sql, aliases=all_projection_aliases(enriched),
         )
@@ -3436,8 +3356,8 @@ class SlayerQueryEngine:
                 agg_shorts.add(_alias_to_short(cm.alias))
         for m in enriched.measures:
             if m.from_cross_model_intercept:
-                # DEV-1756: same fitting the ``column_map`` entry got, or the
-                # breadcrumb would name a column the virtual model never has.
+                # Same fitting the column_map entry got, else the breadcrumb
+                # names a column the virtual model never has.
                 agg_shorts.add(_fit_short(m.name))
 
         # DEV-1449: record the lineage breadcrumb so outer-stage dotted-ref

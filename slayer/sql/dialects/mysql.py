@@ -25,7 +25,7 @@ class MysqlDialect(SqlDialect):
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
-    # DEV-1756: 64-char identifier limit. MySQL allows 256 for column ALIASES specifically, but one conservative number keeps the rule simple, and MySQL errors rather than truncating.
+    # Conservative: MySQL allows 256 for column aliases but errors (not truncates).
     max_identifier_bytes: int | None = 64
 
     def build_median(
