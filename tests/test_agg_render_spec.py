@@ -1094,9 +1094,14 @@ class TestBuildAggRegistryDispatch:
         )
 
     def test_simple_class_comes_from_the_registry_entry(self) -> None:
+        from slayer.sql.render.aggregates import resolve_agg_entry
+
         gen = SQLGenerator(dialect="postgres")
         expr, is_agg = gen._build_agg(self._spec("sum"))
         assert is_agg is True
+        # The emitted node IS the registry entry's node_class — a hardcoded
+        # branch would decouple these.
+        assert type(expr) is resolve_agg_entry("sum").node_class
         assert expr.sql(dialect="postgres") == "SUM(orders.amount)"
 
     def test_count_star_renders_count_star(self) -> None:
@@ -1121,5 +1126,5 @@ class TestBuildAggRegistryDispatch:
     def test_unknown_aggregation_without_a_formula_raises(self) -> None:
         gen = SQLGenerator(dialect="postgres")
         spec = self._spec("definitely_not_an_aggregation")
-        with pytest.raises((ValueError, KeyError, AggregationNotAllowedError)):
+        with pytest.raises(ValueError, match="no formula"):
             gen._build_agg(spec)

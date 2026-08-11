@@ -277,12 +277,17 @@ class TestB2JoinBackBuiltAsAst:
         """B2, production-path proof: both the cross-model and windowed-measure
         grain join-backs render as null-safe AST ``LEFT JOIN``s. The legacy
         string re-parse helper (``_null_safe_join_pair_sql``) was deleted in
-        PR 6 (DEV-1749); these shapes are what its successor emits.
+        PR 6 (DEV-1749); these shapes are what its successor emits — assert the
+        ON predicate is null-safe, not merely that a LEFT JOIN exists.
         """
         cm_sql = await _gen(_cm_shared_grain_query(), dialect="postgres")
         assert "LEFT JOIN _cm_" in cm_sql, cm_sql
+        cm_on = _norm(joinback_on_predicate_for(cm_sql, prefix="_cm_", dialect="postgres"))
+        assert "IS NOT DISTINCT FROM" in cm_on, cm_on
         wm_sql = await _gen(_windowed_chain_query(), dialect="postgres")
         assert "LEFT JOIN _wm_" in wm_sql, wm_sql
+        wm_on = _norm(joinback_on_predicate_for(wm_sql, prefix="_wm_", dialect="postgres"))
+        assert "IS NOT DISTINCT FROM" in wm_on, wm_on
 
 
 # =========================================================================== #
