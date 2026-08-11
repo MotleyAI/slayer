@@ -82,11 +82,10 @@ def _max_cached_engines() -> int:
 
 
 def loggable_key(key: EngineCacheKey) -> str:
-    """Short, stable, log-safe id for a cache key.
+    """Log-safe id for a cache key.
 
-    ``key[0]`` is the connection string, rendered with ``hide_password=False``
-    — so the raw key must never reach a log line. The digest stays correlatable
-    across lines without being reversible.
+    ``key[0]`` renders with ``hide_password=False``, so the raw key must never
+    reach a log line. The digest stays correlatable but not reversible.
     """
     return _digest("\x00".join(key))
 
@@ -119,15 +118,12 @@ def _take_evictions_over_limit() -> list[sa.Engine]:
 
 
 def _cache_key(datasource: DatasourceConfig, connection_string: str) -> EngineCacheKey:
-    """Cache identity for ``datasource``: URL + runtime fields + credentials.
+    """Cache identity: URL + runtime fields + credentials.
 
-    Kept in one place because ``query_engine._sql_client_cache_key`` must agree
-    with it; a divergence between the two caches means a caller can get a client
-    whose engine was built for different credentials.
-
-    Only ``get_engine`` snapshots ``datasource`` first — it is the one caller
-    with a slow build between the key and the credentials it describes. Callers
-    that use the key immediately just miss and rebuild.
+    Shared with ``query_engine._sql_client_cache_key`` — if the two diverged, a
+    caller could get a client whose engine was built for other credentials.
+    Only ``get_engine`` snapshots ``datasource`` first; callers that use the key
+    immediately just miss and rebuild.
     """
     return (
         connection_string,
