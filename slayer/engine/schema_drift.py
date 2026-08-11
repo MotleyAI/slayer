@@ -111,12 +111,11 @@ class ModelAddition(BaseModel):
     # DEV-1538: persisted INT columns whose type widened (to DOUBLE or TEXT)
     # because the SQLite affinity probe disagreed with the declared type.
     widened_columns: list[str] = Field(default_factory=list)
-    # Output metadata — lets the renderer label a view-backed model
-    # without reloading it. Distinct from the persisted
-    # ``SlayerModel.source_kind``, which is the durable record.
+    # Output-only, so the renderer can label a view-backed model without
+    # reloading it; the durable record is ``SlayerModel.source_kind``.
     source_kind: str | None = None
     # Human-readable transition (e.g. "view → table") when a re-ingest found
-    # the live object had changed kind. None when nothing changed.
+    # the live object changed kind; None when nothing changed.
     kind_change: str | None = None
 
 
@@ -134,16 +133,18 @@ class IdempotentIngestResult(BaseModel):
     additions: list[ModelAddition] = Field(default_factory=list)
     to_delete: list[ToDeleteEntry] = Field(default_factory=list)
     errors: list[IngestionError] = Field(default_factory=list)
-    # ``skipped`` holds live objects that could not be modelled at
-    # all — reported separately from ``errors`` because the cause and the fix
-    # differ ("can't represent this name" vs "couldn't persist this model").
+    # Live objects that could not be modelled at all — separate from ``errors``
+    # because cause and fix differ ("can't represent this name" vs "couldn't
+    # persist this model").
     skipped: list[Any] = Field(default_factory=list)
-    # Every live object discovered this pass, whether or not it produced a
-    # model. Lets the CLI distinguish an empty schema (worth a hint) from a
-    # healthy no-op re-ingest (worth silence). Typed ``Any`` to avoid a
-    # circular import with ``engine.ingestion``; runtime entries are
-    # ``IngestableObject``.
+    # Every live object discovered this pass, modelled or not — lets the CLI
+    # tell an empty schema (worth a hint) from a no-op re-ingest (worth
+    # silence). ``Any`` avoids a circular import; entries are ``IngestableObject``.
     objects: list[Any] = Field(default_factory=list)
+    # Recognised ELT/migration bookkeeping modelled ``hidden``. Effective
+    # post-merge state, not the scan's verdict (the merge preserves a persisted
+    # ``hidden``). ``Any`` avoids a circular import; entries are ``InternalTable``.
+    hidden_internals: list[Any] = Field(default_factory=list)
 
 
 class AppliedEntry(BaseModel):
@@ -1661,21 +1662,14 @@ def _live_schema_for_datasource(
     datasource: DatasourceConfig,
     schema: str | None = None,
 ) -> dict[str, LiveTable]:
-    """Return ``{object_name: LiveTable}`` for every live table AND view in
-    the DS, using SQLAlchemy ``Inspector`` and the same fallback path as
-    auto-ingestion (``slayer/engine/ingestion.py``).
+    """Return ``{object_name: LiveTable}`` for every live table AND view in the
+    DS, using the same ``Inspector`` fallback path as auto-ingestion.
 
-    Views are included **unconditionally** — there is deliberately no
-    ``include_views`` parameter here, and adding one would be a bug.
-
-    This map is only ever a lookup target: ``validate_datasource`` iterates the
-    *persisted* models and resolves each model's ``sql_table`` against it, so
-    including views can never manufacture a model or a drift entry. What it
-    does fix is the reverse: a model whose ``sql_table`` names a view used to
-    resolve to ``None``, which ``diff_sql_table_model`` reports as a
-    ``WholeModelDelete`` — and ``validate-models --force-clean`` acts on that.
-    Gating this on the ingest-side ``--no-views`` flag would re-arm that
-    data-loss bug for anyone who opted out of ingesting views.
+    Views are included unconditionally — no ``include_views`` gate, by design.
+    The map is only a lookup target, so views can't manufacture a model; but a
+    model whose ``sql_table`` names a view would otherwise resolve to ``None``
+    and be reported as a ``WholeModelDelete`` that ``--force-clean`` acts on.
+    Gating on ``--no-views`` would re-arm that data-loss bug.
     """
     from slayer.engine.ingestion import _dispose_quietly, list_ingestable_objects
     from slayer.sql import engine_factory

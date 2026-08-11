@@ -28,9 +28,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 
 def test_v7_step_is_registered() -> None:
-    """v8 exists, so this file no longer pins the *current* version (see
-    ``tests/test_model_source_kind.py``). What stays true is that the chain
-    reaches v7 and has a step out of it."""
+    """The migration chain reaches at least v7 and registers the v6→v7 step."""
     assert mig.CURRENT_VERSIONS["SlayerModel"] >= 7
     assert ("SlayerModel", 6) in mig._REGISTRY
 
@@ -238,10 +236,7 @@ async def test_sqlite_round_trips_v6_payload_to_v7_with_new_fields_none() -> Non
 
 
 def test_v5_payload_walks_through_chain_to_v7() -> None:
-    """End-to-end migration from v5 through v6 to v7 via the orchestrator.
-
-    Asserts the current version rather than a literal 7: the point is that the
-    walk completes, not where it stops today."""
+    """End-to-end migration from v5 to the current version via the orchestrator."""
     raw = {
         "version": 5,
         "name": "orders",

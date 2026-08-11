@@ -1,13 +1,4 @@
-"""`slayer ingest` must not be silent.
-
-Ingest printed only additions, drift, and errors — zero of each meant no
-output and exit 0, so a views-only schema looked like success.
-
-Exit-code contract: skipped objects or an empty scan both exit 1. But
-`POST /ingest` keeps 422 for `errors` only — a permanent 422 aimed at a
-machine that cannot act on the `--exclude` hint would bury a successful
-partial ingest behind an error status.
-"""
+"""`slayer ingest` must not be silent: skips or an empty scan exit 1, but `POST /ingest` keeps 422 for errors only."""
 from __future__ import annotations
 
 import tempfile
@@ -215,8 +206,7 @@ class TestRenderers:
         assert "ambiguous" in out
 
     def test_skipped_and_errors_are_reported_separately(self, capsys) -> None:
-        """A skip ('cannot model this object') and an error ('failed to save
-        this model') have different causes and different fixes."""
+        """A skip and an error have different causes and fixes, so report them separately."""
         from slayer.engine.schema_drift import IngestionError
 
         result = IdempotentIngestResult(
@@ -238,8 +228,7 @@ class TestRenderers:
         assert skipped_at != errors_at
 
     def test_empty_message_wording_covers_views(self) -> None:
-        """The old wording said 'No tables found', which is exactly what
-        misled the reporter into thinking the schema was empty."""
+        """The empty-scan message must mention views, not just tables."""
         ds = SimpleNamespace(name="ds", type="sqlite", database=":memory:")
         msg = _empty_ingest_message(schema_name="analytics", ds=ds)
         assert "views" in msg.lower()
@@ -255,8 +244,7 @@ class TestRestExitSemantics:
     def test_skipped_only_returns_200_with_skipped_in_body(
         self, monkeypatch, workspace: Path
     ) -> None:
-        """D12. Skips must NOT turn into 422; the body carries them
-        so a client can see what happened alongside the successful additions."""
+        """Skips must NOT turn into 422; the body carries them alongside the successful additions."""
         from fastapi.testclient import TestClient
 
         from slayer.api.server import create_app
@@ -338,8 +326,7 @@ class TestRestExitSemantics:
 
 class TestDatasourcesCreateCarveOut:
     def test_empty_db_still_exits_zero(self, workspace: Path, capsys) -> None:
-        """D14. Creating the datasource is this command's job and it
-        succeeded; an empty database must not fail it."""
+        """Creating the datasource succeeded, so an empty database must not fail this command."""
         import sqlite3
 
         from slayer.cli import _run_datasources_create
@@ -366,8 +353,7 @@ class TestDatasourcesCreateCarveOut:
         assert "No models were generated." in capsys.readouterr().out
 
 class TestViewsFlagWiring:
-    """The parser is built inline in ``main()``, so drive it through ``main()``
-    with a stubbed handler that captures the parsed args."""
+    """The parser is built inline in ``main()``, so drive it through ``main()`` with a stubbed handler that captures the parsed args."""
 
     @staticmethod
     def _capture(monkeypatch, argv: list[str], handler: str) -> SimpleNamespace:
@@ -401,8 +387,7 @@ class TestViewsFlagWiring:
         assert args.include_views is False
 
     def test_datasources_create_defaults_to_views_on(self, monkeypatch) -> None:
-        """D15 — the flag exists on this subcommand too, so behaviour is
-        consistent with `slayer ingest`."""
+        """The flag exists on this subcommand too, consistent with `slayer ingest`."""
         args = self._capture(
             monkeypatch,
             ["datasources", "create", "sqlite:///x.db", "--ingest"],
