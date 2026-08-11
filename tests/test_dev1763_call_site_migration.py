@@ -6,19 +6,19 @@ This module is the migration's proof, in three layers:
 
 1. **Per-family raising sentinels** (``Test*FamilySentinel``) — one class per
    legacy renderer, patching it to raise and running production query shapes
-   the probe confirmed reach it. Each FAILS today (the legacy renderer is still
-   on the production path) and PASSES once its family is migrated. A runtime
-   proof, not a grep: a source scan cannot tell a live call from one inside a
-   docstring or an unreachable branch (the ``tests/test_dev1747_order_resolver``
-   pattern, ``TestSingleResolver``).
+   the probe confirmed reach it. The migration is done, so each PASSES; a
+   sentinel fails only if that family REGRESSES back onto its legacy renderer.
+   A runtime proof, not a grep: a source scan cannot tell a live call from one
+   inside a docstring or an unreachable branch (the
+   ``tests/test_dev1747_order_resolver`` pattern, ``TestSingleResolver``).
 
 2. **The static state-1 inventory** (``TestState1Inventory``) — an ``ast`` walk
-   asserting that after migration each legacy renderer's *external* call sites
-   (callers other than its own body) are exactly the documented set: none for
-   filter / aliases / outer-wrapper; the single production-dead
-   ``_build_first_last_base_select`` site for composite; the single
-   ``first_last_state`` escape hatch in ``_collect_routed_filters`` for
-   target-scope. This is the machine-checked inventory PR 6 (DEV-1749) consumes.
+   asserting each legacy renderer's *external* call sites (callers other than
+   its own body) are exactly the documented set: none for filter / aliases /
+   outer-wrapper; the single production-dead ``_build_first_last_base_select``
+   site for composite; the single ``first_last_state`` escape hatch in
+   ``_collect_routed_filters_first_last`` for target-scope. This is the
+   machine-checked inventory PR 6 (DEV-1749) consumes.
 
 3. **Facility unit tests** — the new renderer behaviours the migration adds:
    the ``FilterFacilities.agg_builder`` HAVING seam (slot lookup +
@@ -27,9 +27,10 @@ This module is the migration's proof, in three layers:
    resolution mode with table qualification, the ``Optional`` scope fail-closed
    rule, and ``ScopeFrame.column_type``.
 
-Everything new is referenced from inside a test body (never at module import),
-so the sentinels and inventory stay collectable and fail for the right reason
-while the implementation is still absent.
+New API is referenced from inside test bodies (never at module import), so the
+sentinels and inventory stay collectable independently of the facility surface —
+which kept them meaningful while this suite was written test-first, before the
+migration landed.
 
 Refs: DEV-1763, DEV-1742 §5.1 / P-G / P-J, DEV-1749 (deletion consumer).
 """
@@ -411,8 +412,8 @@ def _self_attr_refs(tree: ast.Module, name: str) -> list[ast.Attribute]:
 class TestState1Inventory:
     """The machine-checked inventory PR 6 consumes: every legacy family
     renderer is production-unreferenced except for the documented dead-code /
-    escape-hatch sites. FAILS today (the live call sites still reference the
-    renderers); PASSES once all five families migrate."""
+    escape-hatch sites. This invariant holds post-migration; a failure means a
+    family regressed onto its legacy renderer (or a new caller was added)."""
 
     @pytest.fixture(scope="class")
     def tree(self) -> ast.Module:
