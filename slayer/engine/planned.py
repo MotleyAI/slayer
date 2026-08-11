@@ -451,15 +451,14 @@ class FilterPhase(BaseModel):
       walks the typed value-key tree.
     * ``text`` is a Mode-A SQL fragment — used for
       ``SlayerModel.filters`` (always-applied WHERE). The renderer
-      qualifies bare-identifier column refs in ``text_columns`` with
-      the source-relation alias and emits the result verbatim
-      (matching legacy ``_build_where_and_having`` qualification).
+      enters it through the source scope's Mode-A door, which
+      qualifies bare-identifier column refs and discovers crossed
+      joins as a side effect of rendering.
     """
 
     id: BoundFilterId
     phase: Phase
     text: Optional[str] = None
-    text_columns: Tuple[str, ...] = ()
     expression: Optional[BoundExpr] = None
 
 

@@ -53,11 +53,11 @@ def _joinback_on_predicate(sql: str, *, dialect: str = "postgres") -> str:
     for join in tree.find_all(sqlglot.exp.Join):
         target = join.this
         name = getattr(target, "alias_or_name", "") or ""
-        if name.startswith("_cm_") or name.startswith("_fm_"):
+        if name.startswith("_cm_"):
             on = join.args.get("on")
             if on is not None:
                 return on.sql(dialect=dialect)
-    raise AssertionError(f"no LEFT JOIN _cm_*/_fm_* ON predicate in:\n{sql}")
+    raise AssertionError(f"no LEFT JOIN _cm_* ON predicate in:\n{sql}")
 
 
 # --------------------------------------------------------------------------- #

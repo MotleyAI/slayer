@@ -1,9 +1,7 @@
 """DEV-1450 stage 7b.15d — response metadata from the typed plan.
 
-The legacy engine derived ``SlayerResponse.attributes`` and
-``expected_columns`` from an ``EnrichedQuery``. The typed pipeline has no
-``EnrichedQuery``; this module rebuilds the same two artefacts from the root
-``PlannedQuery`` plus the final rendered SQL.
+This module builds ``SlayerResponse.attributes`` and ``expected_columns``
+from the root ``PlannedQuery`` plus the final rendered SQL.
 
 * ``expected_columns`` comes from the final SQL's ``named_selects`` — the
   literal result-key columns the rows come back keyed by. Deriving them from
@@ -204,8 +202,7 @@ def _measure_format(
 
     Aggregate slots inherit via ``_infer_aggregated_format`` (INTEGER for
     count(-distinct) / star, FLOAT for avg-family, source-column format for
-    sum/min/max). Transform / arithmetic / scalar-call slots default to FLOAT,
-    matching the legacy ``EnrichedQuery`` expression/transform handling.
+    sum/min/max). Transform / arithmetic / scalar-call slots default to FLOAT.
     """
     key = slot.key
     if isinstance(key, AggregateKey):

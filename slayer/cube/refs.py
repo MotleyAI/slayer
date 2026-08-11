@@ -7,6 +7,8 @@ upstream). See DEV-1608 §3.
 
 import re
 
+from slayer.core.refs import IDENTIFIER_RE
+
 _JINJA_RE = re.compile(r"\{\{|\{%|%\}|\}\}")
 _LITERAL_RE = re.compile(r"'(?:''|[^'])*'")  # SQL string literal, doubled-quote aware
 _REF_RE = re.compile(r"\{([^{}]+)\}")
@@ -17,7 +19,6 @@ _OPERAND_BRACED = re.compile(r"^\{([^{}]+)\}$")                  # {cube.col}
 # `\bAND\b` (no surrounding `\s+` quantifiers) avoids the polynomial-backtracking
 # shape Sonar S5852 flags; operands are whitespace-stripped after the split.
 _AND_SPLIT = re.compile(r"\bAND\b", re.IGNORECASE)
-_IDENTIFIER_RE = re.compile(r"^[A-Za-z_]\w*$")
 
 
 def contains_jinja(text: str) -> bool:
@@ -126,4 +127,4 @@ def _equality_pair(part: str, *, source_cube: str, target_cube: str) -> list[str
 
 def is_bare_identifier(sql: str) -> bool:
     """True if ``sql`` is a single bare column identifier (usable in join_pairs)."""
-    return bool(_IDENTIFIER_RE.match(sql.strip()))
+    return bool(IDENTIFIER_RE.match(sql.strip()))

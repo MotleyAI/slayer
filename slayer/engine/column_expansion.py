@@ -196,10 +196,7 @@ def collect_root_scope_joined_paths(
 # already loaded every referenced model (P11: storage consulted once, up
 # front), so it expands derived refs through a *sync* model resolver.
 #
-# DEV-1485: the async twins (``_walk_path_to_target`` / ``_process_column_node``
-# / ``expand_derived_refs``) resolved join targets through ``storage.get_model``
-# for the legacy enrichment path and are deleted with it, as this comment always
-# said they would be. Nothing awaits model resolution here any more.
+# Nothing awaits model resolution here — the expansion is fully synchronous.
 
 SyncResolveModel = Callable[[str], Optional[SlayerModel]]
 

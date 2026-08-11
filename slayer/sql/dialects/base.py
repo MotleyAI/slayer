@@ -563,13 +563,14 @@ class SqlDialect(BaseModel):
         """Emit the DEV-1444 outer-projection wrap around ``inner_sql``.
 
         Contract: ``inner_sql`` is the inner SELECT with **trailing
-        pagination already detached** (``SQLGenerator._build_outer_wrap``
-        owns the strip). ``order`` / ``limit`` / ``offset_arg`` are the
-        detached sqlglot AST nodes the caller pulled off the inner; the
-        hook re-emits them on the outer statement.
+        pagination already detached** (the planned outer-wrap path,
+        ``SQLGenerator._emit_planned_outer_wrap``, owns it — pagination
+        arrives as detached AST from the plan). ``order`` / ``limit`` /
+        ``offset_arg`` are the detached sqlglot AST nodes the caller pulled
+        off the inner; the hook re-emits them on the outer statement.
 
         ``parse`` is the generator's ``_parse`` callback when the
-        generator is the caller (``SQLGenerator._build_outer_wrap``).
+        generator is the caller (``SQLGenerator._emit_planned_outer_wrap``).
         T-SQL needs it to preserve SLayer-specific AST rewrites (LOG10/
         LOG2 alias preservation, SQLite JSONExtract function-form) when
         the override re-parses ``inner_sql`` to detach the WITH clause.
@@ -627,8 +628,8 @@ class SqlDialect(BaseModel):
         generator output.
 
         Symmetric companion to ``rewrite_parsed_ast`` (the input-side
-        hook): write-side, applied at the end of
-        ``SQLGenerator.generate()`` AFTER ``_apply_outer_projection_trim``.
+        hook): write-side, applied at the end of the generator's terminal
+        SQL emit (``generate_planned_stages``).
 
         Contract: preserve query semantics. Suitable for alias renames,
         identifier mangling/escape, dialect-quoting fixes. Do NOT change

@@ -61,9 +61,11 @@ def _reject_dsl_constructs(formula: str) -> None:
 
 def _bare_column_refs(formula: str) -> list[str]:
     """Best-effort extraction of column-like identifiers from a SQL-mode
-    predicate, used so downstream join-detection sees the same shape it
-    saw before DEV-1369 round 2 dropped sqlglot from this path. Skips
-    string literals, then walks tokens that look like identifiers
+    predicate. The render-time join-detection use was superseded by structured
+    extraction (``column_filter_paths``) and the Mode-A door; this now serves
+    only VALIDATION — the model-filter measure/windowed-column rejection in
+    ``stage_planner`` and the ``schema_drift`` check. Skips string literals,
+    then walks tokens that look like identifiers
     (``customers__regions.name`` → ``customers__regions.name``,
     ``status`` → ``status``) and excludes function-call heads.
     """

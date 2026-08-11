@@ -2370,175 +2370,47 @@ class TestEveryOperatorPairSurvivesTheRoundTrip:
             f"{op} over {inner}",
         )
 
+class TestArithmeticGroupingViaRender:
+    """Grouping shapes the deleted generator composers used to pin, now pinned
+    on the live ``render_value_key`` path (DEV-1749). The other composer shapes
+    (negated sum, NOT-of-conjunction, IS[ NOT] NULL over a comparison,
+    equal-precedence right operand, ``(a + b) * c``, comparison nested in
+    arithmetic) are already pinned by ``TestUnaryOperandGrouping`` /
+    ``TestComparisonsAreNonAssociative`` / ``TestRendersEveryKeyKind`` /
+    ``TestOperatorCompositionEdges``; only these two shapes were unique to the
+    composer suite."""
 
-class TestGeneratorComposersShareTheGroupingPolicy:
-    """The three LIVE generator composers had the same grouping holes.
-
-    ``value_expr`` is not yet on the generator's arithmetic path (that reroute
-    is the scope-assembly PR), so finding these there did not fix them here.
-    Each composer built ``exp.Not`` / ``exp.Neg`` / ``exp.Is`` around a bare
-    operand and hand-folded ``and``/``or``, producing SQL that parses cleanly
-    and returns a different row set:
-
-    * ``not (a AND b)``      -> ``NOT a AND b``   = ``(NOT a) AND b``
-    * ``-(a + b)``           -> ``-a + b``        = ``(-a) + b``
-    * ``(a = 5) IS NULL``    -> ``a = 5 IS NULL`` = ``a = (5 IS NULL)``
-    * ``a AND (b OR c)``     -> ``a AND b OR c``  = ``(a AND b) OR c``
-
-    All four now route through the shared policy in ``value_expr``, so the
-    construct groups the same way wherever it is composed (P-G).
-    """
-
-    @staticmethod
-    def _a():
-        return exp.column("a", table="t")
-
-    def _gt(self):
-        return exp.GT(this=self._a(), expression=exp.Literal.number("1"))
-
-    def _lt(self):
-        return exp.LT(this=self._a(), expression=exp.Literal.number("9"))
-
-    def _eq(self):
-        return exp.EQ(this=self._a(), expression=exp.Literal.number("5"))
-
-    def _add(self):
-        return exp.Add(this=self._a(), expression=exp.column("b", table="t"))
-
-    def _composers(self):
-        """The three live composers, as uniform ``(op, operands) -> node``."""
-        gen = SQLGenerator.__new__(SQLGenerator)
-        return {
-            "build_arithmetic_for_filter": (
-                lambda op, ops: SQLGenerator._build_arithmetic_for_filter(
-                    op=op, operands=ops,
-                )
-            ),
-            "compose_arithmetic_op": (
-                lambda op, ops: SQLGenerator._compose_arithmetic_op(
-                    op=op, operands=ops,
-                )
-            ),
-            "build_arith_or_cmp_ast": (
-                lambda op, ops: gen._build_arith_or_cmp_ast(op=op, operands=ops)
-            ),
-        }
-
-    @pytest.mark.parametrize(
-        "composer",
-        ["build_arithmetic_for_filter", "compose_arithmetic_op",
-         "build_arith_or_cmp_ast"],
-    )
-    def test_not_of_a_conjunction_keeps_its_parens(self, composer) -> None:
-        compose = self._composers()[composer]
-        conj = exp.And(this=self._gt(), expression=self._lt())
-        assert compose("not", [conj]).sql() == "NOT (t.a > 1 AND t.a < 9)"
-
-    @pytest.mark.parametrize(
-        "composer",
-        ["build_arithmetic_for_filter", "compose_arithmetic_op",
-         "build_arith_or_cmp_ast"],
-    )
-    def test_is_null_over_a_comparison_keeps_its_parens(self, composer) -> None:
-        compose = self._composers()[composer]
-        out = compose("is", [self._eq(), exp.Null()]).sql()
-        assert out == "(t.a = 5) IS NULL", out
-
-    @pytest.mark.parametrize(
-        "composer",
-        ["build_arithmetic_for_filter", "compose_arithmetic_op",
-         "build_arith_or_cmp_ast"],
-    )
-    def test_is_not_null_over_a_comparison_keeps_its_parens(self, composer) -> None:
-        compose = self._composers()[composer]
-        out = compose("is not", [self._eq(), exp.Null()]).sql()
-        assert out == "NOT (t.a = 5) IS NULL", out
-
-    @pytest.mark.parametrize(
-        "composer",
-        ["build_arithmetic_for_filter", "compose_arithmetic_op",
-         "build_arith_or_cmp_ast"],
-    )
-    def test_disjunction_inside_a_conjunction_keeps_its_parens(
-        self, composer,
-    ) -> None:
-        compose = self._composers()[composer]
-        disj = exp.Or(this=self._gt(), expression=self._lt())
-        out = compose("and", [self._lt(), disj]).sql()
-        assert out == "t.a < 9 AND (t.a > 1 OR t.a < 9)", out
-
-    @pytest.mark.parametrize(
-        "composer",
-        ["build_arithmetic_for_filter", "compose_arithmetic_op",
-         "build_arith_or_cmp_ast"],
-    )
-    def test_negated_sum_keeps_its_parens(self, composer) -> None:
-        compose = self._composers()[composer]
-        assert compose("-", [self._add()]).sql() == "-(t.a + t.b)"
-
-    @pytest.mark.parametrize(
-        "composer",
-        ["build_arithmetic_for_filter", "compose_arithmetic_op",
-         "build_arith_or_cmp_ast"],
-    )
-    @pytest.mark.parametrize(
-        "op,inner_cls,expected",
-        [
-            # ``a - (b + c)``: dropping the parens regroups to ``(a - b) + c``.
-            ("-", exp.Add, "t.a - (t.b + t.c)"),
-            # ``a + (b - c)``: the generator treated ``+`` as associative and
-            # emitted ``a + b - c``. Over floats and fixed-precision decimals
-            # that is a different number, not just a different tree.
-            ("+", exp.Sub, "t.a + (t.b - t.c)"),
-            ("*", exp.Div, "t.a * (t.b / t.c)"),
-            ("/", exp.Mul, "t.a / (t.b * t.c)"),
-        ],
-    )
-    def test_equal_precedence_right_operand_keeps_its_parens(
-        self, composer, op, inner_cls, expected,
-    ) -> None:
-        compose = self._composers()[composer]
-        inner = inner_cls(
-            this=exp.column("b", table="t"), expression=exp.column("c", table="t"),
+    def test_disjunction_inside_a_conjunction_keeps_its_parens(self) -> None:
+        """``a AND (b OR c)`` must not flatten to ``a AND b OR c``, which binds
+        as ``(a AND b) OR c`` — a different, wider row set."""
+        lt = ArithmeticKey(
+            op="<", operands=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(9))),
         )
-        out = compose(op, [self._a(), inner]).sql()
-        assert out == expected, out
-
-    def test_lower_precedence_left_operand_keeps_its_parens(self) -> None:
-        """``_build_arith_or_cmp_ast`` applied NO precedence pass at all, so
-        ``(a + b) * c`` emitted ``a + b * c`` — ``b * c`` binds first."""
-        compose = self._composers()["build_arith_or_cmp_ast"]
-        out = compose("*", [self._add(), exp.column("c", table="t")]).sql()
-        assert out == "(t.a + t.b) * t.c", out
-
-    @pytest.mark.parametrize(
-        "composer",
-        ["build_arithmetic_for_filter", "compose_arithmetic_op",
-         "build_arith_or_cmp_ast"],
-    )
-    def test_comparison_nested_in_arithmetic_keeps_its_parens(
-        self, composer,
-    ) -> None:
-        """The generator's precedence table knew only ``+ - * /``, so a
-        comparison operand fell through ungrouped: ``(a > b) + 1`` emitted
-        ``a > b + 1``, read back as ``a > (b + 1)``."""
-        compose = self._composers()[composer]
-        gt = exp.GT(this=self._a(), expression=exp.column("b", table="t"))
-        out = compose("+", [gt, exp.Literal.number("1")]).sql()
-        assert out == "(t.a > t.b) + 1", out
-
-    @pytest.mark.parametrize(
-        "composer",
-        ["build_arithmetic_for_filter", "compose_arithmetic_op",
-         "build_arith_or_cmp_ast"],
-    )
-    def test_plain_shapes_gain_no_parens(self, composer) -> None:
-        """Don't over-wrap — the fix must not churn the emission of the
-        shapes that were already right."""
-        compose = self._composers()[composer]
-        assert compose("is", [self._a(), exp.Null()]).sql() == "t.a IS NULL"
-        assert compose("not", [self._gt()]).sql() == "NOT t.a > 1"
-        assert (
-            compose("and", [self._gt(), self._lt()]).sql()
-            == "t.a > 1 AND t.a < 9"
+        gt = ArithmeticKey(
+            op=">", operands=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(1))),
         )
+        key = ArithmeticKey(
+            op="and", operands=(lt, ArithmeticKey(op="or", operands=(gt, lt))),
+        )
+        out = _sql(render_value_key(key, _filter_ctx()))
+        assert out == (
+            "orders.amount < 9 AND (orders.amount > 1 OR orders.amount < 9)"
+        ), out
+
+    def test_nary_boolean_retains_all_operands(self) -> None:
+        """``a AND b AND c`` (three operands in one ``ArithmeticKey``) must keep
+        every operand — the deleted ``_build_arith_or_cmp_ast`` used
+        ``operands[0]``/``[1]`` and silently dropped operands past index 1."""
+        cols = tuple(
+            ArithmeticKey(
+                op=">", operands=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(n))),
+            )
+            for n in (1, 2, 3)
+        )
+        for op, joiner in (("and", " AND "), ("or", " OR ")):
+            out = _sql(render_value_key(
+                ArithmeticKey(op=op, operands=cols), _filter_ctx(),
+            ))
+            assert out.count(joiner) == 2, out
+            assert all(f"> {n}" in out for n in (1, 2, 3)), out
+

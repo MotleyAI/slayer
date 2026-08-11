@@ -10,8 +10,8 @@ warnings, whatever the filter is::
 
 Two mechanisms conspire. ``_maybe_reroot_cross_model_plan`` decides which
 filters ride into the re-rooted CTE by TRY-BINDING each one against the target
-scope and swallowing ``_REROOT_BIND_ERRORS`` — a tuple that includes bare
-``ValueError``, so a planner bug is indistinguishable from "not reachable". It
+scope and swallowing a broad error tuple that included bare ``ValueError``, so
+a planner bug was indistinguishable from "not reachable". It
 then CLEARS ``dropped_filter_warnings`` / ``where_filter_ids`` /
 ``having_filter_ids`` / ``applied_filter_ids``, throwing away the routing the
 decision table had already produced.
@@ -340,53 +340,7 @@ class TestUnreachableWarns:
 # Group 3 — internal failures RAISE (§5.5)
 # ---------------------------------------------------------------------------
 class TestInternalFailuresRaise:
-    def test_the_swallow_and_drop_path_is_never_taken(self, monkeypatch) -> None:
-        """``_REROOT_BIND_ERRORS`` includes bare ``ValueError``, so any planner
-        bug inside the reroot path currently reads as "filter unreachable".
 
-        A RUNTIME sentinel rather than a source scan: emptying the tuple makes
-        every ``except _REROOT_BIND_ERRORS`` catch nothing, so if production
-        still swallows there, the swallowed exception escapes here. A grep for
-        the symbol would instead pass the moment someone renamed it.
-        """
-
-        monkeypatch.setattr(cross_model_planner, "_REROOT_BIND_ERRORS", ())
-        plan = _sole_plan(FILTER_REACHABLE, FILTER_HOST_LOCAL, FILTER_UNREACHABLE)
-        assert plan.rerooted_plan is not None
-        assert plan.applied_filter_ids
-        assert plan.dropped_filter_warnings
-
-    def test_the_text_filter_classifier_is_never_called(self, monkeypatch) -> None:
-        """P-J state 1: ``_classify_subplan_filters`` — which re-derives sub-plan
-        filters from ``routing.text`` — stays in the file but must lose every
-        production caller. D6 routes from the typed classification instead.
-
-        Exercised on the HOST-ROOTED route: the helper is called only from
-        ``_plan_filtered_local``, so a target-rooted query would leave this
-        sentinel untripped and the test would assert nothing.
-        """
-
-        assert hasattr(cross_model_planner, "_classify_subplan_filters"), (
-            "the helper was deleted; P-J defers deletion to PR 6"
-        )
-
-        def _boom(*_a, **_kw):
-            raise AssertionError(
-                "_classify_subplan_filters is still on the production path — "
-                "D6 classifies once, structurally, against the CTE's own root"
-            )
-
-        monkeypatch.setattr(
-            cross_model_planner, "_classify_subplan_filters", _boom,
-        )
-        plan = plan_query(
-            query=_HOST_ROOTED_QUERY, bundle=dev1747_bundle(),
-        )
-        assert plan.cross_model_aggregate_plans, "no host-rooted CTE was planned"
-        assert plan.cross_model_aggregate_plans[0].cte_root_model == "orders", (
-            "the shape stopped being host-rooted — the sentinel would be "
-            "untripped for the wrong reason"
-        )
 
     def test_no_bare_except_in_the_reroot_path(self) -> None:
         """Scoped to the reroot functions rather than the whole module, so an

@@ -36,7 +36,6 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
-from slayer.engine.cross_model_planner import _local_agg_formula
 from slayer.engine.planned import CrossModelAggregatePlan
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import plan_query
@@ -1074,71 +1073,3 @@ class TestWidenedLaw3TriggerCrossingInputs:
             f"Pathed host ROW filter must propagate into the host-rooted "
             f"sub-plan; got sub-plan filters {sub.filters_by_phase!r}"
         )
-
-
-class TestLocalAggFormulaRoundTrip:
-    """Codex plan-review F3 — ``_local_agg_formula`` is the serialize
-    boundary between the host plan and the host-rooted sub-plan. For every
-    input shape the widened trigger admits, key → formula-text → re-bind
-    must reproduce an EQUAL ``AggregateKey`` (otherwise the CTE aggregates
-    something other than what the host query asked for)."""
-
-    @staticmethod
-    def _harvest_key(formula: str) -> AggregateKey:
-        q = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": formula, "name": "m0"}],
-        )
-        planned = plan_query(query=q, bundle=_s5_bundle())
-        for slot in planned.aggregate_slots:
-            if isinstance(slot.key, AggregateKey):
-                return slot.key
-        raise AssertionError(f"no AggregateKey slot for formula {formula!r}")
-
-    def _assert_round_trip(self, formula: str) -> None:
-        key = self._harvest_key(formula)
-        text = _local_agg_formula(key)
-        key2 = self._harvest_key(text)
-        assert key2 == key, (
-            f"_local_agg_formula round-trip drifted for {formula!r}:\n"
-            f"  reconstructed text: {text!r}\n"
-            f"  original key:      {key!r}\n"
-            f"  re-bound key:      {key2!r}"
-        )
-
-    def test_rt_bare_sum(self):
-        self._assert_round_trip("amount:sum")
-
-    def test_rt_derived_crossing_source(self):
-        self._assert_round_trip("region_pay:sum")
-
-    def test_rt_star_count(self):
-        self._assert_round_trip("*:count")
-
-    def test_rt_local_time_arg(self):
-        self._assert_round_trip("region_pay:last(orders.created_at)")
-
-    def test_rt_structural_time_arg(self):
-        self._assert_round_trip("amount:last(customers.signup_at)")
-
-    def test_rt_derived_time_arg(self):
-        self._assert_round_trip("amount:last(cross_time)")
-
-    def test_rt_structural_kwarg(self):
-        self._assert_round_trip("amount:weighted_avg(weight=customers.weight)")
-
-    def test_rt_derived_kwarg(self):
-        self._assert_round_trip("amount:weighted_avg(weight=region_pay)")
-
-    def test_rt_scalar_kwarg(self):
-        self._assert_round_trip("amount:scaled_sum(scale=100)")
-
-    def test_rt_template_fragment_kwarg(self):
-        self._assert_round_trip("amount:scaled_sum(scale='amount * 2')")
-
-    def test_rt_template_fragment_kwarg_with_quote(self):
-        # String-escaping round-trip: repr() must survive re-parsing.
-        self._assert_round_trip('amount:scaled_sum(scale="it\'s fine")')
-
-    # bool / None kwargs are rejected by the AggregateKey shape itself
-    # (slayer/core/refs.py raises TypeError) — nothing to round-trip.

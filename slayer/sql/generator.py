@@ -25,7 +25,8 @@ from slayer.core.enums import (
 )
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from slayer.core.errors import AggregationNotAllowedError, UnresolvableOrderColumnError
+from slayer.core.errors import AggregationNotAllowedError
+from slayer.core.formula import RANK_FAMILY_TRANSFORMS
 from slayer.core.keys import (
     _FrozenKey,
     _reroot_path_ref,
@@ -38,7 +39,6 @@ from slayer.core.time_bounds import strip_frame_bounds
 from slayer.core.window_duration import parse_window_duration as _parse_window_duration
 from slayer.engine.column_expansion import (
     _is_trivial_base,
-    _walk_path_to_target_sync,
     collect_root_scope_joined_paths,
     expand_derived_refs_sync,
 )
@@ -54,7 +54,6 @@ from slayer.sql.naming import (
     canonical_aggregate_alias,
     cte_name_from_alias,
     dialect_folds_case,
-    flat_name,
     maybe_quote_ident,
     quote_mixed_case_identifiers,
     result_key,
@@ -79,16 +78,20 @@ from slayer.sql.render.ranked import (
     build_ranked_pick,
     ranked_ordered,
 )
+from slayer.sql.render.aggregates import (
+    DISPATCH_DISTINCT,
+    DISPATCH_FORMULA,
+    DISPATCH_STAT,
+    is_builtin_agg,
+    resolve_agg_entry,
+)
 from slayer.sql.render.value_expr import (
     AliasFacilities,
     CompositeFacilities,
     FilterFacilities,
     RenderContext,
-    _filter_cast_type,
     _wrap_cast_for_type,
     contains_aggregate,
-    render_arithmetic,
-    render_scalar_call,
     render_value_key,
     rewrite_log_alias,
 )
@@ -121,18 +124,16 @@ class ResolvedAggKwarg(BaseModel):
 class AggRenderSpec(BaseModel):
     """DEV-1452 — typed input record for the dialect-aware aggregation
     helpers (``_build_agg``, ``_build_percentile``, ``_build_stat_agg``,
-    ``_build_formula_agg``, ``_resolve_value_sql``, ``_resolve_agg_param``,
-    ``_build_ranked_subquery_from_planned``).
+    ``_build_formula_agg``, ``_resolve_value_sql``, ``_resolve_agg_param``).
 
-    Decouples the helpers from ``EnrichedMeasure`` so the legacy enrichment
-    pipeline can be deleted without forking dialect SQL emission. Carries
-    exactly the 11 fields the helpers empirically read; ``EnrichedMeasure``
-    fields outside this set (``agg_args``, ``source_measure_name``,
-    ``distinct``, ``window``, ``user_declared``, ``label``,
-    ``filter_columns``) are deliberately NOT carried — ``count_distinct``
-    dispatches on the agg name, and the positional time arg for
-    ``first`` / ``last`` is pre-resolved into ``time_column`` at spec-build
-    time.
+    Gives dialect SQL emission a single typed input, decoupled from the
+    query representation. Carries exactly the 11 fields the helpers
+    empirically read; other measure attributes (``agg_args``,
+    ``source_measure_name``, ``distinct``, ``window``, ``user_declared``,
+    ``label``, ``filter_columns``) are deliberately NOT carried —
+    ``count_distinct`` dispatches on the agg name, and the positional time
+    arg for ``first`` / ``last`` is pre-resolved into ``time_column`` at
+    spec-build time.
     """
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
@@ -211,110 +212,6 @@ class AggRenderSpec(BaseModel):
     expression in CAST when the column.sql is a non-bare expression (e.g.
     ``json_extract(...)``). Distinct from ``type`` which wraps the outer
     aggregate."""
-
-
-class FirstLastRenderState(BaseModel):
-    """DEV-1501 — bundle of maps produced by
-    ``_build_first_last_base_select`` (host base) or
-    ``_render_cross_model_cte`` (cross-model CTE) that the HAVING render
-    path needs to thread into ``_build_agg`` so a HAVING aggregate
-    references the same ``_first_rn`` / ``_last_rn{suffix}`` column the
-    SELECT projects (instead of bare ``_last_rn``, which collapses
-    distinct time-column specs).
-    """
-
-    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
-
-    rn_suffix_map: Dict[str, str] = {}
-    """Effective-time-column → rn suffix (``""`` / ``"_2"`` / …). Empty
-    when no first/last aggregates are in scope."""
-
-    default_time_col_sql: Optional[str] = None
-    """Fallback time column when a spec has no explicit ``time_column``.
-    ``None`` when every first/last spec carries an explicit arg."""
-
-    filtered_rn_map: Dict[str, str] = {}
-    """Per-spec-alias → dedicated rn column for filtered first/last
-    aggregates (Column.filter wired in at aggregation time)."""
-
-    filtered_match_map: Dict[str, str] = {}
-    """Per-spec-alias → match-flag column for filtered first/last."""
-
-    agg_synth_alias: Optional[str] = None
-    """DEV-1501 Group A.3 — only set for the cross-model CTE single-agg
-    case. The cross-model CTE projects exactly one aggregate; if HAVING
-    references the same key, ``_render_filter_value_key_in_target_scope``
-    must rebuild the synth with THIS alias so the ``filtered_rn_map`` /
-    ``filtered_match_map`` lookups (keyed by the synth alias) hit. Host-
-    base callers leave this ``None`` and rely on ``aliases_by_slot_id``
-    threaded through ``_build_where_having_from_planned`` instead."""
-
-    value_alias_by_sql: Dict[str, str] = {}
-    """DEV-1708 Law 2: RESOLVED value text → ``_val_<n>`` materialisation alias
-    for an aggregate whose SOURCE crosses a join. Keyed by the resolved
-    (qualified + ``Column.type`` inner-CAST) value emission — DEV-1709 — so
-    same-sql-different-type aggregates map to distinct materialisations. The
-    projected aggregate materialises the crossing value inside the ranked
-    subquery; a HAVING referencing the same aggregate must bind to the SAME
-    alias (not re-emit the raw crossing ref, which is out of scope in the
-    outer SELECT). Empty when every source is local."""
-
-
-def _iter_first_last_leaves(key) -> "list":  # NOSONAR(S3776) — sequential isinstance dispatch over the closed ValueKey union; each branch is the per-type recursion contract for surfacing first/last AggregateKey leaves. Extracting per-type helpers would scatter the contract.
-    """DEV-1501 (Codex round 3): walk a composite ValueKey for first /
-    last ``AggregateKey`` leaves.
-
-    Composite aggregate slots (``ArithmeticKey`` / ``ScalarCallKey``)
-    aren't separately materialised — their operand AggregateKeys are
-    inlined at the composite render path. Without surfacing the leaves
-    here, the ranked-subquery builder wouldn't see their distinct time
-    columns and the composite render would resolve every operand to
-    bare ``_last_rn``.
-
-    Returns local first/last leaves only (cross-model operands raise in
-    the composite render path; row / literal / scalar-call /
-    transform / between / in branches recurse into operands without
-    surfacing themselves).
-    """
-    from slayer.core.keys import (
-        AggregateKey,
-        ArithmeticKey,
-        BetweenKey,
-        InKey,
-        ScalarCallKey,
-    )
-
-    out: list = []
-
-    def _walk(k) -> None:
-        if isinstance(k, AggregateKey):
-            if k.agg in ("first", "last") and not getattr(
-                k.source, "path", (),
-            ):
-                out.append(k)
-            return
-        if isinstance(k, ArithmeticKey):
-            for o in k.operands:
-                _walk(o)
-            return
-        if isinstance(k, ScalarCallKey):
-            for a in k.args:
-                _walk(a)
-            return
-        if isinstance(k, BetweenKey):
-            _walk(k.column)
-            _walk(k.low)
-            _walk(k.high)
-            return
-        if isinstance(k, InKey):
-            _walk(k.column)
-        # LiteralKey / ColumnKey / TimeTruncKey / TransformKey / etc.:
-        # not a first/last operand carrier; stop recursing.
-
-    _walk(key)
-    return out
-
-
 
 
 def _render_scalar_literal(v: Any) -> exp.Expression:
@@ -399,36 +296,15 @@ def _collapses_to_ranked_cte(planned_query) -> bool:
 
 logger = logging.getLogger(__name__)
 
-# Maps aggregation name (string) → SQL function name.
-_AGG_FUNCTION_MAP: dict[str, str] = {
-    "count": "COUNT",
-    "count_distinct": "COUNT_DISTINCT",
-    "sum": "SUM",
-    "avg": "AVG",
-    "min": "MIN",
-    "max": "MAX",
-    "median": "MEDIAN",
-    # "first", "last" use special ROW_NUMBER + conditional aggregate
-    # "weighted_avg" and custom aggregations use formula substitution
-    # "percentile", "stddev_samp", "stddev_pop", "var_samp", "var_pop",
-    # "corr" are dialect-dependent and routed through dedicated builders
-    # (_build_percentile / _build_stat_agg) — they are intentionally
-    # absent from this map.
-}
-
-# DEV-1317: statistical aggregations routed through _build_stat_agg.
-# stddev_samp/_pop and var_samp/_pop are 1-arg; corr / covar_samp /
-# covar_pop are 2-arg via the `other=` kwarg. SQLite gets these through
-# registered Python UDFs; Postgres/DuckDB/MySQL/ClickHouse use the
-# native function emitted via sqlglot transpilation. MySQL has no
-# native CORR / COVAR_SAMP / COVAR_POP — _build_stat_agg raises
-# NotImplementedError there, mirroring _build_median.
-_STAT_AGG_NAMES: frozenset[str] = frozenset({
-    "stddev_samp", "stddev_pop", "var_samp", "var_pop",
-    "corr", "covar_samp", "covar_pop",
-})
-
-# Subset of _STAT_AGG_NAMES that take two columns (LHS + `other=` kwarg).
+# DEV-1317: statistical aggregations (``DISPATCH_STAT`` in ``AGG_REGISTRY``) are
+# routed through _build_stat_agg. stddev_samp/_pop and var_samp/_pop are 1-arg;
+# corr / covar_samp / covar_pop are 2-arg via the `other=` kwarg. SQLite gets
+# these through registered Python UDFs; Postgres/DuckDB/MySQL/ClickHouse use the
+# native function emitted via sqlglot transpilation. MySQL has no native CORR /
+# COVAR_SAMP / COVAR_POP — _build_stat_agg raises NotImplementedError there,
+# mirroring _build_median.
+#
+# The two-column subset (LHS + `other=` kwarg).
 _TWO_ARG_STAT_AGGS: frozenset[str] = frozenset({"corr", "covar_samp", "covar_pop"})
 
 # DEV-1450 stage 7b.13: aggregations dispatched through the built-in
@@ -459,10 +335,6 @@ _BUILTIN_BAREARG_AGGS_LOCAL_SLICE: frozenset[str] = BUILTIN_AGGREGATIONS
 # to ``Anonymous(this='log10'|'log2', ...)``; the per-dialect native-alias
 # decision is delegated to ``SqlDialect.should_use_native_log`` (DEV-1716).
 
-# Transforms that use self-join CTEs instead of window functions.
-# This gives correct results at result-set edges (no NULLs when the DB has the data)
-# and handles gaps in time series correctly.
-_SELF_JOIN_TRANSFORMS = {"time_shift"}
 
 # Separator used when joining pre-rendered SQL fragments into a conjunctive
 # WHERE/HAVING clause; extracted as a constant so Sonar S1192 doesn't flag it
@@ -611,23 +483,6 @@ _GRANULARITY_MAP = {
 
 
 
-def _cte_name_from_alias(prefix: str, alias: str) -> str:
-    """Build a unique CTE name from a measure alias.
-
-    Dots are replaced with ``__`` (double underscore) to avoid collision
-    with aliases that already contain underscores. E.g.:
-    - ``orders.revenue_sum``  -> ``_fm_orders__revenue_sum``
-    - ``orders_v2.revenue_sum`` -> ``_fm_orders_v2__revenue_sum``
-
-    DEV-1713: the ``.`` -> ``__`` flatten delegates to
-    :func:`slayer.sql.naming.flat_name` (single owner); this adds only the
-    non-identifier-character sanitisation on top.
-    """
-    sanitized = flat_name(alias)
-    sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", sanitized)
-    return prefix + sanitized
-
-
 def _cm_plan_identity(*, source_relation: str, plan, agg_slot) -> tuple:
     """The dedup identity for a cross-model CTE.
 
@@ -707,53 +562,8 @@ _TRAILING_LIMIT_RE = re.compile(r"(?is)\s*LIMIT\s+\d+\s*\Z")
 _BARE_IDENT_RE = re.compile(r"[A-Za-z_]\w*")
 
 
-def _strip_trailing_pagination(sql: str) -> str:
-    """DEV-1444: remove trailing ORDER BY / LIMIT / OFFSET clauses that
-    SLayer's generator appends as raw string segments after the inner
-    SELECT body. Used by ``_apply_outer_projection_trim`` so the outer
-    wrapper owns pagination without it appearing twice.
-
-    Works on the trailing tail only — preserves any ORDER BY / LIMIT /
-    OFFSET that appears inside nested CTEs or sub-queries (they have a
-    closing ``)`` after them).
-    """
-    s = sql.rstrip()
-    # OFFSET / LIMIT use narrow digit-bounded regexes. LIMIT-OFFSET is
-    # checked before bare OFFSET / LIMIT so the combined form is peeled
-    # in a single pass.
-    for pattern in (
-        _TRAILING_LIMIT_OFFSET_RE,
-        _TRAILING_OFFSET_RE,
-        _TRAILING_LIMIT_RE,
-    ):
-        m = pattern.search(s)
-        if not m or m.start() == 0:
-            continue
-        tail = s[m.start():]
-        if tail.count("(") != tail.count(")"):
-            continue
-        s = s[:m.start()].rstrip()
-    # ORDER BY: use rfind on the upper-cased copy (case-insensitive
-    # match) instead of a regex with an unbounded character class. Same
-    # paren-balance check confirms the clause is at the outermost
-    # nesting level.
-    upper = s.upper()
-    pos = upper.rfind("ORDER BY")
-    if pos > 0:
-        # Word-boundary on the left (preceding whitespace or newline)
-        # and after (the BY must be followed by whitespace or end).
-        left_ok = upper[pos - 1] in " \t\n\r"
-        right_idx = pos + len("ORDER BY")
-        right_ok = right_idx >= len(upper) or upper[right_idx] in " \t\n\r"
-        if left_ok and right_ok:
-            tail = s[pos:]
-            if tail.count("(") == tail.count(")"):
-                s = s[:pos].rstrip()
-    return s
-
-
 class SQLGenerator:
-    """Generates SQL from an EnrichedQuery."""
+    """Generates SQL from a typed ``PlannedQuery`` (from ``stage_planner``)."""
 
     def __init__(self, dialect: "str | SqlDialect" = "postgres"):
         if isinstance(dialect, SqlDialect):
@@ -938,37 +748,6 @@ class SQLGenerator:
 
 
 
-    def _build_outer_wrap(
-        self,
-        *,
-        inner_sql: str,
-        public: List[str],
-        order,
-        limit,
-        offset_arg,
-    ) -> str:
-        """Thin delegate to ``self._dialect.emit_outer_wrap`` (DEV-1716).
-
-        Strips trailing ORDER BY / LIMIT / OFFSET from ``inner_sql``
-        (text-level) before handing off to the dialect hook, then passes
-        the detached AST nodes for re-emission on the outer statement. The
-        hook owns the wrap shape (base derived-table form; ``TsqlDialect``
-        hoists inner CTEs) AND the dialect-correct identifier quoting of the
-        public-alias list (backticks / brackets / ANSI double quotes).
-        """
-        if order is None and limit is None and offset_arg is None:
-            stripped = inner_sql
-        else:
-            stripped = _strip_trailing_pagination(inner_sql)
-        return self._dialect.emit_outer_wrap(
-            inner_sql=stripped,
-            public=public,
-            order=order,
-            limit=limit,
-            offset_arg=offset_arg,
-            parse=self._parse,
-        )
-
     def _quote_ident(self, name: str) -> str:
         """Render ``name`` as ONE dialect-quoted identifier string (DEV-1716).
 
@@ -1042,17 +821,6 @@ class SQLGenerator:
                 owner_of[alias] = sid
                 out.append(alias)
         return out
-
-    def _null_safe_join_pair_sql(self, *, left_sql: str, right_sql: str) -> str:
-        """Render one dialect-aware null-safe equality (DEV-1708 / Codex F2) for
-        a grain join-back ``ON`` clause. ``left_sql`` / ``right_sql`` are the
-        already-quoted qualified column strings (``_base."x"`` / ``_cm."x"``);
-        they are parsed back to AST so the dialect strategy's
-        ``build_null_safe_eq`` can wrap them (native ``IS NOT DISTINCT FROM`` /
-        ``<=>`` / ``IS``, or the expanded ``= … OR (… IS NULL AND … IS NULL)``)."""
-        left = self._parse(left_sql)
-        right = self._parse(right_sql)
-        return self._dialect.build_null_safe_eq(left, right).sql(dialect=self.dialect)
 
     def _ordered(
         self, order_col: exp.Expression, *, ascending: bool,
@@ -1147,78 +915,6 @@ class SQLGenerator:
             col_expr=col_expr, granularity=granularity, parse=self._parse,
         )
 
-    def _build_transform_sql(self, t) -> str:  # NOSONAR S3776 — flat dispatch over transform names; per-transform SQL forms read better as one if/elif tree than as named helpers
-        """Build a window function SQL expression for a transform.
-
-        DEV-1716: identifier refs are dialect-quoted (``_quote_ident``) so
-        MySQL/T-SQL/BigQuery get correct quotes; the subsequent
-        ``self._parse(window_sql)`` reads them back as identifiers (backticks
-        on MySQL, brackets on T-SQL) rather than string literals.
-        """
-        measure = self._quote_ident(t.measure_alias)
-        time_col = self._quote_ident(t.time_alias) if t.time_alias else None
-        partition_cols = getattr(t, "partition_aliases", []) or []
-        partition_clause = (
-            _SQL_PARTITION_BY + ", ".join(self._quote_ident(a) for a in partition_cols)
-            if partition_cols
-            else ""
-        )
-        order_clause = f"ORDER BY {time_col}" if time_col else ""
-        over_parts = " ".join(p for p in (partition_clause, order_clause) if p)
-
-        # Rank-family OVER clauses always order by the inner measure DESC; their
-        # partition is empty unless the user passed partition_by= on the call.
-        rank_order = f"ORDER BY {measure} DESC"
-        rank_over = " ".join(p for p in (partition_clause, rank_order) if p)
-
-        if t.transform == "cumsum":
-            return f"SUM({measure}) OVER ({over_parts})"
-        elif t.transform == "consecutive_periods":
-            raise ValueError("consecutive_periods should be materialized with staged CTEs")
-        elif t.transform in _SELF_JOIN_TRANSFORMS:
-            raise ValueError(f"{t.transform} should not reach _build_transform_sql; it uses self-join CTE")
-        elif t.transform == "lag":
-            return f"LAG({measure}, {abs(t.offset)}) OVER ({over_parts})"
-        elif t.transform == "lead":
-            return f"LEAD({measure}, {abs(t.offset)}) OVER ({over_parts})"
-        elif t.transform == "rank":
-            return f"RANK() OVER ({rank_over})"
-        elif t.transform == "percent_rank":
-            return f"PERCENT_RANK() OVER ({rank_over})"
-        elif t.transform == "dense_rank":
-            return f"DENSE_RANK() OVER ({rank_over})"
-        elif t.transform == "ntile":
-            n = getattr(t, "n", None)
-            if not isinstance(n, int) or n <= 0:
-                raise ValueError(f"ntile requires a positive integer n, got {n!r}")
-            return f"NTILE({n}) OVER ({rank_over})"
-        elif t.transform == "first":
-            return (
-                f"FIRST_VALUE({measure}) OVER ({over_parts} "
-                f"ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)"
-            )
-        elif t.transform == "last":
-            return (
-                f"FIRST_VALUE({measure}) OVER ({partition_clause} ORDER BY {time_col} DESC "
-                f"ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)"
-            )
-        else:
-            raise ValueError(f"Unsupported transform: {t.transform}")
-
-
-
-
-
-    # ------------------------------------------------------------------
-    # FROM / JOIN building
-    # ------------------------------------------------------------------
-
-
-
-    # ------------------------------------------------------------------
-    # Column / measure resolution (from enriched SQL expressions)
-    # ------------------------------------------------------------------
-
     def _rewrite_log_aliases(self, node: exp.Expression) -> exp.Expression:
         """Thin delegator to the shared log-alias policy in
         ``slayer.sql.render.value_expr``.
@@ -1238,8 +934,8 @@ class SQLGenerator:
     ) -> exp.Expression:
         """Resolve an enriched SQL expression to a sqlglot AST node.
 
-        DEV-1361: when the caller has a typed object in scope (an
-        ``EnrichedDimension``, a ``Column``), it passes ``type=`` so the
+        DEV-1361: when the caller has a typed object in scope (a typed
+        slot, a ``Column``), it passes ``type=`` so the
         generator wraps non-trivial expressions in ``CAST(... AS <type>)``.
         Bare identifiers (``sql=None`` or ``sql`` is a single identifier)
         trust the DB schema and sqlglot — no CAST is emitted regardless of
@@ -1317,8 +1013,8 @@ class SQLGenerator:
         if name in spec.agg_kwargs:
             value = spec.agg_kwargs[name]
             # Guard the untrusted string forms: a ``kind="str"`` wrapper OR a
-            # bare ``str`` (the legacy ``EnrichedMeasure`` adapter and model-level
-            # defaults reach here unwrapped). ``kind="expr"`` is a trusted,
+            # bare ``str`` (model-level defaults and direct-construction call
+            # sites reach here unwrapped). ``kind="expr"`` is a trusted,
             # bind-time-resolved expression and is embedded verbatim.
             if isinstance(value, ResolvedAggKwarg):
                 if value.kind == "str":
@@ -1343,12 +1039,11 @@ class SQLGenerator:
     def _build_agg(
         self,
         spec: "AggRenderSpec | None" = None,
-        rn_suffix_map: Optional[dict[str, str]] = None,
-        default_time_col: Optional[str] = None,
-        filtered_rn_map: Optional[dict[str, str]] = None,
-        filtered_match_map: Optional[dict[str, str]] = None,
     ) -> tuple[exp.Expression, bool]:
-        """Build an aggregation expression from an ``AggRenderSpec``."""
+        """Build an aggregation expression from an ``AggRenderSpec``.
+
+        First/last aggregates never reach here — they render as a plan-shaped
+        ``RankedAggregatePlan`` CTE (DEV-1748 B9), not through this emitter."""
         if spec is None:  # pragma: no cover — defensive
             raise ValueError("_build_agg requires a 'spec'.")
         agg_name = spec.aggregation
@@ -1366,84 +1061,40 @@ class SQLGenerator:
                 table=exp.to_identifier(spec.model_name),
             ), False
 
-        # --- first/last: MAX(CASE WHEN _rn = 1 THEN col END) ---
-        if agg_name in ("first", "last"):
-            col_expr = self._resolve_sql(
-                sql=spec.sql,
-                name=spec.name,
-                model_name=spec.model_name,
-                type=spec.column_type,
-            )
-            col = col_expr.sql(dialect=self.dialect)
-            suffix = ""
-            if rn_suffix_map is not None:
-                # DEV-1501: when no default ranking time column is in scope,
-                # every first/last spec is guaranteed to carry an explicit
-                # ``time_column`` (validated in
-                # ``_build_first_last_base_select``); so the suffix lookup
-                # must not gate on ``default_time_col`` being truthy, else
-                # distinct-time-column specs all collapse to ``_last_rn``.
-                effective_tc = spec.time_column or default_time_col
-                if effective_tc is not None:
-                    suffix = rn_suffix_map.get(effective_tc, "")
-            rn_col = f"_first_rn{suffix}" if agg_name == "first" else f"_last_rn{suffix}"
-            # For filtered first/last, use the dedicated ROW_NUMBER column
-            # that pushes non-matching rows to the bottom of the ranking.
-            # Look up by alias (unique per spec) so two filtered specs
-            # sharing source/agg but with different filters map to their
-            # own respective rank columns. Use the per-spec match flag
-            # (also projected by the ranked subquery) instead of
-            # re-emitting spec.filter_sql here — the filter can reference
-            # joined-table columns that are not in scope outside the
-            # subquery.
-            if spec.filter_sql and filtered_rn_map:
-                filtered_rn = filtered_rn_map.get(spec.alias, rn_col)
-                match_col = (
-                    filtered_match_map.get(spec.alias)
-                    if filtered_match_map
-                    else None
-                )
-                # Fall back to the raw filter expression only if no match flag
-                # was projected (legacy callers); accepts the leak risk.
-                filter_clause = f"{match_col} = 1" if match_col else spec.filter_sql
-                case_sql = (
-                    f"MAX(CASE WHEN {filtered_rn} = 1 AND {filter_clause} "
-                    f"THEN {col} END)"
-                )
-            else:
-                # ``col`` is already a fully-qualified SQL expression resolved
-                # via ``_resolve_sql`` earlier in this branch, so we don't need
-                # to re-prefix ``spec.model_name``. (DEV-1333.)
-                case_sql = f"MAX(CASE WHEN {rn_col} = 1 THEN {col} END)"
-            return self._parse(case_sql), True
-
-        # --- Custom or parameterized aggregation (formula-based) ---
-        if agg_name not in _AGG_FUNCTION_MAP:
-            # percentile is dialect-dependent (no static formula works on
-            # SQLite/ClickHouse/MySQL) so it gets its own builder rather than
-            # going through the BUILTIN_AGGREGATION_FORMULAS path.
-            if agg_name == "percentile":
-                return self._build_percentile(spec), True
-            # Statistical aggregates also dispatch to a dedicated builder so
-            # the SQLite-UDF / native-function / NotImplementedError split
-            # mirrors _build_median.
-            if agg_name in _STAT_AGG_NAMES:
-                return self._build_stat_agg(spec), True
-            # count_distinct_approx (DEV-1595): dialect-aware approximate-
-            # distinct — native function (DuckDB/ClickHouse/BigQuery/…) or the
-            # exact COUNT(DISTINCT) fallback (Postgres/SQLite/MySQL). Built like
-            # percentile/stat-agg (via _wrap_filter + _resolve_value_sql) so a
-            # row-level filter wraps as COUNT(DISTINCT (CASE WHEN ... END)).
-            if agg_name == "count_distinct_approx":
-                col_expr = _wrap_filter(
-                    self._resolve_value_sql(spec), spec.filter_sql
-                )
-                return self._dialect.build_approx_count_distinct(
-                    col_sql=col_expr, parse=self._parse
-                ), True
+        # Classification comes from the single ``AGG_REGISTRY`` table (DEV-1744):
+        # a name not registered is a model-level custom aggregation and takes the
+        # formula-template path.
+        if not is_builtin_agg(agg_name):
             return self._build_formula_agg(spec, agg_name), True
 
-        # --- Resolve inner expression ---
+        entry = resolve_agg_entry(agg_name)
+        dispatch = entry.dispatch
+
+        # --- Builders that resolve (and filter-wrap) their OWN inner ---
+        # These are dialect-dependent or template-based, so they cannot share the
+        # plain inner resolution below and run BEFORE it (which also keeps them
+        # from triggering its join-discovery side effect).
+        if dispatch == DISPATCH_STAT:
+            # DEV-1317: SQLite-UDF / native-function / NotImplementedError split.
+            return self._build_stat_agg(spec), True
+        if dispatch == DISPATCH_FORMULA:
+            # ``weighted_avg`` and any other {value}/{param} template built-in.
+            return self._build_formula_agg(spec, agg_name), True
+        if agg_name == "percentile":
+            # Dialect-dependent (no static formula works on
+            # SQLite/ClickHouse/MySQL) so it gets its own builder.
+            return self._build_percentile(spec), True
+        if agg_name == "count_distinct_approx":
+            # DEV-1595: native approx-distinct or the exact COUNT(DISTINCT)
+            # fallback. A row-level filter wraps as COUNT(DISTINCT (CASE ...)).
+            col_expr = _wrap_filter(
+                self._resolve_value_sql(spec), spec.filter_sql
+            )
+            return self._dialect.build_approx_count_distinct(
+                col_sql=col_expr, parse=self._parse
+            ), True
+
+        # --- Resolve inner expression (SIMPLE / DISTINCT / median paths) ---
         if agg_name == "count" and spec.sql is None:
             # COUNT(*) — if filtered, use COUNT(CASE WHEN filter THEN 1 END)
             if spec.filter_sql:
@@ -1471,7 +1122,7 @@ class SQLGenerator:
             inner = self._parse(case_sql)
 
         # --- count_distinct ---
-        if agg_name == "count_distinct":
+        if dispatch == DISPATCH_DISTINCT:
             return exp.Count(this=exp.Distinct(expressions=[inner])), True
 
         # --- median (dialect-dependent) ---
@@ -1479,16 +1130,8 @@ class SQLGenerator:
             return self._build_median(inner), True
 
         # --- Standard aggregations (sum, avg, min, max, count) ---
-        agg_class_map = {
-            "COUNT": exp.Count,
-            "SUM": exp.Sum,
-            "AVG": exp.Avg,
-            "MIN": exp.Min,
-            "MAX": exp.Max,
-        }
-        agg_func = _AGG_FUNCTION_MAP[agg_name]
-        agg_class = agg_class_map[agg_func]
-        return agg_class(this=inner), True
+        # ``node_class`` is the sqlglot class the registry entry carries.
+        return entry.node_class(this=inner), True
 
     def _build_formula_agg(self, spec: AggRenderSpec, agg_name: str) -> exp.Expression:  # NOSONAR(S3776) — sequential dispatch over formula source (aggregation_def vs built-in) and per-kind ResolvedAggKwarg substitution (DEV-1527); one cohesive template-substitution contract.
         """Build SQL for formula-based aggregations (weighted_avg, custom)."""
@@ -1661,16 +1304,11 @@ class SQLGenerator:
     # ======================================================================
     # DEV-1450 stage 7b.8 — PlannedQuery → SQL.
     #
-    # The legacy generator (everything above) consumes EnrichedQuery. This
-    # new entry point consumes the typed PlannedQuery from
-    # slayer/engine/stage_planner.py. The two paths coexist until the
-    # engine cutover (stage 7b.15) flips the default path.
-    #
-    # 7b.8 scope: local-only single-model queries — row-phase dims, local
-    # aggregates, Mode-B row filters, ORDER BY / LIMIT / OFFSET, dim-only
-    # dedup. Cross-model, time dimensions, transforms, and aggregate
-    # filtering raise NotImplementedError with an explicit stage marker
-    # so silent parity drift is impossible.
+    # This entry point consumes the typed PlannedQuery from
+    # slayer/engine/stage_planner.py and renders the full pipeline:
+    # row-phase dims, local aggregates, Mode-B row filters, ORDER BY /
+    # LIMIT / OFFSET, dim-only dedup, plus cross-model, time dimensions,
+    # transforms, and aggregate filtering.
     # ======================================================================
 
     def generate_from_planned(
@@ -1749,15 +1387,12 @@ class SQLGenerator:
         the DB-bound terminal (``generate_planned_stages``), NOT here. Mangling
         a stage's column names would break the downstream flat-name binding.
 
-        Mirrors the local-only branch of ``_generate_base`` but reads
-        from typed PlannedQuery fields (``row_slots`` / ``aggregate_slots``
-        / ``filters_by_phase`` / ``order`` / ``transform_layers``)
-        instead of ``EnrichedQuery``. Reuses legacy dialect helpers
+        Reads from typed PlannedQuery fields (``row_slots`` /
+        ``aggregate_slots`` / ``filters_by_phase`` / ``order`` /
+        ``transform_layers``) and renders through the dialect helpers
         (``_resolve_sql`` / ``_build_agg`` / ``_wrap_cast_for_type`` /
         ``_parse_predicate`` / ``_build_date_trunc``) so dialect-specific
-        behavior is rendered identically to the legacy ``generate()``
-        path — the parity oracle in ``tests/parity_oracle.py`` pins
-        this contract.
+        behavior is emitted consistently across the pipeline.
 
         Stage 7b.10 adds window-transform rendering: when
         ``planned_query.transform_layers`` is non-empty, the base SELECT
@@ -1880,8 +1515,6 @@ class SQLGenerator:
             aliases_by_slot_id,
             has_aggregation,
             group_by_keys,
-            where_consumed,
-            first_last_state,
         ) = self._build_base_select_for_planned(
             planned_query=planned_query,
             bundle=bundle,
@@ -1896,16 +1529,10 @@ class SQLGenerator:
             source_relation=source_relation,
             source_model=source_model,
             bundle=bundle,
-            first_last_state=first_last_state,
             aliases_by_slot_id=aliases_by_slot_id,
         )
 
-        # ``where_consumed`` is True for the first/last ranked-subquery path:
-        # the WHERE is applied INSIDE the ranked subquery (it must filter raw
-        # rows before ranking), so re-applying it on the outer SELECT would be
-        # both redundant and — for filters that should narrow the ranked set —
-        # semantically wrong.
-        if where_clause is not None and not where_consumed:
+        if where_clause is not None:
             base_select = base_select.where(where_clause)
 
         # Match legacy _generate_base:1375 — dim-only-dedup OR
@@ -2274,7 +1901,7 @@ class SQLGenerator:
 
         leaf_kinds = (ColumnKey, ColumnSqlKey, AggregateKey, TimeTruncKey)
         # Keep aligned with _emit_consecutive_periods_ctes_for_planned —
-        # the renderer dispatches arithmetic ops via _compose_arithmetic_op
+        # the renderer dispatches arithmetic ops via render_arithmetic
         # which supports these binary comparisons only.
         _COMPARISON_OPS = {"==", "!=", "<", "<=", ">", ">="}
 
@@ -2658,10 +2285,11 @@ class SQLGenerator:
         resolver join-registration order (Column.filter → source → kwargs):
 
         1. **``Column.filter`` predicates** (DEV-1494; replaces
-           ``_collect_column_filter_join_paths``). The Mode-A predicate is
-           dual-scanned via ``_filter_join_paths`` (raw + inline-expanded, so a
-           placeholder dotted ref that inlines to a constant still pulls its
-           join) and the paths registered into the scope.
+           ``_collect_column_filter_join_paths``). The Mode-A predicate enters
+           through the door (``ScopeFrame.enter_predicate``), whose dual-scan
+           (raw + inline-expanded, so a placeholder dotted ref that inlines to
+           a constant still pulls its join) registers the crossed paths into
+           the scope as a side effect.
         2. **derived aggregate SOURCES** (``ColumnSqlKey`` whose ``Column.sql``
            crosses a join — DEV-1502; replaces ``_collect_aggregate_source_
            join_paths``). Discovery only; the render spec re-expands the source.
@@ -2800,7 +2428,7 @@ class SQLGenerator:
 
         The base SELECT uses the batch ``_resolve_agg_inputs_via_scope`` pass over
         a shared host scope (which also registers the crossed joins). The HAVING
-        render path (``_render_value_key_for_filter``) has no such scope, so it
+        render path (``render_value_key``) has no such scope, so it
         builds a throwaway one here purely to reproduce the SAME anchored kwarg
         expression the SELECT emits — the crossed join is already base-pulled
         (the HAVING aggregate is also a ``base_render_order`` slot), so the
@@ -2944,31 +2572,6 @@ class SQLGenerator:
             joined_paths=needed_join_paths,
             bundle=bundle,
         )
-
-        # DEV-1450: first/last AGGREGATIONS rank rows via a ROW_NUMBER
-        # subquery (mirrors legacy ``_generate_base`` + ``_build_last_
-        # ranked_from``).
-        if self._has_first_last_aggregate(
-            base_render_order=base_render_order, slots_by_id=slots_by_id,
-        ):
-            # DEV-1503 — local first/last in ``_base`` alongside cross-model
-            # CTEs is supported: the ranked subquery wraps ``_base`` for the
-            # local measures; cross-model / filtered-local aggregates are
-            # deferred to their per-plan ``_cm_*`` CTEs (their slot ids are
-            # excluded from ``base_render_order`` by the caller, so
-            # ``_build_first_last_base_select`` never sees them and emits no
-            # dangling references).
-            return self._build_first_last_base_select(
-                planned_query=planned_query,
-                bundle=bundle,
-                source_model=source_model,
-                source_relation=source_relation,
-                base_render_order=base_render_order,
-                slots_by_id=slots_by_id,
-                from_clause=from_clause,
-                base_joins=base_joins,
-                skip_filter_ids=skip_filter_ids,
-            )
 
         select_columns: list[exp.Expression] = []
         group_by_keys: Dict[str, exp.Expression] = {}
@@ -3115,7 +2718,7 @@ class SQLGenerator:
                     # GROUPs at the query grain. This is the base-pull the
                     # recursion guard exists to reach.
                 # DEV-1450 stage 7b.12: ``column_filter_key`` is now
-                # propagated into the synthetic EnrichedMeasure's
+                # propagated into the synthetic ``AggRenderSpec``'s
                 # ``filter_sql`` field so ``_build_agg`` wraps the
                 # aggregate as ``SUM(CASE WHEN <filter> THEN col END)``.
                 synth = self._build_agg_render_spec_from_planned(
@@ -3148,104 +2751,7 @@ class SQLGenerator:
             )
         return (
             base_select, aliases_by_slot_id, has_aggregation, group_by_keys,
-            False, None,
         )
-
-    def _has_first_last_aggregate(
-        self, *, base_render_order: List[str], slots_by_id: Dict[str, Any],
-    ) -> bool:
-        """True if any LOCAL ``first`` / ``last`` AGGREGATE slot appears in
-        the base render order — directly as an ``AggregateKey`` slot OR
-        as an operand inside a composite (``ArithmeticKey`` /
-        ``ScalarCallKey``) aggregate slot.
-
-        Cross-model first/last (non-empty ``source.path``) is excluded —
-        it is not rendered by the ranked-subquery path (each cross-model
-        aggregate has its own CTE). DEV-1501 (Codex round 4): composite-
-        only first/last (e.g. ``last(created_at) + last(updated_at)``
-        with no direct sibling) must still trigger the ranked-subquery
-        path; without composite-aware detection the composite render
-        would emit ``MAX(CASE WHEN _last_rn = 1 …)`` referencing a
-        column the bare-FROM never projects.
-        """
-        from slayer.core.keys import AggregateKey, Phase
-
-        for sid in base_render_order:
-            slot = slots_by_id.get(sid)
-            if slot is None or slot.phase != Phase.AGGREGATE:
-                continue
-            key = slot.key
-            if (
-                isinstance(key, AggregateKey)
-                and key.agg in ("first", "last")
-                and not getattr(key.source, "path", ())
-            ):
-                return True
-            # Composite slot (no direct AggregateKey): walk for first/
-            # last AggregateKey leaves. The composite render needs the
-            # ranked subquery so each operand's ``_first_rn`` /
-            # ``_last_rn{suffix}`` column exists.
-            if not isinstance(key, AggregateKey) and _iter_first_last_leaves(key):
-                return True
-        return False
-
-    def _resolve_ranking_time_column_from_planned(
-        self,
-        *,
-        base_render_order: List[str],
-        slots_by_id: Dict[str, Any],
-        source_model,
-        source_relation: str,
-        bundle,
-    ) -> Optional[str]:
-        """Resolve the default ORDER-BY time column for first/last
-        ROW_NUMBER ranking (mirrors legacy ``_resolve_last_agg_time``).
-
-        Precedence (matching legacy): the first ``DATE`` / ``TIMESTAMP``
-        regular dimension, then the first time-dimension slot's raw column,
-        then the model's ``default_time_dimension``. Returns the qualified
-        SQL string (e.g. ``"orders.created_at"`` / ``"stores.opened_at"``),
-        or ``None`` when nothing temporal is in scope.
-
-        (The legacy ``main_time_dimension`` short-circuit and the
-        filter-referenced-date fallback are corner cases the spec permits
-        diverging on; they are not reproduced here.)
-        """
-        from slayer.core.keys import ColumnKey, Phase, TimeTruncKey
-
-        for sid in base_render_order:
-            slot = slots_by_id[sid]
-            if slot.phase == Phase.ROW and isinstance(slot.key, ColumnKey):
-                model = source_model
-                for hop in slot.key.path:
-                    nxt = bundle.get_referenced_model(hop)
-                    if nxt is None:
-                        model = None
-                        break
-                    model = nxt
-                if model is None:
-                    continue
-                col_def = next(
-                    (c for c in model.columns if c.name == slot.key.leaf), None,
-                )
-                if col_def is not None and col_def.type in (
-                    DataType.DATE, DataType.TIMESTAMP,
-                ):
-                    return self._joined_or_local_dim_expr(
-                        path=slot.key.path, leaf=slot.key.leaf,
-                        source_model=source_model,
-                        source_relation=source_relation, bundle=bundle,
-                    ).sql(dialect=self.dialect)
-        for sid in base_render_order:
-            slot = slots_by_id[sid]
-            if slot.phase == Phase.ROW and isinstance(slot.key, TimeTruncKey):
-                return self._raw_time_col_expr_for_planned(
-                    time_column=slot.key.column, source_model=source_model,
-                    source_relation=source_relation, bundle=bundle,
-                ).sql(dialect=self.dialect)
-        if source_model.default_time_dimension:
-            return f"{source_relation}.{source_model.default_time_dimension}"
-        return None
 
     @staticmethod
     def _explicit_time_arg_of(key):
@@ -3254,9 +2760,9 @@ class SQLGenerator:
 
         The SINGLE arg-selection contract shared by the three sites that must
         never disagree on WHICH positional arg is the time column (DEV-1710 /
-        Codex F1): the raise-gate in ``_build_first_last_base_select``, the
-        join-discovery pass in ``_resolve_agg_inputs_via_scope``, and the render
-        seam ``_resolve_explicit_time_col``. Returns the FIRST positional arg
+        Codex F1): the ranked-plan builder in ``slayer/engine/ranked_planner.py``,
+        the join-discovery pass in ``_resolve_agg_inputs_via_scope``, and the
+        render seam ``_resolve_explicit_time_col``. Returns the FIRST positional arg
         iff it is a ``ColumnKey`` / ``ColumnSqlKey``; ``None`` for a
         non-first/last agg, empty args, or a first positional arg of any other
         type (first/last never takes a leading non-column positional).
@@ -3360,699 +2866,6 @@ class SQLGenerator:
             return f"{source_relation}.{col_sql}"
         return self._parse(col_sql).sql(dialect=self.dialect)
 
-    def _build_ranked_subquery_from_planned(  # NOSONAR(S3776) — Group 2 already factored the per-spec ROW_NUMBER passes into _build_unfiltered_rn_columns / _build_filtered_rn_columns; what's left is exp.Select / from / joins / where assembly that has to live in one place.
-        self,
-        *,
-        source_relation: str,
-        default_time_col_sql: str,
-        partition_exprs: List[exp.Expression],
-        extra_projections: List[Tuple[str, exp.Expression]],
-        synth_specs: List[AggRenderSpec],
-        from_clause: exp.Expression,
-        base_joins: List,
-        where_clause: Optional[exp.Expression],
-    ) -> Tuple[exp.Expression, dict, dict, dict]:
-        """Build the ROW_NUMBER-ranked subquery that wraps the source for
-        first/last aggregation (planned-native port of
-        ``_build_last_ranked_from``).
-
-        Projects ``source_relation.*`` plus the supplied ``extra_projections``
-        (truncated time dimensions / joined dimensions referenced by the
-        outer SELECT) plus one ``ROW_NUMBER`` column per distinct
-        (effective-time-column, agg) pair. Filtered first/last measures get
-        a dedicated ranking column (non-matching rows pushed to the bottom)
-        and a boolean match flag. WHERE is applied INSIDE so it filters raw
-        rows before ranking. Returns ``(subquery, rn_suffix_map,
-        filtered_rn_map, filtered_match_map)``.
-        """
-        partition_clause = ""
-        if partition_exprs:
-            partition_clause = _SQL_PARTITION_BY + ", ".join(
-                p.sql(dialect=self.dialect) for p in partition_exprs
-            )
-
-        select_exprs: List[exp.Expression] = [
-            exp.Column(this=exp.Star(), table=exp.to_identifier(source_relation)),
-        ]
-        for alias, e in extra_projections:
-            select_exprs.append(e.copy().as_(alias))
-
-        unfiltered_exprs, rn_suffix_map = self._build_unfiltered_rn_columns(
-            synth_specs=synth_specs,
-            default_time_col_sql=default_time_col_sql,
-            partition_clause=partition_clause,
-        )
-        select_exprs.extend(unfiltered_exprs)
-
-        filtered_exprs, filtered_rn_map, filtered_match_map = (
-            self._build_filtered_rn_columns(
-                synth_specs=synth_specs,
-                default_time_col_sql=default_time_col_sql,
-                partition_clause=partition_clause,
-            )
-        )
-        select_exprs.extend(filtered_exprs)
-
-        inner = exp.Select()
-        for e in select_exprs:
-            inner = inner.select(e)
-        inner = inner.from_(from_clause)
-        for join_expr, on_expr, join_type in base_joins:
-            inner = inner.join(join_expr, on=on_expr, join_type=join_type)
-        if where_clause is not None:
-            inner = inner.where(where_clause)
-        subquery = exp.Subquery(
-            this=inner, alias=exp.to_identifier(source_relation),
-        )
-        return subquery, rn_suffix_map, filtered_rn_map, filtered_match_map
-
-    def _build_unfiltered_rn_columns(
-        self,
-        *,
-        synth_specs: List[AggRenderSpec],
-        default_time_col_sql: str,
-        partition_clause: str,
-    ) -> Tuple[List[exp.Expression], Dict[str, str]]:
-        """One ``ROW_NUMBER`` projection per distinct effective time column
-        for the unfiltered ``first`` / ``last`` specs.
-
-        Each unique effective time column gets a stable suffix in render
-        order (first sorted gets ``""``, then ``"_2"``, ...); the same
-        time column shared by both ``first`` and ``last`` produces two
-        projections (`_first_rn{suffix}` ASC, `_last_rn{suffix}` DESC).
-        Returns ``(rn_select_exprs, rn_suffix_map)``.
-        """
-        time_col_agg_types: Dict[str, set] = {}
-        for m in synth_specs:
-            if m.aggregation in ("first", "last") and not m.filter_sql:
-                eff = m.time_column or default_time_col_sql
-                time_col_agg_types.setdefault(eff, set()).add(m.aggregation)
-        sorted_tcs = sorted(time_col_agg_types)
-        rn_suffix_map: Dict[str, str] = {
-            tc: ("" if i == 0 else f"_{i + 1}")
-            for i, tc in enumerate(sorted_tcs)
-        }
-        rn_exprs: List[exp.Expression] = []
-        for tc in sorted_tcs:
-            suffix = rn_suffix_map[tc]
-            if "last" in time_col_agg_types[tc]:
-                rn_exprs.append(
-                    self._parse(
-                        f"ROW_NUMBER() OVER ({partition_clause} "
-                        f"ORDER BY {tc} DESC)"
-                    ).as_(f"_last_rn{suffix}")
-                )
-            if "first" in time_col_agg_types[tc]:
-                rn_exprs.append(
-                    self._parse(
-                        f"ROW_NUMBER() OVER ({partition_clause} "
-                        f"ORDER BY {tc} ASC)"
-                    ).as_(f"_first_rn{suffix}")
-                )
-        return rn_exprs, rn_suffix_map
-
-    def _build_filtered_rn_columns(
-        self,
-        *,
-        synth_specs: List[AggRenderSpec],
-        default_time_col_sql: str,
-        partition_clause: str,
-    ) -> Tuple[List[exp.Expression], Dict[str, str], Dict[str, str]]:
-        """One dedicated ``ROW_NUMBER`` + match-flag projection per distinct
-        ``(filter, time, agg)`` triple for the filtered ``first`` / ``last``
-        specs.
-
-        Filtered first/last needs to push non-matching rows past the
-        winners; emits ``ROW_NUMBER() OVER (... ORDER BY CASE WHEN
-        <filter> THEN 0 ELSE 1 END, <time> <dir>)`` alongside a boolean
-        match-flag column so the outer SELECT can ``MAX(CASE WHEN _rn = 1
-        AND _match = 1 THEN col END)``. Triples that repeat across specs
-        share a single (rn, match) pair; per-spec ``alias`` keys map onto
-        those.
-        """
-        filtered_rn_map: Dict[str, str] = {}
-        filtered_match_map: Dict[str, str] = {}
-        seen_filters: Dict[Tuple[str, str, str], Tuple[str, str]] = {}
-        rn_exprs: List[exp.Expression] = []
-        filter_idx = 0
-        for m in synth_specs:
-            if not (m.aggregation in ("first", "last") and m.filter_sql):
-                continue
-            eff = m.time_column or default_time_col_sql
-            cache_key = (m.filter_sql, eff, m.aggregation)
-            cached = seen_filters.get(cache_key)
-            if cached is not None:
-                rn_alias, match_alias = cached
-            else:
-                kind = "first" if m.aggregation == "first" else "last"
-                rn_alias = f"_{kind}_rn_f{filter_idx}"
-                match_alias = f"_match_f{filter_idx}"
-                order_dir = "ASC" if m.aggregation == "first" else "DESC"
-                rn_exprs.append(
-                    self._parse(
-                        f"ROW_NUMBER() OVER ({partition_clause} ORDER BY "
-                        f"CASE WHEN {m.filter_sql} THEN 0 ELSE 1 END, "
-                        f"{eff} {order_dir})"
-                    ).as_(rn_alias)
-                )
-                rn_exprs.append(
-                    self._parse(
-                        f"CASE WHEN {m.filter_sql} THEN 1 ELSE 0 END"
-                    ).as_(match_alias)
-                )
-                seen_filters[cache_key] = (rn_alias, match_alias)
-                filter_idx += 1
-            filtered_rn_map[m.alias] = rn_alias
-            filtered_match_map[m.alias] = match_alias
-        return rn_exprs, filtered_rn_map, filtered_match_map
-
-    # =====================================================================
-    # SUPERSEDED by ``RankedAggregatePlan`` (DEV-1748 B9) — production-
-    # UNREFERENCED, deleted in PR 6 (P-J: superseded code stops being reachable
-    # in the PR that replaces it, and is removed in the one that closes the
-    # series, so neither change has to be reviewed alongside the other).
-    #
-    # Every first/last aggregate is now excluded from ``base_render_order`` by
-    # ``isolated_slot_ids``, so ``_has_first_last_aggregate`` cannot return True
-    # and nothing in this block is entered. A runtime probe over the whole unit
-    # suite confirms it: the only callers left are the unit tests that pin these
-    # helpers directly.
-    #
-    # WHOLLY UNREACHABLE — PR 6 deletes outright:
-    #   _build_first_last_base_select, _has_first_last_aggregate,
-    #   _build_ranked_subquery_from_planned, _build_unfiltered_rn_columns,
-    #   _build_filtered_rn_columns, _iter_first_last_leaves,
-    #   _resolve_ranking_time_column_from_planned, FirstLastRenderState (+ its
-    #   rn_suffix_map / filtered_rn_map / filtered_match_map / agg_synth_alias /
-    #   value_alias_by_sql fields), ``_build_agg``'s first/last branch and its
-    #   rn_suffix_map / filtered_* parameters, and the rn threading through
-    #   ``_render_aggregate_composite_expr``.
-    #
-    # STILL CALLED, but only ever on the no-op path — PR 6 removes the dead
-    # branch rather than the function:
-    #   _resolve_explicit_time_col / _explicit_time_arg_of, reached from
-    #   ``_build_agg_render_spec_from_planned`` for EVERY aggregate. No
-    #   first/last reaches that builder any more (the ranked renderer resolves
-    #   its value itself, precisely so the plan owns the ranking column), so
-    #   both return ``None`` on every production call — measured: 2876 calls
-    #   across the unit suite, zero non-``None`` results outside the four unit
-    #   tests that invoke the builder directly. The same holds for
-    #   ``_resolve_agg_inputs_via_scope``'s ``_resolve_first_last_time_arg``
-    #   sub-pass, which walks a ``base_render_order`` that no longer contains a
-    #   ranked slot.
-    # =====================================================================
-
-    def _build_first_last_base_select(  # NOSONAR(S3776) — single conceptual unit: dimension/td/derived-dim classification pass + agg-spec synth + ranked-subquery wrap + outer SELECT/GROUP BY assembly. Splitting forces shared mutable state (partition_exprs / extra_projections / outer_ref_by_sid / synth_by_sid) across helpers without simplifying anything.
-        self,
-        *,
-        planned_query,
-        bundle,
-        source_model,
-        source_relation: str,
-        base_render_order: List[str],
-        slots_by_id: Dict[str, Any],
-        from_clause: exp.Expression,
-        base_joins: List,
-        skip_filter_ids: Optional[Set[str]] = None,
-    ):
-        """Render the base SELECT for a query containing LOCAL first/last
-        AGGREGATES (planned-native port of legacy ``_generate_base``'s
-        ``has_first_or_last`` branch).
-
-        The FROM (+ joins + WHERE) is wrapped in a ROW_NUMBER-ranked
-        subquery; dimensions / time-dimensions are materialised inside it
-        (``source_relation.*`` plus ``_td_*`` / ``_dim_*`` projections) and
-        referenced bare by the outer SELECT, which GROUPs BY them and emits
-        each first/last aggregate as ``MAX(CASE WHEN _rn = 1 THEN col END)``.
-        WHERE goes inside the subquery (raw-row filtering before ranking), so
-        ``where_consumed=True`` is returned to suppress the outer WHERE.
-
-        Returns ``(base_select, aliases_by_slot_id, has_aggregation,
-        group_by_keys, where_consumed)``.
-        """
-        from slayer.core.enums import TimeGranularity
-        from slayer.core.keys import (
-            AggregateKey,
-            ColumnKey,
-            ColumnSqlKey,
-            Phase,
-            TimeTruncKey,
-        )
-
-        default_time_col_sql = self._resolve_ranking_time_column_from_planned(
-            base_render_order=base_render_order,
-            slots_by_id=slots_by_id,
-            source_model=source_model,
-            source_relation=source_relation,
-            bundle=bundle,
-        )
-        # DEV-1476 bug (b): the raise must gate on whether ANY first/last
-        # aggregate slot lacks an explicit positional time arg. When every
-        # first/last spec carries its own ``key.args`` time column, no
-        # default is needed and the helper should not raise.
-        if default_time_col_sql is None:
-            needs_default = False
-            # DEV-1501 (Codex round 5): walk both top-level AggregateKey
-            # slots AND first/last leaves inside composite slots
-            # (ArithmeticKey / ScalarCallKey). A composite like
-            # ``revenue:last + 1`` with no explicit time arg and no
-            # default time dim would otherwise bypass the validation,
-            # then ``_build_unfiltered_rn_columns`` would emit
-            # ``ORDER BY None``.
-            for sid in base_render_order:
-                if needs_default:
-                    break
-                slot = slots_by_id[sid]
-                if slot.phase != Phase.AGGREGATE:
-                    continue
-                key = slot.key
-                fl_keys: list = []
-                if isinstance(key, AggregateKey):
-                    if key.agg in ("first", "last"):
-                        fl_keys = [key]
-                else:
-                    fl_keys = _iter_first_last_leaves(key)
-                for fl in fl_keys:
-                    # Whether this leaf carries an explicit ranking-time arg is
-                    # the shared ``_explicit_time_arg_of`` contract — the SAME
-                    # selection the render seam uses, so the gate and the render
-                    # can never disagree (DEV-1710 / Codex F1).
-                    if self._explicit_time_arg_of(fl) is None:
-                        needs_default = True
-                        break
-            if needs_default:
-                raise ValueError(
-                    "first/last aggregation requires a ranking time column "
-                    "(a time_dimension, a DATE/TIMESTAMP dimension, or the "
-                    "model's default_time_dimension); none is resolvable for "
-                    f"model {source_model.name!r}."
-                )
-
-        # Pass 1: full aliases (in render order, for C13 cycling), ROW-slot
-        # classification (partition / subquery projection / outer ref), and
-        # synth measures for aggregate slots.
-        #
-        # DEV-1501: C13 multi-public-alias support — a slot can appear in
-        # ``base_render_order`` multiple times (one per declared public
-        # name on a shared key). Track aliases as a per-sid list so pass 2
-        # can project the same aggregate expression once per declared
-        # alias (instead of overwriting and emitting the same alias N
-        # times). The synth spec is computed once per sid; the aggregate
-        # value is identical across C13 visits so a single computation
-        # suffices.
-        alias_index: Dict[str, int] = {}
-        full_aliases_by_sid: Dict[str, List[str]] = {}
-        partition_exprs: List[exp.Expression] = []
-        extra_projections: List[Tuple[str, exp.Expression]] = []
-        outer_ref_by_sid: Dict[str, exp.Expression] = {}
-        synth_by_sid: Dict[str, "AggRenderSpec"] = {}
-        td_counter = 0
-        dim_counter = 0
-
-        for sid in base_render_order:
-            slot = slots_by_id[sid]
-            full_alias = self._full_alias_for_slot(
-                slot=slot, source_relation=source_relation,
-                alias_index=alias_index,
-            )
-            full_aliases_by_sid.setdefault(sid, []).append(full_alias)
-            if slot.phase == Phase.ROW:
-                key = slot.key
-                if isinstance(key, TimeTruncKey):
-                    raw = self._raw_time_col_expr_for_planned(
-                        time_column=key.column,
-                        source_model=source_model,
-                        source_relation=source_relation, bundle=bundle,
-                    )
-                    trunc = self._build_date_trunc(
-                        col_expr=raw,
-                        granularity=TimeGranularity(key.granularity),
-                    )
-                    alias = f"_td_{td_counter}"
-                    td_counter += 1
-                    extra_projections.append((alias, trunc))
-                    partition_exprs.append(trunc.copy())
-                    outer_ref_by_sid[sid] = exp.Column(
-                        this=exp.to_identifier(alias),
-                    )
-                elif isinstance(key, ColumnKey) and key.path:
-                    joined = self._joined_or_local_dim_expr(
-                        path=key.path, leaf=key.leaf,
-                        source_model=source_model,
-                        source_relation=source_relation, bundle=bundle,
-                    )
-                    alias = f"_dim_{dim_counter}"
-                    dim_counter += 1
-                    extra_projections.append((alias, joined))
-                    partition_exprs.append(joined.copy())
-                    outer_ref_by_sid[sid] = exp.Column(
-                        this=exp.to_identifier(alias),
-                    )
-                elif isinstance(key, ColumnKey):
-                    # Local dimension — available via ``source_relation.*``.
-                    # ``_to_ident`` (not bare ``to_identifier``) so a mixed-case
-                    # physical column is double-quoted: this expression is
-                    # emitted in the ranked subquery's PARTITION BY *and* in the
-                    # outer SELECT / GROUP BY, and an unquoted ``events.RegionCode``
-                    # out there folds to lowercase on Postgres -> UndefinedColumn
-                    # (DEV-1645 Flavor B).
-                    local = exp.Column(
-                        this=self._to_ident(key.leaf),
-                        table=exp.to_identifier(source_relation),
-                    )
-                    partition_exprs.append(local.copy())
-                    outer_ref_by_sid[sid] = local
-                elif isinstance(key, ColumnSqlKey):
-                    derived = self._dim_column_expr_from_planned(
-                        source_model=source_model,
-                        source_relation=source_relation,
-                        leaf=key.column_name,
-                    )
-                    alias = f"_dim_{dim_counter}"
-                    dim_counter += 1
-                    extra_projections.append((alias, derived))
-                    partition_exprs.append(derived.copy())
-                    outer_ref_by_sid[sid] = exp.Column(
-                        this=exp.to_identifier(alias),
-                    )
-                else:
-                    raise NotImplementedError(
-                        f"DEV-1450: first/last with row key "
-                        f"{type(key).__name__} not supported."
-                    )
-            elif slot.phase == Phase.AGGREGATE and isinstance(
-                slot.key, AggregateKey,
-            ):
-                # Single aggregate (incl. first/last) — synth + ``_build_agg``.
-                # Composite aggregates (ArithmeticKey / ScalarCallKey of
-                # aggregates) have no ``key.source``; they render in pass 2
-                # via ``_render_aggregate_composite_expr`` (reading the
-                # subquery's ``source_relation.*``), matching the normal path.
-                # DEV-1501: a C13 sid appears multiple times in
-                # ``base_render_order``; the aggregate value is identical
-                # across visits so synthesise once per sid, keyed by the
-                # first alias.
-                #
-                # DEV-1709 (closes the DEV-1527/DEV-1476 first/last kwarg
-                # deferral): column-ref kwargs are resolved here so the
-                # spec embeds the expanded, join-anchored expression; a
-                # CROSSING kwarg expression is then Law-2-materialised in
-                # the pass below (the outer aggregate body may only
-                # reference the ranked subquery's projections).
-                if sid not in synth_by_sid:
-                    synth_by_sid[sid] = (
-                        self._build_agg_render_spec_from_planned(
-                            slot=slot, key=slot.key, source_model=source_model,
-                            source_relation=source_relation,
-                            full_alias=full_alias,
-                            bundle=bundle,
-                            resolved_agg_kwargs=self._resolve_agg_kwargs_for_key(
-                                key=slot.key, source_model=source_model,
-                                source_relation=source_relation, bundle=bundle,
-                            ),
-                        )
-                    )
-
-        # DEV-1501 (Codex round 3): composite aggregate slots (ArithmeticKey
-        # / ScalarCallKey of aggregates) carry first/last AggregateKey
-        # operands that are not separately slotted but DO need their time
-        # columns to contribute ``_first_rn`` / ``_last_rn{suffix}`` columns
-        # in the ranked subquery — otherwise the composite render's
-        # ``MAX(CASE WHEN _last_rn{suffix} = 1 ...)`` references a column
-        # the subquery never projects. Walk every composite-aggregate slot
-        # in base_render_order for first/last AggregateKey leaves and
-        # synthesise specs for them (NOT projected as columns — they are
-        # inlined inside the composite render). Keyed by the AggregateKey
-        # itself so two composites sharing the same operand dedupe.
-        composite_synth_by_key: Dict[Any, "AggRenderSpec"] = {}
-        composite_resolved_kwargs: Dict[Any, Dict[str, ResolvedAggKwarg]] = {}
-        for sid in base_render_order:
-            slot = slots_by_id[sid]
-            if slot.phase != Phase.AGGREGATE:
-                continue
-            if isinstance(slot.key, AggregateKey):
-                continue  # handled by synth_by_sid above
-            for agg_leaf in _iter_first_last_leaves(slot.key):
-                if agg_leaf in composite_synth_by_key:
-                    continue
-                composite_synth_by_key[agg_leaf] = (
-                    self._build_agg_render_spec_from_planned(
-                        slot=slot,
-                        key=agg_leaf,
-                        source_model=source_model,
-                        source_relation=source_relation,
-                        # Per-leaf alias must be distinct so the filtered
-                        # rn-map lookup (keyed by alias) hits the right
-                        # column when multiple composite operands share
-                        # a Column.filter.
-                        full_alias=(
-                            f"{source_relation}._composite_op_"
-                            f"{len(composite_synth_by_key)}"
-                        ),
-                        bundle=bundle,
-                    )
-                )
-                leaf_kw = self._resolve_agg_kwargs_for_key(
-                    key=agg_leaf, source_model=source_model,
-                    source_relation=source_relation, bundle=bundle,
-                )
-                if leaf_kw:
-                    composite_resolved_kwargs[agg_leaf] = leaf_kw
-
-        # DEV-1709 / DEV-1531 — Law 2 in the ranked subquery. The subquery
-        # re-exports only ``source_relation.*`` + rank / ``_td`` / ``_dim``
-        # columns, so ANY crossing expression the OUTER SELECT consumes —
-        # an aggregate SOURCE sql or a column-ref KWARG value — must be
-        # materialised as a ``_val_<n>`` projection inside the subquery and
-        # the outer consumer rewritten to the bare alias. Applies to
-        # first/last AND regular aggregates alike (DEV-1702-B1). After the
-        # widened Law-3 trigger, crossing inputs reach this path only
-        # inside a host-rooted isolation CTE's sub-render (where inline
-        # joins are legal but the ranked-scope boundary still applies) or
-        # under ``disable_host_rooted_isolation``.
-        #
-        # The materialised projection is the RESOLVED value — qualified,
-        # with the ``Column.type`` inner CAST for non-bare expressions
-        # (``_resolve_value_sql``'s rule) — so the outer aggregate consumes
-        # exactly the value the inline path would have aggregated
-        # (``SUM(CAST(x * 2 AS INT))`` semantics preserved). Dedupe is by
-        # that resolved text: same sql + different type differ by the CAST
-        # and never collapse onto one ``_val``; bare refs are type-agnostic
-        # (no CAST) and sharing IS correct.
-        allocator = self._gen_allocator or self._new_allocator()
-        self._reserve_model_column_names(allocator, source_model)
-        value_alias_by_sql: Dict[str, str] = {}
-
-        def _materialize_if_crossing(
-            spec: "AggRenderSpec",
-        ) -> Optional[str]:
-            if not spec.sql:
-                return None
-            value_expr = self._resolve_sql(
-                sql=spec.sql, name=spec.name,
-                model_name=spec.model_name, type=spec.column_type,
-            )
-            resolved_key = value_expr.sql(dialect=self.dialect)
-            if resolved_key in value_alias_by_sql:
-                return value_alias_by_sql[resolved_key]
-            if not self._joined_paths_in_sql(
-                sql_expr=value_expr, source_relation=source_relation,
-                source_model=source_model, bundle=bundle,
-            ):
-                return None
-            val_alias = allocator.allocate_val()
-            extra_projections.append((val_alias, value_expr))
-            value_alias_by_sql[resolved_key] = val_alias
-            return val_alias
-
-        def _materialize_spec_kwargs(
-            kw: "Optional[Dict[str, ResolvedAggKwarg]]",
-        ) -> "Optional[Dict[str, ResolvedAggKwarg]]":
-            """Rewrite crossing ``kind="expr"`` kwarg values to their
-            materialised ``_val`` aliases; local values pass through."""
-            if not kw:
-                return kw
-            new_kw: Dict[str, ResolvedAggKwarg] = {}
-            for name, rk in kw.items():
-                if rk.kind == "expr" and self._joined_paths_in_sql(
-                    sql_expr=rk.value, source_relation=source_relation,
-                    source_model=source_model, bundle=bundle,
-                ):
-                    kw_sql = rk.value.sql(dialect=self.dialect)
-                    val_alias = value_alias_by_sql.get(kw_sql)
-                    if val_alias is None:
-                        val_alias = allocator.allocate_val()
-                        extra_projections.append((val_alias, rk.value))
-                        value_alias_by_sql[kw_sql] = val_alias
-                    new_kw[name] = ResolvedAggKwarg(
-                        kind="expr",
-                        value=exp.column(val_alias, table=source_relation),
-                    )
-                else:
-                    new_kw[name] = rk
-            return new_kw
-
-        outer_synth_by_sid: Dict[str, "AggRenderSpec"] = {}
-        for sid, spec in synth_by_sid.items():
-            updates: Dict[str, Any] = {}
-            src_alias = _materialize_if_crossing(spec)
-            if src_alias is not None:
-                updates["sql"] = src_alias
-            new_kw = _materialize_spec_kwargs(spec.agg_kwargs)
-            if new_kw is not spec.agg_kwargs:
-                updates["agg_kwargs"] = new_kw
-            outer_synth_by_sid[sid] = (
-                spec.model_copy(update=updates) if updates else spec
-            )
-        for leaf_key, spec in composite_synth_by_key.items():
-            # Composite leaves re-synthesise inside the pass-2 composite
-            # render; registering their crossing sql here lets that render
-            # swap in the alias via ``value_alias_by_sql``.
-            _materialize_if_crossing(spec)
-            leaf_kw = composite_resolved_kwargs.get(leaf_key)
-            new_leaf_kw = _materialize_spec_kwargs(leaf_kw)
-            if new_leaf_kw is not leaf_kw and new_leaf_kw is not None:
-                composite_resolved_kwargs[leaf_key] = new_leaf_kw
-
-        # WHERE goes inside the ranked subquery (raw-row filtering before
-        # ranking). HAVING is recomputed and applied by the caller.
-        # ``skip_filter_ids`` carries the cross-model-routed filter ids so
-        # filters applied inside a per-plan ``_cm_*`` CTE don't double-apply
-        # inside the host ranked subquery (Codex round 5).
-        where_clause, _having = self._build_where_having_from_planned(
-            planned_query=planned_query,
-            source_relation=source_relation,
-            source_model=source_model,
-            bundle=bundle,
-            skip_filter_ids=skip_filter_ids,
-        )
-
-        (
-            ranked_from,
-            rn_suffix_map,
-            filtered_rn_map,
-            filtered_match_map,
-        ) = self._build_ranked_subquery_from_planned(
-            source_relation=source_relation,
-            default_time_col_sql=default_time_col_sql,
-            partition_exprs=partition_exprs,
-            extra_projections=extra_projections,
-            # Project AggregateKey synth_specs (single-key slot
-            # aggregates) PLUS composite-operand first/last synth specs
-            # so their distinct time columns each contribute an rn
-            # column. The composite operands aren't projected as base
-            # SELECT columns — they're inlined inside the composite
-            # render in pass 2 — but their time columns must still
-            # participate in the ranked-subquery rn-column set.
-            synth_specs=(
-                list(synth_by_sid.values())
-                + list(composite_synth_by_key.values())
-            ),
-            from_clause=from_clause,
-            base_joins=base_joins,
-            where_clause=where_clause,
-        )
-
-        # Pass 2: outer SELECT columns + GROUP BY, in render order.
-        # DEV-1501: cycle through each sid's ``full_aliases_by_sid`` list
-        # so a C13 slot (one key, N declared names) projects once per
-        # alias rather than re-emitting the same alias N times.
-        select_columns: List[exp.Expression] = []
-        group_by_keys: Dict[str, exp.Expression] = {}
-        aliases_by_slot_id: Dict[str, List[str]] = {}
-        has_aggregation = False
-        visit_idx: Dict[str, int] = {}
-
-        for sid in base_render_order:
-            slot = slots_by_id[sid]
-            aliases_for_sid = full_aliases_by_sid[sid]
-            idx = visit_idx.get(sid, 0)
-            full_alias = (
-                aliases_for_sid[idx]
-                if idx < len(aliases_for_sid)
-                else aliases_for_sid[-1]
-            )
-            visit_idx[sid] = idx + 1
-            if slot.phase == Phase.ROW:
-                ref = outer_ref_by_sid[sid]
-                select_columns.append(ref.copy().as_(full_alias))
-                group_by_keys[sid] = ref.copy()
-                aliases_by_slot_id.setdefault(sid, []).append(full_alias)
-            elif slot.phase == Phase.AGGREGATE:
-                if sid in synth_by_sid:
-                    # DEV-1709: the OUTER aggregate consumes the Law-2
-                    # rewritten spec (crossing source / kwarg expressions
-                    # swapped for their ``_val`` aliases); the ranked
-                    # subquery consumed the originals.
-                    agg_expr, is_agg = self._build_agg(
-                        outer_synth_by_sid[sid],
-                        rn_suffix_map=rn_suffix_map,
-                        default_time_col=default_time_col_sql,
-                        filtered_rn_map=filtered_rn_map,
-                        filtered_match_map=filtered_match_map,
-                    )
-                else:
-                    # Composite aggregate (no single ``AggregateKey``).
-                    # DEV-1501 (Codex round 3 + 6): thread rn state so a
-                    # composite expression containing first/last operands
-                    # binds each operand to its own ``_first_rn`` /
-                    # ``_last_rn{suffix}`` column instead of bare
-                    # ``_last_rn``; AND pass per-leaf alias map so a
-                    # FILTERED first/last operand's synth matches the
-                    # alias the ranked subquery used to key
-                    # ``filtered_rn_map`` / ``filtered_match_map``
-                    # (otherwise the lookup misses and the operand falls
-                    # back to bare ``_last_rn`` + raw filter_sql).
-                    composite_alias_by_key = {
-                        agg_key: spec.alias
-                        for agg_key, spec in composite_synth_by_key.items()
-                    }
-                    # DEV-1709 (closes the DEV-1527/DEV-1476 first/last kwarg
-                    # deferral): thread the per-leaf resolved kwargs (crossing
-                    # values already Law-2-rewritten to their ``_val`` aliases)
-                    # and the source-value alias map so composite leaves bind
-                    # to the ranked subquery's projections instead of leaking
-                    # crossing refs into the outer scope.
-                    agg_expr, is_agg = self._render_aggregate_composite_expr(
-                        key=slot.key, slot=slot, source_model=source_model,
-                        source_relation=source_relation,
-                        bundle=bundle,
-                        rn_suffix_map=rn_suffix_map,
-                        default_time_col=default_time_col_sql,
-                        filtered_rn_map=filtered_rn_map,
-                        filtered_match_map=filtered_match_map,
-                        composite_alias_by_key=composite_alias_by_key,
-                        resolved_agg_kwargs=composite_resolved_kwargs,
-                        value_alias_by_sql=value_alias_by_sql,
-                    )
-                if is_agg:
-                    agg_expr = _wrap_cast_for_type(agg_expr, slot.type)
-                    has_aggregation = True
-                select_columns.append(agg_expr.copy().as_(full_alias))
-                aliases_by_slot_id.setdefault(sid, []).append(full_alias)
-
-        base_select = exp.Select()
-        for col in select_columns:
-            base_select = base_select.select(col)
-        base_select = base_select.from_(ranked_from)
-        # DEV-1501: surface the per-time-column rn maps + default time
-        # column so the outer HAVING render can resolve hidden first/last
-        # aggregate references to the same ``_first_rn`` / ``_last_rn
-        # {suffix}`` columns the base SELECT projects.
-        first_last_state = FirstLastRenderState(
-            rn_suffix_map=dict(rn_suffix_map),
-            default_time_col_sql=default_time_col_sql,
-            filtered_rn_map=dict(filtered_rn_map),
-            filtered_match_map=dict(filtered_match_map),
-            # DEV-1709: HAVING re-synths of a crossing-source aggregate bind
-            # to the materialised alias instead of the raw crossing ref.
-            value_alias_by_sql=dict(value_alias_by_sql),
-        )
-        return (
-            base_select, aliases_by_slot_id, has_aggregation,
-            group_by_keys, True, first_last_state,
-        )
-
     def _composite_agg_builder(
         self, *, slot, source_model, source_relation: str, bundle,
         resolved_agg_kwargs,
@@ -4082,175 +2895,6 @@ class SQLGenerator:
             return agg_expr
 
         return build
-
-    def _render_aggregate_composite_expr(  # NOSONAR(S3776) — sequential isinstance dispatch over ValueKey union (AggregateKey / ArithmeticKey / ScalarCallKey / LiteralKey) with rn-state + composite-alias-by-key threading. Each branch carries the per-type recursion contract; extracting helpers would scatter the rn-state forwarding chain.
-        self,
-        *,
-        key,
-        slot,
-        source_model,
-        source_relation: str,
-        bundle=None,
-        rn_suffix_map: Optional[Dict[str, str]] = None,
-        default_time_col: Optional[str] = None,
-        filtered_rn_map: Optional[Dict[str, str]] = None,
-        filtered_match_map: Optional[Dict[str, str]] = None,
-        composite_alias_by_key: Optional[Dict[Any, str]] = None,
-        resolved_agg_kwargs: "Optional[Dict[Any, Dict[str, ResolvedAggKwarg]]]" = None,
-        value_alias_by_sql: Optional[Dict[str, str]] = None,
-    ) -> "tuple[exp.Expression, bool]":
-        """Render an AGGREGATE-phase composite key (``ArithmeticKey`` /
-        ``ScalarCallKey`` of aggregates, e.g. ``expensenet:avg +
-        benchmarkexp:avg``) to one inline sqlglot expr.
-
-        Operand ``AggregateKey``s render inline via the same synth +
-        ``_build_agg`` path the single-aggregate branch uses (no per-operand
-        cast — the caller casts the composite once). Returns ``(expr,
-        contains_aggregate)``. Cross-model operand aggregates (non-empty
-        ``source.path``) are not yet handled here — they need CTE routing.
-
-        DEV-1527 (composite local half): ``resolved_agg_kwargs`` is the host
-        scope's per-``AggregateKey`` column-ref kwarg map (``weight=<derived>`` /
-        ``other=<derived>``); each operand leaf looks up its own entry so a
-        crossing derived kwarg embeds its expanded, join-anchored expression
-        instead of collapsing to a bare (non-existent) name. Threaded only from
-        the non-first/last base path; the first/last ranked-subquery caller passes
-        ``None`` (that path's derived-kwarg support is deferred — see DEV-1476).
-
-        DEV-1501 (Codex round 3): when the host base is built via the
-        first/last ranked-subquery path, the caller threads the rn maps
-        here so a composite expression like ``last(amount, created_at) +
-        last(amount, updated_at)`` renders each operand with its OWN
-        ``_last_rn{suffix}`` column instead of collapsing to bare
-        ``_last_rn``.
-        """
-        from decimal import Decimal
-
-        from slayer.core.keys import (
-            AggregateKey,
-            ArithmeticKey,
-            LiteralKey,
-            ScalarCallKey,
-        )
-
-        if isinstance(key, AggregateKey):
-            if getattr(key.source, "path", ()):
-                raise NotImplementedError(
-                    "DEV-1450: cross-model aggregate operand inside an "
-                    "AGGREGATE-phase composite is not yet supported; factor it "
-                    "into a multi-stage source_queries model."
-                )
-            # DEV-1501 (Codex round 6): for FILTERED composite operands,
-            # the ranked subquery's ``filtered_rn_map`` /
-            # ``filtered_match_map`` were keyed by the per-leaf alias
-            # ``_build_first_last_base_select`` minted at synth time
-            # (e.g. ``orders._composite_op_0``). Rebuilding the synth
-            # with the fixed placeholder ``__op__`` would miss those
-            # lookups and fall back to bare ``_last_rn`` + raw
-            # ``filter_sql``. Use the per-leaf alias when supplied.
-            op_alias = (
-                composite_alias_by_key.get(key)
-                if composite_alias_by_key is not None
-                else None
-            ) or "__op__"
-            synth = self._build_agg_render_spec_from_planned(
-                slot=slot, key=key, source_model=source_model,
-                source_relation=source_relation, full_alias=op_alias,
-                bundle=bundle,
-                resolved_agg_kwargs=(resolved_agg_kwargs or {}).get(key),
-            )
-            # DEV-1709 Law 2: inside the first/last ranked path, a crossing
-            # composite-leaf SOURCE was materialised as a ``_val_<n>``
-            # projection in the ranked subquery — rebind the re-synthesised
-            # leaf to that alias (keyed by the RESOLVED value text, so
-            # same-sql-different-type leaves bind to their own casts) so
-            # the outer composite never references the crossing expression
-            # out of scope.
-            if value_alias_by_sql and synth.sql is not None:
-                resolved_key = self._resolve_value_sql(synth)
-                if resolved_key in value_alias_by_sql:
-                    synth = synth.model_copy(
-                        update={"sql": value_alias_by_sql[resolved_key]},
-                    )
-            agg_expr, is_agg = self._build_agg(
-                synth,
-                rn_suffix_map=rn_suffix_map,
-                default_time_col=default_time_col,
-                filtered_rn_map=filtered_rn_map,
-                filtered_match_map=filtered_match_map,
-            )
-            return agg_expr, is_agg
-        if isinstance(key, ArithmeticKey):
-            operands = []
-            any_agg = False
-            for o in key.operands:
-                e, a = self._render_aggregate_composite_expr(
-                    key=o, slot=slot, source_model=source_model,
-                    source_relation=source_relation,
-                    bundle=bundle,
-                    rn_suffix_map=rn_suffix_map,
-                    default_time_col=default_time_col,
-                    filtered_rn_map=filtered_rn_map,
-                    filtered_match_map=filtered_match_map,
-                    composite_alias_by_key=composite_alias_by_key,
-                    resolved_agg_kwargs=resolved_agg_kwargs,
-                    value_alias_by_sql=value_alias_by_sql,
-                )
-                operands.append(e)
-                any_agg = any_agg or a
-            return self._compose_arithmetic_op(op=key.op, operands=operands), any_agg
-        if isinstance(key, ScalarCallKey):
-            args = []
-            any_agg = False
-            for a in key.args:
-                # DEV-1733: dispatch on the KEY BASE, not a hand-listed subset.
-                # The trailing ``else`` below stringifies whatever it does not
-                # recognise, so a row-column argument
-                # (``coalesce(revenue:sum, quantity)``) used to render as the
-                # SQL string literal ``'path=() leaf=''quantity'''`` — valid
-                # SQL, silently wrong results. Routing every ValueKey through
-                # the recursive renderer makes an unsupported operand hit the
-                # same terminal NotImplementedError the arithmetic path raises,
-                # and leaves the ``else`` for genuine Python literals only.
-                if isinstance(a, _FrozenKey):
-                    e, ag = self._render_aggregate_composite_expr(
-                        key=a, slot=slot, source_model=source_model,
-                        source_relation=source_relation,
-                        bundle=bundle,
-                        rn_suffix_map=rn_suffix_map,
-                        default_time_col=default_time_col,
-                        filtered_rn_map=filtered_rn_map,
-                        filtered_match_map=filtered_match_map,
-                        composite_alias_by_key=composite_alias_by_key,
-                        resolved_agg_kwargs=resolved_agg_kwargs,
-                        value_alias_by_sql=value_alias_by_sql,
-                    )
-                    args.append(e)
-                    any_agg = any_agg or ag
-                elif a is None:
-                    args.append(exp.Null())
-                elif isinstance(a, bool):
-                    args.append(exp.true() if a else exp.false())
-                elif isinstance(a, (int, float, Decimal)):
-                    args.append(exp.Literal.number(str(a)))
-                else:
-                    args.append(exp.Literal.string(str(a)))
-            return render_scalar_call(
-                name=key.name, args=args, dialect=self._dialect,
-            ), any_agg
-        if isinstance(key, LiteralKey):
-            v = key.value
-            if v is None:
-                return exp.Null(), False
-            if isinstance(v, bool):
-                return (exp.true() if v else exp.false()), False
-            if isinstance(v, (int, float, Decimal)):
-                return exp.Literal.number(str(v)), False
-            return exp.Literal.string(str(v)), False
-        raise NotImplementedError(
-            f"DEV-1450: AGGREGATE-phase composite operand "
-            f"{type(key).__name__} not supported."
-        )
 
     def _render_window_measure_cte_from_planned(  # NOSONAR(S3776) — one cohesive host-rooted range-join CTE build: ``_src`` projection (dims / other-time-dims / raw-window-time / value) with Law-1 join discovery, WHERE inheritance minus date_range, and the ``_base LEFT JOIN _src`` interval range join. Splitting scatters the shared scope / grain-alias / join-eq state.
         self,
@@ -5234,8 +3878,6 @@ class SQLGenerator:
                 aliases_by_slot_id,
                 base_has_agg,
                 base_group_by,
-                _base_where_consumed,
-                base_first_last_state,
             ) = self._build_base_select_for_planned(
                 planned_query=planned_query,
                 bundle=bundle,
@@ -5253,16 +3895,9 @@ class SQLGenerator:
                 source_model=source_model,
                 bundle=bundle,
                 skip_filter_ids=routed_ids,
-                first_last_state=base_first_last_state,
                 aliases_by_slot_id=aliases_by_slot_id,
             )
-            # CodeRabbit thread: the first/last ranked-subquery path
-            # consumes WHERE inside the ranked subquery and returns
-            # ``where_consumed=True``. Re-applying ``base_where`` to the
-            # outer SELECT here would double-filter (and change
-            # first/last semantics by filtering AFTER ranking) and can
-            # dangle joined-column aliases on the outer SELECT scope.
-            if base_where is not None and not _base_where_consumed:
+            if base_where is not None:
                 base_select = base_select.where(base_where)
             base_dim_only_dedup = (
                 planned_query.distinct_dimension_values
@@ -6032,10 +4667,9 @@ class SQLGenerator:
         )
 
         # Outer projection trim — the inner already projects the public
-        # list in declared order, so the trim is normally a no-op. Skip
-        # the trim machinery here because the legacy path goes through
-        # an EnrichedQuery-driven ``_apply_outer_projection_trim`` that
-        # we don't have on the new side. Future slices may re-enable.
+        # list in declared order, so the trim is normally a no-op and is
+        # skipped on this cross-model transform-chain path. Future slices
+        # may re-enable it.
         return combined_statement.sql(dialect=self.dialect, pretty=True)
 
     def _render_cross_model_transform_chain(  # NOSONAR(S3776) — pre-existing complexity in the window-layer chain; this PR only threaded the CTE-name allocator through it, which re-attributed the function as new code. The chain is rebuilt as sqlglot AST in the scope-assembly PR, where the layering is what gets simplified.
@@ -6465,43 +5099,20 @@ class SQLGenerator:
         # column on the left side). Intersect with the host's actual
         # projection ids so only projected slots flow into the CTE.
         cte_select_columns: List[exp.Expression] = []
-        # DEV-1728: two GROUP-BY lists — ``cte_group_by`` is the OUTER GROUP BY
-        # (an alias ref ``_val_<n>`` for a first/last-materialised crossing
-        # grain, the raw expression otherwise); ``cte_partition_exprs`` is the
-        # ranked-subquery PARTITION BY, always the RAW expression (valid inside
-        # the subquery where the crossed join is bound). They are identical for
-        # every non-first/last query and every non-crossing grain.
         cte_group_by: List[exp.Expression] = []
-        cte_partition_exprs: List[exp.Expression] = []
         shared_grain_aliases: List[str] = []
         # DEV-1701: join paths crossed by a shared-grain derived TIME dimension's
         # expanded ``Column.sql``. Collected during the loop (which runs before
         # the CTE scope's join set is assembled) and merged into it below.
         shared_grain_join_paths: List[Tuple[str, ...]] = []
-        # DEV-1728: first/last grain materialisations (``_val_<n>`` projections
-        # to inject INTO the ranked subquery for crossing derived grains). The
-        # generation-wide allocator is hoisted here so grain + source ``_val``s
-        # share one monotonic sequence. Reserve the target's physical column
-        # names (Codex F6): the ranked subquery re-exports ``target.*``, so a
-        # minted ``_val_<n>`` must never collide with a real target column of
-        # that name — mirrors the host-path reservation in
-        # ``_build_first_last_base_select``.
+        # DEV-1728: reserve the target's physical column names in the shared
+        # generation-wide allocator (Codex F6) so any minted ``_val_<n>``
+        # materialisation never collides with a real target column of that name.
         cte_allocator = self._gen_allocator or self._new_allocator()
         self._reserve_model_column_names(cte_allocator, target_model)
-        is_first_or_last = agg_slot.key.agg in ("first", "last")
-        # The CTE's own scope, and the scope of the ranked subquery it may
-        # select FROM. Both are created here, before the grain loop, because a
-        # crossing grain is materialised in the RANKED scope for the CTE scope
-        # to consume — Law 2's producer/consumer pair.
+        # The CTE's own scope, created before the grain loop so shared-grain
+        # refs resolve (and any crossing value materialises) through it.
         cte_scope = ScopeFrame(
-            scope_id=cte_allocator.next_scope_id(target_relation),
-            root_model=target_model,
-            root_relation=target_relation,
-            bundle=bundle,
-            dialect=self._dialect,
-            allocator=cte_allocator,
-        )
-        ranked_scope = ScopeFrame(
             scope_id=cte_allocator.next_scope_id(target_relation),
             root_model=target_model,
             root_relation=target_relation,
@@ -6609,39 +5220,11 @@ class SQLGenerator:
             # ``_build_base_select_for_planned`` already aliases that
             # way for joined ROW slots.
             host_alias = planned_query.source_relation + "." + ".".join(path) + f".{leaf}"
-            # DEV-1728 Law 2: for a first/last aggregate the CTE's FROM is a
-            # ROW_NUMBER-ranked subquery that re-exports only ``target.*`` + rank
-            # columns. A grain whose expression CROSSES a join references a table
-            # bound ONLY inside that subquery, so the outer SELECT / GROUP BY
-            # cannot name it — materialise it as a ``_val_<n>`` projection inside
-            # the subquery, group the outer SELECT on the alias, and keep the RAW
-            # expression for PARTITION BY (evaluated where the join is bound). A
-            # target-local grain (no crossing) needs no materialisation — it is
-            # re-exported by ``target.*``.
-            grain_crosses = is_first_or_last and bool(
-                self._joined_paths_in_sql(
-                    sql_expr=col_expr, source_relation=target_relation,
-                    source_model=target_model, bundle=bundle,
-                )
-            )
-            if grain_crosses:
-                # Law 2 through the SCOPE (§5.1): the ranked subquery projects
-                # the crossing expression and the CTE consumes the alias. The
-                # scope owns the dedup table, so a value materialised once for
-                # the grain is not materialised again for the aggregate.
-                alias_ref = ranked_scope.materialize_for(
-                    col_expr.copy(), consumer=cte_scope,
-                )
-                cte_select_columns.append(alias_ref.copy().as_(host_alias))
-                cte_group_by.append(alias_ref.copy())
-                cte_partition_exprs.append(col_expr.copy())
-            else:
-                cte_select_columns.append(col_expr.copy().as_(host_alias))
-                cte_group_by.append(col_expr.copy())
-                cte_partition_exprs.append(col_expr.copy())
+            cte_select_columns.append(col_expr.copy().as_(host_alias))
+            cte_group_by.append(col_expr.copy())
             shared_grain_aliases.append(host_alias)
 
-        # Aggregate column: synthesise an EnrichedMeasure ROOTED at the
+        # Aggregate column: synthesise an ``AggRenderSpec`` ROOTED at the
         # target so ``_build_agg`` resolves the source column on the
         # right model (including ``column_filter_key`` CASE-WHEN).
         # Mutate a copy of the key with ``source.path=()`` so the
@@ -6722,41 +5305,10 @@ class SQLGenerator:
             resolved_agg_kwargs=cte_resolved_kwargs or None,
         )
 
-        # DEV-1476 bug (c): for first/last aggregates the FROM must be a
-        # ROW_NUMBER-ranked subquery so the ``MAX(CASE WHEN _last_rn = 1
-        # THEN col END)`` expression has a ranking column. The local
-        # first/last path (``_build_first_last_base_select``) wraps via
-        # ``_build_ranked_subquery_from_planned``; mirror that here for
-        # the cross-model CTE.
-        #
-        # Codex round 2: when no explicit positional time arg was
-        # supplied, fall back to the target model's
-        # ``default_time_dimension`` (qualified under the target
-        # relation). If even that is unset, raise the standard
-        # "first/last requires a ranking time column" error rather than
-        # silently emitting an agg_expr that references a non-existent
-        # ``_first_rn`` / ``_last_rn`` column. (``is_first_or_last`` is computed
-        # once above the grain loop from ``agg_slot.key.agg`` — reroot preserves
-        # the aggregation name — so the grain materialisation and this branch
-        # agree.)
-        time_col_sql: Optional[str] = synth.time_column
-        if is_first_or_last and time_col_sql is None:
-            if target_model.default_time_dimension:
-                time_col_sql = (
-                    f"{target_relation}.{target_model.default_time_dimension}"
-                )
-            else:
-                raise ValueError(
-                    f"first/last aggregation requires a ranking time column "
-                    f"(an explicit positional time arg, or the target "
-                    f"model's default_time_dimension); none is resolvable "
-                    f"for cross-model aggregate on target "
-                    f"{target_model_name!r}."
-                )
         # WHERE: target-model-filters (qualified bare-identifier refs
         # so ``deleted_at IS NULL`` becomes ``customers.deleted_at IS
-        # NULL`` to match the legacy enrichment's filter-column
-        # resolution) + host filters routed to WHERE. Computed up-front
+        # NULL`` so they resolve against the target model, via the
+        # Mode-A door) + host filters routed to WHERE. Computed up-front
         # so the first/last branch can push them INSIDE the ranked
         # subquery — otherwise rows excluded by a filter could still
         # win ``_last_rn = 1`` and yield NULL aggregates.
@@ -6766,9 +5318,10 @@ class SQLGenerator:
         # computation, so adding these joins to ITS FROM affects only this
         # measure (not siblings) — it resolves the filter's refs without the
         # cross-measure cardinality concern DEV-1503 owns. Free-SQL predicates
-        # keep the quote-tolerant dual-scan of ``_filter_join_paths`` (raw +
-        # inline-expanded — the DEV-1494/dedup contract) while writing into the
-        # single ``cte_scope.join_paths`` set.
+        # keep the quote-tolerant dual-scan (raw + inline-expanded — the
+        # DEV-1494/dedup contract) now performed by the Mode-A door
+        # (``ScopeFrame.enter_predicate``), writing into the single
+        # ``cte_scope.join_paths`` set.
         def _register_filter_join_paths(sql_text: Optional[str]) -> None:
             if not sql_text:
                 return
@@ -6864,82 +5417,7 @@ class SQLGenerator:
                 source_model=target_model, source_relation=target_relation,
             )
             cte_base_joins = []
-        ranked_from: Optional[exp.Expression] = None
-        cte_value_alias_by_sql: Dict[str, str] = {}
-        if is_first_or_last:
-            assert time_col_sql is not None  # narrowed by the guard above
-            # DEV-1708 Law 2 (DEV-1702 B2, forward variant): the ranked subquery
-            # re-exports only ``target.*`` + rank columns. If the first/last
-            # SOURCE value crosses a join, the crossing ref must be materialised
-            # as a ``_val_<n>`` projection INSIDE the subquery and the outer
-            # aggregate rewritten to reference the alias — otherwise the outer
-            # ``MAX(CASE WHEN _last_rn = 1 THEN <crossing ref> END)`` references a
-            # table bound only inside the subquery (out of scope). The FILTER
-            # refs are consumed inside the subquery (the ``_last_rn_fN`` /
-            # ``_match_fN`` rank columns) and need no outer alias. A LOCAL source
-            # value is already covered by ``target.*`` — no materialisation.
-            outer_synth = synth
-            # DEV-1728: seed with the crossing-grain ``_val_<n>`` projections
-            # collected in the grain loop, so a first/last aggregate grouped by a
-            # crossing derived grain materialises that grain INSIDE the subquery
-            # too (the outer SELECT / GROUP BY reference the alias).
-            extra_projections: List[Tuple[str, exp.Expression]] = [
-                (m.alias, m.expr) for m in ranked_scope.materializations
-            ]
-            if synth.sql:
-                # DEV-1709: materialise the RESOLVED value (qualified +
-                # ``Column.type`` inner CAST for non-bare expressions) and
-                # key the alias map by that resolved text — mirrors the
-                # host-path materialisation in
-                # ``_build_first_last_base_select`` so typed non-bare
-                # sources keep ``MAX(CASE ... THEN CAST(x AS t) END)``
-                # semantics inside the CTE too.
-                value_expr = self._resolve_sql(
-                    sql=synth.sql, name=synth.name,
-                    model_name=synth.model_name, type=synth.column_type,
-                )
-                if self._joined_paths_in_sql(
-                    sql_expr=value_expr, source_relation=target_relation,
-                    source_model=target_model, bundle=bundle,
-                ):
-                    # Law 2 through the SCOPE, same as the crossing grain above.
-                    # Because both go through ONE dedup table, grouping a
-                    # first/last aggregate by the very expression it aggregates
-                    # now projects that expression once instead of twice — the
-                    # two sites used to keep separate alias maps.
-                    val_alias = ranked_scope.materialize_for(
-                        value_expr, consumer=cte_scope,
-                    ).name
-                    extra_projections = [
-                        (m.alias, m.expr) for m in ranked_scope.materializations
-                    ]
-                    outer_synth = synth.model_copy(update={"sql": val_alias})
-                    # A HAVING on this same aggregate must reference the alias,
-                    # not the raw crossing ref (out of scope in the outer SELECT).
-                    cte_value_alias_by_sql[
-                        value_expr.sql(dialect=self.dialect)
-                    ] = val_alias
-            ranked_from, rn_suffix_map, filtered_rn_map, filtered_match_map = (
-                self._build_ranked_subquery_from_planned(
-                    source_relation=target_relation,
-                    default_time_col_sql=time_col_sql,
-                    partition_exprs=list(cte_partition_exprs),
-                    extra_projections=extra_projections,
-                    synth_specs=[synth],
-                    from_clause=target_from,
-                    base_joins=cte_base_joins,
-                    where_clause=combined_where,
-                )
-            )
-            agg_expr, is_agg = self._build_agg(
-                outer_synth,
-                rn_suffix_map=rn_suffix_map,
-                default_time_col=time_col_sql,
-                filtered_rn_map=filtered_rn_map,
-                filtered_match_map=filtered_match_map,
-            )
-        else:
-            agg_expr, is_agg = self._build_agg(synth)
+        agg_expr, is_agg = self._build_agg(synth)
         if is_agg:
             agg_expr = _wrap_cast_for_type(agg_expr, agg_slot.type)
         cte_select_columns.append(agg_expr.copy().as_(full_agg_alias))
@@ -6949,47 +5427,24 @@ class SQLGenerator:
         cte_select = exp.Select()
         for col in cte_select_columns:
             cte_select = cte_select.select(col)
-        if is_first_or_last:
-            assert ranked_from is not None
-            cte_select = cte_select.from_(ranked_from)
-        else:
-            cte_select = cte_select.from_(target_from)
-            for join_expr, on_expr, join_type in cte_base_joins:
-                cte_select = cte_select.join(
-                    join_expr, on=on_expr, join_type=join_type,
-                )
-            if combined_where is not None:
-                cte_select = cte_select.where(combined_where)
+        cte_select = cte_select.from_(target_from)
+        for join_expr, on_expr, join_type in cte_base_joins:
+            cte_select = cte_select.join(
+                join_expr, on=on_expr, join_type=join_type,
+            )
+        if combined_where is not None:
+            cte_select = cte_select.where(combined_where)
 
         if cte_group_by:
             for gb in cte_group_by:
                 cte_select = cte_select.group_by(gb)
 
-        # DEV-1501 Group A.3: routed HAVING for cross-model first/last
-        # must use the SAME rn-based aggregate the CTE projects. Build a
-        # ``FirstLastRenderState`` carrying the rn maps + the single
-        # projected aggregate's full alias so HAVING's synth rebuild
-        # binds to the right ``_first_rn`` / ``_last_rn{suffix}`` /
-        # ``_last_rn_fN`` column (instead of a placeholder alias whose
-        # ``filtered_rn_map`` lookup misses and silently degrades to
-        # bare ``_last_rn`` + raw ``filter_sql``).
-        cm_first_last_state: Optional[FirstLastRenderState] = None
-        if is_first_or_last:
-            cm_first_last_state = FirstLastRenderState(
-                rn_suffix_map=dict(rn_suffix_map),
-                default_time_col_sql=time_col_sql,
-                filtered_rn_map=dict(filtered_rn_map),
-                filtered_match_map=dict(filtered_match_map),
-                agg_synth_alias=full_agg_alias,
-                value_alias_by_sql=dict(cte_value_alias_by_sql),
-            )
         cte_having = self._collect_routed_filters(
             planned_query=planned_query,
             filter_ids=plan.having_filter_ids,
             target_relation=target_relation,
             target_model=target_model,
             bundle=bundle,
-            first_last_state=cm_first_last_state,
         )
         if cte_having is not None:
             cte_select = cte_select.having(cte_having)
@@ -7014,7 +5469,7 @@ class SQLGenerator:
         WHERE, and the HAVING render below) emit the SQL themselves. The scope's
         ``resolve`` anchors each typed leaf at the target relation and records
         the path it crosses; free-SQL ``column_filter`` predicates keep the
-        quote-tolerant dual-scan of ``_filter_join_paths``.
+        quote-tolerant dual-scan of the Mode-A door (``ScopeFrame.enter_predicate``).
         """
         from slayer.core.keys import (
             AggregateKey,
@@ -7229,13 +5684,12 @@ class SQLGenerator:
         target_relation: str,
         target_model,
         bundle,
-        first_last_state: Optional[FirstLastRenderState] = None,
     ) -> Optional[exp.Expression]:
         """Build a conjunction of bound filter predicates by ID.
 
         Filters routed into a cross-model CTE bind in the CTE's local
         scope (``customers.status`` resolves to the target's table).
-        The LIVE path renders each filter through ``render_value_key`` on a
+        Each filter renders through ``render_value_key`` on a
         target-rooted scope (DEV-1763 P-G).
 
         Returns ``None`` when the requested filter set is empty so the
@@ -7244,18 +5698,6 @@ class SQLGenerator:
         if not filter_ids:
             return None
         wanted = set(filter_ids)
-
-        # ESCAPE HATCH: ``first_last_state`` (rn maps / agg-synth-alias /
-        # value-alias) is fed only by the production-dead ``is_first_or_last``
-        # cross-model CTE branch (probe: FirstLastRenderState at 0 production
-        # calls). Keep the legacy renderer for it; PR 6 (DEV-1749) deletes the
-        # branch, the ``FirstLastRenderState`` type, and this hatch together.
-        if first_last_state is not None:
-            return self._collect_routed_filters_first_last(
-                planned_query=planned_query, wanted=wanted,
-                target_relation=target_relation, target_model=target_model,
-                bundle=bundle, first_last_state=first_last_state,
-            )
 
         allocator = self._new_allocator()
         scope = ScopeFrame(
@@ -7293,262 +5735,6 @@ class SQLGenerator:
             return None
         return exp.and_(*parts) if len(parts) > 1 else parts[0]
 
-    def _collect_routed_filters_first_last(
-        self, *, planned_query, wanted, target_relation: str, target_model,
-        bundle, first_last_state,
-    ) -> Optional[exp.Expression]:
-        """The DEV-1763 escape hatch: the production-dead cross-model first/last
-        CTE routed-filter path, still on the legacy target-scope renderer so its
-        rn-state threading is preserved verbatim. PR 6 deletes this whole path
-        with ``FirstLastRenderState``."""
-        parts: List[exp.Expression] = []
-        for fp in planned_query.filters_by_phase:
-            if fp.id not in wanted or fp.expression is None:
-                continue
-            ast = self._render_filter_value_key_in_target_scope(
-                value_key=fp.expression.value_key,
-                target_relation=target_relation,
-                target_model=target_model,
-                planned_query=planned_query,
-                bundle=bundle,
-                first_last_state=first_last_state,
-            )
-            if ast is not None:
-                parts.append(ast)
-        if not parts:
-            return None
-        return exp.and_(*parts) if len(parts) > 1 else parts[0]
-
-    def _render_filter_value_key_in_target_scope(  # NOSONAR(S3776) — sequential isinstance dispatch over the closed ValueKey union with per-type cross-model target-scope rules (joined-column qualification, derived-column expansion, rn-state aware aggregate synth). Each branch carries the per-type cross-model render contract; extracting helpers would scatter the contract.
-        self,
-        *,
-        value_key,
-        target_relation: str,
-        target_model,
-        planned_query,
-        bundle,
-        first_last_state: Optional[FirstLastRenderState] = None,
-    ) -> Optional[exp.Expression]:
-        """Render a bound filter's value key as SQL with bare column
-        refs qualified against the cross-model CTE's local scope.
-
-        The typed pipeline carries filter ASTs as ``ValueKey``-rooted
-        trees (``ArithmeticKey`` / ``AggregateKey`` / ``ColumnKey`` /
-        ``ColumnSqlKey`` / scalars). The CTE renderer reuses the legacy
-        ``_build_agg`` / column-resolution helpers via a small local
-        recursion that binds each leaf to the target model's relation alias.
-        """
-        from slayer.core.keys import (
-            AggregateKey,
-            ArithmeticKey,
-            BetweenKey,
-            ColumnKey,
-            ColumnSqlKey,
-            InKey,
-            LiteralKey,
-            ScalarCallKey,
-        )
-
-        if isinstance(value_key, ColumnSqlKey):
-            # DEV-1450 #4b: a routed filter on a DERIVED column owned by the
-            # CTE target — expand its Column.sql rooted at the target so it
-            # emits real SQL instead of falling through to a bogus literal.
-            if value_key.model != target_model.name:
-                raise NotImplementedError(
-                    f"DEV-1450: cross-model filter on derived column "
-                    f"{value_key.column_name!r} owned by {value_key.model!r} "
-                    f"(not the CTE target {target_model.name!r}) is not yet "
-                    f"rendered in the typed pipeline.",
-                )
-            expanded = self._expand_derived_column_sql(
-                source_model=target_model,
-                source_relation=target_relation,
-                column_name=value_key.column_name,
-                bundle=bundle,
-            )
-            return self._parse(expanded)
-
-        if isinstance(value_key, ColumnKey):
-            # Cross-model filter on the joined-target path: the column
-            # lives on the target (single-hop) or on an intermediate
-            # hop. For 7b.12 we expect target-rooted refs only.
-            path = value_key.path
-            # ``value_key.path`` is a tuple of hop names ending at the
-            # target. The cross-model planner routes filters to the
-            # CTE only when the path == target_path (single-hop) or is
-            # a prefix (multi-hop). Both forms render against the
-            # target's local relation alias by leaf name.
-            if path and path[-1] != target_relation:
-                # Intermediate hop ref — not yet rendered.
-                raise NotImplementedError(
-                    f"DEV-1450 stage 7b.12: cross-model filter on an "
-                    f"intermediate hop ({path!r}) not yet rendered in "
-                    f"the typed pipeline.",
-                )
-            return exp.Column(
-                this=exp.to_identifier(value_key.leaf),
-                table=exp.to_identifier(target_relation),
-            )
-        if isinstance(value_key, LiteralKey):
-            return self._literal_key_to_exp(value_key)
-        if isinstance(value_key, AggregateKey):
-            # HAVING-route: render the aggregate against the target.
-            # Reuse the synthesise helper with target_model as scope.
-            # DEV-1501 (Codex round 9): the routed AggregateKey carries
-            # source / args / kwargs still rooted at the cross-model path
-            # (``customers.regions.amount:last(customers.regions.opened_at)``
-            # arrives with ``args=(ColumnKey(path=("customers","regions"),
-            # leaf="opened_at"),)``). Inside the target CTE scope every ref
-            # must qualify under the local relation, not the host-rooted
-            # ``__``-path alias — the SAME symmetric reroot the projection
-            # path applies (DEV-1707). Without it, the ranked subquery's
-            # ``ORDER BY`` qualifies the time column under a non-existent
-            # alias inside the CTE.
-            cross_model_path = getattr(value_key.source, "path", ())
-            local_agg = reroot_aggregate_key(
-                value_key, target_path=cross_model_path,
-            )
-            from slayer.engine.planned import ValueSlot as _Slot
-            tmp_slot = _Slot(
-                id="_cte_having_tmp",
-                key=local_agg,
-                declared_name="_having_agg",
-                phase=value_key.phase,
-                type=None,
-            )
-            # DEV-1501 Group A.3: when the CTE projects a first/last
-            # aggregate, the projected spec's alias is the key for
-            # ``filtered_rn_map`` / ``filtered_match_map``. Reusing the
-            # SAME alias here lets ``_build_agg``'s lookup hit, binding
-            # the HAVING aggregate to the dedicated ``_last_rn_fN`` (and
-            # match-flag) instead of bare ``_last_rn`` + raw filter_sql.
-            having_full_alias = (
-                first_last_state.agg_synth_alias
-                if first_last_state is not None and first_last_state.agg_synth_alias
-                else f"{target_relation}._having_agg"
-            )
-            synth = self._build_agg_render_spec_from_planned(
-                slot=tmp_slot,
-                key=local_agg,
-                source_model=target_model,
-                source_relation=target_relation,
-                full_alias=having_full_alias,
-                bundle=bundle,
-            )
-            # DEV-1708 Law 2: if the projected first/last materialised its
-            # crossing SOURCE value as a ``_val_<n>`` column inside the ranked
-            # subquery, the HAVING aggregate must bind to that SAME alias — the
-            # outer ``MAX(CASE WHEN _last_rn = 1 THEN <raw crossing ref> END)``
-            # would otherwise reference a table bound only inside the subquery.
-            # DEV-1709: the alias map is keyed by the RESOLVED value text
-            # (qualified + typed inner CAST) so same-sql-different-type
-            # aggregates bind to their own materialisations.
-            if first_last_state is not None and synth.sql:
-                resolved_key = self._resolve_value_sql(synth)
-                if resolved_key in first_last_state.value_alias_by_sql:
-                    synth = synth.model_copy(update={
-                        "sql": first_last_state.value_alias_by_sql[resolved_key],
-                    })
-            # Thread the cross-model CTE's rn maps so the HAVING
-            # aggregate uses the same ``_first_rn`` / ``_last_rn{suffix}``
-            # / ``_last_rn_fN`` column the CTE SELECT projects.
-            rn_suffix_map = (
-                first_last_state.rn_suffix_map if first_last_state else None
-            )
-            default_time_col = (
-                first_last_state.default_time_col_sql
-                if first_last_state else None
-            )
-            filtered_rn_map = (
-                first_last_state.filtered_rn_map if first_last_state else None
-            )
-            filtered_match_map = (
-                first_last_state.filtered_match_map if first_last_state else None
-            )
-            expr, _ = self._build_agg(
-                synth,
-                rn_suffix_map=rn_suffix_map,
-                default_time_col=default_time_col,
-                filtered_rn_map=filtered_rn_map,
-                filtered_match_map=filtered_match_map,
-            )
-            return expr
-        if isinstance(value_key, ArithmeticKey):
-            op = value_key.op
-            rendered_operands = [
-                self._render_filter_value_key_in_target_scope(
-                    value_key=op_key,
-                    target_relation=target_relation,
-                    target_model=target_model,
-                    planned_query=planned_query,
-                    bundle=bundle,
-                    first_last_state=first_last_state,
-                )
-                for op_key in value_key.operands
-            ]
-            return self._build_arith_or_cmp_ast(op=op, operands=rendered_operands)
-        if isinstance(value_key, ScalarCallKey):
-            # DEV-1708 (Codex): a routed filter wrapping a target ref in a scalar
-            # call (``abs(customers.deep_pop) > 5``) — render each arg in the
-            # target scope (a derived arg expands + pulls its join) and rebuild
-            # the call, mirroring the local filter-render path's ScalarCallKey
-            # branch (``like`` → ``exp.Like``; else ``func(NAME, *args)`` through
-            # the dialect rewrite). Without this the key falls through to the
-            # scalar fallback and emits its repr as a bogus string literal.
-            rendered_args = [
-                self._render_filter_value_key_in_target_scope(
-                    value_key=a,
-                    target_relation=target_relation,
-                    target_model=target_model,
-                    planned_query=planned_query,
-                    bundle=bundle,
-                    first_last_state=first_last_state,
-                )
-                for a in value_key.args
-            ]
-            return render_scalar_call(
-                name=value_key.name, args=rendered_args, dialect=self._dialect,
-            )
-        if isinstance(value_key, BetweenKey):
-            # DEV-1708: a routed ``date_range``-derived BETWEEN over a target
-            # (possibly crossing) column — render each operand in the target
-            # scope, mirroring the local filter path's ``exp.Between``.
-            def _render(k):
-                return self._render_filter_value_key_in_target_scope(
-                    value_key=k,
-                    target_relation=target_relation,
-                    target_model=target_model,
-                    planned_query=planned_query,
-                    bundle=bundle,
-                    first_last_state=first_last_state,
-                )
-            return exp.Between(
-                this=_render(value_key.column),
-                low=_render(value_key.low),
-                high=_render(value_key.high),
-            )
-        if isinstance(value_key, InKey):
-            # DEV-1475: cross-model IN filter — render the LHS column
-            # rooted at the CTE's target relation (so a bare ``name`` on
-            # ``stores`` becomes ``stores.name``), and the RHS literals
-            # inline. The cross-model routing path lands here only when
-            # the InKey's LHS column lives on the CTE target.
-            col_expr = self._render_filter_value_key_in_target_scope(
-                value_key=value_key.column,
-                target_relation=target_relation,
-                target_model=target_model,
-                planned_query=planned_query,
-                bundle=bundle,
-                first_last_state=first_last_state,
-            )
-            value_exprs = [
-                self._literal_key_to_exp(lit) for lit in value_key.values
-            ]
-            in_expr = exp.In(this=col_expr, expressions=value_exprs)
-            return exp.Not(this=in_expr) if value_key.negated else in_expr
-        # Scalars stored inline (Decimal / str / bool / None).
-        return self._literal_key_to_exp(value_key)
-
     def _literal_key_to_exp(self, value) -> exp.Expression:
         """Convert a scalar / LiteralKey value to a sqlglot literal."""
         from slayer.core.keys import LiteralKey
@@ -7565,166 +5751,6 @@ class SQLGenerator:
         if inner is None:
             return exp.Null()
         return exp.Literal.string(str(inner))
-
-    def _build_arith_or_cmp_ast(
-        self,
-        *,
-        op: str,
-        operands: List[exp.Expression],
-    ) -> exp.Expression:
-        """Build a sqlglot expression for a binary or unary op.
-
-        Delegates to the one composer in ``slayer.sql.render.value_expr``.
-        The hand-rolled version here applied NO precedence pass at all, so
-        ``(a + b) * c`` emitted ``a + b * c`` and ``(a > b) + 1`` emitted
-        ``a > b + 1`` — both parse, both mean something else.
-        """
-        return render_arithmetic(op, list(operands))
-
-    # -----------------------------------------------------------------
-    # Superseded by ``resolve_order_term`` (DEV-1742 §5.10 / P-J state 1)
-    # -----------------------------------------------------------------
-    #
-    # ``_build_combined_order_by_sql`` + ``_resolve_combined_order_term`` (the
-    # combined SELECT), ``_apply_order_limit_from_planned`` (the host base and
-    # its outer trim wrap), and ``_planned_order_by_sql`` (the chain outer
-    # wrap) are the four per-site ORDER BY resolutions the one resolver
-    # replaced. All four are PRODUCTION-UNREFERENCED as of this change — the
-    # first pair is a closed island, since its only caller is its own partner.
-    #
-    # Their tests stay green so the two mechanisms can be compared, and
-    # ``tests/test_dev1747_order_resolver.py`` pins the absence with raising
-    # sentinels over every render shape rather than by grepping this file.
-    # Deletion happens in one sweep (PR 6) rather than smeared across the
-    # series.
-
-    def _build_combined_order_by_sql(
-        self,
-        *,
-        planned_query,
-        slots_by_id: Dict[str, Any],
-        cma_slot_ids: Set[str],
-        cm_alias_for_plan: Dict[str, str],
-        bare_order_slot_ids: Optional[Set[str]] = None,
-        outer_composite_aliases: Optional[Dict[str, str]] = None,
-        outer_composite_expressions: Optional[Dict[str, exp.Expression]] = None,
-        hidden_cte_order_refs: Optional[Dict[str, exp.Expression]] = None,
-    ) -> List[exp.Ordered]:
-        """Build the combined SELECT's ORDER BY terms, as AST.
-
-        Terms are AST rather than text because they reference DOTTED public
-        aliases, and rendering them to a string only to re-parse it re-reads
-        such an alias as a multi-part reference on BigQuery — the same
-        corruption the grain join-back suffered.
-
-        PROJECTED local slots are referenced as ``_base."<full_alias>"``
-        (legacy parity); cross-model slots are referenced as bare
-        ``"<full_alias>"`` (they live in a single column projected from
-        the cross-model CTE). HIDDEN order-only local slots
-        (``bare_order_slot_ids``) are also referenced bare: they are
-        materialised in ``_base`` but TRIMMED from the combined public
-        projection, so the outermost ORDER BY must use the unqualified
-        alias — the ``_base.`` qualifier would dangle if an outer
-        projection-trim wrapper (which exposes only the bare public
-        aliases) is ever layered on top. The bare alias still resolves
-        unambiguously against ``_base`` in the combined FROM.
-
-        DEV-1503 (Codex round 3 #2): outer-routed composite slots
-        (``outer_composite_aliases``) live ONLY in the combined SELECT's
-        projection — they are not materialised in ``_base``. Reference
-        them as bare aliases so the ORDER BY resolves against the outer
-        SELECT's own column list rather than ``_base.<alias>`` (which
-        would dangle).
-        """
-        if not planned_query.order:
-            return []
-        bare_ids = bare_order_slot_ids or set()
-        outer_aliases = outer_composite_aliases or {}
-        outer_expressions = outer_composite_expressions or {}
-        hidden_cte_refs = hidden_cte_order_refs or {}
-        parts: List[exp.Ordered] = []
-        for entry in planned_query.order:
-            slot = slots_by_id.get(entry.slot_id)
-            if slot is None:
-                continue
-            term = self._resolve_combined_order_term(
-                entry=entry,
-                slot=slot,
-                source_relation=planned_query.source_relation,
-                cma_slot_ids=cma_slot_ids,
-                cm_alias_for_plan=cm_alias_for_plan,
-                bare_ids=bare_ids,
-                outer_aliases=outer_aliases,
-                outer_expressions=outer_expressions,
-                hidden_cte_refs=hidden_cte_refs,
-            )
-            if term is not None:
-                parts.append(term)
-        return parts
-
-    def _resolve_combined_order_term(
-        self,
-        *,
-        entry,
-        slot,
-        source_relation: str,
-        cma_slot_ids: Set[str],
-        cm_alias_for_plan: Dict[str, str],
-        bare_ids: Set[str],
-        outer_aliases: Dict[str, str],
-        outer_expressions: Optional[Dict[str, exp.Expression]] = None,
-        hidden_cte_refs: Optional[Dict[str, exp.Expression]] = None,
-    ) -> Optional[exp.Ordered]:
-        """Resolve one ``OrderEntry`` to an ``exp.Ordered`` term.
-
-        Cross-model agg slot → bare CTE alias; projected outer-composite
-        slot → bare combined-SELECT alias; order-only outer composite
-        (Codex round 8 / CodeRabbit) → inline ``<expression> <dir>`` so
-        no synthetic alias leaks into the combined projection and the
-        transform-chain carry-forward doesn't lose track; hidden
-        order-only local → bare ``_base`` alias; everything else →
-        qualified ``_base."<alias>"``. Returns ``None`` when the
-        cross-model alias map has no entry (the order slot can't be
-        rendered).
-        """
-        ascending = entry.direction == "asc"
-
-        def _ordered(col: exp.Expression) -> exp.Ordered:
-            # Through ``self._ordered``, NOT a bare ``exp.Ordered``: on T-SQL an
-            # unset ``nulls_first`` makes sqlglot emit a ``CASE WHEN <alias> IS
-            # NULL ...`` NULLS-emulation wrapper, and the bracketed alias inside
-            # it mis-resolves against the FROM scope (``Invalid column name``).
-            # The old text-built ORDER BY never constructed an ``Ordered`` node,
-            # so building one here newly exposed this path.
-            return self._ordered(col, ascending=ascending)
-
-        # DEV-1712 / DEV-1733: a HIDDEN (order-only) aggregate that lives in its
-        # own CTE — cross-model (``_cm_``) or windowed (``_wm_``) — is trimmed
-        # from the combined projection, so the bare alias no longer names a
-        # projected column. Reference the CTE-qualified column instead. Checked
-        # BEFORE the ``cma_slot_ids`` gate because a windowed slot is not a
-        # cross-model slot and would otherwise fall through to the bare-alias
-        # branch below and dangle.
-        hidden_ref = (hidden_cte_refs or {}).get(entry.slot_id)
-        if hidden_ref is not None:
-            return _ordered(hidden_ref.copy())
-        if entry.slot_id in cma_slot_ids:
-            alias = cm_alias_for_plan.get(entry.slot_id)
-            if alias is None:
-                return None
-            return _ordered(exp.column(alias, quoted=True))
-        if entry.slot_id in outer_aliases:
-            return _ordered(exp.column(outer_aliases[entry.slot_id], quoted=True))
-        if outer_expressions and entry.slot_id in outer_expressions:
-            return _ordered(outer_expressions[entry.slot_id].copy())
-        full_alias = self._full_alias_for_slot(
-            slot=slot,
-            source_relation=source_relation,
-            alias_index={},
-        )
-        if entry.slot_id in bare_ids:
-            return _ordered(exp.column(full_alias, quoted=True))
-        return _ordered(grain_alias_column(alias=full_alias, table="_base"))
 
     def _full_alias_for_slot(
         self,
@@ -8105,9 +6131,7 @@ class SQLGenerator:
         # Resolve partition aliases. Explicit partition_keys take
         # precedence; otherwise auto-partition by query dimension slots
         # (ColumnKey row-phase, hidden==False) — NOT TimeTruncKey slots
-        # (matches legacy enrichment.py:584 ``[d.alias for d in
-        # dimensions]``).
-        rank_family = {"rank", "percent_rank", "dense_rank", "ntile"}
+        # (partition by the query's dimension aliases).
         if key.partition_keys:
             partition_aliases: list[str] = []
             for pk in sorted(
@@ -8123,7 +6147,7 @@ class SQLGenerator:
                 partition_aliases.append(
                     available_alias_by_slot_id[pk_sid],
                 )
-        elif key.op in rank_family:
+        elif key.op in RANK_FAMILY_TRANSFORMS:
             partition_aliases = []
         else:
             partition_aliases = []
@@ -8284,7 +6308,7 @@ class SQLGenerator:
         looked up through ``slot_id_by_key`` /
         ``available_alias_by_slot_id``. Arithmetic / scalar-call
         composition uses the same operator dispatch as the WHERE
-        renderer in ``_render_value_key_for_filter``.
+        renderer in ``render_value_key``.
         """
         from slayer.core.keys import Phase
 
@@ -8309,115 +6333,6 @@ class SQLGenerator:
             )
             out.append(rendered.sql(dialect=self.dialect))
         return out
-
-    def _render_value_key_against_aliases(
-        self,
-        *,
-        key,
-        slot_id_by_key: Dict[Any, str],
-        available_alias_by_slot_id: Dict[str, str],
-    ) -> exp.Expression:
-        """Render a typed ValueKey tree against already-materialised
-        aliases (used inside the ``_filtered`` wrapper).
-
-        Slot-worthy keys → quoted ``exp.Column`` refs to their aliases.
-        ``ArithmeticKey`` / ``ScalarCallKey`` / ``BetweenKey`` /
-        ``InKey`` / ``LiteralKey`` compose recursively.
-        """
-        from slayer.core.keys import (
-            AggregateKey,
-            ArithmeticKey,
-            BetweenKey,
-            ColumnKey,
-            ColumnSqlKey,
-            InKey,
-            LiteralKey,
-            ScalarCallKey,
-            TimeTruncKey,
-            TransformKey,
-        )
-
-        slotted_kinds = (
-            ColumnKey, ColumnSqlKey, TimeTruncKey, AggregateKey, TransformKey,
-        )
-        all_key_kinds = (
-            TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey, InKey,
-            ColumnKey, ColumnSqlKey, TimeTruncKey, AggregateKey, LiteralKey,
-        )
-
-        def recurse(k) -> exp.Expression:
-            return self._render_value_key_against_aliases(
-                key=k,
-                slot_id_by_key=slot_id_by_key,
-                available_alias_by_slot_id=available_alias_by_slot_id,
-            )
-
-        if isinstance(key, slotted_kinds):
-            sid = slot_id_by_key.get(key)
-            if sid is None or sid not in available_alias_by_slot_id:
-                raise RuntimeError(
-                    f"POST-phase filter references a key not materialised "
-                    f"as a slot: {type(key).__name__} -> {key!r}.",
-                )
-            alias = available_alias_by_slot_id[sid]
-            return exp.Column(this=exp.to_identifier(alias, quoted=True))
-
-        if isinstance(key, LiteralKey):
-            return _render_scalar_literal(key.value)
-
-        if isinstance(key, ArithmeticKey):
-            return self._compose_arithmetic_op(
-                op=key.op, operands=[recurse(o) for o in key.operands],
-            )
-
-        if isinstance(key, ScalarCallKey):
-            args = [
-                recurse(a) if isinstance(a, all_key_kinds)
-                else _render_scalar_literal(a)
-                for a in key.args
-            ]
-            return render_scalar_call(
-                name=key.name, args=args, dialect=self._dialect,
-            )
-
-        if isinstance(key, BetweenKey):
-            return exp.Between(
-                this=recurse(key.column),
-                low=recurse(key.low),
-                high=recurse(key.high),
-            )
-
-        if isinstance(key, InKey):
-            # DEV-1475: POST-phase IN filter — LHS column resolves to a
-            # quoted alias materialised in the ``_filtered`` wrapper; RHS
-            # literals are inlined as bare sqlglot scalars.
-            in_expr = exp.In(
-                this=recurse(key.column),
-                expressions=[recurse(lit) for lit in key.values],
-            )
-            return exp.Not(this=in_expr) if key.negated else in_expr
-
-        raise NotImplementedError(
-            f"DEV-1450 stage 7b.10: POST-phase filter key type "
-            f"{type(key).__name__} not yet supported.",
-        )
-
-    @staticmethod
-    def _compose_arithmetic_op(
-        *, op: str, operands: List[exp.Expression],
-    ) -> exp.Expression:
-        """Compose an arithmetic / comparison / boolean operator over
-        already-rendered operands.
-
-        Accepts the operator aliases ``=``/``==``, ``<>``/``!=`` so the
-        rendered SQL surfaces the canonical SQL spellings for POST filters.
-
-        Delegates to the one composer in ``slayer.sql.render.value_expr``.
-        The hand-rolled version's precedence table knew only ``+ - * /``, so
-        a comparison nested in arithmetic — ``(a > b) + 1`` — emitted
-        ``a > b + 1``, which reads as ``a > (b + 1)``.
-        """
-        return render_arithmetic(op, list(operands))
 
     def _emit_planned_outer_wrap(
         self,
@@ -8500,38 +6415,6 @@ class SQLGenerator:
             resolve_order_term(entry=entry, env=env)
             for entry in planned_query.order
         ]
-
-    def _planned_order_by_sql(
-        self,
-        *,
-        planned_query,
-        slots_by_id: Dict[str, Any],
-        available_alias_by_slot_id: Dict[str, str],
-    ) -> str:
-        """Render the ORDER BY term list (without the keyword) for a planned
-        query whose sort keys resolve to CTE-chain aliases."""
-        order_parts: list[str] = []
-        for order_entry in planned_query.order:
-            slot = slots_by_id.get(order_entry.slot_id)
-            alias = available_alias_by_slot_id.get(order_entry.slot_id)
-            if slot is None or alias is None:
-                raise RuntimeError(
-                    f"ORDER BY references slot id={order_entry.slot_id!r} "
-                    f"not materialised in the CTE chain.",
-                )
-            direction = (
-                "ASC" if order_entry.direction == "asc" else "DESC"
-            )
-            order_parts.append(f'{self._quote_ident(alias)} {direction}')
-        return ", ".join(order_parts)
-
-
-    # -----------------------------------------------------------------
-    # Stage 7b.11 helpers — self-join CTE transforms (time_shift,
-    # consecutive_periods). change / change_pct desugar at plan time to
-    # time_shift + arithmetic, so the renderer only needs the two
-    # primitive shapes below.
-    # -----------------------------------------------------------------
 
     def _build_shifted_cte_where_parts(
         self,
@@ -8618,9 +6501,9 @@ class SQLGenerator:
         ``_joined_paths_in_sql`` — the expression is fully qualified/expanded,
         so its crossed joins are visible directly and there is no text
         round-trip that could silently swallow a parse failure. A Mode-A
-        ``text`` filter has only its string form, so it keeps the
-        ``_filter_join_paths`` dual raw + inline-expanded scan (the DEV-1494
-        contract that surfaces a derived ref's expansion joins).
+        ``text`` filter has only its string form, so it keeps the Mode-A
+        door's dual raw + inline-expanded scan (the DEV-1494 contract that
+        surfaces a derived ref's expansion joins).
 
         Note the scan runs on the RESIDUAL, so the shifted CTE's join set
         follows what it actually renders.
@@ -8941,7 +6824,7 @@ class SQLGenerator:
         # Aggregate: re-emit the AggregateKey using the same synth /
         # _build_agg dance the base CTE uses.
         if isinstance(inner_key, AggregateKey):
-            # Build a synth EnrichedMeasure for _build_agg.
+            # Build a synth ``AggRenderSpec`` for _build_agg.
             #
             # The renderer needs a slot-like input with declared_name +
             # type. Pull from the inner aggregate's slot to keep typed
@@ -9377,204 +7260,6 @@ class SQLGenerator:
                 col.set("table", exp.to_identifier(source_relation))
         return ast.sql(dialect=self.dialect)
 
-    def _column_ref_is_derived(
-        self, *, col: exp.Column, source_model, source_relation: str, bundle,
-        include_dotted: bool,
-    ) -> bool:
-        """True iff a single ``exp.Column`` ref resolves to a non-trivial DERIVED
-        column — bare on ``source_model``, or (when ``include_dotted``) a dotted
-        ``__``-path alias resolving through ``bundle`` to a derived column on a
-        joined model. Dotted resolution starts from ``source_relation`` (the
-        alias the rest of the Mode-A path uses), not ``source_model.name``.
-        """
-        if col.args.get("db") or col.args.get("catalog"):
-            return False
-        ident = col.this
-        if not isinstance(ident, exp.Identifier):
-            return False
-        tbl = col.args.get("table")
-        if tbl is None:
-            return self._is_nontrivial_derived(source_model, ident.name)
-        if not include_dotted:
-            return False
-        target, _ = _walk_path_to_target_sync(
-            source_model=source_model,
-            source_alias=source_relation,
-            table_alias=tbl.name,
-            resolve_model=bundle.get_referenced_model,
-            is_root=True,
-        )
-        return target is not None and self._is_nontrivial_derived(target, ident.name)
-
-    def _predicate_references_derived(
-        self, *, parsed: exp.Expression, source_model, source_relation: str,
-        bundle, include_dotted: bool,
-    ) -> bool:
-        """True iff the parsed Mode-A predicate references a non-trivial DERIVED
-        column (see :meth:`_column_ref_is_derived`). Drives whether the predicate
-        must be inline-expanded (vs. cheaply qualified). DEV-1494.
-        """
-        return any(
-            self._column_ref_is_derived(
-                col=col, source_model=source_model,
-                source_relation=source_relation, bundle=bundle,
-                include_dotted=include_dotted,
-            )
-            for col in parsed.find_all(exp.Column)
-        )
-
-    def _render_mode_a_predicate(
-        self,
-        *,
-        sql: Optional[str],
-        source_model,
-        source_relation: str,
-        bundle,
-        qualify_fallback,
-        include_dotted_derived: bool = True,
-    ) -> Optional[str]:
-        """Render a Mode-A predicate (``Column.filter`` / ``SlayerModel.filters``)
-        with DERIVED refs inline-expanded and base refs qualified — the shared
-        core for the column-filter and model-filter render paths (DEV-1494).
-
-        If the predicate references a non-trivial derived column (bare, or — when
-        ``include_dotted_derived`` — a dotted ref to a derived column on a joined
-        model), it is inline-expanded via ``expand_derived_refs_sync`` so the
-        crossed joins resolve and no dangling ``<alias>.<derived_col>`` (a
-        non-physical column) survives — mirroring the query-level filter path.
-        Otherwise ``qualify_fallback(sql)`` does the cheap bare-ref qualification,
-        preserving each caller's exact non-derived output (regex for model
-        filters, AST for column filters). On sqlglot parse failure the predicate
-        falls through to ``qualify_fallback`` unchanged, so a dialect-specific
-        fragment never raises earlier than today. ``include_dotted_derived`` is
-        ``False`` for the cross-model ``_cm_*`` CTE target-filter path, which has
-        no mechanism to add a deeper join an expansion would cross (DEV-1503).
-        """
-        if not sql:
-            return None
-        if bundle is not None:
-            try:
-                parsed = self._parse_predicate(sql)
-            except Exception:
-                parsed = None
-            if parsed is not None and self._predicate_references_derived(
-                parsed=parsed, source_model=source_model,
-                source_relation=source_relation, bundle=bundle,
-                include_dotted=include_dotted_derived,
-            ):
-                root = self._expand_degenerate_derived_root(
-                    parsed=parsed, source_model=source_model,
-                    source_relation=source_relation, bundle=bundle,
-                    include_dotted_derived=include_dotted_derived,
-                )
-                if root is not None:
-                    return root
-                expanded = expand_derived_refs_sync(
-                    sql=sql,
-                    model=source_model,
-                    alias_path=source_relation,
-                    resolve_model=bundle.get_referenced_model,
-                    dialect=self.dialect,
-                )
-                if expanded is not None:
-                    return expanded
-        return qualify_fallback(sql)
-
-    def _expand_degenerate_derived_root(
-        self, *, parsed: exp.Expression, source_model, source_relation: str,
-        bundle, include_dotted_derived: bool,
-    ) -> Optional[str]:
-        """When the whole predicate IS a single derived-column ref
-        (``filter="is_eu"`` / ``filter="loss_payment.has_flag"``), expand it
-        directly — ``expand_derived_refs_sync`` rewrites refs via in-place
-        ``col.replace``, a no-op on the AST root. A dotted root is walked to its
-        target model + canonical ``__`` alias and expanded with ``is_root=False``
-        so further-joined refs prefix correctly. Returns the expanded SQL, or
-        ``None`` when ``parsed`` is not such a derived single-column root.
-        """
-        if not isinstance(parsed, exp.Column) or (
-            parsed.args.get("db") or parsed.args.get("catalog")
-        ):
-            return None
-        tbl = parsed.args.get("table")
-        if tbl is None:
-            if self._is_nontrivial_derived(source_model, parsed.name):
-                return self._expand_derived_column_sql(
-                    source_model=source_model,
-                    source_relation=source_relation,
-                    column_name=parsed.name,
-                    bundle=bundle,
-                )
-            return None
-        if not include_dotted_derived:
-            return None
-        target, canonical = _walk_path_to_target_sync(
-            source_model=source_model,
-            source_alias=source_relation,
-            table_alias=tbl.name,
-            resolve_model=bundle.get_referenced_model,
-            is_root=True,
-        )
-        if (
-            target is not None
-            and canonical is not None
-            and self._is_nontrivial_derived(target, parsed.name)
-        ):
-            return self._expand_derived_column_sql(
-                source_model=target,
-                source_relation=canonical,
-                column_name=parsed.name,
-                bundle=bundle,
-                is_root=False,
-            )
-        return None
-
-    def _filter_join_paths(
-        self, *, sql: Optional[str], source_relation: str, source_model, bundle,
-    ) -> List[Tuple[str, ...]]:
-        """Join paths a Mode-A filter (``Column.filter`` / ``SlayerModel.filters``)
-        needs (DEV-1494).
-
-        Scans BOTH the un-inlined predicate — so a placeholder dotted ref
-        (``loss_payment.has_flag``, the dbt join-trigger idiom) keeps its alias
-        even when it inlines to a constant — AND the inline-expanded predicate —
-        so a bare/dotted DERIVED ref surfaces the joins its expansion crosses
-        (``is_eu`` → ``customers``; ``loss_payment.deep_flag`` →
-        ``loss_payment__claim``). The union is required because inlining drops the
-        placeholder alias while the raw form can't see a derived expansion's
-        crossed joins. Each parse is tolerant — an unparseable side yields no
-        paths rather than raising earlier than today.
-        """
-        if not sql:
-            return []
-        seen: set = set()
-        ordered: List[Tuple[str, ...]] = []
-
-        def _scan(text: Optional[str]) -> None:
-            if not text:
-                return
-            try:
-                parsed = self._parse_predicate(text)
-            except Exception:
-                return
-            for p in self._joined_paths_in_sql(
-                sql_expr=parsed, source_relation=source_relation,
-                source_model=source_model, bundle=bundle,
-            ):
-                if p not in seen:
-                    seen.add(p)
-                    ordered.append(p)
-
-        _scan(sql)
-        rendered = self._render_mode_a_predicate(
-            sql=sql, source_model=source_model, source_relation=source_relation,
-            bundle=bundle, qualify_fallback=lambda s: s,
-        )
-        if rendered is not None and rendered != sql:
-            _scan(rendered)
-        return ordered
-
-    # ---- The one Mode-A door, generator side (P-A) -------------------------
     def _mode_a_scope(
         self, *, source_model, source_relation: str, bundle,
     ) -> ScopeFrame:
@@ -9811,8 +7496,8 @@ class SQLGenerator:
         """Render a ``Column.filter`` Mode-A predicate for the aggregation-time
         CASE-WHEN wrapper (``SUM(CASE WHEN <filter> THEN col END)``). Inlines
         derived refs (bare or dotted-to-joined-derived) so the crossed joins
-        resolve; otherwise qualifies bare refs. DEV-1494; see
-        ``_render_mode_a_predicate``.
+        resolve; otherwise qualifies bare refs. DEV-1494; see the Mode-A door
+        (``_enter_mode_a_predicate``).
         """
         if not canonical_sql:
             return None
@@ -10005,8 +7690,9 @@ class SQLGenerator:
         references (Law 1 — discovery is a side effect of resolving the filter
         through the scope). A 1:1 replacement for the former
         ``_collect_filter_join_paths`` (wrap-and-reuse, D-G): it delegates to the
-        same ``_value_key_join_paths`` / ``_filter_join_paths`` sub-scanners in
-        the same ``filters_by_phase`` order, so the base FROM stays byte-identical.
+        same ``_value_key_join_paths`` sub-scanner for typed filters and to the
+        Mode-A door (``_enter_mode_a_predicate``) for text filters, in the same
+        ``filters_by_phase`` order, so the base FROM stays byte-identical.
 
         Covers three shapes:
         * typed joined column ref (``customers.regions.name == 'US'``) —
@@ -10047,7 +7733,7 @@ class SQLGenerator:
                 # ``loss_payment.has_flag`` keeps its alias even when it inlines
                 # to a constant) AND the inline-expanded text (a bare/dotted
                 # DERIVED ref like ``is_eu`` surfaces the join its expansion
-                # crosses). See ``_filter_join_paths``.
+                # crosses). See the Mode-A door's dual-scan (``ScopeFrame._enter``).
                 self._enter_mode_a_predicate(
                     sql=fp.text, scope=scope,
                     location=(
@@ -10245,11 +7931,9 @@ class SQLGenerator:
         ``_build_agg`` / ``_resolve_sql`` / ``_wrap_cast_for_type`` emit
         dialect-correct SQL without forking the agg-emission codebase.
 
-        Replaces the legacy ``_build_agg_render_spec_from_planned``
-        adapter (DEV-1452 Stage A). Mirrors ``enrichment.py:431``
-        ``sql = column.sql or column.name`` so ``COUNT(*)`` (StarKey source)
-        and ``COUNT(col)`` (ColumnKey source with sql=None on a bare column)
-        take their distinct branches inside ``_build_agg``.
+        Uses ``sql = column.sql or column.name`` so ``COUNT(*)`` (StarKey
+        source) and ``COUNT(col)`` (ColumnKey source with sql=None on a bare
+        column) take their distinct branches inside ``_build_agg``.
         """
         from slayer.core.keys import ColumnKey, ColumnSqlKey, StarKey
 
@@ -10259,12 +7943,11 @@ class SQLGenerator:
         slot_type = slot.type if slot is not None else None
         source = key.source
         if isinstance(source, StarKey):
-            # Legacy enrichment (enrichment.py:~388) rejects any
-            # non-count aggregation on ``*`` — e.g. ``*:sum`` or
-            # ``*:median`` would otherwise plan and render as
-            # ``SUM(*)`` / ``MEDIAN(*)``, which is meaningless.
-            # Mirror that rejection here so the typed pipeline can't
-            # silently emit invalid SQL (Codex MEDIUM fold-in).
+            # Reject any non-count aggregation on ``*`` — e.g.
+            # ``*:sum`` or ``*:median`` would otherwise plan and render
+            # as ``SUM(*)`` / ``MEDIAN(*)``, which is meaningless. The
+            # typed pipeline enforces it here so it can't silently emit
+            # invalid SQL (Codex MEDIUM fold-in).
             if key.agg != "count":
                 raise ValueError(
                     f"Aggregation {key.agg!r} not allowed with measure "
@@ -10307,8 +7990,9 @@ class SQLGenerator:
                 else source.column_name
             )
             # ``first`` / ``last`` aggregations rank rows via a ROW_NUMBER
-            # subquery (built in ``_build_ranked_subquery_from_planned``) and
-            # pick ``rn = 1`` through ``MAX(CASE WHEN _rn = 1 THEN col END)``.
+            # ranked CTE (planned in ``slayer/engine/ranked_planner.py``,
+            # rendered by ``_render_ranked_cte_from_planned``) and pick
+            # ``rn = 1`` through ``MAX(CASE WHEN _rn = 1 THEN col END)``.
             # An explicit positional arg (``latest_amount:last(created_at)``
             # or ``…:last(derived_time_col)``) overrides the query's default
             # ranking time column; the helper handles both bare-column
@@ -10410,7 +8094,6 @@ class SQLGenerator:
         source_model,
         bundle,
         skip_filter_ids: Optional[Set[str]] = None,
-        first_last_state: Optional[FirstLastRenderState] = None,
         aliases_by_slot_id: Optional[Dict[str, List[str]]] = None,
         filters_override: "Optional[List[Any]]" = None,
     ):
@@ -10479,14 +8162,8 @@ class SQLGenerator:
             if fp.expression is not None:
                 # Typed predicate (Mode-B DSL or planner-emitted
                 # BetweenKey) — render through the value-key walker.
-                # DEV-1501: thread ``first_last_state`` so HAVING
-                # aggregates reference the same ``_first_rn`` /
-                # ``_last_rn{suffix}`` columns the base SELECT projects,
-                # AND thread ``aliases_by_slot_id`` so the synth's
-                # ``full_alias`` matches the materialised spec's alias —
-                # required for ``filtered_rn_map`` / ``filtered_match_map``
-                # lookups (which are keyed by the full alias the
-                # ranked-subquery builder used).
+                # Thread ``aliases_by_slot_id`` so the synth's ``full_alias``
+                # matches the materialised spec's alias.
                 rendered = render_value_key(
                     fp.expression.value_key,
                     self._filter_render_context(
@@ -10495,7 +8172,6 @@ class SQLGenerator:
                         bundle=bundle,
                         slot_by_key=slot_by_key,
                         aliases_by_slot_id=aliases_by_slot_id,
-                        first_last_state=first_last_state,
                     ),
                 )
                 # Match the legacy DSL parser, which wraps top-level
@@ -10538,47 +8214,6 @@ class SQLGenerator:
         return where_clause, having_clause
 
     @staticmethod
-    def _qualify_mode_a_sql_filter(
-        *,
-        sql: str,
-        columns,
-        source_model,
-        source_relation: str,
-    ) -> str:
-        """Qualify bare-identifier column references in a Mode-A SQL
-        filter — mirrors legacy ``_build_where_and_having`` at
-        ``slayer/sql/generator.py:2566-2580``.
-
-        For each name in ``columns``:
-        * Already-dotted refs are left alone (``orders.id`` stays).
-        * Non-identifier tokens (SQL keywords picked up by the regex
-          extractor) are left alone.
-        * Bare identifiers matching a model column name are rewritten
-          to ``<source_relation>.<col>``. The negative lookbehind
-          ``(?<!\\.)(?<!\\w)`` prevents touching already-qualified or
-          substring-of-another-identifier matches.
-
-        Note: ``columns`` is the column list ``parse_sql_predicate``
-        returned at planner time. The bare-identifier filter is
-        permissive (matches more than just column names) — only those
-        also present in the regex's ``\\b...\\b`` match get rewritten,
-        which mirrors legacy behavior exactly.
-        """
-        import re
-        out = sql
-        for col_name in dict.fromkeys(columns):
-            if "." in col_name:
-                continue
-            if not col_name.isidentifier():
-                continue
-            out = re.sub(
-                rf"(?<!\.)(?<!\w)\b{re.escape(col_name)}\b",
-                f"{source_relation}.{col_name}",
-                out,
-            )
-        return out
-
-    @staticmethod
     def _is_nontrivial_derived(model, name: str) -> bool:
         """True iff ``name`` is a column on ``model`` whose ``Column.sql`` is a
         non-trivial expression (set, and not just a bare-identifier remap)."""
@@ -10587,48 +8222,15 @@ class SQLGenerator:
             column=col,
         )
 
-    def _render_model_filter_sql(
-        self,
-        *,
-        sql: str,
-        columns,
-        source_model,
-        source_relation: str,
-        bundle,
-    ) -> str:
-        """Render a ``SlayerModel.filters`` Mode-A SQL predicate (DEV-1450 #4b /
-        DEV-1494).
-
-        Inlines references to non-trivial derived columns — bare on
-        ``source_model`` or dotted-to-a-derived-column-on-a-joined-model — so the
-        crossed joins resolve; otherwise qualifies bare base refs via the regex
-        path (``_qualify_mode_a_sql_filter``), byte-identical to legacy. Thin
-        wrapper over ``_render_mode_a_predicate``.
-        """
-        rendered = self._render_mode_a_predicate(
-            sql=sql,
-            source_model=source_model,
-            source_relation=source_relation,
-            bundle=bundle,
-            qualify_fallback=lambda s: self._qualify_mode_a_sql_filter(
-                sql=s,
-                columns=columns,
-                source_model=source_model,
-                source_relation=source_relation,
-            ),
-        )
-        return rendered if rendered is not None else sql
-
     def _filter_agg_builder(
-        self, *, source_model, source_relation: str, bundle, first_last_state,
+        self, *, source_model, source_relation: str, bundle,
     ):
         """The WHERE/HAVING aggregate seam (DEV-1763 P-G): render a local
         aggregate as its EXPRESSION (``SUM(x)``) rather than by output alias so
         HAVING works on backends that reject SELECT aliases there. The renderer
         supplies the slot and the recovered ``having_full_alias``; this resolves
         the aggregate's column-ref kwargs through a host scope (matching the base
-        SELECT) and threads the base's rn maps when a (dead-path) first/last
-        state is present. Cross-model aggregates route via the per-plan CTE."""
+        SELECT). Cross-model aggregates route via the per-plan CTE."""
 
         def build(agg_key, slot, having_full_alias) -> exp.Expression:
             if getattr(agg_key.source, "path", ()):
@@ -10646,30 +8248,14 @@ class SQLGenerator:
                 source_relation=source_relation, full_alias=having_full_alias,
                 bundle=bundle, resolved_agg_kwargs=having_kwargs,
             )
-            agg_expr, _is_agg = self._build_agg(
-                synth,
-                rn_suffix_map=(
-                    first_last_state.rn_suffix_map if first_last_state else None
-                ),
-                default_time_col=(
-                    first_last_state.default_time_col_sql
-                    if first_last_state else None
-                ),
-                filtered_rn_map=(
-                    first_last_state.filtered_rn_map if first_last_state else None
-                ),
-                filtered_match_map=(
-                    first_last_state.filtered_match_map
-                    if first_last_state else None
-                ),
-            )
+            agg_expr, _is_agg = self._build_agg(synth)
             return agg_expr
 
         return build
 
     def _filter_render_context(
         self, *, source_model, source_relation: str, bundle,
-        slot_by_key=None, aliases_by_slot_id=None, first_last_state=None,
+        slot_by_key=None, aliases_by_slot_id=None,
     ) -> RenderContext:
         """A ``RenderContext`` for the WHERE/HAVING filter family, over a
         render-scoped host ``ScopeFrame`` (the crossed joins are pulled into the
@@ -10696,307 +8282,10 @@ class SQLGenerator:
                     source_model=source_model,
                     source_relation=source_relation,
                     bundle=bundle,
-                    first_last_state=first_last_state,
                 ),
                 cast_column_sql=True,
                 paren_comparison_operands=True,
             ),
-        )
-
-    def _render_value_key_for_filter(  # NOSONAR(S3776) — sequential isinstance dispatch over the closed filter-ValueKey union. Each branch carries the per-type filter-render contract (local vs joined column qualification, derived-column expansion, aggregate-with-rn-state synth, etc.); extracting per-branch helpers would scatter the contract.
-        self,
-        *,
-        key,
-        source_relation: str,
-        source_model,
-        bundle,
-        slot_by_key: Optional[Dict[Any, Any]] = None,
-        first_last_state: Optional[FirstLastRenderState] = None,
-        aliases_by_slot_id: Optional[Dict[str, List[str]]] = None,
-    ) -> exp.Expression:
-        """Render a ValueKey tree to sqlglot for WHERE / HAVING rendering.
-
-        Supports ``ColumnKey`` (local AND joined ``path != ()`` — emitted as
-        ``<__path_alias>.<leaf>``; the join is pulled into the FROM by
-        ``_resolve_where_filter_joins_via_scope``), ``ColumnSqlKey`` (derived column —
-        expanded inline, sibling/joined refs resolved), ``LiteralKey``,
-        ``ArithmeticKey``, ``ScalarCallKey``, ``BetweenKey``, and a LOCAL
-        ``AggregateKey`` (for HAVING — rendered as the bare aggregate
-        expression so it works on dialects that reject SELECT aliases in
-        HAVING). Cross-model aggregate refs (``path != ()``) and
-        ``TransformKey`` / ``TimeTruncKey`` are deferred to later slices.
-        """
-        from decimal import Decimal
-
-        from slayer.core.keys import (
-            AggregateKey,
-            ArithmeticKey,
-            BetweenKey,
-            ColumnKey,
-            ColumnSqlKey,
-            InKey,
-            LiteralKey,
-            ScalarCallKey,
-            StarKey,
-            TimeTruncKey,
-            TransformKey,
-        )
-
-        if isinstance(key, AggregateKey):
-            # HAVING term: render the aggregate as its expression (``COUNT(*)``,
-            # ``SUM(amount)``), not the SELECT alias — Postgres rejects output
-            # aliases in HAVING. Cross-model aggregates (non-empty source path)
-            # are routed into a per-plan CTE instead (handled by the caller).
-            if getattr(key.source, "path", ()):
-                raise NotImplementedError(
-                    f"DEV-1450 stage 7b.12: cross-model aggregate ref in "
-                    f"filter (path={key.source.path!r}) routes via the "
-                    f"per-plan CTE, not inline HAVING."
-                )
-            slot = (slot_by_key or {}).get(key)
-            # DEV-1501 Group A.2: when the slot was materialised in the
-            # base SELECT, ``_build_filtered_rn_columns`` keyed its
-            # ``filtered_rn_map`` / ``filtered_match_map`` by the FULL
-            # ALIAS the materialised spec used. The HAVING synth must
-            # reuse the same alias — bare placeholder ``__having_ref__``
-            # would miss the lookup and fall back to the unfiltered
-            # ``_last_rn`` + raw ``filter_sql``.
-            having_full_alias = "__having_ref__"
-            if (
-                aliases_by_slot_id is not None
-                and slot is not None
-                and aliases_by_slot_id.get(slot.id)
-            ):
-                having_full_alias = aliases_by_slot_id[slot.id][0]
-            # DEV-1527: resolve this local aggregate's column-ref kwargs
-            # (``weighted_avg(weight=<col>)`` / ``corr(other=<col>)``) through a
-            # host scope so a derived/crossing kwarg renders its expanded, join-
-            # anchored expression HERE too — matching the base SELECT — instead of
-            # collapsing to a bare, non-existent name. The crossed join is already
-            # base-pulled by ``_resolve_agg_inputs_via_scope`` (this HAVING
-            # aggregate is also a ``base_render_order`` slot), so the throwaway
-            # scope is used only to reproduce the same anchored expression.
-            having_kwargs = self._resolve_agg_kwargs_for_key(
-                key=key, source_model=source_model,
-                source_relation=source_relation, bundle=bundle,
-            )
-            synth = self._build_agg_render_spec_from_planned(
-                slot=slot,
-                key=key,
-                source_model=source_model,
-                source_relation=source_relation,
-                full_alias=having_full_alias,
-                bundle=bundle,
-                resolved_agg_kwargs=having_kwargs,
-            )
-            # DEV-1501: thread the rn suffix maps from the base SELECT
-            # so a HAVING reference to a hidden first/last aggregate
-            # binds to the same ``_first_rn`` / ``_last_rn{suffix}``
-            # column the base projects (instead of bare ``_last_rn``,
-            # which collapses distinct time-column specs).
-            rn_suffix_map = (
-                first_last_state.rn_suffix_map if first_last_state else None
-            )
-            default_time_col = (
-                first_last_state.default_time_col_sql
-                if first_last_state
-                else None
-            )
-            filtered_rn_map = (
-                first_last_state.filtered_rn_map if first_last_state else None
-            )
-            filtered_match_map = (
-                first_last_state.filtered_match_map if first_last_state else None
-            )
-            agg_expr, _is_agg = self._build_agg(
-                synth,
-                rn_suffix_map=rn_suffix_map,
-                default_time_col=default_time_col,
-                filtered_rn_map=filtered_rn_map,
-                filtered_match_map=filtered_match_map,
-            )
-            return agg_expr
-
-        if isinstance(key, ColumnKey):
-            if key.path != ():
-                # Joined column ref (``customers.regions.name``) — emit the
-                # ``__``-canonical path alias (``customers__regions.name``).
-                # The join is pulled into the FROM by
-                # ``_resolve_where_filter_joins_via_scope``.
-                return exp.Column(
-                    this=exp.to_identifier(key.leaf),
-                    table=exp.to_identifier("__".join(key.path)),
-                )
-            col = next(
-                (c for c in source_model.columns if c.name == key.leaf),
-                None,
-            )
-            if col is None:
-                raise ValueError(
-                    f"Filter references column {key.leaf!r} which is "
-                    f"not found on model {source_model.name!r}",
-                )
-            return self._resolve_sql(
-                sql=col.sql,
-                name=col.name,
-                model_name=source_relation,
-                type=col.type,
-            )
-        if isinstance(key, ColumnSqlKey):
-            if key.path != ():
-                # Joined derived-column ref (``policy_amount.premium.has_premium``).
-                # Expand the column's ``sql`` rooted at the JOINED model,
-                # qualifying bare refs to the ``__``-canonical path alias; the
-                # join itself is pulled into the FROM by
-                # ``_resolve_where_filter_joins_via_scope`` (which adds ``key.path``).
-                joined_model = bundle.get_referenced_model(key.path[-1])
-                if joined_model is None:
-                    raise ValueError(
-                        f"Filter references derived column {key.column_name!r} "
-                        f"on joined model {key.path[-1]!r} which is not in the "
-                        f"resolved source bundle.",
-                    )
-                path_alias = "__".join(key.path)
-                # ``is_root=False`` — the column lives on a JOINED model, so a
-                # further-joined ref inside its ``sql`` resolves to the full
-                # path alias rather than the bare child relation. Must match
-                # ``_value_key_join_paths``, which registers the joins by
-                # scanning this same expansion.
-                expanded_sql = self._expand_derived_column_sql(
-                    source_model=joined_model,
-                    source_relation=path_alias,
-                    column_name=key.column_name,
-                    bundle=bundle,
-                    is_root=False,
-                )
-                col = next(
-                    (c for c in joined_model.columns if c.name == key.column_name),
-                    None,
-                )
-                return _wrap_cast_for_type(
-                    self._parse(expanded_sql),
-                    _filter_cast_type(col.type if col is not None else None),
-                )
-            # Derived column (``Column.sql`` set) — expand inline, resolving
-            # sibling / joined derived refs and pulling crossed joins into the
-            # FROM (via ``_resolve_where_filter_joins_via_scope``).
-            expanded_sql = self._expand_derived_column_sql(
-                source_model=source_model,
-                source_relation=source_relation,
-                column_name=key.column_name,
-                bundle=bundle,
-            )
-            col = next(
-                (c for c in source_model.columns if c.name == key.column_name),
-                None,
-            )
-            return _wrap_cast_for_type(
-                self._parse(expanded_sql),
-                _filter_cast_type(col.type if col is not None else None),
-            )
-        if isinstance(key, LiteralKey):
-            return self._scalar_to_sqlglot(key.value)
-        if isinstance(key, ArithmeticKey):
-            operands = [
-                self._render_value_key_for_filter(
-                    key=o,
-                    source_relation=source_relation,
-                    source_model=source_model,
-                    bundle=bundle,
-                    slot_by_key=slot_by_key,
-                    first_last_state=first_last_state,
-                    aliases_by_slot_id=aliases_by_slot_id,
-                )
-                for o in key.operands
-            ]
-            return self._build_arithmetic_for_filter(
-                op=key.op, operands=operands,
-            )
-        if isinstance(key, ScalarCallKey):
-            args = []
-            for a in key.args:
-                if isinstance(a, (Decimal, str, bool)) or a is None:
-                    args.append(self._scalar_to_sqlglot(a))
-                else:
-                    args.append(self._render_value_key_for_filter(
-                        key=a,
-                        source_relation=source_relation,
-                        source_model=source_model,
-                        bundle=bundle,
-                        slot_by_key=slot_by_key,
-                        first_last_state=first_last_state,
-                        aliases_by_slot_id=aliases_by_slot_id,
-                    ))
-            # One ScalarCall policy everywhere (B5): typed node, dialect
-            # rewrite, then the log-alias fix-up. This branch used to return an
-            # ``exp.Anonymous`` passthrough for everything but ROUND, so a
-            # filter emitted ``IFNULL(...)`` — which Postgres does not have —
-            # while the same key emitted ``COALESCE(...)`` from a projection.
-            #
-            # The log fix-up is load-bearing: ``exp.func("LOG10", x)``
-            # normalises to a generic ``Log(10, x)`` that re-emits as
-            # ``LOG(10, x)``, wrong for dialects with a native single-arg
-            # ``LOG10``. Transpiling alone fixes ifnull and breaks log10.
-            return render_scalar_call(
-                name=key.name, args=args, dialect=self._dialect,
-            )
-        if isinstance(key, BetweenKey):
-            col_expr = self._render_value_key_for_filter(
-                key=key.column,
-                source_relation=source_relation,
-                source_model=source_model,
-                bundle=bundle,
-                slot_by_key=slot_by_key,
-                first_last_state=first_last_state,
-                aliases_by_slot_id=aliases_by_slot_id,
-            )
-            low_expr = self._render_value_key_for_filter(
-                key=key.low,
-                source_relation=source_relation,
-                source_model=source_model,
-                bundle=bundle,
-                slot_by_key=slot_by_key,
-                first_last_state=first_last_state,
-                aliases_by_slot_id=aliases_by_slot_id,
-            )
-            high_expr = self._render_value_key_for_filter(
-                key=key.high,
-                source_relation=source_relation,
-                source_model=source_model,
-                bundle=bundle,
-                slot_by_key=slot_by_key,
-                first_last_state=first_last_state,
-                aliases_by_slot_id=aliases_by_slot_id,
-            )
-            return exp.Between(this=col_expr, low=low_expr, high=high_expr)
-        if isinstance(key, InKey):
-            # DEV-1475: render the LHS column through the normal filter
-            # path (local + joined paths both supported via ColumnKey /
-            # ColumnSqlKey), and the RHS as a sequence of scalar
-            # literals. Wrap in ``exp.Not`` for ``not in``.
-            col_expr = self._render_value_key_for_filter(
-                key=key.column,
-                source_relation=source_relation,
-                source_model=source_model,
-                bundle=bundle,
-                slot_by_key=slot_by_key,
-                first_last_state=first_last_state,
-                aliases_by_slot_id=aliases_by_slot_id,
-            )
-            value_exprs = [
-                self._scalar_to_sqlglot(lit.value) for lit in key.values
-            ]
-            in_expr = exp.In(this=col_expr, expressions=value_exprs)
-            return exp.Not(this=in_expr) if key.negated else in_expr
-        if isinstance(key, (
-            AggregateKey, TransformKey, TimeTruncKey, StarKey,
-        )):
-            raise NotImplementedError(
-                f"DEV-1450 stage 7b.10+: filter rendering for "
-                f"{type(key).__name__} deferred to later slice."
-            )
-        raise NotImplementedError(
-            f"Unsupported ValueKey type in filter: {type(key).__name__}",
         )
 
     def _outer_wrapper_alias_facilities(
@@ -11032,177 +8321,6 @@ class SQLGenerator:
             slot_id_by_key=slot_id_by_key,
             available_alias_by_slot_id=available_alias_by_slot_id,
             table_by_slot_id=table_by_slot_id,
-        )
-
-    def _render_filter_for_outer_wrapper(  # NOSONAR(S3776) — sequential isinstance dispatch over the closed filter-ValueKey union for the DEV-1503 outer-WHERE wrapper. Mirrors ``_render_value_key_for_filter`` shape but substitutes slot refs with the combined-SELECT's table-qualified columns (``_cm_*`` / ``_base``); per-branch helpers would scatter the substitution contract.
-        self,
-        *,
-        key,
-        slot_by_key: Dict[Any, Any],
-        cross_model_agg_slot_to_cm: Dict[str, Tuple[str, str]],
-        aliases_by_slot_id: Dict[str, List[str]],
-    ) -> exp.Expression:
-        """Render a ValueKey tree for the DEV-1503 outer combined-SELECT WHERE.
-
-        Used when an AGGREGATE-phase host filter references a filtered-local
-        isolated aggregate (``loss_payment_amt:sum > 1000`` where
-        ``loss_payment_amt`` has a join-crossing ``Column.filter``). The
-        filtered aggregate lives in a ``_cm_*`` CTE that LEFT JOINs back to
-        ``_base``; the outer combined SELECT is non-aggregating, so the
-        comparison renders as plain WHERE on the joined-back column rather
-        than HAVING-into-the-CTE (which would surface host rows as NULL
-        instead of dropping them).
-
-        Slot-bearing leaves resolve via:
-
-        * Isolated aggregate slot → ``<cte_name>."<agg_col_alias>"`` from
-          ``cross_model_agg_slot_to_cm`` (the CTE's emitted aggregate column).
-        * Any other slot (row column, joined dim, local aggregate operand)
-          → ``_base."<first_alias>"`` from ``aliases_by_slot_id``. The
-          generator's aux-slot pass (``_add_local_aux_slots(aggregates_only=
-          True)``) promotes non-isolated aggregate operands into
-          ``base_render_order`` so this lookup always succeeds.
-
-        Cross-model aggregates with ``path != ()`` (forward-path) are not
-        expected here — the planner routes those via plan-level
-        ``where_filter_ids`` / ``having_filter_ids`` instead.
-        """
-        from decimal import Decimal
-
-        from slayer.core.keys import (
-            AggregateKey,
-            ArithmeticKey,
-            BetweenKey,
-            ColumnKey,
-            ColumnSqlKey,
-            InKey,
-            LiteralKey,
-            ScalarCallKey,
-            StarKey,
-            TimeTruncKey,
-            TransformKey,
-        )
-
-        def _slot_alias_column(slot) -> Optional[exp.Expression]:
-            sid = slot.id
-            cm_entry = cross_model_agg_slot_to_cm.get(sid)
-            if cm_entry is not None:
-                cte_name, agg_col_alias = cm_entry
-                return exp.Column(
-                    this=exp.to_identifier(agg_col_alias, quoted=True),
-                    table=exp.to_identifier(cte_name),
-                )
-            aliases = aliases_by_slot_id.get(sid) or []
-            if not aliases:
-                return None
-            return exp.Column(
-                this=exp.to_identifier(aliases[0], quoted=True),
-                table=exp.to_identifier("_base"),
-            )
-
-        if isinstance(key, AggregateKey):
-            slot = slot_by_key.get(key)
-            if slot is not None:
-                resolved = _slot_alias_column(slot)
-                if resolved is not None:
-                    return resolved
-            raise NotImplementedError(
-                f"DEV-1503 outer-WHERE wrapper: AggregateKey "
-                f"{key!r} has no slot/alias resolution. "
-                f"Forward-path cross-model aggregates route via plan "
-                f"where/having ids instead.",
-            )
-        if isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
-            slot = slot_by_key.get(key)
-            if slot is not None:
-                resolved = _slot_alias_column(slot)
-                if resolved is not None:
-                    return resolved
-            raise NotImplementedError(
-                f"DEV-1503 outer-WHERE wrapper: {type(key).__name__} "
-                f"{key!r} has no base alias — operand promotion did not "
-                f"materialise it in ``_base``.",
-            )
-        if isinstance(key, LiteralKey):
-            return self._scalar_to_sqlglot(key.value)
-        if isinstance(key, ArithmeticKey):
-            operands = [
-                self._render_filter_for_outer_wrapper(
-                    key=o,
-                    slot_by_key=slot_by_key,
-                    cross_model_agg_slot_to_cm=cross_model_agg_slot_to_cm,
-                    aliases_by_slot_id=aliases_by_slot_id,
-                )
-                for o in key.operands
-            ]
-            return self._build_arithmetic_for_filter(
-                op=key.op, operands=operands,
-            )
-        if isinstance(key, ScalarCallKey):
-            args = []
-            for a in key.args:
-                if isinstance(a, (Decimal, str, bool)) or a is None:
-                    args.append(self._scalar_to_sqlglot(a))
-                else:
-                    args.append(self._render_filter_for_outer_wrapper(
-                        key=a,
-                        slot_by_key=slot_by_key,
-                        cross_model_agg_slot_to_cm=cross_model_agg_slot_to_cm,
-                        aliases_by_slot_id=aliases_by_slot_id,
-                    ))
-            # One ScalarCall policy everywhere (B5): typed node, dialect
-            # rewrite, then the log-alias fix-up. This branch used to return an
-            # ``exp.Anonymous`` passthrough for everything but ROUND, so a
-            # filter emitted ``IFNULL(...)`` — which Postgres does not have —
-            # while the same key emitted ``COALESCE(...)`` from a projection.
-            #
-            # The log fix-up is load-bearing: ``exp.func("LOG10", x)``
-            # normalises to a generic ``Log(10, x)`` that re-emits as
-            # ``LOG(10, x)``, wrong for dialects with a native single-arg
-            # ``LOG10``. Transpiling alone fixes ifnull and breaks log10.
-            return render_scalar_call(
-                name=key.name, args=args, dialect=self._dialect,
-            )
-        if isinstance(key, BetweenKey):
-            col_expr = self._render_filter_for_outer_wrapper(
-                key=key.column,
-                slot_by_key=slot_by_key,
-                cross_model_agg_slot_to_cm=cross_model_agg_slot_to_cm,
-                aliases_by_slot_id=aliases_by_slot_id,
-            )
-            low_expr = self._render_filter_for_outer_wrapper(
-                key=key.low,
-                slot_by_key=slot_by_key,
-                cross_model_agg_slot_to_cm=cross_model_agg_slot_to_cm,
-                aliases_by_slot_id=aliases_by_slot_id,
-            )
-            high_expr = self._render_filter_for_outer_wrapper(
-                key=key.high,
-                slot_by_key=slot_by_key,
-                cross_model_agg_slot_to_cm=cross_model_agg_slot_to_cm,
-                aliases_by_slot_id=aliases_by_slot_id,
-            )
-            return exp.Between(this=col_expr, low=low_expr, high=high_expr)
-        if isinstance(key, InKey):
-            col_expr = self._render_filter_for_outer_wrapper(
-                key=key.column,
-                slot_by_key=slot_by_key,
-                cross_model_agg_slot_to_cm=cross_model_agg_slot_to_cm,
-                aliases_by_slot_id=aliases_by_slot_id,
-            )
-            value_exprs = [
-                self._scalar_to_sqlglot(lit.value) for lit in key.values
-            ]
-            in_expr = exp.In(this=col_expr, expressions=value_exprs)
-            return exp.Not(this=in_expr) if key.negated else in_expr
-        if isinstance(key, (TransformKey, StarKey)):
-            raise NotImplementedError(
-                f"DEV-1503 outer-WHERE wrapper: filter rendering for "
-                f"{type(key).__name__} not supported on outer wrapper.",
-            )
-        raise NotImplementedError(
-            f"DEV-1503 outer-WHERE wrapper: unsupported ValueKey type "
-            f"{type(key).__name__}",
         )
 
     @staticmethod
@@ -11276,36 +8394,6 @@ class SQLGenerator:
         (``CAST(...)`` / ``Paren``) are not ``Binary`` and pass through."""
         return exp.Paren(this=node) if isinstance(node, exp.Binary) else node
 
-    @staticmethod
-    def _build_arithmetic_for_filter(
-        *, op: str, operands: list,
-    ) -> exp.Expression:
-        """Compose a WHERE / HAVING operator.
-
-        Every operator but the comparisons delegates to the one composer in
-        ``slayer.sql.render.value_expr``; the hand-rolled versions here emitted
-        ``a + (b - c)`` as ``a + b - c``, a different number.
-
-        Comparisons keep :meth:`_paren_if_binary` (DEV-1539): it parenthesises
-        EVERY multi-term operand, so ``(a + b) > 7`` stays explicit by
-        inspection rather than by precedence rules. That is strictly more
-        grouping than the shared policy derives, never less, so it is a
-        readability choice rather than a second correctness policy.
-        """
-        # DSL ``==``/``!=`` map to sqlglot EQ/NEQ; sqlglot then emits the
-        # dialect-correct SQL operator (postgres ``=``/``!=``).
-        _cmp = {
-            "==": exp.EQ, "=": exp.EQ, "!=": exp.NEQ, "<>": exp.NEQ,
-            "<": exp.LT, "<=": exp.LTE, ">": exp.GT, ">=": exp.GTE,
-        }
-        cmp_cls = _cmp.get(op)
-        if cmp_cls is not None:
-            return cmp_cls(
-                this=SQLGenerator._paren_if_binary(operands[0]),
-                expression=SQLGenerator._paren_if_binary(operands[1]),
-            )
-        return render_arithmetic(op, list(operands))
-
     def _build_outer_trim_wrap_sql(
         self,
         *,
@@ -11371,189 +8459,6 @@ class SQLGenerator:
             bundle=bundle,
             aliases_by_slot_id=aliases_by_slot_id,
         ).sql(dialect=self.dialect, pretty=True)
-
-    def _apply_order_limit_from_planned(  # NOSONAR(S3776) — per-order-entry slot-kind dispatch (hidden materialised aggregate vs hidden NYI vs declared public alias) plus LIMIT/OFFSET tail. Each branch is the per-kind resolution contract; extracting helpers would scatter the alias-lookup chain.
-        self,
-        *,
-        select: exp.Select,
-        planned_query,
-        source_relation: str,
-        slots_by_id: dict,
-        source_model=None,
-        bundle=None,
-        aliases_by_slot_id: Optional[Dict[str, List[str]]] = None,
-    ) -> exp.Select:
-        """ORDER BY entries reference slot ids — resolve to the slot's
-        public or materialised alias and emit ``ORDER BY
-        "source_relation.alias" ASC|DESC`` (quoted-identifier form).
-
-        DEV-1501: hidden AggregateKey slots that have been MATERIALISED
-        in the base SELECT (via Change 2's aggregate-only walk over
-        order/filter deps) resolve to their materialised full alias from
-        ``aliases_by_slot_id``. This is called either on the inner base
-        SELECT (when no outer wrap is needed) or on the outer wrap (when
-        hidden materialised columns are trimmed). In the outer-wrap
-        path, the inner subquery exposes the materialised alias as a
-        column the outer SELECT can reference by quoted identifier.
-
-        Hidden ROW / TransformKey / cross-model targets remain
-        unsupported (``Change 2``'s ``aggregates_only=True`` keeps row
-        targets out of ``base_render_order``, preserving today's
-        ``NotImplementedError``).
-        """
-        from slayer.core.keys import (
-            AggregateKey,
-            ArithmeticKey,
-            ColumnKey,
-            ColumnSqlKey,
-            ScalarCallKey,
-            TimeTruncKey,
-            TransformKey,
-        )
-
-        # DEV-1733: the EXACT set of hidden key kinds that resolve to a
-        # materialised alias. Deliberately enumerated rather than "any hidden
-        # slot that happens to carry an alias" — a hidden ROW slot with an
-        # alias must still hit the split-emission / invariant branches below,
-        # never be ordered on as a bare column that is not in the GROUP BY.
-        _MATERIALISED_ORDER_KINDS = (
-            AggregateKey, ArithmeticKey, ScalarCallKey, TransformKey,
-        )
-
-        for order_entry in planned_query.order:
-            slot = slots_by_id.get(order_entry.slot_id)
-            if slot is None:
-                continue
-            if slot.hidden:
-                # DEV-1501: hidden AGGREGATE slots are now materialised
-                # in the base SELECT (Change 2). Resolve to the
-                # materialised full alias from ``aliases_by_slot_id`` and
-                # reference it by quoted identifier — identical shape to
-                # the non-hidden public-alias branch below.
-                aliases = (
-                    aliases_by_slot_id.get(slot.id, [])
-                    if aliases_by_slot_id is not None
-                    else []
-                )
-                if aliases and isinstance(slot.key, _MATERIALISED_ORDER_KINDS):
-                    full_alias = aliases[0]
-                    order_col = exp.Column(
-                        this=exp.to_identifier(full_alias, quoted=True),
-                    )
-                    ascending = order_entry.direction == "asc"
-                    select = select.order_by(
-                        self._ordered(order_col, ascending=ascending),
-                    )
-                    continue
-                # DEV-1712 (Law 2, split emission): a hidden ROW column ordered
-                # in an UNGROUPED query. The plan-time order validation
-                # (``plan_query``) guarantees the only hidden ROW slot that
-                # reaches here is a bare column in a query with no GROUP BY —
-                # grouped row columns are rejected or MAX-wrapped up front, and
-                # aggregates take the branch above. Emit a SPLIT
-                # ``<relation>.<column>`` reference (mixed-case-aware) against
-                # the base FROM scope, identical to how the column would render
-                # if it were a projected dimension.
-                #
-                # DEV-1703 Phase 1: a JOINED column is emitted the same way,
-                # under its ``__`` path alias (``customers__regions.name``). The
-                # row IS the grain in an ungrouped query, so the bare reference
-                # is legal; Law 1 pulls the crossed join into the base FROM (see
-                # ``_collect_joined_paths_for_base``, which walks order targets).
-                key = slot.key
-                row_key = key.column if isinstance(key, TimeTruncKey) else key
-                if (
-                    source_model is not None
-                    and isinstance(row_key, ColumnKey)
-                ):
-                    order_col = self._joined_or_local_dim_expr(
-                        path=row_key.path, leaf=row_key.leaf,
-                        source_model=source_model,
-                        source_relation=source_relation, bundle=bundle,
-                    )
-                    ascending = order_entry.direction == "asc"
-                    select = select.order_by(
-                        self._ordered(order_col, ascending=ascending),
-                    )
-                    continue
-                # A LOCAL DERIVED column (``ColumnSqlKey``, path empty): resolve
-                # its ``Column.sql`` through a throwaway host scope. That both
-                # anchors the expansion AND surfaces whether the SQL crosses a
-                # join. A hidden order-only derived column is NOT projected, so
-                # its join was never pulled into the base FROM — ordering on it
-                # would reference an unbound table. Reject that (project it),
-                # rather than emit invalid SQL; a non-crossing derived column
-                # (e.g. a bare mixed-case identifier) orders on its expression.
-                if (
-                    source_model is not None
-                    and bundle is not None
-                    and isinstance(row_key, ColumnSqlKey)
-                    and not row_key.path
-                ):
-                    # Detect join crossing via a throwaway scope (register-only);
-                    # the resolved expr is discarded — its expansion lacks the
-                    # DEV-1645 mixed-case quoting the planned-dim helper applies.
-                    allocator = self._new_allocator()
-                    scope = ScopeFrame(
-                        scope_id=allocator.next_scope_id(source_relation),
-                        root_model=source_model,
-                        root_relation=source_relation,
-                        bundle=bundle,
-                        dialect=self._dialect,
-                        allocator=allocator,
-                    )
-                    scope.resolve(row_key)
-                    if scope.join_paths:
-                        # The derived column IS local (``orders.cust_region``);
-                        # it merely depends on an unpulled join. Report its own
-                        # qualified name, not a fabricated ``customers.cust_region``.
-                        raise UnresolvableOrderColumnError(
-                            column=row_key.column_name, qualifier=source_relation,
-                        )
-                    # Non-crossing local derived column — emit through the
-                    # planned-dim helper so the expansion is quoted identically
-                    # to a projected dimension (mixed-case-safe).
-                    order_col = self._joined_or_local_dim_expr(
-                        path=(), leaf=row_key.column_name,
-                        source_model=source_model,
-                        source_relation=source_relation, bundle=bundle,
-                    )
-                    ascending = order_entry.direction == "asc"
-                    select = select.order_by(
-                        self._ordered(order_col, ascending=ascending),
-                    )
-                    continue
-                # Defensive: any other hidden shape should have been rejected at
-                # plan time (transform / composite / joined / grouped-row).
-                raise NotImplementedError(
-                    f"ORDER BY references a hidden slot (id={slot.id!r}, key="
-                    f"{type(slot.key).__name__}) that was not resolved at plan "
-                    f"time — this is an internal invariant violation."
-                )
-            # DEV-1713: resolve to the SAME full alias the projection emits —
-            # a joined ROW dimension projects under the DOTTED result key
-            # (``orders.customers.regions.name``), so the ORDER BY must match
-            # it, not the flat ``declared_name`` (``customers__regions__name``),
-            # which would name a column the SELECT never projects.
-            full_alias = self._full_alias_for_slot(
-                slot=slot, source_relation=source_relation, alias_index={},
-            )
-            order_col = exp.Column(
-                this=exp.to_identifier(full_alias, quoted=True),
-            )
-            ascending = order_entry.direction == "asc"
-            select = select.order_by(
-                self._ordered(order_col, ascending=ascending),
-            )
-
-        return self._dialect.apply_pagination(
-            select, limit=planned_query.limit, offset=planned_query.offset,
-        )
-
-    # -----------------------------------------------------------------
-    # §5.10 — the host-base render path's ORDER BY, through the one
-    # resolver. Supersedes ``_apply_order_limit_from_planned`` above.
-    # -----------------------------------------------------------------
 
     def _apply_planned_order_limit(
         self,
@@ -11762,19 +8667,10 @@ def generate_from_planned(
     """Render a ``PlannedQuery`` to SQL.
 
     Module-level entry point: constructs an ``SQLGenerator`` for the
-    requested dialect and delegates to the instance method, which
-    reuses the legacy dialect helpers (``_resolve_sql`` /
-    ``_build_agg`` / ``_wrap_cast_for_type`` / ``_parse_predicate``)
-    so dialect-specific behavior is rendered identically to the
-    legacy ``SQLGenerator.generate()`` path.
-
-    Stage 7b.8 scope: single-model queries with dimensions, local
-    aggregates, Mode-B row filters, ORDER BY, LIMIT/OFFSET, and dim-
-    only deduplication. Cross-model aggregates, time dimensions,
-    window transforms, self-join CTE transforms, and HAVING-phase
-    filters raise ``NotImplementedError`` with a stage marker so
-    silent parity drift is impossible (slices 7b.9–7b.13 land each
-    behavior in turn).
+    requested dialect and delegates to the instance method, which uses
+    the dialect helpers (``_resolve_sql`` / ``_build_agg`` /
+    ``_wrap_cast_for_type`` / ``_parse_predicate``) so dialect-specific
+    behavior is emitted consistently.
     """
     return SQLGenerator(dialect=dialect).generate_from_planned(
         planned_query, bundle=bundle,

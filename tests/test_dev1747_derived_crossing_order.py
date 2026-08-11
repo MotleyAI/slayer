@@ -47,7 +47,6 @@ from tests._dev1747_fixtures import (
 from tests._engine_helpers import _engine_generate
 from slayer.engine.planned import OrderScope
 from slayer.engine.stage_planner import plan_query
-from slayer.sql.generator import SQLGenerator
 
 
 def _squash(sql: str) -> str:
@@ -201,35 +200,8 @@ class TestUngroupedDerivedCrossing:
 # Group 3 — the render-time probe is gone
 # ---------------------------------------------------------------------------
 class TestRenderTimeProbeRemoved:
-    async def test_the_probe_host_method_is_never_called(
-        self, monkeypatch,
-    ) -> None:
-        """The probe builds a throwaway ``ScopeFrame`` inside
-        ``_apply_order_limit_from_planned`` purely to DETECT this crossing at
-        render time, then raises when it finds one. §5.10 makes the decision at
-        plan time, so the method must leave the production path entirely.
-
-        A sentinel on the method rather than on ``ScopeFrame.__init__``:
-        legitimate scopes are constructed constantly, so counting them cannot
-        isolate the probe, whereas "this method is not called" is exactly the
-        claim.
-        """
-
-        assert hasattr(SQLGenerator, "_apply_order_limit_from_planned"), (
-            "the method was deleted; P-J defers deletion to PR 6"
-        )
-
-        def _boom(*_a, **_kw):
-            raise AssertionError(
-                "the render-time crossing probe is still on the production "
-                "path — §5.10 requires the decision to be planned"
-            )
-
-        monkeypatch.setattr(
-            SQLGenerator, "_apply_order_limit_from_planned", _boom,
-        )
-        sql = await _sql(_ungrouped("desc"))
-        assert order_by_text(sql)
+    """The render-time crossing probe (the deleted ``_apply_order_limit_from_planned``)
+    is gone; the crossing decision is now made at plan time, pinned below (P-D)."""
 
     async def test_plan_carries_the_crossing_decision(self) -> None:
         """Plan-level: the order entry's scope is decided before rendering

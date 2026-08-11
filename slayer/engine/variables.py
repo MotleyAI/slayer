@@ -1,8 +1,7 @@
 """Stage 7b.1 (DEV-1450) — variable substitution in the new pipeline.
 
-Moves the ``{var}`` placeholder substitution that previously lived inside
-the legacy enrichment path (``slayer.engine.enrichment.py:1162``) into a
-small, pipeline-friendly module.
+Handles the ``{var}`` placeholder substitution in a small,
+pipeline-friendly module.
 
 Public surface:
 

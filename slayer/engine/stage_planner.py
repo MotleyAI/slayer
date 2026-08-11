@@ -28,6 +28,7 @@ from __future__ import annotations
 from typing import AbstractSet, Dict, FrozenSet, List, Optional, Set, Tuple, Union
 
 from slayer.core.enums import DataType
+from slayer.core.formula import TIME_TRANSFORMS
 from slayer.core.format import NumberFormat
 from slayer.core.errors import (
     AmbiguousReferenceError,
@@ -140,20 +141,10 @@ __all__ = [
 ]
 
 
-# Stage 7b.10 — TIME_NEEDING transform ops that require a resolvable
-# time dimension to render their OVER ``ORDER BY``. Mirrors the legacy
-# ``TIME_TRANSFORMS`` set at ``slayer/core/formula.py:33``.
-_TIME_NEEDING_TRANSFORM_OPS = frozenset({
-    "cumsum",
-    "change",
-    "change_pct",
-    "time_shift",
-    "first",
-    "last",
-    "lag",
-    "lead",
-    "consecutive_periods",
-})
+# Stage 7b.10 — transform ops that require a resolvable time dimension to render
+# their OVER ``ORDER BY``: the canonical ``TIME_TRANSFORMS`` set (single-sourced
+# from ``slayer/core/formula.py``).
+_TIME_NEEDING_TRANSFORM_OPS = TIME_TRANSFORMS
 
 
 def _attach_time_keys(
@@ -755,10 +746,9 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
 
     # DEV-1450 stage 7b.9 — filter list construction in legacy WHERE
     # order: date_range filters first, then SlayerModel.filters
-    # (Mode-A SQL), then user query filters (Mode-B DSL). The legacy
-    # generator emits date_range BEFORE iterating ``enriched.filters``
-    # (slayer/sql/generator.py:2527 vs :2540), and ``enriched.filters``
-    # itself is model filters then query filters (enrichment.py:1192).
+    # (Mode-A SQL), then user query filters (Mode-B DSL). date_range is
+    # emitted before the model/query filters, and model filters precede
+    # query filters.
     #
     # ``bound_filters`` carries the typed-BoundFilter entries (date_range
     # + query filters) for the cross-model routing and projection
@@ -908,9 +898,8 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     # binder-output left ``time_key`` as ``None``. Closes the 7b.4
     # carry-over gap: ``_bind_transform`` does not have query / scope
     # context to resolve the TD, so the planner does it here after all
-    # binding completes. Validation mirrors legacy
-    # ``enrichment.py:564-569`` -- any time-needing transform with no
-    # resolvable TD raises with the legacy phrase.
+    # binding completes. Any time-needing transform with no resolvable
+    # time dimension raises.
     active_td_key: Optional[TimeTruncKey] = None
     if isinstance(scope, ModelScope) and scope.source_model is not None:
         active_td = _resolve_main_time_dimension(
@@ -1298,7 +1287,7 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     #     slot, ordered by its alias (unchanged);
     #   * row column, UNGROUPED query -> split ``orders.created_at`` /
     #     ``customers__regions.name`` emission in the generator's
-    #     ``_apply_order_limit_from_planned`` (the row IS the grain, so the
+    #     ``_apply_planned_order_limit`` (the row IS the grain, so the
     #     bare reference is legal);
     #   * LOCAL row column, GROUPED query -> the bare reference is NOT legal
     #     (the column is not in GROUP BY), so it materialises as a hidden
@@ -2365,8 +2354,7 @@ def _declared_measures_from_query(
         #      ``expand_model_measures`` rewrites the AST but drops the
         #      source measure's type metadata; re-look-up here.
         #   3. ``_type_for_measure_formula`` — aggregation-aware inference.
-        # Mirrors how the legacy ``EnrichedMeasure.type`` honored an
-        # explicit type before falling back to inference.
+        # An explicit type wins over inference at every level of this chain.
         m_type = (
             m.type
             or _saved_model_measure_type(scope=scope, formula=formula)
@@ -2725,21 +2713,20 @@ def _validate_model_filter(
     """Validate a ``SlayerModel.filters`` entry and emit a text-only
     ``FilterPhase`` for it.
 
-    Replicates legacy validation (``slayer/engine/enrichment.py:1138-1219``):
+    Validation:
 
     * ``parse_sql_predicate`` rejects DSL constructs (colon aggregation,
       transform calls) and raw ``OVER(...)`` window functions.
     * Reject references to a ``ModelMeasure`` declared on the same
       model — model filters are WHERE-clause SQL, can't reference
-      aggregates (legacy ``enrichment.py:1147-1153``).
+      aggregates.
     * Reject references to a column whose ``Column.sql`` contains a
-      window function (legacy ``enrichment.py:1205-1219``).
+      window function.
     * DEV-1450 follow-up #4b: references to a NON-windowed derived
-      ``Column.sql`` column are now accepted — the generator inlines the
-      column's expanded SQL at render time
-      (``SQLGenerator._render_model_filter_sql``) and pulls any joins the
-      expansion crosses into the FROM, matching legacy
-      ``resolve_filter_columns``.
+      ``Column.sql`` column are accepted — the generator inlines the
+      column's expanded SQL at render time through the Mode-A door
+      (``ScopeFrame.enter_predicate``) and pulls any joins the expansion
+      crosses into the FROM.
     """
     parsed = parse_sql_predicate(mf)
     measure_names = {m.name for m in (model.measures or [])}
@@ -2765,7 +2752,6 @@ def _validate_model_filter(
         id=f"mf{idx}",
         phase=Phase.ROW,
         text=mf,
-        text_columns=tuple(parsed.columns),
         expression=None,
     )
 

@@ -207,42 +207,6 @@ async def test_is_null_filter_renders_end_to_end(engine):
     )
 
 
-def test_nary_boolean_cross_model_filter_retains_all_operands():
-    """Codex round 2: ``_build_arith_or_cmp_ast`` (cross-model filter
-    rendering) used ``operands[0]``/``[1]`` and silently dropped n-ary
-    boolean operands past index 1. ``a AND b AND c`` would lose ``c``
-    in cross-model HAVING/WHERE, broadening results.
-
-    Unit-test the helper directly to pin the fix; the renderer is
-    static so we don't need an engine."""
-    from slayer.sql.generator import SQLGenerator
-    import sqlglot.expressions as exp
-    gen = SQLGenerator(dialect="sqlite")
-    operands = [
-        exp.column("a"),
-        exp.column("b"),
-        exp.column("c"),
-    ]
-    out = gen._build_arith_or_cmp_ast(op="and", operands=operands)
-    rendered = out.sql(dialect="sqlite")
-    # Every operand must appear in the rendered SQL — c MUST NOT be
-    # silently dropped.
-    assert "a" in rendered and "b" in rendered and "c" in rendered, (
-        f"n-ary AND lost an operand: {rendered}"
-    )
-    # The fold should produce nested And: ``(a AND b) AND c`` or
-    # equivalent. Sanity-check that both intermediate ``AND`` keywords
-    # appear.
-    assert rendered.upper().count(" AND ") == 2, (
-        f"expected two ``AND`` joiners; got {rendered}"
-    )
-    # Same for ``or``.
-    out_or = gen._build_arith_or_cmp_ast(op="or", operands=operands)
-    rendered_or = out_or.sql(dialect="sqlite")
-    assert "a" in rendered_or and "b" in rendered_or and "c" in rendered_or
-    assert rendered_or.upper().count(" OR ") == 2
-
-
 def test_aggregation_eligibility_allowed_aggregations_whitelist():
     """An explicit ``allowed_aggregations`` whitelist overrides the
     type-default gate."""
