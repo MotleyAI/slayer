@@ -5557,9 +5557,11 @@ class SQLGenerator:
 
         Host-rooted refs carry a ``__``-path; inside the CTE the join to the
         target is direct, so the path is stripped and the ref anchors at
-        ``target_relation`` (``is_root=True`` for derived columns). An
-        intermediate-hop path (not ending at the target), or a derived column
-        owned by another model, keeps the legacy ``NotImplementedError``."""
+        ``target_relation``. Both leaf kinds reject an intermediate-hop path
+        (not ending at the target) symmetrically (DEV-1769); the ColumnSqlKey
+        guard is unreachable for binder keys (``model == path[-1]``,
+        ``target_relation == target_model.name``) so it fails closed on
+        inconsistent hand-built / deserialized ones."""
         from slayer.core.keys import ColumnKey, ColumnSqlKey
 
         if isinstance(key, ColumnKey):
@@ -5577,6 +5579,12 @@ class SQLGenerator:
                     f"{key.column_name!r} owned by {key.model!r} "
                     f"(not the CTE target {target_model.name!r}) is not yet "
                     f"rendered in the typed pipeline.",
+                )
+            if key.path and key.path[-1] != target_relation:
+                raise NotImplementedError(
+                    f"DEV-1769: cross-model filter on derived column "
+                    f"{key.column_name!r} via an intermediate-hop path "
+                    f"({key.path!r}) not yet rendered in the typed pipeline.",
                 )
             return (
                 ColumnSqlKey(path=(), model=key.model, column_name=key.column_name)

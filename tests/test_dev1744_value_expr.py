@@ -1,47 +1,27 @@
 """P-G "same construct, same SQL": the single ValueKey→AST renderer.
 
-``slayer/sql/generator.py`` contains FIVE independent ValueKey renderers (the
-issue text says four; the fifth is the outer-wrapper copy):
-
-* R1 ``_render_value_key_for_filter``            — host WHERE / HAVING
-* R2 ``_render_filter_value_key_in_target_scope``— cross-model CTE routed filters
-* R3 ``_render_value_key_against_aliases``       — POST-phase / alias space
-* R4 ``_render_filter_for_outer_wrapper``        — outer combined WHERE
-* R5 ``_render_aggregate_composite_expr``        — AGGREGATE-phase composites
-
-…plus three literal renderers and three arithmetic composers riding along. They
-have drifted, and B5 is the sharpest instance: R1 and R4 emit scalar calls as
-``exp.Anonymous`` passthrough while R2/R3/R5 build a typed node and let the
-dialect transpile it. The same ``ScalarCallKey`` therefore reaches Postgres as
-``IFNULL(...)`` from a filter (Postgres has no ``IFNULL``) and as
-``COALESCE(...)`` from a projection.
-
-This module pins the replacement: ONE ``render_value_key(key, ctx)`` in
-``slayer/sql/render/value_expr.py``, parameterised by an explicit
-``RenderContext`` and failing closed when the context lacks a facility a key
-kind needs. Materialisation stays on ``ScopeFrame`` (P-B) — the renderer
-anchors leaves through ``scope.resolve(ref, consumer=...)`` and never by hand.
+Pins ``render_value_key(key, ctx)`` in ``slayer/sql/render/value_expr.py`` — the
+one ``ValueKey``→AST renderer, parameterised by an explicit ``RenderContext``
+and failing closed when the context lacks a facility a key kind needs. It
+replaced five independent per-path renderers in ``generator.py`` (host
+WHERE/HAVING, cross-model CTE routed filters, POST/alias space, outer combined
+WHERE, AGGREGATE-phase composites) plus three arithmetic composer shims, all of
+which had drifted; those were deleted in DEV-1749. Materialisation stays on
+``ScopeFrame`` (P-B) — the renderer anchors leaves through
+``scope.resolve(ref, consumer=...)`` and never by hand.
 
 Also pinned here: B10 (``ScopeFrame._model_for`` raises instead of silently
-substituting the root model) and the aggregation registry that replaces
-``_build_agg``'s five dispatch mechanisms.
+substituting the root model) and the aggregation registry (``AGG_REGISTRY``)
+that `_build_agg` reads instead of several ad-hoc dispatch mechanisms.
 
-Scope note: this PR defines the COMPLETE context API, including
-``consumer=``, but migrates only SAME-SCOPE call sites (R1 filters, R5
-composites). R2/R3/R4 migrate in PR 3, which also adds the production-path
-proof that ``resolve(consumer=...)`` is exercised — an unused API does not
-establish P-B. The ``consumer`` tests here are therefore renderer-level.
-
-B5 nuance discovered while writing these tests: "uppercase + dialect transpile"
-alone is NOT the whole policy. Building ``exp.func("LOG10", x)`` yields a
-generic ``exp.Log(10, x)`` that re-emits as ``LOG(10, x)`` — which is wrong for
-the dialects that have a native single-arg ``LOG10``
-(``SqlDialect.should_use_native_log``). The generator already owns that rewrite
-(``_rewrite_log_aliases``) but applies it only inside ``_parse`` /
-``_parse_predicate``, never to AST-built calls, so R3 gets ``log10`` WRONG today
-while R1's Anonymous passthrough gets it right. The unified policy is therefore
-transpile-then-log-rewrite, which is the only form that is correct for both
-``ifnull`` and ``log10``.
+B5 is the sharpest drift instance: the same ``ScalarCallKey`` reached Postgres
+as ``IFNULL(...)`` from a filter (Postgres has no ``IFNULL``) and as
+``COALESCE(...)`` from a projection. The unified policy is
+transpile-then-log-rewrite — building ``exp.func("LOG10", x)`` yields a generic
+``exp.Log(10, x)`` re-emitting as ``LOG(10, x)``, wrong for dialects with a
+native single-arg ``LOG10`` (``SqlDialect.should_use_native_log``), so the
+renderer applies ``_rewrite_log_aliases`` to AST-built calls too; that is the
+only form correct for both ``ifnull`` and ``log10``.
 """
 
 from __future__ import annotations

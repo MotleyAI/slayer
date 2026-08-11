@@ -147,6 +147,15 @@ crossing probe that used to build a throwaway `ScopeFrame` purely to *detect* a
 crossing is gone; the crossing is decided at plan time and carried on the order
 entry's `OrderScope`.
 
+When a filter is routed into a cross-model CTE, its column leaves re-root to the
+CTE-local scope through `_reroot_routed_leaf`, which validates the host-rooted
+path **symmetrically** for both `ColumnKey` and `ColumnSqlKey` (DEV-1769): an
+intermediate-hop path — one not ending at the target relation — is rejected for
+either kind rather than silently stripped. The `ColumnSqlKey` guard is
+unreachable for binder-produced keys (the binder builds `model == path[-1]`, and
+every call site passes `target_relation == target_model.name`), so it fails
+closed on inconsistent hand-built / deserialized keys.
+
 ## P-E — Identity is structural end-to-end
 
 Rerooting and isolation operate on typed keys, never by round-tripping through
