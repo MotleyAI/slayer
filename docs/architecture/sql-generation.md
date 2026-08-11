@@ -108,6 +108,19 @@ ways: runtime raising-sentinels (each legacy renderer patched to raise, run
 against production shapes) and a static `ast` walk asserting the exact allowed
 external-reference set per renderer.
 
+When a filter is routed into a cross-model CTE its column leaves re-root to the
+CTE-local scope, and both column-leaf kinds now validate their host-rooted path
+**symmetrically** (DEV-1769): the live `_reroot_routed_leaf` and the legacy
+`_render_filter_value_key_in_target_scope` reject an intermediate-hop path — one
+not ending at the target relation — for `ColumnKey` *and* `ColumnSqlKey` alike,
+rather than the former asymmetry where a `ColumnSqlKey` was checked only for
+model ownership and its path silently stripped. The `ColumnSqlKey` path guard is
+unreachable for binder-produced keys (the binder builds `model == path[-1]`, and
+every call site passes `target_relation == target_model.name`), so it fails
+closed on inconsistent hand-built / deserialized keys instead of re-rooting them;
+`tests/test_dev1769_routed_filter_path_validation.py` pins both the reachable
+shapes end-to-end and the unreachable guard by direct call.
+
 !!! note "Historical: the synthetic-`EnrichedMeasure` adapter"
 
     `generate_from_planned` originally consumed `PlannedQuery` at the top but

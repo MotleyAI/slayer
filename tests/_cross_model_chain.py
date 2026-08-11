@@ -74,17 +74,20 @@ def _countries() -> SlayerModel:
     )
 
 
-def _regions() -> SlayerModel:
+def _regions(*, extra_columns=None) -> SlayerModel:
+    cols = [
+        Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+        Column(name="name", sql="name", type=DataType.TEXT),
+        Column(name="population", sql="population", type=DataType.DOUBLE),
+        Column(name="weight", sql="weight", type=DataType.DOUBLE),
+        Column(name="country_id", sql="country_id", type=DataType.DOUBLE),
+        Column(name="opened_at", sql="opened_at", type=DataType.TIMESTAMP),
+    ]
+    if extra_columns:
+        cols.extend(extra_columns)
     return SlayerModel(
         name="regions", sql_table="regions", data_source="test",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="name", sql="name", type=DataType.TEXT),
-            Column(name="population", sql="population", type=DataType.DOUBLE),
-            Column(name="weight", sql="weight", type=DataType.DOUBLE),
-            Column(name="country_id", sql="country_id", type=DataType.DOUBLE),
-            Column(name="opened_at", sql="opened_at", type=DataType.TIMESTAMP),
-        ],
+        columns=cols,
         joins=[ModelJoin(target_model="countries", join_pairs=[["country_id", "id"]])],
     )
 
@@ -143,6 +146,7 @@ async def _gen(
     *,
     orders_extra=None,
     customers_extra=None,
+    regions_extra=None,
     dialect: str = "postgres",
 ) -> str:
     """Render ``query`` against the orders_x chain and return the SQL."""
@@ -152,7 +156,7 @@ async def _gen(
         dialect=dialect,
         extra_models=[
             _customers_v2(extra_columns=customers_extra),
-            _regions(),
+            _regions(extra_columns=regions_extra),
             _countries(),
         ],
     )
