@@ -171,8 +171,9 @@ The trigger predicate is structural:
 `agg_path` non-empty (forward cross-model, target-rooted) **OR** any
 crossing input (host-rooted). Both route through
 `IsolatedCteCrossModelPlanner.plan`; the host-rooted branch
-calls `_plan_filtered_local`, which re-anchors the measure as a typed key
-(`reroot_aggregate_key`) into a
+calls `_plan_filtered_local`, which carries the EXISTING typed `aggregate_key`
+unchanged (the sub-plan is rooted at the SAME host model, so there is nothing to
+re-root) into a
 **host-rooted** nested `PlannedQuery` (same `source_model`, same dims/TDs,
 only the crossing measure as the single aggregate) and attaches it via the
 same `rerooted_plan` / `rerooted_grain_pairs` / `rerooted_agg_slot_id`

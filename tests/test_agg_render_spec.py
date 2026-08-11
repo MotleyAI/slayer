@@ -1120,5 +1120,6 @@ class TestBuildAggRegistryDispatch:
 
     def test_unknown_aggregation_without_a_formula_raises(self) -> None:
         gen = SQLGenerator(dialect="postgres")
+        spec = self._spec("definitely_not_an_aggregation")
         with pytest.raises((ValueError, KeyError, AggregationNotAllowedError)):
-            gen._build_agg(self._spec("definitely_not_an_aggregation"))
+            gen._build_agg(spec)

@@ -37,6 +37,10 @@ from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.planned import ValueSlot
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.ranked_planner import (
+    explicit_ranking_time_arg,
+    resolve_ranking_time_key,
+)
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import plan_query
 from slayer.sql.generator import SQLGenerator
@@ -929,20 +933,14 @@ class TestGateUsesSharedArgSelection:
         )
 
     def test_scalar_first_positional_is_not_an_explicit_time_arg(self) -> None:
-        from slayer.engine.ranked_planner import explicit_ranking_time_arg
-
         assert explicit_ranking_time_arg(self._scalar_first_arg_key()) is None
 
     def test_scalar_first_arg_gate_requires_default_time(self) -> None:
-        from slayer.engine.ranked_planner import resolve_ranking_time_key
-
         orders = _u_orders()  # no default_time_dimension
         bundle = _u_bundle(orders)
+        key = self._scalar_first_arg_key()
         with pytest.raises(ValueError, match="ranking time"):
-            resolve_ranking_time_key(
-                key=self._scalar_first_arg_key(),
-                root_model=orders, bundle=bundle,
-            )
+            resolve_ranking_time_key(key=key, root_model=orders, bundle=bundle)
 
 
 # --------------------------------------------------------------------------- #
