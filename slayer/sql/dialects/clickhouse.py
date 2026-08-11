@@ -21,6 +21,7 @@ class ClickhouseDialect(SqlDialect):
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
+    max_identifier_bytes: int | None = None  # unbounded
 
     def build_median(
         self,

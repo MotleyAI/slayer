@@ -20,7 +20,11 @@ import sqlalchemy as sa
 from sqlglot import exp
 
 from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, DataType
-from slayer.core.errors import AmbiguousModelError, ForcedFilterError
+from slayer.core.errors import (
+    AmbiguousModelError,
+    ForcedFilterError,
+    IdentifierCollisionError,
+)
 from slayer.core.policy import JoinFilterRuleset, SessionPolicy
 from slayer.core.format import NumberFormat, NumberFormatType, format_number
 from slayer.core.models import (
@@ -61,6 +65,7 @@ from slayer.engine.enriched import (
     CrossModelMeasure,
     EnrichedMeasure,
     EnrichedQuery,
+    all_projection_aliases,
     public_projection_aliases,
 )
 from slayer.engine.enrichment import enrich_query
@@ -72,25 +77,28 @@ from slayer.memories.resolver import (
 )
 from slayer.sql.client import SlayerSQLClient
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type, get_dialect
+from slayer.sql.dialects._identifier_fit import fit_identifier
 from slayer.sql import engine_factory
-from slayer.sql.engine_factory import _runtime_fingerprint
+from slayer.sql.engine_factory import EngineCacheKey
+from slayer.sql.engine_factory import _cache_key as _engine_cache_key
 from slayer.sql.generator import SQLGenerator
-from slayer.sql.reserved_keywords import SLAYER_RESERVED_KEYWORDS
 from slayer.sql.session_policy import ScopedTable, apply_session_policy
 from slayer.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
 
 
-def _sql_client_cache_key(datasource: DatasourceConfig) -> tuple[str, str]:
+def _sql_client_cache_key(datasource: DatasourceConfig) -> EngineCacheKey:
     """Cache key for ``SlayerQueryEngine._sql_clients``.
 
-    Mirrors ``engine_factory``'s cache key so two datasources differing
-    in (e.g.) Snowflake ``warehouse`` get distinct ``SlayerSQLClient``
-    instances (and therefore distinct factory-cached engines with the
-    correct per-connection ``USE`` listener).
+    Delegates to ``engine_factory``'s key builder rather than re-deriving it:
+    each client memoizes the engine it got from the factory, so if the two keys
+    disagreed a caller could be handed a client whose engine was built for
+    different credentials. Sharing one implementation makes that impossible.
     """
-    return (datasource.get_connection_string(), _runtime_fingerprint(datasource))
+    return _engine_cache_key(
+        datasource=datasource, connection_string=datasource.get_connection_string(),
+    )
 
 
 class _ResolvedItem(BaseModel):
@@ -495,7 +503,7 @@ class _Prepared(BaseModel):
     sql: str
     attributes: "ResponseAttributes"
     expected_columns: list[str]
-    ds_key: tuple[str, str]
+    ds_key: EngineCacheKey
     ds_fingerprint: str
 
 
@@ -549,7 +557,7 @@ class SlayerQueryEngine:
         # ``engine_factory``'s cache so Snowflake datasources sharing a
         # connection_name but differing in warehouse/role/database/schema
         # get distinct clients (DEV-1551).
-        self._sql_clients: dict[tuple[str, str], SlayerSQLClient] = {}
+        self._sql_clients: dict[EngineCacheKey, SlayerSQLClient] = {}
         # DEV-1578: immutable, engine-global forced-filter policy. When set,
         # every generated SQL is rewritten to scope each physical table to the
         # configured tenant before execution / dry-run / explain / profiling.
@@ -563,7 +571,7 @@ class SlayerQueryEngine:
         # datasource, for the correlated-subquery join-rule gate. ``None`` (or
         # a missing entry) fails closed. Populated by
         # ``_preflight_clickhouse_correlated`` before the policy rewrite.
-        self._ch_version_cache: dict[tuple[str, str], tuple[int, int] | None] = {}
+        self._ch_version_cache: dict[EngineCacheKey, tuple[int, int] | None] = {}
         # DEV-1587: per-engine, in-memory, opt-in query result cache. The
         # cache is local to this engine instance so two engines with
         # different RLS / connection settings keep separate caches.
@@ -1357,7 +1365,7 @@ class SlayerQueryEngine:
         return await self._run_and_build(prepared=prepared, client=client)
 
     def _get_client(
-        self, datasource: DatasourceConfig, ds_key: tuple[str, str]
+        self, datasource: DatasourceConfig, ds_key: EngineCacheKey
     ) -> SlayerSQLClient:
         """Reuse (or open) the SQL client + connection pool for a datasource.
 
@@ -1383,10 +1391,11 @@ class SlayerQueryEngine:
             )
             raise
         timing.record("execute", _t)
-        # Dialect-driven read-side decode: BigQuery reverses its alias
-        # mangling here so the response keys match SLayer's universal
-        # dotted shape. Default hook is identity for every other dialect.
-        rows = get_dialect(prepared.dialect).decode_result_keys(rows)
+        # Reverse dialect alias fitting/mangling so response keys are canonical.
+        # Pass the unfiltered alias set: a row may carry a hidden ORDER-BY hoist.
+        rows = get_dialect(prepared.dialect).decode_result_keys(
+            rows, aliases=all_projection_aliases(prepared.enriched),
+        )
         columns = prepared.expected_columns if not rows else []  # [] auto-derives
         return SlayerResponse(
             data=rows,
@@ -1604,21 +1613,21 @@ class SlayerQueryEngine:
 
     async def _refresh_scan_all(
         self, snapshot: "dict[str, _CacheEntry]", result: RefreshResult,
-    ) -> "tuple[dict[tuple[tuple[str, str], str, str], Any], set]":
+    ) -> "tuple[dict[tuple[EngineCacheKey, str, str], Any], set]":
         """Collate applicable ``(ds_key, table)`` scan targets across all
         entries and run ONE batched scan per pair. Scan failures are recorded
         as continue-on-error ``RefreshError(phase="refresh_key_scan")`` and the
         table is marked failed so its dependent entries are left unchanged."""
-        targets: dict[tuple[tuple[str, str], str], set] = {}
-        dialects: dict[tuple[str, str], str] = {}
-        clients: dict[tuple[str, str], SlayerSQLClient] = {}
+        targets: dict[tuple[EngineCacheKey, str], set] = {}
+        dialects: dict[EngineCacheKey, str] = {}
+        clients: dict[EngineCacheKey, SlayerSQLClient] = {}
         for entry in snapshot.values():
             ds_key = tuple(entry.ds_key)
             dialects[ds_key] = entry.dialect
             for table, expr in entry.applicable:
                 targets.setdefault((ds_key, table), set()).add(expr)
 
-        fresh: dict[tuple[tuple[str, str], str, str], Any] = {}
+        fresh: dict[tuple[EngineCacheKey, str, str], Any] = {}
         failed: set = set()
         for (ds_key, table), exprs in targets.items():
             expr_list = sorted(exprs)
@@ -1639,9 +1648,9 @@ class SlayerQueryEngine:
 
     async def _client_for_refresh(
         self,
-        ds_key: tuple[str, str],
+        ds_key: EngineCacheKey,
         snapshot: "dict[str, _CacheEntry]",
-        clients: dict[tuple[str, str], SlayerSQLClient],
+        clients: dict[EngineCacheKey, SlayerSQLClient],
     ) -> SlayerSQLClient:
         """Get the cached client for ``ds_key``, reopening it from an entry's
         recorded resolved datasource name if it isn't cached."""
@@ -1671,7 +1680,7 @@ class SlayerQueryEngine:
         *,
         key: str,
         entry: _CacheEntry,
-        fresh_values: "dict[tuple[tuple[str, str], str, str], Any]",
+        fresh_values: "dict[tuple[EngineCacheKey, str, str], Any]",
         failed_tables: set,
         result: RefreshResult,
     ) -> None:
@@ -2039,6 +2048,12 @@ class SlayerQueryEngine:
         except Exception:
             logger.warning("get_column_types probe failed for model '%s'", model_name)
             return {}
+
+        # The probe's metadata keys are the emitted (fitted) names; decode them
+        # to canonical or an over-limit measure drops out of the type map.
+        raw_types = get_dialect(dialect).decode_result_keys(
+            [raw_types], aliases=all_projection_aliases(enriched),
+        )[0]
 
         # Map qualified aliases (e.g., "orders.revenue_max") back to bare measure names
         result: dict[str, str] = {}
@@ -3208,19 +3223,23 @@ class SlayerQueryEngine:
         # from the alias by stripping the source model prefix and replacing
         # dots with underscores.
         def _alias_to_short(alias: str) -> str:
-            """Convert result alias to a flat column name for the virtual model.
+            """Flatten a result alias to the virtual model's column name, then fit it.
 
-            The query result is a self-contained table without the joins the
-            source model may have had, so dot syntax (join paths) is not
-            applicable. We use ``__`` to preserve the path information:
-
-            'orders.customers.regions.name' → 'customers__regions__name'
-            'orders.count'                  → 'count'
+            The result is a self-contained table without joins, so join-path
+            dots become ``__``: 'orders.customers.regions.name' → 'customers__regions__name'.
             """
-            # Strip source model prefix
             stripped = alias.split(".", 1)[-1] if "." in alias else alias
-            # Replace remaining dots with __ to encode the original join path
-            return stripped.replace(".", "__")
+            return _fit_short(stripped.replace(".", "__"))
+
+        def _fit_short(name: str) -> str:
+            """Fit a virtual-model short to the dialect's budget; identity under the limit.
+
+            Every short is both an output alias and a downstream ``Column.name``,
+            and caller-supplied names can be arbitrarily long.
+            """
+            return fit_identifier(
+                name, limit=get_dialect(dialect).max_identifier_bytes,
+            )
 
         # (inner_alias, short_name, data_type, label, description, format)
         column_map = []
@@ -3243,14 +3262,14 @@ class SlayerQueryEngine:
                 measure_name=src_name,
                 aggregation=m.aggregation,
             )
-            column_map.append((m.alias, m.name, DataType.DOUBLE, label, desc, fmt))
+            column_map.append((m.alias, _fit_short(m.name), DataType.DOUBLE, label, desc, fmt))
         for t in enriched.transforms:
             column_map.append(
-                (t.alias, t.name, DataType.DOUBLE, t.label, None, NumberFormat(type=NumberFormatType.FLOAT))
+                (t.alias, _fit_short(t.name), DataType.DOUBLE, t.label, None, NumberFormat(type=NumberFormatType.FLOAT))
             )
         for e in enriched.expressions:
             column_map.append(
-                (e.alias, e.name, DataType.DOUBLE, e.label, None, NumberFormat(type=NumberFormatType.FLOAT))
+                (e.alias, _fit_short(e.name), DataType.DOUBLE, e.label, None, NumberFormat(type=NumberFormatType.FLOAT))
             )
         for cm in enriched.cross_model_measures:
             # DEV-1448: when the user supplied an explicit ``name``, cm.name is
@@ -3269,37 +3288,51 @@ class SlayerQueryEngine:
             # leak into the virtual model's column set. Only user-declared
             # renames qualify for the bare-name short.
             if cm.user_declared and cm.name and "." not in cm.name:
-                short = cm.name
+                short = _fit_short(cm.name)  # still fitted: deterministic + collision-checked
             else:
                 short = _alias_to_short(cm.alias)
             column_map.append((cm.alias, short, DataType.DOUBLE, cm.label, None, cm.format))
 
-        # Wrap inner SQL: SELECT <inner_alias> AS <short>, ... FROM (inner) AS _inner
-        # DEV-1571 Bug 3 follow-up: identifier quoting must match the
-        # dialect ``inner_sql`` was generated for. On MySQL the inner CTEs
-        # use backticks; on T-SQL the inner CTEs use brackets AND have
-        # their dotted aliases mangled. Hardcoded ANSI double quotes
-        # would either fail to parse (MySQL) or reference an alias the
-        # mangled inner subquery doesn't expose (T-SQL).
-        # DEV-1686: the inner ``alias`` is always dialect-quoted; the ``short``
-        # output alias must also be quoted when it is a reserved word (a
-        # user-declared cross-model rename like ``order``, or an
-        # ``_alias_to_short`` that yields one), else ``AS order`` is bare and
-        # the wrapped SQL fails to parse/execute.
+        # Wrap inner SQL: SELECT <inner_alias> AS <short>, ... FROM (inner) AS _inner.
+        # The ``short`` output alias must be spelled EXACTLY as the downstream
+        # reference will be, so both resolve to the same column. Run it through the
+        # two mechanisms the reference side uses: ``_maybe_quote_ident`` (DEV-1645:
+        # quote iff mixed-case) and ``Identifier.sql`` (dialect-reserved words /
+        # unsafe shapes). Both dialect-driven — unconditional quoting breaks bare
+        # refs on upper-folding backends; a fixed keyword set misses native words
+        # like MySQL's ``index``.
         def _short_sql(short: str) -> str:
-            if short.lower() in SLAYER_RESERVED_KEYWORDS:
-                return exp.Identifier(this=short, quoted=True).sql(dialect=dialect)
-            return short
+            ident = exp.Identifier(this=short, quoted=False)
+            SQLGenerator._maybe_quote_ident(ident)
+            return ident.sql(dialect=dialect)
+
+        # Validate the whole short allocation: two shorts colliding on one output
+        # name silently drop a column. Keyed CASEFOLDED — conservative, since a
+        # mixed-case short is quoted (case-preserved) and would not really collide
+        # with its folded twin, but SLayer carries no per-dialect fold direction, so
+        # a loud error beats a silent duplicate on the backends this protects.
+        short_owner: dict[str, str] = {}
+        for alias, short, _, _, _, _ in column_map:
+            prior_alias = short_owner.setdefault(short.casefold(), alias)
+            if prior_alias != alias:
+                raise IdentifierCollisionError(
+                    first=prior_alias, second=alias, emitted=short,
+                    dialect=dialect,
+                    limit=get_dialect(dialect).max_identifier_bytes,
+                    namespace="query-backed model column",
+                )
 
         rename_parts = [
             f'{exp.Identifier(this=alias, quoted=True).sql(dialect=dialect)} AS {_short_sql(short)}'
             for alias, short, _, _, _, _ in column_map
         ]
         wrapped_sql = f"SELECT {', '.join(rename_parts)} FROM ({inner_sql}) AS _inner"
-        # DEV-1571 Bug 2: apply the dialect's emitted-SQL rewrite (e.g.
-        # T-SQL bracket-mangling) so the rename clause's inner-alias
-        # references match what the inner subquery actually projects.
-        wrapped_sql = get_dialect(dialect).rewrite_emitted_sql(wrapped_sql)
+        # Apply the dialect's emitted-SQL rewrite (T-SQL bracket-mangling, DEV-1756
+        # length-fitting) so the wrapper's inner-alias references match the fitted
+        # names the inner subquery projects. Same alias set the inner SQL used.
+        wrapped_sql = get_dialect(dialect).rewrite_emitted_sql(
+            sql=wrapped_sql, aliases=all_projection_aliases(enriched),
+        )
 
         # One Column per result column — each is potentially both a dimension
         # (group-by) or measure (with colon-aggregation) at query time.
@@ -3326,7 +3359,9 @@ class SlayerQueryEngine:
                 agg_shorts.add(_alias_to_short(cm.alias))
         for m in enriched.measures:
             if m.from_cross_model_intercept:
-                agg_shorts.add(m.name)
+                # Same fitting the column_map entry got, else the breadcrumb
+                # names a column the virtual model never has.
+                agg_shorts.add(_fit_short(m.name))
 
         # DEV-1449: record the lineage breadcrumb so outer-stage dotted-ref
         # lookup can strip the right ancestor prefix and find the flat

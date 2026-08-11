@@ -49,6 +49,7 @@ from slayer.engine.ingestion import (
     _sa_type_to_data_type,
 )
 from slayer.sql.client import SlayerSQLClient
+from slayer.sql.engine_factory import EngineCacheKey
 
 logger = logging.getLogger(__name__)
 
@@ -2081,7 +2082,7 @@ async def _collect_sql_diffs(
     *,
     datasource: DatasourceConfig,
     sql_models: list[SlayerModel],
-    sql_clients: dict[tuple[str, str], SlayerSQLClient] | None,
+    sql_clients: dict[EngineCacheKey, SlayerSQLClient] | None,
 ) -> dict[str, tuple[ToDeleteEntry | None, set[str]]]:
     """Trial-execute each sql-mode model concurrently and produce its diff."""
     out: dict[str, tuple[ToDeleteEntry | None, set[str]]] = {}
@@ -2117,7 +2118,7 @@ async def validate_datasource(
     *,
     datasource: DatasourceConfig,
     models: list[SlayerModel],
-    sql_clients: dict[tuple[str, str], SlayerSQLClient] | None = None,
+    sql_clients: dict[EngineCacheKey, SlayerSQLClient] | None = None,
 ) -> list[ToDeleteEntry]:
     """Validate every persisted model in ``models`` (all in the same DS)
     against the live schema of ``datasource``. Read-only.

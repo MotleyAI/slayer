@@ -811,6 +811,12 @@ class DatasourceConfig(BaseModel):
     # When unset, BigQuery falls back to Application Default Credentials
     # (``GOOGLE_APPLICATION_CREDENTIALS`` env var or attached compute identity).
     credentials_json: str | None = Field(default=None, repr=False)
+    # BigQuery-specific. A Google OAuth authorized-user grant as JSON, in the
+    # shape ``Credentials.from_authorized_user_info`` consumes — the per-end-user
+    # auth path, so queries run with that user's permissions. Mutually exclusive
+    # with ``credentials_json``, which cannot carry a grant: the driver feeds it
+    # to ``from_service_account_info``.
+    oauth_credentials_json: str | None = Field(default=None, repr=False)
 
     @model_validator(mode="before")
     @classmethod
