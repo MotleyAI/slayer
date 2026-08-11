@@ -28,6 +28,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
 from sqlglot.errors import ParseError
 
+from slayer.core.enums import DataType
 from slayer.core.errors import ModeASqlParseError, UnknownReferenceError
 from slayer.core.keys import ColumnKey, ColumnSqlKey
 from slayer.core.models import SlayerModel
@@ -335,6 +336,29 @@ class ScopeFrame(BaseModel):
         raise NotImplementedError(
             f"ScopeFrame.resolve does not yet handle ref type {type(ref).__name__}",
         )
+
+    def column_type(self, ref: Ref) -> Optional[DataType]:
+        """The declared ``DataType`` of the column ``ref`` names, or ``None``
+        when it is unknown (an anonymous free-SQL string, or a name absent from
+        its model). Used by the filter-CAST policy (DEV-1763); the model lookup
+        mirrors :meth:`_anchor` / :meth:`_model_for` so the type and the
+        rendering agree on which model owns the column."""
+        if isinstance(ref, ColumnSqlKey):
+            model = self._model_for(ref.model)
+            col = next(
+                (c for c in model.columns if c.name == ref.column_name), None,
+            )
+            return col.type if col is not None else None
+        if isinstance(ref, ColumnKey):
+            if not ref.path:
+                model = self.root_model
+            else:
+                model = self.bundle.get_referenced_model(ref.path[-1])
+            if model is None:
+                return None
+            col = next((c for c in model.columns if c.name == ref.leaf), None)
+            return col.type if col is not None else None
+        return None
 
     def _model_for(self, name: str) -> SlayerModel:
         """Resolve a model name against the scope root, then the bundle.

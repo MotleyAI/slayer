@@ -80,8 +80,16 @@ from slayer.sql.render.ranked import (
     ranked_ordered,
 )
 from slayer.sql.render.value_expr import (
+    AliasFacilities,
+    CompositeFacilities,
+    FilterFacilities,
+    RenderContext,
+    _filter_cast_type,
+    _wrap_cast_for_type,
+    contains_aggregate,
     render_arithmetic,
     render_scalar_call,
+    render_value_key,
     rewrite_log_alias,
 )
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
@@ -384,51 +392,10 @@ def _collapses_to_ranked_cte(planned_query) -> bool:
     ]
 
 
-def _wrap_cast_for_type(expr: exp.Expression, dt: Optional[DataType]) -> exp.Expression:
-    """DEV-1361: wrap ``expr`` in ``CAST(expr AS <dialect-rendered dt>)`` so the
-    declared SLayer ``DataType`` is enforced in emitted SQL.
-
-    Skipped when ``dt`` is ``None`` (no declared type) or ``DataType.TEXT``
-    (cosmetic — SQL TEXT/VARCHAR roundtripping is already a no-op for our
-    purposes and ``CAST(... AS TEXT)`` does not unwrap SQLite's
-    JSON-quoted-string return values anyway). Also skipped when ``dt`` is
-    opaque (``DataType.UNKNOWN``) — there is no such SQL type, so
-    ``CAST(x AS UNKNOWN)`` is invalid in every dialect. Skipped when ``expr`` is a
-    plain ``exp.Column`` (possibly qualified ``model.col``) — those are
-    bare column references whose runtime type already matches the declared
-    type by definition; wrapping them in CAST is dead noise and on SQLite
-    can be lossy (e.g. ``CAST(text_timestamp AS TIMESTAMP)`` truncating
-    to a year). Idempotent: if ``expr`` is already a CAST to the same
-    target, return it unchanged.
-    """
-    if dt is None or dt == DataType.TEXT or dt.is_opaque:
-        return expr
-    if isinstance(expr, exp.Column):
-        return expr
-    target = exp.DataType.Type(dt.value)
-    if isinstance(expr, exp.Cast):
-        existing = expr.args.get("to")
-        if isinstance(existing, exp.DataType) and existing.this == target:
-            return expr
-    return exp.Cast(this=expr, to=exp.DataType(this=target))
-
-
-def _filter_cast_type(dt: Optional[DataType]) -> Optional[DataType]:
-    """The CAST target to use when rendering a derived column inside a
-    WHERE / HAVING predicate (DEV-1450 #4a).
-
-    Temporal types (``DATE`` / ``TIMESTAMP``) are suppressed: in a filter
-    the derived expression is COMPARED, not type-enforced, and
-    ``CAST(text AS TIMESTAMP)`` on SQLite gives the expression NUMERIC
-    affinity — truncating a string timestamp to its leading year and
-    breaking ``BETWEEN`` / comparison. A base temporal column in the same
-    position is never cast (it renders as a bare ``exp.Column``), so this
-    keeps the derived form on par. Non-temporal types pass through so a
-    derived numeric / boolean column still gets its enforcing CAST.
-    """
-    if dt in (DataType.DATE, DataType.TIMESTAMP):
-        return None
-    return dt
+# ``_wrap_cast_for_type`` / ``_filter_cast_type`` moved to
+# ``slayer.sql.render.value_expr`` (DEV-1763 P-G): the filter-CAST policy is now
+# renderer-visible, and they are re-exported above so this module's call sites
+# and their pinning tests are unchanged.
 
 logger = logging.getLogger(__name__)
 
@@ -2185,10 +2152,15 @@ class SQLGenerator:
                     else cslot.declared_name
                 )
                 full_alias = f"{source_relation}.{alias}"
-                rendered = self._render_value_key_against_aliases(
-                    key=cslot.key,
-                    slot_id_by_key=slot_id_by_key,
-                    available_alias_by_slot_id=available_alias_by_slot_id,
+                rendered = render_value_key(
+                    cslot.key,
+                    RenderContext(
+                        dialect=self._dialect,
+                        aliases=AliasFacilities(
+                            slot_id_by_key=slot_id_by_key,
+                            available_alias_by_slot_id=available_alias_by_slot_id,
+                        ),
+                    ),
                 )
                 if cslot.type is not None:
                     rendered = _wrap_cast_for_type(rendered, cslot.type)
@@ -3102,15 +3074,22 @@ class SQLGenerator:
                     # (``amount:weighted_avg(weight=<derived>) + quantity:sum``)
                     # embeds its expanded join-anchored expression instead of a
                     # bare, non-existent name.
-                    composite, any_agg = self._render_aggregate_composite_expr(
-                        key=key,
-                        slot=slot,
-                        source_model=source_model,
-                        source_relation=source_relation,
-                        bundle=bundle,
-                        resolved_agg_kwargs=resolved_agg_kwargs,
+                    composite = render_value_key(
+                        key,
+                        RenderContext(
+                            dialect=self._dialect,
+                            composites=CompositeFacilities(
+                                agg_builder=self._composite_agg_builder(
+                                    slot=slot,
+                                    source_model=source_model,
+                                    source_relation=source_relation,
+                                    bundle=bundle,
+                                    resolved_agg_kwargs=resolved_agg_kwargs,
+                                ),
+                            ),
+                        ),
                     )
-                    if any_agg:
+                    if contains_aggregate(key):
                         composite = _wrap_cast_for_type(composite, slot.type)
                         has_aggregation = True
                     select_columns.append(composite.copy().as_(full_alias))
@@ -4073,6 +4052,36 @@ class SQLGenerator:
             base_select, aliases_by_slot_id, has_aggregation,
             group_by_keys, True, first_last_state,
         )
+
+    def _composite_agg_builder(
+        self, *, slot, source_model, source_relation: str, bundle,
+        resolved_agg_kwargs,
+    ):
+        """The AGGREGATE-phase composite seam (DEV-1763 P-G): render one
+        aggregate LEAF of a composite inline via the same synth + ``_build_agg``
+        path the single-aggregate branch uses. ``render_value_key`` owns the
+        composite STRUCTURE (arithmetic / scalar calls); only the aggregate leaf
+        needs the generator's spec builder + resolved column-ref kwargs. The
+        live base-SELECT site threads no rn-state (that is the dead first/last
+        path); the ``__op__`` placeholder alias is inert without it."""
+
+        def build(agg_key) -> exp.Expression:
+            if getattr(agg_key.source, "path", ()):
+                raise NotImplementedError(
+                    "DEV-1450: cross-model aggregate operand inside an "
+                    "AGGREGATE-phase composite is not yet supported; factor it "
+                    "into a multi-stage source_queries model."
+                )
+            synth = self._build_agg_render_spec_from_planned(
+                slot=slot, key=agg_key, source_model=source_model,
+                source_relation=source_relation, full_alias="__op__",
+                bundle=bundle,
+                resolved_agg_kwargs=(resolved_agg_kwargs or {}).get(agg_key),
+            )
+            agg_expr, _is_agg = self._build_agg(synth)
+            return agg_expr
+
+        return build
 
     def _render_aggregate_composite_expr(  # NOSONAR(S3776) — sequential isinstance dispatch over ValueKey union (AggregateKey / ArithmeticKey / ScalarCallKey / LiteralKey) with rn-state + composite-alias-by-key threading. Each branch carries the per-type recursion contract; extracting helpers would scatter the rn-state forwarding chain.
         self,
@@ -5535,11 +5544,17 @@ class SQLGenerator:
                 )
 
             def _render_outer_composite(cslot) -> exp.Expression:
-                rendered = self._render_filter_for_outer_wrapper(
-                    key=cslot.key,
-                    slot_by_key=slot_by_key,
-                    cross_model_agg_slot_to_cm=outer_composite_cm_map,
-                    aliases_by_slot_id=aliases_by_slot_id,
+                rendered = render_value_key(
+                    cslot.key,
+                    RenderContext(
+                        dialect=self._dialect,
+                        aliases=self._outer_wrapper_alias_facilities(
+                            slot_by_key=slot_by_key,
+                            cross_model_agg_slot_to_cm=outer_composite_cm_map,
+                            aliases_by_slot_id=aliases_by_slot_id,
+                        ),
+                        filters=FilterFacilities(paren_comparison_operands=True),
+                    ),
                 )
                 if cslot.type is not None:
                     rendered = _wrap_cast_for_type(rendered, cslot.type)
@@ -5840,11 +5855,17 @@ class SQLGenerator:
                     rk_agg_col_for_plan[plan.aggregate_slot_id],
                 )
             for fp in outer_where_filters:
-                rendered = self._render_filter_for_outer_wrapper(
-                    key=fp.expression.value_key,
-                    slot_by_key=slot_by_key,
-                    cross_model_agg_slot_to_cm=cross_model_agg_slot_to_cm,
-                    aliases_by_slot_id=aliases_by_slot_id,
+                rendered = render_value_key(
+                    fp.expression.value_key,
+                    RenderContext(
+                        dialect=self._dialect,
+                        aliases=self._outer_wrapper_alias_facilities(
+                            slot_by_key=slot_by_key,
+                            cross_model_agg_slot_to_cm=cross_model_agg_slot_to_cm,
+                            aliases_by_slot_id=aliases_by_slot_id,
+                        ),
+                        filters=FilterFacilities(paren_comparison_operands=True),
+                    ),
                 )
                 if isinstance(rendered, (exp.And, exp.Or)):
                     rendered = exp.Paren(this=rendered)
@@ -5870,11 +5891,17 @@ class SQLGenerator:
             for fp in planned_query.filters_by_phase:
                 if fp.phase != Phase.POST or fp.expression is None:
                     continue
-                rendered = self._render_filter_for_outer_wrapper(
-                    key=fp.expression.value_key,
-                    slot_by_key=slot_by_key,
-                    cross_model_agg_slot_to_cm=wm_slot_to_cte,
-                    aliases_by_slot_id=aliases_by_slot_id,
+                rendered = render_value_key(
+                    fp.expression.value_key,
+                    RenderContext(
+                        dialect=self._dialect,
+                        aliases=self._outer_wrapper_alias_facilities(
+                            slot_by_key=slot_by_key,
+                            cross_model_agg_slot_to_cm=wm_slot_to_cte,
+                            aliases_by_slot_id=aliases_by_slot_id,
+                        ),
+                        filters=FilterFacilities(paren_comparison_operands=True),
+                    ),
                 )
                 if isinstance(rendered, (exp.And, exp.Or)):
                     rendered = exp.Paren(this=rendered)
@@ -6163,10 +6190,15 @@ class SQLGenerator:
                     else cslot.declared_name
                 )
                 full_alias = f"{source_relation}.{alias}"
-                rendered = self._render_value_key_against_aliases(
-                    key=cslot.key,
-                    slot_id_by_key=slot_id_by_key,
-                    available_alias_by_slot_id=available_alias_by_slot_id,
+                rendered = render_value_key(
+                    cslot.key,
+                    RenderContext(
+                        dialect=self._dialect,
+                        aliases=AliasFacilities(
+                            slot_id_by_key=slot_id_by_key,
+                            available_alias_by_slot_id=available_alias_by_slot_id,
+                        ),
+                    ),
                 )
                 if cslot.type is not None:
                     rendered = _wrap_cast_for_type(rendered, cslot.type)
@@ -7064,6 +7096,131 @@ class SQLGenerator:
                 location=f"Column.filter on model {scope.root_model.name!r}",
             )
 
+    def _reroot_routed_leaf(self, key, *, target_relation: str, target_model):
+        """Re-root a routed COLUMN leaf (``ColumnKey`` / ``ColumnSqlKey``) to the
+        CTE-local scope, or return ``None`` when ``key`` is not a column leaf.
+
+        Host-rooted refs carry a ``__``-path; inside the CTE the join to the
+        target is direct, so the path is stripped and the ref anchors at
+        ``target_relation`` (``is_root=True`` for derived columns). An
+        intermediate-hop path (not ending at the target), or a derived column
+        owned by another model, keeps the legacy ``NotImplementedError``."""
+        from slayer.core.keys import ColumnKey, ColumnSqlKey
+
+        if isinstance(key, ColumnKey):
+            if key.path and key.path[-1] != target_relation:
+                raise NotImplementedError(
+                    f"DEV-1450 stage 7b.12: cross-model filter on an "
+                    f"intermediate hop ({key.path!r}) not yet rendered in "
+                    f"the typed pipeline.",
+                )
+            return ColumnKey(path=(), leaf=key.leaf) if key.path else key
+        if isinstance(key, ColumnSqlKey):
+            if key.model != target_model.name:
+                raise NotImplementedError(
+                    f"DEV-1450: cross-model filter on derived column "
+                    f"{key.column_name!r} owned by {key.model!r} "
+                    f"(not the CTE target {target_model.name!r}) is not yet "
+                    f"rendered in the typed pipeline.",
+                )
+            return (
+                ColumnSqlKey(path=(), model=key.model, column_name=key.column_name)
+                if key.path else key
+            )
+        return None
+
+    def _reroot_routed_filter_key(self, key, *, target_relation: str, target_model):
+        """Re-root a routed filter key to the cross-model CTE's LOCAL scope so
+        ``render_value_key`` resolves each leaf against the target relation the
+        way the legacy target-scope renderer did (DEV-1763 P-G).
+
+        Column leaves reroot via :meth:`_reroot_routed_leaf`; composites rebuild
+        with rerooted children. ``AggregateKey`` leaves are left intact — the
+        HAVING seam reroots them via ``reroot_aggregate_key``."""
+        from slayer.core.keys import (
+            ArithmeticKey,
+            BetweenKey,
+            InKey,
+            ScalarCallKey,
+        )
+
+        leaf = self._reroot_routed_leaf(
+            key, target_relation=target_relation, target_model=target_model,
+        )
+        if leaf is not None:
+            return leaf
+        if isinstance(key, ArithmeticKey):
+            return ArithmeticKey(
+                op=key.op,
+                operands=tuple(
+                    self._reroot_routed_filter_key(
+                        o, target_relation=target_relation, target_model=target_model,
+                    )
+                    for o in key.operands
+                ),
+            )
+        if isinstance(key, ScalarCallKey):
+            return ScalarCallKey(
+                name=key.name,
+                args=tuple(
+                    self._reroot_routed_filter_key(
+                        a, target_relation=target_relation, target_model=target_model,
+                    )
+                    if isinstance(a, _FrozenKey) else a
+                    for a in key.args
+                ),
+            )
+        if isinstance(key, BetweenKey):
+            return BetweenKey(
+                column=self._reroot_routed_filter_key(
+                    key.column, target_relation=target_relation, target_model=target_model,
+                ),
+                low=self._reroot_routed_filter_key(
+                    key.low, target_relation=target_relation, target_model=target_model,
+                ),
+                high=self._reroot_routed_filter_key(
+                    key.high, target_relation=target_relation, target_model=target_model,
+                ),
+            )
+        if isinstance(key, InKey):
+            return InKey(
+                column=self._reroot_routed_filter_key(
+                    key.column, target_relation=target_relation, target_model=target_model,
+                ),
+                values=key.values,
+                negated=key.negated,
+            )
+        # LiteralKey / AggregateKey (rerooted by the HAVING seam) pass through.
+        return key
+
+    def _target_scope_agg_builder(self, *, target_model, target_relation: str, bundle):
+        """The routed-HAVING seam (DEV-1763 P-G): render a cross-model aggregate
+        against the CTE's LOCAL scope. Symmetric reroot (DEV-1707) qualifies the
+        aggregate's source / args / kwargs under ``target_relation`` rather than
+        the host ``__``-path alias, then the same synth + ``_build_agg`` path the
+        projection uses emits it. The LIVE path (``first_last_state is None``)
+        threads no rn-state and uses the ``{target_relation}._having_agg`` alias;
+        the first/last variant stays on the legacy renderer (escape hatch)."""
+
+        def build(agg_key, _slot, _having_full_alias) -> exp.Expression:
+            from slayer.engine.planned import ValueSlot as _Slot
+
+            cross_model_path = getattr(agg_key.source, "path", ())
+            local_agg = reroot_aggregate_key(agg_key, target_path=cross_model_path)
+            tmp_slot = _Slot(
+                id="_cte_having_tmp", key=local_agg, declared_name="_having_agg",
+                phase=agg_key.phase, type=None,
+            )
+            synth = self._build_agg_render_spec_from_planned(
+                slot=tmp_slot, key=local_agg, source_model=target_model,
+                source_relation=target_relation,
+                full_alias=f"{target_relation}._having_agg", bundle=bundle,
+            )
+            expr, _ = self._build_agg(synth)
+            return expr
+
+        return build
+
     def _collect_routed_filters(
         self,
         *,
@@ -7078,9 +7235,8 @@ class SQLGenerator:
 
         Filters routed into a cross-model CTE bind in the CTE's local
         scope (``customers.status`` resolves to the target's table).
-        For row-phase filters whose typed ``value_key`` already encodes
-        the join-target columns, ``_render_filter_value_key`` resolves
-        each leaf against the target model.
+        The LIVE path renders each filter through ``render_value_key`` on a
+        target-rooted scope (DEV-1763 P-G).
 
         Returns ``None`` when the requested filter set is empty so the
         caller can skip emitting WHERE / HAVING.
@@ -7088,11 +7244,66 @@ class SQLGenerator:
         if not filter_ids:
             return None
         wanted = set(filter_ids)
+
+        # ESCAPE HATCH: ``first_last_state`` (rn maps / agg-synth-alias /
+        # value-alias) is fed only by the production-dead ``is_first_or_last``
+        # cross-model CTE branch (probe: FirstLastRenderState at 0 production
+        # calls). Keep the legacy renderer for it; PR 6 (DEV-1749) deletes the
+        # branch, the ``FirstLastRenderState`` type, and this hatch together.
+        if first_last_state is not None:
+            return self._collect_routed_filters_first_last(
+                planned_query=planned_query, wanted=wanted,
+                target_relation=target_relation, target_model=target_model,
+                bundle=bundle, first_last_state=first_last_state,
+            )
+
+        allocator = self._new_allocator()
+        scope = ScopeFrame(
+            scope_id=allocator.next_scope_id(target_relation),
+            root_model=target_model,
+            root_relation=target_relation,
+            bundle=bundle,
+            dialect=self._dialect,
+            allocator=allocator,
+        )
+        ctx = RenderContext(
+            scope=scope,
+            dialect=self._dialect,
+            filters=FilterFacilities(
+                agg_builder=self._target_scope_agg_builder(
+                    target_model=target_model,
+                    target_relation=target_relation,
+                    bundle=bundle,
+                ),
+                cast_column_sql=False,
+                paren_comparison_operands=False,
+            ),
+        )
         parts: List[exp.Expression] = []
         for fp in planned_query.filters_by_phase:
-            if fp.id not in wanted:
+            if fp.id not in wanted or fp.expression is None:
                 continue
-            if fp.expression is None:
+            local_key = self._reroot_routed_filter_key(
+                fp.expression.value_key,
+                target_relation=target_relation,
+                target_model=target_model,
+            )
+            parts.append(render_value_key(local_key, ctx))
+        if not parts:
+            return None
+        return exp.and_(*parts) if len(parts) > 1 else parts[0]
+
+    def _collect_routed_filters_first_last(
+        self, *, planned_query, wanted, target_relation: str, target_model,
+        bundle, first_last_state,
+    ) -> Optional[exp.Expression]:
+        """The DEV-1763 escape hatch: the production-dead cross-model first/last
+        CTE routed-filter path, still on the legacy target-scope renderer so its
+        rn-state threading is preserved verbatim. PR 6 deletes this whole path
+        with ``FirstLastRenderState``."""
+        parts: List[exp.Expression] = []
+        for fp in planned_query.filters_by_phase:
+            if fp.id not in wanted or fp.expression is None:
                 continue
             ast = self._render_filter_value_key_in_target_scope(
                 value_key=fp.expression.value_key,
@@ -7855,10 +8066,15 @@ class SQLGenerator:
         )
 
         if isinstance(key.input, (_ArithKey, _ScalarKey)):
-            measure = self._render_value_key_against_aliases(
-                key=key.input,
-                slot_id_by_key=slot_id_by_key,
-                available_alias_by_slot_id=available_alias_by_slot_id,
+            measure = render_value_key(
+                key.input,
+                RenderContext(
+                    dialect=self._dialect,
+                    aliases=AliasFacilities(
+                        slot_id_by_key=slot_id_by_key,
+                        available_alias_by_slot_id=available_alias_by_slot_id,
+                    ),
+                ),
             )
         else:
             # Resolve input alias (slotted leaf).
@@ -8081,10 +8297,15 @@ class SQLGenerator:
                     f"POST-phase FilterPhase id={fp.id!r} has no typed "
                     f"expression; text-only POST filters are not supported.",
                 )
-            rendered = self._render_value_key_against_aliases(
-                key=fp.expression.value_key,
-                slot_id_by_key=slot_id_by_key,
-                available_alias_by_slot_id=available_alias_by_slot_id,
+            rendered = render_value_key(
+                fp.expression.value_key,
+                RenderContext(
+                    dialect=self._dialect,
+                    aliases=AliasFacilities(
+                        slot_id_by_key=slot_id_by_key,
+                        available_alias_by_slot_id=available_alias_by_slot_id,
+                    ),
+                ),
             )
             out.append(rendered.sql(dialect=self.dialect))
         return out
@@ -8410,11 +8631,13 @@ class SQLGenerator:
             )
             if residual is None:
                 return None  # wholly a frame bound — omit from the shifted CTE.
-            rendered = self._render_value_key_for_filter(
-                key=residual,
-                source_relation=source_relation,
-                source_model=source_model,
-                bundle=bundle,
+            rendered = render_value_key(
+                residual,
+                self._filter_render_context(
+                    source_model=source_model,
+                    source_relation=source_relation,
+                    bundle=bundle,
+                ),
             )
             if isinstance(rendered, (exp.And, exp.Or)):
                 rendered = exp.Paren(this=rendered)
@@ -8964,10 +9187,15 @@ class SQLGenerator:
                     f"ArithmeticKey op={inner_key.op!r}) are deferred to "
                     f"a follow-up slice (slot id={slot.id!r}).",
                 )
-            predicate = self._render_value_key_against_aliases(
-                key=inner_key,
-                slot_id_by_key=slot_id_by_key,
-                available_alias_by_slot_id=available_alias_by_slot_id,
+            predicate = render_value_key(
+                inner_key,
+                RenderContext(
+                    dialect=self._dialect,
+                    aliases=AliasFacilities(
+                        slot_id_by_key=slot_id_by_key,
+                        available_alias_by_slot_id=available_alias_by_slot_id,
+                    ),
+                ),
             )
             predicate_is_boolean = True
         else:
@@ -10259,14 +10487,16 @@ class SQLGenerator:
                 # required for ``filtered_rn_map`` / ``filtered_match_map``
                 # lookups (which are keyed by the full alias the
                 # ranked-subquery builder used).
-                rendered = self._render_value_key_for_filter(
-                    key=fp.expression.value_key,
-                    source_relation=source_relation,
-                    source_model=source_model,
-                    bundle=bundle,
-                    slot_by_key=slot_by_key,
-                    first_last_state=first_last_state,
-                    aliases_by_slot_id=aliases_by_slot_id,
+                rendered = render_value_key(
+                    fp.expression.value_key,
+                    self._filter_render_context(
+                        source_model=source_model,
+                        source_relation=source_relation,
+                        bundle=bundle,
+                        slot_by_key=slot_by_key,
+                        aliases_by_slot_id=aliases_by_slot_id,
+                        first_last_state=first_last_state,
+                    ),
                 )
                 # Match the legacy DSL parser, which wraps top-level
                 # boolean expressions in parens — legacy WHERE for a
@@ -10388,6 +10618,90 @@ class SQLGenerator:
             ),
         )
         return rendered if rendered is not None else sql
+
+    def _filter_agg_builder(
+        self, *, source_model, source_relation: str, bundle, first_last_state,
+    ):
+        """The WHERE/HAVING aggregate seam (DEV-1763 P-G): render a local
+        aggregate as its EXPRESSION (``SUM(x)``) rather than by output alias so
+        HAVING works on backends that reject SELECT aliases there. The renderer
+        supplies the slot and the recovered ``having_full_alias``; this resolves
+        the aggregate's column-ref kwargs through a host scope (matching the base
+        SELECT) and threads the base's rn maps when a (dead-path) first/last
+        state is present. Cross-model aggregates route via the per-plan CTE."""
+
+        def build(agg_key, slot, having_full_alias) -> exp.Expression:
+            if getattr(agg_key.source, "path", ()):
+                raise NotImplementedError(
+                    f"DEV-1450 stage 7b.12: cross-model aggregate ref in "
+                    f"filter (path={agg_key.source.path!r}) routes via the "
+                    f"per-plan CTE, not inline HAVING."
+                )
+            having_kwargs = self._resolve_agg_kwargs_for_key(
+                key=agg_key, source_model=source_model,
+                source_relation=source_relation, bundle=bundle,
+            )
+            synth = self._build_agg_render_spec_from_planned(
+                slot=slot, key=agg_key, source_model=source_model,
+                source_relation=source_relation, full_alias=having_full_alias,
+                bundle=bundle, resolved_agg_kwargs=having_kwargs,
+            )
+            agg_expr, _is_agg = self._build_agg(
+                synth,
+                rn_suffix_map=(
+                    first_last_state.rn_suffix_map if first_last_state else None
+                ),
+                default_time_col=(
+                    first_last_state.default_time_col_sql
+                    if first_last_state else None
+                ),
+                filtered_rn_map=(
+                    first_last_state.filtered_rn_map if first_last_state else None
+                ),
+                filtered_match_map=(
+                    first_last_state.filtered_match_map
+                    if first_last_state else None
+                ),
+            )
+            return agg_expr
+
+        return build
+
+    def _filter_render_context(
+        self, *, source_model, source_relation: str, bundle,
+        slot_by_key=None, aliases_by_slot_id=None, first_last_state=None,
+    ) -> RenderContext:
+        """A ``RenderContext`` for the WHERE/HAVING filter family, over a
+        render-scoped host ``ScopeFrame`` (the crossed joins are pulled into the
+        FROM by a separate pass, so this scope's ``join_paths`` are inert — the
+        same throwaway pattern as ``_resolve_agg_kwargs_for_key``; PR 6
+        consolidates them). Carries the filter-side CAST policy and the DEV-1539
+        comparison grouping."""
+        allocator = self._new_allocator()
+        scope = ScopeFrame(
+            scope_id=allocator.next_scope_id(source_relation),
+            root_model=source_model,
+            root_relation=source_relation,
+            bundle=bundle,
+            dialect=self._dialect,
+            allocator=allocator,
+        )
+        return RenderContext(
+            scope=scope,
+            dialect=self._dialect,
+            filters=FilterFacilities(
+                slot_by_key=slot_by_key or {},
+                aliases_by_slot_id=aliases_by_slot_id or {},
+                agg_builder=self._filter_agg_builder(
+                    source_model=source_model,
+                    source_relation=source_relation,
+                    bundle=bundle,
+                    first_last_state=first_last_state,
+                ),
+                cast_column_sql=True,
+                paren_comparison_operands=True,
+            ),
+        )
 
     def _render_value_key_for_filter(  # NOSONAR(S3776) — sequential isinstance dispatch over the closed filter-ValueKey union. Each branch carries the per-type filter-render contract (local vs joined column qualification, derived-column expansion, aggregate-with-rn-state synth, etc.); extracting per-branch helpers would scatter the contract.
         self,
@@ -10683,6 +10997,41 @@ class SQLGenerator:
             )
         raise NotImplementedError(
             f"Unsupported ValueKey type in filter: {type(key).__name__}",
+        )
+
+    def _outer_wrapper_alias_facilities(
+        self, *, slot_by_key, cross_model_agg_slot_to_cm, aliases_by_slot_id,
+    ) -> AliasFacilities:
+        """Precompute the DEV-1503 outer-WHERE slot→qualified-column map as an
+        :class:`AliasFacilities` for ``render_value_key`` (DEV-1763 P-G).
+
+        Each slotted leaf resolves to a table-qualified alias: an isolated
+        aggregate slot to ``<cte_name>."<agg_col_alias>"``
+        (``cross_model_agg_slot_to_cm``), every other slot to
+        ``_base."<first_alias>"`` (``aliases_by_slot_id``). A slot with neither
+        is left out of the maps, so alias-exclusive resolution fails closed on
+        it — the operand-promotion pass makes that unreachable in production."""
+        slot_id_by_key: Dict[Any, str] = {}
+        available_alias_by_slot_id: Dict[str, str] = {}
+        table_by_slot_id: Dict[str, str] = {}
+        for key, slot in slot_by_key.items():
+            sid = slot.id
+            cm_entry = cross_model_agg_slot_to_cm.get(sid)
+            if cm_entry is not None:
+                cte_name, agg_col_alias = cm_entry
+                alias, table = agg_col_alias, cte_name
+            else:
+                aliases = aliases_by_slot_id.get(sid) or []
+                if not aliases:
+                    continue
+                alias, table = aliases[0], "_base"
+            slot_id_by_key[key] = sid
+            available_alias_by_slot_id[sid] = alias
+            table_by_slot_id[sid] = table
+        return AliasFacilities(
+            slot_id_by_key=slot_id_by_key,
+            available_alias_by_slot_id=available_alias_by_slot_id,
+            table_by_slot_id=table_by_slot_id,
         )
 
     def _render_filter_for_outer_wrapper(  # NOSONAR(S3776) — sequential isinstance dispatch over the closed filter-ValueKey union for the DEV-1503 outer-WHERE wrapper. Mirrors ``_render_value_key_for_filter`` shape but substitutes slot refs with the combined-SELECT's table-qualified columns (``_cm_*`` / ``_base``); per-branch helpers would scatter the substitution contract.
