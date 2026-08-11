@@ -210,8 +210,8 @@ class TestOpaqueReferencesSurvive:
     @pytest.mark.xfail(
         strict=True,
         reason=(
-            "Known defect, tracked separately and deliberately NOT fixed in "
-            "this PR: qualification in _process_column_node_sync happens "
+            "DEV-1752: known defect, tracked separately and deliberately NOT "
+            "fixed in this PR: qualification in _process_column_node_sync happens "
             "BEFORE the root_scope_ids gate, so it is not scope-aware. Only "
             "derived INLINING is gated. A column inside a subquery with its "
             "own FROM is therefore qualified against the OUTER root: "

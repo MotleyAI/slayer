@@ -49,7 +49,6 @@ from slayer.core.keys import (
     reroot_aggregate_key,
 )
 from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.engine.cross_model_planner import _local_agg_formula
 from slayer.sql.generator import SQLGenerator
 
 
@@ -460,72 +459,6 @@ def test_reroot_does_not_mutate_input_key() -> None:
     assert key.args == (ColumnKey(path=("customers",), leaf="signup_at"),)
 
 
-# ===========================================================================
-# Section F — behaviour-lock: _local_agg_formula stays byte-identical
-# ===========================================================================
-# These already pass today; they guard the refactor that reimplements
-# ``_local_agg_formula`` on top of ``reroot_aggregate_key`` so its public
-# string contract (imported by tests/test_dev1476_first_last_explicit_time.py)
-# does not drift.
-
-
-def test_local_agg_formula_bare_source() -> None:
-    key = AggregateKey(
-        source=ColumnKey(path=("customers",), leaf="revenue"), agg="sum",
-    )
-    assert _local_agg_formula(key) == "revenue:sum"
-
-
-def test_local_agg_formula_star_count() -> None:
-    key = AggregateKey(source=StarKey(path=("customers",)), agg="count")
-    assert _local_agg_formula(key) == "*:count"
-
-
-def test_local_agg_formula_positional_columnkey_arg() -> None:
-    key = AggregateKey(
-        source=ColumnKey(path=("customers",), leaf="amount"),
-        agg="last",
-        args=(ColumnKey(path=("customers",), leaf="signup_at"),),
-    )
-    assert _local_agg_formula(key) == "amount:last(signup_at)"
-
-
-def test_local_agg_formula_deeper_hop_arg_keeps_residual() -> None:
-    key = AggregateKey(
-        source=ColumnKey(path=("customers",), leaf="amount"),
-        agg="last",
-        args=(ColumnKey(path=("customers", "regions"), leaf="opened_at"),),
-    )
-    assert _local_agg_formula(key) == "amount:last(regions.opened_at)"
-
-
-def test_local_agg_formula_kwarg_and_scalar() -> None:
-    key = AggregateKey(
-        source=ColumnKey(path=("customers",), leaf="price"),
-        agg="weighted_avg",
-        kwargs=(("weight", ColumnKey(path=("customers",), leaf="qty")),),
-    )
-    assert _local_agg_formula(key) == "price:weighted_avg(weight=qty)"
-
-
-def test_local_agg_formula_deeper_hop_kwarg_keeps_residual() -> None:
-    key = AggregateKey(
-        source=ColumnKey(path=("customers",), leaf="price"),
-        agg="weighted_avg",
-        kwargs=(
-            ("weight", ColumnKey(path=("customers", "regions"), leaf="qty")),
-        ),
-    )
-    assert _local_agg_formula(key) == "price:weighted_avg(weight=regions.qty)"
-
-
-def test_local_agg_formula_scalar_kwarg_literal() -> None:
-    key = AggregateKey(
-        source=ColumnKey(path=("customers",), leaf="price"),
-        agg="percentile",
-        kwargs=(("p", Decimal("0.5")),),
-    )
-    assert _local_agg_formula(key) == "price:percentile(p=0.5)"
 
 
 # ===========================================================================

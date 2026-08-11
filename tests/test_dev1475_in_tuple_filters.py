@@ -11,10 +11,9 @@ DEV-1475 lands the support: ``ast.In`` / ``ast.NotIn`` reach
 ``_CMP_OP_MAP``, the parser produces a new ``Tuple`` ParsedExpr node for
 the RHS, the binder folds a ``Cmp(op="in"/"not in", left=ref, right=Tuple)``
 into a new ``InKey`` (modelled on ``BetweenKey``), and the SQL generator
-emits ``IN (lit, lit, …)`` / ``NOT IN (...)`` at all three filter render
-sites (``_render_value_key_for_filter`` for local WHERE/HAVING,
-``_render_value_key_against_aliases`` for POST-phase filters,
-``_render_filter_value_key_in_target_scope`` for cross-model CTE filters).
+emits ``IN (lit, lit, …)`` / ``NOT IN (...)`` through the single
+``render_value_key`` path (P-G) across all filter render contexts — local
+WHERE/HAVING, POST-phase filters, and cross-model CTE routed filters.
 
 Coverage:
 

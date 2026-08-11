@@ -35,9 +35,12 @@ from slayer.core.keys import (
 )
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
-from slayer.engine.cross_model_planner import _local_agg_formula
-from slayer.engine.planned import PlannedQuery, ValueSlot
+from slayer.engine.planned import ValueSlot
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.ranked_planner import (
+    explicit_ranking_time_arg,
+    resolve_ranking_time_key,
+)
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import plan_query
 from slayer.sql.generator import SQLGenerator
@@ -46,54 +49,6 @@ from slayer.sql.scope import ScopeFrame
 from slayer.storage.yaml_storage import YAMLStorage
 
 
-# ---------------------------------------------------------------------------
-# Unit: DEV-1476 bug (c) — reroot strips target prefix from key.args
-# (symmetric to the kwarg reroot already tested in
-# tests/test_dev1450fix_cross_model_derived.py).
-# ---------------------------------------------------------------------------
-
-
-def test_local_agg_formula_reroots_positional_columnkey_arg() -> None:
-    """``customers.amount:last(customers.signup_at)`` rerooted to the
-    customers scope: the positional ``ColumnKey`` arg drops its
-    ``customers`` prefix and renders as a target-local identifier
-    (``signup_at``), NOT as a Pydantic-repr scalar literal.
-    """
-    key = AggregateKey(
-        source=ColumnKey(path=("customers",), leaf="amount"),
-        agg="last",
-        args=(ColumnKey(path=("customers",), leaf="signup_at"),),
-    )
-    assert _local_agg_formula(key) == "amount:last(signup_at)"
-
-
-def test_local_agg_formula_reroots_positional_columnsqlkey_arg() -> None:
-    """Same as above for ``ColumnSqlKey`` (derived-column variant)."""
-    key = AggregateKey(
-        source=ColumnKey(path=("customers",), leaf="amount"),
-        agg="last",
-        args=(
-            ColumnSqlKey(
-                path=("customers",),
-                model="customers",
-                column_name="signup_at_alias",
-            ),
-        ),
-    )
-    assert _local_agg_formula(key) == "amount:last(signup_at_alias)"
-
-
-def test_local_agg_formula_keeps_residual_path_in_args_for_deeper_hop() -> None:
-    """A positional arg one hop past the target keeps its residual path
-    (mirrors the kwarg-side behaviour pinned in
-    ``test_local_agg_formula_keeps_residual_path_for_deeper_kwarg``).
-    """
-    key = AggregateKey(
-        source=ColumnKey(path=("customers",), leaf="amount"),
-        agg="last",
-        args=(ColumnKey(path=("customers", "regions"), leaf="opened_at"),),
-    )
-    assert _local_agg_formula(key) == "amount:last(regions.opened_at)"
 
 
 def _orders_model(with_amount: bool = False) -> SlayerModel:
@@ -961,42 +916,31 @@ class TestTimeArgJoinDiscovery:
 
 
 # --------------------------------------------------------------------------- #
-# Group 2b — the raise-gate in ``_build_first_last_base_select`` uses the SAME
-# ``_explicit_time_arg_of`` contract as the render seam (Codex F1). A first/last
-# whose FIRST positional arg is a scalar (a later arg being a column) has NO
-# explicit time arg under the first-arg-only contract; with no default time
-# column the gate must raise the clean "ranking time" error. A retained
-# ``any(isinstance(a, (ColumnKey, ColumnSqlKey)) ...)`` gate would instead skip
-# the raise and later blow up building the ``ROW_NUMBER`` map — proving the two
-# sites had drifted.
+# Group 2b — the live ranking-time gate (``ranked_planner.resolve_ranking_time_key``)
+# uses the SAME first-arg-only selection (``explicit_ranking_time_arg``) as every
+# other consumer. A first/last whose FIRST positional arg is a scalar (a later arg
+# being a column) has NO explicit time arg under that contract; with no default
+# time column the gate must raise the clean "ranking time" error rather than skip
+# it and later blow up building the ``ROW_NUMBER`` map.
+# (DEV-1749: migrated off the deleted host-base ``_build_first_last_base_select``
+# gate onto its single-sourced successor.)
 # --------------------------------------------------------------------------- #
 class TestGateUsesSharedArgSelection:
-    def test_scalar_first_arg_gate_requires_default_time(self) -> None:
-        gen = SQLGenerator(dialect="postgres")
-        orders = _u_orders()  # no default_time_dimension
-        bundle = _u_bundle(orders)
-        key = AggregateKey(
+    def _scalar_first_arg_key(self) -> AggregateKey:
+        return AggregateKey(
             source=ColumnKey(leaf="amount"), agg="last",
             args=(Decimal("5"), ColumnKey(leaf="created_at")),
         )
-        slot = ValueSlot(
-            id="s0", key=key, declared_name="x", public_name="x",
-            phase=Phase.AGGREGATE, type=None,
-        )
-        pq = PlannedQuery(
-            source_relation="orders", aggregate_slots=[slot], projection=["s0"],
-        )
-        from_clause, base_joins = gen._build_from_and_joins(
-            source_model=orders, source_relation="orders",
-            joined_paths=[], bundle=bundle,
-        )
+
+    def test_scalar_first_positional_is_not_an_explicit_time_arg(self) -> None:
+        assert explicit_ranking_time_arg(self._scalar_first_arg_key()) is None
+
+    def test_scalar_first_arg_gate_requires_default_time(self) -> None:
+        orders = _u_orders()  # no default_time_dimension
+        bundle = _u_bundle(orders)
+        key = self._scalar_first_arg_key()
         with pytest.raises(ValueError, match="ranking time"):
-            gen._build_first_last_base_select(
-                planned_query=pq, bundle=bundle, source_model=orders,
-                source_relation="orders", base_render_order=["s0"],
-                slots_by_id={"s0": slot}, from_clause=from_clause,
-                base_joins=base_joins,
-            )
+            resolve_ranking_time_key(key=key, root_model=orders, bundle=bundle)
 
 
 # --------------------------------------------------------------------------- #

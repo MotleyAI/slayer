@@ -84,7 +84,7 @@ class TestAllocateCte:
 
     def test_cross_family_names_reserved_then_allocated(self) -> None:
         """Codex F3: the DEV-1692 fix reserves every deterministic CTE name
-        (``_cm_`` / ``_wm_`` / ``_fm_`` / user CTEs) up front, then ALLOCATES
+        (``_cm_`` / ``_wm_`` / user CTEs) up front, then ALLOCATES
         the transform families (``shifted_`` / ``sjoin_``) around them. A
         transform CTE whose preferred name collides with a reserved name from
         another family (or a user model/CTE literally named ``shifted_x``)
@@ -218,6 +218,16 @@ class TestFlatName:
         from slayer.sql.naming import flat_name
 
         assert flat_name("revenue_sum") == "revenue_sum"
+
+    def test_dot_vs_underscore_do_not_collide(self) -> None:
+        """Aliases differing only in dot-vs-underscore placement flatten to
+        distinct names — the dot→``__`` rule is injective on the pair, so a
+        CTE name minted from either can never collide."""
+        from slayer.sql.naming import flat_name
+
+        assert flat_name("a.b_c") == "a__b_c"
+        assert flat_name("a_b.c") == "a_b__c"
+        assert flat_name("a.b_c") != flat_name("a_b.c")
 
     def test_strip_relation_prefix(self) -> None:
         from slayer.sql.naming import flat_name

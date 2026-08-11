@@ -842,8 +842,7 @@ def _bind_agg(
     column_filter_key = _resolve_column_filter_key(
         source=source, bundle=bundle,
     )
-    # Codex review: enforce per-column aggregation eligibility gates
-    # the legacy enrichment site at ``enrichment.py:401-417`` enforced.
+    # Codex review: enforce the per-column aggregation eligibility gates.
     # Without this, ``id:sum`` (a PK) or ``status:avg`` (text) compile
     # silently in the typed pipeline. The check is best-effort against
     # the bundle — sources whose target model can't be resolved (e.g.
@@ -953,7 +952,7 @@ def _validate_agg_eligibility(
     token exactly matches a custom aggregation registered on the owning model,
     so a custom ``countd`` wins over the ``countd -> count_distinct`` alias.
 
-    Gate order (mirrors the legacy ``enrichment.py`` v2 contract):
+    Gate order (the binding contract):
 
     0. Unknown-name-first: a name that is neither a built-in nor a model
        custom aggregation raises ``"Unknown aggregation ..."`` **before** the

@@ -569,10 +569,8 @@ class DeclaredMeasure(BaseModel):
 
     DEV-1452 Stage B decisions #2 + #8: ``type``, ``format``, and
     ``description`` carry typed display + slot metadata from the source
-    ``ModelMeasure`` / ``Column`` so the public slot retains the same
-    contract the legacy enrichment pipeline produced. ``type`` mirrors
-    the legacy ``EnrichedMeasure.type`` (count → INT, avg → DOUBLE,
-    sum/min/max → source column type).
+    ``ModelMeasure`` / ``Column``. ``type`` follows the aggregation
+    (count → INT, avg → DOUBLE, sum/min/max → source column type).
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)

@@ -56,8 +56,9 @@ them, so SQL stays parity-stable:
 2. `SlayerModel.filters` — Mode-A SQL, validated by `_validate_model_filter`
    (rejects DSL constructs, raw windows, measure refs, and windowed columns).
    A reference to a non-trivial derived column is accepted (DEV-1450 #4b): the
-   generator's `_render_model_filter_sql` inline-expands the predicate at render
-   time. These are text-only `FilterPhase` entries with no typed value-key.
+   generator enters the predicate through the scope's Mode-A door
+   (`ScopeFrame.enter_predicate`), which inline-expands it at render time. These
+   are text-only `FilterPhase` entries with no typed value-key.
 3. user query filters — Mode-B DSL, bound with the `filter_alias_map` so renamed
    measures resolve by alias (DEV-1445). Two filter strings that bind to the same
    structural key are deduped (P2) so a HAVING isn't duplicated.

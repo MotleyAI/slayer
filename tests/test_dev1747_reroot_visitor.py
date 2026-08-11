@@ -1,9 +1,8 @@
 """DEV-1747 §5.4 — the total reroot visitor over the ValueKey union.
 
-Rerooting today is done by SERIALIZING typed keys back to formula text
-(``_local_agg_formula`` / ``_reroot_ref`` in ``slayer/engine/cross_model_planner.py``)
-and re-parsing them into a nested ``SlayerQuery``. §5.4 replaces that with
-``reroot_value_key(key, *, target_path)`` — a visitor that is:
+Rerooting was once done by SERIALIZING typed keys back to formula text and
+re-parsing them into a nested ``SlayerQuery``. That was replaced with typed
+re-rooting via ``reroot_value_key(key, *, target_path)`` — a visitor that is:
 
 * **total** over the union — every member has an explicit case, so a key kind
   added later cannot silently ride through unrerooted; and

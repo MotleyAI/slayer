@@ -66,7 +66,7 @@ CTE back without changing cardinality.
 ### Rerooting the aggregate's embedded references (`reroot_aggregate_key`)
 
 When the forward `_cm_*` CTE (`_render_cross_model_cte`), its HAVING route, and
-the re-rooted-plan formula (`_local_agg_formula`) render a cross-model aggregate
+the re-rooted plan render a cross-model aggregate
 in its target scope, every reference embedded in the `AggregateKey` — the
 `source`, positional `args` (e.g. the `first`/`last` explicit time arg), keyword
 `kwargs` values (e.g. `weighted_avg(weight=…)`), and `column_filter_key` — must
@@ -110,10 +110,10 @@ flowchart TB
 ```
 
 It re-roots each host dimension/time-dimension/filter from the host's perspective
-to the target's (`_reroot_ref`: host-local → `<host>.<name>`; on-target → bare;
-through-target → strip the prefix), drops anything unreachable from the target
-(matching legacy), reconstructs the local aggregate formula
-(`_local_agg_formula`), builds a fresh `SlayerQuery` rooted at the target, and
+to the target's (`reroot_value_key`: host-local → `<host>.<name>`; on-target →
+bare; through-target → strip the prefix), drops anything unreachable from the
+target, re-anchors the aggregate as a typed key (`reroot_aggregate_key`), builds
+a fresh `SlayerQuery` rooted at the target, and
 compiles it via the injected `subplan_builder` callback (which `plan_query`
 supplies as a `plan_query` recursion — keeping `cross_model_planner.py` free of a
 `stage_planner` import). The sub-plan is rendered by
@@ -171,8 +171,9 @@ The trigger predicate is structural:
 `agg_path` non-empty (forward cross-model, target-rooted) **OR** any
 crossing input (host-rooted). Both route through
 `IsolatedCteCrossModelPlanner.plan`; the host-rooted branch
-calls `_plan_filtered_local`, which rebuilds the measure's formula text
-via `_local_agg_formula` (round-trip-tested for every input shape) into a
+calls `_plan_filtered_local`, which carries the EXISTING typed `aggregate_key`
+unchanged (the sub-plan is rooted at the SAME host model, so there is nothing to
+re-root) into a
 **host-rooted** nested `PlannedQuery` (same `source_model`, same dims/TDs,
 only the crossing measure as the single aggregate) and attaches it via the
 same `rerooted_plan` / `rerooted_grain_pairs` / `rerooted_agg_slot_id`

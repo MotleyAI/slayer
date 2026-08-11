@@ -13,9 +13,8 @@ consumer-scope materialisation), and a missing facility raises
 Migration status
 ----------------
 All five live render families route through :func:`render_value_key` (DEV-1763,
-byte-identical SQL). The generator's own per-path renderers survive but are
-PRODUCTION-UNREFERENCED (P-J state 1) with their pinning tests still green; PR 6
-(DEV-1749) deletes them. The seams the migration added:
+byte-identical SQL). The generator's legacy per-path renderers have been
+deleted (DEV-1749). The seams the migration added:
 
 * **Filter** (``_build_where_having_from_planned`` host WHERE / HAVING and
   ``_shifted_where_part`` the shifted-CTE WHERE) — a render-scoped host
@@ -27,8 +26,8 @@ PRODUCTION-UNREFERENCED (P-J state 1) with their pinning tests still green; PR 6
 * **Composite** (``_build_base_select_for_planned`` base SELECT) — the composite
   STRUCTURE renders here; only the aggregate LEAF goes to
   :class:`CompositeFacilities`'s ``agg_builder`` → the generator's ``_build_agg``
-  (byte-identical). The dead first/last base SELECT keeps the legacy renderer
-  (PR 6 deletes it).
+  (byte-identical). First/last aggregates render as a planned
+  ``RankedAggregatePlan`` CTE, not at render time.
 * **Alias-environment / Outer-wrapper** (POST-phase filters, window-transform
   inputs, consecutive-periods predicates, the cross-model transform chain, and
   the DEV-1503 outer combined WHERE) — carry :class:`AliasFacilities` and
@@ -36,14 +35,11 @@ PRODUCTION-UNREFERENCED (P-J state 1) with their pinning tests still green; PR 6
   ``table_by_slot_id`` for the outer wrapper.
 * **Target-scope** (``_collect_routed_filters`` cross-model CTE WHERE / HAVING) —
   a target-rooted ``ScopeFrame`` with a routed-key reroot to the CTE's local
-  scope. The narrow ``first_last_state`` variant keeps the legacy renderer as a
-  documented escape hatch (PR 6 deletes it with the ``FirstLastRenderState``
-  type).
+  scope.
 
-Two shared leaf policies predate this PR and stay: ScalarCall
-(:func:`render_scalar_call`, all paths) and arithmetic / comparison / boolean
-composition (:func:`render_arithmetic`, the three thin generator composers PR 6
-inlines).
+Two shared leaf policies stay: ScalarCall (:func:`render_scalar_call`, all
+paths) and arithmetic / comparison / boolean composition
+(:func:`render_arithmetic`, now the single arithmetic renderer).
 """
 
 from __future__ import annotations
@@ -270,7 +266,7 @@ def _paren_if_binary(node: exp.Expression) -> exp.Expression:
     literals, function calls, and already-enclosed ``CAST(...)`` / ``Paren``
     are not ``Binary`` and pass through. The pre-wrap makes the operand
     self-delimiting, so the shared composer's own precedence grouping is a
-    no-op over it — replicating the legacy ``_build_arithmetic_for_filter``."""
+    no-op over it."""
     return exp.Paren(this=node) if isinstance(node, exp.Binary) else node
 
 

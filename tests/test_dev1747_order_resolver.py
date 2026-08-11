@@ -50,7 +50,6 @@ from slayer.sql.render.order_terms import (
 )
 from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.dialects.tsql import TsqlDialect
-from slayer.sql.generator import SQLGenerator
 import pydantic
 
 _MEASURE = [{"formula": "amount:sum", "name": "rev"}]
@@ -434,37 +433,10 @@ class TestNullOrdering:
 # Group 4 — one resolver, not four
 # ---------------------------------------------------------------------------
 class TestSingleResolver:
-    """The superseded resolvers stay in the file (P-J state 1) but must lose
-    every production caller.
-
-    Proven with raising sentinels over every render shape rather than by
-    grepping the module: a source scan cannot tell a live call from one inside
-    a docstring or an unreachable branch, and it silently stops meaning
-    anything the moment the method is renamed.
-    """
-
-    @pytest.mark.parametrize("shape", sorted(_D4_SHAPES))
-    @pytest.mark.parametrize(
-        "method",
-        ["_resolve_combined_order_term", "_apply_order_limit_from_planned"],
-    )
-    async def test_superseded_resolver_is_never_called(
-        self, method: str, shape: str, monkeypatch,
-    ) -> None:
-
-        assert hasattr(SQLGenerator, method), (
-            f"{method} has been deleted; P-J defers deletion to PR 6, so "
-            f"update this test deliberately rather than losing the guard"
-        )
-
-        def _boom(*_a, **_kw):
-            raise AssertionError(
-                f"{method} is still on the production render path — §5.10 "
-                f"replaces all four resolvers with resolve_order_term"
-            )
-
-        monkeypatch.setattr(SQLGenerator, method, _boom)
-        await _sql(_D4_SHAPES[shape])
+    """The four legacy order resolvers were deleted in PR 6 (DEV-1749); the
+    single live resolver (``resolve_order_term`` / ``_apply_planned_order_limit``)
+    is exercised across every render shape by ``TestOrderTargetMatrix`` and the
+    same-sort-term-across-paths check below."""
 
     @pytest.mark.parametrize("dialect", ["postgres", "sqlite", "duckdb", "tsql"])
     async def test_same_construct_same_sort_term_across_paths(

@@ -1,11 +1,15 @@
 # SQL generation
 
-**Modules:** `slayer/sql/generator.py` (the planned-consuming path),
-`slayer/engine/response_meta.py` (response metadata)
+**Modules:** `slayer/sql/generator.py` (renders a `PlannedQuery` to SQL),
+`slayer/sql/render/` (the shared renderers — value keys, aggregates, order
+terms, joins), `slayer/sql/scope.py` (`ScopeFrame`), `slayer/sql/naming.py`
+(the allocator), `slayer/engine/response_meta.py` (response metadata).
 
-The generator renders a `PlannedQuery` (or a list of them) to a SQL string. It
-preserves the result-key contract exactly (**P10**) and emits SQL via sqlglot
-AST building, not string concatenation.
+The generator renders a `PlannedQuery` (or a list of them) to a SQL string via
+sqlglot AST building, never string concatenation. It is organised around ten
+principles (P-A – P-J); the invariant, the code that enforces it, and the key
+mechanism are described together under each. The consolidation that arrived at
+these is logged in `DECISIONS.md` (DEV-1742).
 
 ## Entry points
 
@@ -16,7 +20,7 @@ flowchart TB
     gps -->|multi-stage| loop["render each stage → CTE; root = outer SELECT"]
     loop --> gfp
     gfp --> inst["SQLGenerator(dialect).generate_from_planned"]
-    inst -->|cross-model| cm["_render_with_cross_model_plans"]
+    inst -->|cross-model / windowed / ranked| cm["_render_with_cross_model_plans"]
     inst -->|transforms| tl["WITH base, step CTEs, outer wrap"]
     inst -->|plain| base["single SELECT"]
 ```
@@ -28,310 +32,270 @@ flowchart TB
   multi-stage DAG to one SQL string. Each non-root stage becomes a CTE; the root
   is the outer SELECT.
 
-## `generate_from_planned` (instance method)
+`generate_from_planned` reads typed `PlannedQuery` fields (`row_slots` /
+`aggregate_slots` / `filters_by_phase` / `order` / `transform_layers`) and
+dispatches: any `cross_model_aggregate_plans` / `WindowedAggregatePlan` /
+`RankedAggregatePlan` present → `_render_with_cross_model_plans`;
+`transform_layers` present → `WITH base AS (...)`, Kahn-batched step CTEs, an
+outer wrap projecting in user-spec order; otherwise → a single base SELECT with
+WHERE/HAVING, GROUP BY, ORDER BY, LIMIT (plus a conditional outer-trim wrap when
+the base materialises a hidden aggregate, so the hidden alias never leaks into
+the result columns).
 
-Reads from typed `PlannedQuery` fields (`row_slots` / `aggregate_slots` /
-`filters_by_phase` / `order` / `transform_layers`) and dispatches:
+## P-A — One door into a scope
 
-- `cross_model_aggregate_plans` non-empty → `_render_with_cross_model_plans`;
-- `transform_layers` present → `WITH base AS (...)`, Kahn-batched step CTEs
-  carrying the window functions, an outer wrap projecting in user-spec order;
-  POST-phase filters that reference transform slots wrap as `SELECT * FROM (...)
-  AS _filtered WHERE …`; `time_shift` / `consecutive_periods` emit dedicated
-  self-join CTE pairs;
-- otherwise → a single base SELECT with WHERE/HAVING, GROUP BY, ORDER BY, LIMIT.
-  When the base CTE materialises any hidden aggregate (an aggregate referenced
-  ONLY by ORDER BY or a filter, never declared as a measure), a conditional
-  outer-trim wrapper projects exactly the public projection — same shape as the
-  transform path's outer wrap, minus the step CTEs — so the hidden alias does
-  not leak into the result columns (DEV-1501).
+Every SQL fragment enters a SELECT scope through that scope's resolver, and
+join discovery is a **side effect of rendering**, never a separate pass. There
+is no string concatenation between scopes — inter-scope assembly is sqlglot AST.
 
-It builds its own `slot_id_by_key` map (the `PlannedQuery` doesn't carry the
-registry), materializes hidden aux slots referenced as transform inputs /
-partition keys / time keys / POST-filter operands, and renders.
+A `ScopeFrame` (`slayer/sql/scope.py`) is the door. Rendering a `ValueKey` or a
+Mode-A text predicate through the frame both resolves the reference (qualifying
+bare identifiers against the scope root, joined refs to their `__`-path alias,
+reserved-word relations quoted) **and** registers the join paths the reference
+crosses onto the frame's `join_paths`, which the FROM is then built from
+(`_build_from_and_joins`). Discovery is root-scope-only, so a correlated ref
+inside an `EXISTS (...)` subquery does not pull an outer join.
 
-### `AggRenderSpec` — the dialect-helper interface
+Mode-A surfaces — a column-level `Column.filter` (`SUM(CASE WHEN <filter> THEN
+<col> END)`) and a `SlayerModel.filters` WHERE term — enter through the scope's
+Mode-A door (`_mode_a_scope` / `ScopeFrame.enter_predicate`). The door
+inline-expands references to derived columns (bare `is_eu` → its `CASE WHEN
+customers.region …`; dotted `loss_payment.has_flag` → its `sql`) so the emitted
+predicate is runnable and never names a non-physical `<alias>.<derived_col>`,
+and it discovers the crossed joins as it renders. The dbt placeholder-join idiom
+— a constant derived column such as `has_flag sql="1"` whose only purpose is to
+force the inner join — keeps its join because discovery unions the paths of the
+un-inlined and the inline-expanded predicate.
 
-To render aggregations identically across all dialects, the shared dialect
-helpers (`_build_agg`, `_build_percentile`, `_build_stat_agg`,
-`_wrap_cast_for_type`, `_resolve_sql`, `_build_date_trunc`) consume a single
-typed input: `AggRenderSpec`, built directly from planned slots by
-`_build_agg_render_spec_from_planned`.
+## P-B — Scopes exchange data only through projected columns
 
-Dialect-specific behavior (SQLite UDFs, ClickHouse `quantile`, the MySQL
-`median` `NotImplementedError`, and so on) is therefore emitted by exactly one
-code path.
+Cross-scope data flow uses exactly one materialisation mechanism —
+`ScopeFrame.resolve(consumer=...)` + `apply_materializations` — with one dedup
+key: producing-scope identity + anchored AST + dialect. A value a producing
+scope computes once (a crossing grain expression, a first/last value that
+crosses a join) is projected under a minted `_val_<n>` alias and the consuming
+scope references the alias; the dedup key means the same value is never
+projected twice.
 
-### The single `ValueKey` renderer (P-G, DEV-1763)
+At the stage level, each non-root stage renders independently (against a
+per-stage bundle from `_bundle_for_stage`) and is wrapped by
+`_stage_rename_wrapper`, which renames its output columns to the flat names
+downstream stages bound against (`orders.customers.region` →
+`customers__region`). The wrapper derives those from the *actual* rendered
+`named_selects` and asserts they match the stage's `StageSchema` — a
+planner/generator divergence fails at the boundary rather than as a confusing
+downstream bind miss.
+
+## P-C — One isolation doctrine
+
+Any aggregate that needs its own rows — crossing inputs, its own row ordering
+(first/last), or its own frame (windowed) — is a **plan-shaped CTE** rooted
+where its rows live, joined back on the query grain. The host base SELECT
+contains only purely-local aggregates, and host cardinality never changes.
+
+`_render_with_cross_model_plans` emits three CTE kinds, all joined back to the
+host base on the query grain:
+
+- **`_cm_*`** per `CrossModelAggregatePlan` — a measure over a joined model. A
+  re-rooted plan (`plan.rerooted_plan`) renders FROM the target + the target's
+  joins preserving host grain; a forward plan renders FROM the bare target
+  grouped at the forward dims. See [Cross-model aggregates](cross-model-aggregates.md).
+- **`_wm_*`** per `WindowedAggregatePlan` — a duration-windowed measure
+  (`revenue:sum(window='90d')`). Host-rooted: an inner `_src` subquery
+  self-selects the host rows and `FROM _base LEFT JOIN _src` pairs the grain
+  equalities with a trailing `INTERVAL` range predicate. `sum`/`avg` local
+  measures only; other shapes raise at plan time (`_guard_windowed_measures`).
+- **`_rk_*`** per `RankedAggregatePlan` — a `first`/`last` measure. Rooted at the
+  host or the join target, it ranks its own rows (ROW_NUMBER), picks rank 1 per
+  grain, and joins back on that grain. See [Ranked aggregates](ranked-aggregates.md).
+
+Since the Law-3 trigger widened (DEV-1709), a LOCAL aggregate with **any**
+crossing input — source `Column.sql`, `Column.filter`, positional args, kwargs —
+never renders in the top-level host base: it isolates into a host-rooted `_cm_*`
+CTE, and its join discovery runs inside that CTE's sub-render. The host base
+FROM therefore pulls `LEFT JOIN`s only for purely-local sources — derived
+dimension / time-dimension `Column.sql`, local aggregated-measure `Column.filter`,
+and local aggregate-source `Column.sql` — each discovered through the scope door
+(P-A) and fed to the shared `needed_join_paths` list, deduped by
+`_build_from_and_joins`'s `emitted_aliases` guard.
+
+### Frame bounds vs population filters (DEV-1732)
+
+A `_src` (windowed) or shifted (`time_shift`) CTE inherits the host's ROW-phase
+filters **minus their frame bounds** — a relational comparison between a
+non-hidden time dimension's raw column and a temporal literal. Without that, the
+trailing window cannot reach rows before the earliest visible bucket and that
+bucket under-counts. `slayer/core/time_bounds.py` owns the analysis
+(dependency-free, so planner and generator share it); `plan_query` partitions
+the filters into `WindowedAggregatePlan.where_filter_ids` plus
+`src_filter_rewrites` (a top-level `and` is split so only its frame-bound
+conjuncts drop; `or`/`not` are never descended into), and the generator's
+`_effective_src_filters` materialises that view once for both join discovery and
+rendering. Hidden `TimeTruncKey` slots are excluded on purpose; Mode-A
+`SlayerModel.filters` are exempt entirely — they define which rows exist, not
+which frame the query looks at.
+
+## P-D — Plan decides, render emits
+
+All classification happens at plan time; the generator consumes the plan
+verbatim. It never re-classifies a slot, re-parses user text, or re-walks
+filters to decide policy. The isolation decision (does this aggregate cross a
+join?), the ranking-time column, the frame-bound partition, and the order-term
+scope all arrive as typed fields on `PlannedQuery` / its plans. The generator
+builds only the environment those decisions read — for example, the render-time
+crossing probe that used to build a throwaway `ScopeFrame` purely to *detect* a
+crossing is gone; the crossing is decided at plan time and carried on the order
+entry's `OrderScope`.
+
+When a filter is routed into a cross-model CTE, its column leaves re-root to the
+CTE-local scope through `_reroot_routed_leaf`, which validates the host-rooted
+path **symmetrically** for both `ColumnKey` and `ColumnSqlKey` (DEV-1769): an
+intermediate-hop path — one not ending at the target relation — is rejected for
+either kind rather than silently stripped. The `ColumnSqlKey` guard is
+unreachable for binder-produced keys (the binder builds `model == path[-1]`, and
+every call site passes `target_relation == target_model.name`), so it fails
+closed on inconsistent hand-built / deserialized keys.
+
+## P-E — Identity is structural end-to-end
+
+Rerooting and isolation operate on typed keys, never by round-tripping through
+formula text. A cross-model aggregate re-anchored from the host's coordinate
+system into the target's is `reroot_aggregate_key` / `reroot_value_key`
+(`slayer/core/keys.py`) producing typed keys directly — there is no
+serialize-to-`revenue:sum`-and-re-bind step. Sub-plan filters are classified
+structurally against the CTE's own root rather than re-derived from
+`routing.text`.
+
+## P-F — One naming authority
+
+Every alias and CTE name is minted by the allocator (`slayer/sql/naming.py`);
+result keys come from `result_key` / `flat_name`. There are no bespoke
+unallocated names. The allocator reserves the deterministic CTE families
+(`_cm_` / `_wm_` / `_rk_` / user CTEs) up front, then allocates the transform
+families (`shifted_` / `sjoin_`) around them, so a transform CTE whose preferred
+name collides with a reserved one renames rather than shadows.
+
+### Result-key contract (P10)
+
+Result keys are preserved byte-for-byte: `orders.revenue_sum`, `orders._count`
+(the `*` dropped, the leading `_` kept), joined dimensions as the full dotted
+path `orders.customers.regions.name`, renamed measures as `orders.<user_name>`.
+`_full_alias_for_slot` derives these from the slot's key / public aliases. Two
+documented exceptions, both through `canonical_agg_name`: cross-model parametric
+aggregates carry the kwarg suffix, and hidden parametric `first`/`last` carry the
+explicit time-arg suffix so distinct time-column specs get distinct materialised
+aliases.
+
+## P-G — Same construct, same SQL
+
+A given `ValueKey` renders identically wherever it appears — one
+`ValueKey`→AST renderer parameterised by scope context, not four copies.
 
 Every `ValueKey` tree — WHERE/HAVING predicates, AGGREGATE-phase composites,
 POST-phase filters, the DEV-1503 outer combined WHERE, and cross-model CTE
-routed filters — renders through one function,
-`slayer.sql.render.value_expr.render_value_key(key, ctx)`, parameterised by a
-`RenderContext` rather than by call site. This is what keeps the same
+routed filters — renders through `slayer.sql.render.value_expr.render_value_key(key,
+ctx)`, parameterised by a `RenderContext`. This is what keeps the same
 `ScalarCallKey` from emitting `IFNULL(...)` on one path (invalid on Postgres)
 and `COALESCE(...)` on another. The context carries per-concern facilities:
 
-- **`FilterFacilities`** — the WHERE/HAVING `agg_builder` HAVING seam (renders a
-  local aggregate as its *expression*, not its SELECT alias, so HAVING works on
+- **`FilterFacilities`** — the WHERE/HAVING `agg_builder` seam (renders a local
+  aggregate as its *expression*, not its SELECT alias, so HAVING works on
   backends that reject aliases there), the filter-side CAST policy
-  (`cast_column_sql`), and the DEV-1539 comparison grouping
-  (`paren_comparison_operands`).
+  (`cast_column_sql`), and the comparison grouping (`paren_comparison_operands`).
 - **`CompositeFacilities`** — the AGGREGATE-composite `agg_builder`; the
   composite *structure* renders through `render_value_key` while the aggregate
   *leaf* delegates to `_build_agg`.
 - **`AliasFacilities`** — POST-phase / outer-wrapper *alias-exclusive*
-  resolution: the five slotted kinds come back as their materialised alias
+  resolution: the slotted kinds come back as their materialised alias
   (table-qualified via `table_by_slot_id`), never rebuilt from source.
 
 A missing facility or an unmaterialised slot raises
 `RenderContextMissingFacilityError` — the renderer fails closed rather than
-degrading quietly, which is how the five predecessor copies drifted apart.
+degrading quietly, which is how the predecessor copies drifted apart. Arithmetic
+and scalar calls likewise route through single functions (`render_arithmetic`,
+`render_scalar_call`); the generator no longer carries per-path composer shims.
 
-`render_value_key` is the sole production path. The generator's five legacy
-per-path renderers (`_render_value_key_for_filter`,
-`_render_value_key_against_aliases`, `_render_filter_for_outer_wrapper`,
-`_render_aggregate_composite_expr`, `_render_filter_value_key_in_target_scope`)
-remain in `slayer/sql/generator.py` but are **production-unreferenced** (P-J
-state 1) — their only surviving references are two documented dead-code sites
-that PR 6 (DEV-1749) deletes along with the renderers themselves:
+### The aggregation registry
 
-- `_render_aggregate_composite_expr` — the dead first/last base SELECT
-  (`_build_first_last_base_select`).
-- `_render_filter_value_key_in_target_scope` — the `first_last_state` escape
-  hatch in `_collect_routed_filters` (fed only by the production-dead
-  cross-model first/last CTE branch; `FirstLastRenderState` is at zero
-  production calls post-DEV-1748).
+Aggregation classification is a single table, `AGG_REGISTRY`
+(`slayer/sql/render/aggregates.py`): each built-in is one `AggEntry` naming the
+`dispatch` mechanism (`simple` / `ranked` / `stat` / `dialect_hook` / `distinct`
+/ `formula`) and, for the simple path, its sqlglot `node_class`. `_build_agg`
+reads the table — `is_builtin_agg` / `resolve_agg_entry` — rather than the four
+former mechanisms (a name→function-string map, a second inline class map, a
+stat-name frozenset, and per-name equality intercepts). A name absent from the
+table is a model-level custom aggregation and takes the formula-template path.
+`window_agg_class` reads the same table's `window_class`, replacing a silent
+`else AVG` catch-all.
 
-`tests/test_dev1763_call_site_migration.py` proves this state-1 inventory two
-ways: runtime raising-sentinels (each legacy renderer patched to raise, run
-against production shapes) and a static `ast` walk asserting the exact allowed
-external-reference set per renderer.
+## P-H — Dialect differences live only in the dialect strategy
 
-When a filter is routed into a cross-model CTE its column leaves re-root to the
-CTE-local scope, and both column-leaf kinds now validate their host-rooted path
-**symmetrically** (DEV-1769): the live `_reroot_routed_leaf` and the legacy
-`_render_filter_value_key_in_target_scope` reject an intermediate-hop path — one
-not ending at the target relation — for `ColumnKey` *and* `ColumnSqlKey` alike,
-rather than the former asymmetry where a `ColumnSqlKey` was checked only for
-model ownership and its path silently stripped. The `ColumnSqlKey` path guard is
-unreachable for binder-produced keys (the binder builds `model == path[-1]`, and
-every call site passes `target_relation == target_model.name`), so it fails
-closed on inconsistent hand-built / deserialized keys instead of re-rooting them;
-`tests/test_dev1769_routed_filter_path_validation.py` pins both the reachable
-shapes end-to-end and the unreachable guard by direct call.
+To render identically across dialects, the shared helpers (`_build_agg`,
+`_build_percentile`, `_build_stat_agg`, `_wrap_cast_for_type`, `_resolve_sql`,
+`_build_date_trunc`) consume one typed input, `AggRenderSpec`, built from planned
+slots by `_build_agg_render_spec_from_planned`. Dialect-specific behaviour
+(SQLite UDFs, ClickHouse parametric quantiles, MySQL's unsupported-function
+`NotImplementedError`, `log10`/`log2` literal preservation, JSON-extract
+rewriting) is emitted by exactly one code path. The outer wrap is likewise a
+dialect hook: `_emit_planned_outer_wrap` delegates to `SqlDialect.emit_outer_wrap`
+(pagination arrives as detached AST from the plan), and order terms resolve
+through the single `resolve_order_term`, which reads null-ordering and direction
+from the dialect strategy rather than per-render-path.
 
-!!! note "Historical: the synthetic-`EnrichedMeasure` adapter"
+## P-I — Grain join-backs are null-safe everywhere
 
-    `generate_from_planned` originally consumed `PlannedQuery` at the top but
-    adapted *back* to `EnrichedMeasure` (`_synthesize_enriched_measure_from_planned`)
-    to reach the dialect helpers — a hybrid that coupled the new path to a
-    legacy type, kept deliberately so the two coexisting pipelines could not
-    drift on dialect SQL. DEV-1452 Stage A retyped the helpers onto
-    `AggRenderSpec`; DEV-1485 deleted the last adapter
-    (`_agg_render_spec_from_enriched`) and `_build_agg`'s `measure=` compat
-    surface with the rest of the legacy stack.
+Every plan-shaped CTE joins back to the host base on the query grain through the
+one null-safe join builder (`slayer/sql/render/joins.py`), which pairs each grain
+column with a null-safe equality so a NULL grain value on either side still
+matches. A scalar CMA has an empty grain — no join predicate exists, so the shape
+stays a CROSS JOIN.
 
-## Multi-stage chaining (`generate_planned_stages`)
+## P-J — No parity ballast
 
-Each non-root stage renders independently (against a per-stage bundle from
-`_bundle_for_stage`) and is wrapped by `_stage_rename_wrapper` so its output
-columns become the flat names downstream stages bound against
-(`orders.customers.region` → `customers__region`). The wrapper derives those from
-the *actual* rendered `named_selects` (robust to the cross-model renderer
-emitting columns out of `public_projection` order) and asserts they match the
-stage's `StageSchema` — a planner/generator divergence fails here rather than as
-a confusing downstream bind miss. Stage CTEs are prepended before any CTEs the
-root already emits (the root reads `FROM <stage>`).
-
-`_bundle_for_stage` picks the host model the stage renders against from the
-planner's `render_source_model` (the stage's own source / overlay /
-synthetic-over-sibling), falling back to a synthetic model over the upstream CTE
-for a `StageSchema` chain stage — so the generator's FROM/joins bind against
-exactly what the binder used.
-
-## Cross-model rendering
-
-`_render_with_cross_model_plans` emits one `_cm_*` CTE per
-`CrossModelAggregatePlan` joined back to the host base. When `plan.rerooted_plan`
-is set, `_render_rerooted_cross_model_cte` renders the nested re-rooted plan
-(FROM target + the target's joins) preserving host grain; otherwise the
-forward-path CTE renders (FROM bare target, grouped at the forward dims).
-`Column.filter` on the aggregated column renders as
-`SUM(CASE WHEN <filter> THEN <col> END)`. See
-[Cross-model aggregates](cross-model-aggregates.md).
-
-The same renderer also emits one `_wm_*` CTE per `WindowedAggregatePlan` — a
-duration-windowed measure (`revenue:sum(window='90d')`). Unlike `_cm_*` (rooted
-at the join target), a `_wm_*` CTE is **host-rooted**: an inner `_src` subquery
-self-selects the host rows (dimensions → `_w_dim_<n>`, other time dims →
-`_w_td_<n>`, the raw window time column → `_w_time`, the value → `_w_value`)
-with its joins discovered through a host `ScopeFrame`, and
-`FROM _base LEFT JOIN _src`
-pairs the grain equalities with a trailing `INTERVAL` range predicate
-(`_src._w_time >= bucket_end − window` / `< bucket_end`). The result groups at
-the query grain and joins back to `_base` null-safe, exactly like a `_cm_*` CTE,
-so windowed and cross-model measures coexist in one query. Windowed-measure
-filters route to the combined-SELECT outer `WHERE` (`Phase.POST`). `sum`/`avg`
-local measures only; other shapes raise at plan time (`_guard_windowed_measures`
-in `stage_planner.py`).
-
-And one `_rk_*` CTE per `RankedAggregatePlan` — a `first`/`last` measure. Rooted
-at the host or at the join target, it ranks its own rows and picks rank 1 per
-grain, then joins back on that grain like the other two. See
-[Ranked aggregates](ranked-aggregates.md). Any of the three plan kinds routes
-the whole query through this renderer.
-
-### Frame bounds vs population filters (DEV-1732)
-
-`_src` inherits the host's ROW-phase filters **minus their frame bounds** — a
-relational comparison (`<`, `<=`, `>`, `>=`) between a non-hidden time
-dimension's raw column and a temporal literal. Without that, the trailing window
-cannot reach rows before the earliest visible bucket and that bucket
-under-counts; with it, `date_range` and the explicit spelling of the same intent
-produce identical numbers.
-
-`slayer/core/time_bounds.py` owns the analysis (dependency-free, so planner and
-generator share it). `stage_planner.plan_query` computes the strippable column
-set once into `PlannedQuery.frame_bound_columns` and partitions the filters into
-`WindowedAggregatePlan.where_filter_ids` (applied) plus `src_filter_rewrites`
-(applied as a residual — a top-level `and` is split so only its frame-bound
-conjuncts drop; `or`/`not` are never descended into). The generator's
-`_effective_src_filters` materialises that view **once** and feeds the same list
-to both join discovery and rendering, so the two cannot disagree about what the
-CTE contains.
-
-Hidden `TimeTruncKey` slots are excluded from `frame_bound_columns` on purpose:
-`_build_windowed_plans` skips hidden row slots, so a hidden time axis is never
-equality-joined into `_src` and stripping its bound would leave it
-unconstrained. Mode-A `SlayerModel.filters` are exempt entirely — they define
-which rows exist, not which frame the query looks at.
-
-The `time_shift` shifted CTE (`_shifted_where_part`) applies the same rule,
-reading the same `frame_bound_columns`; its former
-`isinstance(..., BetweenKey)` special case is subsumed, since a `date_range`'s
-`BetweenKey` column is always a query time dimension's raw column.
-
-## Mode-A filter inlining and join discovery (DEV-1494)
-
-A column-level `Column.filter` on an aggregated measure becomes a CASE-WHEN
-wrapper (`SUM(CASE WHEN <filter> THEN <col> END)`), and a `SlayerModel.filters`
-entry becomes a WHERE term. Both are Mode-A SQL and share one renderer,
-`_render_mode_a_predicate`, which inline-expands references to derived columns —
-bare (`is_eu` → its `CASE WHEN customers.region …`) or dotted to a derived
-column on a joined model (`loss_payment.has_flag` → its `sql`) — so the emitted
-predicate is runnable and never references a non-physical `<alias>.<derived_col>`.
-A predicate with only base refs takes the cheap qualify path
-(`_qualify_mode_a_sql_filter` regex for model filters, `_qualify_column_filter_sql`
-AST for column filters), byte-identical to before. On sqlglot parse failure the
-predicate falls through to the qualify path unchanged.
-
-Join discovery for these text filters (`_filter_join_paths`) is the **union** of
-the join paths in the **un-inlined** predicate and those in the **inline-expanded**
-predicate. Both are needed: the dbt placeholder-join idiom — a constant derived
-column such as `has_flag sql="1"` whose only purpose is to force the (inner)
-join — keeps its alias only in the un-inlined form (it inlines to the constant
-`(1)`), while a derived ref's *crossed* joins (`is_eu` → `customers`;
-`loss_payment.deep_flag` → `loss_payment__claim`) appear only after expansion.
-Discovery for column filters in the base SELECT is restricted to **local**
-aggregate sources (empty `AggregateKey.path`); a cross-model aggregate's filter
-joins are discovered inside its `_cm_*` CTE instead — `_render_cross_model_cte`
-collects the join paths of the target measure's `Column.filter` and the
-target-model filters and adds them to the CTE's own FROM. Because each `_cm_*`
-CTE is an isolated per-(target, grain) computation, adding the join resolves the
-filter's refs without affecting sibling measures. Discovery is root-scope-only,
-so a correlated ref inside an `EXISTS (...)` subquery does not pull an outer join.
-
-## Host-base join discovery (the three symmetric sources)
-
-The host base FROM at `_build_base_select_for_planned` pulls in `LEFT JOIN`s from
-three symmetric sources, each handled by a dedicated collector wired in the same
-call chain just before `_build_from_and_joins`:
-
-1. **Dimension / time-dimension `Column.sql`** (DEV-1484): `_expand_derived_row_dims`
-   pre-expands derived ROW slots (`ColumnSqlKey` dims and `TimeTruncKey` columns
-   that are themselves derived) and scans the expansion through
-   `_joined_paths_in_sql`, appending crossed paths to `needed_join_paths`.
-2. **Aggregated-measure `Column.filter`** (DEV-1494): `_collect_column_filter_join_paths`
-   recurses through AGGREGATE-phase composite keys (`ArithmeticKey` /
-   `ScalarCallKey`) and, for each `AggregateKey` with a `column_filter_key`,
-   collects the paths the predicate touches via `_filter_join_paths` (the union
-   of un-inlined and inline-expanded predicate paths, per the section above).
-3. **Aggregate-source `Column.sql`** (DEV-1502): `_collect_aggregate_source_join_paths`
-   mirrors the filter helper — recurses through the same composite keys, and for
-   each `AggregateKey` whose `source` is a `ColumnSqlKey` with `path == ()`,
-   expands the column via `_expand_derived_column_sql` and scans the result
-   through `_joined_paths_in_sql`. The render-time expansion in
-   `_build_agg_render_spec_from_planned` already produces `SUM(<expanded>)` SQL;
-   this collector closes the join-discovery loop so a measure source like
-   `customers__regions.population` emits both `LEFT JOIN`s.
-
-All three collectors restrict to **local** aggregate sources (empty
-`AggregateKey.source.path`); cross-model aggregates own their own join
-discovery inside the per-plan `_cm_*` CTE — for the `Column.filter` side
-(DEV-1494 / DEV-1503) and, since Stage 4 (DEV-1708 closed DEV-1526), for a
-target column's `Column.sql` that crosses a further join. All three
-host-side collectors feed the shared `needed_join_paths` list, so repeated
-paths surfaced by different sources dedupe naturally via
-`_build_from_and_joins`'s `emitted_aliases` guard.
-
-Since Stage 5 (DEV-1709, widened Law-3 trigger), a LOCAL aggregate with
-any crossing input — source `Column.sql`, `Column.filter`, positional
-args, kwargs — never renders in the top-level host base at all: it
-isolates into a host-rooted `_cm_*` CTE, and the discovery above runs
-inside that CTE's sub-render (see
-[cross-model-aggregates.md](cross-model-aggregates.md#strategy-3-host-rooted-isolation--any-crossing-input-dev-1503-widened-by-dev-1709)).
-The host base only ever contains purely-local aggregates.
-
-## Result-key contract (P10)
-
-The generator preserves the result keys byte-for-byte: `orders.revenue_sum`,
-`orders._count` (the `*` dropped, the leading `_` kept), joined dimensions as the
-full dotted path `orders.customers.regions.name`, and renamed measures as
-`orders.<user_name>`. `_full_alias_for_slot` derives these from the slot's key /
-public aliases. Two documented exceptions, both routed through the same
-`canonical_agg_name` helper: cross-model parametric aggregates carry the kwarg
-suffix legacy dropped, and hidden parametric `first`/`last` (DEV-1501) carry the
-explicit time-arg suffix so distinct time-column specs get distinct
-materialised aliases (`orders.revenue_last_created_at`,
-`orders.revenue_last_updated_at`).
+Every superseded mechanism passes through three states: (1) production-
+unreferenced, (2) deleted, (3) test-unpinned. States 2 and 3 happen only after
+the desired behaviour is completely pinned by tests on the new code; byte-parity
+with already-deleted legacy code is not a requirement. This PR (DEV-1749)
+executed states 2 and 3 for the legacy value-key renderers and arithmetic
+composers, the first/last host-base ranked machinery (`FirstLastRenderState` and
+its helpers), the Mode-A model-filter qualify chain, the four legacy ORDER BY
+resolvers, the `_null_safe_join_pair_sql` string round-trip, the formula-text
+cross-model re-rooting island, and the double-indirection aggregation dispatch —
+each with its pinning tests removed only after the live path's behaviour was
+confirmed pinned.
 
 ## Response metadata (`response_meta.py`)
 
 `build_response_metadata` builds `SlayerResponse.attributes` and
-`expected_columns` from the root `PlannedQuery` plus the rendered SQL (the
-retired legacy engine derived both from an `EnrichedQuery`):
+`expected_columns` from the root `PlannedQuery` plus the rendered SQL:
 
 - **`expected_columns`** comes from the final SQL's `named_selects` — the literal
   result-key columns rows come back under. Reading them from the SQL (rather than
-  re-deriving from slots) is bulletproof: it is exactly the outer SELECT the
-  generator emitted.
+  re-deriving from slots) is exactly the outer SELECT the generator emitted.
 - **`attributes`** (`ResponseAttributes.dimensions` / `.measures`) come from the
-  root plan's public `ValueSlot`s, classified dimension (ROW phase) vs measure
-  (everything else), with each public result key mapped to its
-  `FieldMetadata(label, format)`. `_slot_result_keys` mirrors
-  `_full_alias_for_slot` so the keys line up with the rendered projection; only
-  keys actually present in the rendered SQL are surfaced (a guard against
-  divergence). Aggregate formats come from `_infer_aggregated_format` (INTEGER
-  for count/star, FLOAT for avg-family, source-column format for sum/min/max).
+  root plan's public `ValueSlot`s, classified dimension (ROW phase) vs measure,
+  each public result key mapped to its `FieldMetadata(label, format)`.
+  `_slot_result_keys` mirrors `_full_alias_for_slot`; only keys actually present
+  in the rendered SQL are surfaced. Aggregate formats come from
+  `_infer_aggregated_format` (INTEGER for count/star, FLOAT for avg-family,
+  source-column format for sum/min/max).
 
 `FieldMetadata` / `ResponseAttributes` / `_infer_aggregated_format` live here (not
-in `query_engine`) so the module imports nothing from the engine;
-`query_engine` re-exports them, keeping the public import path unchanged.
+in `query_engine`) so the module imports nothing from the engine; `query_engine`
+re-exports them, keeping the public import path unchanged.
 
 ## Design rationale
 
-- **Why one shared dialect emitter?** Dialect coverage (SQLite UDFs, ClickHouse
-  parametric quantiles, MySQL's unsupported-function `NotImplementedError`, the
-  `log10`/`log2` literal preservation, JSON-extract rewriting) is large and
-  well-tested. Routing every caller through one emitter keeps that behaviour in
-  a single place. This originally also kept the two coexisting pipelines from
-  drifting on dialect SQL, at the cost of an `EnrichedMeasure` coupling that
-  DEV-1452 / DEV-1485 removed.
-- **Why derive `expected_columns` from the SQL?** Because the SQL is the ground
-  truth for what rows come back keyed by. Re-deriving from slots risks a subtle
-  mismatch; reading `named_selects` cannot.
-- **Why assert in `_stage_rename_wrapper`?** A leaked hidden column or a C13
-  over-projection would otherwise surface as a downstream "column not found"
-  deep in the next stage's binding. Asserting at the boundary turns a confusing
-  failure into a precise one.
+- **Why one shared dialect emitter (P-H)?** Dialect coverage is large and
+  well-tested; routing every caller through one emitter keeps that behaviour in a
+  single place and makes "same construct, same SQL" (P-G) hold across backends.
+- **Why derive `expected_columns` from the SQL?** The SQL is the ground truth for
+  what rows come back keyed by. Re-deriving from slots risks a subtle mismatch;
+  reading `named_selects` cannot.
+- **Why assert in `_stage_rename_wrapper` (P-B)?** A leaked hidden column or a C13
+  over-projection would otherwise surface as a downstream "column not found" deep
+  in the next stage's binding. Asserting at the boundary turns a confusing failure
+  into a precise one.
+- **Why typed keys end-to-end (P-E)?** A formula-text round-trip could silently
+  drift on quoting, path residuals, or operand order; typed re-rooting cannot
+  produce a key the binder would read differently.

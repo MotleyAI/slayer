@@ -271,29 +271,23 @@ class TestB2JoinBackBuiltAsAst:
             f"{sorted(unbound)}.\nON: {on}\n\nfull SQL:\n{sql}"
         )
 
-    async def test_join_backs_no_longer_route_through_the_string_round_trip(
-        self, monkeypatch: pytest.MonkeyPatch,
+    async def test_join_backs_are_built_as_ast_not_string_round_trip(
+        self,
     ) -> None:
-        """NEW (B2), production-path proof: ``_null_safe_join_pair_sql`` is
-        retained (P-J state 1) but must no longer be REACHED by either
-        join-back. Poisoning it proves the call sites migrated — a grep cannot,
-        because the function stays in the file.
+        """B2, production-path proof: both the cross-model and windowed-measure
+        grain join-backs render as null-safe AST ``LEFT JOIN``s. The legacy
+        string re-parse helper (``_null_safe_join_pair_sql``) was deleted in
+        PR 6 (DEV-1749); these shapes are what its successor emits — assert the
+        ON predicate is null-safe, not merely that a LEFT JOIN exists.
         """
-        from slayer.sql.generator import SQLGenerator
-
-        def _poisoned(*args, **kwargs):  # noqa: ANN002, ANN003
-            raise AssertionError(
-                "_null_safe_join_pair_sql was called — a grain join-back is "
-                "still using the string re-parse round-trip (B2 incomplete)."
-            )
-
-        monkeypatch.setattr(
-            SQLGenerator, "_null_safe_join_pair_sql", _poisoned, raising=True,
-        )
         cm_sql = await _gen(_cm_shared_grain_query(), dialect="postgres")
         assert "LEFT JOIN _cm_" in cm_sql, cm_sql
+        cm_on = _norm(joinback_on_predicate_for(cm_sql, prefix="_cm_", dialect="postgres"))
+        assert "IS NOT DISTINCT FROM" in cm_on, cm_on
         wm_sql = await _gen(_windowed_chain_query(), dialect="postgres")
         assert "LEFT JOIN _wm_" in wm_sql, wm_sql
+        wm_on = _norm(joinback_on_predicate_for(wm_sql, prefix="_wm_", dialect="postgres"))
+        assert "IS NOT DISTINCT FROM" in wm_on, wm_on
 
 
 # =========================================================================== #

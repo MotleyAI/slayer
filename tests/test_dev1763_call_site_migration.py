@@ -1,46 +1,25 @@
-"""DEV-1763 — the P-G call-site migration: route the five live render families
-through ``render_value_key`` with byte-identical SQL, leaving the legacy
-renderers production-unreferenced (P-J state 1).
+"""DEV-1763 — the P-G call-site migration: the five render families route
+through ``render_value_key`` with byte-identical SQL.
 
-This module is the migration's proof, in three layers:
+Behavioural unit tests for the renderer surface the migration added: the
+``FilterFacilities.agg_builder`` HAVING seam (slot lookup + ``having_full_alias``
+recovery), the ``cast_column_sql`` filter-CAST policy, the
+``paren_comparison_operands`` grouping policy, the alias-exclusive resolution
+mode with table qualification, the ``Optional`` scope fail-closed rule, and
+``ScopeFrame.column_type``.
 
-1. **Per-family raising sentinels** (``Test*FamilySentinel``) — one class per
-   legacy renderer, patching it to raise and running production query shapes
-   the probe confirmed reach it. The migration is done, so each PASSES; a
-   sentinel fails only if that family REGRESSES back onto its legacy renderer.
-   A runtime proof, not a grep: a source scan cannot tell a live call from one
-   inside a docstring or an unreachable branch (the
-   ``tests/test_dev1747_order_resolver`` pattern, ``TestSingleResolver``).
-
-2. **The static state-1 inventory** (``TestState1Inventory``) — an ``ast`` walk
-   asserting each legacy renderer's *external* call sites (callers other than
-   its own body) are exactly the documented set: none for filter / aliases /
-   outer-wrapper; the single production-dead ``_build_first_last_base_select``
-   site for composite; the single ``first_last_state`` escape hatch in
-   ``_collect_routed_filters_first_last`` for target-scope. This is the
-   machine-checked inventory PR 6 (DEV-1749) consumes.
-
-3. **Facility unit tests** — the new renderer behaviours the migration adds:
-   the ``FilterFacilities.agg_builder`` HAVING seam (slot lookup +
-   ``having_full_alias`` recovery), the ``cast_column_sql`` filter-CAST policy,
-   the ``paren_comparison_operands`` grouping policy, the alias-exclusive
-   resolution mode with table qualification, the ``Optional`` scope fail-closed
-   rule, and ``ScopeFrame.column_type``.
-
-New API is referenced from inside test bodies (never at module import), so the
-sentinels and inventory stay collectable independently of the facility surface —
-which kept them meaningful while this suite was written test-first, before the
-migration landed.
+The transitional migration pins (per-family raising sentinels + the static
+state-1 inventory) were deleted with the legacy renderers in PR 6 (DEV-1749):
+once a symbol no longer exists, any reference to it fails the suite outright, so
+symbol-absence tests are the parity ballast P-J forbids.
 
 Refs: DEV-1763, DEV-1742 §5.1 / P-G / P-J, DEV-1749 (deletion consumer).
 """
 
 from __future__ import annotations
 
-import ast
 import tempfile
 from decimal import Decimal
-from pathlib import Path
 
 import pytest
 from sqlglot import exp
@@ -67,7 +46,6 @@ from slayer.core.models import (
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.dialects import get_dialect
-from slayer.sql.generator import SQLGenerator
 from slayer.sql.naming import AliasAllocator
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.sql.render.value_expr import (
@@ -158,19 +136,6 @@ _MONTH = TimeDimension(
 # --------------------------------------------------------------------------- #
 # Per-family production shapes (probe-verified to reach the named renderer).
 # --------------------------------------------------------------------------- #
-_COMPOSITE_SHAPES = {
-    "arith_of_aggregates": SlayerQuery(
-        source_model="orders",
-        dimensions=[ColumnRef(name="status")],
-        measures=[ModelMeasure(formula="amount:sum - qty:sum", name="d")],
-    ),
-    "scalar_over_aggregate": SlayerQuery(
-        source_model="orders",
-        dimensions=[ColumnRef(name="status")],
-        measures=[ModelMeasure(formula="ifnull(amount:sum, 0)", name="m")],
-    ),
-}
-
 _FILTER_SHAPES = {
     "host_where_scalar": SlayerQuery(
         source_model="orders",
@@ -210,242 +175,6 @@ _FILTER_SHAPES = {
     ),
 }
 
-_ALIAS_SHAPES = {
-    "post_phase_filter_on_transform": SlayerQuery(
-        source_model="orders",
-        time_dimensions=[_MONTH],
-        measures=[ModelMeasure(formula="cumsum(amount:sum)", name="cs")],
-        filters=["cumsum(amount:sum) > 5"],
-    ),
-    "post_phase_filter_arith_transform": SlayerQuery(
-        source_model="orders",
-        time_dimensions=[_MONTH],
-        measures=[ModelMeasure(formula="cumsum(amount:sum)", name="cs")],
-        filters=["cumsum(amount:sum) + 1 > 5"],
-    ),
-    "window_transform_composite_input": SlayerQuery(
-        source_model="orders",
-        time_dimensions=[_MONTH],
-        measures=[ModelMeasure(formula="cumsum(amount:sum + qty:sum)", name="cs")],
-    ),
-}
-
-_OUTER_SHAPES = {
-    "outer_composite_projection": SlayerQuery(
-        source_model="orders",
-        dimensions=[ColumnRef(name="status")],
-        measures=[ModelMeasure(
-            formula="customers.spend:sum + amount:sum", name="mix")],
-    ),
-}
-
-_TARGET_SHAPES = {
-    "cross_model_routed_where": SlayerQuery(
-        source_model="orders",
-        dimensions=[ColumnRef(name="status")],
-        measures=[ModelMeasure(formula="customers.spend:sum", name="cs")],
-        filters=["customers.deep_pop > 5"],
-    ),
-    "cross_model_routed_having": SlayerQuery(
-        source_model="orders",
-        dimensions=[ColumnRef(name="status")],
-        measures=[ModelMeasure(formula="customers.spend:sum", name="cs")],
-        filters=["customers.spend:sum + 1 > 5"],
-    ),
-}
-
-
-# ===========================================================================
-# Layer 1 — per-family raising sentinels.
-# ===========================================================================
-def _boom_factory(method: str):
-    def _boom(*_a, **_kw):
-        raise AssertionError(
-            f"{method} is still on the production render path — DEV-1763 routes "
-            f"every family through render_value_key(key, ctx)"
-        )
-    return _boom
-
-
-def _assert_present(method: str) -> None:
-    assert hasattr(SQLGenerator, method), (
-        f"{method} has been deleted; DEV-1763 keeps the legacy renderers "
-        f"(P-J state 1) and defers deletion to PR 6 — update this test "
-        f"deliberately rather than losing the guard"
-    )
-
-
-class TestCompositeFamilySentinel:
-    """``_render_aggregate_composite_expr`` must lose its live production caller
-    (``_build_base_select_for_planned``). Its only surviving reference is the
-    production-dead ``_build_first_last_base_select`` site (PR 6 deletes it)."""
-
-    _METHOD = "_render_aggregate_composite_expr"
-
-    @pytest.mark.parametrize("shape", sorted(_COMPOSITE_SHAPES))
-    async def test_composite_family_never_reached(self, shape, monkeypatch) -> None:
-        _assert_present(self._METHOD)
-        monkeypatch.setattr(SQLGenerator, self._METHOD, _boom_factory(self._METHOD))
-        await _generate(_COMPOSITE_SHAPES[shape])
-
-
-class TestFilterFamilySentinel:
-    """``_render_value_key_for_filter`` must lose both production call sites:
-    the host WHERE/HAVING builder and the time_shift shifted-CTE WHERE."""
-
-    _METHOD = "_render_value_key_for_filter"
-
-    @pytest.mark.parametrize("shape", sorted(_FILTER_SHAPES))
-    async def test_filter_family_never_reached(self, shape, monkeypatch) -> None:
-        _assert_present(self._METHOD)
-        monkeypatch.setattr(SQLGenerator, self._METHOD, _boom_factory(self._METHOD))
-        await _generate(_FILTER_SHAPES[shape])
-
-
-class TestAliasFamilySentinel:
-    """``_render_value_key_against_aliases`` must lose all six production sites
-    (including ``_render_cross_model_transform_chain`` :6166)."""
-
-    _METHOD = "_render_value_key_against_aliases"
-
-    @pytest.mark.parametrize("shape", sorted(_ALIAS_SHAPES))
-    async def test_alias_family_never_reached(self, shape, monkeypatch) -> None:
-        _assert_present(self._METHOD)
-        monkeypatch.setattr(SQLGenerator, self._METHOD, _boom_factory(self._METHOD))
-        await _generate(_ALIAS_SHAPES[shape])
-
-
-class TestOuterWrapperFamilySentinel:
-    """``_render_filter_for_outer_wrapper`` must lose its production sites in
-    ``_render_with_cross_model_plans`` / ``_render_outer_composite``."""
-
-    _METHOD = "_render_filter_for_outer_wrapper"
-
-    @pytest.mark.parametrize("shape", sorted(_OUTER_SHAPES))
-    async def test_outer_family_never_reached(self, shape, monkeypatch) -> None:
-        _assert_present(self._METHOD)
-        monkeypatch.setattr(SQLGenerator, self._METHOD, _boom_factory(self._METHOD))
-        await _generate(_OUTER_SHAPES[shape])
-
-
-class TestTargetScopeFamilySentinel:
-    """``_render_filter_value_key_in_target_scope`` must lose its production
-    caller ``_collect_routed_filters`` on the live (``first_last_state is None``)
-    path. Patching it to raise also proves production never takes the
-    first_last escape hatch, which is the sole intentional surviving reference
-    (PR 6 inventory)."""
-
-    _METHOD = "_render_filter_value_key_in_target_scope"
-
-    @pytest.mark.parametrize("shape", sorted(_TARGET_SHAPES))
-    async def test_target_scope_family_never_reached(self, shape, monkeypatch) -> None:
-        _assert_present(self._METHOD)
-        monkeypatch.setattr(SQLGenerator, self._METHOD, _boom_factory(self._METHOD))
-        await _generate(_TARGET_SHAPES[shape])
-
-
-# ===========================================================================
-# Layer 2 — the static state-1 inventory (ast, robust to self-recursion).
-# ===========================================================================
-_GENERATOR_SRC = (
-    Path(__file__).resolve().parents[1] / "slayer" / "sql" / "generator.py"
-)
-
-# family renderer -> the EXACT external references (``self.<renderer>`` outside
-# the renderer's own body) allowed after migration, as
-# ``{enclosing class-method: expected count}``. A count catches a second,
-# unguarded legacy call inside an allowed method that a set alone would hide
-# (Codex F2).
-_ALLOWED_EXTERNAL_CALLERS = {
-    "_render_value_key_for_filter": {},
-    "_render_value_key_against_aliases": {},
-    "_render_filter_for_outer_wrapper": {},
-    # Production-dead first/last base SELECT — deleted with the type in PR 6.
-    "_render_aggregate_composite_expr": {"_build_first_last_base_select": 1},
-    # The narrow first_last_state escape hatch (its own helper) — deleted in PR 6.
-    "_render_filter_value_key_in_target_scope": {
-        "_collect_routed_filters_first_last": 1,
-    },
-}
-
-
-def _with_parents(tree: ast.Module) -> ast.Module:
-    """Attach ``.parent`` links so a node can walk up to its lexical scope
-    (Codex F10/F12 — parentage instead of a brittle line-span heuristic)."""
-    for node in ast.walk(tree):
-        for child in ast.iter_child_nodes(node):
-            child.parent = node  # type: ignore[attr-defined]
-    return tree
-
-
-def _enclosing_class_method(node: ast.AST) -> "str | None":
-    """The name of the nearest ``def`` that is a direct child of a ``ClassDef``
-    (i.e. a real method, not a nested closure like ``recurse``). ``None`` if the
-    reference is at module level or in a free function. Attributing a closure's
-    body to its owning method is what keeps duplicate closure names (many
-    ``recurse``s) from colliding (Codex F10/F11)."""
-    cur = getattr(node, "parent", None)
-    while cur is not None:
-        if isinstance(cur, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if isinstance(getattr(cur, "parent", None), ast.ClassDef):
-                return cur.name
-        cur = getattr(cur, "parent", None)
-    return None
-
-
-def _self_attr_refs(tree: ast.Module, name: str) -> list[ast.Attribute]:
-    """Every ``self.<name>`` attribute reference — not only ``self.<name>(...)``
-    calls, so a stored/passed method reference (``callback=self._render_x``) is
-    also inventoried (Codex F11)."""
-    refs: list[ast.Attribute] = []
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Attribute)
-            and node.attr == name
-            and isinstance(node.value, ast.Name)
-            and node.value.id == "self"
-        ):
-            refs.append(node)
-    return refs
-
-
-class TestState1Inventory:
-    """The machine-checked inventory PR 6 consumes: every legacy family
-    renderer is production-unreferenced except for the documented dead-code /
-    escape-hatch sites. This invariant holds post-migration; a failure means a
-    family regressed onto its legacy renderer (or a new caller was added)."""
-
-    @pytest.fixture(scope="class")
-    def tree(self) -> ast.Module:
-        return _with_parents(ast.parse(_GENERATOR_SRC.read_text()))
-
-    @pytest.mark.parametrize("renderer", sorted(_ALLOWED_EXTERNAL_CALLERS))
-    def test_external_references_are_exactly_the_allowed_set(
-        self, renderer: str, tree: ast.Module,
-    ) -> None:
-        own_methods = {
-            n.name for n in ast.walk(tree)
-            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-        }
-        assert renderer in own_methods, f"{renderer} vanished from generator.py"
-
-        external: dict[str, int] = {}
-        for ref in _self_attr_refs(tree, renderer):
-            enclosing = _enclosing_class_method(ref)
-            if enclosing == renderer:
-                continue  # self-recursion inside the renderer's own body
-            key = enclosing if enclosing is not None else f"<line {ref.lineno}>"
-            external[key] = external.get(key, 0) + 1
-
-        assert external == _ALLOWED_EXTERNAL_CALLERS[renderer], (
-            f"{renderer} external references {external} != "
-            f"allowed {_ALLOWED_EXTERNAL_CALLERS[renderer]}"
-        )
-
-
-# ===========================================================================
-# Layer 3 — facility unit tests (the new renderer behaviours).
-# ===========================================================================
 def _scope(dialect: str = "postgres") -> ScopeFrame:
     host, cust, reg = _orders(), _customers(), _regions()
     alloc = AliasAllocator()

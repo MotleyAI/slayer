@@ -1170,7 +1170,7 @@ class TestStillRejected:
         generator = SQLGenerator(dialect="sqlite")
         select = exp.Select()
         with pytest.raises(NotImplementedError) as ei:
-            generator._apply_order_limit_from_planned(
+            generator._apply_planned_order_limit(
                 select=select,
                 planned_query=planned,
                 source_relation="orders",

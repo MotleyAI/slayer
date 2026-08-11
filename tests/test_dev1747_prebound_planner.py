@@ -1,17 +1,11 @@
 """DEV-1747 §5.4 — the pre-bound planner seam, and zero text round-trips.
 
-Rerooting today builds its nested plan by SERIALIZING typed keys back to
-formula text and re-parsing them::
-
-    formula = _local_agg_formula(agg_key)          # AggregateKey -> "spend:sum"
-    rr      = _reroot_ref(...)                     # ColumnRef    -> "regions.name"
-    SlayerQuery(measures=[ModelMeasure(formula=formula)], filters=[<raw text>])
-    sub_plan = subplan_builder(rerooted_query, rerooted_bundle)   # re-parses all of it
-
-That is the P-E violation: structural identity is laundered through a string
-and re-derived. §5.4 replaces it with ``PreboundQuery`` — the typed product of
-``plan_query``'s bind block — handed straight back to ``plan_query(prebound=…)``,
-which then skips binding entirely.
+Rerooting once built its nested plan by SERIALIZING typed keys back to formula
+text and re-parsing the whole thing (measures, filters) from strings — a P-E
+violation that laundered structural identity through text and re-derived it.
+§5.4 replaces it with ``PreboundQuery`` — the typed product of ``plan_query``'s
+bind block — handed straight back to ``plan_query(prebound=…)``, which then
+skips binding entirely.
 
 Two properties are asserted:
 
@@ -210,43 +204,6 @@ class TestNoTextRoundTrip:
         _plan(self._reroot_query())
         assert real_builder_calls, "the reroot path never ran — test is vacuous"
 
-    def test_the_text_serializers_are_never_called(self, monkeypatch) -> None:
-        """The text serializers stay (P-J state 1) but must lose every
-        production caller — otherwise the round-trip is still live.
-
-        Sentinels rather than a source scan: a grep for ``_reroot_ref(`` also
-        matches a call inside a docstring or a dead branch, and stops matching
-        the moment the symbol is renamed. A function that raises when invoked
-        is exactly as strong as the claim being made.
-
-        Both nested-plan routes are planned, because the serializers are split
-        between them — ``_reroot_ref`` on the TARGET-rooted reroot,
-        ``_local_agg_formula`` on the HOST-rooted one. Exercising a single
-        shape would leave the other's serializer free to stay live.
-        """
-
-        patched = []
-        for symbol in ("_local_agg_formula", "_reroot_ref", "_render_ref_formula"):
-            if not hasattr(cross_model_planner, symbol):
-                continue
-
-            def _boom(*_a, _symbol=symbol, **_kw):
-                raise AssertionError(
-                    f"{_symbol} is still on the production reroot path — §5.4 "
-                    f"replaces formula-text round-trips with typed keys"
-                )
-
-            monkeypatch.setattr(cross_model_planner, symbol, _boom)
-            patched.append(symbol)
-        assert patched, (
-            "none of the text serializers exist any more; P-J state 1 keeps "
-            "them until PR 6, so update this test deliberately rather than "
-            "letting it pass vacuously"
-        )
-        target_rooted = _plan(_SHAPES["rerooted"])
-        assert target_rooted.cross_model_aggregate_plans[0].rerooted_plan is not None
-        host_rooted = _plan(_SHAPES["host_rooted"])
-        assert host_rooted.cross_model_aggregate_plans[0].cte_root_model == "orders"
 
     def test_nested_plan_measure_is_a_typed_key_not_a_formula(self) -> None:
         """The observable end state: the nested plan's aggregate slot carries

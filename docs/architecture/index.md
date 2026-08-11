@@ -211,18 +211,19 @@ the kind of multi-path coupling the redesign set out to remove.
    - A `SlayerModel.filters` entry, OR a column-level `Column.filter` on an
      aggregated measure, referencing a non-trivial derived column.
      `_validate_model_filter` no longer rejects the model-filter form; the
-     generator inline-expands the predicate (the shared
-     `_render_mode_a_predicate`, used by both `_render_model_filter_sql` and the
-     `Column.filter` CASE-WHEN path) and pulls any join the expansion crosses
-     into the FROM. Inlining covers a bare derived ref (`is_eu` →
+     generator enters the predicate through the scope's Mode-A door
+     (`ScopeFrame.enter_predicate`), shared by both the `SlayerModel.filters`
+     WHERE term and the `Column.filter` CASE-WHEN path, which inline-expands
+     derived references and pulls any join the expansion crosses into the FROM.
+     Inlining covers a bare derived ref (`is_eu` →
      `customers.region`) **and** a dotted ref to a derived column on a joined
      model (`loss_payment.has_flag` → its `sql`), matching the query-level
      filter path so no dangling `<alias>.<derived_col>` (a non-physical column)
-     is emitted (DEV-1494). Join discovery for these Mode-A text filters
-     (`_filter_join_paths`) unions the paths of the **un-inlined** predicate
-     (so the dbt placeholder-join idiom — a constant `has_flag sql="1"` whose
-     only purpose is to force the join — keeps its alias) with the paths the
-     **inline-expanded** predicate crosses. The cross-model `_cm_*` CTE discovers
+     is emitted (DEV-1494). Join discovery for these Mode-A text filters is a
+     side effect of entering the door, and unions the paths of the **un-inlined**
+     predicate (so the dbt placeholder-join idiom — a constant `has_flag
+     sql="1"` whose only purpose is to force the join — keeps its alias) with the
+     paths the **inline-expanded** predicate crosses. The cross-model `_cm_*` CTE discovers
      its OWN filter joins too — the target measure's `Column.filter` and the
      target-model filters — and adds them to the CTE's FROM (each `_cm_*` CTE is
      an isolated per-(target, grain) computation, so the join resolves the

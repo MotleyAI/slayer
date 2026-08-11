@@ -25,9 +25,8 @@ Two layers of coverage:
   that the pre-existing intermediate-hop / other-model rejections still fire
   with their exact messages. These pass before and after the fix.
 * **Direct-call (the new guard)** — the binder-unreachable inconsistent key,
-  which only a direct call to ``_reroot_routed_leaf`` (live) or
-  ``_render_filter_value_key_in_target_scope`` (legacy escape hatch) can
-  construct. These are red before the guard lands.
+  which only a direct call to the live ``_reroot_routed_leaf`` can construct.
+  These are red before the guard lands.
 
 The aggregate is ``customers_v2.regions.population:sum`` throughout, so the CTE
 target is ``regions`` (a TWO-hop path). That lets a filter path end AT the
@@ -43,16 +42,12 @@ from slayer.core.enums import DataType
 from slayer.core.keys import ColumnKey, ColumnSqlKey
 from slayer.core.models import Column, ModelMeasure
 from slayer.core.query import SlayerQuery
-from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.sql.generator import SQLGenerator
 
 from tests._cross_model_chain import (
-    _countries,
-    _customers_v2,
     _extract_cte_body,
     _gen,
     _norm,
-    _orders_x,
     _regions,
 )
 from tests._engine_helpers import _assert_valid_sql
@@ -145,19 +140,6 @@ def _regions_target():
     return _regions(extra_columns=_REGIONS_EXTRA)
 
 
-def _direct_bundle() -> ResolvedSourceBundle:
-    """A bundle whose ``regions`` carries ``pop_x2`` so the legacy renderer's
-    accept path can expand it."""
-    return ResolvedSourceBundle(
-        source_model=_orders_x(),
-        referenced_models=[
-            _customers_v2(),
-            _regions(extra_columns=_REGIONS_EXTRA),
-            _countries(),
-        ],
-    )
-
-
 # Hand-built keys against target ``regions``. Only the malformed one must raise.
 _VALID_MULTI_HOP = ColumnSqlKey(
     path=("customers_v2", "regions"), model="regions", column_name="pop_x2",
@@ -229,45 +211,3 @@ class TestRerootRoutedLeafDirect:
             gen._reroot_routed_leaf(
                 key, target_relation="regions", target_model=target,
             )
-
-
-class TestLegacyTargetScopeRendererDirect:
-    """The LEGACY escape hatch ``_render_filter_value_key_in_target_scope`` —
-    production-dead except the first/last path (PR 6 deletes it), so tested by
-    direct call. Unlike the live seam it EXPANDS immediately rather than
-    returning a re-rooted key, so the accept case needs a real bundle."""
-
-    def _gen(self) -> SQLGenerator:
-        return SQLGenerator(dialect="postgres")
-
-    def _render(self, value_key):
-        return self._gen()._render_filter_value_key_in_target_scope(
-            value_key=value_key,
-            target_relation="regions",
-            target_model=_regions_target(),
-            planned_query=None,
-            bundle=_direct_bundle(),
-        )
-
-    def test_malformed_multi_hop_path_raises_symmetrically(self) -> None:
-        with pytest.raises(NotImplementedError, match=_MSG_NEW_COLUMNSQLKEY):
-            self._render(_MALFORMED_MULTI_HOP)
-
-    def test_valid_multi_hop_path_ending_at_target_expands(self) -> None:
-        """path ends at target → expands the derived ``Column.sql`` rooted at
-        the local ``regions`` alias (the accept case the guard must not reject).
-        Asserting the ``regions`` qualifier — not just the formula — pins that
-        expansion roots at ``target_relation``, which is the behaviour under
-        protection."""
-        out = self._render(_VALID_MULTI_HOP)
-        assert out is not None
-        assert "regions.population * 2" in _norm(out.sql(dialect="postgres")), out.sql()
-
-    def test_empty_path_expands(self) -> None:
-        out = self._render(_VALID_EMPTY_PATH)
-        assert out is not None
-        assert "regions.population * 2" in _norm(out.sql(dialect="postgres")), out.sql()
-
-    def test_other_model_still_raises_on_model_check_first(self) -> None:
-        with pytest.raises(NotImplementedError, match=_MSG_OTHER_MODEL):
-            self._render(_OTHER_MODEL)

@@ -18,7 +18,6 @@ from slayer.engine.stage_planner import plan_query
 from slayer.sql.generator import (
     AggRenderSpec,
     SQLGenerator,
-    _cte_name_from_alias,
     _validate_agg_param_value,
     _wrap_cast_for_type,
 )
@@ -10102,20 +10101,6 @@ class TestIsolatedFilteredMeasureCTEs:
             f"host subquery FROM should render inside the _cm_ CTE:\n{sql}"
         )
         _assert_valid_sql(sql)
-
-
-class TestCteNameSanitization:
-    """CTE names from aliases must be collision-free."""
-
-    def test_dot_vs_underscore_no_collision(self) -> None:
-        """Aliases differing only in dot/underscore placement produce distinct CTE names."""
-
-        name_a = _cte_name_from_alias("_fm_", "a.b_c")
-        name_b = _cte_name_from_alias("_fm_", "a_b.c")
-        assert name_a != name_b, f"Collision: {name_a!r} == {name_b!r}"
-        # a.b_c → _fm_a__b_c, a_b.c → _fm_a_b__c
-        assert name_a == "_fm_a__b_c"
-        assert name_b == "_fm_a_b__c"
 
 
 class TestGetColumnTypesSql:

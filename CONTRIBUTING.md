@@ -78,8 +78,8 @@ slayer/
   core/             # Domain models, enums, query/formula parsers
   engine/           # Query orchestration
     query_engine.py   # Central orchestrator (execute, model resolution)
-    enrichment.py     # SlayerQuery → EnrichedQuery transformation
-    enriched.py       # EnrichedQuery dataclasses
+    binding.py        # SlayerQuery → typed bound keys
+    stage_planner.py  # Bound query → typed PlannedQuery (rendered by sql/generator.py)
     ingestion.py      # Auto-ingestion from database schemas
   sql/              # SQL generation (sqlglot) and execution (SQLAlchemy)
   storage/          # Storage backends (YAML, SQLite, pluggable registry)
@@ -116,7 +116,7 @@ docs/
 1. Add the function name to `ALL_TRANSFORMS` and/or `TIME_TRANSFORMS` in `core/formula.py`
 2. Handle it in the formula parser (`parse_formula`)
 3. Add the SQL generation in `generator.py`
-4. Add enrichment support in `enrichment.py` if it needs special handling
+4. Add binder/planner support in `binding.py` / `stage_planner.py` if it needs special handling
 5. Add unit tests in `test_sql_generator.py` and integration tests
 6. Document in `docs/concepts/formulas.md`
 

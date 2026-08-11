@@ -116,16 +116,14 @@ def _decimal_to_plain_str(value: Decimal) -> str:
 def agg_kwarg_canonical_str(value: Any) -> str:
     """Canonicalize an AggregateKey kwarg / arg value to SQL-string form.
 
-    DEV-1450 stage 7b.13: ``EnrichedMeasure.agg_kwargs`` is typed as
-    ``Dict[str, str]`` and every value flows through
-    ``_validate_agg_param_value`` (``slayer/sql/generator.py:172``) which
-    accepts only identifiers, qualified names, or numeric literals.
-    Sites that build the synth ``EnrichedMeasure`` from a typed
-    ``AggregateKey`` -- AND the two canonical-alias renderers that
-    previously called ``str(v)`` directly (``slayer/sql/generator.py:3753``
-    and ``slayer/engine/cross_model_planner.py:286``) -- route every
-    kwarg value through this helper instead, so a ``ColumnKey`` never
-    surfaces as Pydantic-repr noise.
+    Agg kwarg / arg values must reach ``_build_agg`` as SQL strings that
+    ``_validate_agg_param_value`` (``slayer/sql/generator.py``) accepts —
+    identifiers, qualified names, or numeric literals. Sites that build the
+    synth ``AggRenderSpec`` from a typed ``AggregateKey`` -- AND the two
+    canonical-alias renderers that previously called ``str(v)`` directly
+    (``slayer/sql/generator.py`` and ``slayer/engine/cross_model_planner.py``)
+    -- route every kwarg value through this helper instead, so a ``ColumnKey``
+    never surfaces as Pydantic-repr noise.
 
     Conversion rules:
 

@@ -514,7 +514,7 @@ class _Prepared(BaseModel):
     """DB-free product of ``_prepare_pipeline`` (DEV-1715).
 
     Everything the execute / cache-hook / evict / refresh paths need after
-    resolve→enrich→plan→SQL-gen→policy but BEFORE any SQL-client construction.
+    resolve→bind→plan→SQL-gen→policy but BEFORE any SQL-client construction.
     ``sql`` is the FINAL, policy-rewritten SQL that is actually executed, so a
     cache key computed from it (``make_key(sql, ds_fingerprint)``) always
     matches the executed statement. ``resolved_data_source`` is
@@ -955,7 +955,7 @@ class SlayerQueryEngine:
 
         return main_query, named_queries, model.data_source or prefer_data_source
 
-    async def _prepare_pipeline(  # NOSONAR S3776 — linear pipeline (resolve→enrich→generate→policy); breaking it up obscures the order of operations
+    async def _prepare_pipeline(  # NOSONAR S3776 — linear pipeline (resolve→bind→generate→policy); breaking it up obscures the order of operations
         self,
         query: SlayerQuery,
         named_queries: Dict[str, SlayerQuery],
@@ -965,7 +965,7 @@ class SlayerQueryEngine:
         override_datasource: Optional[DatasourceConfig] = None,
     ) -> _Prepared:
         """DB-free-ish prepare portion shared by execute / evict / refresh
-        (DEV-1715): resolve→enrich→normalize→plan→SQL-gen→ClickHouse-preflight→
+        (DEV-1715): resolve→bind→normalize→plan→SQL-gen→ClickHouse-preflight→
         policy-rewrite→response-metadata. Produces the FINAL executed SQL and
         the datasource fingerprint but constructs **no** SQL client on the
         common (no-policy) path — so ``evict()`` recomputes a cache key without
@@ -1148,7 +1148,7 @@ class SlayerQueryEngine:
         )
 
         # Models whose live schema a query-time DBAPI error could be attributed
-        # to (the typed-plan equivalent of the legacy enriched-derived set).
+        # to, derived from the typed plan.
         touched = self._touched_models_for_plan(
             bundle=bundle,
             planned_list=planned_list,
@@ -1409,7 +1409,7 @@ class SlayerQueryEngine:
         *,
         data_source: Optional[str] = None,
     ) -> bool:
-        """Remove one cached entry, recomputing its key DB-free (resolve→enrich
+        """Remove one cached entry, recomputing its key DB-free (resolve→bind
         →SQL-gen→policy). Returns ``True`` if an entry was present. Never
         constructs a SQL client on the no-policy path."""
         runtime_kwarg = variables or {}
@@ -1766,8 +1766,6 @@ class SlayerQueryEngine:
 
         ``touched_models`` is computed from the resolved bundle / plan; the
         join graph is widened via ``_expand_join_graph`` before attribution.
-        (DEV-1485 Stage D removed the alternative ``enriched=`` mode, which
-        derived the same set from a legacy ``EnrichedQuery``.)
 
         Any error from ``validate_models`` itself is swallowed so the
         original exception is never masked.
@@ -1843,7 +1841,7 @@ class SlayerQueryEngine:
     ) -> Dict[str, str]:
         """Infer column types for a model's columns via a type-probe query.
 
-        Builds a real query through the engine's enrich+generate pipeline
+        Builds a real query through the engine's bind+generate pipeline
         so cross-model measures (with JOINs) are resolved correctly.
 
         Returns {column_name: type_category} where type_category is
@@ -2540,8 +2538,7 @@ class SlayerQueryEngine:
         named_q = {q.name: q for q in stages[:-1] if q.name}
 
         # 2. Build resolved source bundle for the final stage. Stage B
-        # mirrors the legacy ``_query_as_model`` data_source behaviour: the
-        # bundle is built WITHOUT a DS hint, so the inner resolution falls
+        # builds the bundle WITHOUT a DS hint, so the inner resolution falls
         # back to the unique-match / priority-list resolver. This lets
         # ``get_column_types`` recover from a stale persisted
         # ``model.data_source`` (the cache populator may not have refreshed
@@ -2751,7 +2748,7 @@ class SlayerQueryEngine:
                 )
             raise ValueError(f"Model '{model_name}' not found")
 
-        # If model has source_queries, re-enrich from stored queries.
+        # If model has source_queries, re-expand from stored queries.
         # Model-level defaults are folded into outer_vars by the helper
         # (precedence: runtime > stage > outer > model_defaults).
         return await self._expand_query_backed_model(
@@ -2905,10 +2902,10 @@ class SlayerQueryEngine:
         query-backed models, persists as-is.
 
         DEV-1450 stage 6 — runs the slack-normalization layer over the
-        incoming model so persisted formulas land in canonical form. The
-        (Before DEV-1485 the legacy in-tree rewriters also fired during
-        enrichment for callers that loaded and re-executed persisted models;
-        normalization at save time is now the only such rewrite.)
+        incoming model so persisted formulas land in canonical form.
+        (Before DEV-1485 the legacy in-tree rewriters also fired when
+        callers loaded and re-executed persisted models; normalization at
+        save time is now the only such rewrite.)
 
         DEV-1500 — the FUNC_STYLE_AGG rewrite recognises custom aggregations
         defined on joined models via ``_reachable_aggs_for_save`` (best-effort

@@ -49,9 +49,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.enums import DataType
 from slayer.core.errors import (
-    AmbiguousReferenceError,
-    IllegalScopeReferenceError,
-    UnknownReferenceError,
     UnreachableFilterDroppedWarning,
 )
 from slayer.core.keys import (
@@ -63,7 +60,6 @@ from slayer.core.keys import (
     TimeTruncKey,
     ValueKey,
     column_path,
-    reroot_aggregate_key,
     reroot_value_key,
 )
 from slayer.core.models import SlayerModel
@@ -538,49 +534,6 @@ def _route_host_rooted_filters(
     return _FilterRoutes(applied=list(where_ids), where_ids=where_ids)
 
 
-def _classify_subplan_filters(
-    *,
-    host_filters: List[HostFilterRouting],
-) -> List[BoundFilter]:
-    """Decide which host-query filters propagate into the DEV-1503 sub-plan.
-
-    ROW: pass through — the sub-plan applies them to the aggregate's rowset
-    (otherwise a non-dim filter like ``status = 'active'`` has no effect on
-    the join-back aggregate value).
-    AGGREGATE (any slot ref): skip. Pushing such a filter into the sub-plan
-    as HAVING would drop CTE rows where the aggregate fails the test; the
-    outer LEFT JOIN then surfaces the host row with a NULL aggregate
-    instead of dropping it — wrong semantics. The generator's outer-WHERE
-    wrapper applies the filter on the joined-back column so the row is
-    actually dropped (DEV-1503 spec).
-    POST: skip — stays at the existing host post-transform wrapper.
-
-    Consume ``routing.text`` directly — it carries the original user-filter
-    string for user-filter routings (None for date_range bounds) and is
-    populated by ``stage_planner`` from the deduped ``bound_filters`` list,
-    so it stays in lock-step with ``host_filters`` even after Mode-B
-    dedup-by-bound-key collapses two textually-different filter spellings
-    onto one routing (CR PR #153 thread r3350000254). Slicing
-    ``host_query.filters`` here would mis-pair phases when a ``date_range``-
-    bearing time_dimension is present (Codex review) OR when dedup drops
-    user-filter entries.
-
-    §5.4 — the TYPED ``routing.bound`` rides into the sub-plan; ``routing.text``
-    now only distinguishes a user filter from a synthesized date-range bound
-    (which the caller re-attaches itself, in date-range-first order).
-    """
-    inherited: List[BoundFilter] = []
-    for routing in host_filters:
-        if routing.text is None:
-            # date_range bound — not a user filter, do not propagate.
-            continue
-        if routing.phase in (Phase.POST, Phase.AGGREGATE):
-            continue
-        if routing.bound is None:
-            continue
-        # ROW phase — propagate.
-        inherited.append(routing.bound)
-    return inherited
 
 
 class _FilterRoutes(BaseModel):
@@ -941,9 +894,8 @@ class IsolatedCteCrossModelPlanner:
         ``SlayerModel.filters``, and the per-dimension GROUP BY — producing a
         per-grain aggregate that the host base LEFT JOINs back.
 
-        Only ROW-phase host filters propagate (see
-        ``_classify_subplan_filters``); the rest stay at the host base or at
-        the generator's outer-WHERE wrapper (DEV-1503 spec).
+        Only ROW-phase host filters propagate; the rest stay at the host base
+        or at the generator's outer-WHERE wrapper (DEV-1503 spec).
         """
         # §5.4 — the sub-plan is rooted at the SAME host model, so the
         # aggregate key and the host's bound dimensions carry over VERBATIM;
@@ -1189,7 +1141,8 @@ def _reroot_host_key(
 ) -> ValueKey:
     """Re-anchor one host-coordinate key into the target's coordinate system.
 
-    The typed counterpart of :func:`_reroot_ref`, and the same three rules:
+    Three rules (the typed reroot; the superseded formula-text round-trip it
+    replaced was deleted in PR 6, DEV-1749):
 
     * host-local (empty path) → reached FROM the target by naming the host as
       the first hop, so ``status`` becomes ``orders.status``;
@@ -1280,125 +1233,20 @@ def _rerooted_dimension_measure(
     )
 
 
-# ---------------------------------------------------------------------------
-# Superseded by the typed re-rooting above (DEV-1742 §5.4 / P-J state 1)
-# ---------------------------------------------------------------------------
-#
-# ``_reroot_ref``, ``_host_ref_path``, ``_render_ref_formula``,
-# ``_scalar_formula_literal``, ``_local_agg_formula`` and
-# ``_REROOT_BIND_ERRORS`` are the formula-text round-trip these functions
-# replaced. They are PRODUCTION-UNREFERENCED as of this change; their tests
-# stay green so the two mechanisms can be compared, and deletion happens in
-# one sweep (PR 6) rather than being smeared across the series.
-#
-# ``_filter_ref_paths`` is NOT in this group — the typed path still uses it.
 
 
-def _reroot_ref(
-    *, model_prefix: Optional[str], name: str, host_model_name: str,
-    target_model_name: str,
-) -> str:
-    """Re-root one Mode-B ref from the host's perspective to the target's.
-
-    Mirrors legacy ``_build_rerooted_enriched``:
-
-    * host-local (``model_prefix is None``) -> ``<host>.<name>`` (now a
-      cross-model dim from the target's view),
-    * on the target itself -> bare ``<name>`` (local on target),
-    * a path through the target -> strip the target prefix,
-    * any other dotted ref -> kept as-is (resolved via the target's joins).
-    """
-    if model_prefix is None:
-        return f"{host_model_name}.{name}"
-    if model_prefix == target_model_name:
-        return name
-    if model_prefix.startswith(target_model_name + "."):
-        return f"{model_prefix[len(target_model_name) + 1:]}.{name}"
-    return f"{model_prefix}.{name}"
 
 
-def _host_ref_path(model_prefix: Optional[str]) -> Tuple[str, ...]:
-    """The join path a host ColumnRef / TimeDimension prefix denotes."""
-    if not model_prefix:
-        return ()
-    return tuple(model_prefix.split("."))
 
 
-def _scalar_formula_literal(value) -> str:
-    """Render a normalized scalar back into formula text."""
-    if isinstance(value, bool):
-        return "True" if value else "False"
-    if value is None:
-        return "None"
-    if isinstance(value, str):
-        return repr(value)
-    return str(value)
 
 
-def _filter_ref_paths(value_key: ValueKey) -> List[Tuple[str, ...]]:
-    """Join paths of every column-like leaf a (bound) filter references."""
-    paths: List[Tuple[str, ...]] = []
-    for k in walk_value_keys(value_key):
-        if isinstance(k, (ColumnKey, ColumnSqlKey, StarKey)):
-            paths.append(tuple(k.path))
-        elif isinstance(k, TimeTruncKey):
-            paths.append(tuple(column_path(k.column)))
-    return paths
 
 
-def _render_ref_formula(ref) -> str:
-    """Render one already-rerooted embedded reference back into formula text.
-
-    Column-like refs dot-join their (residual) path with the leaf; scalars
-    fall through to ``_scalar_formula_literal``. Contains NO path-stripping
-    decisions — the reroot has already happened (DEV-1707).
-    """
-    if isinstance(ref, ColumnSqlKey):
-        return ".".join((*ref.path, ref.column_name))
-    if isinstance(ref, ColumnKey):
-        return ".".join((*ref.path, ref.leaf))
-    return _scalar_formula_literal(ref)
 
 
-def _local_agg_formula(key: AggregateKey) -> str:
-    """Reconstruct the LOCAL colon-formula for a cross-model aggregate
-    (``customers.revenue:sum`` -> ``revenue:sum``) so it can be re-planned
-    against the target model as a plain local measure.
-
-    Every embedded reference — source, positional args, and column-valued
-    kwargs — is re-anchored symmetrically via the unified
-    ``reroot_aggregate_key`` (DEV-1707), then rendered by the path-free
-    ``_render_ref_formula``. A kwarg / arg one hop past the target keeps its
-    residual path (``other=regions.code``); an exact match becomes local
-    (``other=region_id``). The public string contract is unchanged — the
-    strip logic simply no longer lives here.
-    """
-    local = reroot_aggregate_key(
-        key, target_path=tuple(getattr(key.source, "path", ())),
-    )
-    src = local.source
-    if isinstance(src, StarKey):
-        base = "*"
-    elif isinstance(src, ColumnSqlKey):
-        base = ".".join((*src.path, src.column_name))
-    else:  # ColumnKey
-        base = ".".join((*src.path, src.leaf))
-
-    formula = f"{base}:{local.agg}"
-    parts: List[str] = [_render_ref_formula(a) for a in local.args]
-    parts += [f"{k}={_render_ref_formula(v)}" for k, v in local.kwargs]
-    if parts:
-        formula += "(" + ", ".join(parts) + ")"
-    return formula
 
 
-_REROOT_BIND_ERRORS = (
-    UnknownReferenceError,
-    AmbiguousReferenceError,
-    IllegalScopeReferenceError,
-    ValueError,
-    NotImplementedError,
-)
 
 
 def _maybe_reroot_cross_model_plan(  # NOSONAR(S3776) — one re-rooting decision over three parallel input kinds (dimensions, time dimensions, filters). Each loop re-anchors, tests target-reachability, and votes on `needs_reroot`; the vote is the shared state that makes them one pass rather than three functions.
