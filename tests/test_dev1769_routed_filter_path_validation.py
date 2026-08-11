@@ -184,10 +184,11 @@ class TestRerootRoutedLeafDirect:
         """model == target but path ends at an intermediate hop → the new
         DEV-1769 raise (symmetric with ColumnKey), distinct from the
         model-ownership message."""
+        gen, target = self._gen(), _regions_target()
         with pytest.raises(NotImplementedError, match=_MSG_NEW_COLUMNSQLKEY):
-            self._gen()._reroot_routed_leaf(
+            gen._reroot_routed_leaf(
                 _MALFORMED_MULTI_HOP,
-                target_relation="regions", target_model=_regions_target(),
+                target_relation="regions", target_model=target,
             )
 
     def test_valid_multi_hop_path_ending_at_target_accepted(self) -> None:
@@ -212,19 +213,21 @@ class TestRerootRoutedLeafDirect:
     def test_other_model_still_raises_on_model_check_first(self) -> None:
         """A key owned by another model raises the EXISTING ownership message —
         the model check must fire before the new path guard (Codex F7)."""
+        gen, target = self._gen(), _regions_target()
         with pytest.raises(NotImplementedError, match=_MSG_OTHER_MODEL):
-            self._gen()._reroot_routed_leaf(
+            gen._reroot_routed_leaf(
                 _OTHER_MODEL,
-                target_relation="regions", target_model=_regions_target(),
+                target_relation="regions", target_model=target,
             )
 
     def test_plain_columnkey_intermediate_hop_still_raises(self) -> None:
         """The ColumnKey side is unchanged — its intermediate-hop raise is what
         the ColumnSqlKey guard is made symmetric with."""
+        gen, target = self._gen(), _regions_target()
+        key = ColumnKey(path=("customers_v2",), leaf="status")
         with pytest.raises(NotImplementedError, match=_MSG_COLUMNKEY_INTERMEDIATE):
-            self._gen()._reroot_routed_leaf(
-                ColumnKey(path=("customers_v2",), leaf="status"),
-                target_relation="regions", target_model=_regions_target(),
+            gen._reroot_routed_leaf(
+                key, target_relation="regions", target_model=target,
             )
 
 
