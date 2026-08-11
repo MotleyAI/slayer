@@ -1,27 +1,4 @@
-"""Recognised ELT/migration housekeeping tables ingest hidden (DEV-1759).
-
-An unfiltered ingest modelled `_dlt_loads` / `_dlt_pipeline_state` /
-`_dlt_version` as first-class semantic models. The model list is the menu
-handed to an agent over MCP, so junk entries cost tokens in every session and
-invite wrong turns — agents do not share the human instinct that an
-underscore-prefixed table is off-limits.
-
-Hidden, not skipped: DEV-1741 spent a release killing silent omissions, and
-`_dlt_loads` legitimately answers "when did this last load?" when targeted by
-name. So the table is modelled, queryable, and joinable — just absent from
-every listing surface.
-
-The sharp edge is REPORTING, and it has two faces. The rule fires while
-building the scanned candidate, but `_additive_merge_existing` preserves the
-persisted model's `hidden`, so an implementation that reports what the SCAN
-classified rather than what SURVIVED THE MERGE lies twice over: it calls a
-user-unhidden model hidden, and it goes silent about a still-hidden model on
-the very run where `--surface-internals` was passed to see it. Hence the
-deliberate split — `IngestionScanReport.hidden_internals` is what the scan
-constructed (correct for the fresh path, which never touches storage) while
-`IdempotentIngestResult.hidden_internals` is effective post-merge state.
-`TestIdempotencyAndReporting` is what pins that apart.
-"""
+"""Recognised ELT/migration housekeeping tables ingest hidden, not skipped — modelled and queryable but absent from every listing surface, with reporting that reflects post-merge state rather than the raw scan verdict."""
 from __future__ import annotations
 
 import sqlite3
@@ -69,8 +46,7 @@ def _ds(workspace: Path, script: str, name: str = "live.db") -> tuple[str, Datas
     return db_path, DatasourceConfig(name="ds", type="sqlite", database=db_path)
 
 
-# A real table plus the dlt trio and an Alembic bookkeeping table — the shape
-# the reporter actually hit on a dlt-loaded DuckDB.
+# A real table plus the dlt trio and an Alembic bookkeeping table.
 _MIXED = """
     CREATE TABLE orders (id INTEGER PRIMARY KEY, amount REAL, status TEXT);
     INSERT INTO orders VALUES (1, 10.0, 'ok');
@@ -96,8 +72,7 @@ async def _storage_with(workspace: Path, ds: DatasourceConfig) -> YAMLStorage:
 
 
 class TestMatcherPrefixes:
-    """Both surviving prefixes are reserved by a VENDOR, in every warehouse it
-    loads into — so a prefix match is safe and needs no dialect."""
+    """Both surviving prefixes are vendor-reserved in every warehouse, so a prefix match is safe and needs no dialect."""
 
     @pytest.mark.parametrize(
         "name",
@@ -141,8 +116,7 @@ class TestMatcherExactNames:
 
 
 class TestMatcherCaseInsensitivity:
-    """Liquibase upper-cases, EF Core and Sequelize camel-case. A
-    case-sensitive matcher silently misses every one of them."""
+    """Liquibase upper-cases and EF Core/Sequelize camel-case, so the matcher must be case-insensitive."""
 
     @pytest.mark.parametrize(
         "name,tool",
@@ -184,16 +158,12 @@ class TestMatcherNegatives:
 
     @pytest.mark.parametrize("name", ["_sdc_batched_at", "_sdc_received_at"])
     def test_singer_sdc_is_column_level_not_a_table_rule(self, name: str) -> None:
-        """Singer's `_sdc_` surface is columns on real tables. A table rule
-        would match nothing real, so there deliberately isn't one — and if one
-        is ever added it must be a considered decision, not a drive-by."""
+        """Singer's `_sdc_` surface is columns on real tables, so there is deliberately no table rule for it."""
         assert internal_table_rule(name) is None
 
     @pytest.mark.parametrize("name", ["_fivetran_synced", "_fivetran_deleted"])
     def test_fivetran_column_names_are_not_table_rules(self, name: str) -> None:
-        """Same for Fivetran: only the two audit TABLES are rules. There is no
-        `_fivetran_` prefix rule, because everything else the vendor writes
-        into a destination schema is a column."""
+        """Only Fivetran's two audit TABLES are rules; there is no `_fivetran_` prefix rule since everything else is a column."""
         assert internal_table_rule(name) is None
 
     def test_empty_name_does_not_match(self) -> None:
@@ -201,17 +171,7 @@ class TestMatcherNegatives:
 
 
 class TestNoSqlitePrefixRule:
-    """There is deliberately no `sqlite_` prefix rule, and adding one back
-    could only ever hide real data.
-
-    SQLite does reserve the namespace, but the objects it reserves it FOR never
-    reach the scan — SQLAlchemy's SQLite inspector defaults to
-    `sqlite_include_internal=False`, so `get_table_names()` filters
-    `sqlite_sequence` and friends out first. `test_sqlite_internals_never_reach_the_scan`
-    pins that upstream behaviour, since the argument for having no rule rests
-    on it. The rule could therefore only fire on a NON-SQLite datasource, where
-    nothing reserves the prefix and `sqlite_backup` is an ordinary table.
-    """
+    """There is deliberately no `sqlite_` prefix rule: SQLite's own internals never reach the scan, and on any other engine `sqlite_`-named tables are ordinary data."""
 
     @pytest.mark.parametrize(
         "name",
@@ -221,9 +181,7 @@ class TestNoSqlitePrefixRule:
         assert internal_table_rule(name) is None
 
     def test_sqlite_internals_never_reach_the_scan(self, workspace: Path) -> None:
-        """AUTOINCREMENT makes SQLite create a real `sqlite_sequence` table.
-        It is in `sqlite_master` and still never becomes a candidate — which is
-        why deleting the rule costs nothing."""
+        """AUTOINCREMENT's real `sqlite_sequence` table is in `sqlite_master` yet never becomes a candidate."""
         db_path, ds = _ds(
             workspace,
             """
@@ -245,8 +203,7 @@ class TestNoSqlitePrefixRule:
     def test_a_user_table_named_sqlite_something_is_impossible_on_sqlite(
         self, workspace: Path
     ) -> None:
-        """The other half of the argument: on SQLite nobody can create one, so
-        the rule had no legitimate target there either."""
+        """On SQLite nobody can create a `sqlite_`-named table, so the rule would have no legitimate target there."""
         with pytest.raises(sqlite3.OperationalError, match="reserved for internal use"):
             _ds(workspace, "CREATE TABLE sqlite_backup (id INTEGER PRIMARY KEY);")
 
@@ -278,8 +235,7 @@ class TestScanClassification:
         assert by_name["alembic_version"].meta == {"internal_table": "alembic"}
 
     def test_real_tables_get_no_breadcrumb(self, workspace: Path) -> None:
-        """A non-matching model must not grow an empty meta dict — that would
-        show up in every ingested YAML for no reason."""
+        """A non-matching model must not grow an empty meta dict that would show up in every ingested YAML."""
         _, ds = _ds(workspace, _MIXED)
         by_name = {m.name: m for m in ingest_datasource(datasource=ds)}
         assert by_name["orders"].meta is None
@@ -302,8 +258,7 @@ class TestScanClassification:
     def test_matching_view_is_hidden_and_labelled_view(
         self, workspace: Path
     ) -> None:
-        """Views are ingested since DEV-1741, so a view named like an internal
-        must classify the same way — and keep its kind for the report."""
+        """A view named like an internal classifies the same way and keeps its kind for the report."""
         _, ds = _ds(
             workspace,
             """
@@ -324,10 +279,7 @@ class TestMatchesTheLiveObjectName:
     def test_sanitized_model_name_does_not_decide_the_match(
         self, workspace: Path
     ) -> None:
-        """Model names cannot contain `__`, so DEV-1741 sanitizes a dlt child
-        table `_dlt_loads__x` down to `_dlt_loads_x`. Matching the sanitized
-        name means matching a derived string; the rule must see the live one,
-        and the report must carry both so the user can find the table."""
+        """The rule must match the live object name, not the `__`-sanitized model name; the report carries both."""
         _, ds = _ds(
             workspace,
             "CREATE TABLE _dlt_loads__x (id INTEGER PRIMARY KEY, v TEXT);",
@@ -347,10 +299,7 @@ class TestSqlitePrefixOnAnotherEngine:
     def test_sqlite_named_table_stays_visible_on_duckdb(
         self, workspace: Path
     ) -> None:
-        """The only case a `sqlite_` rule could ever have reached, on a real
-        non-SQLite engine. `sqlite_backup` is an ordinary DuckDB table and must
-        stay visible; a dlt table in the same database is still hidden, so the
-        removal is surgical rather than a blanket loosening."""
+        """On DuckDB `sqlite_backup` stays visible while a sibling dlt table is still hidden."""
         pytest.importorskip("duckdb")
         import duckdb
 
@@ -374,9 +323,7 @@ class TestSkipAndHideAreDisjoint:
     def test_construction_failure_reports_skipped_only(
         self, workspace: Path, monkeypatch
     ) -> None:
-        """The other way an object lands in `skipped`: the per-object
-        try/except around `_build_one_model`. Classifying before that call
-        returns would report a table as hidden that produced no model at all."""
+        """A per-object build failure lands in `skipped`, not `hidden_internals` — no model was produced to hide."""
         from slayer.engine import ingestion as ing
 
         real = ing._build_one_model
@@ -400,11 +347,7 @@ class TestSkipAndHideAreDisjoint:
     def test_collision_skipped_object_is_not_also_reported_hidden(
         self, workspace: Path
     ) -> None:
-        """`_assign_model_names` reserves unsanitized names first, so a real
-        `_dlt_loads_x` beats the sanitized `_dlt_loads__x` and the latter is
-        skipped. Classifying before that decision would report one object in
-        both `skipped` and `hidden_internals` — two contradictory verdicts on
-        the same table."""
+        """A name-collision skip must not also appear in `hidden_internals` — the two verdicts are mutually exclusive."""
         _, ds = _ds(
             workspace,
             """
@@ -429,21 +372,12 @@ class TestSkipAndHideAreDisjoint:
 
 
 class TestLiveNameSurvivesToTheReport:
-    """The scan carries the live object name through to the report rather than
-    letting a consumer reconstruct it from ``sql_table``.
-
-    ``_bare_table_name`` splits on the FIRST dot, so reconstructing from
-    ``sql_table`` loses the match whenever the schema itself is dotted —
-    ``project.dataset._dlt_loads`` reduces to ``dataset._dlt_loads``, which no
-    rule matches. The model would still be hidden but would silently drop out
-    of the report.
-    """
+    """The scan carries the live object name through to the report, since reconstructing it from a dotted ``sql_table`` would lose the match."""
 
     def test_dotted_schema_still_classifies(self, workspace: Path) -> None:
         _, ds = _ds(workspace, _MIXED)
         report = ingest_datasource_report(datasource=ds)
-        # Simulate the dotted-schema shape the BigQuery-style `--schema
-        # project.dataset` produces, then re-check what a consumer sees.
+        # Simulate the dotted-schema shape and re-check what a consumer sees.
         entry = next(
             t for t in report.internal_tables if t.table_name == "_dlt_loads"
         )
@@ -462,8 +396,7 @@ class TestLiveNameSurvivesToTheReport:
     async def test_dotted_schema_model_is_still_reported(
         self, workspace: Path
     ) -> None:
-        """End-to-end guard: a hidden internal must reach the idempotent
-        report even when its persisted ``sql_table`` is multi-part."""
+        """A hidden internal reaches the idempotent report even when its persisted ``sql_table`` is multi-part."""
         _, ds = _ds(workspace, _MIXED)
         storage = await _storage_with(workspace, ds)
         await ingest_datasource_idempotent(datasource=ds, storage=storage)
@@ -482,9 +415,7 @@ class TestSurfaceInternals:
     def test_flag_records_the_classification_anyway(
         self, workspace: Path
     ) -> None:
-        """`internal_tables` is populated regardless of the flag — the
-        idempotent path needs the classification on a surfaced run too, to
-        report a model an EARLIER run created hidden."""
+        """`internal_tables` is populated regardless of the flag, so a surfaced run can still report an earlier run's hidden model."""
         _, ds = _ds(workspace, _MIXED)
         report = ingest_datasource_report(datasource=ds, surface_internals=True)
 
@@ -541,11 +472,7 @@ class TestIncludeExclude:
         assert "_dlt_loads" not in {h.table_name for h in report.hidden_internals}
 
     def test_explicit_include_still_hides(self, workspace: Path) -> None:
-        """`--include` and `--exclude` choose WHICH objects are scanned;
-        visibility is a separate axis with its own flag. Making an explicit
-        include surface the model would mean the first ingest's invocation
-        shape silently decides the model's visibility forever, and would make
-        REST (which has no flags) behave differently from the CLI."""
+        """`--include`/`--exclude` choose which objects are scanned; visibility is a separate axis, so an explicit include still hides."""
         _, ds = _ds(workspace, _MIXED)
         report = ingest_datasource_report(
             datasource=ds, include_tables=["orders", "_dlt_loads"]
@@ -586,9 +513,7 @@ class TestIdempotencyAndReporting:
     async def test_steady_state_run_still_reports_hidden_internals(
         self, workspace: Path
     ) -> None:
-        """A no-op re-ingest produces no `ModelAddition`, so labelling the
-        `Created:` line would go silent here — precisely the silence class
-        DEV-1741 set out to kill. The section is scan-level for this reason."""
+        """A no-op re-ingest produces no `ModelAddition`, so the hidden-internals section is scan-level to stay reported."""
         _, ds = _ds(workspace, _MIXED)
         storage = await _storage_with(workspace, ds)
 
@@ -600,9 +525,7 @@ class TestIdempotencyAndReporting:
     async def test_user_unhidden_internal_is_not_reported_as_hidden(
         self, workspace: Path
     ) -> None:
-        """The report must describe the model that SURVIVED THE MERGE. The
-        additive merge preserves the persisted `hidden=False`, so reporting
-        what the scan classified would call a visible model hidden."""
+        """The report describes the post-merge model, so a user-unhidden internal is not reported as hidden."""
         _, ds = _ds(workspace, _MIXED)
         storage = await _storage_with(workspace, ds)
         await ingest_datasource_idempotent(datasource=ds, storage=storage)
@@ -621,9 +544,7 @@ class TestIdempotencyAndReporting:
     async def test_user_unhidden_internal_stays_visible(
         self, workspace: Path
     ) -> None:
-        """Creation-only: re-ingest must never fight a deliberate un-hide.
-        `_dlt_loads` answers freshness questions, which the issue explicitly
-        wants to keep working."""
+        """Re-ingest must never fight a deliberate un-hide; the model stays visible."""
         _, ds = _ds(workspace, _MIXED)
         storage = await _storage_with(workspace, ds)
         await ingest_datasource_idempotent(datasource=ds, storage=storage)
@@ -641,8 +562,7 @@ class TestIdempotencyAndReporting:
     async def test_preexisting_visible_model_is_never_retro_hidden(
         self, workspace: Path
     ) -> None:
-        """A store ingested before this feature keeps its visible internals.
-        Retro-hiding would mutate user-owned config on an unrelated run."""
+        """A pre-existing visible internal is never retro-hidden, since that would mutate user-owned config."""
         _, ds = _ds(workspace, _MIXED)
         storage = await _storage_with(workspace, ds)
         await storage.save_model(
@@ -665,9 +585,7 @@ class TestIdempotencyAndReporting:
     async def test_user_authored_sql_model_is_untouched_and_reported_honestly(
         self, workspace: Path
     ) -> None:
-        """`_process_one_table` early-returns for sql-mode models, so nothing
-        merges. The re-derived report must still read effective storage state
-        rather than assume the scan's verdict applied."""
+        """A user-authored sql-mode model is left untouched, and the report reads effective storage state."""
         _, ds = _ds(workspace, _MIXED)
         storage = await _storage_with(workspace, ds)
         await storage.save_model(
@@ -690,10 +608,7 @@ class TestIdempotencyAndReporting:
     async def test_sanitized_model_is_reported_with_both_names(
         self, workspace: Path
     ) -> None:
-        """The post-merge re-derivation has to look the model up by
-        `model_name`. Keying it on `table_name` would find nothing for a
-        `__`-sanitized table, so a correctly-hidden model would silently
-        vanish from the report."""
+        """The post-merge re-derivation keys on `model_name`, so a `__`-sanitized table is reported with both names."""
         _, ds = _ds(
             workspace,
             "CREATE TABLE _dlt_loads__x (id INTEGER PRIMARY KEY, v TEXT);",
@@ -711,9 +626,7 @@ class TestIdempotencyAndReporting:
     async def test_surface_internals_does_not_unhide_an_existing_model(
         self, workspace: Path
     ) -> None:
-        """The flag controls creation, not mutation — and the report must say
-        so by still listing the model. Emptying the list here would print
-        nothing on the exact run where the user asked to see these."""
+        """The flag controls creation, not mutation, so it does not unhide an existing model and still lists it."""
         _, ds = _ds(workspace, _MIXED)
         storage = await _storage_with(workspace, ds)
         await ingest_datasource_idempotent(datasource=ds, storage=storage)
@@ -758,11 +671,7 @@ class TestIdempotencyAndReporting:
 
 class TestColumnsToModelKwargs:
     def test_meta_is_propagated_verbatim(self) -> None:
-        """`_columns_to_model` must pass `meta` through untouched — the
-        breadcrumb is merged by the caller, so a constructor that rebuilt or
-        replaced the dict here would drop keys. (Persisted-meta preservation
-        across re-ingest is covered by
-        `test_user_edits_to_an_internal_model_survive_re_ingest`.)"""
+        """`_columns_to_model` passes `meta` through untouched, since the caller merges the breadcrumb."""
         from slayer.engine.ingestion import _columns_to_model
 
         model = _columns_to_model(
@@ -823,9 +732,7 @@ def _result_with_hidden(**overrides) -> IdempotentIngestResult:
 
 class TestRenderer:
     def test_section_renders_a_full_line_per_table(self, capsys) -> None:
-        """Asserted as whole lines on purpose: `"dlt" in out` is satisfied by
-        the substring inside `_dlt_loads`, so a renderer that dropped the
-        `tool` field entirely would still pass a naive containment check."""
+        """Asserted as whole lines: a substring check on `dlt` would pass even if the `tool` field were dropped."""
         _print_ingest_drift_and_errors(_result_with_hidden())
         out = capsys.readouterr().out
 
@@ -834,9 +741,7 @@ class TestRenderer:
         assert "  - alembic_version: alembic" in out
 
     def test_line_names_the_model_when_it_differs(self, capsys) -> None:
-        """The section's own advice is `edit_model(hidden=false)`, which takes
-        the MODEL name. For a `__`-sanitized table the live name alone points
-        at something the user cannot act on."""
+        """The advice takes the MODEL name, so a `__`-sanitized line must name the model the user can act on."""
         _print_ingest_drift_and_errors(
             _result_with_hidden(
                 hidden_internals=[
@@ -858,9 +763,7 @@ class TestRenderer:
         assert "(model:" not in out
 
     def test_section_explains_both_escape_hatches(self, capsys) -> None:
-        """`--surface-internals` alone is a half-truth on a re-ingest: it only
-        affects models this run CREATES. A user staring at an already-hidden
-        model needs to be pointed at `edit_model` instead."""
+        """`--surface-internals` only affects newly created models, so the section also points at `edit_model`."""
         _print_ingest_drift_and_errors(_result_with_hidden(), data_source="ds")
         out = capsys.readouterr().out
 
@@ -868,20 +771,14 @@ class TestRenderer:
         assert "hidden=false" in out
 
     def test_hint_is_datasource_qualified(self, capsys) -> None:
-        """A BARE model name resolves across datasources by the priority list
-        and raises `AmbiguousModelError` when that picks no winner. Internals
-        are the worst case: `_dlt_loads` exists verbatim in every dlt-loaded
-        database, so two dlt datasources collide by construction and the
-        unqualified hint either fails or un-hides the wrong model."""
+        """The hint is datasource-qualified because a bare internal name collides across every dlt-loaded database."""
         _print_ingest_drift_and_errors(_result_with_hidden(), data_source="warehouse")
         out = capsys.readouterr().out
 
         assert 'edit_model("<model>", data_source="warehouse", hidden=false)' in out
 
     def test_hint_degrades_when_the_datasource_is_unknown(self, capsys) -> None:
-        """Neither result shape carries the datasource, so it has to come from
-        the caller. Omitting it must still print an actionable hint rather than
-        `data_source="None"`."""
+        """When the caller omits the datasource, the hint degrades gracefully rather than printing `data_source="None"`."""
         _print_ingest_drift_and_errors(_result_with_hidden())
         out = capsys.readouterr().out
 
@@ -893,18 +790,13 @@ class TestRenderer:
         assert "Hidden" not in capsys.readouterr().out
 
     def test_tolerates_a_result_lacking_the_attribute(self, capsys) -> None:
-        """Matches the defensiveness `skipped` already gets — the renderer is
-        called with duck-typed results from more than one code path."""
+        """The renderer tolerates a result missing the attribute, matching the defensiveness `skipped` already gets."""
         legacy = SimpleNamespace(to_delete=[], errors=[], skipped=[])
         _print_ingest_drift_and_errors(legacy)
         assert "Hidden" not in capsys.readouterr().out
 
     def test_accepts_a_scan_report(self, workspace: Path, capsys) -> None:
-        """`datasources create --ingest` renders an `IngestionScanReport`,
-        which has no `to_delete` and no `errors` at all. The renderer reaches
-        both directly today, so it must become defensive on every field or
-        that path dies with an AttributeError that has nothing to do with
-        classification."""
+        """The renderer accepts an `IngestionScanReport`, which lacks `to_delete` and `errors` entirely."""
         _, ds = _ds(workspace, _MIXED)
         report = ingest_datasource_report(datasource=ds)
 
@@ -976,9 +868,7 @@ class TestCliExitCodes:
     def test_hidden_internals_alone_exit_zero(
         self, workspace: Path, monkeypatch, capsys
     ) -> None:
-        """Hiding is the intended outcome. Unlike a skip — which is a
-        capability failure with `--exclude` as its remedy — there is nothing
-        for the user to fix, so nagging with exit 1 would be noise."""
+        """Hiding is the intended outcome with nothing for the user to fix, so it exits 0 unlike a skip."""
         from slayer.cli import _run_ingest
 
         _patch_ingest(monkeypatch, _result_with_hidden())
@@ -1000,8 +890,7 @@ class TestCliExitCodes:
                 ]
             ),
         )
-        # `args` built outside the block so only one call inside it can raise
-        # (Sonar S5778).
+        # `args` built outside the block so only one call inside it can raise (Sonar S5778).
         args = _args(workspace)
         with pytest.raises(SystemExit) as exc:
             _run_ingest(args)
@@ -1031,8 +920,7 @@ class TestCliFlagThreading:
 
 
 class TestParserWiring:
-    """The parser is built inline in ``main()``, so drive it through ``main()``
-    with a stubbed handler that captures the parsed args."""
+    """The parser is built inline in ``main()``, so drive it through ``main()`` with a stubbed handler."""
 
     @staticmethod
     def _capture(monkeypatch, argv: list[str], handler: str) -> SimpleNamespace:
@@ -1078,9 +966,7 @@ class TestParserWiring:
 
 
 class TestDatasourcesCreateReporting:
-    """That path called ``ingest_datasource`` (models only), so it could not
-    report anything. Left alone it would silently hide four models — and it
-    was already silent about DEV-1741's skips."""
+    """`datasources create --ingest` now reports hidden internals and skips instead of silently hiding models."""
 
     @staticmethod
     def _create_args(workspace: Path, db_path: str, **overrides) -> SimpleNamespace:
@@ -1115,8 +1001,7 @@ class TestDatasourcesCreateReporting:
         assert "alembic_version" in out
 
     def test_skipped_section_printed(self, workspace: Path, capsys) -> None:
-        """Switching this path to the report form closes the pre-existing
-        DEV-1741 gap where it swallowed skips entirely."""
+        """The report form closes the pre-existing gap where this path swallowed skips entirely."""
         from slayer.cli import _run_datasources_create
 
         db_path, _ = _ds(
@@ -1181,8 +1066,7 @@ class TestRest:
         )
 
     def test_route_forwards_the_flag(self, workspace: Path, monkeypatch) -> None:
-        """Adding the field to `IngestRequest` without wiring it into the
-        route would satisfy every other REST assertion here."""
+        """The route actually forwards the flag, not just accepts it on `IngestRequest`."""
         captured: dict = {}
 
         async def _fake(**kwargs):
@@ -1219,9 +1103,7 @@ class TestRest:
         assert captured["surface_internals"] is False
 
     def test_body_carries_hidden_internals_at_200(self, workspace: Path) -> None:
-        """The 200 body is how a REST client learns what was hidden — there is
-        no exit code or log for it to read. Hidden internals must never turn
-        the response into a 422, matching the `skipped` contract."""
+        """The 200 body carries hidden internals; they must never turn the response into a 422, matching `skipped`."""
         db_path, _ = _ds(workspace, _MIXED)
         client = _api_client(workspace, db_path)
 
@@ -1233,8 +1115,7 @@ class TestRest:
         assert {h["tool"] for h in body["hidden_internals"]} == {"dlt", "alembic"}
 
     def test_re_ingest_with_flag_does_not_unhide(self, workspace: Path) -> None:
-        """The creation-only rule holds over REST too, and the body must
-        report the model as still hidden rather than going quiet."""
+        """The creation-only rule holds over REST too; the body reports the model as still hidden."""
         db_path, _ = _ds(workspace, _MIXED)
         client = _api_client(workspace, db_path)
 
@@ -1288,8 +1169,7 @@ class TestVisibilitySurfaces:
         )
 
     async def test_absent_from_mcp_models_summary(self, workspace: Path) -> None:
-        """The issue's own acceptance criterion, exercised through the real
-        MCP tool rather than by re-applying our own `hidden` filter."""
+        """Hidden internals are absent from the real MCP `models_summary` tool."""
         from slayer.mcp.server import create_mcp_server
 
         _, ds = _ds(workspace, _MIXED)
@@ -1307,8 +1187,7 @@ class TestVisibilitySurfaces:
             assert name not in summary, name
 
     async def test_absent_from_the_bi_catalog(self, workspace: Path) -> None:
-        """pg_facade and Flight both build through ``FacadeCatalog``, so one
-        assertion covers both wire protocols."""
+        """pg_facade and Flight both build through ``FacadeCatalog``, so one assertion covers both."""
         from slayer.facade.catalog import build_catalog
 
         _, ds = _ds(workspace, _MIXED)
@@ -1338,8 +1217,7 @@ class TestVisibilitySurfaces:
     async def test_hidden_internal_is_still_queryable_by_name(
         self, workspace: Path
     ) -> None:
-        """The whole reason this issue chose hidden over skipped: `_dlt_loads`
-        answers "when did this last load?" when deliberately targeted."""
+        """A hidden internal is still queryable when deliberately targeted by name — the point of hidden over skipped."""
         from slayer.engine.query_engine import SlayerQueryEngine
 
         _, ds = _ds(workspace, _MIXED)
@@ -1361,9 +1239,7 @@ class TestJoinsIntoHiddenModels:
     async def test_visible_model_joins_to_a_hidden_one(
         self, workspace: Path
     ) -> None:
-        """Hiding must not filter join targets. A silent drop here would not
-        raise — it would return different rows, which is the worst failure
-        mode available."""
+        """Hiding must not filter join targets, since a silent drop would return different rows without raising."""
         from slayer.engine.query_engine import SlayerQueryEngine
 
         _, ds = _ds(
@@ -1397,9 +1273,7 @@ class TestJoinsIntoHiddenModels:
                 measures=[{"formula": "amount:sum", "name": "total"}],
             )
         )
-        # Result keys are ``model.column``, and a joined dimension keeps its
-        # full path — so the hidden model's name appearing in the key is itself
-        # evidence the join resolved rather than being dropped.
+        # The hidden model's name in the result key is evidence the join resolved.
         assert resp.row_count == 2
         assert set(resp.data[0]) == {
             "orders._dlt_loads.schema_name",
@@ -1415,9 +1289,7 @@ class TestDriftScope:
     async def test_hidden_internal_is_validated_like_any_other_model(
         self, workspace: Path
     ) -> None:
-        """`_scoped_models_for_validation` does not filter on `hidden`, so a
-        hidden internal must still surface drift. If it silently fell out of
-        scope, its persisted schema would rot unnoticed."""
+        """A hidden internal is still validated like any other model, so its schema drift is surfaced."""
         _, ds = _ds(workspace, _MIXED)
         storage = await _storage_with(workspace, ds)
         await ingest_datasource_idempotent(datasource=ds, storage=storage)
@@ -1446,17 +1318,7 @@ class TestDriftScope:
 
 
 class TestMcpIngestReporting:
-    """`ingest_datasource_models` is the surface this issue is about.
-
-    The model list is the menu handed to an agent over MCP, so the agent that
-    ran the ingest is precisely the one that needs telling which tables were
-    modelled hidden — otherwise it cannot distinguish a hidden model from one
-    that was never created, and re-ingests forever chasing the difference.
-    Every other path (`slayer ingest`, `datasources create --ingest`,
-    ingest-on-startup) renders through `_print_ingest_drift_and_errors`; this
-    one has its own renderer, which reported neither hidden internals nor
-    DEV-1741's skips.
-    """
+    """`ingest_datasource_models` has its own renderer, which must report hidden internals and skips to the agent that ran the ingest."""
 
     async def _ingest_via_mcp(self, storage, *, schema_name: str = "") -> str:
         from slayer.mcp.server import create_mcp_server
@@ -1485,9 +1347,7 @@ class TestMcpIngestReporting:
     async def test_steady_state_re_ingest_still_reports_them(
         self, workspace: Path
     ) -> None:
-        """The sharp edge. A no-op re-ingest produces no additions, no drift
-        and no errors, so the early return answered "already in sync" and
-        swallowed the section on every run after the first."""
+        """A no-op re-ingest still reports hidden internals rather than returning "already in sync"."""
         _, ds = _ds(workspace, _MIXED)
         storage = await _storage_with(workspace, ds)
 
@@ -1501,9 +1361,7 @@ class TestMcpIngestReporting:
     async def test_report_names_the_model_when_it_differs(
         self, workspace: Path
     ) -> None:
-        """The advice is `edit_model(hidden=false)`, which takes the MODEL
-        name — for a `__`-sanitized table the live name alone names something
-        the agent cannot act on."""
+        """The report names the MODEL for a `__`-sanitized table, since the live name alone is not actionable."""
         _, ds = _ds(
             workspace, "CREATE TABLE _dlt_loads__x (id INTEGER PRIMARY KEY);"
         )
@@ -1516,8 +1374,7 @@ class TestMcpIngestReporting:
     async def test_report_points_at_the_escape_hatch(
         self, workspace: Path
     ) -> None:
-        """`--surface-internals` is a CLI flag this tool does not accept, so
-        the agent-facing hint must name the MCP tool that does work."""
+        """The agent-facing hint names `edit_model`, not the CLI-only `--surface-internals` flag."""
         _, ds = _ds(workspace, _MIXED)
         storage = await _storage_with(workspace, ds)
 
@@ -1530,10 +1387,7 @@ class TestMcpIngestReporting:
     async def test_hint_names_the_ingested_datasource(
         self, workspace: Path
     ) -> None:
-        """An agent runs this hint verbatim, and these names collide across
-        datasources by construction — every dlt-loaded database has its own
-        `_dlt_loads`. An unqualified `edit_model` therefore resolves by
-        priority and can un-hide a DIFFERENT datasource's model."""
+        """The hint names the ingested datasource, since an unqualified `edit_model` could un-hide a different datasource's model."""
         _, ds = _ds(workspace, _MIXED)
         storage = await _storage_with(workspace, ds)
 
@@ -1544,9 +1398,7 @@ class TestMcpIngestReporting:
     async def test_two_datasources_share_internal_names(
         self, workspace: Path
     ) -> None:
-        """The collision this guards against, made real: two dlt pipelines in
-        one store both produce `_dlt_loads`, so the hint must name which one
-        the agent just ingested."""
+        """Two dlt pipelines in one store both produce `_dlt_loads`, so the hint must name which one was ingested."""
         _, ds_a = _ds(workspace, _MIXED, name="a.db")
         db_b = str(workspace / "b.db")
         conn = sqlite3.connect(db_b)
@@ -1581,9 +1433,7 @@ class TestMcpIngestReporting:
     async def test_skipped_objects_are_reported_too(
         self, workspace: Path
     ) -> None:
-        """DEV-1741's skips were dropped by this renderer for the same reason.
-        `_dlt_loads_x` reserves the unsanitized name, so `_dlt_loads__x` is
-        skipped rather than modelled."""
+        """Skips are reported here too: `_dlt_loads_x` reserves the name, so `_dlt_loads__x` is skipped rather than modelled."""
         _, ds = _ds(
             workspace,
             """
@@ -1612,8 +1462,7 @@ class TestMcpIngestReporting:
         assert "Skipped" not in out
 
     async def test_empty_schema_message_survives(self, workspace: Path) -> None:
-        """Widening the early-return guard must not cost the empty-schema
-        hint, which is the branch that tells an agent to try another schema."""
+        """Widening the early-return guard must not cost the empty-schema hint that tells an agent to try another schema."""
         _, ds = _ds(workspace, "CREATE TABLE placeholder (id INTEGER);")
         storage = await _storage_with(workspace, ds)
         conn = sqlite3.connect(str(workspace / "live.db"))
@@ -1627,8 +1476,7 @@ class TestMcpIngestReporting:
         assert "already in sync" not in out
 
     def test_renderer_tolerates_a_result_lacking_the_attributes(self) -> None:
-        """Mirrors the CLI renderer's defensiveness — this one is called with
-        more than one result shape."""
+        """The renderer tolerates a result lacking the attributes, mirroring the CLI renderer's defensiveness."""
         from slayer.mcp.server import (
             _render_hidden_internals_section,
             _render_skipped_section,
@@ -1643,9 +1491,7 @@ class TestMcpIngestReporting:
         ) == []
 
     def test_section_renders_whole_lines(self) -> None:
-        """Asserted as whole lines on purpose: `"dlt" in out` is satisfied by
-        the substring inside `_dlt_loads`, so a renderer that dropped the
-        `tool` field would still pass a naive containment check."""
+        """Asserted as whole lines: a substring check on `dlt` would pass even if the `tool` field were dropped."""
         from slayer.mcp.server import _render_hidden_internals_section
 
         lines = _render_hidden_internals_section([

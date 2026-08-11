@@ -1,14 +1,4 @@
-"""Ingestion, drift, and MCP listing must see views.
-
-Introspection only called ``get_table_names()``. dbt materializes staging
-models as views, so a schema of them ingested nothing and printed nothing.
-
-Three surfaces were blind. The drift one is a data-loss bug independent of
-ingest: a hand-authored model whose ``sql_table`` named a view resolved to
-``live_table=None``, producing a ``WholeModelDelete`` that
-``validate-models --force-clean`` acts on. Its fix is deliberately NOT gated
-on ``--no-views``.
-"""
+"""Ingestion, drift, and MCP listing must all see views."""
 from __future__ import annotations
 
 import sqlite3
@@ -70,8 +60,7 @@ def _mock_inspector(
     views: list[str] | Exception | None = None,
     matviews: list[str] | Exception | None = None,
 ) -> MagicMock:
-    """An Inspector stub whose view accessors can raise, to model dialects
-    that do not implement them."""
+    """An Inspector stub whose view accessors can raise, for dialects lacking them."""
     insp = MagicMock(spec=sa.engine.Inspector)
     insp.get_table_names.return_value = list(tables)
 
@@ -79,9 +68,7 @@ def _mock_inspector(
         def _call(*_args, **_kwargs):
             if isinstance(value, Exception):
                 raise value
-            # ``or []`` matters: an omitted accessor must exercise the
-            # "dialect reports no objects" path, not blow up on list(None)
-            # and land in the generic except branch.
+            # ``or []``: an omitted accessor means "no objects", not list(None)
             return list(value or [])
         return _call
 
@@ -108,8 +95,7 @@ def _kind_of(objects: list[IngestableObject], name: str) -> str | None:
 
 class TestViewIngestion:
     def test_view_is_ingested_by_default(self, workspace: Path) -> None:
-        """the headline regression. Before the fix this returned
-        only ``orders``."""
+        """Headline regression: before the fix this returned only ``orders``."""
         _, ds = _db_with_view(workspace)
         models = ingest_datasource(datasource=ds)
         by_name = {m.name: m for m in models}
@@ -133,8 +119,7 @@ class TestViewIngestion:
         assert {c.name for c in view_model.columns} == {"id", "amount", "status"}
 
     def test_view_model_has_no_joins(self, workspace: Path) -> None:
-        """Views carry no FK metadata, so no joins can be derived. Pinned so
-        a future change doesn't silently invent them."""
+        """Views carry no FK metadata, so no joins can be derived."""
         _, ds = _db_with_view(workspace)
         models = ingest_datasource(datasource=ds)
         view_model = next(m for m in models if m.name == "stg_orders")
@@ -148,16 +133,13 @@ class TestViewIngestion:
 
 class TestDialectTolerance:
     def test_get_view_names_not_implemented_is_survivable(self) -> None:
-        """base Inspector raises NotImplementedError on dialects that
-        do not implement the accessor. Tables must still list."""
+        """Base Inspector raises NotImplementedError; tables must still list."""
         insp = _mock_inspector(tables=["orders"], views=NotImplementedError())
         objects = list_ingestable_objects(inspector=insp, schema=None)
         assert _names(objects) == ["orders"]
 
     def test_get_materialized_view_names_not_implemented_is_survivable(self) -> None:
-        """verified against SQLAlchemy 2.0.49: the base
-        ``Inspector.get_materialized_view_names`` raises rather than
-        returning []."""
+        """The base get_materialized_view_names raises rather than returning []."""
         insp = _mock_inspector(
             tables=["orders"], views=["v_orders"], matviews=NotImplementedError()
         )
@@ -165,8 +147,7 @@ class TestDialectTolerance:
         assert _names(objects) == ["orders", "v_orders"]
 
     def test_arbitrary_accessor_failure_is_survivable(self) -> None:
-        """A dialect that raises something other than NotImplementedError
-        (driver quirk, permissions) must not abort the scan."""
+        """A non-NotImplementedError from an accessor must not abort the scan."""
         insp = _mock_inspector(
             tables=["orders"], views=RuntimeError("no view privilege")
         )
@@ -174,9 +155,7 @@ class TestDialectTolerance:
         assert _names(objects) == ["orders"]
 
     def test_name_returned_as_both_table_and_view_appears_once(self) -> None:
-        """some dialects have historically returned views from
-        get_table_names(). First-seen wins and the object is classified as a
-        table."""
+        """A name from both table and view accessors: first-seen wins as a table."""
         insp = _mock_inspector(tables=["orders", "v_dup"], views=["v_dup"])
         objects = list_ingestable_objects(inspector=insp, schema=None)
         assert _names(objects) == ["orders", "v_dup"]
@@ -189,8 +168,7 @@ class TestDialectTolerance:
         assert _kind_of(objects, "mv") == "view"
 
     def test_ordering_is_tables_then_views_then_matviews(self) -> None:
-        """Deterministic order matters: the name-collision reservation in
-        item 3 depends on a stable scan order."""
+        """Deterministic order matters: name-collision reservation needs a stable scan order."""
         insp = _mock_inspector(
             tables=["t1", "t2"], views=["v1"], matviews=["m1"]
         )
@@ -245,8 +223,7 @@ class TestDriftSeesViews:
     async def test_hand_authored_view_model_is_not_marked_for_deletion(
         self, workspace: Path
     ) -> None:
-        """regression for the pre-existing bug. A model pointing at a
-        view resolved to live_table=None and produced a WholeModelDelete."""
+        """A model pointing at a view resolved to live_table=None and got a WholeModelDelete."""
         _, ds = _db_with_view(workspace)
         model = SlayerModel(
             name="stg_orders",
@@ -277,8 +254,7 @@ class TestDriftSeesViews:
         assert any(isinstance(e, WholeModelDelete) for e in entries)
 
     def test_drift_sees_views_unconditionally(self, workspace: Path) -> None:
-        """D4. The drift side takes no include_views flag; there is
-        no code path by which --no-views can re-arm the deletion bug."""
+        """The drift side takes no include_views flag, so --no-views can't re-arm the bug."""
         import inspect as _inspect
 
         from slayer.engine.schema_drift import _live_schema_for_datasource
@@ -300,9 +276,7 @@ class TestDriftSeesViews:
 
 class TestMcpListing:
     def test_fetch_tables_includes_views(self, workspace: Path) -> None:
-        """describe_datasource hid views, and the empty-ingest probe
-        used the same helper to decide whether to tell the agent to try
-        another schema."""
+        """describe_datasource hid views; the empty-ingest probe shares this helper."""
         from slayer.mcp.server import _fetch_tables
 
         _, ds = _db_with_view(workspace)

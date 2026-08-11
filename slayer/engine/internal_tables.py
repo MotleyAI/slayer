@@ -1,53 +1,17 @@
-"""Recognition of well-known ELT / migration housekeeping tables (DEV-1759).
+"""Recognition of well-known ELT / migration housekeeping tables.
 
-An unfiltered ingest models these as first-class semantic models, and the model
-list is the menu handed to an AI agent over MCP — so junk entries burn tokens in
-every session, invite an agent to aggregate `_dlt_loads` or join `_dlt_version`,
-and (for the state/raw tables) dump kilobytes of serialized JSON into context on
-a single exploratory query.
+An unfiltered ingest models these as first-class semantic models, so they clog
+the model list handed to an AI agent over MCP — burning tokens and inviting
+nonsense aggregations/joins. Pure and DB-free so the rule table is unit-testable
+without a database.
 
-Pure and DB-free on purpose: no engine or storage imports, so the rule table can
-be unit-tested without a database and reasoned about without tracing a scan.
-
-Two rule shapes. A PREFIX rule is only admissible where the namespace is
-reserved by contract *and* the rule can actually fire, so that a match provably
-is not user data:
-
-* ``_dlt_``     — dlt namespaces every object it owns this way.
-* ``_airbyte_`` — likewise; this is also what covers ``_airbyte_raw_*``, whose
-  stream suffix is arbitrary and so cannot be enumerated.
-
-Both vendors reserve their prefix in every warehouse they load into, so neither
-rule is engine-specific.
-
-Everything else is an exact name. Notably absent, each for a reason:
-
-* ``_fivetran_`` / ``_sdc_`` as PREFIXES. Both vendors' real surface is
-  *columns* on real tables (``_fivetran_synced``, ``_sdc_batched_at``, …), not
-  tables, so a table-level prefix rule would match nothing and merely imply a
-  coverage we do not have. Fivetran's only destination-schema tables are the two
-  audit ones, listed exactly.
-* ``sqlite_``, for that same reason plus a worse one. SQLite reserves the
-  namespace — ``CREATE TABLE sqlite_foo`` is a hard error — but the objects it
-  reserves it FOR never reach us: SQLAlchemy's SQLite inspector defaults to
-  ``sqlite_include_internal=False``, so ``get_table_names()`` filters
-  ``sqlite_sequence`` / ``sqlite_stat1``…``sqlite_stat4`` out before the scan
-  sees them. The rule could therefore only ever fire on a NON-SQLite
-  datasource, where nothing reserves the prefix and ``sqlite_backup`` is an
-  ordinary table — so its only reachable effect was hiding real user data.
-* PostGIS (``spatial_ref_sys``, ``geometry_columns``, ``geography_columns``,
-  ``raster_columns``) and ``pg_stat_statements``. These land in ``public`` and
-  are bookkeeping, but the namespaces are not reserved and a geospatial user may
-  legitimately want ``spatial_ref_sys``. Holding the line at engine-reserved
-  namespaces keeps "which extensions count?" from becoming an open question with
-  no principled stopping point.
-* ``log`` / ``audit_trail`` / ``changes`` (Fivetran platform, sqitch) — far too
-  generic to match on a name alone.
-
-One accepted risk, recorded so a future reader does not think it was missed:
-``schema_version`` (legacy Flyway ≤4) is the most collision-prone exact entry.
-It is recoverable — matching hides a model, it never omits one, so the table
-stays queryable by name and one ``edit_model(hidden=false)`` undoes it.
+A prefix rule is admissible only where a vendor reserves the namespace by
+contract (``_dlt_``, ``_airbyte_``), so a match cannot be user data; everything
+else is an exact name. Rules are dialect-blind — each names something a vendor
+writes into any warehouse it targets. Two deliberate omissions worth not
+re-litigating: ``_fivetran_`` / ``_sdc_`` as prefixes (their surface is columns
+on real tables, not tables), and ``sqlite_`` (SQLAlchemy already filters SQLite
+internals out, so the rule could only fire on a non-SQLite DB and hide user data).
 """
 
 # (prefix, tool). Lower-case; the lookup lower-cases its input once.
@@ -56,9 +20,8 @@ _INTERNAL_PREFIXES: tuple[tuple[str, str], ...] = (
     ("_airbyte_", "airbyte"),
 )
 
-# Exact table name → owning tool. Lower-case keys: Liquibase upper-cases its
-# tables, EF Core writes ``__EFMigrationsHistory`` and Sequelize
-# ``SequelizeMeta``, so a case-sensitive match would silently miss all three.
+# Exact table name → owning tool. Lower-case keys because vendors vary the case
+# (``__EFMigrationsHistory``, ``SequelizeMeta``); the lookup is case-insensitive.
 _INTERNAL_EXACT: dict[str, str] = {
     # ELT
     "_fivetran_audit": "fivetran",
@@ -84,18 +47,10 @@ _INTERNAL_EXACT: dict[str, str] = {
 def internal_table_rule(table_name: str) -> str | None:
     """Return the tool that owns ``table_name`` as bookkeeping, else ``None``.
 
-    Match on the LIVE object name, never on a derived model name — ingestion
-    sanitizes ``__`` runs out of model names, so ``_dlt_loads__x`` becomes the
-    model ``_dlt_loads_x`` and matching the sanitized form would be matching a
-    string the database never had.
-
-    Deliberately dialect-blind: every surviving rule names something a VENDOR
-    writes into whatever warehouse it targets, so none of them varies by
-    engine. A rule that did would be a rule about user data on some dialect —
-    see the ``sqlite_`` note in the module docstring.
-
-    Exact names are consulted before prefixes. The two sets do not overlap, so
-    the order is for determinism rather than precedence.
+    Match on the live object name, not a derived model name: ``__``-sanitization
+    turns ``_dlt_loads__x`` into the model ``_dlt_loads_x``, a string the
+    database never had. Exact names are checked before prefixes (the sets don't
+    overlap, so it's for determinism, not precedence).
     """
     if not table_name:
         return None

@@ -1419,10 +1419,9 @@ def _run_ingest(args):
         )
     )
 
-    # An ingest that found nothing used to print nothing and exit 0,
-    # which is what convinced the reporter their schema of dbt views was empty.
-    # Gate on ``objects`` rather than ``additions`` so a healthy no-op re-ingest
-    # (objects exist, all already in sync) stays quiet.
+    # Gate on ``objects``, not ``additions``: a schema whose objects are all
+    # already in sync must stay quiet, but a truly empty schema must not print
+    # nothing and exit 0 (which reads as "empty" to a user with only views).
     if not (
         result.additions
         or result.to_delete
@@ -2021,9 +2020,8 @@ def _run_datasources_create(args, storage):
     exclude = [t for t in (s.strip() for s in args.exclude.split(",")) if t] if args.exclude else None
 
     try:
-        # The report form, not the models-only ``ingest_datasource``: this path
-        # would otherwise hide recognised internals with no output at all, and
-        # it was already swallowing DEV-1741's skips the same way.
+        # Report form, not models-only ``ingest_datasource``: otherwise this
+        # path hides recognised internals and skips with no output at all.
         report = ingest_datasource_report(
             datasource=ds,
             schema=args.schema,
@@ -2037,9 +2035,8 @@ def _run_datasources_create(args, storage):
         sys.exit(1)
 
     _persist_ingested_models(report.models, storage, assume_yes=args.yes)
-    # After persistence, so the sections read as commentary on what was just
-    # written. Exit stays 0 either way — creating the datasource is this
-    # command's job and it succeeded (the DEV-1741 carve-out).
+    # After persistence, so the sections comment on what was just written. Exit
+    # stays 0 — creating the datasource succeeded, whatever was skipped/hidden.
     _print_ingest_drift_and_errors(report, data_source=ds.name)
 
 

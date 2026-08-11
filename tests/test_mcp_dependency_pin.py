@@ -1,18 +1,4 @@
-"""DEV-1757: the ``mcp`` dependency must stay on the 1.x FastMCP API.
-
-`pyproject.toml` declared `mcp = ">=1.0"` with no upper bound. mcp 2.0.0
-renamed ``mcp.server.fastmcp`` to ``mcp.server.mcpserver``, so every
-lockfile-free install (`pip install motley-slayer`, `uv tool install`)
-resolved a major that `slayer/mcp/server.py` cannot import. `poetry.lock`
-pins a 1.x, so CI never saw it — only users did.
-
-Three guards live here:
-
-1. the declared constraint excludes 2.x (the bug reproduction);
-2. a wrong / absent ``mcp`` produces an *actionable* error rather than the
-   old "Reinstall SLayer" message, which reproduced the failure;
-3. ``serverInfo.version`` reports SLayer's version, not the mcp SDK's.
-"""
+"""The ``mcp`` dependency must stay on the 1.x FastMCP API: mcp 2.0.0 renamed away ``mcp.server.fastmcp``, so an unbounded pin breaks lockfile-free installs."""
 
 from __future__ import annotations
 
@@ -30,8 +16,7 @@ from slayer.mcp.server import _import_fastmcp, _set_server_version, create_mcp_s
 
 PYPROJECT = pathlib.Path(__file__).parent.parent / "pyproject.toml"
 
-# The 1.x the issue verified end-to-end (initialize handshake, tools/list,
-# models_summary, a joined query) over stdio.
+# The 1.x verified end-to-end over stdio.
 VERIFIED_1X = "1.29.0"
 FIRST_BREAKING_MAJOR = "2.0.0"
 
@@ -46,19 +31,12 @@ def _mcp_constraint() -> str:
     with open(PYPROJECT, "rb") as fh:
         deps = tomllib.load(fh)["tool"]["poetry"]["dependencies"]
     spec = deps["mcp"]
-    # Poetry accepts a bare string or a table (`{version = "...", ...}`);
-    # the guard must survive a future conversion to the table form.
+    # Poetry accepts a bare string or a table; survive a future conversion to the table form.
     return spec["version"] if isinstance(spec, dict) else spec
 
 
 def _mcp_specifier() -> SpecifierSet:
-    """The declared constraint as a PEP 440 specifier set.
-
-    Raises ``InvalidSpecifier`` if the constraint is not PEP 440 — a Poetry
-    caret (``^1.0``) is semantically fine but unparseable here. Express the
-    constraint in PEP 440 form (e.g. ``>=1.0,<2``) so this guard can evaluate
-    it rather than silently skipping.
-    """
+    """The declared constraint as a PEP 440 specifier set (raises ``InvalidSpecifier`` on a non-PEP-440 form like a Poetry caret)."""
     return SpecifierSet(_mcp_constraint())
 
 
@@ -93,12 +71,7 @@ class TestMcpDependencyPin:
 
 
 class TestFastMcpImportError:
-    """The import failure must name the real remedy, not 'Reinstall SLayer'.
-
-    ``sys.modules[name] = None`` makes ``import name`` raise ImportError
-    ("halted; None in sys.modules"), so no mcp 2.x install is needed to
-    exercise the failure paths. monkeypatch restores the entry afterwards.
-    """
+    """Import failure must name the real remedy, not 'Reinstall SLayer'; ``sys.modules[name]=None`` forces the ImportError without an mcp 2.x install."""
 
     @staticmethod
     def _block_fastmcp(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -132,12 +105,7 @@ class TestFastMcpImportError:
     def test_1_x_metadata_is_not_blamed_on_the_2_x_rename(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Metadata reporting 1.x must not be diagnosed as the 2.x rename.
-
-        Any ImportError raised from *inside* a genuine 1.x mcp — a broken
-        transitive dependency, say — lands here too, and telling that user
-        the module was renamed away would be a fresh misdiagnosis.
-        """
+        """An ImportError from inside a genuine 1.x mcp must not be misdiagnosed as the 2.x rename."""
         self._block_fastmcp(monkeypatch)
         self._pretend_installed(monkeypatch, "1.27.0")
 
@@ -255,16 +223,11 @@ class _NoLowlevelServer:
 
 
 class TestServerInfoVersion:
-    """serverInfo.version must be SLayer's version, not the mcp SDK's.
-
-    FastMCP 1.x exposes no ``version`` kwarg and never forwards one to the
-    lowlevel ``Server``, which then falls back to ``pkg_version("mcp")``.
-    """
+    """serverInfo.version must be SLayer's version, not the mcp SDK's (FastMCP 1.x otherwise falls back to ``pkg_version("mcp")``)."""
 
     @staticmethod
     def _server():
-        # storage=None / _seed_help=False is the metadata-only build path
-        # established by DEV-1669 — no storage or DB access needed.
+        # storage=None / _seed_help=False is the metadata-only build path — no storage or DB access needed.
         return create_mcp_server(storage=None, _seed_help=False)  # NOSONAR(S5655) — metadata-only build needs no storage
 
     def test_lowlevel_server_version_is_slayer_version(self) -> None:

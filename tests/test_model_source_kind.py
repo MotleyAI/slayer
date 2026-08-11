@@ -1,15 +1,4 @@
-"""Persist what kind of database object backs a model.
-
-Views have no primary key, and fan-out safety leans on ``Column.primary_key``;
-``source_kind`` is what explains why the PK is absent and will stay absent.
-
-The sharp edge is refresh. A view→table flip (dbt ``+materialized: table``)
-usually changes no columns, so it must bypass all THREE guards: the early
-return in ``_additive_merge_existing``, the ``model_copy(update=...)`` set, and
-the save gate in ``_process_one_table``. An implementation editing only the
-update dict passes every other test here and fails
-``test_view_to_table_flip_refreshes``.
-"""
+"""Persist what kind of database object backs a model."""
 from __future__ import annotations
 
 import sqlite3
@@ -85,8 +74,7 @@ class TestClassification:
     def test_introspect_table_to_model_defaults_to_none(
         self, workspace: Path
     ) -> None:
-        """the dbt and OSI converters call this without a kind and
-        must be unaffected."""
+        """The dbt and OSI converters call this without a kind and must be unaffected."""
         db_path, ds = _ds(workspace, _TABLE_AND_VIEW)
         engine = sa.create_engine(f"sqlite:///{db_path}")
         try:
@@ -139,8 +127,7 @@ class TestPersistence:
         assert loaded.source_kind == "materialized_view"
 
     def test_defaults_to_none(self) -> None:
-        """hand-authored and sql-mode models have no live object to
-        classify, so None (unknown) is the correct value rather than a guess."""
+        """Hand-authored and sql-mode models have no live object, so None is correct."""
         assert (
             SlayerModel(name="m", sql_table="t", data_source="ds").source_kind
             is None
@@ -170,8 +157,7 @@ class TestMigration:
         assert SlayerModel(name="m", sql_table="t", data_source="ds").version == 8
 
     def test_v7_payload_migrates_without_raising(self) -> None:
-        """``migrate()`` raises RuntimeError when no converter is
-        registered for a step, so v8_migration.py is mandatory, not optional."""
+        """migrate() raises when a step has no converter, so v8_migration.py is mandatory."""
         payload = {
             "version": 7,
             "name": "orders",
@@ -183,8 +169,7 @@ class TestMigration:
         assert migrated["version"] == 8
 
     def test_v7_payload_loads_with_unknown_source_kind(self) -> None:
-        """A pre-existing model cannot know what backed it — None is correct,
-        not a guess of "table"."""
+        """A pre-existing model cannot know what backed it — None is correct."""
         model = SlayerModel.model_validate(
             {
                 "version": 7,
@@ -210,15 +195,7 @@ class TestMigration:
 
 class TestSourceKindRefresh:
     async def test_view_to_table_flip_refreshes(self, workspace: Path) -> None:
-        """THE Part E regression.
-
-        The replacement table has IDENTICAL columns on purpose: that produces
-        no new columns, no new joins and no widening, so it drives the early
-        return in ``_additive_merge_existing`` and the save gate in
-        ``_process_one_table``. An implementation that only adds source_kind to
-        ``model_copy(update=...)`` passes every other test in this file and
-        fails this one.
-        """
+        """A view→table flip with identical columns must bypass the early-return and save gate."""
         db_path, ds = _ds(
             workspace,
             """
@@ -280,8 +257,7 @@ class TestSourceKindRefresh:
         assert second.source_kind == "view"
 
     async def test_refresh_reports_the_change(self, workspace: Path) -> None:
-        """a kind change with no column change must still surface as
-        a ModelAddition, otherwise the run looks like a silent no-op."""
+        """A kind change with no column change must still surface as a ModelAddition."""
         db_path, ds = _ds(
             workspace,
             """
@@ -304,8 +280,7 @@ class TestSourceKindRefresh:
         assert addition.kind_change == "view → table"
 
     async def test_none_never_erases_a_known_value(self, workspace: Path) -> None:
-        """a fresh model from a path that does not classify (kind
-        None) must not wipe a persisted value."""
+        """A fresh model with kind None must not wipe a persisted value."""
         from slayer.engine.ingestion import _additive_merge_existing
 
         persisted = SlayerModel(
@@ -327,8 +302,7 @@ class TestSourceKindRefresh:
         assert outcome.merged.source_kind == "view"
 
     def test_no_op_merge_preserves_the_early_return_contract(self) -> None:
-        """an identical re-ingest must still short-circuit; the new
-        kind check must not make every merge look dirty."""
+        """An identical re-ingest must still short-circuit."""
         from slayer.engine.ingestion import _additive_merge_existing
 
         model = SlayerModel(
@@ -350,8 +324,7 @@ class TestSourceKindRefresh:
     async def test_identical_reingest_is_still_a_no_op(
         self, workspace: Path
     ) -> None:
-        """End-to-end guard for the same thing: adding source_kind must not
-        turn every re-ingest into a write."""
+        """End-to-end: adding source_kind must not turn every re-ingest into a write."""
         _, ds = _ds(workspace, _TABLE_AND_VIEW)
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
         await ingest_datasource_idempotent(datasource=ds, storage=storage)

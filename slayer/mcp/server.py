@@ -66,11 +66,9 @@ logger = logging.getLogger(__name__)
 VALID_DIMENSION_TYPES = {"string", "time", "date", "boolean", "number"}
 _UNSET = object()  # Sentinel to distinguish "not provided" from "explicitly set to None"
 
-# DEV-1757: every branch of the import failure below offers the same remedy.
-# The direct constrained install leads because it works whatever SLayer
-# release the caller is on; "upgrade SLayer" is the secondary hint, since
-# telling someone already on the latest release to reinstall it is precisely
-# the misdirection the old "Reinstall SLayer" message caused.
+# Shared remedy for every mcp-import failure below. The direct constrained
+# install leads because it works on any SLayer release; "upgrade SLayer" is
+# secondary (reinstalling doesn't help someone already on the latest).
 _MCP_REMEDY = (
     "Install a supported version: pip install 'mcp>=1.0,<2' "
     "(or upgrade SLayer, which pins mcp<2: pip install -U motley-slayer)."
@@ -88,10 +86,9 @@ def _mcp_major(version_str: str) -> int | None:
 def _import_fastmcp():
     """Return the mcp 1.x ``FastMCP`` class, or raise an actionable ImportError.
 
-    DEV-1757: mcp 2.x renamed ``mcp.server.fastmcp`` to
-    ``mcp.server.mcpserver``, so an unbounded pin resolved a major SLayer
-    cannot import. Absent package and wrong major need different remedies,
-    and the old message ("Reinstall SLayer") was wrong for both.
+    mcp 2.x renamed ``mcp.server.fastmcp`` to ``mcp.server.mcpserver``, so an
+    unbounded pin can resolve a major SLayer cannot import; absent package and
+    wrong major get different remedies.
     """
     try:
         from mcp.server.fastmcp import FastMCP
@@ -108,9 +105,8 @@ def _import_fastmcp():
                 f"mcp.server.mcpserver.MCPServer)."
             )
         else:
-            # A genuine 1.x whose import failed for some other reason — a
-            # broken transitive dep, say. Blaming the 2.x rename here would
-            # just be a fresh misdiagnosis, so report what actually happened.
+            # 1.x that failed for another reason (e.g. broken transitive dep) —
+            # report that, not the 2.x rename.
             detail = (
                 f"mcp {installed} is installed, but 'mcp.server.fastmcp' could "
                 f"not be imported: {exc}"
@@ -122,10 +118,9 @@ def _import_fastmcp():
 def _set_server_version(mcp) -> None:
     """Stamp SLayer's version onto the lowlevel MCP server.
 
-    DEV-1757: FastMCP 1.x exposes no ``version`` kwarg and never forwards one
-    to the lowlevel ``Server``, which then reports the *mcp SDK's* own version
-    as ``serverInfo.version``. Both degradation paths are tolerated so a future
-    SDK change cannot abort server construction over a cosmetic field.
+    FastMCP 1.x forwards no ``version`` to the lowlevel ``Server``, which then
+    reports the mcp SDK's own version. Both degradation paths are tolerated so
+    an SDK change can't abort construction over a cosmetic field.
     """
     lowlevel = getattr(mcp, "_mcp_server", None)
     if lowlevel is None:
@@ -171,11 +166,8 @@ def _fetch_tables(
     Returns ``(objects, None)`` on success or ``(None, friendly_error_message)``
     on failure. ``schema_name=None`` uses the dialect's default schema.
 
-    Views are always included here, independent of the ingest-side
-    ``--no-views`` flag. This helper backs ``describe_datasource`` and the
-    empty-ingest probe, and a views-only schema previously reported "No tables
-    found — try another schema", misdirecting the agent away from a schema
-    that was in fact full of objects.
+    Views are always included, independent of the ingest-side ``--no-views``
+    flag: a views-only schema must not read as empty and misdirect the agent.
     """
     try:
         from slayer.sql import engine_factory
@@ -245,11 +237,10 @@ def _render_drift_section(to_delete: list[Any]) -> list[str]:
 
 
 def _render_skipped_section(skipped: list[Any]) -> list[str]:
-    """Objects that produced no model at all (DEV-1741).
+    """Objects that produced no model at all.
 
-    The CLI points at ``--exclude`` here; this tool has no such argument, so
-    the line states the outcome and stops rather than naming a flag the agent
-    cannot pass.
+    Unlike the CLI this omits the ``--exclude`` hint — the agent has no such
+    argument to pass.
     """
     if not skipped:
         return []
@@ -261,16 +252,12 @@ def _render_skipped_section(skipped: list[Any]) -> list[str]:
 def _render_hidden_internals_section(
     hidden: list[Any], *, data_source: str | None = None
 ) -> list[str]:
-    """Recognised ELT/migration bookkeeping modelled ``hidden`` (DEV-1759).
+    """Recognised ELT/migration bookkeeping modelled ``hidden``.
 
-    Reported for the same reason the CLI reports it: the models exist and are
-    queryable, they are just absent from ``models_summary``. Staying silent
-    here would leave the agent that ran the ingest unable to tell a hidden
-    model from one that was never created.
-
-    The hint is datasource-qualified via the shared ``_unhide_hint`` — an agent
-    executes it verbatim, and these names collide across datasources by
-    construction rather than by accident.
+    The models exist and stay queryable but are absent from ``models_summary``;
+    reporting them lets the agent tell a hidden model from an uncreated one. The
+    hint is datasource-qualified (via ``_unhide_hint``) because an agent runs it
+    verbatim and these names collide across datasources by construction.
     """
     if not hidden:
         return []
@@ -300,8 +287,8 @@ def _render_ingest_result(
 ) -> str:
     """Render an ``IdempotentIngestResult`` for the MCP ``ingest_datasource_models`` tool."""
     additions = list(result.additions)
-    # Read defensively, matching the CLI renderer: this is called with more
-    # than one result shape, and an older one may carry neither attribute.
+    # Read defensively — called with more than one result shape; an older one
+    # may carry neither attribute.
     skipped = list(getattr(result, "skipped", None) or [])
     hidden_internals = list(getattr(result, "hidden_internals", None) or [])
     if (
@@ -319,11 +306,9 @@ def _render_ingest_result(
         #      additive work to do, but the existing models are healthy.
         # Probe the live table count so we don't misdirect the agent.
         #
-        # Skips and hidden internals are part of the guard, not just of the
-        # output below: a steady-state re-ingest of a dlt-loaded schema
-        # produces no additions at all, so reaching this branch would answer
-        # "already in sync" and swallow both sections on every run after the
-        # first — the silence class DEV-1741 exists to kill.
+        # The skipped/hidden checks are part of this guard: a steady-state
+        # re-ingest produces no additions, so without them this branch would
+        # answer "already in sync" and swallow both sections.
         tables, _err = _fetch_tables(ds=ds, schema_name=schema_name or None)
         if tables is None or not tables:
             return _empty_ingest_message(schema_name=schema_name, ds=ds)

@@ -157,11 +157,9 @@ class JoinType(StrEnum):
     INNER = "inner"
 
 
-# The kind of database object a ``sql_table``-mode model points at.
-# A plain ``Literal`` rather than a ``StrEnum`` because the values are written
-# straight into persisted YAML/SQLite and read back by ``SlayerModel``; keeping
-# them bare strings avoids an enum-serialisation round-trip on a field whose
-# whole job is to be inspected by humans and agents.
+# The kind of database object a ``sql_table``-mode model points at. A plain
+# ``Literal`` (not ``StrEnum``) so the values persist as bare strings in
+# YAML/SQLite without an enum-serialisation round-trip.
 ObjectKind = Literal["table", "view", "materialized_view"]
 
 

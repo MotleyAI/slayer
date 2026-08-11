@@ -316,10 +316,9 @@ def _get_fk_relationships(
 
     Returns list of (source_column, target_table, target_column).
 
-    FK lookup is guarded: views carry no foreign keys and some dialects raise
-    rather than returning an empty list. This helper feeds ``_build_fk_graph``,
-    which runs before per-object model construction, so an unguarded raise
-    would abort the entire ingest.
+    FK lookup is guarded: views carry no FKs and some dialects raise instead of
+    returning ``[]``; this feeds ``_build_fk_graph``, so a raise would abort the
+    whole ingest.
     """
     try:
         fks = inspector.get_foreign_keys(table_name, schema=schema)
@@ -757,9 +756,8 @@ def introspect_table_to_model(
     This is the building block shared between the auto-ingest path and the
     dbt hidden-model import. It never builds joins or traverses the FK graph.
 
-    ``source_kind`` defaults to ``None``: the dbt and OSI converters call this
-    without classifying the live object, and ``None`` correctly means "not
-    known" rather than a guess.
+    ``source_kind=None`` means "not classified": the dbt/OSI converters don't
+    know the live object's kind.
     """
     columns = _introspect_query_columns_via_inspector(
         sa_engine=sa_engine,
@@ -800,8 +798,8 @@ class IngestableObject(BaseModel):
 class SkippedTable(BaseModel):
     """A live object that could not be turned into a model.
 
-    Distinct from ``IngestionError`` ("this model failed to persist") — separate
-    cause, separate fix, so reported separately.
+    Distinct from ``IngestionError`` ("this model failed to persist"): separate
+    cause, separate fix, reported separately.
     """
 
     table_name: str
@@ -810,22 +808,15 @@ class SkippedTable(BaseModel):
 
 
 class InternalTable(BaseModel):
-    """A live object recognised as ELT/migration bookkeeping (DEV-1759).
+    """A live object recognised as ELT/migration bookkeeping.
 
-    Distinct from ``SkippedTable``: the model exists, is queryable by name and
-    is a valid join target — when ``hidden`` it is merely absent from the
-    listing surfaces.
-
-    Both names are carried because they can differ: ingestion sanitizes ``__``
-    runs out of model names, so the live ``_dlt_loads__x`` becomes the model
-    ``_dlt_loads_x``. A user reading the report needs ``table_name`` to find the
-    table and ``model_name`` to un-hide it. Carrying both here is also what lets
-    downstream consumers avoid re-deriving the live name from ``sql_table``,
-    which is lossy — ``_bare_table_name`` splits on the FIRST dot, so a dotted
-    ``--schema`` (``project.dataset``) would leave ``dataset._dlt_loads`` and
-    silently stop matching.
-
-    ``hidden`` is False only when ``surface_internals`` surfaced it.
+    Unlike ``SkippedTable`` the model exists and stays queryable; ``hidden``
+    only keeps it off the listing surfaces (False only when surfaced). Both
+    names are kept because ``__``-sanitization makes them differ (live
+    ``_dlt_loads__x`` → model ``_dlt_loads_x``): the report needs the table name
+    to locate the object and the model name to un-hide it, and carrying both
+    spares consumers re-deriving the live name from ``sql_table`` (lossy for a
+    dotted ``--schema``).
     """
 
     table_name: str
@@ -840,30 +831,19 @@ class IngestionScanReport(BaseModel):
 
     models: list[SlayerModel] = Field(default_factory=list)
     skipped: list[SkippedTable] = Field(default_factory=list)
-    # EVERY recognised internal that produced a model, whether or not this run
-    # hid it — populated regardless of ``surface_internals`` so the idempotent
-    # path can filter it against effective storage state without reconstructing
-    # the live object name from a derived string.
+    # Every recognised internal that produced a model, regardless of
+    # ``surface_internals`` — the idempotent path filters this against storage.
     internal_tables: list[InternalTable] = Field(default_factory=list)
-    # Every object discovered, whether or not it produced a model. Lets the
-    # caller tell "the schema was empty" apart from "the schema had objects
-    # but they were all skipped / already in sync" — the CLI needs that
-    # distinction to decide between the empty-schema hint and silence.
-    # NOTE: ``hidden_internals`` is defined as a property below the field
-    # block — a derived view, so the hidden subset can never drift from
-    # ``internal_tables``.
+    # Every object discovered, modelled or not — lets the CLI tell an empty
+    # schema apart from one whose objects were all skipped / already in sync.
     objects: list[IngestableObject] = Field(default_factory=list)
 
     @property
     def hidden_internals(self) -> list[InternalTable]:
-        """The subset this scan actually hid — what the renderer prints.
-
-        Derived rather than stored so it cannot drift from
-        ``internal_tables``. For callers that persist ``models`` directly
-        (``datasources create --ingest``) this IS effective state, because the
-        scan never reads storage. The idempotent path instead filters
-        ``internal_tables`` against persisted state — see
-        ``_effective_hidden_internals``.
+        """The subset this scan hid — derived so it can't drift from
+        ``internal_tables``. Effective state only for callers that persist
+        ``models`` directly; the idempotent path uses
+        ``_effective_hidden_internals`` instead.
         """
         return [t for t in self.internal_tables if t.hidden]
 
@@ -940,20 +920,12 @@ def _assign_model_names(
 ) -> tuple[dict[str, str], list[SkippedTable]]:
     """Map each object name to its model name, returning ``(mapping, skipped)``.
 
-    Model names may not contain ``__`` (the SQL generator splits it back into a
-    join path, so ``a__b`` would silently query ``a -> b``); object names may,
-    so only the model name is sanitized.
-
-    Unsanitized names are reserved first, so a real ``a_b`` beats a sanitized
-    ``a__b``. Collisions skip rather than suffix — suffixes shift with the
-    object set, orphaning models and churning drift.
-
-    Both passes are scan-order independent. The sanitized pass walks its
-    candidates in sorted order, so when two objects collapse to the same name
-    (``a__b`` and ``a___b`` both yield ``a_b``) the winner is fixed by the name
-    itself, not by whichever the inspector happened to list first. Otherwise a
-    dialect changing its listing order would silently repoint the model at a
-    different physical object.
+    Model names may not contain ``__`` (the SQL generator reads it as a join
+    path, so ``a__b`` would query ``a -> b``); only the model name is sanitized.
+    Unsanitized names are reserved first so a real ``a_b`` beats a sanitized
+    ``a__b``, and collisions skip rather than suffix (suffixes shift with the
+    object set, churning drift). The sanitized pass walks sorted candidates so a
+    dialect's listing order can't repoint a model at a different object.
     """
     assigned: dict[str, str] = {}
     taken: set[str] = {o.name for o in objects if "__" not in o.name}
@@ -1007,11 +979,10 @@ def _build_one_model(
     """Introspect one live object into a model. Raises on failure; the caller
     isolates per-object.
 
-    ``internal_tool`` is the DEV-1759 verdict for this object (``None`` when it
-    is not recognised bookkeeping, or when the caller passed
-    ``surface_internals``). When set, the model is built ``hidden`` with a
-    ``meta.internal_table`` breadcrumb so an unexplained ``hidden: true`` never
-    appears in a persisted YAML.
+    ``internal_tool`` is the bookkeeping verdict (``None`` when unrecognised or
+    when the caller surfaced internals). When set, the model is built ``hidden``
+    with a ``meta.internal_table`` breadcrumb so an unexplained ``hidden: true``
+    never lands in a persisted YAML.
     """
     referenced = (
         set() if has_cycles else _compute_transitive_closure(fk_graph, obj.name)
@@ -1043,8 +1014,6 @@ def _build_one_model(
         sql_table=sql_table,
         columns=columns,
     )
-    # Merged rather than assigned: ``meta`` is a user-extensible bag, so the
-    # breadcrumb must never be the thing that decides what else it contains.
     meta = {"internal_table": internal_tool} if internal_tool else None
     return _columns_to_model(
         name=model_name,
@@ -1061,13 +1030,9 @@ def _build_one_model(
 def _dispose_quietly(sa_engine: sa.Engine) -> None:
     """Dispose ``sa_engine``, logging rather than raising on failure.
 
-    Called from ``finally`` blocks, so raising would replace the in-flight
-    exception (or turn a successful run into a failure) — the caller would see
-    a teardown error instead of the driver error that actually failed.
-
-    Logged at WARNING, not DEBUG: disposal is what releases the connection so
-    an external ``duckdb.connect(file)`` can open the same file, so a failure
-    here is a real resource leak and needs to be operationally visible.
+    Called from ``finally``, so a raise would mask the in-flight exception.
+    Logged at WARNING because a failed dispose leaks the connection, blocking
+    an external ``duckdb.connect(file)`` on the same file.
     """
     try:
         sa_engine.dispose()
@@ -1085,9 +1050,8 @@ def _collect_fk_columns(
 ) -> dict[str, set[str]]:
     """Map each table to its FK-constrained columns, for rollup exclusion.
 
-    Guarded per table: views have no foreign keys and some dialects raise
-    instead of returning ``[]``. This runs before per-object model
-    construction, so an unguarded raise would abort the whole ingest.
+    Guarded per table (see ``_get_fk_relationships``): views have no FKs and
+    some dialects raise instead of returning ``[]``.
     """
     out: dict[str, set[str]] = defaultdict(set)
     for table_name in table_names:
@@ -1112,13 +1076,11 @@ def ingest_datasource_report(
 ) -> IngestionScanReport:
     """Introspect ``datasource``, returning models plus everything skipped.
 
-    Discovers views and matviews (``include_views``), and skips an unmodellable
-    object with a reason rather than aborting the run.
-
-    Recognised ELT/migration bookkeeping (DEV-1759) is modelled ``hidden``
-    unless ``surface_internals``. Visibility is a separate axis from
-    ``include_tables`` / ``exclude_tables``, which choose WHICH objects are
-    scanned — so naming an internal in ``include_tables`` still hides it.
+    Discovers views and matviews (``include_views``); an unmodellable object is
+    skipped with a reason rather than aborting. Recognised ELT/migration
+    bookkeeping is modelled ``hidden`` unless ``surface_internals`` — a separate
+    axis from ``include_tables`` / ``exclude_tables`` (which choose what is
+    scanned), so naming an internal in ``include_tables`` still hides it.
     """
     from slayer.sql import engine_factory
     sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
@@ -1159,10 +1121,8 @@ def ingest_datasource_report(
             model_name = name_by_object.get(obj.name)
             if model_name is None:
                 continue  # already recorded in ``skipped`` by _assign_model_names
-            # Classified on the LIVE name, never the sanitized model name.
-            # Evaluated regardless of ``surface_internals`` so the entry is
-            # still recorded (with ``hidden=False``) — the idempotent path
-            # needs the classification even on a run that surfaced them.
+            # Classified on the live name, not the model name; evaluated even
+            # under ``surface_internals`` so the entry is still recorded.
             tool = internal_table_rule(obj.name)
             try:
                 models.append(
@@ -1189,9 +1149,8 @@ def ingest_datasource_report(
                     SkippedTable(table_name=obj.name, kind=obj.kind, reason=str(exc))
                 )
                 continue
-            # Recorded only AFTER construction succeeds, so an object can never
-            # appear in both ``skipped`` and ``internal_tables`` — two
-            # contradictory verdicts on the same table.
+            # Recorded only after construction succeeds, so an object never
+            # lands in both ``skipped`` and ``internal_tables``.
             if tool is not None:
                 internal_tables.append(
                     InternalTable(
@@ -1210,13 +1169,8 @@ def ingest_datasource_report(
             internal_tables=internal_tables,
         )
     finally:
-        # One-shot admin operation, not a hot query path. Disposing releases
-        # the underlying connection so other consumers (notably
-        # ``duckdb.connect(file)`` in notebooks) can open the same file. In a
-        # ``finally`` because discovery, the FK graph, and the FK-column pass
-        # can all raise a driver error — the REST layer explicitly handles
-        # ``SQLAlchemyError`` from here — and an undisposed engine would keep
-        # the connection open, which is the exact problem this prevents.
+        # In a ``finally`` because discovery and the FK passes can raise a
+        # driver error, and an undisposed engine holds the connection open.
         _dispose_quietly(sa_engine)
 
 
@@ -1372,12 +1326,9 @@ def _additive_merge_existing(
     * Live columns whose names are absent from ``persisted.columns`` are
       appended from ``fresh.columns``.
     * Joins with new ``(target_model, join_pairs)`` signatures are appended.
-    * Carve-out: ``source_kind`` is REFRESHED, not preserved. It
-      describes the live object, not user intent, and the transition it exists
-      to capture — dbt's ``+materialized: table`` turning a view into a table —
-      usually changes no columns at all. A field that never refreshed would
-      confidently lie about precisely the case it was added for. A ``None``
-      from a path that doesn't classify never erases a known value.
+    * Carve-out: ``source_kind`` is refreshed, not preserved — it describes the
+      live object, and the view→table flip it captures often changes no columns.
+      A ``None`` from a non-classifying path never erases a known value.
     """
     existing_by_name: dict[str, Column] = {c.name: c for c in persisted.columns}
     fresh_by_name: dict[str, Column] = {c.name: c for c in fresh.columns}
@@ -1404,9 +1355,8 @@ def _additive_merge_existing(
 
     new_joins, new_join_targets = _merge_joins_strict(persisted, fresh)
 
-    # A view→table flip typically changes nothing else, so the kind check has
-    # to participate in the short-circuit below — not just in the update dict —
-    # or the refresh would never be reached.
+    # In the short-circuit below (not just the update dict), else a view→table
+    # flip that changes nothing else would never reach the refresh.
     kind_changed = (
         fresh.source_kind is not None
         and fresh.source_kind != persisted.source_kind
@@ -1466,9 +1416,8 @@ async def _process_one_table(
         fresh=fresh,
         sqlite_widen_enabled=(datasource.type or "").lower() == "sqlite",
     )
-    # ``kind_changed`` must gate the save too: a view→table flip
-    # usually adds no columns and no joins, so without it the refreshed model
-    # would be computed and then thrown away.
+    # ``kind_changed`` gates the save too — a view→table flip usually adds no
+    # columns or joins, so otherwise the refreshed model would be discarded.
     if (
         outcome.new_columns
         or outcome.new_joins
@@ -1531,30 +1480,14 @@ async def _effective_hidden_internals(
     datasource: DatasourceConfig,
     storage: StorageBackend,
 ) -> list[InternalTable]:
-    """Narrow scan-time classifications down to models that are ACTUALLY
-    hidden once the additive merge has run (DEV-1759).
+    """Narrow scan-time classifications to models actually hidden after the merge.
 
-    The scan classifies the candidate it just built, but ``_process_one_table``
-    preserves the persisted ``hidden`` (and returns early without merging at all
-    for user-authored sql/query-backed models). Reporting the scan's verdict
-    would therefore lie in both directions:
-
-    * a user who un-hid ``_dlt_loads`` would see it reported as hidden on every
-      subsequent run, and
-    * ``--surface-internals`` would report nothing for a model that was created
-      hidden by an earlier run and is still hidden — silence on precisely the
-      run where the user asked to see these.
-
-    Takes ``scan.internal_tables`` (every recognised internal, whatever this run
-    did with it), NOT ``scan.hidden_internals`` — the latter is empty under
-    ``surface_internals`` by construction, which is exactly the second case
-    above. Consuming the scan's own entries also means the live object name is
-    carried through verbatim rather than reconstructed from ``sql_table``, which
-    would be lossy for a dotted ``--schema``.
-
-    Looked up by ``model_name``, not ``table_name``: they differ for any
-    ``__``-sanitized object, and keying on the table name would silently drop
-    those from the report.
+    ``_process_one_table`` preserves the persisted ``hidden`` (and skips merging
+    user-authored models entirely), so the scan's verdict can lie both ways — a
+    since-un-hidden internal, or silence under ``--surface-internals`` for one an
+    earlier run hid. Takes ``internal_tables`` (not ``hidden_internals``, empty
+    under ``surface_internals``) and keys on ``model_name``, which differs from
+    ``table_name`` for ``__``-sanitized objects.
     """
     effective: list[InternalTable] = []
     for entry in candidates:
@@ -1621,11 +1554,10 @@ async def ingest_datasource_idempotent(
     )
     fresh_models = scan.models
     fresh_by_name = {m.name: m for m in fresh_models}
-    # Keyed on the LIVE OBJECT name, not the model name. ``_scoped_models_for_validation``
-    # compares this against ``_bare_table_name(m.sql_table)``, so using model
-    # names silently dropped from validation scope any model whose name differs
-    # from its table — every ``__``-sanitized model, and already
-    # every dbt/OSI hidden model that passes ``model_name=``.
+    # Keyed on the live object name, not the model name: validation scoping
+    # compares against ``_bare_table_name(m.sql_table)``, so any model whose
+    # name differs from its table (``__``-sanitized or dbt/OSI hidden) would
+    # otherwise drop out of scope.
     in_scope_table_names: set[str] = {
         _bare_table_name(m.sql_table) for m in fresh_models if m.sql_table
     }
@@ -1782,8 +1714,7 @@ def _print_ingest_addition(
     addition, *, file: TextIO | None = None
 ) -> None:
     out = file if file is not None else sys.stdout
-    # Label non-table objects so a view-backed model is obvious at
-    # ingest time — views carry no primary key and no FK-derived joins.
+    # Label non-table objects — a view-backed model has no PK and no joins.
     label = _KIND_LABELS.get(getattr(addition, "source_kind", None) or "", "")
     if addition.created:
         print(
@@ -1816,12 +1747,7 @@ def _print_report_section(
     out: TextIO,
     footer: str | None = None,
 ) -> None:
-    """Print one ``header`` + indented-bullet section, or nothing when empty.
-
-    Extracted because the report grew to four structurally identical sections;
-    inlining them all put ``_print_ingest_drift_and_errors`` over Sonar's
-    cognitive-complexity threshold (S3776) for no readability gain.
-    """
+    """Print one ``header`` + indented-bullet section, or nothing when empty."""
     if not entries:
         return
     print(header, file=out)
@@ -1832,12 +1758,10 @@ def _print_report_section(
 
 
 def _hidden_internal_line(entry) -> str:
-    """``<table>: <tool>``, disambiguating the model name when it differs.
+    """``<table>: <tool>``, appending the model name when it differs.
 
-    The section's own advice is ``edit_model(..., hidden=false)``, which takes
-    the MODEL name — so for a ``__``-sanitized table (live ``_dlt_loads__x`` →
-    model ``_dlt_loads_x``) printing the table name alone names something the
-    user cannot act on.
+    The un-hide advice takes the model name, so for a ``__``-sanitized table the
+    table name alone would name something the user cannot act on.
     """
     target = entry.table_name
     if entry.model_name != entry.table_name:
@@ -1848,17 +1772,10 @@ def _hidden_internal_line(entry) -> str:
 def _unhide_hint(data_source: str | None = None) -> str:
     """The ``edit_model`` invocation that un-hides one recognised internal.
 
-    Qualified with ``data_source`` whenever the caller knows it, which every
-    ingest path does. A BARE model name resolves across datasources by the
-    priority list and raises ``AmbiguousModelError`` when that picks no unique
-    winner — and an internal is the worst possible case for that, because these
-    names are not incidental collisions: ``_dlt_loads`` exists verbatim in every
-    dlt-loaded database, so two dlt datasources collide by construction. An
-    unqualified hint therefore fails, or silently un-hides the other
-    datasource's model, exactly in the multi-pipeline setup this feature is
-    aimed at.
-
-    Shared with the MCP renderer so both surfaces advise the same call.
+    Qualified with ``data_source`` when known: a bare model name raises
+    ``AmbiguousModelError`` across datasources, and internals collide by
+    construction (``_dlt_loads`` exists in every dlt-loaded database). Shared
+    with the MCP renderer so both surfaces advise the same call.
     """
     if data_source:
         return f'edit_model("<model>", data_source="{data_source}", hidden=false)'
@@ -1870,16 +1787,10 @@ def _print_ingest_drift_and_errors(
 ) -> None:
     """Render the non-addition sections of an ingest.
 
-    Every field is read through ``getattr``: this is called with both an
-    ``IdempotentIngestResult`` and — since DEV-1759 wired reporting into
-    ``datasources create --ingest`` — a bare ``IngestionScanReport``, which has
-    no ``to_delete`` and no ``errors`` at all. Reaching either directly would
-    kill that path with an ``AttributeError`` unrelated to anything it was
-    trying to report.
-
-    ``data_source`` qualifies the un-hide hint; see ``_unhide_hint``. Optional
-    rather than required because neither result shape carries the datasource,
-    so it has to come from the caller — every in-tree one passes it.
+    Fields are read through ``getattr`` because this takes both an
+    ``IdempotentIngestResult`` and a bare ``IngestionScanReport`` (which has no
+    ``to_delete`` / ``errors``). ``data_source`` qualifies the un-hide hint (see
+    ``_unhide_hint``); it comes from the caller since neither result carries it.
     """
     out = file if file is not None else sys.stdout
     _print_report_section(
@@ -1888,9 +1799,8 @@ def _print_ingest_drift_and_errors(
         line=lambda e: f"{e.tool}: {e.model_name}",
         out=out,
     )
-    # Skips are reported separately from errors — "this object can't
-    # be modelled" has a different cause and a different fix from "this model
-    # failed to persist".
+    # Skips are separate from errors: "can't be modelled" differs in cause and
+    # fix from "failed to persist".
     skipped = getattr(result, "skipped", None) or []
     _print_report_section(
         entries=skipped,
@@ -1901,8 +1811,7 @@ def _print_ingest_drift_and_errors(
         line=lambda e: f"{e.table_name}: {e.reason}",
         out=out,
     )
-    # Hidden internals are reported separately again, and never affect the exit
-    # code: unlike a skip, nothing was declined and there is nothing to fix.
+    # Hidden internals never affect the exit code: nothing was declined.
     hidden_internals = getattr(result, "hidden_internals", None) or []
     _print_report_section(
         entries=hidden_internals,
@@ -1912,8 +1821,7 @@ def _print_ingest_drift_and_errors(
             f"name):"
         ),
         line=_hidden_internal_line,
-        # Naming only the flag would be a half-truth: it governs models this
-        # run CREATES, so it cannot surface one an earlier run already hid.
+        # The flag only governs models this run creates, so mention un-hiding.
         footer=(
             "  --surface-internals ingests NEW internals visible; use "
             f"{_unhide_hint(data_source)} to unhide an existing one."

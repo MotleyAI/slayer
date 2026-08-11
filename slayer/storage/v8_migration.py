@@ -1,16 +1,9 @@
 """v7 → v8 schema migration for SlayerModel.
 
-v8 introduces one new optional field on ``SlayerModel``:
-
-- ``source_kind: Optional[Literal["table", "view", "materialized_view"]]`` —
-  what kind of database object ``sql_table`` names. Auto-ingestion sets it;
-  hand-authored, ``sql``-mode and query-backed models leave it ``None``.
-
-The forward conversion is a no-op because the field defaults to ``None`` on
-the Pydantic class. ``None`` is also the *correct* value for a pre-v8 model:
-we genuinely do not know what backed it, and guessing ``"table"`` would be a
-fabrication that the next re-ingest would silently have to correct. The first
-subsequent ingest classifies it for real.
+v8 adds one optional field, ``source_kind`` (the kind of object ``sql_table``
+names). The forward conversion is a no-op: it defaults to ``None``, which is
+also correct for a pre-v8 model — its backing object is unknown, and the next
+ingest classifies it for real rather than guessing ``"table"``.
 """
 
 from __future__ import annotations
