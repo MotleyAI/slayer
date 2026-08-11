@@ -2,16 +2,19 @@
 
 import logging
 import sqlite3
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import sqlalchemy.exc
 
+from slayer.core.models import DatasourceConfig
 from slayer.sql import client as sql_client
 from slayer.sql.client import (
     _build_type_probe_sql,
     _execute_with_retry_async,
     _execute_with_retry_sync,
     _execute_with_retry_threaded,
+    _is_auth_failure,
     _is_transient_db_error,
     _map_type_code,
 )
@@ -444,3 +447,153 @@ class TestBuildTypeProbeSQL:
     def test_none_db_type_uses_limit(self) -> None:
         sql = _build_type_probe_sql(self.BASE, db_type=None)
         assert "LIMIT 0" in sql
+
+
+class TestIsAuthFailure:
+    """Credential rejection is classified apart from transient errors: retrying
+    is pointless, so the engine gets thrown away instead."""
+
+    def test_oauth_invalid_grant_is_auth_failure(self) -> None:
+        assert _is_auth_failure(Exception("('invalid_grant: Token has been expired or revoked.')"))
+
+    def test_libpq_password_failure_is_auth_failure(self) -> None:
+        assert _is_auth_failure(Exception('FATAL:  password authentication failed for user "svc"'))
+
+    def test_signal_found_through_sqlalchemy_orig(self) -> None:
+        """Drivers surface wrapped; the signal sits a layer or two down."""
+        inner = Exception("invalid_grant")
+        wrapped = sqlalchemy.exc.OperationalError("SELECT 1", {}, inner)
+        assert _is_auth_failure(wrapped)
+
+    def test_signal_found_through_cause_chain(self) -> None:
+        inner = Exception("Reauthentication is needed")
+        outer = RuntimeError("query failed")
+        outer.__cause__ = inner
+        assert _is_auth_failure(outer)
+
+    def test_google_refresh_error_matched_by_type_name(self) -> None:
+        """google-auth ships only with the optional extra, so the classifier
+        matches on class name."""
+        class RefreshError(Exception):
+            pass
+        assert _is_auth_failure(RefreshError("bad news"))
+
+    def test_transient_errors_are_not_auth_failures(self) -> None:
+        for message in ("database is locked", "deadlock detected", "server closed the connection"):
+            assert not _is_auth_failure(Exception(message)), message
+
+    def test_table_permission_denied_is_not_an_auth_failure(self) -> None:
+        """The credentials worked; the grant didn't. Evicting is pool churn."""
+        assert not _is_auth_failure(Exception("permission denied for table orders"))
+
+    def test_cyclic_cause_chain_terminates(self) -> None:
+        first, second = Exception("a"), Exception("b")
+        first.__cause__ = second
+        second.__cause__ = first
+        assert _is_auth_failure(first) is False
+
+
+class TestClientDiscardsEngineOnAuthFailure:
+
+    @staticmethod
+    def _client():
+        return sql_client.SlayerSQLClient(
+            datasource=DatasourceConfig(name="bq", type="bigquery", connection_string="bigquery://p/d"),
+        )
+
+    async def test_auth_failure_invalidates_cached_engine(self) -> None:
+        client = self._client()
+        client._sync_engine = object()
+        boom = Exception("invalid_grant: Token has been expired or revoked.")
+        with (
+            patch.object(sql_client.SlayerSQLClient, "_execute", side_effect=boom),
+            patch("slayer.sql.engine_factory.invalidate_engine") as invalidate,
+        ):
+            with pytest.raises(Exception, match="invalid_grant"):
+                await client.execute("SELECT 1")
+        invalidate.assert_called_once_with(client.datasource)
+        assert client._sync_engine is None
+
+    async def test_non_auth_failure_keeps_the_engine(self) -> None:
+        client = self._client()
+        engine = object()
+        client._sync_engine = engine
+        with (
+            patch.object(sql_client.SlayerSQLClient, "_execute", side_effect=Exception("no such table: orders")),
+            patch("slayer.sql.engine_factory.invalidate_engine") as invalidate,
+        ):
+            with pytest.raises(Exception, match="no such table"):
+                await client.execute("SELECT 1")
+        invalidate.assert_not_called()
+        assert client._sync_engine is engine
+
+    async def test_async_engine_is_disposed_too(self) -> None:
+        """Native-async dialects hold a second pool ``invalidate_engine`` knows
+        nothing about."""
+        client = self._client()
+        async_engine = AsyncMock()
+        client._async_engine = async_engine
+        with (
+            patch.object(sql_client.SlayerSQLClient, "_execute", side_effect=Exception("invalid_grant")),
+            patch("slayer.sql.engine_factory.invalidate_engine"),
+        ):
+            with pytest.raises(Exception, match="invalid_grant"):
+                await client.execute("SELECT 1")
+        async_engine.dispose.assert_awaited_once()
+        assert client._async_engine is None
+
+    async def test_get_column_types_also_discards(self) -> None:
+        """Runs its own SQL on the same cached engine, so it needs the same
+        cleanup ``execute`` gets."""
+        client = self._client()
+        client._sync_engine = object()
+        with (
+            patch.object(
+                sql_client.SlayerSQLClient, "_get_column_types",
+                side_effect=Exception("invalid_grant"),
+            ),
+            patch("slayer.sql.engine_factory.invalidate_engine") as invalidate,
+        ):
+            with pytest.raises(Exception, match="invalid_grant"):
+                await client.get_column_types("SELECT 1")
+        invalidate.assert_called_once_with(client.datasource)
+        assert client._sync_engine is None
+
+    def test_execute_sync_also_discards(self) -> None:
+        """Shares the factory-cached engine, but has no loop to dispose an async
+        pool on — so it drops only the sync one."""
+        client = self._client()
+        client._sync_engine = object()
+        with (
+            patch("slayer.sql.client._execute_with_retry_sync", side_effect=Exception("invalid_grant")),
+            patch.object(sql_client.SlayerSQLClient, "_get_sync_engine_for_client", return_value=None),
+            patch("slayer.sql.engine_factory.invalidate_engine") as invalidate,
+        ):
+            with pytest.raises(Exception, match="invalid_grant"):
+                client.execute_sync("SELECT 1")
+        invalidate.assert_called_once_with(client.datasource)
+        assert client._sync_engine is None
+
+    def test_execute_sync_keeps_engine_on_non_auth_failure(self) -> None:
+        client = self._client()
+        engine = object()
+        client._sync_engine = engine
+        with (
+            patch("slayer.sql.client._execute_with_retry_sync", side_effect=Exception("no such table")),
+            patch.object(sql_client.SlayerSQLClient, "_get_sync_engine_for_client", return_value=None),
+            patch("slayer.sql.engine_factory.invalidate_engine") as invalidate,
+        ):
+            with pytest.raises(Exception, match="no such table"):
+                client.execute_sync("SELECT 1")
+        invalidate.assert_not_called()
+        assert client._sync_engine is engine
+
+    async def test_cleanup_failure_does_not_mask_the_original_error(self) -> None:
+        """A failed eviction must not displace the auth error."""
+        client = self._client()
+        with (
+            patch.object(sql_client.SlayerSQLClient, "_execute", side_effect=Exception("invalid_grant")),
+            patch("slayer.sql.engine_factory.invalidate_engine", side_effect=RuntimeError("cache busted")),
+        ):
+            with pytest.raises(Exception, match="invalid_grant"):
+                await client.execute("SELECT 1")
