@@ -3428,85 +3428,119 @@ class SlayerQueryEngine:
         if not (query.dimensions or query.time_dimensions):
             return query
 
-        can_route = bool(model.data_source) and not named_queries
-        graph: "JoinGraph | None" = None
-        rewrite: dict[tuple[str, str], str] = {}
-
-        async def _route_ref(ref: ColumnRef) -> ColumnRef:
-            nonlocal graph
-            if ref.model is None:
-                return ref
-            segments = ref.model.split(".")
-            try:
-                await self._walk_join_chain(
-                    source_model=model, hop_names=segments,
-                    named_queries=named_queries, strict_missing_join=False,
-                )
-                return ref  # valid direct-join chain
-            except _NoJoinError:
-                pass
-            if not can_route:
-                return ref  # defer to enrichment's binding guard
-            if graph is None:
-                graph = JoinGraph.build_from_models(
-                    await self._load_candidate_models(data_source=model.data_source)
-                )
-            target = segments[-1]
-            n_routes = graph.count_simple_paths(model.name, target)
-            route = graph.shortest_path(model.name, target)
-            if len(segments) == 1 and n_routes == 1 and route:
-                new_model = ".".join(route)
-                rewrite[(ref.model, ref.name)] = new_model
-                return ref.model_copy(update={"model": new_model})
-            raise UnresolvableDimensionJoinError(
-                reference=f"{ref.model}.{ref.name}",
-                root_model=model.name,
-                reason=self._unresolvable_reason(target=target, n_routes=n_routes),
-                available_joins=[j.target_model for j in model.joins],
-                suggested_path=self._suggested_path(
-                    target=target, leaf=ref.name, n_routes=n_routes, route=route,
-                ),
-            )
-
+        rewrite: dict[str, str] = {}  # short model -> full routed model
+        kw = {
+            "can_route": bool(model.data_source) and not named_queries,
+            "rewrite": rewrite,
+            "graph_cache": {},  # lazily holds the datasource JoinGraph
+        }
         updates: dict[str, Any] = {}
         if query.dimensions:
-            routed = [await _route_ref(d) for d in query.dimensions]
+            routed = [await self._route_one_ref(d, model, named_queries, **kw) for d in query.dimensions]
             if any(a is not b for a, b in zip(routed, query.dimensions)):
                 updates["dimensions"] = routed
         if query.time_dimensions:
-            new_tds, changed = [], False
-            for td in query.time_dimensions:
-                routed_dim = await _route_ref(td.dimension)
-                if routed_dim is not td.dimension:
-                    new_tds.append(td.model_copy(update={"dimension": routed_dim}))
+            new_tds = await self._route_time_dimension_list(
+                query.time_dimensions, model, named_queries, **kw
+            )
+            if new_tds is not None:
+                updates["time_dimensions"] = new_tds
+        if rewrite:
+            updates.update(self._rewrite_dependent_refs(query=query, rewrite=rewrite))
+        return query.model_copy(update=updates) if updates else query
+
+    async def _route_one_ref(
+        self,
+        ref: ColumnRef,
+        model: SlayerModel,
+        named_queries: dict,
+        *,
+        can_route: bool,
+        rewrite: dict,
+        graph_cache: dict,
+    ) -> ColumnRef:
+        """Route one dotted ref: return it unchanged (valid chain / deferred),
+        rewrite a uniquely-routed short form to its full path, or raise."""
+        if ref.model is None:
+            return ref
+        segments = ref.model.split(".")
+        try:
+            await self._walk_join_chain(
+                source_model=model, hop_names=segments,
+                named_queries=named_queries, strict_missing_join=False,
+            )
+            return ref  # valid direct-join chain
+        except _NoJoinError:
+            pass
+        if not can_route:
+            return ref  # defer to enrichment's binding guard
+        graph = graph_cache.get("graph")
+        if graph is None:
+            graph = graph_cache["graph"] = JoinGraph.build_from_models(
+                await self._graph_models(model)
+            )
+        target = segments[-1]
+        n_routes = graph.count_simple_paths(model.name, target)
+        route = graph.shortest_path(model.name, target)
+        if len(segments) == 1 and n_routes == 1 and route:
+            new_model = ".".join(route)
+            rewrite[ref.model] = new_model
+            return ref.model_copy(update={"model": new_model})
+        raise UnresolvableDimensionJoinError(
+            reference=f"{ref.model}.{ref.name}",
+            root_model=model.name,
+            reason=self._unresolvable_reason(target=target, n_routes=n_routes),
+            available_joins=[j.target_model for j in model.joins],
+            suggested_path=self._suggested_path(
+                target=target, leaf=ref.name, n_routes=n_routes, route=route,
+            ),
+        )
+
+    async def _route_time_dimension_list(
+        self, time_dims: list, model: SlayerModel, named_queries: dict, **kw
+    ) -> "list | None":
+        """Route each time-dim's ColumnRef; return the new list or ``None`` if
+        nothing changed."""
+        out, changed = [], False
+        for td in time_dims:
+            routed = await self._route_one_ref(td.dimension, model, named_queries, **kw)
+            if routed is not td.dimension:
+                out.append(td.model_copy(update={"dimension": routed}))
+                changed = True
+            else:
+                out.append(td)
+        return out if changed else None
+
+    async def _graph_models(self, model: SlayerModel) -> list:
+        """Routing candidates: stored models in the datasource, with the passed
+        root substituting its stored namesake so inline / ModelExtension joins
+        are honored (a stored graph node would miss them)."""
+        stored = await self._load_candidate_models(data_source=model.data_source)
+        return [m for m in stored if m.name != model.name] + [model]
+
+    def _rewrite_dependent_refs(self, *, query: SlayerQuery, rewrite: dict) -> dict:
+        """Propagate short->full model rewrites to matching order items and
+        ``main_time_dimension`` so dependent references stay consistent."""
+        updates: dict[str, Any] = {}
+        if query.order:
+            new_order, changed = [], False
+            for item in query.order:
+                new_model = rewrite.get(item.column.model)
+                if new_model is not None:
+                    new_order.append(item.model_copy(
+                        update={"column": item.column.model_copy(update={"model": new_model})}
+                    ))
                     changed = True
                 else:
-                    new_tds.append(td)
+                    new_order.append(item)
             if changed:
-                updates["time_dimensions"] = new_tds
-
-        # Keep dependent references consistent with the rewritten dimensions.
-        if rewrite:
-            if query.order:
-                new_order, order_changed = [], False
-                for item in query.order:
-                    new_model = rewrite.get((item.column.model, item.column.name))
-                    if new_model is not None:
-                        new_order.append(item.model_copy(
-                            update={"column": item.column.model_copy(update={"model": new_model})}
-                        ))
-                        order_changed = True
-                    else:
-                        new_order.append(item)
-                if order_changed:
-                    updates["order"] = new_order
-            if query.main_time_dimension and "." in query.main_time_dimension:
-                mtd_model, _, mtd_leaf = query.main_time_dimension.rpartition(".")
-                new_model = rewrite.get((mtd_model, mtd_leaf))
-                if new_model is not None:
-                    updates["main_time_dimension"] = f"{new_model}.{mtd_leaf}"
-
-        return query.model_copy(update=updates) if updates else query
+                updates["order"] = new_order
+        if query.main_time_dimension and "." in query.main_time_dimension:
+            mtd_model, _, mtd_leaf = query.main_time_dimension.rpartition(".")
+            new_model = rewrite.get(mtd_model)
+            if new_model is not None:
+                updates["main_time_dimension"] = f"{new_model}.{mtd_leaf}"
+        return updates
 
     @staticmethod
     def _unresolvable_reason(*, target: str, n_routes: int) -> str | None:

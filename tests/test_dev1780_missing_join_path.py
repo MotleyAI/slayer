@@ -418,9 +418,10 @@ class TestEnrichmentGuard:
             measures=[{"formula": "amount:sum", "name": "amt"}],
             dimensions=[ColumnRef(name="x", model="Ghost")],
         )
+        model = self._ghost_model()
         with pytest.raises(UnresolvableDimensionJoinError) as ei:
             await enrich_query(
-                query=query, model=self._ghost_model(),
+                query=query, model=model,
                 resolve_dimension_via_joins=_noop_async,
                 resolve_cross_model_measure=_noop_async,
                 resolve_join_target=_noop_async,
@@ -440,9 +441,10 @@ class TestEnrichmentGuard:
                 granularity=TimeGranularity.MONTH,
             )],
         )
+        model = self._ghost_model()
         with pytest.raises(UnresolvableDimensionJoinError) as ei:
             await enrich_query(
-                query=query, model=self._ghost_model(),
+                query=query, model=model,
                 resolve_dimension_via_joins=_noop_async,
                 resolve_cross_model_measure=_noop_async,
                 resolve_join_target=_noop_async,
@@ -456,9 +458,10 @@ class TestEnrichmentGuard:
             dimensions=[ColumnRef(name="a", model="Ghost1"),
                         ColumnRef(name="b", model="Ghost2")],
         )
+        model = self._ghost_model()
         with pytest.raises(UnresolvableDimensionJoinError) as ei:
             await enrich_query(
-                query=query, model=self._ghost_model(),
+                query=query, model=model,
                 resolve_dimension_via_joins=_noop_async,
                 resolve_cross_model_measure=_noop_async,
                 resolve_join_target=_noop_async,
@@ -529,6 +532,36 @@ class TestRoutingGates:
         with pytest.raises(UnresolvableDimensionJoinError) as ei:
             await engine._enrich(query=query, model=invoice)
         assert ei.value.suggested_path is None
+
+
+class TestInlineModelJoins:
+    async def test_routing_honors_passed_root_joins_not_stored(self, tmp_path) -> None:
+        """The routing graph must use the passed root's joins (which may include
+        inline / ModelExtension joins absent from storage). Here the stored graph
+        has no Invoice node; the inline Invoice's join makes Consumer uniquely
+        reachable, so the short form resolves instead of being wrongly rejected."""
+        storage = YAMLStorage(base_dir=str(tmp_path))
+        await storage.save_model(SlayerModel(
+            name="Consumer", sql_table="Consumer", data_source="test",
+            columns=[_pk(), _t("name")],
+        ))
+        await storage.save_model(SlayerModel(
+            name="Customer", sql_table="Customer", data_source="test",
+            columns=[_pk(), _d("consumerId")],
+            joins=[ModelJoin(target_model="Consumer", join_pairs=[["consumerId", "id"]])],
+        ))
+        # Invoice is NOT saved — it only exists as the inline model passed in.
+        invoice = SlayerModel(
+            name="Invoice", sql_table="Invoice", data_source="test",
+            columns=[_pk(), _d("customerId"), _d("amount")],
+            joins=[ModelJoin(target_model="Customer", join_pairs=[["customerId", "id"]])],
+        )
+        engine = SlayerQueryEngine(storage=storage)
+        query = SlayerQuery(**_amount_query(
+            dimensions=[ColumnRef(name="name", model="Consumer")],
+        ))
+        enriched = await engine._enrich(query=query, model=invoice)  # must not raise
+        assert enriched.dimensions[0].model_name == "Customer__Consumer"
 
 
 class TestPrePassPurity:
