@@ -26,6 +26,7 @@ from typing import Dict, List, Optional, Tuple
 import sqlglot
 from pydantic import BaseModel, Field as PydanticField
 
+from slayer.core.enums import INTEGER_AGGREGATIONS
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.keys import (
     AggregateKey,
@@ -83,7 +84,7 @@ def _infer_aggregated_format(
     if measure_name == "*":
         return NumberFormat(type=NumberFormatType.INTEGER)
 
-    if aggregation in ("count", "count_distinct", "count_distinct_approx"):
+    if aggregation in INTEGER_AGGREGATIONS:
         return NumberFormat(type=NumberFormatType.INTEGER)
 
     if aggregation in ("avg", "weighted_avg", "median"):

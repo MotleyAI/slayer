@@ -310,7 +310,7 @@ class TestUnresolvableRaises:
             slot_id="missing", direction="asc",
             scope=OrderScope.CROSS_MODEL_CTE, phase=Phase.AGGREGATE,
         )
-        env = OrderEnv()
+        env = OrderEnv(dialect=SqlDialect())
         with pytest.raises(OrderSlotNotMaterialisedError) as exc:
             resolve_order_term(entry=entry, env=env)
         assert "missing" in str(exc.value), (
@@ -328,7 +328,7 @@ class TestUnresolvableRaises:
                 slot_id="missing", direction="asc",
                 scope=scope, phase=Phase.AGGREGATE,
             )
-            env = OrderEnv()
+            env = OrderEnv(dialect=SqlDialect())
             with pytest.raises(OrderSlotNotMaterialisedError):
                 resolve_order_term(entry=entry, env=env)
 
@@ -480,3 +480,16 @@ class TestSingleResolver:
             f"on {dialect} the same construct sorts by {rendered['base']} on "
             f"the base path and {rendered['combined']} on the combined path"
         )
+
+
+class TestOrderEnvRequiresDialect:
+    """``OrderEnv.dialect`` is required (DEV-1784 item 19), so no render site
+    can fall back to a silent default dialect's null ordering."""
+
+    def test_env_without_a_dialect_is_rejected(self) -> None:
+        with pytest.raises(pydantic.ValidationError):
+            OrderEnv()  # type: ignore[call-arg]
+
+    def test_uniform_without_a_dialect_is_rejected(self) -> None:
+        with pytest.raises(TypeError):
+            OrderEnv.uniform({})  # type: ignore[call-arg]

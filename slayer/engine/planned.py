@@ -64,6 +64,7 @@ __all__ = [
     "CrossModelAggregatePlan",
     "EmptyBaseGrainPlan",
     "FilterPhase",
+    "FilterReachability",
     "JoinRequirement",
     "OrderEntry",
     "OrderScope",
@@ -505,7 +506,7 @@ class OrderEntry(BaseModel):
     """
 
     slot_id: SlotId
-    direction: str  # "asc" or "desc"
+    direction: Literal["asc", "desc"]
     scope: OrderScope
     phase: Phase
     #: Null-ordering policy. ``"default"`` is NULLs last, which is what SLayer
@@ -515,15 +516,6 @@ class OrderEntry(BaseModel):
     #: emulation, or T-SQL's native pin where the emulation does not run — so
     #: no render site emits a NULLS clause of its own.
     nulls: Literal["default", "first", "last"] = "default"
-
-    @field_validator("direction")
-    @classmethod
-    def _validate_direction(cls, v: str) -> str:
-        if v not in ("asc", "desc"):
-            raise ValueError(
-                f"OrderEntry.direction must be 'asc' or 'desc', got {v!r}"
-            )
-        return v
 
 
 # ---------------------------------------------------------------------------

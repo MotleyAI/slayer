@@ -31,10 +31,14 @@ whole aggregates.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Sequence, Set, Tuple
+from typing import TYPE_CHECKING, Sequence, Set, Tuple
 
 from slayer.core.keys import AggregateKey
 from slayer.engine.aggregate_input_paths import compute_aggregate_input_join_paths
+
+if TYPE_CHECKING:  # pragma: no cover — typing only, keeps the import leaf clean
+    from slayer.engine.planned import ValueSlot
+    from slayer.engine.source_bundle import ResolvedSourceBundle
 
 __all__ = [
     "IsolationKind",
@@ -87,9 +91,9 @@ def may_inline_crossing_inputs(crossed_paths: Sequence[Tuple[str, ...]]) -> bool
 
 def classify_isolation(
     *,
-    slot: Any,
+    slot: "ValueSlot",
     windowed_slot_ids: Set[str],
-    bundle: Any,
+    bundle: "ResolvedSourceBundle",
     disable_host_rooted_isolation: bool = False,
 ) -> IsolationKind:
     """How ``slot`` is compiled. The single trigger decision.
@@ -160,7 +164,7 @@ def classify_isolation(
     return IsolationKind.HOST_ROOTED
 
 
-def _crossing_input_paths(*, key: AggregateKey, bundle: Any) -> list:
+def _crossing_input_paths(*, key: AggregateKey, bundle: "ResolvedSourceBundle") -> list:
     """Join paths a LOCAL aggregate's inputs cross.
 
     A ``Column.filter`` carries its crossings as typed

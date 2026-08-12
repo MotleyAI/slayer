@@ -13,7 +13,7 @@ fields use class-level defaults (``sqlglot_name: str = "postgres"``).
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Literal, Optional
 from collections.abc import Callable
 
 from pydantic import BaseModel, ConfigDict
@@ -228,7 +228,7 @@ class SqlDialect(BaseModel):
         order_col: exp.Expression,
         *,
         descending: bool,
-        nulls: str = "default",
+        nulls: Literal["default", "first", "last"] = "default",
     ) -> exp.Ordered:
         """Build one ``ORDER BY`` term with its null-ordering policy applied.
 

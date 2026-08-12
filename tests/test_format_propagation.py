@@ -3,13 +3,14 @@
 import pytest
 
 from slayer.core.format import NumberFormat, NumberFormatType
-from slayer.core.enums import DataType
+from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType, INTEGER_AGGREGATIONS
 from slayer.core.models import Column, SlayerModel
 from slayer.engine.query_engine import FieldMetadata
 
 # DEV-1485 Stage D: imported through ``query_engine`` while the legacy
 # ``_query_as_model`` re-exported it; now imported from its owning module.
 from slayer.engine.response_meta import _infer_aggregated_format
+from slayer.engine.prebound import aggregated_type
 
 
 # ---------------------------------------------------------------------------
@@ -142,3 +143,62 @@ class TestMcpFormatMeta:
         assert "type=integer" in result
         assert "precision" not in result
         assert "symbol" not in result
+
+
+# ---------------------------------------------------------------------------
+# Drift guard: ``aggregated_type`` (slot DataType) and ``_infer_aggregated_format``
+# (display NumberFormat) both classify aggregations, and the integer bucket is
+# the one classification they MUST agree on. Pinned here against the shared
+# ``INTEGER_AGGREGATIONS`` constant so neither can drift on it. The float /
+# inherit split for stat aggregations legitimately differs (type vs display)
+# and is deliberately left as-is — reconciling it is tracked in DEV-1788.
+# ---------------------------------------------------------------------------
+
+
+class TestIntegerBucketSharedByTypeAndFormat:
+    @pytest.fixture()
+    def model(self):
+        return SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test_ds",
+            columns=[
+                Column(
+                    name="revenue",
+                    sql="amount",
+                    type=DataType.DOUBLE,
+                    format=NumberFormat(type=NumberFormatType.CURRENCY, symbol="€"),
+                ),
+            ],
+        )
+
+    def test_shared_constant_names_only_builtin_aggregations(self):
+        assert INTEGER_AGGREGATIONS <= BUILTIN_AGGREGATIONS
+
+    @pytest.mark.parametrize("aggregation", sorted(INTEGER_AGGREGATIONS))
+    def test_integer_aggs_are_int_type_and_integer_format(self, model, aggregation):
+        assert aggregated_type(
+            model=model, measure_name="revenue", aggregation=aggregation,
+        ) == DataType.INT
+        assert _infer_aggregated_format(
+            model=model, measure_name="revenue", aggregation=aggregation,
+        ).type == NumberFormatType.INTEGER
+
+    def test_star_count_is_int_type_and_integer_format(self, model):
+        assert aggregated_type(
+            model=model, measure_name="*", aggregation="count",
+        ) == DataType.INT
+        assert _infer_aggregated_format(
+            model=model, measure_name="*", aggregation="count",
+        ).type == NumberFormatType.INTEGER
+
+    def test_stat_agg_type_format_divergence_is_pinned(self, model):
+        # stddev is always a float, so the slot TYPE is DOUBLE — but the display
+        # FORMAT still inherits the source column's format (currency here), not
+        # integer/float. This intentional divergence is what DEV-1788 revisits.
+        assert aggregated_type(
+            model=model, measure_name="revenue", aggregation="stddev_samp",
+        ) == DataType.DOUBLE
+        assert _infer_aggregated_format(
+            model=model, measure_name="revenue", aggregation="stddev_samp",
+        ).type == NumberFormatType.CURRENCY

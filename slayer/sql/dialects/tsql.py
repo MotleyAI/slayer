@@ -27,7 +27,7 @@ T-SQL is the most divergent Tier-1 dialect:
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Literal
 from collections.abc import Callable
 
 import sqlglot
@@ -83,7 +83,7 @@ class TsqlDialect(SqlDialect):
         order_col: exp.Expression,
         *,
         descending: bool,
-        nulls: str = "default",
+        nulls: Literal["default", "first", "last"] = "default",
     ) -> exp.Ordered:
         """DEV-1571 Bug 2 / DEV-1716 — pin ``nulls_first`` to T-SQL's native
         default for the direction (FIRST on ASC, LAST on DESC).

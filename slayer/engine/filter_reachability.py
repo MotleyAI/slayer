@@ -56,6 +56,7 @@ from slayer.engine.column_filter_paths import (
     _expand_derived_refs_any_dialect,
     _parse_filter_sql_any_dialect,
 )
+from slayer.engine.planned import FilterReachability
 
 Path = Tuple[str, ...]
 
@@ -391,8 +392,6 @@ def recompute_filter_reachability(planned_query, *, bundle) -> List:
     stored value would still be anchored at the parent root and the two would
     differ.
     """
-    from slayer.engine.planned import FilterReachability
-
     anchor_model = planned_query.render_source_model or bundle.source_model
     anchor_relation = planned_query.source_relation
     cache: dict = {}
