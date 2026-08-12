@@ -144,7 +144,8 @@ def test_cli_import_writes_report_and_models(tmp_path):
     storage = YAMLStorage(base_dir=str(store))
     for name in EXPECTED_MODELS:
         model = run_sync(storage.get_model(name, data_source=DS))
-        assert model is not None and model.name == name
+        assert model is not None
+        assert model.name == name
 
     fp_members = {
         i["member"] for i in data["issues"] if i["category"] == "filter_params_variable"
@@ -191,10 +192,14 @@ async def test_required_bare_optional_blocked_in_sql(tmp_path):
     _, storage, _, _ = await _prepare(tmp_path)
     model = await storage.get_model("order_facts", data_source=DS)
     bare, blocked = extract_variable_refs(model.sql)
-    assert "category" in bare and "category" not in blocked
-    assert "region" in blocked and "region" not in bare
+    assert "category" in bare
+    assert "category" not in blocked
+    assert "region" in blocked
+    assert "region" not in bare
     low = model.sql.lower()
-    assert "orders" in low and "customers" in low and "products" in low
+    assert "orders" in low
+    assert "customers" in low
+    assert "products" in low
 
 
 # --------------------------------------------------------------------------- #
