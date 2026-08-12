@@ -111,6 +111,10 @@ nav = [
       "examples/14_variable_substitution/variable_substitution.md",
       { "Notebook" = "examples/14_variable_substitution/variable_substitution_nb.ipynb" },
     ]},
+    { "Cube Import" = [
+      "examples/15_cube_import/cube_import.md",
+      { "Notebook" = "examples/15_cube_import/cube_import_nb.ipynb" },
+    ]},
     { "Schema Drift (worked example)" = "examples/schema-drift.md" },
   ]},
   { "Configuration" = [

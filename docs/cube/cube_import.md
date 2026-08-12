@@ -22,6 +22,12 @@ to the storage directory, and writes `cube_import_report.json` next to it.
 does not need to exist or be reachable. After importing, run `slayer ingest`
 against a live connection to profile sample values and refine numeric types.
 
+> **Worked example.** [From Cube to SLayer](../examples/15_cube_import/cube_import.md)
+> imports a small jaffle-shop project end-to-end — YAML cubes, a view, and a JS
+> `FILTER_PARAMS` cube — and queries the result. Its
+> [notebook](../examples/15_cube_import/cube_import_nb.ipynb) runs the whole flow
+> offline against a deterministic DuckDB.
+
 ## What gets converted
 
 ### Cubes → models

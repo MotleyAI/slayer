@@ -1,0 +1,29 @@
+# A table-anchored Cube. Becomes a SLayer model bound to the `orders` table,
+# with a join to `customers` the importer turns into a SLayer join.
+cubes:
+  - name: orders
+    sql_table: orders
+    description: One row per order line
+    joins:
+      - name: customers
+        relationship: many_to_one
+        sql: "{CUBE}.customer_id = {customers.customer_id}"
+    measures:
+      - name: count
+        type: count
+      - name: total_amount
+        type: sum
+        sql: "{CUBE}.amount"
+        title: Total Amount
+        format: currency
+    dimensions:
+      - name: order_id
+        sql: "{CUBE}.order_id"
+        type: number
+        primary_key: true
+      - name: status
+        sql: "{CUBE}.status"
+        type: string
+      - name: ordered_at
+        sql: "{CUBE}.ordered_at"
+        type: time
