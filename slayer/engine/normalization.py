@@ -597,6 +597,9 @@ def _apply_malformed_date_range(
             original=f"time_dimensions[{i}].date_range={list(date_range)!r}",
             normalized="(ignored — no date filter emitted)",
             location=f"time_dimensions[{i}].date_range",
+            # Reports but does NOT rewrite (planner silently no-ops the range);
+            # the message must not claim a transform (DEV-1783).
+            rewritten=False,
             # No rule_doc_url: docs/agent_input_slack.md does not exist, and a
             # link to a missing page is worse than no link.
         )

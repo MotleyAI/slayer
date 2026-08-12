@@ -347,6 +347,17 @@ class TsqlDialect(SqlDialect):
         to the base impl — T-SQL will still reject malformed SQL at the
         DB layer, but we don't make it worse.
         """
+        # SQL Server rejects OFFSET without ORDER BY. Synthesize the same no-op
+        # ordering ``apply_pagination`` uses BEFORE branching, so BOTH the AST
+        # path AND the base-impl fallback (a non-Select inner, base.py also
+        # emits a bare OFFSET) receive it. A user's ORDER BY is never replaced —
+        # this only fires when ``order`` is absent (DEV-1783).
+        if order is None and offset_arg is not None:
+            order = exp.Order(expressions=[
+                exp.Ordered(this=exp.Subquery(
+                    this=exp.Select().select(exp.Null()),
+                )),
+            ])
         parse_fn = parse if parse is not None else (
             lambda s: sqlglot.parse_one(s, dialect=self.sqlglot_name)
         )

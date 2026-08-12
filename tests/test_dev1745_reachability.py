@@ -255,6 +255,28 @@ class TestCompositeKeyKindsAreTotal:
         assert ("customers",) in paths, paths
         assert ("customers", "regions") in paths, paths
 
+    def test_aggregate_column_filter_key_is_owner_relative(self) -> None:
+        """DEV-1783 item 1. ``AggregateKey.column_filter_key`` paths are
+        OWNER-relative (anchored at the aggregated column's owner, reached via
+        ``source.path``), so the scan must re-anchor them by prefixing
+        ``source.path``. ``customers.balance:sum`` with a filter on
+        ``regions.name`` must contribute ``("customers","regions")`` — never
+        bare ``("regions",)``, which ``classify_host_filter`` would mis-route."""
+        from slayer.core.keys import SqlExprKey
+
+        key = AggregateKey(
+            agg="sum",
+            source=ColumnKey(path=("customers",), leaf="balance"),
+            column_filter_key=SqlExprKey(
+                canonical_sql="regions.name = 'Alpha'",
+                referenced_join_paths=(("regions",),),
+            ),
+        )
+        paths = _paths_for(key)
+        assert ("customers",) in paths, paths
+        assert ("customers", "regions") in paths, paths
+        assert ("regions",) not in paths, paths
+
     def test_in_values_are_walked_for_crossings(self) -> None:
         """``InKey.values`` are walked by the crossing scan, so a crossing
         reference sitting in the value list is a dependency like any other."""

@@ -227,11 +227,15 @@ def _child_keys(node, *, descend_aggregates: bool = True) -> List:
     if isinstance(node, AggregateKey):
         if not descend_aggregates:
             return []
+        # ``column_filter_key`` is deliberately NOT a plain child: its
+        # ``referenced_join_paths`` are OWNER-relative and must be re-anchored
+        # by prefixing ``source.path``, which ``compute_key_join_paths`` does
+        # explicitly (DEV-1783). Descending it here would record them
+        # anchor-rooted and mis-route the filter.
         return [
             node.source,
             *node.args,
             *(v for _name, v in node.kwargs),
-            node.column_filter_key,
         ]
     if isinstance(node, TransformKey):
         return [
@@ -310,6 +314,16 @@ def compute_key_join_paths(
             anchor_relation=anchor_relation, bundle=bundle, cache=cache,
         ):
             _add(path)
+        if isinstance(node, AggregateKey) and node.column_filter_key is not None:
+            # ``column_filter_key.referenced_join_paths`` are OWNER-relative
+            # (anchored at the aggregated column's owner, reached via
+            # ``source.path``). Re-anchor to the query root by prefixing
+            # ``source.path`` — the reroot visitor leaves the owner in place for
+            # the same reason (keys.py: cfk copied unchanged).
+            source_path = tuple(getattr(node.source, "path", ()) or ())
+            for p in node.column_filter_key.referenced_join_paths:
+                for pre in _prefixes(source_path + tuple(p)):
+                    _add(pre)
         for child in _child_keys(node):
             _walk(child)
 

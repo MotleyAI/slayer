@@ -324,6 +324,54 @@ class TestApplyPaginationHook:
 
 
 # =========================================================================== #
+# DEV-1783 item 2 — the OTHER outer wrap (emit_outer_wrap), which had no guard.
+# =========================================================================== #
+class TestEmitOuterWrapInjectsOrderingForOffset:
+    """``emit_outer_wrap`` (transform-chain / cross-model combined outer wrap)
+    must apply the same OFFSET-needs-ORDER-BY guard ``apply_pagination`` does —
+    SQL Server rejects OFFSET without ORDER BY. The guard must cover the AST
+    path AND the base-impl fallback taken for a non-``Select`` inner."""
+
+    @staticmethod
+    def _offset(n: int) -> exp.Offset:
+        return exp.Offset(expression=exp.Literal.number(n))
+
+    def test_ast_path_injects_ordering_for_a_bare_offset(self) -> None:
+        out = get_dialect("tsql").emit_outer_wrap(
+            inner_sql="SELECT 1 AS a", public=["a"],
+            order=None, limit=None, offset_arg=self._offset(5),
+        )
+        assert re.search(r"\bORDER\s+BY\b", out, re.IGNORECASE), (
+            f"tsql outer-wrap emitted OFFSET without ORDER BY:\n{out}"
+        )
+        assert "OFFSET" in out.upper(), out
+
+    def test_base_fallback_injects_ordering_for_a_bare_offset(self) -> None:
+        """A UNION inner parses to a non-``Select`` and takes the base-impl
+        fallback, which also appends OFFSET with no ORDER BY. The guard runs
+        before branching, so the fallback receives the synthesized ordering."""
+        out = get_dialect("tsql").emit_outer_wrap(
+            inner_sql="SELECT 1 AS a UNION SELECT 2 AS a", public=["a"],
+            order=None, limit=None, offset_arg=self._offset(5),
+        )
+        assert re.search(r"\bORDER\s+BY\b", out, re.IGNORECASE), (
+            f"tsql outer-wrap fallback emitted OFFSET without ORDER BY:\n{out}"
+        )
+
+    def test_user_order_is_never_replaced(self) -> None:
+        user_order = exp.Order(expressions=[
+            exp.Ordered(this=exp.column("a", quoted=True)),
+        ])
+        out = get_dialect("tsql").emit_outer_wrap(
+            inner_sql="SELECT 1 AS a", public=["a"],
+            order=user_order, limit=None, offset_arg=self._offset(5),
+        )
+        assert "SELECT NULL" not in out.upper(), (
+            f"the user's ORDER BY was replaced by the fallback ordering:\n{out}"
+        )
+
+
+# =========================================================================== #
 # Execution — pagination changes row sets, so parse-only is not enough (D5).
 # =========================================================================== #
 class TestPaginationExecution:

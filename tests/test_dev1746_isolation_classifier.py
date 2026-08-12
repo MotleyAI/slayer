@@ -368,3 +368,29 @@ class TestMayInlineSeam:
         assert ScopeFrame.may_inline(
             ScopeFrame.__new__(ScopeFrame), [("customers_v2",)],
         ) is False
+
+
+class TestCrossingInputPathsUnionsFilterAndStructural:
+    """DEV-1783 item 6 — ``_crossing_input_paths`` must UNION a local
+    aggregate's ``Column.filter`` crossings with its structural input crossings
+    (source ``Column.sql`` / args / kwargs). The pre-fix early-return reported
+    the filter paths ALONE, hiding a crossing kwarg from the isolation
+    decision and letting a fan-out-multiplying aggregate inline."""
+
+    def test_filter_and_kwarg_crossings_are_both_reported(self) -> None:
+        from slayer.core.keys import AggregateKey, ColumnKey, SqlExprKey
+
+        key = AggregateKey(
+            agg="sum",
+            source=ColumnKey(path=(), leaf="amount"),
+            kwargs=(("weight", ColumnKey(path=("customers_v2",), leaf="balance")),),
+            column_filter_key=SqlExprKey(
+                canonical_sql="customers_v2__regions.name = 'X'",
+                referenced_join_paths=(("customers_v2", "regions"),),
+            ),
+        )
+        paths = isolation_mod._crossing_input_paths(key=key, bundle=_bundle())
+        assert ("customers_v2", "regions") in paths, paths  # column_filter_key
+        assert ("customers_v2",) in paths, paths            # kwarg — dropped pre-fix
+        # Order-stable + de-duplicated: filter paths first, then structural.
+        assert paths == [("customers_v2", "regions"), ("customers_v2",)], paths
