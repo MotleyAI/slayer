@@ -1636,6 +1636,10 @@ class SQLGenerator:
                 bundle=bundle,
             )
         )
+        # Explicit chain tail: the CTE the next transform step reads from,
+        # tracked directly rather than as ``ctes[-1]`` so an append elsewhere in
+        # the list can never silently retarget where the chain continues.
+        chain_tail = ctes[-1].name
         while pending_layers:
             ready_window: list = []
             ready_time_shift: list = []
@@ -1665,7 +1669,7 @@ class SQLGenerator:
             if ready_window:
                 step_num += 1
                 step_name = cte_allocator.allocate_cte(f"step{step_num}")
-                prev_cte = ctes[-1].name
+                prev_cte = chain_tail
                 carry_aliases = self._carry_aliases_in_plan_order(
                     aliases_by_slot_id,
                 )
@@ -1706,13 +1710,15 @@ class SQLGenerator:
                     query=exp.Select().select(*step_parts).from_(prev_cte),
                     depends_on=[prev_cte],
                 ))
+                chain_tail = step_name
             # --- time_shift layers (each gets shifted_ + sjoin_ pair) -
             for layer in ready_time_shift:
                 for slot_id in layer.slot_ids:
                     slot = slots_by_id[slot_id]
-                    self._emit_time_shift_ctes_for_planned(
+                    chain_tail = self._emit_time_shift_ctes_for_planned(
                         slot=slot,
                         ctes=ctes,
+                        chain_tail=chain_tail,
                         cte_allocator=cte_allocator,
                         slots_by_id=slots_by_id,
                         slot_id_by_key=slot_id_by_key,
@@ -1729,9 +1735,10 @@ class SQLGenerator:
             for layer in ready_cp:
                 for slot_id in layer.slot_ids:
                     slot = slots_by_id[slot_id]
-                    self._emit_consecutive_periods_ctes_for_planned(
+                    chain_tail = self._emit_consecutive_periods_ctes_for_planned(
                         slot=slot,
                         ctes=ctes,
+                        chain_tail=chain_tail,
                         cte_allocator=cte_allocator,
                         slots_by_id=slots_by_id,
                         slot_id_by_key=slot_id_by_key,
@@ -1767,7 +1774,7 @@ class SQLGenerator:
         if unmaterialised:
             step_num += 1
             step_name = cte_allocator.allocate_cte(f"step{step_num}")
-            prev_cte = ctes[-1].name
+            prev_cte = chain_tail
             carry_aliases = self._carry_aliases_in_plan_order(
                 aliases_by_slot_id,
             )
@@ -1780,8 +1787,8 @@ class SQLGenerator:
                 )
                 full_alias = f"{source_relation}.{alias}"
                 rendered = render_value_key(
-                    cslot.key,
-                    RenderContext(
+                    key=cslot.key,
+                    ctx=RenderContext(
                         dialect=self._dialect,
                         aliases=AliasFacilities(
                             slot_id_by_key=slot_id_by_key,
@@ -1803,11 +1810,12 @@ class SQLGenerator:
                 query=exp.Select().select(*step_parts).from_(prev_cte),
                 depends_on=[prev_cte],
             ))
+            chain_tail = step_name
 
         # Inner SELECT inside _outer wrap: ALL carried aliases sorted
         # in PLAN order (B8 — this list used to be sorted alphabetically to
         # match the legacy renderer byte-for-byte).
-        final_cte = ctes[-1].name
+        final_cte = chain_tail
         inner_aliases = self._carry_aliases_in_plan_order(aliases_by_slot_id)
         inner_select = exp.Select().select(
             *(exp.column(a, quoted=True) for a in inner_aliases),
@@ -2678,8 +2686,8 @@ class SQLGenerator:
                     # embeds its expanded join-anchored expression instead of a
                     # bare, non-existent name.
                     composite = render_value_key(
-                        key,
-                        RenderContext(
+                        key=key,
+                        ctx=RenderContext(
                             dialect=self._dialect,
                             composites=CompositeFacilities(
                                 agg_builder=self._composite_agg_builder(
@@ -3976,7 +3984,7 @@ class SQLGenerator:
                 )
                 continue
             cte_name = cte_name_from_alias(
-                "_cm_", canonical_alias, allocator=cm_allocator,
+                prefix="_cm_", alias=canonical_alias, allocator=cm_allocator,
             )
             cm_cte_name_by_identity[identity] = cte_name
             cm_cte_name_for_plan[plan.aggregate_slot_id] = cte_name
@@ -4040,7 +4048,7 @@ class SQLGenerator:
                 slot=agg_slot, source_relation=source_relation, alias_index={},
             )
             cte_name = cte_name_from_alias(
-                "_wm_", full_agg_alias, allocator=wm_allocator,
+                prefix="_wm_", alias=full_agg_alias, allocator=wm_allocator,
             )
             cte_query, grain_aliases = self._render_window_measure_cte_from_planned(
                 plan=plan, agg_slot=agg_slot, source_model=source_model,
@@ -4076,7 +4084,7 @@ class SQLGenerator:
                 slot=agg_slot, source_relation=source_relation, alias_index={},
             )
             cte_name = cte_name_from_alias(
-                RANKED_CTE_PREFIX, full_agg_alias, allocator=rk_allocator,
+                prefix=RANKED_CTE_PREFIX, alias=full_agg_alias, allocator=rk_allocator,
             )
             cte_query, grain_aliases = self._render_ranked_cte_from_planned(
                 plan=plan, agg_slot=agg_slot, bundle=bundle,
@@ -4180,8 +4188,8 @@ class SQLGenerator:
 
             def _render_outer_composite(cslot) -> exp.Expression:
                 rendered = render_value_key(
-                    cslot.key,
-                    RenderContext(
+                    key=cslot.key,
+                    ctx=RenderContext(
                         dialect=self._dialect,
                         aliases=self._outer_wrapper_alias_facilities(
                             slot_by_key=slot_by_key,
@@ -4491,8 +4499,8 @@ class SQLGenerator:
                 )
             for fp in outer_where_filters:
                 rendered = render_value_key(
-                    fp.expression.value_key,
-                    RenderContext(
+                    key=fp.expression.value_key,
+                    ctx=RenderContext(
                         dialect=self._dialect,
                         aliases=self._outer_wrapper_alias_facilities(
                             slot_by_key=slot_by_key,
@@ -4527,8 +4535,8 @@ class SQLGenerator:
                 if fp.phase != Phase.POST or fp.expression is None:
                     continue
                 rendered = render_value_key(
-                    fp.expression.value_key,
-                    RenderContext(
+                    key=fp.expression.value_key,
+                    ctx=RenderContext(
                         dialect=self._dialect,
                         aliases=self._outer_wrapper_alias_facilities(
                             slot_by_key=slot_by_key,
@@ -4735,6 +4743,9 @@ class SQLGenerator:
         # Window-transform Kahn batches (one step CTE per ready batch).
         pending_layers = list(planned_query.transform_layers)
         step_num = 0
+        # Explicit chain tail (see the host transform chain above): the CTE the
+        # next step reads from, tracked directly instead of as ``ctes[-1]``.
+        chain_tail = ctes[-1].name
         while pending_layers:
             ready: list = []
             not_ready: list = []
@@ -4757,7 +4768,7 @@ class SQLGenerator:
                 )
             step_num += 1
             step_name = cte_allocator.allocate_cte(f"step{step_num}")
-            prev_cte = ctes[-1].name
+            prev_cte = chain_tail
             carry_aliases = self._carry_aliases_in_plan_order(
                 aliases_by_slot_id,
             )
@@ -4792,6 +4803,7 @@ class SQLGenerator:
                 query=exp.Select().select(*step_parts).from_(prev_cte),
                 depends_on=[prev_cte],
             ))
+            chain_tail = step_name
             pending_layers = not_ready
 
         # Materialise any projected POST-phase ArithmeticKey / ScalarCallKey
@@ -4812,7 +4824,7 @@ class SQLGenerator:
         if unmaterialised:
             step_num += 1
             step_name = cte_allocator.allocate_cte(f"step{step_num}")
-            prev_cte = ctes[-1].name
+            prev_cte = chain_tail
             carry_aliases = self._carry_aliases_in_plan_order(
                 aliases_by_slot_id,
             )
@@ -4825,8 +4837,8 @@ class SQLGenerator:
                 )
                 full_alias = f"{source_relation}.{alias}"
                 rendered = render_value_key(
-                    cslot.key,
-                    RenderContext(
+                    key=cslot.key,
+                    ctx=RenderContext(
                         dialect=self._dialect,
                         aliases=AliasFacilities(
                             slot_id_by_key=slot_id_by_key,
@@ -4844,8 +4856,9 @@ class SQLGenerator:
                 query=exp.Select().select(*step_parts).from_(prev_cte),
                 depends_on=[prev_cte],
             ))
+            chain_tail = step_name
 
-        final_cte = ctes[-1].name
+        final_cte = chain_tail
         inner_aliases = self._carry_aliases_in_plan_order(aliases_by_slot_id)
         inner_select = exp.Select().select(
             *(exp.column(a, quoted=True) for a in inner_aliases),
@@ -5738,7 +5751,7 @@ class SQLGenerator:
                 target_relation=target_relation,
                 target_model=target_model,
             )
-            parts.append(render_value_key(local_key, ctx))
+            parts.append(render_value_key(key=local_key, ctx=ctx))
         if not parts:
             return None
         return exp.and_(*parts) if len(parts) > 1 else parts[0]
@@ -6101,8 +6114,8 @@ class SQLGenerator:
 
         if isinstance(key.input, (_ArithKey, _ScalarKey)):
             measure = render_value_key(
-                key.input,
-                RenderContext(
+                key=key.input,
+                ctx=RenderContext(
                     dialect=self._dialect,
                     aliases=AliasFacilities(
                         slot_id_by_key=slot_id_by_key,
@@ -6330,8 +6343,8 @@ class SQLGenerator:
                     f"expression; text-only POST filters are not supported.",
                 )
             rendered = render_value_key(
-                fp.expression.value_key,
-                RenderContext(
+                key=fp.expression.value_key,
+                ctx=RenderContext(
                     dialect=self._dialect,
                     aliases=AliasFacilities(
                         slot_id_by_key=slot_id_by_key,
@@ -6523,8 +6536,8 @@ class SQLGenerator:
             if residual is None:
                 return None  # wholly a frame bound — omit from the shifted CTE.
             rendered = render_value_key(
-                residual,
-                self._filter_render_context(
+                key=residual,
+                ctx=self._filter_render_context(
                     source_model=source_model,
                     source_relation=source_relation,
                     bundle=bundle,
@@ -6569,9 +6582,13 @@ class SQLGenerator:
         shifted_where_join_paths: List[Tuple[str, ...]],
         planned_query,
         bundle,
-    ) -> None:
+        chain_tail: str,
+    ) -> str:
         """Emit a ``shifted_<alias>`` + ``sjoin_<alias>`` CTE pair for
         one time_shift transform slot.
+
+        Returns the name of the ``sjoin_`` CTE — the new chain tail the caller
+        continues from.
 
         Legacy reference: ``slayer/sql/generator.py::_generate_shifted_base``
         and the sjoin assembly inside ``_generate_with_computed:1546``.
@@ -6933,7 +6950,7 @@ class SQLGenerator:
         # partition equalities. Carry every prev_cte alias forward,
         # then add the shifted measure under EACH of the slot's public
         # aliases (DEV-1450 C13).
-        prev_cte = ctes[-2].name  # the CTE just before the shifted CTE
+        prev_cte = chain_tail  # the chain tail this pair extends
         carry_aliases = self._carry_aliases_in_plan_order(
             aliases_by_slot_id,
         )
@@ -6984,6 +7001,7 @@ class SQLGenerator:
             aliases_by_slot_id.setdefault(slot.id, []).append(full_slot_alias)
         # ``available_alias_by_slot_id`` is "pick one" — first alias wins.
         available_alias_by_slot_id.setdefault(slot.id, slot_full_aliases[0])
+        return sjoin_cte_name
 
     def _emit_consecutive_periods_ctes_for_planned(  # NOSONAR(S3776) — one cohesive per-slot consecutive_periods emission: predicate-shape decision, unique hidden alias plus collision-safe reset and value CTE names, the reset-group window layer, then the count-within-group window layer. Each block shares the slot registry and alias maps and cte_allocator; extracting helpers would scatter that contract without simplifying it.
         self,
@@ -6997,9 +7015,13 @@ class SQLGenerator:
         aliases_by_slot_id: Dict[str, List[str]],
         planned_query,
         source_relation: str,
-    ) -> None:
+        chain_tail: str,
+    ) -> str:
         """Emit ``cp_reset_<alias>`` + ``cp_value_<alias>`` CTEs for one
         consecutive_periods transform slot.
+
+        Returns the name of the ``cp_value_`` CTE — the new chain tail the
+        caller continues from.
 
         Supersedes the legacy ``_build_consecutive_periods_ctes`` (deleted
         with the enrichment stack in DEV-1485). The typed implementation
@@ -7079,8 +7101,8 @@ class SQLGenerator:
                     f"a follow-up slice (slot id={slot.id!r}).",
                 )
             predicate = render_value_key(
-                inner_key,
-                RenderContext(
+                key=inner_key,
+                ctx=RenderContext(
                     dialect=self._dialect,
                     aliases=AliasFacilities(
                         slot_id_by_key=slot_id_by_key,
@@ -7130,7 +7152,7 @@ class SQLGenerator:
         cp_reset_alias = f"_cp_reset_{full_slot_alias}"
 
         # Build the reset CTE.
-        prev_cte = ctes[-1].name
+        prev_cte = chain_tail
         carry_aliases = self._carry_aliases_in_plan_order(
             aliases_by_slot_id,
         )
@@ -7204,6 +7226,7 @@ class SQLGenerator:
         # Record the slot's alias for downstream lookups.
         aliases_by_slot_id.setdefault(slot.id, []).append(full_slot_alias)
         available_alias_by_slot_id.setdefault(slot.id, full_slot_alias)
+        return cp_value_cte_name
 
     @staticmethod
     def _pick_alias_for_planned_slot(*, slot, alias_index: dict) -> str:
@@ -8173,8 +8196,8 @@ class SQLGenerator:
                 # Thread ``aliases_by_slot_id`` so the synth's ``full_alias``
                 # matches the materialised spec's alias.
                 rendered = render_value_key(
-                    fp.expression.value_key,
-                    self._filter_render_context(
+                    key=fp.expression.value_key,
+                    ctx=self._filter_render_context(
                         source_model=source_model,
                         source_relation=source_relation,
                         bundle=bundle,

@@ -218,7 +218,7 @@ class TestOptionalScopeFailsClosed:
     def test_scope_needing_key_raises_when_scope_absent(self, label, key) -> None:
         ctx = RenderContext(scope=None, dialect=get_dialect("postgres"))
         with pytest.raises(RenderContextMissingFacilityError):
-            render_value_key(key, ctx)
+            render_value_key(key=key, ctx=ctx)
 
 
 class TestScopeFrameColumnType:
@@ -308,7 +308,7 @@ class TestFilterCastColumnSql:
             scope=_scope(), dialect=get_dialect("postgres"),
             filters=FilterFacilities(**facilities),
         )
-        return render_value_key(key, ctx)
+        return render_value_key(key=key, ctx=ctx)
 
     def test_cast_wraps_a_non_temporal_derived_leaf(self) -> None:
         out = self._out(_NET, cast_column_sql=True)
@@ -326,7 +326,7 @@ class TestFilterCastColumnSql:
 
     def test_no_cast_without_filter_facility(self) -> None:
         ctx = RenderContext(scope=_scope(), dialect=get_dialect("postgres"))
-        out = render_value_key(_NET, ctx)
+        out = render_value_key(key=_NET, ctx=ctx)
         assert not isinstance(out, exp.Cast), _emit(out)
 
 
@@ -359,7 +359,7 @@ class TestAggregateBranchPrecedence:
             filters=FilterFacilities(agg_builder=filt_builder),
             composites=CompositeFacilities(),
         )
-        out = render_value_key(key, ctx)
+        out = render_value_key(key=key, ctx=ctx)
         assert out.name == "orders.rev", _emit(out)
         assert calls == [], "filter builder must not run when aliases resolve it"
 
@@ -379,7 +379,7 @@ class TestAggregateBranchPrecedence:
             filters=FilterFacilities(agg_builder=filt_builder),
             composites=CompositeFacilities(agg_builder=comp_builder),
         )
-        assert _emit(render_value_key(key, ctx)) == "FILTER"
+        assert _emit(render_value_key(key=key, ctx=ctx)) == "FILTER"
 
     def test_composite_builder_used_when_no_filter_builder(self) -> None:
         from slayer.sql.render.value_expr import CompositeFacilities
@@ -389,7 +389,7 @@ class TestAggregateBranchPrecedence:
             scope=_scope(), dialect=get_dialect("postgres"),
             composites=CompositeFacilities(agg_builder=lambda k: exp.column("COMPOSITE")),
         )
-        assert _emit(render_value_key(key, ctx)) == "COMPOSITE"
+        assert _emit(render_value_key(key=key, ctx=ctx)) == "COMPOSITE"
 
     def test_builtin_fallback_when_no_builder(self) -> None:
         from slayer.sql.render.value_expr import CompositeFacilities
@@ -399,7 +399,7 @@ class TestAggregateBranchPrecedence:
             scope=_scope(), dialect=get_dialect("postgres"),
             composites=CompositeFacilities(),
         )
-        assert _emit(render_value_key(key, ctx)) == "SUM(orders.amount)"
+        assert _emit(render_value_key(key=key, ctx=ctx)) == "SUM(orders.amount)"
 
 
 class TestParenComparisonOperands:
@@ -428,7 +428,7 @@ class TestParenComparisonOperands:
             scope=_scope(), dialect=get_dialect("postgres"),
             filters=FilterFacilities(paren_comparison_operands=True),
         )
-        assert _emit(render_value_key(self._cmp_key(), ctx)) == \
+        assert _emit(render_value_key(key=self._cmp_key(), ctx=ctx)) == \
             "(orders.amount + 1) > 5"
 
     def test_flag_off_uses_minimal_grouping(self) -> None:
@@ -436,12 +436,12 @@ class TestParenComparisonOperands:
             scope=_scope(), dialect=get_dialect("postgres"),
             filters=FilterFacilities(paren_comparison_operands=False),
         )
-        assert _emit(render_value_key(self._cmp_key(), ctx)) == \
+        assert _emit(render_value_key(key=self._cmp_key(), ctx=ctx)) == \
             "orders.amount + 1 > 5"
 
     def test_no_filter_facility_uses_minimal_grouping(self) -> None:
         ctx = RenderContext(scope=_scope(), dialect=get_dialect("postgres"))
-        assert _emit(render_value_key(self._cmp_key(), ctx)) == \
+        assert _emit(render_value_key(key=self._cmp_key(), ctx=ctx)) == \
             "orders.amount + 1 > 5"
 
 
@@ -485,7 +485,7 @@ class TestFilterAggBuilderSeam:
             slot_by_key={key: slot},
             aliases_by_slot_id={"s1": ["orders.q"]},
         )
-        render_value_key(key, ctx)
+        render_value_key(key=key, ctx=ctx)
         assert recorded["slot"] is slot
         assert recorded["having_full_alias"] == "orders.q"
 
@@ -496,7 +496,7 @@ class TestFilterAggBuilderSeam:
             slot_by_key={key: slot},
             aliases_by_slot_id={},
         )
-        render_value_key(key, ctx)
+        render_value_key(key=key, ctx=ctx)
         assert recorded["having_full_alias"] == "__having_ref__"
 
     def test_empty_alias_list_falls_back_to_placeholder(self) -> None:
@@ -509,20 +509,20 @@ class TestFilterAggBuilderSeam:
             slot_by_key={key: slot},
             aliases_by_slot_id={"s1": []},
         )
-        render_value_key(key, ctx)
+        render_value_key(key=key, ctx=ctx)
         assert recorded["having_full_alias"] == "__having_ref__"
 
     def test_no_slot_passes_none_and_placeholder(self) -> None:
         key = self._key()
         ctx, recorded = self._ctx(slot_by_key={}, aliases_by_slot_id={})
-        render_value_key(key, ctx)
+        render_value_key(key=key, ctx=ctx)
         assert recorded["slot"] is None
         assert recorded["having_full_alias"] == "__having_ref__"
 
     def test_builder_output_is_returned(self) -> None:
         key = self._key()
         ctx, _ = self._ctx(slot_by_key={}, aliases_by_slot_id={})
-        assert _emit(render_value_key(key, ctx)) == "SENTINEL"
+        assert _emit(render_value_key(key=key, ctx=ctx)) == "SENTINEL"
 
 
 _SLOTTED_KINDS = {
@@ -559,23 +559,23 @@ class TestAliasExclusiveMode:
     @pytest.mark.parametrize("label", sorted(_SLOTTED_KINDS))
     def test_every_slotted_kind_resolves_by_alias_without_scope(self, label) -> None:
         key = _SLOTTED_KINDS[label]
-        out = render_value_key(key, self._ctx(key))
+        out = render_value_key(key=key, ctx=self._ctx(key))
         assert isinstance(out, exp.Column), f"{label}: {type(out).__name__}"
         assert out.name == "orders.rev", f"{label}: {_emit(out)}"
 
     def test_bare_alias_when_no_table_qualifier(self) -> None:
         key = ColumnKey(leaf="amount")
-        out = render_value_key(key, self._ctx(key))
+        out = render_value_key(key=key, ctx=self._ctx(key))
         assert _emit(out) == '"orders.rev"', _emit(out)
 
     def test_base_qualified_alias(self) -> None:
         key = ColumnKey(leaf="amount")
-        out = render_value_key(key, self._ctx(key, table="_base"))
+        out = render_value_key(key=key, ctx=self._ctx(key, table="_base"))
         assert _emit(out) == '_base."orders.rev"', _emit(out)
 
     def test_cross_model_cte_qualifier(self) -> None:
         key = AggregateKey(source=ColumnKey(leaf="amount"), agg="sum")
-        out = render_value_key(key, self._ctx(key, table="_cm_x"))
+        out = render_value_key(key=key, ctx=self._ctx(key, table="_cm_x"))
         assert _emit(out) == '_cm_x."orders.rev"', _emit(out)
 
     @pytest.mark.parametrize("label", sorted(_SLOTTED_KINDS))
@@ -583,7 +583,7 @@ class TestAliasExclusiveMode:
         key = _SLOTTED_KINDS[label]
         ctx = self._ctx(key, present=False)
         with pytest.raises(RenderContextMissingFacilityError):
-            render_value_key(key, ctx)
+            render_value_key(key=key, ctx=ctx)
 
     def test_miss_does_not_fall_back_to_scope(self) -> None:
         """A miss is a promotion bug, not a cue to rebuild from source — even
@@ -592,7 +592,7 @@ class TestAliasExclusiveMode:
         key = ColumnKey(leaf="amount")
         ctx = self._ctx(key, present=False, scope=_scope())
         with pytest.raises(RenderContextMissingFacilityError):
-            render_value_key(key, ctx)
+            render_value_key(key=key, ctx=ctx)
 
 
 class TestMixedCaseShiftedCteParity:

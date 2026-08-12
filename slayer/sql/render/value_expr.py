@@ -75,6 +75,9 @@ from slayer.sql.render.aggregates import (
     is_builtin_agg,
     resolve_agg_entry,
 )
+# DEV-1784: single log-alias policy — defined once in parse.py, re-exported
+# under this module's historical name for render_scalar_call and the generator.
+from slayer.sql.render.parse import rewrite_log_aliases as rewrite_log_alias
 from slayer.sql.scope import ScopeFrame
 
 # Arithmetic / comparison / boolean operators, as sqlglot node classes. One
@@ -477,7 +480,7 @@ def _fold_binary(
 
 
 def render_arithmetic(
-    op: str, operands: List[exp.Expression],
+    *, op: str, operands: List[exp.Expression],
 ) -> exp.Expression:
     """Compose an arithmetic / comparison / boolean operator.
 
@@ -543,33 +546,6 @@ def render_scalar_call(
         return exp.Like(this=args[0], expression=args[1])
     node = dialect.rewrite_target_ast(exp.func(name.upper(), *args))
     return rewrite_log_alias(node, dialect=dialect)
-
-
-def rewrite_log_alias(
-    node: exp.Expression, *, dialect: SqlDialect,
-) -> exp.Expression:
-    """The single log-alias policy: a 2-arg ``LOG(10|2, x)`` becomes the
-    dialect's native single-arg ``log10`` / ``log2`` where one exists.
-
-    Shared with the generator, which applies it over parsed trees. Two copies
-    of this rule would reintroduce exactly the drift this module removes.
-    """
-    if not isinstance(node, exp.Log):
-        return node
-    base = node.args.get("this")
-    arg = node.args.get("expression")
-    if arg is None or not isinstance(base, exp.Literal) or base.is_string:
-        return node
-    try:
-        base_val = float(base.this)
-    except (TypeError, ValueError):
-        return node
-    for candidate in (10, 2):
-        if base_val == candidate and dialect.should_use_native_log(candidate):
-            return exp.Anonymous(
-                this=f"log{candidate}", expressions=[arg.copy()],
-            )
-    return node
 
 
 def _render_filter_aggregate(
@@ -690,7 +666,7 @@ def _render_builtin_aggregate(  # NOSONAR(S3776) — sequential fail-closed guar
 
 
 def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed ValueKey union; each branch IS that type's render contract, and splitting them is exactly the fragmentation this module removes.
-    key: ValueKey, ctx: RenderContext,
+    *, key: ValueKey, ctx: RenderContext,
 ) -> exp.Expression:
     """Render ``key`` to sqlglot AST in ``ctx``."""
     # ALIAS-EXCLUSIVE mode: when a scope projected these earlier, the five
@@ -750,7 +726,7 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
 
     if isinstance(key, ArithmeticKey):
         op = key.op.lower()
-        operands = [render_value_key(o, ctx) for o in key.operands]
+        operands = [render_value_key(key=o, ctx=ctx) for o in key.operands]
         # Filter families keep the DEV-1539 extra grouping: every multi-term
         # COMPARISON operand is parenthesised (strictly more than the composer
         # derives). Pre-wrapping makes each operand self-delimiting.
@@ -760,11 +736,11 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
             and op in _COMPARISON_OPS
         ):
             operands = [_paren_if_binary(o) for o in operands]
-        return render_arithmetic(op, operands)
+        return render_arithmetic(op=op, operands=operands)
 
     if isinstance(key, ScalarCallKey):
         args = [
-            render_value_key(a, ctx)
+            render_value_key(key=a, ctx=ctx)
             if isinstance(a, _VALUE_KEY_TYPES)
             else _literal(a)
             for a in key.args
@@ -775,9 +751,9 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
 
     if isinstance(key, BetweenKey):
         return exp.Between(
-            this=render_value_key(key.column, ctx),
-            low=render_value_key(key.low, ctx),
-            high=render_value_key(key.high, ctx),
+            this=render_value_key(key=key.column, ctx=ctx),
+            low=render_value_key(key=key.low, ctx=ctx),
+            high=render_value_key(key=key.high, ctx=ctx),
         )
 
     if isinstance(key, InKey):
@@ -790,7 +766,7 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
                 "IS NOT NULL.",
             )
         node = exp.In(
-            this=render_value_key(key.column, ctx),
+            this=render_value_key(key=key.column, ctx=ctx),
             expressions=[_literal(v.value) for v in key.values],
         )
         return exp.Not(this=node) if key.negated else node
