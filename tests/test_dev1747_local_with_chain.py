@@ -151,11 +151,9 @@ class TestWithChainAssembly:
 # Group 2 — no render-to-text-and-re-parse (PR 3's lesson 1)
 # ---------------------------------------------------------------------------
 class TestNoTextRoundTrip:
-    async def test_window_transform_renderer_returns_ast(self) -> None:
-        """``_render_window_transform_sql`` returns a string today, which is
-        what forces a parse at the assembler seam."""
-
-
+    def test_window_transform_renderer_returns_ast(self) -> None:
+        """``_render_window_transform_sql`` must hand back AST, not a SQL
+        string — a string body forces a parse at the assembler seam (D8)."""
         signature = inspect.signature(SQLGenerator._render_window_transform_sql)
         assert signature.return_annotation is not str, (
             "the window transform renderer must hand back AST so the local "

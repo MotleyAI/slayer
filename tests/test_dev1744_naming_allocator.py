@@ -1011,6 +1011,8 @@ _MATRIX: List[tuple] = [
 # returns None there (it falls through to its own formula-text sanitiser,
 # which is NOT part of the aggregate-alias contract and stays in
 # stage_planner).
+# ``model_copy(update=...)`` deliberately bypasses validation: a TimeTruncKey
+# source is outside ``_AggregateSource`` and normal construction would reject it.
 _MISSING_LEAF_KEY = AggregateKey(
     source=ColumnKey(leaf="x"), agg="sum",
 ).model_copy(

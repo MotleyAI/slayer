@@ -1182,7 +1182,7 @@ class TestCrossModelRenameFilters:
             f"aggregate:\n{sql}"
         )
         # Never a WHERE against a column that doesn't exist on the base table.
-        assert "orders.cust_rev > 100" not in sql, (
+        assert "orders.cust_rev > 100" not in _norm(sql), (
             f"the filter must not be emitted against a non-existent base-table "
             f"column:\n{sql}"
         )

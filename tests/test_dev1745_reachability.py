@@ -274,14 +274,16 @@ class TestCompositeKeyKindsAreTotal:
         assert ("customers", "regions") in paths, paths
         assert ("regions",) not in paths, paths
 
-    def test_in_values_are_walked_for_crossings(self) -> None:
-        """``InKey.values`` are walked by the crossing scan, so a crossing
-        reference sitting in the value list is a dependency like any other."""
+    def test_in_key_column_crossing_is_walked(self) -> None:
+        """An ``InKey`` is walked by the crossing scan: a crossing COLUMN
+        contributes its hop. ``values`` is ``Tuple[LiteralKey, ...]`` — literals
+        cross nothing — so the crossing can only ride on the column; the old
+        host-local shape crossed nothing whatever the scan did (vacuous)."""
         key = InKey(
-            column=ColumnKey(path=(), leaf="amount"),
+            column=ColumnKey(path=("customers",), leaf="balance"),
             values=(LiteralKey(value=1),),
         )
-        assert _paths_for(key) == ()
+        assert ("customers",) in _paths_for(key)
 
     def test_literal_crosses_nothing(self) -> None:
         assert _paths_for(LiteralKey(value=1)) == ()
@@ -449,8 +451,6 @@ class TestInlineScalarsAreNotReferences:
         """``price:percentile(p=0.9)`` normalises 0.9 to a Decimal and puts it
         in AggregateKey.kwargs. Rejecting it took down planning for every
         filter over a parametric aggregate."""
-        from decimal import Decimal
-
         key = AggregateKey(
             source=ColumnKey(path=("customers",), leaf="balance"),
             agg="percentile",
@@ -526,12 +526,10 @@ class TestCoordinateSystemInvariant:
     def test_nested_plan_recomputes_rather_than_inherits(self) -> None:
         """The nested (rerooted) plan a cross-model CTE compiles must carry its
         OWN summary, not the parent's."""
-        from slayer.core.query import SlayerQuery
         from slayer.engine.filter_reachability import (
             filter_reachability_for,
             recompute_filter_reachability,
         )
-        from slayer.engine.stage_planner import plan_query
 
         host = _orders()
         host.columns.append(

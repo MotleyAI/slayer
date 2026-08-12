@@ -22,6 +22,7 @@ migration does not quietly re-introduce a render-time derivation.
 from __future__ import annotations
 
 import pytest
+from sqlglot import exp
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, ModelJoin, SlayerModel
@@ -29,8 +30,9 @@ from slayer.core.query import SlayerQuery
 from slayer.engine.planned import PlannedQuery
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import plan_query
+from slayer.sql.generator import SQLGenerator
 
-from tests._engine_helpers import _norm, _engine_generate
+from tests._engine_helpers import _engine_generate, _outer_select
 
 
 # --------------------------------------------------------------------------- #
@@ -89,8 +91,6 @@ class TestPlanCarriesOuterWhereRouting:
         """A DECLARED Pydantic field, not merely an attribute — ``model_copy``
         can graft an undeclared key onto an instance, so ``hasattr`` alone
         would not prove the schema owns it."""
-        from slayer.engine.planned import PlannedQuery
-
         assert "outer_where_filter_ids" in PlannedQuery.model_fields, (
             "PlannedQuery must DECLARE the outer-WHERE routing field decided "
             f"at plan time; fields are {sorted(PlannedQuery.model_fields)}"
@@ -132,17 +132,29 @@ class TestGeneratorConsumesThePlanVerbatim:
             validate=False, extra_models=[_customers()],
         )
 
-    # The predicate applied to the JOINED-BACK ``_cm_`` column on the outer,
-    # non-aggregating SELECT — the shape this routing exists to produce, and
-    # one nothing else in the query emits.
-    # Whitespace-normalised: the combined statement is emitted by sqlglot's
-    # printer, which breaks after ``WHERE``. The claim is about the predicate
-    # landing on the outer SELECT against the joined-back column, not layout.
-    OUTER_WHERE = 'WHERE _cm_orders__eu_amount_sum."orders.eu" > 100'
+    @staticmethod
+    def _has_outer_cm_where(sql: str) -> bool:
+        """True iff the OUTERMOST SELECT filters the joined-back ``_cm_`` measure
+        ``orders.eu`` with ``> 100`` — the routed outer WHERE. Matched by
+        STRUCTURE, not by the generated ``_cm_`` alias spelling, so an
+        alias-naming change cannot make the negative assertion pass vacuously."""
+        where = _outer_select(sql).args.get("where")
+        if where is None:
+            return False
+        for gt in where.this.find_all(exp.GT):
+            col = gt.this
+            if (
+                isinstance(col, exp.Column)
+                and col.name == "orders.eu"
+                and col.table.startswith("_cm_")
+                and gt.expression == exp.Literal.number(100)
+            ):
+                return True
+        return False
 
     async def test_outer_where_is_emitted_for_the_isolated_shape(self) -> None:
         sql = await self._sql(_outer_where_query())
-        assert self.OUTER_WHERE in _norm(sql), sql
+        assert self._has_outer_cm_where(sql), sql
 
     async def test_clearing_the_plan_field_removes_the_outer_where(self) -> None:
         """P-D: the plan is authoritative. A generator that re-walks the
@@ -155,8 +167,6 @@ class TestGeneratorConsumesThePlanVerbatim:
         that ``> 100`` vanish from the whole query would be demanding that a
         filter be silently dropped.
         """
-        from slayer.sql.generator import SQLGenerator
-
         planned = plan_query(query=_outer_where_query(), bundle=_bundle())
         assert list(planned.outer_where_filter_ids) == ["f0"], (
             "precondition: the plan must be POPULATED before clearing, "
@@ -165,7 +175,7 @@ class TestGeneratorConsumesThePlanVerbatim:
         cleared = planned.model_copy(update={"outer_where_filter_ids": []})
         gen = SQLGenerator(dialect="postgres")
         sql = gen.generate_from_planned(planned_query=cleared, bundle=_bundle())
-        assert self.OUTER_WHERE not in _norm(sql), (
+        assert not self._has_outer_cm_where(sql), (
             "the generator re-derived the outer-WHERE routing instead of "
             f"consuming the plan:\n{sql}"
         )

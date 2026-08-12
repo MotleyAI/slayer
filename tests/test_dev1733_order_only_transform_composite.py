@@ -1011,10 +1011,10 @@ class TestWindowedStillGuarded:
 
 
 # ===========================================================================
-# Group 8 — shapes that must KEEP raising. Widening the hidden-order branch
-# must not swallow the Stage-8 rejections.
+# Group 8 — widening the hidden-order branch must not cross its boundaries:
+# some shapes must KEEP raising; the newly-resolved ones must not change grain.
 # ===========================================================================
-class TestStillRejected:
+class TestStillGuarded:
     async def test_joined_row_column_order_resolves_host_rooted(
         self, engine,
     ) -> None:
@@ -1033,6 +1033,18 @@ class TestStillRejected:
         assert [e.alias_or_name for e in parsed.expressions] == [
             "orders.status", "orders._count",
         ], sql
+        # Grain unchanged: the base CTE still groups on the query dim only —
+        # the joined sort key did NOT widen the base GROUP BY nor join the base.
+        base_cte = next(
+            (c.this for c in sqlglot.parse_one(sql, dialect="sqlite").find_all(exp.CTE)
+             if c.alias == "_base"), None,
+        )
+        assert base_cte is not None, f"expected a `_base` CTE.\nSQL:\n{sql}"
+        group = base_cte.args.get("group")
+        assert group is not None, f"`_base` has no GROUP BY.\nSQL:\n{sql}"
+        assert [g.name for g in group.expressions] == ["status"], (
+            f"base GROUP BY grain widened past the query dims.\nSQL:\n{sql}"
+        )
 
     async def test_ungrouped_row_column_still_splits(self, engine) -> None:
         """The DEV-1712 split-emission path must be untouched."""

@@ -58,6 +58,7 @@ from slayer.sql.generator import (  # type: ignore[attr-defined]
     ResolvedAggKwarg,
     SQLGenerator,
 )
+from slayer.sql.render.aggregates import resolve_agg_entry
 
 
 def _str_kwarg(value: str) -> ResolvedAggKwarg:
@@ -1094,8 +1095,6 @@ class TestBuildAggRegistryDispatch:
         )
 
     def test_simple_class_comes_from_the_registry_entry(self) -> None:
-        from slayer.sql.render.aggregates import resolve_agg_entry
-
         gen = SQLGenerator(dialect="postgres")
         expr, is_agg = gen._build_agg(self._spec("sum"))
         assert is_agg is True
