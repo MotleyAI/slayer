@@ -147,18 +147,20 @@ def _extract_src_body(sql: str) -> str:
     """Pull out the ``_src`` subquery body from a generated window-measure SQL.
 
     Resilient when the outer query also contains other LEFT JOIN (...) blocks
-    (e.g. cross-model measure subqueries): anchors on the unique ``\\n) AS _src``
-    suffix and reverse-searches for the matching ``LEFT JOIN (\\n`` before it.
+    (e.g. cross-model measure subqueries): anchors on the ``\\n) AS _src`` suffix
+    and reverse-searches for the matching ``LEFT JOIN (\\n`` before it. Multiple
+    windowed measures emit SIBLING ``) AS _src`` closes (never nested); anchor on
+    the LAST so the reverse search pairs it with the last measure's opening.
 
     The missing-anchor assertion is not reachable with today's generator output
-    (CodeRabbit): without it ``rfind`` returns ``-1`` and the helper silently
-    returns a slice from an arbitrary offset, so a future change to the join
-    keyword or its formatting would surface as a confusing assertion against the
-    wrong text rather than a clear failure here.
+    (CodeRabbit): without it the helper silently returns a slice from an
+    arbitrary offset, so a future change to the join keyword or its formatting
+    would surface as a confusing assertion against the wrong text rather than a
+    clear failure here.
     """
-    close = re.search(r"\n[ \t]*\) AS _src", sql)
-    assert close is not None, f"No `) AS _src` closing the _src subquery in:\n{sql}"
-    end = close.start()
+    closes = list(re.finditer(r"\n[ \t]*\) AS _src", sql))
+    assert closes, f"No `) AS _src` closing the _src subquery in:\n{sql}"
+    end = closes[-1].start()
     opens = list(re.finditer(r"LEFT JOIN \(\n", sql[:end]))
     assert opens, f"No `LEFT JOIN (` opening the _src subquery in:\n{sql}"
     return sql[opens[-1].end():end]

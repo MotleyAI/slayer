@@ -1343,11 +1343,11 @@ class TestOuterWrapperAndShiftedCteFamilies:
             ),
             dry_run=True,
         )
-        assert "IFNULL" not in resp.sql.upper(), resp.sql
-        assert "COALESCE" in resp.sql.upper(), resp.sql
+        assert "IFNULL" not in (resp.sql or "").upper(), resp.sql
+        assert "COALESCE" in (resp.sql or "").upper(), resp.sql
 
     async def test_shifted_cte_filter_call_site_executes(self, tmp_path_factory) -> None:
-        """R1's SECOND call site (the ``time_shift`` CTE's WHERE, that call site).
+        """R1's SECOND call site (``_shifted_where_part``, the ``time_shift`` CTE's WHERE).
 
         A host filter must apply inside the shifted CTE as well as the host
         base, so the shifted value is computed over the same filtered rows.
@@ -1965,7 +1965,7 @@ class TestArityIsRejectedAtBindTime:
             ),
             dry_run=True,
         )
-        assert "ROUND" in resp.sql.upper()
+        assert "ROUND" in (resp.sql or "").upper()
 
 
 class TestNullInInList:

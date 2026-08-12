@@ -241,3 +241,17 @@ def test_ordering_cases_actually_emit_an_order_by(baseline) -> None:
         assert "ORDER BY" in value.upper(), (
             f"{key} is an ordering case that emits no ORDER BY:\n{value}"
         )
+
+
+def test_reroot_cases_actually_reroot(baseline) -> None:
+    """Vacuity guard for the reroot half. ``_cm_`` marks a cross-model rerooted
+    alias; its absence means the shape stopped re-rooting and the entry silently
+    pins a forward plan instead."""
+    for key, value in baseline.items():
+        if not key.startswith("reroot/"):
+            continue
+        assert isinstance(value, str), f"{key} records an error, not SQL: {value}"
+        assert "_cm_" in value, (
+            f"{key} is a re-rooting case with no ``_cm_`` alias — it stopped "
+            f"re-rooting:\n{value}"
+        )

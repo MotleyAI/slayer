@@ -236,14 +236,25 @@ class TestCompositeKinds:
 
     def test_transform_scalar_args_are_type_prohibited_from_holding_keys(self) -> None:
         """``TransformKey.args``/``kwargs`` are ``Tuple[Scalar, ...]`` where
-        ``Scalar = Union[Decimal, str, bool, None]`` — no ValueKey can hide
-        there. Pinned so that widening the annotation later trips this test
-        and forces the visitor to grow the matching traversal."""
-        anno = TransformKey.model_fields["args"].annotation
-        assert "ValueKey" not in str(anno), (
-            f"TransformKey.args now admits {anno!r}; reroot_value_key must "
-            f"traverse it (§5.4 totality)."
-        )
+        ``Scalar = Union[Decimal, str, bool, None]`` — no ValueKey union member
+        can hide there. Pinned so that widening the annotation later trips this
+        test and forces the visitor to grow the matching traversal."""
+
+        def _atomic_types(anno) -> set:
+            args = get_args(anno)
+            if not args:
+                return {anno}
+            return {t for a in args if a is not Ellipsis for t in _atomic_types(a)}
+
+        members = set(get_args(ValueKey))
+        for field in ("args", "kwargs"):
+            anno = TransformKey.model_fields[field].annotation
+            leaked = members & _atomic_types(anno)
+            assert not leaked, (
+                f"TransformKey.{field} now admits "
+                f"{sorted(m.__name__ for m in leaked)}; reroot_value_key must "
+                f"traverse it (§5.4 totality)."
+            )
 
     def test_arithmetic_operands(self) -> None:
         out = reroot_value_key(
@@ -533,15 +544,21 @@ class TestPublicResultKeysUnchanged:
 
     def test_agg_and_column_filter_fields_ride_through(self) -> None:
         """Fields the visitor does not own must survive — a rebuild that
-        enumerated only the rerootable fields would silently drop them."""
+        enumerated only the rerootable fields would silently drop them.
+
+        ``grain`` is set NON-default ("host"): left at its "target" default a
+        dropped-grain rebuild would re-default to the same value, so the
+        assertion could not fail."""
         key = AggregateKey(
             source=ColumnKey(path=("customers",), leaf="spend"),
             agg="approx_count_distinct",
             column_filter_key=SqlExprKey(canonical_sql="a = 1"),
+            grain="host",
         )
         out = reroot_value_key(key, target_path=TARGET)
         assert out.agg == "approx_count_distinct"
         assert out.column_filter_key is not None
+        assert out.grain == "host"
 
     def test_kwargs_stay_canonically_sorted_after_reroot(self) -> None:
         key = AggregateKey(

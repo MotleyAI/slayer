@@ -100,7 +100,7 @@ def parse_sql_predicate(formula: str) -> ParsedFilter:
 
     The ``ParsedFilter.sql`` field is the original ``formula`` unchanged;
     ``columns`` is a best-effort regex extraction of column-shaped
-    identifiers (used by downstream join-detection on the strict path).
+    identifiers, used only for validation (see :func:`_bare_column_refs`).
     """
     if has_window_function(formula):
         raise ValueError(f"Filter '{formula}' {WINDOW_IN_FILTER_ERROR}")

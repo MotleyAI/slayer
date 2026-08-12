@@ -63,6 +63,20 @@ _TSQL_STAT_NAMES: dict[str, str] = {
 _TSQL_DOTTED_ALIAS_RE = re.compile(r"\[(\w+(?:\.\w+)+)\]", re.ASCII)
 
 
+def _offset_ordering_fallback(
+    order: "exp.Expression | None", offset_arg: "exp.Expression | None",
+) -> "exp.Expression | None":
+    """The ORDER BY an OFFSET-bearing outer wrap must carry: the caller's, or a
+    synthesized ``ORDER BY (SELECT NULL)`` no-op when there is none (SQL Server
+    rejects OFFSET without ORDER BY). Returns ``order`` unchanged otherwise, so
+    a user's ordering is never replaced (DEV-1783)."""
+    if order is not None or offset_arg is None:
+        return order
+    return exp.Order(expressions=[
+        exp.Ordered(this=exp.Subquery(this=exp.Select().select(exp.Null()))),
+    ])
+
+
 class TsqlDialect(SqlDialect):
     sqlglot_name: str = "tsql"
     ds_type_aliases: frozenset[str] = frozenset({"mssql", "sqlserver", "tsql"})
@@ -347,6 +361,10 @@ class TsqlDialect(SqlDialect):
         to the base impl — T-SQL will still reject malformed SQL at the
         DB layer, but we don't make it worse.
         """
+        # SQL Server rejects OFFSET without ORDER BY. Resolve the effective
+        # ordering BEFORE branching, so BOTH the AST path AND the base-impl
+        # fallback (a non-Select inner, base.py also emits a bare OFFSET) get it.
+        order = _offset_ordering_fallback(order, offset_arg)
         parse_fn = parse if parse is not None else (
             lambda s: sqlglot.parse_one(s, dialect=self.sqlglot_name)
         )

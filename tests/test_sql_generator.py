@@ -2166,12 +2166,16 @@ class TestRankFamilyTransforms:
         # collapsing whitespace still leaves the spaces it puts inside the
         # parens. The claim here is the window's SHAPE, not its line breaks.
         window = next(
-            w
-            for w in sqlglot.parse_one(sql, read="postgres").find_all(
-                sqlglot.exp.Window,
-            )
-            if isinstance(w.this, sqlglot.exp.Rank)
+            (
+                w
+                for w in sqlglot.parse_one(sql, read="postgres").find_all(
+                    sqlglot.exp.Window,
+                )
+                if isinstance(w.this, sqlglot.exp.Rank)
+            ),
+            None,
         )
+        assert window is not None, sql
         assert window.sql(dialect="postgres") == (
             'RANK() OVER (PARTITION BY "orders.customer_id", "orders.status" '
             'ORDER BY "orders.revenue_sum" DESC)'

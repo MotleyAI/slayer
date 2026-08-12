@@ -350,8 +350,13 @@ class TestSurfaceGrammar:
         """``select`` is a column name here. The predicate parser's
         ``SELECT 1 WHERE ...`` guard exists so this is not read as a
         statement."""
-        out = _sql_of(_scope().enter_predicate("\"select\" = 'x'"))
-        assert "select" in out.lower(), out
+        node = _scope().enter_predicate("\"select\" = 'x'")
+        cols = [c for c in node.find_all(exp.Column) if c.name == "select"]
+        assert cols, _sql_of(node)
+        assert all(c.table == "orders" for c in cols), (
+            f"statement-keyword column was not parsed as a qualified column: "
+            f"{_sql_of(node)}"
+        )
 
     def test_expression_returns_a_non_boolean_node(self) -> None:
         node = _scope().enter_expression("amount * 2")

@@ -169,11 +169,21 @@ structurally against the CTE's own root rather than re-derived from
 ## P-F — One naming authority
 
 Every alias and CTE name is minted by the allocator (`slayer/sql/naming.py`);
-result keys come from `result_key` / `flat_name`. There are no bespoke
-unallocated names. The allocator reserves the deterministic CTE families
-(`_cm_` / `_wm_` / `_rk_` / user CTEs) up front, then allocates the transform
-families (`shifted_` / `sjoin_`) around them, so a transform CTE whose preferred
-name collides with a reserved one renames rather than shadows.
+result keys come from `result_key` / `flat_name`. The allocator reserves the
+deterministic CTE families (`_cm_` / `_wm_` / `_rk_` / user CTEs) up front, then
+allocates the transform families (`shifted_` / `sjoin_`) around them, so a
+transform CTE whose preferred name collides with a reserved one renames rather
+than shadows.
+
+Two ratified carve-outs, recorded rather than silently omitted. The structural
+alias constants `_outer` (outer-wrapper subquery — the base `emit_outer_wrap`
+and the T-SQL ORDER-BY-detach rewrite), `_stage_inner` (stage-schema wrapper) and
+`_filtered` (filtered transform-chain wrapper) name their derived tables directly
+rather than being allocator-minted — the T-SQL rewrite is a post-generation AST
+pass with no allocator in reach, and each alias scopes a derived table its own
+pass creates, so a collision could only arise inside that one subquery. The structural names `base` / `_base` / `_combined` keep their
+literal spellings but are reserved into the allocator up front, so a user CTE
+that folds onto one of them renames instead.
 
 ### Result-key contract (P10)
 

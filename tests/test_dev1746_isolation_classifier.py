@@ -31,6 +31,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import TimeGranularity
+from slayer.core.keys import AggregateKey, ColumnKey, SqlExprKey
 from slayer.core.models import ModelMeasure
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine import isolation as isolation_mod
@@ -58,15 +59,30 @@ def _bundle() -> ResolvedSourceBundle:
     )
 
 
+def _crossing_bundle() -> ResolvedSourceBundle:
+    """A bundle whose host ``orders_x`` carries a LOCAL ``eu_amount`` measure
+    whose ``Column.filter`` crosses to ``customers_v2`` — the crossing-input
+    shape the host-rooted and seam tests share."""
+    crossing = _orders_x().columns[0].model_copy(update={
+        "name": "eu_amount", "sql": "amount",
+        "filter": "customers_v2.status = 'eu'", "primary_key": False,
+    })
+    return ResolvedSourceBundle(
+        source_model=_orders_x(extra_columns=[crossing]),
+        referenced_models=[_customers_v2(), _regions(), _countries()],
+    )
+
+
 def _classify_all(query: SlayerQuery) -> "tuple[dict, PlannedQuery]":
     """Every aggregate slot's isolation kind keyed by slot id, and the plan."""
-    planned = plan_query(query=query, bundle=_bundle())
+    bundle = _bundle()
+    planned = plan_query(query=query, bundle=bundle)
     windowed_ids = {
         p.aggregate_slot_id for p in planned.windowed_aggregate_plans
     }
     return {
         slot.id: classify_isolation(
-            slot=slot, windowed_slot_ids=windowed_ids, bundle=_bundle(),
+            slot=slot, windowed_slot_ids=windowed_ids, bundle=bundle,
         )
         for slot in planned.aggregate_slots
     }, planned
@@ -118,26 +134,14 @@ class TestEveryIsolationKindIsClassified:
     ) -> None:
         """The trigger that exists so a LOCAL aggregate whose ``Column.filter``
         reaches another model still gets its own rows."""
-        crossing = [
-            _orders_x().columns[0].model_copy(update={
-                "name": "eu_amount", "sql": "amount",
-                "filter": "customers_v2.status = 'eu'", "primary_key": False,
-            }),
-        ]
+        bundle = _crossing_bundle()
         planned = plan_query(
             query=SlayerQuery(
                 source_model="orders_x",
                 dimensions=[ColumnRef(name="status")],
                 measures=[ModelMeasure(formula="eu_amount:sum", name="eu")],
             ),
-            bundle=ResolvedSourceBundle(
-                source_model=_orders_x(extra_columns=crossing),
-                referenced_models=[_customers_v2(), _regions(), _countries()],
-            ),
-        )
-        bundle = ResolvedSourceBundle(
-            source_model=_orders_x(extra_columns=crossing),
-            referenced_models=[_customers_v2(), _regions(), _countries()],
+            bundle=bundle,
         )
         kinds = {
             slot.id: classify_isolation(
@@ -161,16 +165,7 @@ class TestOrderingBetweenTheOldPredicates:
     ) -> None:
         """The windowed skip came FIRST for a reason: this shape would trip the
         crossing-input trigger and be isolated twice."""
-        crossing = [
-            _orders_x().columns[0].model_copy(update={
-                "name": "eu_amount", "sql": "amount",
-                "filter": "customers_v2.status = 'eu'", "primary_key": False,
-            }),
-        ]
-        bundle = ResolvedSourceBundle(
-            source_model=_orders_x(extra_columns=crossing),
-            referenced_models=[_customers_v2(), _regions(), _countries()],
-        )
+        bundle = _crossing_bundle()
         planned = plan_query(
             query=SlayerQuery(
                 source_model="orders_x",
@@ -199,16 +194,7 @@ class TestOrderingBetweenTheOldPredicates:
         """Inside a sub-plan the crossing input renders inline — legal there,
         because the CTE is the aggregate's own scope, and required because the
         sub-plan holds the same measure and would otherwise recurse."""
-        crossing = [
-            _orders_x().columns[0].model_copy(update={
-                "name": "eu_amount", "sql": "amount",
-                "filter": "customers_v2.status = 'eu'", "primary_key": False,
-            }),
-        ]
-        bundle = ResolvedSourceBundle(
-            source_model=_orders_x(extra_columns=crossing),
-            referenced_models=[_customers_v2(), _regions(), _countries()],
-        )
+        bundle = _crossing_bundle()
         planned = plan_query(
             query=SlayerQuery(
                 source_model="orders_x",
@@ -324,16 +310,7 @@ class TestMayInlineSeam:
         returning ``True`` a crossing-input aggregate stops being isolated,
         which is the behaviour a cardinality-aware version would enable.
         """
-        crossing = [
-            _orders_x().columns[0].model_copy(update={
-                "name": "eu_amount", "sql": "amount",
-                "filter": "customers_v2.status = 'eu'", "primary_key": False,
-            }),
-        ]
-        bundle = ResolvedSourceBundle(
-            source_model=_orders_x(extra_columns=crossing),
-            referenced_models=[_customers_v2(), _regions(), _countries()],
-        )
+        bundle = _crossing_bundle()
         planned = plan_query(
             query=SlayerQuery(
                 source_model="orders_x",
@@ -368,3 +345,27 @@ class TestMayInlineSeam:
         assert ScopeFrame.may_inline(
             ScopeFrame.__new__(ScopeFrame), [("customers_v2",)],
         ) is False
+
+
+class TestCrossingInputPathsUnionsFilterAndStructural:
+    """DEV-1783 item 6 — ``_crossing_input_paths`` must UNION a local
+    aggregate's ``Column.filter`` crossings with its structural input crossings
+    (source ``Column.sql`` / args / kwargs). The pre-fix early-return reported
+    the filter paths ALONE, hiding a crossing kwarg from the isolation
+    decision and letting a fan-out-multiplying aggregate inline."""
+
+    def test_filter_and_kwarg_crossings_are_both_reported(self) -> None:
+        key = AggregateKey(
+            agg="sum",
+            source=ColumnKey(path=(), leaf="amount"),
+            kwargs=(("weight", ColumnKey(path=("customers_v2",), leaf="balance")),),
+            column_filter_key=SqlExprKey(
+                canonical_sql="customers_v2__regions.name = 'X'",
+                referenced_join_paths=(("customers_v2", "regions"),),
+            ),
+        )
+        paths = isolation_mod._crossing_input_paths(key=key, bundle=_bundle())
+        assert ("customers_v2", "regions") in paths, paths  # column_filter_key
+        assert ("customers_v2",) in paths, paths            # kwarg — dropped pre-fix
+        # Order-stable + de-duplicated: filter paths first, then structural.
+        assert paths == [("customers_v2", "regions"), ("customers_v2",)], paths

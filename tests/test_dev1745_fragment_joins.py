@@ -20,6 +20,7 @@ tracked separately.
 
 from __future__ import annotations
 
+import duckdb
 import pytest
 
 from slayer.core.enums import DataType
@@ -34,6 +35,7 @@ from slayer.core.models import (
 from slayer.core.query import SlayerQuery
 from slayer.sql.generator import SQLGenerator
 
+from tests._dev1746_fixtures import cte_names_in_order, find_cte
 from tests._engine_helpers import _engine_generate
 
 
@@ -149,14 +151,24 @@ class TestOnlySubstitutedKwargsAreSql:
         return seen
 
     def test_reserved_marker_kwarg_is_not_parsed_as_sql(self) -> None:
-        """``window='90d'`` is the standing example — a marker on a BUILT-IN
-        aggregation, which has no template to substitute it into."""
-        assert self._entered_fragments(kwargs=(("window", "90d"),)) == []
+        """``window='90d'`` is the standing example — a marker whose ``{window}``
+        never appears in ``wscaled_sum``'s template, so it is not a fragment.
+        Uses a TEMPLATED aggregation so the scan runs PAST the no-template
+        guard; the default ``w`` param still contributes ``regions.weight``, so
+        the check is that the MARKER's value is absent, not that nothing ran."""
+        entered = self._entered_fragments(
+            kwargs=(("window", "90d"),), agg="wscaled_sum",
+        )
+        assert "90d" not in entered, entered
 
     def test_marker_that_is_not_parseable_sql_is_still_skipped(self) -> None:
-        """The failure this guards: a marker whose text sqlglot rejects. It
-        must never reach the door, which raises."""
-        assert self._entered_fragments(kwargs=(("fmt", "%Y-%m"),)) == []
+        """The failure this guards: a marker whose text sqlglot rejects. Under a
+        TEMPLATED aggregation the substitution filter is what skips it, so it
+        never reaches the door (which would raise)."""
+        entered = self._entered_fragments(
+            kwargs=(("fmt", "%Y-%m"),), agg="wscaled_sum",
+        )
+        assert "%Y-%m" not in entered, entered
 
     def test_a_substituted_kwarg_is_still_scanned(self) -> None:
         """The counter-case, so the filter is not blanket suppression:
@@ -167,24 +179,22 @@ class TestOnlySubstitutedKwargsAreSql:
         assert entered == ["regions.weight"], entered
 
 
-def _cm_body(sql: str) -> str:
-    """The body of the `_cm_` CTE.
+def _cm_body(sql: str, *, dialect: str = "postgres") -> str:
+    """The rendered body of the `_cm_` CTE.
 
     Assertions about which alias the fragment rendered belong to THIS scope:
     a whole-SQL check can be satisfied — or defeated — by a perfectly valid
     alias in the host base or the combined SELECT.
     """
-    start = sql.index("_cm_")
-    open_paren = sql.index("(", start)
-    depth = 0
-    for i in range(open_paren, len(sql)):
-        if sql[i] == "(":
-            depth += 1
-        elif sql[i] == ")":
-            depth -= 1
-            if depth == 0:
-                return sql[open_paren + 1:i]
-    raise AssertionError(f"unbalanced _cm_ CTE in:\n{sql}")
+    name = next(
+        (n for n in cte_names_in_order(sql, dialect=dialect)
+         if n.startswith("_cm_")),
+        None,
+    )
+    assert name is not None, f"no _cm_ CTE in:\n{sql}"
+    body = find_cte(sql, name, dialect=dialect)
+    assert body is not None, f"no _cm_ CTE in:\n{sql}"
+    return body.sql(dialect=dialect)
 
 
 @pytest.mark.asyncio
@@ -271,8 +281,6 @@ class TestHostPathFragmentJoinsStillWork:
 @pytest.mark.asyncio
 async def test_cross_model_fragment_executes_on_duckdb() -> None:
     """A missing join is not a cosmetic difference — the SQL does not bind."""
-    import duckdb
-
     sql = await _sql(
         SlayerQuery(
             source_model="orders",

@@ -228,11 +228,15 @@ def _child_keys(node, *, descend_aggregates: bool = True) -> List:
     if isinstance(node, AggregateKey):
         if not descend_aggregates:
             return []
+        # ``column_filter_key`` is deliberately NOT a plain child: its
+        # ``referenced_join_paths`` are OWNER-relative and must be re-anchored
+        # by prefixing ``source.path``, which ``compute_key_join_paths`` does
+        # explicitly (DEV-1783). Descending it here would record them
+        # anchor-rooted and mis-route the filter.
         return [
             node.source,
             *node.args,
             *(v for _name, v in node.kwargs),
-            node.column_filter_key,
         ]
     if isinstance(node, TransformKey):
         return [
@@ -255,12 +259,26 @@ def _leaf_paths(
     node, *, anchor_model, anchor_relation: str, bundle,
     cache: "Optional[dict]" = None,
 ) -> List[Path]:
-    """Join paths a LEAF key is itself anchored at.
+    """Join paths a key contributes ITSELF (not via its children).
 
     Composites contribute nothing here — their dependencies arrive through
-    ``_child_keys``. Split out of the traversal so the walk stays a two-line
-    "collect, then descend".
+    ``_child_keys`` — EXCEPT an ``AggregateKey``'s ``column_filter_key``, which
+    is not a plain child (its paths are OWNER-relative and re-anchored here).
+    Split out of the traversal so the walk stays a two-line "collect, then
+    descend".
     """
+    if isinstance(node, AggregateKey) and node.column_filter_key is not None:
+        # ``column_filter_key.referenced_join_paths`` are OWNER-relative
+        # (anchored at the aggregated column's owner, reached via
+        # ``source.path``). Re-anchor to the query root by prefixing
+        # ``source.path`` (DEV-1783); the reroot visitor leaves the owner in
+        # place for the same reason (keys.py: cfk copied unchanged).
+        source_path = tuple(getattr(node.source, "path", ()) or ())
+        return [
+            pre
+            for p in node.column_filter_key.referenced_join_paths
+            for pre in _prefixes(source_path + tuple(p))
+        ]
     if isinstance(node, ColumnSqlKey):
         # Own anchored path first, then whatever its expansion reaches — the
         # order the FROM builder consumes. Built as a NEW list rather than

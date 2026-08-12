@@ -186,17 +186,20 @@ class TestNoTextRoundTrip:
             # Patch the names as BOUND in each module (both do
             # ``from … import parse_expr``), so patching the defining module
             # would miss them entirely and the test would pass vacuously.
-            for module in (cross_model_planner, stage_planner):
-                for symbol in (
-                    "parse_expr", "parse_filter_expr",
-                    "bind_expr", "bind_filter", "bind_time_dimension",
-                ):
-                    if hasattr(module, symbol):
-                        monkeypatch.setattr(module, symbol, _boom)
-            try:
+            #
+            # A SCOPED context, not ``monkeypatch.undo()``: undo is global to
+            # the fixture and would also tear down the outer
+            # ``_maybe_reroot_cross_model_plan`` spy, disarming the sentinels
+            # for any second or nested reroot call.
+            with monkeypatch.context() as inner:
+                for module in (cross_model_planner, stage_planner):
+                    for symbol in (
+                        "parse_expr", "parse_filter_expr",
+                        "bind_expr", "bind_filter", "bind_time_dimension",
+                    ):
+                        if hasattr(module, symbol):
+                            inner.setattr(module, symbol, _boom)
                 return original(**kwargs)
-            finally:
-                monkeypatch.undo()
 
         monkeypatch.setattr(
             cross_model_planner, "_maybe_reroot_cross_model_plan", _wrapped,

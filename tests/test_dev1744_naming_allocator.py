@@ -626,14 +626,15 @@ class TestAllocatorRouting:
 
     def test_no_raw_step_cte_names_in_the_generator(self) -> None:
         """P-F, checked structurally because it has no reachable behavioural
-        difference today: the three ``f"step{...}"`` mint sites must all go
+        difference today: the four ``f"step{...}"`` mint sites must all go
         through the allocator.
 
-        ``the generator`` bypasses an allocator that is in scope 100 lines
-        above it; ``that call site`` and ``that call site`` live in the cross-model transform
-        chain, which holds no allocator at all. They are latently safe only
-        because no ``_cm_*`` CTE can be named ``stepN`` — an invariant nothing
-        enforces.
+        Two live in ``_generate_from_planned_impl`` (the window-batch and the
+        unmaterialised combined-expression step CTEs), sharing the allocator
+        built earlier in the same method; two live in
+        ``_render_cross_model_transform_chain``, which derives its own. They
+        are latently safe today only because no ``_cm_*`` CTE can be named
+        ``stepN`` — an invariant nothing enforces.
         """
         src = inspect.getsource(generator_module)
         raw = [
@@ -1010,6 +1011,8 @@ _MATRIX: List[tuple] = [
 # returns None there (it falls through to its own formula-text sanitiser,
 # which is NOT part of the aggregate-alias contract and stays in
 # stage_planner).
+# ``model_copy(update=...)`` deliberately bypasses validation: a TimeTruncKey
+# source is outside ``_AggregateSource`` and normal construction would reject it.
 _MISSING_LEAF_KEY = AggregateKey(
     source=ColumnKey(leaf="x"), agg="sum",
 ).model_copy(

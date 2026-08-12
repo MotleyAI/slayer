@@ -23,6 +23,7 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import Column, SlayerModel
 from slayer.core.query import SlayerQuery
+from slayer.core.warnings import NormalizationWarning, SlayerNormalizationWarning
 from slayer.engine.normalization import normalize_query
 
 from tests._engine_helpers import _engine_generate
@@ -83,14 +84,49 @@ class TestMalformedDateRangeWarns:
 
     @pytest.mark.parametrize("date_range", MALFORMED)
     def test_emits_on_the_python_warnings_channel(self, date_range) -> None:
-        from slayer.core.warnings import SlayerNormalizationWarning
-
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             normalize_query(query=_query(date_range))
         assert any(
             issubclass(w.category, SlayerNormalizationWarning) for w in caught
         ), f"no SlayerNormalizationWarning for date_range={date_range!r}"
+
+
+class TestWarningWordingDescribesTheNoOp:
+    """DEV-1783 item 7 — MALFORMED_DATE_RANGE reports but never rewrites, so its
+    message must not claim a rewrite. A real rewrite rule (FUNC_STYLE_AGG) still
+    says "rewrote"."""
+
+    @pytest.mark.parametrize("date_range", MALFORMED)
+    def test_structured_message_does_not_claim_a_rewrite(self, date_range) -> None:
+        [w] = _warnings_for(date_range)
+        assert w.rewritten is False, w
+        msg = w.human_message()
+        assert "rewrote" not in msg.lower(), msg
+        assert "→" not in msg, msg
+        assert w.rule_id in msg, msg
+        assert w.location in msg, msg
+
+    @pytest.mark.parametrize("date_range", MALFORMED)
+    def test_python_warning_carrier_does_not_claim_a_rewrite(self, date_range) -> None:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            normalize_query(query=_query(date_range))
+        texts = [str(w.message) for w in caught if "date_range" in str(w.message)]
+        assert texts, "no date_range warning surfaced on the Python channel"
+        # Neither the verb "rewrote" nor the transform arrow — nothing was
+        # rewritten, so the carrier must not imply it (single source of truth
+        # with human_message).
+        assert all("rewrote" not in t.lower() for t in texts), texts
+        assert all("→" not in t for t in texts), texts
+
+    def test_a_genuine_rewrite_rule_still_says_rewrote(self) -> None:
+        w = NormalizationWarning(
+            rule_id="FUNC_STYLE_AGG", original="count(*)",
+            normalized="*:count", location="measures[0].formula",
+        )
+        assert w.rewritten is True
+        assert "rewrote" in w.human_message().lower()
 
 
 class TestWellFormedDateRangeIsSilent:

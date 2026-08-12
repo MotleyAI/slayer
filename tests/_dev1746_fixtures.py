@@ -63,54 +63,56 @@ PAID_FEB_WINDOW = PAID_JAN + PAID_FEB  # 30.0
 def seed_dev1746_sqlite(db_path: str) -> None:
     """Create + seed the DEV-1746 SQLite corpus at ``db_path``."""
     con = sqlite3.connect(db_path)
-    con.executescript(
-        """
-        CREATE TABLE regions (
-            id INTEGER PRIMARY KEY,
-            name TEXT,
-            population REAL
-        );
-        CREATE TABLE customers (
-            id INTEGER PRIMARY KEY,
-            region_id INTEGER,
-            tier TEXT,
-            spend REAL
-        );
-        CREATE TABLE orders (
-            id INTEGER PRIMARY KEY,
-            customer_id INTEGER,
-            status TEXT,
-            created_at TEXT,
-            amount REAL
-        );
-        """
-    )
-    con.executemany(
-        "INSERT INTO regions VALUES (?,?,?)",
-        # Region 2's name is NULL — the joined nullable grain member.
-        [(1, "West", 100.0), (2, None, 200.0)],
-    )
-    con.executemany(
-        "INSERT INTO customers VALUES (?,?,?,?)",
-        # Customer 101's tier is NULL — the target-side nullable grain member.
-        [
-            (100, 1, "gold", 1000.0),
-            (101, 2, None, 250.0),
-            (102, 2, None, 75.0),
-        ],
-    )
-    con.executemany(
-        "INSERT INTO orders VALUES (?,?,?,?,?)",
-        [
-            (1, 100, "paid", "2024-01-15", PAID_JAN),
-            (2, 100, "paid", "2024-02-15", PAID_FEB),
-            # The NULL-status group — two months, so a 90-day window spans both.
-            (3, 101, None, "2024-01-20", NULL_STATUS_JAN),
-            (4, 101, None, "2024-02-20", NULL_STATUS_FEB),
-        ],
-    )
-    con.commit()
-    con.close()
+    try:
+        con.executescript(
+            """
+            CREATE TABLE regions (
+                id INTEGER PRIMARY KEY,
+                name TEXT,
+                population REAL
+            );
+            CREATE TABLE customers (
+                id INTEGER PRIMARY KEY,
+                region_id INTEGER,
+                tier TEXT,
+                spend REAL
+            );
+            CREATE TABLE orders (
+                id INTEGER PRIMARY KEY,
+                customer_id INTEGER,
+                status TEXT,
+                created_at TEXT,
+                amount REAL
+            );
+            """
+        )
+        con.executemany(
+            "INSERT INTO regions VALUES (?,?,?)",
+            # Region 2's name is NULL — the joined nullable grain member.
+            [(1, "West", 100.0), (2, None, 200.0)],
+        )
+        con.executemany(
+            "INSERT INTO customers VALUES (?,?,?,?)",
+            # Customer 101's tier is NULL — the target-side nullable grain member.
+            [
+                (100, 1, "gold", 1000.0),
+                (101, 2, None, 250.0),
+                (102, 2, None, 75.0),
+            ],
+        )
+        con.executemany(
+            "INSERT INTO orders VALUES (?,?,?,?,?)",
+            [
+                (1, 100, "paid", "2024-01-15", PAID_JAN),
+                (2, 100, "paid", "2024-02-15", PAID_FEB),
+                # The NULL-status group — two months, so a 90-day window spans both.
+                (3, 101, None, "2024-01-20", NULL_STATUS_JAN),
+                (4, 101, None, "2024-02-20", NULL_STATUS_FEB),
+            ],
+        )
+        con.commit()
+    finally:
+        con.close()
 
 
 def dev1746_models() -> List[SlayerModel]:
