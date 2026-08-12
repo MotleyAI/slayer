@@ -399,11 +399,13 @@ def test_record_raise_redacts_volatile_paths_only() -> None:
     so the message still pins the FAILURE, not where the test ran."""
     msg = record_raise(
         ValueError(
-            "open /tmp/pytest-1/db.sqlite failed via https://x.io/a/b "
-            "while evaluating a/b/c"
+            "open /tmp/pytest-1/db.sqlite under /workspace failed via "
+            "https://x.io/a/b while evaluating a/b/c"
         ),
     )["message"]
-    assert "/tmp/pytest-1/db.sqlite" not in msg and "<PATH>" in msg, msg
+    assert "/tmp/pytest-1/db.sqlite" not in msg, msg
+    assert "/workspace" not in msg, msg  # single-segment path also redacted
+    assert "<PATH>" in msg, msg
     assert "https://x.io/a/b" in msg, msg  # URL untouched
     assert "a/b/c" in msg, msg  # compact division untouched
 

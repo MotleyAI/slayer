@@ -386,9 +386,10 @@ class TestInternalFailuresRaise:
                 )
                 names = {n.id for n in caught if isinstance(n, ast.Name)}
                 # A broad catch that RE-RAISES doesn't swallow — the B6 defect
-                # is the silent drop, not catching per se. Flag only handlers
-                # that catch broad and never raise.
-                reraises = any(isinstance(n, ast.Raise) for n in ast.walk(node))
+                # is the silent drop, not catching per se. Require the re-raise
+                # at the handler's TOP level: a raise buried in a conditional
+                # branch still leaves a swallow path.
+                reraises = any(isinstance(s, ast.Raise) for s in node.body)
                 assert not (names & broad) or reraises, (
                     f"{name} SWALLOWS {sorted(names & broad)} without re-raising "
                     f"— a swallowed broad error is exactly the B6 defect"

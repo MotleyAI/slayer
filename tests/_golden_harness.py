@@ -59,12 +59,13 @@ def render_value(value) -> str:
 
 
 #: Absolute filesystem paths in an exception message — a tempdir, the repo
-#: root, a CI checkout — are volatile and would make a recorded RAISE differ
-#: run-to-run and machine-to-machine. Collapse each to ``<PATH>`` so the recorded
-#: message pins the FAILURE, not where the test ran. The leading boundary (not
-#: preceded by a word char, ``:`` or ``/``) leaves URLs (``https://…``) and
-#: compact SQL division (``a/b/c``) intact.
-_ABS_PATH_RE = re.compile(r"(?<![\w:/])/(?:[\w.\-]+/)+[\w.\-]*")
+#: root, a CI checkout (incl. single-segment mounts like ``/workspace``) — are
+#: volatile and would make a recorded RAISE differ run-to-run and
+#: machine-to-machine. Collapse each to ``<PATH>`` so the recorded message pins
+#: the FAILURE, not where the test ran. The leading boundary (not preceded by a
+#: word char, ``:`` or ``/``) leaves URLs (``https://…``) and compact SQL
+#: division (``a/b/c``) intact.
+_ABS_PATH_RE = re.compile(r"(?<![\w:/])/[\w.\-]+(?:/[\w.\-]+)*")
 
 
 def _redact_paths(message: str) -> str:
