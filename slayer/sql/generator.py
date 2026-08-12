@@ -1698,13 +1698,33 @@ class SQLGenerator:
         final_parts = [self._q(a) for a in sorted(available_aliases)]
 
         # Add any remaining expressions/transforms that couldn't be layered.
+        # DEV-1779: a remaining item whose dependencies never became available
+        # can only reference a column no CTE projects — emitting it produces
+        # invalid SQL that fails (or silently NULLs, on SQLite) at the DB.
+        # Fail loudly here with the offending aliases instead. `_deps_available`
+        # gates in-loop addition, so anything still pending is genuinely
+        # unresolved (not a false positive).
         # DEV-1571 Bug 3 follow-up: re-emit each expression through the
         # active dialect so ANSI-quoted aliases from enrichment become
         # MySQL backticks / T-SQL brackets.
         for expr in pending_expressions:
+            if not self._deps_available(expr.sql, available_aliases):
+                missing = sorted(set(re.findall(r'"([^"]+)"', expr.sql)) - available_aliases)
+                raise ValueError(
+                    f"Computed column {expr.alias!r} references column(s) "
+                    f"{missing} that no CTE layer projects — the query could "
+                    f"not be lowered to valid SQL (internal alias-resolution error)."
+                )
             expr_sql = self._parse(expr.sql, dialect="postgres").sql(dialect=self.dialect)
             final_parts.append(f'{expr_sql} AS {self._q(expr.alias)}')
         for t in pending_transforms:
+            if t.measure_alias not in available_aliases:
+                raise ValueError(
+                    f"Transform {t.alias!r} references measure alias "
+                    f"{t.measure_alias!r} that no CTE layer projects — the query "
+                    f"could not be lowered to valid SQL (internal "
+                    f"alias-resolution error)."
+                )
             if t.transform in _SELF_JOIN_TRANSFORMS:
                 continue  # Should not happen — self-joins are always materialized
             if t.transform == "consecutive_periods":
@@ -1723,7 +1743,6 @@ class SQLGenerator:
         # pagination, so LIMIT/OFFSET operate on the filtered result.
         post_filters = [f for f in enriched.filters if f.is_post_filter]
         if post_filters:
-            import re
             model = enriched.model_name
             conditions = []
             for f in post_filters:
