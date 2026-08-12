@@ -156,7 +156,7 @@ class TestMcpFormatMeta:
 
 
 class TestIntegerBucketSharedByTypeAndFormat:
-    @pytest.fixture()
+    @pytest.fixture
     def model(self):
         return SlayerModel(
             name="orders",

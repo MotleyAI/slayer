@@ -6566,7 +6566,7 @@ class SQLGenerator:
             return rendered.sql(dialect=self.dialect), frame.join_paths.as_list()
         return None
 
-    def _emit_time_shift_ctes_for_planned(  # NOSONAR(S3776) — single conceptual unit for one time_shift slot: partition/time resolution through the shifted ScopeFrame + shifted-CTE body assembly + collision-safe CTE naming (cte_allocator) + sjoin grain join-back, all sharing tightly-coupled per-slot state (time_alias / input_alias / partition_specs / shifted_cte_name / carry aliases). Splitting forces that cross-cutting state through many-argument helpers without simplifying anything — same shape as the sibling _render_cross_model_cte's suppression.
+    def _emit_time_shift_ctes_for_planned(  # NOSONAR(S3776, S107) — single conceptual unit for one time_shift slot: partition/time resolution through the shifted ScopeFrame + shifted-CTE body assembly + collision-safe CTE naming (cte_allocator) + sjoin grain join-back, all sharing tightly-coupled per-slot state (time_alias / input_alias / partition_specs / shifted_cte_name / carry aliases). Splitting forces that cross-cutting state through many-argument helpers without simplifying anything — same shape as the sibling _render_cross_model_cte's suppression. S107: the explicit chain_tail (DEV-1784) is the 14th of these cohesive per-slot params.
         self,
         *,
         slot,
