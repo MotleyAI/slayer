@@ -23,6 +23,7 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import Column, SlayerModel
 from slayer.core.query import SlayerQuery
+from slayer.core.warnings import NormalizationWarning, SlayerNormalizationWarning
 from slayer.engine.normalization import normalize_query
 
 from tests._engine_helpers import _engine_generate
@@ -83,8 +84,6 @@ class TestMalformedDateRangeWarns:
 
     @pytest.mark.parametrize("date_range", MALFORMED)
     def test_emits_on_the_python_warnings_channel(self, date_range) -> None:
-        from slayer.core.warnings import SlayerNormalizationWarning
-
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             normalize_query(query=_query(date_range))
@@ -105,7 +104,8 @@ class TestWarningWordingDescribesTheNoOp:
         msg = w.human_message()
         assert "rewrote" not in msg.lower(), msg
         assert "→" not in msg, msg
-        assert w.rule_id in msg and w.location in msg, msg
+        assert w.rule_id in msg, msg
+        assert w.location in msg, msg
 
     @pytest.mark.parametrize("date_range", MALFORMED)
     def test_python_warning_carrier_does_not_claim_a_rewrite(self, date_range) -> None:
@@ -121,8 +121,6 @@ class TestWarningWordingDescribesTheNoOp:
         assert all("→" not in t for t in texts), texts
 
     def test_a_genuine_rewrite_rule_still_says_rewrote(self) -> None:
-        from slayer.core.warnings import NormalizationWarning
-
         w = NormalizationWarning(
             rule_id="FUNC_STYLE_AGG", original="count(*)",
             normalized="*:count", location="measures[0].formula",

@@ -64,8 +64,9 @@ class TestNtileNIsNormalised:
 
     def test_non_integral_decimal_is_rejected_not_truncated(self) -> None:
         """``Decimal("2.7")`` used to truncate to ``NTILE(2)`` silently."""
+        n = Decimal("2.7")
         with pytest.raises(ValueError):
-            _render_ntile(Decimal("2.7"))
+            _render_ntile(n)
 
     def test_bool_is_rejected(self) -> None:
         """``True`` is an ``int`` subclass, so ``isinstance(n, int)`` used to

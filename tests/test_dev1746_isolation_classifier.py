@@ -31,6 +31,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import TimeGranularity
+from slayer.core.keys import AggregateKey, ColumnKey, SqlExprKey
 from slayer.core.models import ModelMeasure
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine import isolation as isolation_mod
@@ -378,8 +379,6 @@ class TestCrossingInputPathsUnionsFilterAndStructural:
     decision and letting a fan-out-multiplying aggregate inline."""
 
     def test_filter_and_kwarg_crossings_are_both_reported(self) -> None:
-        from slayer.core.keys import AggregateKey, ColumnKey, SqlExprKey
-
         key = AggregateKey(
             agg="sum",
             source=ColumnKey(path=(), leaf="amount"),

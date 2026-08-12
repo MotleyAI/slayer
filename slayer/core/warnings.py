@@ -45,7 +45,10 @@ class SlayerWarning(BaseModel):
 
 
 class NormalizationWarning(SlayerWarning):
-    """Structured payload describing one slack-normalization rewrite.
+    """Structured payload describing one slack-normalization event — a REWRITE
+    (``rewritten=True``, the default) or a report-only advisory
+    (``rewritten=False``, e.g. ``MALFORMED_DATE_RANGE``, which the planner
+    silently no-ops rather than rewriting).
 
     ``rule_id`` identifies the rule that fired (``FUNC_STYLE_AGG``,
     ``DOT_PATH_IN_SQL``, ``MISPLACED_MEASURE``). ``location`` is a

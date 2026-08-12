@@ -6262,7 +6262,7 @@ class SQLGenerator:
             # rejected and a non-integral Decimal raises rather than truncating
             # (DEV-1783). The binder gates this too; this is the render-side
             # defense-in-depth.
-            n = _normalise_periods(kwarg_map.get("n"), kw="n")
+            n = _normalise_periods(raw=kwarg_map.get("n"), kw="n")
             if n <= 0:
                 raise ValueError(
                     f"ntile requires a positive integer n, got {n!r}",

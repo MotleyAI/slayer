@@ -469,6 +469,9 @@ def _apply_dot_path_in_sql(
                 original=original,
                 normalized="(ambiguous: shadowed by local alias or CTE — not rewritten)",
                 location=location,
+                # Shadowed ref is left untouched — reported, not rewritten
+                # (DEV-1783).
+                rewritten=False,
                 rule_doc_url="docs/agent_input_slack.md#dot-path-in-sql",
             )
             emitted.append(payload)

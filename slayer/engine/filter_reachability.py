@@ -258,12 +258,26 @@ def _leaf_paths(
     node, *, anchor_model, anchor_relation: str, bundle,
     cache: "Optional[dict]" = None,
 ) -> List[Path]:
-    """Join paths a LEAF key is itself anchored at.
+    """Join paths a key contributes ITSELF (not via its children).
 
     Composites contribute nothing here — their dependencies arrive through
-    ``_child_keys``. Split out of the traversal so the walk stays a two-line
-    "collect, then descend".
+    ``_child_keys`` — EXCEPT an ``AggregateKey``'s ``column_filter_key``, which
+    is not a plain child (its paths are OWNER-relative and re-anchored here).
+    Split out of the traversal so the walk stays a two-line "collect, then
+    descend".
     """
+    if isinstance(node, AggregateKey) and node.column_filter_key is not None:
+        # ``column_filter_key.referenced_join_paths`` are OWNER-relative
+        # (anchored at the aggregated column's owner, reached via
+        # ``source.path``). Re-anchor to the query root by prefixing
+        # ``source.path`` (DEV-1783); the reroot visitor leaves the owner in
+        # place for the same reason (keys.py: cfk copied unchanged).
+        source_path = tuple(getattr(node.source, "path", ()) or ())
+        return [
+            pre
+            for p in node.column_filter_key.referenced_join_paths
+            for pre in _prefixes(source_path + tuple(p))
+        ]
     if isinstance(node, ColumnSqlKey):
         # Own anchored path first, then whatever its expansion reaches — the
         # order the FROM builder consumes. Built as a NEW list rather than
@@ -314,16 +328,6 @@ def compute_key_join_paths(
             anchor_relation=anchor_relation, bundle=bundle, cache=cache,
         ):
             _add(path)
-        if isinstance(node, AggregateKey) and node.column_filter_key is not None:
-            # ``column_filter_key.referenced_join_paths`` are OWNER-relative
-            # (anchored at the aggregated column's owner, reached via
-            # ``source.path``). Re-anchor to the query root by prefixing
-            # ``source.path`` — the reroot visitor leaves the owner in place for
-            # the same reason (keys.py: cfk copied unchanged).
-            source_path = tuple(getattr(node.source, "path", ()) or ())
-            for p in node.column_filter_key.referenced_join_paths:
-                for pre in _prefixes(source_path + tuple(p)):
-                    _add(pre)
         for child in _child_keys(node):
             _walk(child)
 

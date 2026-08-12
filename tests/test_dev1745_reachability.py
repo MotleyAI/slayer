@@ -40,6 +40,7 @@ from slayer.core.keys import (
     LiteralKey,
     Phase,
     ScalarCallKey,
+    SqlExprKey,
 )
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
@@ -245,8 +246,6 @@ class TestCompositeKeyKindsAreTotal:
         """``SqlExprKey`` carries its own precomputed crossed paths (a
         ``Column.filter`` interned onto an aggregate). It has an arm in the
         scan; this pins it."""
-        from slayer.core.keys import SqlExprKey
-
         key = SqlExprKey(
             canonical_sql="customers__regions.population > 1",
             referenced_join_paths=(("customers", "regions"),),
@@ -262,8 +261,6 @@ class TestCompositeKeyKindsAreTotal:
         ``source.path``. ``customers.balance:sum`` with a filter on
         ``regions.name`` must contribute ``("customers","regions")`` — never
         bare ``("regions",)``, which ``classify_host_filter`` would mis-route."""
-        from slayer.core.keys import SqlExprKey
-
         key = AggregateKey(
             agg="sum",
             source=ColumnKey(path=("customers",), leaf="balance"),

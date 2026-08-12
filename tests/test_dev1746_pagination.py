@@ -336,15 +336,25 @@ class TestEmitOuterWrapInjectsOrderingForOffset:
     def _offset(n: int) -> exp.Offset:
         return exp.Offset(expression=exp.Literal.number(n))
 
+    @staticmethod
+    def _assert_bare_offset_guarded(out: str) -> None:
+        """OFFSET is emitted, ordered by the synthesized no-op (a ``SELECT NULL``
+        subquery — sqlglot renders it via its NULLS-ordering ``CASE`` form, not a
+        literal ``ORDER BY (SELECT NULL)``), never a real column."""
+        assert re.search(r"\bORDER\s+BY\b", out, re.IGNORECASE), (
+            f"tsql outer-wrap emitted OFFSET without ORDER BY:\n{out}"
+        )
+        assert "OFFSET" in out.upper(), out
+        assert re.search(r"SELECT\s+NULL", out, re.IGNORECASE), (
+            f"OFFSET ordering is not the synthesized no-op:\n{out}"
+        )
+
     def test_ast_path_injects_ordering_for_a_bare_offset(self) -> None:
         out = get_dialect("tsql").emit_outer_wrap(
             inner_sql="SELECT 1 AS a", public=["a"],
             order=None, limit=None, offset_arg=self._offset(5),
         )
-        assert re.search(r"\bORDER\s+BY\b", out, re.IGNORECASE), (
-            f"tsql outer-wrap emitted OFFSET without ORDER BY:\n{out}"
-        )
-        assert "OFFSET" in out.upper(), out
+        self._assert_bare_offset_guarded(out)
 
     def test_base_fallback_injects_ordering_for_a_bare_offset(self) -> None:
         """A UNION inner parses to a non-``Select`` and takes the base-impl
@@ -354,9 +364,7 @@ class TestEmitOuterWrapInjectsOrderingForOffset:
             inner_sql="SELECT 1 AS a UNION SELECT 2 AS a", public=["a"],
             order=None, limit=None, offset_arg=self._offset(5),
         )
-        assert re.search(r"\bORDER\s+BY\b", out, re.IGNORECASE), (
-            f"tsql outer-wrap fallback emitted OFFSET without ORDER BY:\n{out}"
-        )
+        self._assert_bare_offset_guarded(out)
 
     def test_user_order_is_never_replaced(self) -> None:
         user_order = exp.Order(expressions=[
@@ -368,6 +376,10 @@ class TestEmitOuterWrapInjectsOrderingForOffset:
         )
         assert "SELECT NULL" not in out.upper(), (
             f"the user's ORDER BY was replaced by the fallback ordering:\n{out}"
+        )
+        assert "OFFSET" in out.upper(), out
+        assert re.search(r"\bORDER\s+BY\b.*\[a\]", out, re.IGNORECASE | re.DOTALL), (
+            f"the user's ORDER BY column was dropped:\n{out}"
         )
 
 
