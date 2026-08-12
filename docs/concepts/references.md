@@ -122,7 +122,7 @@ than being passed through verbatim. `length(x)` emits `LEN(x)` on SQL Server,
 `substr(x, 1, 5)` emits `SUBSTRING(x FROM 1 FOR 5)` on Postgres, and
 `ifnull(x, 0)` emits `COALESCE(x, 0)` on backends without `IFNULL`.
 
-Three consequences worth knowing:
+Four consequences worth knowing:
 
 * **`concat` follows SQL string-concatenation semantics.** On dialects whose
   natural spelling is the `||` operator (Postgres, DuckDB, SQLite), `concat(a, b)`
