@@ -45,7 +45,10 @@ class SlayerWarning(BaseModel):
 
 
 class NormalizationWarning(SlayerWarning):
-    """Structured payload describing one slack-normalization rewrite.
+    """Structured payload describing one slack-normalization event — a REWRITE
+    (``rewritten=True``, the default) or a report-only advisory
+    (``rewritten=False``, e.g. ``MALFORMED_DATE_RANGE``, which the planner
+    silently no-ops rather than rewriting).
 
     ``rule_id`` identifies the rule that fired (``FUNC_STYLE_AGG``,
     ``DOT_PATH_IN_SQL``, ``MISPLACED_MEASURE``). ``location`` is a
@@ -60,8 +63,16 @@ class NormalizationWarning(SlayerWarning):
     normalized: str
     location: str
     rule_doc_url: Optional[str] = None
+    # Some rules (MALFORMED_DATE_RANGE) REPORT without rewriting; the message
+    # must not claim a transform that never happened (DEV-1783).
+    rewritten: bool = True
 
     def human_message(self) -> str:
+        if not self.rewritten:
+            return (
+                f"[{self.rule_id}] flagged {self.original}: {self.normalized} "
+                f"(at {self.location})"
+            )
         return (
             f"[{self.rule_id}] rewrote {self.original} → {self.normalized} "
             f"(at {self.location})"
@@ -108,7 +119,7 @@ class SlayerNormalizationWarning(UserWarning):
 
     def __init__(self, payload: NormalizationWarning) -> None:
         self.payload = payload
-        super().__init__(
-            f"[{payload.rule_id}] {payload.original!s} → {payload.normalized!s} "
-            f"(at {payload.location})"
-        )
+        # One source of truth for the wording, so a non-rewrite rule reads the
+        # same on the Python-warnings channel as in the structured payload
+        # (DEV-1783).
+        super().__init__(payload.human_message())

@@ -31,7 +31,7 @@ whole aggregates.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Sequence, Set, Tuple
+from typing import Any, List, Sequence, Set, Tuple
 
 from slayer.core.keys import AggregateKey
 from slayer.engine.aggregate_input_paths import compute_aggregate_input_join_paths
@@ -160,7 +160,9 @@ def classify_isolation(
     return IsolationKind.HOST_ROOTED
 
 
-def _crossing_input_paths(*, key: AggregateKey, bundle: Any) -> list:
+def _crossing_input_paths(
+    *, key: AggregateKey, bundle: Any,
+) -> List[Tuple[str, ...]]:
     """Join paths a LOCAL aggregate's inputs cross.
 
     A ``Column.filter`` carries its crossings as typed
@@ -168,13 +170,24 @@ def _crossing_input_paths(*, key: AggregateKey, bundle: Any) -> list:
     ``Column.sql``, positional args including an explicit first/last time arg,
     and kwargs — column refs, user template fragments, and non-overridden
     model-default aggregation params) is computed structurally.
+
+    Both sources are UNIONED (DEV-1783): an aggregate whose column filter AND
+    whose source/args/kwargs each cross a different join must report both, or
+    the isolation decision under-counts and a fan-out-multiplying input inlines.
+    Order-stable (filter paths first) and de-duplicated.
     """
-    if key.column_filter_key is not None and key.column_filter_key.referenced_join_paths:
-        return list(key.column_filter_key.referenced_join_paths)
+    out: List[Tuple[str, ...]] = []
+    if key.column_filter_key is not None:
+        for p in key.column_filter_key.referenced_join_paths:
+            if p not in out:
+                out.append(p)
     source_model = getattr(bundle, "source_model", None)
-    return list(compute_aggregate_input_join_paths(
+    for p in compute_aggregate_input_join_paths(
         key=key,
         anchor_model=source_model,
         anchor_relation=source_model.name if source_model is not None else "",
         bundle=bundle,
-    ))
+    ):
+        if p not in out:
+            out.append(p)
+    return out
