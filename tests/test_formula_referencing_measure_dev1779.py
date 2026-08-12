@@ -344,8 +344,9 @@ def test_generator_raises_on_expression_with_unknown_alias() -> None:
             )
         ],
     )
+    generator = SQLGenerator(dialect="postgres")
     with pytest.raises(ValueError) as exc:
-        SQLGenerator(dialect="postgres").generate(enriched=enriched)
+        generator.generate(enriched=enriched)
     msg = str(exc.value)
     assert "orders.habit_score" in msg
     # The guard must report *all* missing inputs, not just the first.
@@ -370,8 +371,9 @@ def test_generator_raises_on_window_transform_with_unknown_alias() -> None:
             )
         ],
     )
+    generator = SQLGenerator(dialect="postgres")
     with pytest.raises(ValueError) as exc:
-        SQLGenerator(dialect="postgres").generate(enriched=enriched)
+        generator.generate(enriched=enriched)
     msg = str(exc.value)
     assert "orders.running" in msg
     assert "orders.id_count" in msg
@@ -394,8 +396,9 @@ def test_generator_raises_on_self_join_transform_with_unknown_alias() -> None:
             )
         ],
     )
+    generator = SQLGenerator(dialect="postgres")
     with pytest.raises(ValueError) as exc:
-        SQLGenerator(dialect="postgres").generate(enriched=enriched)
+        generator.generate(enriched=enriched)
     msg = str(exc.value)
     assert "orders.shifted" in msg
     assert "orders.id_count" in msg

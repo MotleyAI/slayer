@@ -360,7 +360,7 @@ async def enrich_query(
         for k, v in known_aliases.items():
             if v == prev_alias:
                 known_aliases[k] = new_alias
-        for k, v in list(measure_canonical_key_to_alias.items()):
+        for k, v in measure_canonical_key_to_alias.items():
             if v == prev_alias:
                 measure_canonical_key_to_alias[k] = new_alias
         # Aliases are emitted only as whole quoted identifiers, so matching the
