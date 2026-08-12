@@ -366,7 +366,7 @@ class TestGroupedLocalRowColumnMaxWrapped:
         order_cols = [name for _, name in _outer_order_by_columns(sql)]
         assert order_cols == ["orders.created_at_max", "orders.rev"], sql
 
-    async def test_max_wrap_bypasses_the_aggregation_gate(self, engine) -> None:
+    async def test_wrap_bypasses_the_aggregation_gate(self, engine) -> None:
         """The hidden sort wrap is interned post-bind, so a column that does
         not whitelist ``max`` can still be sorted on — the caller asked to
         SORT, not to aggregate. ``id`` is a primary key (restricted to
@@ -385,9 +385,9 @@ class TestGroupedLocalRowColumnMaxWrapped:
 
 
 # ===========================================================================
-# Group 3 — joined row column -> UnresolvableOrderColumnError.
+# Group 3 — joined row column -> Law-1 join pull / host-rooted CTE (resolves).
 # ===========================================================================
-class TestJoinedRowColumnRejected:
+class TestJoinedRowColumnResolved:
     async def test_joined_row_column_ungrouped_pulls_join_and_splits(
         self, engine,
     ) -> None:
@@ -430,8 +430,8 @@ class TestJoinedRowColumnRejected:
         sql = await _sql(engine, query)
         assert _outer_select_columns(sql) == ["orders.status", "orders._count"], sql
         assert "WITH" in sql.upper(), sql
-        # DESC takes each group's MAXIMUM (D10).
-        assert re.search(r"(?i)\bMAX\s*\(", sql), sql
+        # DESC takes each group's MAXIMUM (D10) of the joined column.
+        assert re.search(r"MAX\(\s*customers\.region\s*\)", sql), sql
 
     async def test_ungrouped_order_by_derived_crossing_column_resolves(
         self, engine,
@@ -509,9 +509,12 @@ class TestJoinedRowColumnRejected:
             order=[OrderItem(column="owners.status", direction="desc")],  # joined
         )
         resp = await engine.execute(query, dry_run=True)
-        assert "owners" in (resp.sql or ""), (
-            f"joined order ref silently bound to the local column.\n"
-            f"SQL:\n{resp.sql}"
+        order_cols = _outer_order_by_columns(resp.sql or "")
+        assert any(
+            "owners" in table or "owners" in name for table, name in order_cols
+        ), (
+            f"joined order ref silently bound to the local column — the outer "
+            f"ORDER BY does not reference owners.\nSQL:\n{resp.sql}"
         )
 
 

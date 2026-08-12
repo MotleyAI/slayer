@@ -856,12 +856,49 @@ def test_aggregate_input_paths_module_exists():
     importlib.import_module("slayer.engine.aggregate_input_paths")
 
 
+class TestCrossingFirstLastStaysRanked:
+    """DEV-1709 x DEV-1748 — a first/last isolates via the RANKED route
+    whatever its inputs do: needing its own ROW ORDERING is the stronger reason
+    and subsumes the crossing one, so the classifier routes it to a ranked CTE
+    BEFORE the crossing-input branch runs. These pin that INTERACTION — a
+    crossing first/last produces ONE flat ranked host plan, not a second
+    cross-model ``_cm_`` plan — which is not redundant with the ranked-render
+    coverage.
+
+    The crossed hop is NOT visible on a host-rooted ranked plan (join_chain is
+    always ``[]``, target_path ``()``); only the ranking TIME arg surfaces it,
+    asserted below for the structural case. The crossings buried in a derived
+    ``Column.sql`` (the source and derived-time-arg cases) are pinned at the
+    RENDER level by the DEV-1748 first/last matrix and ranked-CTE tests
+    (``test_dev1748_first_last_matrix.py`` / ``test_dev1748_ranked_plan.py``)."""
+
+    def test_derived_source_first_last_stays_ranked(self):
+        planned, _ = _s5_plans("region_pay:last(orders.created_at)")
+        _assert_single_ranked_host(planned)
+
+    def test_structural_time_arg_stays_ranked(self):
+        planned, _ = _s5_plans("amount:last(customers.signup_at)")
+        _assert_single_ranked_host(planned)
+        # The one plan-level handle the crossing surfaces on: the ranking key
+        # reaches through the customers join. A non-crossing time arg has path
+        # ``()``, so this is what makes the case discriminate crossing at all.
+        assert planned.ranked_aggregate_plans[0].ranking_time_key.path == (
+            "customers",
+        )
+
+    def test_derived_time_arg_stays_ranked(self):
+        planned, _ = _s5_plans("amount:last(cross_time)")
+        _assert_single_ranked_host(planned)
+
+
 class TestWidenedLaw3TriggerCrossingInputs:
     """DEV-1709 — a LOCAL aggregate isolates host-rooted when ANY input
     crosses a join: source ``Column.sql`` (D1), positional args incl. the
     explicit time arg (D2), kwargs (typed refs, user template fragments,
     and model-default ``AggregationParam`` fragments). ``Column.filter``
-    crossing is the pre-existing DEV-1503 half, pinned above."""
+    crossing is the pre-existing DEV-1503 half, pinned above. The first/last
+    manifestations of these triggers route to the ranked CTE instead — see
+    ``TestCrossingFirstLastStaysRanked``."""
 
     # -- source Column.sql crossing (D1) ---------------------------------
 
@@ -878,20 +915,6 @@ class TestWidenedLaw3TriggerCrossingInputs:
         # expand sibling derived refs before looking for crossed paths.
         _, plans = _s5_plans("doubled_pop:sum")
         _assert_single_host_rooted(plans)
-
-    def test_derived_source_first_last_triggers(self):
-        planned, _ = _s5_plans("region_pay:last(orders.created_at)")
-        _assert_single_ranked_host(planned)
-
-    # -- positional args incl. explicit time arg (D2) --------------------
-
-    def test_structural_time_arg_triggers(self):
-        planned, _ = _s5_plans("amount:last(customers.signup_at)")
-        _assert_single_ranked_host(planned)
-
-    def test_derived_time_arg_triggers(self):
-        planned, _ = _s5_plans("amount:last(cross_time)")
-        _assert_single_ranked_host(planned)
 
     # -- kwargs ----------------------------------------------------------
 

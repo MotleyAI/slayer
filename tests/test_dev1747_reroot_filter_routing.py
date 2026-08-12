@@ -25,12 +25,20 @@ expected drops.
 D7 scopes this to FILTERS. An unreachable rerooted DIMENSION still drops (the
 documented reroot contract), but structurally — not via a swallowed exception.
 
+Coverage note: the common forward abandon (``not needs_reroot``) is exercised
+by the target-grain dispatch tests below; the late ``_forward_only()`` fallbacks
+(a missing target/host-prebound, routing that applies nothing, or an absent
+sub-plan aggregate) guard internal invariants unreachable from a well-formed
+query and are intentionally not pinned.
+
 Refs: DEV-1747 (B6, D6, D7), DEV-1742 §5.4 / §5.5.
 """
 from __future__ import annotations
 
+import ast
 import os
 import tempfile
+import textwrap
 import warnings
 
 import pytest
@@ -345,9 +353,13 @@ class TestInternalFailuresRaise:
     def test_no_bare_except_in_the_reroot_path(self) -> None:
         """Scoped to the reroot functions rather than the whole module, so an
         unrelated ``except Exception`` elsewhere in the file cannot fail this
-        (or, worse, be deleted to make it pass)."""
+        (or, worse, be deleted to make it pass).
 
-
+        The B6 defect was a broad tuple ``except (ValueError, …)`` — not a
+        literal ``except Exception`` — and a bare ``except:`` hides the same
+        thing. All three forms must fail this, and a rename must not skip it."""
+        broad = {"Exception", "BaseException", "ValueError"}
+        checked = 0
         for name in (
             "_maybe_reroot_cross_model_plan",
             "_plan_filtered_local",
@@ -356,12 +368,32 @@ class TestInternalFailuresRaise:
             target = getattr(cross_model_planner, name, None) or getattr(
                 cross_model_planner.IsolatedCteCrossModelPlanner, name, None,
             )
-            if target is None:
-                continue
-            source = inspect.getsource(target)
-            assert "except Exception" not in source, (
-                f"{name} swallows all exceptions — that re-creates the B6 defect"
+            assert target is not None, (
+                f"{name} is gone — the reroot path was renamed and this guard "
+                f"now checks nothing"
             )
+            checked += 1
+            tree = ast.parse(textwrap.dedent(inspect.getsource(target)))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.ExceptHandler):
+                    continue
+                assert node.type is not None, (
+                    f"{name} has a bare ``except:`` — re-creates the B6 defect"
+                )
+                caught = (
+                    node.type.elts if isinstance(node.type, ast.Tuple)
+                    else [node.type]
+                )
+                names = {n.id for n in caught if isinstance(n, ast.Name)}
+                # A broad catch that RE-RAISES doesn't swallow — the B6 defect
+                # is the silent drop, not catching per se. Flag only handlers
+                # that catch broad and never raise.
+                reraises = any(isinstance(n, ast.Raise) for n in ast.walk(node))
+                assert not (names & broad) or reraises, (
+                    f"{name} SWALLOWS {sorted(names & broad)} without re-raising "
+                    f"— a swallowed broad error is exactly the B6 defect"
+                )
+        assert checked == 3, "not every reroot function was checked"
 
     def test_planner_failure_propagates_rather_than_warning(self, monkeypatch) -> None:
         """A genuine internal error must not be reported as an expected drop."""
