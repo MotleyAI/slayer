@@ -63,10 +63,11 @@ presence of a field:
 | `normalization` | The input was rewritten to canonical form | `rule_id`, `original`, `normalized`, `location`, `rule_doc_url` (nullable) |
 | `unreachable_filter_dropped` | A filter could not be applied inside a cross-model CTE and was dropped from it (it still applies at the host) | `filter_text`, `location`, `reason` |
 
-The filter still applies at the host, so the rows returned are unchanged; it is
-dropped only from the cross-model CTE, whose aggregate is therefore computed
-without it. Surfaced so whoever wrote the query knows that measure was not
-narrowed.
+The filter still applies to the host's own rows; it is dropped only from the
+cross-model CTE, whose aggregate is therefore computed without it. That measure
+can come back wider than the filter implies — and where it feeds a `HAVING`,
+`ORDER BY`, or pagination, that can change which rows surface — so it is worth
+surfacing to whoever wrote the query.
 
 The body accepts the same fields as a `SlayerQuery`, plus `dry_run`, `explain`, and `variables`. Notable optional fields:
 

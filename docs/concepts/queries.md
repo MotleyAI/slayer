@@ -235,8 +235,8 @@ Multiple entries in the `filters` list are combined with AND.
 
 ### Scalar Functions in Filters
 
-Filters in `SlayerQuery.filters` accept the same closed Mode-B scalar
-allowlist as formulas: string hygiene (`lower`, `upper`, `trim`, `ltrim`,
+Filters in `SlayerQuery.filters` accept the closed Mode-B scalar
+allowlist: string hygiene (`lower`, `upper`, `trim`, `ltrim`,
 `rtrim`, `replace`, `substr`, `substring`, `instr`, `length`, `concat`),
 null handling (`coalesce`, `nullif`, `ifnull`), and math (`round`, `abs`,
 `ceil`, `floor`, `sign`, `log10`, …). The SQL `||` concat operator is
@@ -255,8 +255,8 @@ full list and per-dialect semantics.
 ]
 ```
 
-Names are lowercase only — `LOWER(...)` is rejected. sqlglot translates
-each call to the target dialect's preferred spelling at SQL-generation
+Names are matched case-insensitively — `LOWER(...)` and `lower(...)` both bind.
+sqlglot translates each call to the target dialect's preferred spelling at SQL-generation
 time (`instr` → `POSITION` / `LOCATE` / `STRPOS`, `substr` →
 `SUBSTRING`, `concat` → `||` on SQLite). Raw SQL functions outside the
 allowlist (`json_extract`, `date_trunc`, `CASE WHEN`, …) belong in

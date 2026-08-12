@@ -175,14 +175,15 @@ allocates the transform families (`shifted_` / `sjoin_`) around them, so a
 transform CTE whose preferred name collides with a reserved one renames rather
 than shadows.
 
-Two ratified carve-outs, recorded rather than silently omitted. The T-SQL
-ORDER-BY-detach rewrite and the stage-schema wrapper take `_outer` /
-`_stage_inner` as shared CONSTANTS, not allocator-minted names — the former is a
-post-generation AST pass with no allocator in reach, and each scopes a derived
-table its own pass creates, so a collision could only arise inside that one
-subquery. The structural names `base` / `_base` / `_combined` keep their literal
-spellings but are reserved into the allocator up front, so a user CTE that folds
-onto one of them renames instead.
+Two ratified carve-outs, recorded rather than silently omitted. The structural
+alias constants `_outer` (T-SQL ORDER-BY-detach rewrite), `_stage_inner`
+(stage-schema wrapper) and `_filtered` (filtered transform-chain wrapper) name
+their derived tables directly rather than being allocator-minted — the T-SQL
+rewrite is a post-generation AST pass with no allocator in reach, and each scopes
+a derived table its own pass creates, so a collision could only arise inside that
+one subquery. The structural names `base` / `_base` / `_combined` keep their
+literal spellings but are reserved into the allocator up front, so a user CTE
+that folds onto one of them renames instead.
 
 ### Result-key contract (P10)
 

@@ -72,7 +72,7 @@ Result column naming: `revenue:sum` → `orders.revenue_sum` (colon becomes unde
 
 **Boolean logic**: `AND`, `OR`, `NOT`
 
-**String-hygiene scalars** (lowercase only): `lower`, `upper`, `trim`, `ltrim`, `rtrim`, `replace`, `substr`, `substring`, `instr`, `length`, `concat`. Plus the SQL `||` operator (folded into `concat(...)`). Examples: `"lower(status) = 'active'"`, `"length(replace(x, ',', '')) > 0"`, `"substr(s, 1, instr(s, ',') - 1) = 'first'"`, `"first || ' ' || last = 'jane doe'"`. Calls outside this allowlist (`json_extract`, `coalesce`, …) belong in `Column.sql` / `Column.filter` / `SlayerModel.filters` (Mode A SQL), not query filters.
+**Mode-B scalars** (matched case-insensitively): string hygiene (`lower`, `upper`, `trim`, `ltrim`, `rtrim`, `replace`, `substr`, `substring`, `instr`, `length`, `concat`), null handling (`coalesce`, `nullif`, `ifnull`), and math (`round`, `abs`, `ceil`, `floor`, `sign`, `log10`, …). Plus the SQL `||` operator (folded into `concat(...)`). Examples: `"lower(status) = 'active'"`, `"coalesce(nickname, name) = 'Ada'"`, `"length(replace(x, ',', '')) > 0"`, `"first || ' ' || last = 'jane doe'"`. Raw SQL functions outside the allowlist (`json_extract`, `date_trunc`, …) belong in `Column.sql` / `Column.filter` / `SlayerModel.filters` (Mode A SQL), not query filters.
 
 **Filtering on computed measures**: `"change(revenue:sum) > 0"`, `"last(change(revenue:sum)) < 0"`. Applied as post-filters on the outer query.
 
