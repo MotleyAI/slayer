@@ -176,12 +176,12 @@ transform CTE whose preferred name collides with a reserved one renames rather
 than shadows.
 
 Two ratified carve-outs, recorded rather than silently omitted. The structural
-alias constants `_outer` (T-SQL ORDER-BY-detach rewrite), `_stage_inner`
-(stage-schema wrapper) and `_filtered` (filtered transform-chain wrapper) name
-their derived tables directly rather than being allocator-minted — the T-SQL
-rewrite is a post-generation AST pass with no allocator in reach, and each scopes
-a derived table its own pass creates, so a collision could only arise inside that
-one subquery. The structural names `base` / `_base` / `_combined` keep their
+alias constants `_outer` (outer-wrapper subquery — the base `emit_outer_wrap`
+and the T-SQL ORDER-BY-detach rewrite), `_stage_inner` (stage-schema wrapper) and
+`_filtered` (filtered transform-chain wrapper) name their derived tables directly
+rather than being allocator-minted — the T-SQL rewrite is a post-generation AST
+pass with no allocator in reach, and each alias scopes a derived table its own
+pass creates, so a collision could only arise inside that one subquery. The structural names `base` / `_base` / `_combined` keep their
 literal spellings but are reserved into the allocator up front, so a user CTE
 that folds onto one of them renames instead.
 
