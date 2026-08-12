@@ -20,7 +20,11 @@ import sqlalchemy as sa
 from sqlglot import exp
 
 from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, DataType
-from slayer.core.errors import AmbiguousModelError, ForcedFilterError
+from slayer.core.errors import (
+    AmbiguousModelError,
+    ForcedFilterError,
+    UnresolvableDimensionJoinError,
+)
 from slayer.core.policy import JoinFilterRuleset, SessionPolicy
 from slayer.core.format import NumberFormat, NumberFormatType, format_number
 from slayer.core.models import (
@@ -2923,6 +2927,7 @@ class SlayerQueryEngine:
         dialect: str | None = None,
         *,
         drop_unreachable_filters: bool = False,
+        enforce_join_binding: bool = True,
     ) -> EnrichedQuery:
         """Resolve a SlayerQuery against model definitions into an EnrichedQuery.
 
@@ -2944,6 +2949,13 @@ class SlayerQueryEngine:
                         dialect = self._dialect_for_type(ds.type)
             except Exception:  # noqa: BLE001 — diagnostics only; never block enrichment
                 pass
+
+        # DEV-1780: normalize + route dotted dimension / time-dimension refs
+        # before enrichment. Skipped for the re-rooted CTE and virtual stages.
+        if enforce_join_binding and model.source_model_origin is None:
+            query = await self._route_dotted_dimension_refs(
+                query=query, model=model, named_queries=named_queries or {},
+            )
 
         async def _resolve_join_target(target_model_name, named_queries):
             nq = named_queries or {}
@@ -3035,6 +3047,7 @@ class SlayerQueryEngine:
             resolve_model=_resolve_model_for_expansion,
             dialect=dialect,
             drop_unreachable_filters=drop_unreachable_filters,
+            enforce_join_binding=enforce_join_binding,
         )
 
         # Post-process: build re-rooted enriched queries for cross-model measures
@@ -3387,6 +3400,133 @@ class SlayerQueryEngine:
         if col is None:
             return None
         return col, terminal_model
+
+    async def _route_dotted_dimension_refs(
+        self,
+        *,
+        query: SlayerQuery,
+        model: SlayerModel,
+        named_queries: dict,
+    ) -> SlayerQuery:
+        """DEV-1780: normalize and route dotted dimension / time-dimension refs.
+
+        A dotted path resolves only when every hop is a direct join. A SHORT
+        FORM (target model only, e.g. ``Consumer.name``) with exactly one route
+        to the target is rewritten to the full routed path (result key = full
+        path). Ambiguous / unreachable short forms and explicit chains with a
+        broken hop are rejected with a route-aware ``UnresolvableDimensionJoinError``.
+
+        Routing only runs within a single datasource and is deferred when named-
+        query stages are in scope (their virtual models are not in the stored
+        graph); such refs fall through to enrichment's binding guard. Only
+        ``_NoJoinError`` triggers routing — pre-existing circular / missing-model
+        ``ValueError``s keep their own diagnostics.
+        """
+        # Strip redundant source-model prefixes (``Invoice.status`` -> local,
+        # ``Invoice.A.col`` -> ``A.col``) so routing sees canonical refs.
+        query = query.strip_source_model_prefix()
+        if not (query.dimensions or query.time_dimensions):
+            return query
+
+        can_route = bool(model.data_source) and not named_queries
+        graph: "JoinGraph | None" = None
+        rewrite: dict[tuple[str, str], str] = {}
+
+        async def _route_ref(ref: ColumnRef) -> ColumnRef:
+            nonlocal graph
+            if ref.model is None:
+                return ref
+            segments = ref.model.split(".")
+            try:
+                await self._walk_join_chain(
+                    source_model=model, hop_names=segments,
+                    named_queries=named_queries, strict_missing_join=False,
+                )
+                return ref  # valid direct-join chain
+            except _NoJoinError:
+                pass
+            if not can_route:
+                return ref  # defer to enrichment's binding guard
+            if graph is None:
+                graph = JoinGraph.build_from_models(
+                    await self._load_candidate_models(data_source=model.data_source)
+                )
+            target = segments[-1]
+            n_routes = graph.count_simple_paths(model.name, target)
+            route = graph.shortest_path(model.name, target)
+            if len(segments) == 1 and n_routes == 1 and route:
+                new_model = ".".join(route)
+                rewrite[(ref.model, ref.name)] = new_model
+                return ref.model_copy(update={"model": new_model})
+            raise UnresolvableDimensionJoinError(
+                reference=f"{ref.model}.{ref.name}",
+                root_model=model.name,
+                reason=self._unresolvable_reason(target=target, n_routes=n_routes),
+                available_joins=[j.target_model for j in model.joins],
+                suggested_path=self._suggested_path(
+                    target=target, leaf=ref.name, n_routes=n_routes, route=route,
+                ),
+            )
+
+        updates: dict[str, Any] = {}
+        if query.dimensions:
+            routed = [await _route_ref(d) for d in query.dimensions]
+            if any(a is not b for a, b in zip(routed, query.dimensions)):
+                updates["dimensions"] = routed
+        if query.time_dimensions:
+            new_tds, changed = [], False
+            for td in query.time_dimensions:
+                routed_dim = await _route_ref(td.dimension)
+                if routed_dim is not td.dimension:
+                    new_tds.append(td.model_copy(update={"dimension": routed_dim}))
+                    changed = True
+                else:
+                    new_tds.append(td)
+            if changed:
+                updates["time_dimensions"] = new_tds
+
+        # Keep dependent references consistent with the rewritten dimensions.
+        if rewrite:
+            if query.order:
+                new_order, order_changed = [], False
+                for item in query.order:
+                    new_model = rewrite.get((item.column.model, item.column.name))
+                    if new_model is not None:
+                        new_order.append(item.model_copy(
+                            update={"column": item.column.model_copy(update={"model": new_model})}
+                        ))
+                        order_changed = True
+                    else:
+                        new_order.append(item)
+                if order_changed:
+                    updates["order"] = new_order
+            if query.main_time_dimension and "." in query.main_time_dimension:
+                mtd_model, _, mtd_leaf = query.main_time_dimension.rpartition(".")
+                new_model = rewrite.get((mtd_model, mtd_leaf))
+                if new_model is not None:
+                    updates["main_time_dimension"] = f"{new_model}.{mtd_leaf}"
+
+        return query.model_copy(update=updates) if updates else query
+
+    @staticmethod
+    def _unresolvable_reason(*, target: str, n_routes: int) -> str | None:
+        if n_routes >= 2:
+            return f"'{target}' is reachable by multiple join paths."
+        if n_routes == 0:
+            return f"'{target}' is not reachable by any join."
+        return None
+
+    @staticmethod
+    def _suggested_path(
+        *, target: str, leaf: str, n_routes: int, route: "list[str] | None"
+    ) -> str | None:
+        """Short form when the target is uniquely reachable; the shortest
+        deterministic full path when reachable by several routes; else none."""
+        if n_routes == 1 and route:
+            return f"{target}.{leaf}"
+        if n_routes >= 2 and route:
+            return ".".join(route) + f".{leaf}"
+        return None
 
     async def _walk_join_chain(
         self,
@@ -3797,6 +3937,7 @@ class SlayerQueryEngine:
             model=target_model,
             named_queries=named_queries,
             drop_unreachable_filters=True,
+            enforce_join_binding=False,
         )
 
         # --- Fix aliases to match main query's expectations ---
