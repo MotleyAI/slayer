@@ -1229,8 +1229,8 @@ def _print_query_warnings(result) -> None:
     """Print query advisories to STDERR.
 
     Stderr specifically, so a piped ``slayer query`` keeps emitting clean data
-    on stdout while the operator still sees that a filter was dropped —
-    something that changes which rows the answer covers (DEV-1745 W5 / D2).
+    on stdout while the operator still sees that a filter was dropped from a
+    cross-model CTE (it still applies at the host).
     """
     for w in (getattr(result, "warnings", None) or []):
         print(f"warning: {w.human_message()}", file=sys.stderr)

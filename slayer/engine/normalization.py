@@ -469,6 +469,9 @@ def _apply_dot_path_in_sql(
                 original=original,
                 normalized="(ambiguous: shadowed by local alias or CTE — not rewritten)",
                 location=location,
+                # Shadowed ref is left untouched — reported, not rewritten
+                # (DEV-1783).
+                rewritten=False,
                 rule_doc_url="docs/agent_input_slack.md#dot-path-in-sql",
             )
             emitted.append(payload)
@@ -597,6 +600,9 @@ def _apply_malformed_date_range(
             original=f"time_dimensions[{i}].date_range={list(date_range)!r}",
             normalized="(ignored — no date filter emitted)",
             location=f"time_dimensions[{i}].date_range",
+            # Reports but does NOT rewrite (planner silently no-ops the range);
+            # the message must not claim a transform (DEV-1783).
+            rewritten=False,
             # No rule_doc_url: docs/agent_input_slack.md does not exist, and a
             # link to a missing page is worse than no link.
         )

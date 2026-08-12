@@ -6258,16 +6258,11 @@ class SQLGenerator:
         if op == "dense_rank":
             return _over(exp.DenseRank(), order=rank_order)
         if op == "ntile":
-            n = kwarg_map.get("n")
-            if not isinstance(n, int):
-                # Decimal-normalised int.
-                try:
-                    n_int = int(n)
-                except (TypeError, ValueError):
-                    raise ValueError(
-                        f"ntile requires a positive integer n, got {n!r}",
-                    )
-                n = n_int
+            # Route through the shared normaliser (as lag / lead do) so bool is
+            # rejected and a non-integral Decimal raises rather than truncating
+            # (DEV-1783). The binder gates this too; this is the render-side
+            # defense-in-depth.
+            n = _normalise_periods(raw=kwarg_map.get("n"), kw="n")
             if n <= 0:
                 raise ValueError(
                     f"ntile requires a positive integer n, got {n!r}",

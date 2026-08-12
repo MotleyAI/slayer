@@ -521,8 +521,13 @@ def _route_host_rooted_filters(
 
     Nothing is ever DROPPED here, so no warning can arise: every filter is
     applied somewhere, either in the CTE or at the host.
+
+    ``where_ids`` stays EMPTY. It is the forward-CTE delegation instruction —
+    "the CTE took this over, so the host base must SKIP it" — but a host-rooted
+    CTE has no forward CTE, and the sub-plan already carries these predicates as
+    its own filters. Only ``applied`` (the audit) is populated (DEV-1783).
     """
-    where_ids: List[BoundFilterId] = []
+    applied_ids: List[BoundFilterId] = []
     for routing in host_filters:
         if routing.text is None:
             continue  # date_range bound — re-attached by the caller, in order
@@ -530,8 +535,8 @@ def _route_host_rooted_filters(
             continue
         if routing.bound is None:
             continue
-        where_ids.append(routing.filter_id)
-    return _FilterRoutes(applied=list(where_ids), where_ids=where_ids)
+        applied_ids.append(routing.filter_id)
+    return _FilterRoutes(applied=applied_ids, where_ids=[])
 
 
 
