@@ -457,3 +457,59 @@ class TestWrapperContract:
         assert report.models == []
         assert report.skipped == []
         assert report.objects == []
+
+
+# ---------------------------------------------------------------------------
+# FK targets follow the sanitized model name
+# ---------------------------------------------------------------------------
+
+
+class TestJoinTargetsUseModelNames:
+    """A join must name the persisted MODEL, not the live object.
+
+    ``__`` is sanitized out of model names, so an FK pointing at
+    ``reports__patient__drug`` has to bind to ``reports_patient_drug``.
+    """
+
+    def test_fk_to_sanitized_table_targets_the_model_name(
+        self, workspace: Path
+    ) -> None:
+        ds = _sqlite_ds(
+            workspace,
+            """
+            CREATE TABLE reports__patient__drug (id INTEGER PRIMARY KEY);
+            CREATE TABLE visits (
+                id INTEGER PRIMARY KEY,
+                report_id INTEGER REFERENCES reports__patient__drug(id)
+            );
+            """,
+        )
+        models = {m.name: m for m in ingest_datasource(datasource=ds)}
+        assert "reports_patient_drug" in models
+
+        visits = models["visits"]
+        assert [j.target_model for j in visits.joins] == ["reports_patient_drug"]
+        # The whole point: the target resolves to a model that exists.
+        assert visits.joins[0].target_model in models
+
+    def test_join_is_dropped_when_the_target_has_no_model(
+        self, workspace: Path
+    ) -> None:
+        """A collided target is skipped, so a join to it would dangle."""
+        ds = _sqlite_ds(
+            workspace,
+            """
+            CREATE TABLE a_b (id INTEGER PRIMARY KEY);
+            CREATE TABLE a__b (id INTEGER PRIMARY KEY);
+            CREATE TABLE refs_it (
+                id INTEGER PRIMARY KEY,
+                x INTEGER REFERENCES a__b(id)
+            );
+            """,
+        )
+        report = ingest_datasource_report(datasource=ds)
+        models = {m.name: m for m in report.models}
+        assert "a__b" in _skipped_names(report)
+
+        refs_it = models["refs_it"]
+        assert all(j.target_model in models for j in refs_it.joins)

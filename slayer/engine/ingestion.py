@@ -625,10 +625,15 @@ def _generate_joins(
     schema: str | None,
     table_set: set[str],
     sa_engine: sa.Engine | None = None,
+    model_name_by_table: dict[str, str] | None = None,
 ) -> list[ModelJoin]:
     """Direct ModelJoins from the source table's own FKs (multi-hop is resolved
     at query time). A composite FK becomes one grouped join, and cardinality is
     inferred from key constraints alone.
+
+    ``model_name_by_table`` maps live object names to the model names they were
+    ingested under; a join names the MODEL, and a target with no model is
+    dropped rather than left dangling.
     """
     groups = _get_fk_constraint_groups(
         inspector=inspector,
@@ -646,6 +651,13 @@ def _generate_joins(
     for ref_table, pairs in groups:
         if ref_table not in referenced_tables:
             continue
+        # Model names strip `__`, so the live name is not always the model name.
+        target_name = (
+            ref_table if model_name_by_table is None
+            else model_name_by_table.get(ref_table)
+        )
+        if target_name is None:
+            continue  # target collided on sanitization and was never ingested
         signature = (ref_table, tuple(pairs))
         if signature in seen_signatures:
             continue
@@ -667,7 +679,7 @@ def _generate_joins(
         )
         joins.append(
             ModelJoin(
-                target_model=ref_table,
+                target_model=target_name,
                 join_pairs=[[s, t] for s, t in pairs],
                 cardinality=cardinality,
             )
@@ -752,6 +764,7 @@ def _introspect_query_columns_via_inspector(
     referenced_tables: set[str],
     fk_columns_by_table: dict[str, set[str]],
     joins: list[ModelJoin] | None = None,
+    live_name_by_model: dict[str, str] | None = None,
 ) -> list[tuple]:
     """Introspect columns from a rollup query or plain table.
 
@@ -790,13 +803,18 @@ def _introspect_query_columns_via_inspector(
     # where the same table appears via multiple paths
     table_path_pairs: list[tuple] = []
     if joins:
+        lookup = live_name_by_model or {}
         for mj in joins:
             if mj.join_pairs and "." in mj.join_pairs[0][0]:
                 prefix = mj.join_pairs[0][0].split(".")[0]
                 path = f"{prefix}.{mj.target_model}"
             else:
                 path = mj.target_model
-            table_path_pairs.append((mj.target_model, path))
+            # The path alias is the MODEL name; introspection needs the live
+            # object name, and sanitization can make the two differ.
+            table_path_pairs.append(
+                (lookup.get(mj.target_model, mj.target_model), path)
+            )
     else:
         # Fallback: one entry per referenced table
         for ref_table in referenced_tables:
@@ -1216,6 +1234,8 @@ def _build_one_model(
     has_cycles: bool,
     fk_columns_by_table: dict[str, set[str]],
     table_set: set[str],
+    model_name_by_table: dict[str, str] | None = None,
+    live_name_by_model: dict[str, str] | None = None,
     internal_tool: str | None = None,
 ) -> SlayerModel:
     """Introspect one live object into a model. Raises on failure; the caller
@@ -1240,6 +1260,7 @@ def _build_one_model(
             schema=schema,
             table_set=table_set,
             sa_engine=sa_engine,
+            model_name_by_table=model_name_by_table,
         )
 
     columns = _introspect_query_columns_via_inspector(
@@ -1251,6 +1272,7 @@ def _build_one_model(
         referenced_tables=referenced,
         fk_columns_by_table=fk_columns_by_table,
         joins=model_joins,
+        live_name_by_model=live_name_by_model,
     )
     columns = _sqlite_probe_integer_columns(
         sa_engine=sa_engine,
@@ -1346,6 +1368,7 @@ def ingest_datasource_report(
         table_set = set(table_names)
 
         name_by_object, skipped = _assign_model_names(objects)
+        live_by_model = {model: live for live, model in name_by_object.items()}
 
         # Build FK graph, check for cycles
         fk_graph = _build_fk_graph(
@@ -1384,6 +1407,8 @@ def ingest_datasource_report(
                         has_cycles=has_cycles,
                         fk_columns_by_table=fk_columns_by_table,
                         table_set=table_set,
+                        model_name_by_table=name_by_object,
+                        live_name_by_model=live_by_model,
                         internal_tool=None if surface_internals else tool,
                     )
                 )

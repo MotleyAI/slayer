@@ -141,14 +141,34 @@ def test_old_column_without_unique_validates() -> None:
     assert c.unique is False
 
 
-def test_old_model_validates_without_new_fields() -> None:
-    """cardinality / unique are additive: pre-existing data validates unchanged.
+def test_current_version_data_without_the_new_fields_needs_no_migration() -> None:
+    """cardinality / unique are additive — they default in with no version change.
 
-    The version is asserted against the model's own default rather than a
-    literal, so an unrelated bump (v8 added ``source_kind``) doesn't read as a
-    bump forced by these fields.
+    Payload is stamped at the CURRENT version, so nothing migrates: if either
+    field ever needed a migration step, the version would have to move and this
+    assertion would fail. (Asserting a literal, or the default, against a
+    migrated v7 payload proves nothing — both pass after any unrelated bump.)
     """
     current_version = SlayerModel.model_fields["version"].default
+    m = SlayerModel.model_validate(
+        {
+            "version": current_version,
+            "name": "orders",
+            "sql_table": "orders",
+            "data_source": "testds",
+            "columns": [{"name": "customer_id", "type": "INT"}],
+            "joins": [
+                {"target_model": "customers", "join_pairs": [["customer_id", "id"]]}
+            ],
+        }
+    )
+    assert m.version == current_version
+    assert m.joins[0].cardinality is None
+    assert m.columns[0].unique is False
+
+
+def test_pre_existing_v7_data_still_validates() -> None:
+    """Older payloads migrate up and the new fields default in."""
     m = SlayerModel.model_validate(
         {
             "version": 7,
@@ -161,7 +181,6 @@ def test_old_model_validates_without_new_fields() -> None:
             ],
         }
     )
-    assert m.version == current_version
     assert m.joins[0].cardinality is None
     assert m.columns[0].unique is False
 
