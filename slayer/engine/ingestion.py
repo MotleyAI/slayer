@@ -713,7 +713,7 @@ def _safe_get_pk_constraint(
     """
     if sa_engine.dialect.name == "sqlite":
         try:
-            result = inspector.get_pk_constraint(table_name, schema=schema)
+            result = inspector.get_pk_constraint(table_name=table_name, schema=schema)
         except Exception:
             return {"constrained_columns": []}
         return result if isinstance(result, dict) else {"constrained_columns": []}
