@@ -278,6 +278,27 @@ examples:
         default=None,
         help="Comma-separated list of tables to exclude",
     )
+    ingest_parser.add_argument(
+        "--no-views",
+        dest="include_views",
+        action="store_false",
+        default=True,
+        help=(
+            "Skip database views and materialized views (they are ingested "
+            "by default)"
+        ),
+    )
+    ingest_parser.add_argument(
+        "--surface-internals",
+        action="store_true",
+        default=False,
+        help=(
+            "Ingest recognised ELT/migration housekeeping tables (_dlt_*, "
+            "_airbyte_*, alembic_version, flyway_schema_history, …) visible "
+            "instead of hidden. Affects models this run CREATES; to unhide "
+            "one an earlier run already created, use edit_model(hidden=false)."
+        ),
+    )
     _add_storage_arg(ingest_parser)
 
     # ── validate-models ───────────────────────────────────────────────
@@ -522,6 +543,25 @@ examples:
         "--exclude",
         default=None,
         help="(with --ingest) Comma-separated list of tables to exclude",
+    )
+    datasources_create_parser.add_argument(
+        "--no-views",
+        dest="include_views",
+        action="store_false",
+        default=True,
+        help=(
+            "(with --ingest) Skip database views and materialized views "
+            "(they are ingested by default)"
+        ),
+    )
+    datasources_create_parser.add_argument(
+        "--surface-internals",
+        action="store_true",
+        default=False,
+        help=(
+            "(with --ingest) Ingest recognised ELT/migration housekeeping "
+            "tables visible instead of hidden"
+        ),
     )
     datasources_create_parser.add_argument(
         "--years",
@@ -1374,12 +1414,40 @@ def _run_ingest(args):
             schema=args.schema,
             include_tables=_parse_csv_arg(args.include),
             exclude_tables=_parse_csv_arg(args.exclude),
+            include_views=getattr(args, "include_views", True),
+            surface_internals=getattr(args, "surface_internals", False),
         )
     )
+
+    # Gate on ``objects``, not ``additions``: a schema whose objects are all
+    # already in sync must stay quiet, but a truly empty schema must not print
+    # nothing and exit 0 (which reads as "empty" to a user with only views).
+    if not (
+        result.additions
+        or result.to_delete
+        or result.errors
+        or result.skipped
+        or result.objects
+    ):
+        from slayer.engine.ingestion import _empty_ingest_message
+
+        print(
+            _empty_ingest_message(
+                schema_name=args.schema or "",
+                ds=ds,
+                retry_hint=(
+                    "Try re-running with --schema set to one of these."
+                ),
+            )
+        )
+        sys.exit(1)
+
     for addition in result.additions:
         _print_ingest_addition(addition)
-    _print_ingest_drift_and_errors(result)
-    if result.errors:
+    _print_ingest_drift_and_errors(result, data_source=args.datasource)
+    # A skip means we declined to ingest a perfectly valid object, so it fails
+    # the command — `--exclude <name>` is the documented way to make it green.
+    if result.errors or result.skipped:
         sys.exit(1)
 
 
@@ -1943,23 +2011,33 @@ def _run_datasources_create(args, storage):
     if not args.ingest:
         return
 
-    from slayer.engine.ingestion import ingest_datasource
+    from slayer.engine.ingestion import (
+        _print_ingest_drift_and_errors,
+        ingest_datasource_report,
+    )
 
     include = [t for t in (s.strip() for s in args.include.split(",")) if t] if args.include else None
     exclude = [t for t in (s.strip() for s in args.exclude.split(",")) if t] if args.exclude else None
 
     try:
-        models = ingest_datasource(
+        # Report form, not models-only ``ingest_datasource``: otherwise this
+        # path hides recognised internals and skips with no output at all.
+        report = ingest_datasource_report(
             datasource=ds,
             schema=args.schema,
             include_tables=include,
             exclude_tables=exclude,
+            include_views=getattr(args, "include_views", True),
+            surface_internals=getattr(args, "surface_internals", False),
         )
     except Exception as e:
         print(f"Ingestion failed: {e}")
         sys.exit(1)
 
-    _persist_ingested_models(models, storage, assume_yes=args.yes)
+    _persist_ingested_models(report.models, storage, assume_yes=args.yes)
+    # After persistence, so the sections comment on what was just written. Exit
+    # stays 0 — creating the datasource succeeded, whatever was skipped/hidden.
+    _print_ingest_drift_and_errors(report, data_source=ds.name)
 
 
 def _run_datasources_create_demo(args, storage):  # NOSONAR S3776 — linear demo-bootstrap flow (build → confirm → save → optional ingest); branches are sequential UX guards, not nested logic

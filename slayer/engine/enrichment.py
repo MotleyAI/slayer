@@ -347,6 +347,35 @@ async def enrich_query(
                 return True
         return False
 
+    def _repoint_alias(prev_alias: str, new_alias: str) -> None:
+        """DEV-1779: repoint every reference to ``prev_alias`` onto ``new_alias``.
+
+        A formula/transform enriched before the sibling measure it references
+        freezes that sibling's canonical alias (``orders.id_count``) into its
+        expression SQL / transform input. When the sibling is later renamed to
+        its declared name (``orders.order_count``), follow the rename in every
+        carrier: the alias resolver, the provenance-merge index, and the
+        already-frozen ``EnrichedExpression.sql`` / ``EnrichedTransform``.
+        """
+        if prev_alias == new_alias:
+            return
+        for k, v in known_aliases.items():
+            if v == prev_alias:
+                known_aliases[k] = new_alias
+        for k, v in measure_canonical_key_to_alias.items():
+            if v == prev_alias:
+                measure_canonical_key_to_alias[k] = new_alias
+        # Aliases are emitted only as whole quoted identifiers, so matching the
+        # closing quote is exact: ``"orders.id_count"`` never matches the
+        # prefix of ``"orders.id_count_2"``.
+        quoted_prev, quoted_new = f'"{prev_alias}"', f'"{new_alias}"'
+        for e in enriched_expressions:
+            if quoted_prev in e.sql:
+                e.sql = e.sql.replace(quoted_prev, quoted_new)
+        for t in enriched_transforms:
+            if t.measure_alias == prev_alias:
+                t.measure_alias = new_alias
+
     async def _ensure_aggregated_measure(
         alias_key: str,
         measure_name: str,
@@ -1492,12 +1521,11 @@ async def enrich_query(
                                 break
                         known_aliases[target_name] = target_alias
                         known_aliases[canonical_name] = target_alias
-                        # DEV-1444 provenance merge: any canonical key
-                        # currently pointing at the pre-rename alias must
-                        # follow the rename.
-                        for k, v in list(measure_canonical_key_to_alias.items()):
-                            if v == prev_alias:
-                                measure_canonical_key_to_alias[k] = target_alias
+                        # DEV-1444 provenance merge + DEV-1779 frozen-carrier
+                        # rewrite: repoint resolver / provenance entries AND
+                        # any expression/transform that already froze the
+                        # pre-rename intercept alias onto the new alias.
+                        _repoint_alias(prev_alias, target_alias)
                         # canonical_to_user_name only fires when the
                         # user explicitly renamed via qfield.name; the
                         # auto-rename to cross-model canonical doesn't
@@ -1657,12 +1685,12 @@ async def enrich_query(
                         break
                 known_aliases[qfield.name] = user_alias
                 known_aliases[canonical_name] = user_alias
-                # DEV-1444 provenance merge: any canonical key currently
-                # pointing at the pre-rename alias must follow the rename
-                # so later auto-extracted refs collapse onto the new alias.
-                for k, v in list(measure_canonical_key_to_alias.items()):
-                    if v == prev_alias:
-                        measure_canonical_key_to_alias[k] = user_alias
+                # DEV-1444 provenance merge + DEV-1779 frozen-carrier rewrite:
+                # any resolver / provenance entry pointing at the pre-rename
+                # alias must follow the rename, AND any expression/transform
+                # that already froze the pre-rename alias must be rewritten so
+                # a formula enriched before this measure doesn't dangle.
+                _repoint_alias(prev_alias, user_alias)
                 # DEV-1443: record the canonical → user-name mapping so
                 # query filters and ORDER BY items referencing the raw
                 # ``col:agg`` formula can be remapped to the user alias

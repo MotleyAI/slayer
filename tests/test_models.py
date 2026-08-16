@@ -2294,12 +2294,12 @@ class TestColumnSampledValuesAndDistinctCount:
 
 
 class TestSlayerModelVersionBump:
-    """DEV-1480: SlayerModel.version bumps from 6 to 7. v6→v7 is a no-op
-    forward migration; the bump is purely about the new optional fields on
-    Column."""
+    """SlayerModel.version bumps from 7 to 8. v7→v8 is a no-op forward
+    migration; the bump is purely about the new optional ``source_kind``
+    field."""
 
-    def test_slayer_model_version_is_7(self) -> None:
+    def test_slayer_model_version_is_8(self) -> None:
         from slayer.core.models import SlayerModel
 
         m = SlayerModel(name="orders", sql_table="orders", data_source="ds")
-        assert m.version == 7
+        assert m.version == 8

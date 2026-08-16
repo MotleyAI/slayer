@@ -1826,3 +1826,55 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
 # integration site for cross-stage dotted refs and is covered by tests
 # in `TestCrossStageFilter` (#5).
 # ===========================================================================
+
+
+# ===========================================================================
+# DEV-1779 — the cross-model-INTERCEPT rename site.
+#
+# A downstream-stage formula that references an intercepted cross-model
+# aggregate BEFORE that same aggregate is selected+renamed must not orphan
+# the frozen reference. This exercises the second rename site of the fix
+# (the intercept branch), distinct from the local-agg site covered in
+# tests/test_formula_referencing_measure_dev1779.py.
+# ===========================================================================
+
+
+def _dev1779_undeclared(sql: str) -> set[str]:
+    """Dotted quoted aliases referenced but never declared with ``AS`` — a
+    non-empty result means the SQL references a column no CTE projects."""
+    import re
+
+    declared = set(re.findall(r'AS "([^"]+)"', sql))
+    referenced = {ref for ref in re.findall(r'"([^"]+)"', sql) if "." in ref}
+    return referenced - declared
+
+
+class TestDev1779InterceptRename:
+    async def test_formula_before_renamed_intercept_ref(self, tmp_path) -> None:
+        """Outer stage lists a formula over ``customers.revenue:sum`` FIRST
+        (freezing the intercept alias), then selects the same cross-model
+        aggregate with an explicit rename. Before the fix the frozen formula
+        reference is orphaned when the intercept measure is renamed."""
+        engine = await _engine_with_real_sqlite(tmp_path)
+        inner = SlayerQuery(
+            name="s1",
+            source_model="orders",
+            dimensions=["customers.regions.name"],
+            measures=[{"formula": "customers.revenue:sum"}],
+        )
+        outer = SlayerQuery(
+            source_model="s1",
+            measures=[
+                {"formula": "customers.revenue:sum / *:count", "name": "avg_rev"},
+                {"formula": "customers.revenue:sum", "name": "cust_rev"},
+            ],
+        )
+        dry = await engine.execute(query=[inner, outer], dry_run=True)
+        assert dry.sql is not None
+        assert _dev1779_undeclared(dry.sql) == set(), dry.sql
+
+        resp = await engine.execute(query=[inner, outer])  # must execute
+        row = resp.data[0]
+        # 3 region groups, total revenue 1500 → cust_rev=1500, avg_rev=1500/3.
+        assert row["s1.cust_rev"] == pytest.approx(1500.0), row
+        assert row["s1.avg_rev"] == pytest.approx(500.0), row

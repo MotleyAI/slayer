@@ -49,6 +49,7 @@ from slayer.engine.ingestion import (
     _sa_type_to_data_type,
 )
 from slayer.sql.client import SlayerSQLClient
+from slayer.sql.engine_factory import EngineCacheKey
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +111,12 @@ class ModelAddition(BaseModel):
     # DEV-1538: persisted INT columns whose type widened (to DOUBLE or TEXT)
     # because the SQLite affinity probe disagreed with the declared type.
     widened_columns: list[str] = Field(default_factory=list)
+    # Output-only, so the renderer can label a view-backed model without
+    # reloading it; the durable record is ``SlayerModel.source_kind``.
+    source_kind: str | None = None
+    # Human-readable transition (e.g. "view → table") when a re-ingest found
+    # the live object changed kind; None when nothing changed.
+    kind_change: str | None = None
 
 
 class IngestionError(BaseModel):
@@ -126,6 +133,18 @@ class IdempotentIngestResult(BaseModel):
     additions: list[ModelAddition] = Field(default_factory=list)
     to_delete: list[ToDeleteEntry] = Field(default_factory=list)
     errors: list[IngestionError] = Field(default_factory=list)
+    # Live objects that could not be modelled at all — separate from ``errors``
+    # because cause and fix differ ("can't represent this name" vs "couldn't
+    # persist this model").
+    skipped: list[Any] = Field(default_factory=list)
+    # Every live object discovered this pass, modelled or not — lets the CLI
+    # tell an empty schema (worth a hint) from a no-op re-ingest (worth
+    # silence). ``Any`` avoids a circular import; entries are ``IngestableObject``.
+    objects: list[Any] = Field(default_factory=list)
+    # Recognised ELT/migration bookkeeping modelled ``hidden``. Effective
+    # post-merge state, not the scan's verdict (the merge preserves a persisted
+    # ``hidden``). ``Any`` avoids a circular import; entries are ``InternalTable``.
+    hidden_internals: list[Any] = Field(default_factory=list)
 
 
 class AppliedEntry(BaseModel):
@@ -1643,15 +1662,26 @@ def _live_schema_for_datasource(
     datasource: DatasourceConfig,
     schema: str | None = None,
 ) -> dict[str, LiveTable]:
-    """Return ``{table_name: LiveTable}`` for every live table in the DS,
-    using SQLAlchemy ``Inspector`` and the same fallback path as
-    auto-ingestion (``slayer/engine/ingestion.py``).
+    """Return ``{object_name: LiveTable}`` for every live table AND view in the
+    DS, using the same ``Inspector`` fallback path as auto-ingestion.
+
+    Views are included unconditionally — no ``include_views`` gate, by design.
+    The map is only a lookup target, so views can't manufacture a model; but a
+    model whose ``sql_table`` names a view would otherwise resolve to ``None``
+    and be reported as a ``WholeModelDelete`` that ``--force-clean`` acts on.
+    Gating on ``--no-views`` would re-arm that data-loss bug.
     """
+    from slayer.engine.ingestion import _dispose_quietly, list_ingestable_objects
     from slayer.sql import engine_factory
     sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
     try:
         inspector = sa.inspect(sa_engine)
-        table_names = list(inspector.get_table_names(schema=schema))
+        table_names = [
+            o.name
+            for o in list_ingestable_objects(
+                inspector=inspector, schema=schema, include_views=True
+            )
+        ]
         out: dict[str, LiveTable] = {}
         for table_name in table_names:
             try:
@@ -1674,8 +1704,9 @@ def _live_schema_for_datasource(
         # Same rationale as ``ingest_datasource``: this is a one-shot
         # admin path. Disposing releases the underlying connection so
         # external direct file access (e.g. ``duckdb.connect(file)``)
-        # in the same process isn't blocked.
-        sa_engine.dispose()
+        # in the same process isn't blocked. Quiet, so a raising dispose
+        # can't replace an in-flight introspection error.
+        _dispose_quietly(sa_engine)
 
 
 def _introspect_one_table(
@@ -2051,7 +2082,7 @@ async def _collect_sql_diffs(
     *,
     datasource: DatasourceConfig,
     sql_models: list[SlayerModel],
-    sql_clients: dict[tuple[str, str], SlayerSQLClient] | None,
+    sql_clients: dict[EngineCacheKey, SlayerSQLClient] | None,
 ) -> dict[str, tuple[ToDeleteEntry | None, set[str]]]:
     """Trial-execute each sql-mode model concurrently and produce its diff."""
     out: dict[str, tuple[ToDeleteEntry | None, set[str]]] = {}
@@ -2087,7 +2118,7 @@ async def validate_datasource(
     *,
     datasource: DatasourceConfig,
     models: list[SlayerModel],
-    sql_clients: dict[tuple[str, str], SlayerSQLClient] | None = None,
+    sql_clients: dict[EngineCacheKey, SlayerSQLClient] | None = None,
 ) -> list[ToDeleteEntry]:
     """Validate every persisted model in ``models`` (all in the same DS)
     against the live schema of ``datasource``. Read-only.
