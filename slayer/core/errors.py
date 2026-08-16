@@ -473,10 +473,13 @@ class RenderContextMissingFacilityError(SlayerError, ValueError):
         self.facility = facility
         self.detail = detail
         suffix = f" ({detail})" if detail else ""
-        super().__init__(
-            f"Rendering a {key_kind} requires the {facility!r} render-context "
-            f"facility, which was not supplied{suffix}."
-        )
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=(
+                f"Rendering a {key_kind} requires the {facility!r} "
+                f"render-context facility, which was not supplied{suffix}."
+            ),
+        ))
 
 
 class IdCollisionError(SlayerError, ValueError):

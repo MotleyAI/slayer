@@ -27,7 +27,7 @@ from its own scope's environment is an error rather than a silent drop.
 
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Dict
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
@@ -80,15 +80,16 @@ class OrderEnv(BaseModel):
     ranked_cte: Dict[str, exp.Expression] = Field(default_factory=dict)
     transform_step: Dict[str, exp.Expression] = Field(default_factory=dict)
     outer_composite: Dict[str, exp.Expression] = Field(default_factory=dict)
-    #: Owns the null-ordering spelling (P-H). Defaults to the portable base.
-    dialect: Optional[SqlDialect] = None
+    #: Owns the null-ordering spelling (P-H). Required so no render site can
+    #: silently fall back to a default dialect's null ordering.
+    dialect: SqlDialect
 
     @classmethod
     def uniform(
         cls,
         refs: Dict[str, exp.Expression],
         *,
-        dialect: Optional[SqlDialect] = None,
+        dialect: SqlDialect,
     ) -> "OrderEnv":
         """An environment where every scope names a value the same way.
 
@@ -111,8 +112,6 @@ if _MISSING_ARMS:  # pragma: no cover - import-time structural guard
         f"query that uses it.",
     )
 
-_DEFAULT_DIALECT = SqlDialect()
-
 
 def resolve_order_term(*, entry: OrderEntry, env: OrderEnv) -> exp.Ordered:
     """One ``OrderEntry`` → one ``ORDER BY`` term.
@@ -129,7 +128,6 @@ def resolve_order_term(*, entry: OrderEntry, env: OrderEnv) -> exp.Ordered:
             f"{entry.scope.value} scope did not materialise "
             f"(it carries {sorted(refs)}).",
         )
-    dialect = env.dialect or _DEFAULT_DIALECT
-    return dialect.build_ordered(
+    return env.dialect.build_ordered(
         ref.copy(), descending=entry.direction == "desc", nulls=entry.nulls,
     )

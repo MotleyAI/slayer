@@ -32,7 +32,7 @@ from typing import FrozenSet, List, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, INTEGER_AGGREGATIONS
 from slayer.core.format import NumberFormat
 from slayer.core.keys import (
     AggregateKey,
@@ -163,9 +163,6 @@ class StrictQueryCarrier(BaseModel):
 # Key -> slot metadata
 # ---------------------------------------------------------------------------
 
-_COUNT_AGGREGATIONS: FrozenSet[str] = frozenset(
-    {"count", "count_distinct", "count_distinct_approx"}
-)
 _FLOAT_AGGREGATIONS: FrozenSet[str] = frozenset({
     "avg", "weighted_avg", "median",
     "stddev_samp", "stddev_pop", "var_samp", "var_pop",
@@ -191,7 +188,7 @@ def aggregated_type(
     """
     if measure_name == "*":
         return DataType.INT
-    if aggregation in _COUNT_AGGREGATIONS:
+    if aggregation in INTEGER_AGGREGATIONS:
         return DataType.INT
     if aggregation in _FLOAT_AGGREGATIONS:
         return DataType.DOUBLE

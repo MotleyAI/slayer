@@ -174,6 +174,16 @@ BUILTIN_AGGREGATIONS: frozenset[str] = frozenset({
     "corr", "covar_samp", "covar_pop",
 })
 
+# Aggregations whose result is always an integer count, independent of the
+# source column's type/format. Single source of truth shared by
+# ``aggregated_type`` (slot DataType) and ``_infer_aggregated_format`` (response
+# NumberFormat) so the two cannot drift on the integer bucket; a drift-guard
+# test pins both against it. The float/inherit split for stat/parametric aggs
+# legitimately differs between type and display format (see DEV-1788).
+INTEGER_AGGREGATIONS: frozenset[str] = frozenset({
+    "count", "count_distinct", "count_distinct_approx",
+})
+
 # DEV-1576: unambiguous aggregation-name aliases that LLM agents routinely
 # emit. ``normalize_aggregation_name`` lowercases the incoming token and maps
 # it through this table; the result is only adopted when it lands in

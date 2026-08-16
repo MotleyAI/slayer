@@ -802,7 +802,11 @@ def _canonical_name(key: ValueKey) -> str:  # NOSONAR(S3776) — sequential isin
         # explicit ``_agg_<name>`` placeholder for a source exposing neither a
         # leaf nor a column name (deliberately NOT the star form, so such a
         # slot stays distinguishable from a real ``*:count``).
-        return canonical_aggregate_alias(key, profile="declared_name")
+        alias = canonical_aggregate_alias(key, profile="declared_name")
+        # Only the ``stage_formula`` profile ever declines (returns None);
+        # ``declared_name`` always yields a name.
+        assert alias is not None
+        return alias
     if isinstance(key, TransformKey):
         return f"_{key.op}_inner"
     if isinstance(key, ArithmeticKey):

@@ -21,7 +21,7 @@ existing engine-layer expansion/scan helpers (D-G wrap-and-reuse).
 
 from __future__ import annotations
 
-from typing import List, Optional, Tuple, Union
+from typing import List, Literal, Optional, Tuple, Union
 
 import sqlglot
 from pydantic import BaseModel, ConfigDict, Field
@@ -52,6 +52,7 @@ install_reserved_keywords()
 # by the call site — never sniffed from the text (see ``ScopeFrame._enter``).
 _PREDICATE = "predicate"
 _EXPRESSION = "expression"
+_Grammar = Literal["predicate", "expression"]
 
 # A ref that can enter a scope. Stage 2 exercises structural column refs, derived
 # columns, and free Mode-A / predicate text; later stages widen this union.
@@ -150,7 +151,7 @@ class ScopeFrame(BaseModel):
         self,
         sql: str,
         *,
-        grammar: str,
+        grammar: _Grammar,
         consumer: "ScopeFrame | None",
         location: Optional[str],
     ) -> exp.Expression:
@@ -212,7 +213,7 @@ class ScopeFrame(BaseModel):
         self,
         text: str,
         *,
-        grammar: str,
+        grammar: _Grammar,
         fragment: str,
         location: Optional[str],
     ) -> exp.Expression:
@@ -224,7 +225,15 @@ class ScopeFrame(BaseModel):
         soft failures this replaces both turned a broken fragment into silently
         wrong SQL.
         """
-        parse = parse_predicate if grammar == _PREDICATE else parse_expression
+        if grammar == _PREDICATE:
+            parse = parse_predicate
+        elif grammar == _EXPRESSION:
+            parse = parse_expression
+        else:  # pragma: no cover — the _Grammar Literal forbids other values
+            raise ValueError(
+                f"Unknown Mode-A grammar {grammar!r}; expected "
+                f"{_PREDICATE!r} or {_EXPRESSION!r}.",
+            )
         try:
             return parse(sql=text, target_dialect=self.dialect, prequote=False)
         except ParseError as exc:

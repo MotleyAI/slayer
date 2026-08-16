@@ -26,7 +26,8 @@ Dialect-specific rewrites:
   normalises both into a generic ``Log(base, expression)`` node, which
   is correct numerically but breaks formula round-tripping for benchmark
   agents reading ``last_sql`` and trips dialects without a 2-arg
-  ``LOG``. Allowlists mirror ``slayer/sql/generator.py``.
+  ``LOG``. The per-dialect policy is the shared ``rewrite_log_aliases``
+  (driven by ``SqlDialect.should_use_native_log``), not a local allowlist.
 
 Dormant in 7a — no engine wiring. The binder is the first consumer.
 """
@@ -40,7 +41,9 @@ from sqlglot import exp
 
 from slayer.core.errors import IllegalWindowInFilterError
 from slayer.core.keys import SqlExprKey
+from slayer.sql.dialects import get_dialect
 from slayer.sql.dialects.sqlite import rewrite_sqlite_json_extract
+from slayer.sql.render.parse import rewrite_log_aliases
 from slayer.sql.window_detect import has_window_function as _has_window_function
 
 __all__ = [
@@ -49,45 +52,6 @@ __all__ = [
     "has_window_function",
     "parse_sql_expr",
 ]
-
-
-# Dialect allowlists for log10 / log2 preservation. Mirrors
-# ``slayer/sql/generator.py`` — keep in sync.
-_LOG10_NATIVE_DIALECTS: frozenset[str] = frozenset({
-    "sqlite", "postgres", "duckdb", "mysql", "clickhouse",
-    "snowflake", "bigquery", "redshift",
-    "trino", "presto", "databricks", "spark", "tsql",
-})
-_LOG2_NATIVE_DIALECTS: frozenset[str] = frozenset({
-    "sqlite", "postgres", "duckdb", "mysql", "clickhouse",
-    "bigquery", "trino", "presto", "databricks", "spark",
-})
-
-
-def _rewrite_log_aliases_for(
-    node: exp.Expression, *, dialect: Optional[str],
-) -> exp.Expression:
-    """Restore ``log10(x)`` / ``log2(x)`` from sqlglot's generic
-    ``Log(base, expression)`` for dialects with native single-arg aliases.
-
-    No-op on non-``Log`` nodes and on ``Log`` nodes with non-literal or
-    non-{10, 2} bases. Mirrors ``SQLGenerator._rewrite_log_aliases``.
-    """
-    if not isinstance(node, exp.Log):
-        return node
-    base = node.args.get("this")
-    arg = node.args.get("expression")
-    if arg is None or not isinstance(base, exp.Literal) or base.is_string:
-        return node
-    try:
-        base_val = float(base.this)
-    except (TypeError, ValueError):
-        return node
-    if base_val == 10 and dialect in _LOG10_NATIVE_DIALECTS:
-        return exp.Anonymous(this="log10", expressions=[arg.copy()])
-    if base_val == 2 and dialect in _LOG2_NATIVE_DIALECTS:
-        return exp.Anonymous(this="log2", expressions=[arg.copy()])
-    return node
 
 
 def _parse_inner(text: str, *, dialect: Optional[str]) -> exp.Expression:
@@ -137,9 +101,22 @@ def parse_sql_expr(
     if dialect == "sqlite":
         parsed = rewrite_sqlite_json_extract(parsed)
 
-    parsed = parsed.transform(
-        lambda n: _rewrite_log_aliases_for(n, dialect=dialect),
-    )
+    # DEV-1784: single log-alias policy — the same rewrite the parser and
+    # generator apply, keyed on ``SqlDialect.should_use_native_log`` rather than
+    # a local allowlist. ``dialect=None``, or a name sqlglot parses but SLayer's
+    # registry does not carry, skips the rewrite (matching the old allowlist's
+    # behaviour on a miss), so ``parse_sql_expr`` stays a total function over any
+    # dialect sqlglot can parse.
+    sql_dialect = None
+    if dialect is not None:
+        try:
+            sql_dialect = get_dialect(dialect)
+        except KeyError:
+            sql_dialect = None
+    if sql_dialect is not None:
+        parsed = parsed.transform(
+            lambda n: rewrite_log_aliases(n, dialect=sql_dialect),
+        )
     canonical = parsed.sql(dialect=dialect)
     return SqlExprKey(canonical_sql=canonical)
 

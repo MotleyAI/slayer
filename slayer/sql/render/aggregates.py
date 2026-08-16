@@ -9,7 +9,7 @@ and ``window_class`` replaces a silent ``else AVG`` catch-all.
 
 from __future__ import annotations
 
-from typing import Dict, Optional, Type
+from typing import Dict, Literal, Optional, Type
 
 from pydantic import BaseModel, ConfigDict
 from sqlglot import exp
@@ -25,14 +25,22 @@ DISPATCH_DIALECT_HOOK = "dialect_hook"  # percentile/median/approx-distinct
 DISPATCH_DISTINCT = "distinct"    # COUNT(DISTINCT ...)
 DISPATCH_FORMULA = "formula"      # {value}/{param} template substitution
 
+# Closed set of dispatch names (mirrors the DISPATCH_* constants above). An
+# entry built with a value outside this set fails at import, not at render.
+DispatchKind = Literal[
+    "simple", "ranked", "stat", "dialect_hook", "distinct", "formula",
+]
+
 
 class AggEntry(BaseModel):
     """How one aggregation renders."""
 
-    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+    model_config = ConfigDict(
+        frozen=True, arbitrary_types_allowed=True, extra="forbid",
+    )
 
     name: str
-    dispatch: str
+    dispatch: DispatchKind
     # The sqlglot class for the simple path, when there is one.
     node_class: Optional[Type[exp.Expression]] = None
     # Set only for aggregations that can carry their own window frame.
@@ -43,7 +51,7 @@ class AggEntry(BaseModel):
         return self.window_class is not None
 
 
-def _entry(*, name: str, dispatch: str, **kw) -> AggEntry:
+def _entry(*, name: str, dispatch: DispatchKind, **kw) -> AggEntry:
     return AggEntry(name=name, dispatch=dispatch, **kw)
 
 

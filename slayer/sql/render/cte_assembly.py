@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Sequence
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
 
 __all__ = ["CteEntry", "assemble_with_chain"]
@@ -45,7 +45,7 @@ class CteEntry(BaseModel):
     query: exp.Expression
     #: Names of CTEs this one references. Must all be present in the same
     #: assembly; a dangling name is a wiring bug, not a no-op.
-    depends_on: List[str] = []
+    depends_on: List[str] = Field(default_factory=list)
 
 
 def _index_entries(entries: Sequence[CteEntry]) -> Dict[str, CteEntry]:

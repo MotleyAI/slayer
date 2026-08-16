@@ -1166,6 +1166,10 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     )
 
     if prebound is None:
+        # A raw SlayerQuery is the only bindable input; a StrictQueryCarrier
+        # arrives only paired with its own prebound product (§5.4), so reaching
+        # the parser with one is a wiring bug, not a fall-through.
+        assert isinstance(query, SlayerQuery)
         prebound = bind_query_inputs(
             query=query, bundle=bundle, scope=scope,
             stage_schemas=stage_schemas,
@@ -1473,7 +1477,7 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
 
     host_filter_routings: List[HostFilterRouting] = []
     for fid, bf, ftext in zip(
-        bound_filter_ids, bound_filters, bound_filter_texts,
+        bound_filter_ids, bound_filters, bound_filter_texts, strict=True,
     ):
         summary = reachability_by_fid.get(fid)
         host_filter_routings.append(HostFilterRouting(
@@ -1600,6 +1604,12 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
             continue
         cross_model_plans.append(plan)
 
+    # Loop-invariant lookups for order-scope classification, hoisted out of the
+    # per-spec loop below (none depend on ``spec``).
+    order_cross_model_slot_ids = {p.aggregate_slot_id for p in cross_model_plans}
+    order_ranked_slot_ids = {p.aggregate_slot_id for p in ranked_plans}
+    order_windowed_slot_ids = set(windowed_slot_ids)
+    order_slot_by_key = {s.key: s.id for s in projection.registry.slots}
     order_entries = []
     for spec in order_specs:
         # A grouped row-column sort key was rewritten to a hidden direction-
@@ -1630,15 +1640,11 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
             direction=spec.direction,
             scope=_classify_order_scope(
                 slot=order_slot,
-                cross_model_slot_ids={
-                    p.aggregate_slot_id for p in cross_model_plans
-                },
-                ranked_slot_ids={p.aggregate_slot_id for p in ranked_plans},
-                windowed_slot_ids=set(windowed_slot_ids),
+                cross_model_slot_ids=order_cross_model_slot_ids,
+                ranked_slot_ids=order_ranked_slot_ids,
+                windowed_slot_ids=order_windowed_slot_ids,
                 public_projection=projection.public_projection,
-                slot_by_key={
-                    s.key: s.id for s in projection.registry.slots
-                },
+                slot_by_key=order_slot_by_key,
             ),
             phase=order_slot.key.phase,
         ))

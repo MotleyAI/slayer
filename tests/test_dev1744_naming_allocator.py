@@ -540,8 +540,8 @@ class TestDedupIdentityIsStructural:
         it by keying on the string."""
         alloc = AliasAllocator(folds_case=True)
         alias = "orders.revenue_sum"
-        first = naming.cte_name_from_alias("_cm_", alias, allocator=alloc)
-        second = naming.cte_name_from_alias("_cm_", alias, allocator=alloc)
+        first = naming.cte_name_from_alias(prefix="_cm_", alias=alias, allocator=alloc)
+        second = naming.cte_name_from_alias(prefix="_cm_", alias=alias, allocator=alloc)
         assert first != second, (
             "the naming primitive collapsed two distinct identities that "
             "happen to share a canonical alias"
@@ -560,29 +560,29 @@ class TestAllocatorRouting:
         the naming authority impossible rather than merely discouraged."""
         alloc = AliasAllocator(folds_case=True)
         first = naming.cte_name_from_alias(
-            "_cm_", "orders.customers.revenue_sum", allocator=alloc,
+            prefix="_cm_", alias="orders.customers.revenue_sum", allocator=alloc,
         )
         assert first == "_cm_orders__customers__revenue_sum"
         # A second, DIFFERENT alias that sanitises to the same string must get
         # its own name rather than silently reusing the first.
         second = naming.cte_name_from_alias(
-            "_cm_", "orders.customers__revenue_sum", allocator=alloc,
+            prefix="_cm_", alias="orders.customers__revenue_sum", allocator=alloc,
         )
         assert second != first, (first, second)
         assert second.startswith("_cm_orders__customers__revenue_sum")
 
     def test_cte_name_from_alias_folds_case_with_the_allocator(self) -> None:
         alloc = AliasAllocator(folds_case=True)
-        a = naming.cte_name_from_alias("_cm_", "orders.Rev_sum", allocator=alloc)
-        b = naming.cte_name_from_alias("_cm_", "orders.rev_sum", allocator=alloc)
+        a = naming.cte_name_from_alias(prefix="_cm_", alias="orders.Rev_sum", allocator=alloc)
+        b = naming.cte_name_from_alias(prefix="_cm_", alias="orders.rev_sum", allocator=alloc)
         assert a.lower() != b.lower(), (a, b)
 
     def test_cte_name_from_alias_is_exact_on_non_folding_dialects(self) -> None:
         """ClickHouse is case-sensitive: the case-only pair keeps both original
         spellings, with no ``_2`` suffix."""
         alloc = AliasAllocator(folds_case=False)
-        a = naming.cte_name_from_alias("_cm_", "orders.Rev_sum", allocator=alloc)
-        b = naming.cte_name_from_alias("_cm_", "orders.rev_sum", allocator=alloc)
+        a = naming.cte_name_from_alias(prefix="_cm_", alias="orders.Rev_sum", allocator=alloc)
+        b = naming.cte_name_from_alias(prefix="_cm_", alias="orders.rev_sum", allocator=alloc)
         assert a == "_cm_orders__Rev_sum"
         assert b == "_cm_orders__rev_sum"
 
@@ -657,7 +657,7 @@ class TestAllocatorRouting:
         # A user-shaped CTE name that folds onto a reserved literal must walk.
         assert alloc.allocate_cte("Base") != "Base"
         # And a _cm_ name minted earlier blocks an identical step name later.
-        cm = naming.cte_name_from_alias("_cm_", "step1", allocator=alloc)
+        cm = naming.cte_name_from_alias(prefix="_cm_", alias="step1", allocator=alloc)
         assert alloc.allocate_cte(cm) != cm
 
 

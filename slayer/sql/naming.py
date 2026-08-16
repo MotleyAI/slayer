@@ -37,6 +37,7 @@ import sqlglot
 from pydantic import BaseModel, ConfigDict, PrivateAttr
 from sqlglot import exp
 
+from slayer.core.keys import StarKey
 from slayer.core.refs import agg_kwarg_canonical_str, canonical_agg_name
 
 if TYPE_CHECKING:  # pragma: no cover — typing only, keeps the import leaf clean
@@ -258,7 +259,7 @@ _NON_IDENT_CHAR_RE = re.compile(r"[^a-zA-Z0-9_]")  # NOSONAR(S6353) — see abov
 
 
 def cte_name_from_alias(
-    prefix: str, alias: str, *, allocator: "AliasAllocator",
+    *, prefix: str, alias: str, allocator: "AliasAllocator",
 ) -> str:
     """Mint a collision-safe CTE name for ``alias`` under ``prefix``.
 
@@ -328,8 +329,6 @@ def canonical_aggregate_alias(  # NOSONAR(S3776) — sequential dispatch over th
     neither ``leaf`` nor ``column_name`` — that profile's documented "decline
     and let the caller sanitise the formula text" path.
     """
-    from slayer.core.keys import StarKey
-
     if profile == "cross_model_cte":
         if source_relation is None:
             raise ValueError(

@@ -113,6 +113,46 @@ class TestSqliteJsonExtractPreservation:
         assert isinstance(key, SqlExprKey)
 
 
+# Golden canonical output for ``log(<base>, revenue)`` under the single-source
+# DEV-1784 log-alias policy. The rewrite to a native single-arg LOG10/LOG2 only
+# fires where sqlglot parses the base as a literal in the ``this`` position AND
+# the dialect supports the native alias (SqlDialect.should_use_native_log);
+# elsewhere the generic 2-arg form is preserved — Presto/ClickHouse reorder to
+# ``LOG(revenue, <base>)``, T-SQL/BigQuery/Oracle keep ``LOG(<base>, revenue)``,
+# and Snowflake/Redshift have LOG10 but no native LOG2. Pinned so a policy or
+# sqlglot change cannot silently drift any dialect's rendering.
+_LOG_GOLDEN = {
+    ('sqlite', 10): 'LOG10(revenue)',
+    ('sqlite', 2): 'LOG2(revenue)',
+    ('postgres', 10): 'LOG10(revenue)',
+    ('postgres', 2): 'LOG2(revenue)',
+    ('duckdb', 10): 'LOG10(revenue)',
+    ('duckdb', 2): 'LOG2(revenue)',
+    ('mysql', 10): 'LOG10(revenue)',
+    ('mysql', 2): 'LOG2(revenue)',
+    ('clickhouse', 10): 'LOG(revenue, 10)',
+    ('clickhouse', 2): 'LOG(revenue, 2)',
+    ('snowflake', 10): 'LOG10(revenue)',
+    ('snowflake', 2): 'LOG(2, revenue)',
+    ('bigquery', 10): 'LOG(10, revenue)',
+    ('bigquery', 2): 'LOG(2, revenue)',
+    ('redshift', 10): 'LOG10(revenue)',
+    ('redshift', 2): 'LOG(2, revenue)',
+    ('trino', 10): 'LOG10(revenue)',
+    ('trino', 2): 'LOG2(revenue)',
+    ('presto', 10): 'LOG(revenue, 10)',
+    ('presto', 2): 'LOG(revenue, 2)',
+    ('databricks', 10): 'LOG10(revenue)',
+    ('databricks', 2): 'LOG2(revenue)',
+    ('spark', 10): 'LOG10(revenue)',
+    ('spark', 2): 'LOG2(revenue)',
+    ('tsql', 10): 'LOG(10, revenue)',
+    ('tsql', 2): 'LOG(2, revenue)',
+    ('oracle', 10): 'LOG(10, revenue)',
+    ('oracle', 2): 'LOG(2, revenue)',
+}
+
+
 class TestLogAliasPreservation:
     def test_log10_preserved_on_sqlite(self):
         key = parse_sql_expr("log10(revenue) > 2", dialect="sqlite")
@@ -129,6 +169,27 @@ class TestLogAliasPreservation:
         key = parse_sql_expr("log(3, revenue) > 0", dialect="postgres")
         # The base 3 must survive.
         assert "3" in key.canonical_sql
+
+    @pytest.mark.parametrize(("dialect", "base"), sorted(_LOG_GOLDEN))
+    def test_log_alias_canonical_per_dialect(self, dialect, base):
+        """Pin ``log(<base>, revenue)``'s canonical form for every dialect under
+        the single-source log-alias policy (DEV-1784), so a policy or sqlglot
+        change that alters any dialect's rendering is caught."""
+        key = parse_sql_expr(f"log({base}, revenue)", dialect=dialect)
+        assert key.canonical_sql == _LOG_GOLDEN[(dialect, base)]
+
+    def test_log_alias_skipped_without_a_dialect(self):
+        # dialect=None has no policy to key on — leave the generic 2-arg form.
+        canonical = parse_sql_expr("log(10, revenue) > 0").canonical_sql
+        assert "log(10," in canonical.lower().replace(" ", "")
+
+    def test_unregistered_sqlglot_dialect_does_not_raise(self):
+        # parse_sql_expr is total over any sqlglot-parseable dialect: a name
+        # outside SLayer's registry ("hive") skips the log-alias policy rather
+        # than raising, leaving the generic 2-arg form (DEV-1784 — Codex).
+        key = parse_sql_expr("log(10, revenue)", dialect="hive")
+        assert isinstance(key, SqlExprKey)
+        assert "log(10," in key.canonical_sql.lower().replace(" ", "")
 
 
 # ---------------------------------------------------------------------------

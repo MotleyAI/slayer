@@ -278,7 +278,7 @@ class TestRenderContextApi:
         ctx = RenderContext(
             scope=producer, consumer=consumer, dialect=producer.dialect,
         )
-        out = render_value_key(key, ctx)
+        out = render_value_key(key=key, ctx=ctx)
         assert isinstance(out, exp.Column), f"{label}: got {type(out).__name__}"
         assert out.table == "", f"{label}: expected a bare alias, got {_sql(out)}"
         assert len(producer.materializations) == 1
@@ -292,7 +292,7 @@ class TestRenderContextApi:
         ctx = RenderContext(
             scope=producer, consumer=consumer, dialect=producer.dialect,
         )
-        alias = _sql(render_value_key(ColumnKey(leaf="amount"), ctx))
+        alias = _sql(render_value_key(key=ColumnKey(leaf="amount"), ctx=ctx))
         select = producer.apply_materializations(
             exp.Select().from_(exp.to_table("orders")),
         )
@@ -309,8 +309,8 @@ class TestRenderContextApi:
         ctx = RenderContext(
             scope=producer, consumer=consumer, dialect=producer.dialect,
         )
-        a = render_value_key(ColumnKey(leaf="amount"), ctx)
-        b = render_value_key(ColumnKey(leaf="amount"), ctx)
+        a = render_value_key(key=ColumnKey(leaf="amount"), ctx=ctx)
+        b = render_value_key(key=ColumnKey(leaf="amount"), ctx=ctx)
         assert _sql(a) == _sql(b)
         assert len(producer.materializations) == 1
 
@@ -321,7 +321,7 @@ class TestRenderContextApi:
         scope = _scope()
         ctx = RenderContext(scope=scope, dialect=scope.dialect)
         render_value_key(
-            ColumnKey(path=("customers", "regions"), leaf="name"), ctx,
+            key=ColumnKey(path=("customers", "regions"), leaf="name"), ctx=ctx,
         )
         assert scope.join_paths.as_list() == [
             ("customers",), ("customers", "regions"),
@@ -340,7 +340,7 @@ class TestRenderContextApi:
             input=AggregateKey(source=ColumnKey(leaf="amount"), agg="sum"),
         )
         with pytest.raises(RenderContextMissingFacilityError):
-            render_value_key(key, bare)
+            render_value_key(key=key, ctx=bare)
 
     def test_missing_facility_error_names_the_key_and_facility(self) -> None:
 
@@ -351,7 +351,7 @@ class TestRenderContextApi:
             input=AggregateKey(source=ColumnKey(leaf="amount"), agg="sum"),
         )
         with pytest.raises(RenderContextMissingFacilityError) as excinfo:
-            render_value_key(key, bare)
+            render_value_key(key=key, ctx=bare)
         message = str(excinfo.value)
         assert "TransformKey" in message
         assert "aliases" in message.lower(), (
@@ -372,7 +372,7 @@ class TestRenderContextApi:
         bare = RenderContext(scope=scope, dialect=scope.dialect)
         key = AggregateKey(source=ColumnKey(leaf="amount"), agg="first")
         with pytest.raises(RenderContextMissingFacilityError) as excinfo:
-            render_value_key(key, bare)
+            render_value_key(key=key, ctx=bare)
         assert "composite" in str(excinfo.value).lower(), str(excinfo.value)
 
     def test_filtered_aggregate_without_a_builder_fails_closed(self) -> None:
@@ -390,7 +390,7 @@ class TestRenderContextApi:
         )
         ctx = _composite_ctx()
         with pytest.raises(RenderContextMissingFacilityError):
-            render_value_key(key, ctx)
+            render_value_key(key=key, ctx=ctx)
 
     def test_parametric_aggregate_without_a_builder_fails_closed(self) -> None:
         """Same rule for args/kwargs, which need the generator's parameter
@@ -402,7 +402,7 @@ class TestRenderContextApi:
         )
         ctx = _composite_ctx()
         with pytest.raises(RenderContextMissingFacilityError):
-            render_value_key(key, ctx)
+            render_value_key(key=key, ctx=ctx)
 
     def test_cross_model_star_without_a_builder_fails_closed(self) -> None:
         """``customers.*:count`` counts rows of the JOINED relation.
@@ -414,12 +414,12 @@ class TestRenderContextApi:
         key = AggregateKey(source=StarKey(path=("customers",)), agg="count")
         ctx = _composite_ctx()
         with pytest.raises(RenderContextMissingFacilityError):
-            render_value_key(key, ctx)
+            render_value_key(key=key, ctx=ctx)
 
     def test_local_star_still_renders(self) -> None:
         """The guard must not catch the ordinary local ``*:count``."""
         key = AggregateKey(source=StarKey(), agg="count")
-        assert _sql(render_value_key(key, _composite_ctx())) == "COUNT(*)"
+        assert _sql(render_value_key(key=key, ctx=_composite_ctx())) == "COUNT(*)"
 
     def test_transform_key_renders_when_alias_facilities_are_supplied(
         self,
@@ -442,7 +442,7 @@ class TestRenderContextApi:
                 available_alias_by_slot_id={"s1": "orders.amount_sum_shifted"},
             ),
         )
-        out = render_value_key(key, ctx)
+        out = render_value_key(key=key, ctx=ctx)
         assert "amount_sum_shifted" in _sql(out), _sql(out)
 
 
@@ -457,21 +457,21 @@ class TestRendersEveryKeyKind:
     a bare ``None`` or a stringified repr."""
     def test_local_column_key(self) -> None:
 
-        out = render_value_key(ColumnKey(leaf="amount"), _filter_ctx())
+        out = render_value_key(key=ColumnKey(leaf="amount"), ctx=_filter_ctx())
         assert _sql(out) == "orders.amount"
 
     def test_joined_column_key_anchors_at_the_path_alias(self) -> None:
 
         out = render_value_key(
-            ColumnKey(path=("customers",), leaf="balance"), _filter_ctx(),
+            key=ColumnKey(path=("customers",), leaf="balance"), ctx=_filter_ctx(),
         )
         assert _sql(out) == "customers.balance"
 
     def test_multi_hop_column_key(self) -> None:
 
         out = render_value_key(
-            ColumnKey(path=("customers", "regions"), leaf="name"),
-            _filter_ctx(),
+            key=ColumnKey(path=("customers", "regions"), leaf="name"),
+            ctx=_filter_ctx(),
         )
         assert _sql(out) == "customers__regions.name"
 
@@ -479,7 +479,7 @@ class TestRendersEveryKeyKind:
         """Exact SQL, not a substring check: ``net`` is ``amount - 1``, and the
         expansion must be anchored at the scope root."""
         out = render_value_key(
-            ColumnSqlKey(model="orders", column_name="net"), _filter_ctx(),
+            key=ColumnSqlKey(model="orders", column_name="net"), ctx=_filter_ctx(),
         )
         assert _sql(out) == "orders.amount - 1"
 
@@ -489,7 +489,7 @@ class TestRendersEveryKeyKind:
         key = TimeTruncKey(
             column=ColumnKey(leaf="created_at"), granularity="month",
         )
-        out = render_value_key(key, _filter_ctx("postgres"))
+        out = render_value_key(key=key, ctx=_filter_ctx("postgres"))
         assert _sql(out, "postgres") == "DATE_TRUNC('MONTH', orders.created_at)"
 
     @pytest.mark.parametrize("dialect", ["postgres", "sqlite", "tsql", "bigquery"])
@@ -505,7 +505,7 @@ class TestRendersEveryKeyKind:
         key = TimeTruncKey(
             column=ColumnKey(leaf="created_at"), granularity="month",
         )
-        out = _sql(render_value_key(key, _filter_ctx(dialect)), dialect)
+        out = _sql(render_value_key(key=key, ctx=_filter_ctx(dialect)), dialect)
         if dialect == "sqlite":
             assert "DATE_TRUNC" not in out.upper(), out
             assert "STRFTIME" in out.upper(), out
@@ -520,78 +520,78 @@ class TestRendersEveryKeyKind:
         key = TimeTruncKey(
             column=ColumnKey(leaf="created_at"), granularity="week_sunday",
         )
-        out = _sql(render_value_key(key, _filter_ctx("postgres")), "postgres")
+        out = _sql(render_value_key(key=key, ctx=_filter_ctx("postgres")), "postgres")
         assert "WEEK_SUNDAY" not in out.upper(), out
         assert "created_at" in out, out
 
     def test_literal_key_variants(self) -> None:
 
         ctx = _filter_ctx()
-        assert _sql(render_value_key(LiteralKey(value=Decimal(3)), ctx)) == "3"
-        assert _sql(render_value_key(LiteralKey(value="x"), ctx)) == "'x'"
+        assert _sql(render_value_key(key=LiteralKey(value=Decimal(3)), ctx=ctx)) == "3"
+        assert _sql(render_value_key(key=LiteralKey(value="x"), ctx=ctx)) == "'x'"
         assert _sql(
-            render_value_key(LiteralKey(value=None), ctx)
+            render_value_key(key=LiteralKey(value=None), ctx=ctx)
         ).upper() == "NULL"
 
     def test_star_key(self) -> None:
 
-        out = render_value_key(StarKey(), _filter_ctx())
+        out = render_value_key(key=StarKey(), ctx=_filter_ctx())
         assert isinstance(out, exp.Star)
 
     def test_arithmetic_key(self) -> None:
 
         out = render_value_key(
-            ArithmeticKey(
+            key=ArithmeticKey(
                 op="+",
                 operands=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(1))),
             ),
-            _filter_ctx(),
+            ctx=_filter_ctx(),
         )
         assert _sql(out) == "orders.amount + 1"
 
     def test_comparison_arithmetic_key(self) -> None:
 
         out = render_value_key(
-            ArithmeticKey(
+            key=ArithmeticKey(
                 op=">",
                 operands=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(5))),
             ),
-            _filter_ctx(),
+            ctx=_filter_ctx(),
         )
         assert _sql(out) == "orders.amount > 5"
 
     def test_between_key(self) -> None:
 
         out = render_value_key(
-            BetweenKey(
+            key=BetweenKey(
                 column=ColumnKey(leaf="amount"),
                 low=LiteralKey(value=Decimal(1)),
                 high=LiteralKey(value=Decimal(9)),
             ),
-            _filter_ctx(),
+            ctx=_filter_ctx(),
         )
         assert _sql(out) == "orders.amount BETWEEN 1 AND 9"
 
     def test_in_key(self) -> None:
 
         out = render_value_key(
-            InKey(
+            key=InKey(
                 column=ColumnKey(leaf="label"),
                 values=(LiteralKey(value="a"), LiteralKey(value="b")),
             ),
-            _filter_ctx(),
+            ctx=_filter_ctx(),
         )
         assert _sql(out) == "orders.label IN ('a', 'b')"
 
     def test_negated_in_key(self) -> None:
 
         out = render_value_key(
-            InKey(
+            key=InKey(
                 column=ColumnKey(leaf="label"),
                 values=(LiteralKey(value="a"),),
                 negated=True,
             ),
-            _filter_ctx(),
+            ctx=_filter_ctx(),
         )
         # Exact form: a bare "NOT" substring would also match e.g. an
         # IS NOT NULL wrapper that got the predicate wrong.
@@ -600,15 +600,15 @@ class TestRendersEveryKeyKind:
     def test_local_aggregate_key(self) -> None:
 
         out = render_value_key(
-            AggregateKey(source=ColumnKey(leaf="amount"), agg="sum"),
-            _composite_ctx(),
+            key=AggregateKey(source=ColumnKey(leaf="amount"), agg="sum"),
+            ctx=_composite_ctx(),
         )
         assert _sql(out) == "SUM(orders.amount)"
 
     def test_star_count_aggregate_key(self) -> None:
 
         out = render_value_key(
-            AggregateKey(source=StarKey(), agg="count"), _composite_ctx(),
+            key=AggregateKey(source=StarKey(), agg="count"), ctx=_composite_ctx(),
         )
         assert _sql(out) == "COUNT(*)"
 
@@ -621,15 +621,15 @@ class TestRendersEveryKeyKind:
         result, not a failure.
         """
         out = render_value_key(
-            ArithmeticKey(op="-", operands=(LiteralKey(value=Decimal(10)),)),
-            _filter_ctx(),
+            key=ArithmeticKey(op="-", operands=(LiteralKey(value=Decimal(10)),)),
+            ctx=_filter_ctx(),
         )
         assert _sql(out) == "-10"
 
     def test_unary_not(self) -> None:
 
         out = render_value_key(
-            ArithmeticKey(
+            key=ArithmeticKey(
                 op="not",
                 operands=(
                     ArithmeticKey(
@@ -641,7 +641,7 @@ class TestRendersEveryKeyKind:
                     ),
                 ),
             ),
-            _filter_ctx(),
+            ctx=_filter_ctx(),
         )
         assert _sql(out) == "NOT orders.amount > 5"
 
@@ -708,7 +708,7 @@ class TestRendersEveryKeyKind:
     def test_arithmetic_precedence_is_parenthesised(self, key, expected) -> None:
         """Operator precedence has to be materialised as ``Paren`` nodes."""
         ctx = _filter_ctx()
-        assert _sql(render_value_key(key, ctx)) == expected
+        assert _sql(render_value_key(key=key, ctx=ctx)) == expected
 
     def test_unsupported_literal_type_raises(self) -> None:
         """An unrecognised Python value must not become a quoted string.
@@ -741,7 +741,7 @@ class TestRendersEveryKeyKind:
         """
         ctx = _filter_ctx()
         with pytest.raises(NotImplementedError) as excinfo:
-            render_value_key(object(), ctx)  # type: ignore[arg-type]
+            render_value_key(key=object(), ctx=ctx)  # type: ignore[arg-type]
         assert "object" in str(excinfo.value)
 
 
@@ -783,10 +783,10 @@ class TestB5ScalarCallPolicy:
 
         key = ScalarCallKey(name=name, args=args)
         assert _sql(
-            render_value_key(key, _filter_ctx("postgres")), "postgres",
+            render_value_key(key=key, ctx=_filter_ctx("postgres")), "postgres",
         ) == expected_pg
         assert _sql(
-            render_value_key(key, _filter_ctx("tsql")), "tsql",
+            render_value_key(key=key, ctx=_filter_ctx("tsql")), "tsql",
         ) == expected_tsql
 
     def test_ifnull_never_reaches_postgres_unmapped(self) -> None:
@@ -796,7 +796,7 @@ class TestB5ScalarCallPolicy:
             name="ifnull",
             args=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(0))),
         )
-        out = _sql(render_value_key(key, _filter_ctx("postgres")), "postgres")
+        out = _sql(render_value_key(key=key, ctx=_filter_ctx("postgres")), "postgres")
         assert "IFNULL" not in out.upper(), out
 
     def test_log10_keeps_the_native_single_arg_alias(self) -> None:
@@ -810,7 +810,7 @@ class TestB5ScalarCallPolicy:
         regress ``log10`` — so the unified renderer must apply both.
         """
         key = ScalarCallKey(name="log10", args=(ColumnKey(leaf="amount"),))
-        out = _sql(render_value_key(key, _filter_ctx("postgres")), "postgres")
+        out = _sql(render_value_key(key=key, ctx=_filter_ctx("postgres")), "postgres")
         assert out.upper().startswith("LOG10("), out
 
     def test_round_keeps_the_dev1576_postgres_cast(self) -> None:
@@ -821,7 +821,7 @@ class TestB5ScalarCallPolicy:
             name="round",
             args=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(0))),
         )
-        out = _sql(render_value_key(key, _filter_ctx("postgres")), "postgres")
+        out = _sql(render_value_key(key=key, ctx=_filter_ctx("postgres")), "postgres")
         assert "CAST" in out.upper(), out
         assert "DECIMAL" in out.upper(), out
 
@@ -833,7 +833,7 @@ class TestB5ScalarCallPolicy:
             name="like",
             args=(ColumnKey(leaf="label"), LiteralKey(value="x%")),
         )
-        out = render_value_key(key, _filter_ctx("postgres"))
+        out = render_value_key(key=key, ctx=_filter_ctx("postgres"))
         assert isinstance(out, exp.Like)
         assert _sql(out) == "orders.label LIKE 'x%'"
 
@@ -847,7 +847,7 @@ class TestB5ScalarCallPolicy:
                 LiteralKey(value=Decimal(0)),
             ),
         )
-        out = _sql(render_value_key(key, _filter_ctx("tsql")), "tsql")
+        out = _sql(render_value_key(key=key, ctx=_filter_ctx("tsql")), "tsql")
         assert "COALESCE" in out.upper(), out
         assert "LEN(" in out.upper(), out
         assert "IFNULL" not in out.upper(), out
@@ -930,10 +930,10 @@ class TestPGSameConstructSameSql:
     ) -> None:
 
         in_filter = _sql(
-            render_value_key(key, _filter_ctx(dialect)), dialect,
+            render_value_key(key=key, ctx=_filter_ctx(dialect)), dialect,
         )
         in_composite = _sql(
-            render_value_key(key, _composite_ctx(dialect)), dialect,
+            render_value_key(key=key, ctx=_composite_ctx(dialect)), dialect,
         )
         assert in_filter == in_composite, (
             f"{label} renders differently by context on {dialect}: "
@@ -1545,7 +1545,7 @@ class TestNoKeyFieldIsSilentlyIgnored:
             # Try both facility groups; a key needing neither renders in both.
             for ctx in (_composite_ctx(), _filter_ctx()):
                 try:
-                    return _sql(render_value_key(key, ctx))
+                    return _sql(render_value_key(key=key, ctx=ctx))
                 except RenderContextMissingFacilityError:
                     continue
                 except NotImplementedError:
@@ -1585,7 +1585,7 @@ class TestOperatorCompositionEdges:
                 LiteralKey(value=Decimal(1)),
             ),
         )
-        out = _sql(render_value_key(key, _filter_ctx()))
+        out = _sql(render_value_key(key=key, ctx=_filter_ctx()))
         assert out == "(orders.amount > 5) + 1", out
 
     def test_boolean_nested_in_arithmetic_keeps_its_parens(self) -> None:
@@ -1609,7 +1609,7 @@ class TestOperatorCompositionEdges:
                 LiteralKey(value=Decimal(1)),
             ),
         )
-        out = _sql(render_value_key(key, _filter_ctx()))
+        out = _sql(render_value_key(key=key, ctx=_filter_ctx()))
         assert out.startswith("("), out
 
     def test_comparison_with_three_operands_is_refused(self) -> None:
@@ -1630,7 +1630,7 @@ class TestOperatorCompositionEdges:
         )
         ctx = _filter_ctx()
         with pytest.raises(NotImplementedError):
-            render_value_key(key, ctx)
+            render_value_key(key=key, ctx=ctx)
 
     def test_is_not_with_extra_operands_is_refused(self) -> None:
         """``is`` / ``is not`` read operands[0] and [1] only — a third would
@@ -1645,7 +1645,7 @@ class TestOperatorCompositionEdges:
         )
         ctx = _filter_ctx()
         with pytest.raises(NotImplementedError):
-            render_value_key(key, ctx)
+            render_value_key(key=key, ctx=ctx)
 
 
 class TestContainsAggregate:
@@ -1716,7 +1716,7 @@ class TestEqualPrecedenceRightChildren:
         [("*", "%"), ("*", "/"), ("/", "*"), ("/", "/"), ("-", "+"), ("-", "-")],
     )
     def test_equal_precedence_right_child_keeps_parens(self, outer, inner) -> None:
-        out = _sql(render_value_key(self._key(outer, inner), _filter_ctx()))
+        out = _sql(render_value_key(key=self._key(outer, inner), ctx=_filter_ctx()))
         assert "(" in out, f"{outer} over {inner} lost its grouping: {out}"
 
     @pytest.mark.parametrize("op", ["+", "*"])
@@ -1733,7 +1733,7 @@ class TestEqualPrecedenceRightChildren:
         So the rule is now uniform — every equal-precedence right child keeps
         its parens — which is also one fewer special case to get wrong.
         """
-        out = _sql(render_value_key(self._key(op, op), _filter_ctx()))
+        out = _sql(render_value_key(key=self._key(op, op), ctx=_filter_ctx()))
         assert "(" in out, out
 
 
@@ -1742,7 +1742,7 @@ class TestArithmeticArity:
         key = ArithmeticKey(op="+", operands=())
         ctx = _filter_ctx()
         with pytest.raises(NotImplementedError):
-            render_value_key(key, ctx)
+            render_value_key(key=key, ctx=ctx)
 
     @pytest.mark.parametrize("op", ["and", "or"])
     def test_single_operand_boolean_is_that_operand(self, op) -> None:
@@ -1753,7 +1753,7 @@ class TestArithmeticArity:
             op=">", operands=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(5))),
         )
         key = ArithmeticKey(op=op, operands=(inner,))
-        assert _sql(render_value_key(key, _filter_ctx())) == "orders.amount > 5"
+        assert _sql(render_value_key(key=key, ctx=_filter_ctx())) == "orders.amount > 5"
 
 
 class TestContainsAggregateTransformDependencies:
@@ -1983,7 +1983,7 @@ class TestNullInInList:
         )
         ctx = _filter_ctx()
         with pytest.raises(NotImplementedError):
-            render_value_key(key, ctx)
+            render_value_key(key=key, ctx=ctx)
 
     def test_renderer_refuses_null_in_a_negated_list(self) -> None:
         key = InKey(
@@ -1993,14 +1993,14 @@ class TestNullInInList:
         )
         ctx = _filter_ctx()
         with pytest.raises(NotImplementedError):
-            render_value_key(key, ctx)
+            render_value_key(key=key, ctx=ctx)
 
     def test_ordinary_in_list_still_renders(self) -> None:
         key = InKey(
             column=ColumnKey(leaf="label"),
             values=(LiteralKey(value="a"), LiteralKey(value="b")),
         )
-        assert _sql(render_value_key(key, _filter_ctx())) == (
+        assert _sql(render_value_key(key=key, ctx=_filter_ctx())) == (
             "orders.label IN ('a', 'b')"
         )
 
@@ -2056,7 +2056,7 @@ class TestUnaryOperandGrouping:
                 ),
             ),
         )
-        out = _sql(render_value_key(key, _filter_ctx()))
+        out = _sql(render_value_key(key=key, ctx=_filter_ctx()))
         assert out == "-(orders.amount + 1)", out
 
     def test_not_of_a_conjunction_keeps_its_parens(self) -> None:
@@ -2080,7 +2080,7 @@ class TestUnaryOperandGrouping:
                 ),
             ),
         )
-        out = _sql(render_value_key(key, _filter_ctx()))
+        out = _sql(render_value_key(key=key, ctx=_filter_ctx()))
         assert out == "NOT (orders.amount > 1 AND orders.amount < 9)", out
 
     def test_not_of_a_comparison_needs_no_parens(self) -> None:
@@ -2095,11 +2095,11 @@ class TestUnaryOperandGrouping:
                 ),
             ),
         )
-        assert _sql(render_value_key(key, _filter_ctx())) == "NOT orders.amount > 5"
+        assert _sql(render_value_key(key=key, ctx=_filter_ctx())) == "NOT orders.amount > 5"
 
     def test_negated_column_needs_no_parens(self) -> None:
         key = ArithmeticKey(op="-", operands=(ColumnKey(leaf="amount"),))
-        assert _sql(render_value_key(key, _filter_ctx())) == "-orders.amount"
+        assert _sql(render_value_key(key=key, ctx=_filter_ctx())) == "-orders.amount"
 
 
 class TestComparisonsAreNonAssociative:
@@ -2122,14 +2122,14 @@ class TestComparisonsAreNonAssociative:
     def test_comparison_over_comparison_keeps_left_parens(self) -> None:
         """``(a = 5) = TRUE`` must not flatten to ``a = 5 = TRUE``."""
         key = self._cmp("=", self._inner(), LiteralKey(value=True))
-        out = _sql(render_value_key(key, _filter_ctx()))
+        out = _sql(render_value_key(key=key, ctx=_filter_ctx()))
         assert out == "(orders.amount = 5) = TRUE", out
 
     def test_mixed_relational_operators_keep_left_parens(self) -> None:
         """``(a < 5) = TRUE`` emitted bare is ``a < 5 = TRUE`` — a
         non-associative chain Postgres refuses to parse at all."""
         key = self._cmp("=", self._inner("<"), LiteralKey(value=True))
-        out = _sql(render_value_key(key, _filter_ctx()))
+        out = _sql(render_value_key(key=key, ctx=_filter_ctx()))
         assert out == "(orders.amount < 5) = TRUE", out
 
     def test_is_null_over_a_comparison_keeps_its_parens(self) -> None:
@@ -2137,18 +2137,18 @@ class TestComparisonsAreNonAssociative:
         ``a = (5 IS NULL)``, i.e. ``a = FALSE`` — a different predicate that
         still returns rows."""
         key = self._cmp("is", self._inner(), LiteralKey(value=None))
-        out = _sql(render_value_key(key, _filter_ctx()))
+        out = _sql(render_value_key(key=key, ctx=_filter_ctx()))
         assert out == "(orders.amount = 5) IS NULL", out
 
     def test_is_not_null_over_a_comparison_keeps_its_parens(self) -> None:
         key = self._cmp("is not", self._inner(), LiteralKey(value=None))
-        out = _sql(render_value_key(key, _filter_ctx()))
+        out = _sql(render_value_key(key=key, ctx=_filter_ctx()))
         assert out == "NOT (orders.amount = 5) IS NULL", out
 
     def test_plain_is_null_over_a_column_gains_no_parens(self) -> None:
         """Don't over-wrap: a column is self-delimiting."""
         key = self._cmp("is", ColumnKey(leaf="amount"), LiteralKey(value=None))
-        assert _sql(render_value_key(key, _filter_ctx())) == "orders.amount IS NULL"
+        assert _sql(render_value_key(key=key, ctx=_filter_ctx())) == "orders.amount IS NULL"
 
     def test_arithmetic_left_child_still_flattens(self) -> None:
         """The non-associativity rule is scoped to the comparison level —
@@ -2158,7 +2158,7 @@ class TestComparisonsAreNonAssociative:
             "-", ColumnKey(leaf="amount"), LiteralKey(value=Decimal(1)),
         )
         key = self._cmp("-", inner, LiteralKey(value=Decimal(2)))
-        out = _sql(render_value_key(key, _filter_ctx()))
+        out = _sql(render_value_key(key=key, ctx=_filter_ctx()))
         assert out == "orders.amount - 1 - 2", out
 
 
@@ -2177,11 +2177,11 @@ class TestStarSourceIsCountOnly:
         key = AggregateKey(source=StarKey(), agg=agg)
         ctx = _composite_ctx()
         with pytest.raises(NotImplementedError, match="bare star"):
-            render_value_key(key, ctx)
+            render_value_key(key=key, ctx=ctx)
 
     def test_count_star_still_renders(self) -> None:
         key = AggregateKey(source=StarKey(), agg="count")
-        assert _sql(render_value_key(key, _composite_ctx())) == "COUNT(*)"
+        assert _sql(render_value_key(key=key, ctx=_composite_ctx())) == "COUNT(*)"
 
 
 def _grouping_shape(node: exp.Expression):
@@ -2244,7 +2244,7 @@ class TestEveryOperatorPairSurvivesTheRoundTrip:
         return exp.column(name, table="t")
 
     def _binary(self, op: str, left, right):
-        return render_arithmetic(op, [left, right])
+        return render_arithmetic(op=op, operands=[left, right])
 
     def _nested(self, inner: str):
         return self._binary(inner, self._leaf("b"), self._leaf("c"))
@@ -2329,7 +2329,7 @@ class TestEveryOperatorPairSurvivesTheRoundTrip:
     @pytest.mark.parametrize("inner", CMP + BOOL)
     def test_not_over_every_predicate(self, inner, dialect) -> None:
         self._check(
-            render_arithmetic("not", [self._nested(inner)]), dialect,
+            render_arithmetic(op="not", operands=[self._nested(inner)]), dialect,
             f"not over {inner}",
         )
 
@@ -2337,7 +2337,7 @@ class TestEveryOperatorPairSurvivesTheRoundTrip:
     @pytest.mark.parametrize("inner", ARITH)
     def test_negation_over_every_arithmetic_operator(self, inner, dialect) -> None:
         self._check(
-            render_arithmetic("-", [self._nested(inner)]), dialect,
+            render_arithmetic(op="-", operands=[self._nested(inner)]), dialect,
             f"- over {inner}",
         )
 
@@ -2346,7 +2346,7 @@ class TestEveryOperatorPairSurvivesTheRoundTrip:
     @pytest.mark.parametrize("inner", ARITH + CMP)
     def test_is_over_every_value_expression(self, op, inner, dialect) -> None:
         self._check(
-            render_arithmetic(op, [self._nested(inner), exp.Null()]), dialect,
+            render_arithmetic(op=op, operands=[self._nested(inner), exp.Null()]), dialect,
             f"{op} over {inner}",
         )
 
@@ -2372,7 +2372,7 @@ class TestArithmeticGroupingViaRender:
         key = ArithmeticKey(
             op="and", operands=(lt, ArithmeticKey(op="or", operands=(gt, lt))),
         )
-        out = _sql(render_value_key(key, _filter_ctx()))
+        out = _sql(render_value_key(key=key, ctx=_filter_ctx()))
         assert out == (
             "orders.amount < 9 AND (orders.amount > 1 OR orders.amount < 9)"
         ), out
@@ -2389,7 +2389,7 @@ class TestArithmeticGroupingViaRender:
         )
         for op, joiner in (("and", " AND "), ("or", " OR ")):
             out = _sql(render_value_key(
-                ArithmeticKey(op=op, operands=cols), _filter_ctx(),
+                key=ArithmeticKey(op=op, operands=cols), ctx=_filter_ctx(),
             ))
             assert out.count(joiner) == 2, out
             assert all(f"> {n}" in out for n in (1, 2, 3)), out
