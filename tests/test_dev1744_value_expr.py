@@ -30,7 +30,7 @@ import os
 import sqlite3
 from datetime import datetime
 from decimal import Decimal
-from typing import AsyncIterator, Optional
+from typing import Optional
 
 import pytest
 import sqlglot
@@ -1095,8 +1095,8 @@ async def _e2e_engine(*, base_dir: str, dialect: str = "sqlite") -> SlayerQueryE
 
 
 @pytest.fixture
-async def e2e(tmp_path_factory) -> AsyncIterator[SlayerQueryEngine]:
-    yield await _e2e_engine(base_dir=str(tmp_path_factory.mktemp("ve")))
+async def e2e(tmp_path) -> SlayerQueryEngine:
+    return await _e2e_engine(base_dir=str(tmp_path))
 
 
 class TestMigratedCallSitesEndToEnd:
@@ -1215,8 +1215,8 @@ class TestOuterWrapperAndShiftedCteFamilies:
     * R1's shifted-CTE WHERE call site (the generator) — reached only by a
       ``time_shift`` transform, never by a plain host filter.
     """
-    async def _engine(self, tmp_path_factory, *, dialect: str = "sqlite") -> SlayerQueryEngine:
-        d = str(tmp_path_factory.mktemp("routes"))
+    async def _engine(self, tmp_path, *, dialect: str = "sqlite") -> SlayerQueryEngine:
+        d = str(tmp_path)
         db_path = os.path.join(d, "routes.db")
         con = sqlite3.connect(db_path)
         cur = con.cursor()
@@ -1285,13 +1285,13 @@ class TestOuterWrapperAndShiftedCteFamilies:
         return SlayerQueryEngine(storage=storage)
 
     async def test_outer_wrapper_filter_over_an_isolated_aggregate(
-        self, tmp_path_factory,
+        self, tmp_path,
     ) -> None:
         """R4's route: an AGGREGATE-phase filter on a filtered-local isolated
         aggregate renders as plain WHERE on the joined-back column of the outer
         combined SELECT. Gold totals: new = 300, old = 0/NULL — so a threshold
         of 100 keeps only ``new``."""
-        engine = await self._engine(tmp_path_factory)
+        engine = await self._engine(tmp_path)
         resp = await engine.execute(
             SlayerQuery(
                 source_model="orders",
@@ -1303,11 +1303,11 @@ class TestOuterWrapperAndShiftedCteFamilies:
         assert [r["orders.status"] for r in resp.data] == ["new"]
         assert resp.data[0]["orders.g"] == 300.0
 
-    async def test_outer_wrapper_filter_carrying_a_scalar_call(self, tmp_path_factory) -> None:
+    async def test_outer_wrapper_filter_carrying_a_scalar_call(self, tmp_path) -> None:
         """B5 on R4's route specifically — the patched scalar branch. Wrapping
         the same comparison in ``ifnull`` must not change which rows survive,
         and (on a dialect without IFNULL) must not emit it."""
-        engine = await self._engine(tmp_path_factory)
+        engine = await self._engine(tmp_path)
         resp = await engine.execute(
             SlayerQuery(
                 source_model="orders",
@@ -1320,7 +1320,7 @@ class TestOuterWrapperAndShiftedCteFamilies:
         assert resp.data[0]["orders.g"] == 300.0
 
     async def test_outer_wrapper_scalar_call_is_transpiled_on_postgres(
-        self, tmp_path_factory,
+        self, tmp_path,
     ) -> None:
         """The emission half of the same case, and the B5 bug in its sharpest
         form: R4 passes scalar calls through as ``exp.Anonymous``, so the
@@ -1333,7 +1333,7 @@ class TestOuterWrapperAndShiftedCteFamilies:
         assertion there would be a policy preference rather than a correctness
         claim.
         """
-        engine = await self._engine(tmp_path_factory, dialect="postgres")
+        engine = await self._engine(tmp_path, dialect="postgres")
         resp = await engine.execute(
             SlayerQuery(
                 source_model="orders",
@@ -1346,7 +1346,7 @@ class TestOuterWrapperAndShiftedCteFamilies:
         assert "IFNULL" not in (resp.sql or "").upper(), resp.sql
         assert "COALESCE" in (resp.sql or "").upper(), resp.sql
 
-    async def test_shifted_cte_filter_call_site_executes(self, tmp_path_factory) -> None:
+    async def test_shifted_cte_filter_call_site_executes(self, tmp_path) -> None:
         """R1's SECOND call site (``_shifted_where_part``, the ``time_shift`` CTE's WHERE).
 
         A host filter must apply inside the shifted CTE as well as the host
@@ -1354,7 +1354,7 @@ class TestOuterWrapperAndShiftedCteFamilies:
         With ``status = 'new'`` only, January's total is 100 and February's
         shifted-by-one-month value must be that same 100.
         """
-        engine = await self._engine(tmp_path_factory)
+        engine = await self._engine(tmp_path)
         resp = await engine.execute(
             SlayerQuery(
                 source_model="orders",

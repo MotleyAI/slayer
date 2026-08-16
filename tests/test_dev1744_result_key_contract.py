@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from typing import AsyncIterator, List
+from typing import List
 
 import pytest
 
@@ -60,8 +60,8 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 
 @pytest.fixture
-async def engine(tmp_path_factory) -> AsyncIterator[SlayerQueryEngine]:
-    d = str(tmp_path_factory.mktemp("contract"))
+async def engine(tmp_path) -> SlayerQueryEngine:
+    d = str(tmp_path)
     db_path = os.path.join(d, "contract.db")
     con = sqlite3.connect(db_path)
     cur = con.cursor()
@@ -154,7 +154,7 @@ async def engine(tmp_path_factory) -> AsyncIterator[SlayerQueryEngine]:
             ],
         )
     )
-    yield SlayerQueryEngine(storage=storage)
+    return SlayerQueryEngine(storage=storage)
 
 
 async def _assert_result_keys(

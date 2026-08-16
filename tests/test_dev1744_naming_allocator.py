@@ -53,7 +53,7 @@ import sqlite3
 from collections import Counter
 from decimal import Decimal
 from types import SimpleNamespace
-from typing import AsyncIterator, List
+from typing import List
 
 import pytest
 import sqlglot
@@ -197,8 +197,8 @@ async def _build_engine(*, base_dir: str, dialect: str = "sqlite") -> SlayerQuer
 
 
 @pytest.fixture
-async def engine(tmp_path_factory) -> AsyncIterator[SlayerQueryEngine]:
-    yield await _build_engine(base_dir=str(tmp_path_factory.mktemp("b4")))
+async def engine(tmp_path) -> SlayerQueryEngine:
+    return await _build_engine(base_dir=str(tmp_path))
 
 
 def _cte_names_by_scope(sql: str, *, dialect: str = "sqlite") -> List[List[str]]:
@@ -587,7 +587,7 @@ class TestAllocatorRouting:
         assert b == "_cm_orders__rev_sum"
 
     async def test_windowed_cte_names_use_the_shared_helper(
-        self, tmp_path_factory,
+        self, tmp_path,
     ) -> None:
         """``_wm_`` names go through the same sanitise-and-allocate primitive as
         ``_cm_``, so both CTE families behave identically under a case-only
@@ -600,7 +600,7 @@ class TestAllocatorRouting:
         broke ``_cm_``.
         """
         engine = await _hostile_engine(
-            column="revx2", base_dir=str(tmp_path_factory.mktemp("wm")),
+            column="revx2", base_dir=str(tmp_path),
         )
         resp = await engine.execute(
             SlayerQuery(
@@ -750,10 +750,10 @@ class TestInternalNamesDoNotCollideWithUserColumns:
 
     @pytest.mark.parametrize("column", _INTERNAL_NAMES)
     async def test_user_column_named_like_an_internal_alias(
-        self, column, tmp_path_factory,
+        self, column, tmp_path,
     ) -> None:
         engine = await _hostile_engine(
-            column=column, base_dir=str(tmp_path_factory.mktemp("hostile")),
+            column=column, base_dir=str(tmp_path),
         )
         resp = await engine.execute(
             SlayerQuery(
@@ -775,12 +775,12 @@ class TestInternalNamesDoNotCollideWithUserColumns:
 
     @pytest.mark.parametrize("column", _INTERNAL_NAMES)
     async def test_user_column_named_like_an_internal_alias_as_dimension(
-        self, column, tmp_path_factory,
+        self, column, tmp_path,
     ) -> None:
         """The same names as a GROUP BY dimension, which routes through the
         ranked-subquery / projection aliasing rather than the aggregate path."""
         engine = await _hostile_engine(
-            column=column, base_dir=str(tmp_path_factory.mktemp("hostile")),
+            column=column, base_dir=str(tmp_path),
         )
         resp = await engine.execute(
             SlayerQuery(
@@ -793,13 +793,13 @@ class TestInternalNamesDoNotCollideWithUserColumns:
 
     @pytest.mark.parametrize("column", ["_td_0", "_dim_0", "_val_0"])
     async def test_ranked_subquery_families_survive_the_name(
-        self, column, tmp_path_factory,
+        self, column, tmp_path,
     ) -> None:
         """Reaches the ``_td_<n>`` / ``_dim_<n>`` counters specifically: a
         first/last measure builds the ranked subquery those aliases live in.
         Last amount per status, ordered by ``created_at``: a -> 20, b -> 30."""
         engine = await _hostile_engine(
-            column=column, base_dir=str(tmp_path_factory.mktemp("hostile")),
+            column=column, base_dir=str(tmp_path),
         )
         resp = await engine.execute(
             SlayerQuery(
@@ -814,11 +814,11 @@ class TestInternalNamesDoNotCollideWithUserColumns:
     @pytest.mark.parametrize(
         "column", ["_w_dim_0", "_w_td_0", "_w_time", "_w_value"],
     )
-    async def test_windowed_families_survive_the_name(self, column, tmp_path_factory) -> None:
+    async def test_windowed_families_survive_the_name(self, column, tmp_path) -> None:
         """Reaches the ``_w_*`` ``_src``-projection aliases specifically: a
         duration-windowed measure is the only shape that builds them."""
         engine = await _hostile_engine(
-            column=column, base_dir=str(tmp_path_factory.mktemp("hostile")),
+            column=column, base_dir=str(tmp_path),
         )
         resp = await engine.execute(
             SlayerQuery(
