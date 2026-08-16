@@ -127,3 +127,48 @@ class TestAdditiveContract:
         reloaded = await storage.get_model("customers", data_source="ds")
         region = next(c for c in reloaded.columns if c.name == "region")
         assert region.unique is True
+
+
+class TestLegacyJoinTargetNormalisation:
+    """A join persisted with the live object name self-heals on re-ingest.
+
+    Model names cannot contain ``__``, so such a target can never resolve —
+    it is repaired rather than kept alongside the corrected join.
+    """
+
+    async def test_legacy_double_underscore_target_is_rewritten(
+        self, workspace: Path
+    ) -> None:
+        import sqlite3
+
+        from slayer.core.models import DatasourceConfig
+        from slayer.storage.yaml_storage import YAMLStorage
+
+        db = str(workspace / "legacy.db")
+        conn = sqlite3.connect(db)
+        conn.executescript(
+            """
+            CREATE TABLE reports__patient__drug (id INTEGER PRIMARY KEY);
+            CREATE TABLE visits (
+                id INTEGER PRIMARY KEY,
+                report_id INTEGER REFERENCES reports__patient__drug(id)
+            );
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        storage = YAMLStorage(base_dir=str(workspace / "store"))
+        ds = DatasourceConfig(name="ds", type="sqlite", database=db)
+        await storage.save_datasource(ds)
+        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+
+        # Rewind to the pre-fix state: the join names the live object.
+        visits = await storage.get_model("visits", data_source="ds")
+        visits.joins[0].target_model = "reports__patient__drug"
+        await storage.save_model(visits)
+
+        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+
+        reloaded = await storage.get_model("visits", data_source="ds")
+        assert [j.target_model for j in reloaded.joins] == ["reports_patient_drug"]

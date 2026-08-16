@@ -802,7 +802,9 @@ def _introspect_query_columns_via_inspector(
     # Build list of (ref_table, dotted_path) from joins — supports diamond joins
     # where the same table appears via multiple paths
     table_path_pairs: list[tuple] = []
-    if joins:
+    # `is not None`, not truthiness: an EMPTY join list means every candidate
+    # join was dropped, which is not the same as "joins were never generated".
+    if joins is not None:
         lookup = live_name_by_model or {}
         for mj in joins:
             if mj.join_pairs and "." in mj.join_pairs[0][0]:
@@ -1542,6 +1544,31 @@ def _join_sig(j: ModelJoin) -> tuple:
     return (j.target_model, tuple(sorted((p[0], p[1]) for p in j.join_pairs)))
 
 
+def _repair_legacy_join_targets(
+    persisted: SlayerModel, fresh: SlayerModel,
+) -> tuple[SlayerModel, bool]:
+    """Rewrite persisted join targets that name the live object, not the model.
+
+    Ingests before the sanitizing fix wrote the raw table name, and a model
+    name can never contain ``__`` — so such a target resolves to nothing.
+    Repaired only when the sanitized name matches a fresh join's target, which
+    proves the model exists; otherwise the join is left for the user to see.
+    """
+    fresh_targets = {j.target_model for j in fresh.joins}
+    repaired = False
+    joins: list[ModelJoin] = []
+    for j in persisted.joins:
+        candidate = sanitize_model_name(j.target_model)
+        if candidate != j.target_model and candidate in fresh_targets:
+            joins.append(j.model_copy(update={"target_model": candidate}))
+            repaired = True
+        else:
+            joins.append(j)
+    if not repaired:
+        return persisted, False
+    return persisted.model_copy(update={"joins": joins}), True
+
+
 def _merge_joins_strict(
     persisted: SlayerModel, fresh: SlayerModel,
 ) -> tuple[list[ModelJoin], list[str], bool]:
@@ -1553,11 +1580,13 @@ def _merge_joins_strict(
     user-set one is never overwritten. The third return value flags a
     metadata-only fill, which still has to trigger a save.
     """
+    persisted, target_repaired = _repair_legacy_join_targets(persisted, fresh)
+
     existing_join_sigs = _existing_join_signatures(persisted)
     existing_join_targets = {j.target_model for j in persisted.joins}
     fresh_by_sig = {_join_sig(j): j for j in fresh.joins}
 
-    metadata_changed = False
+    metadata_changed = target_repaired
     new_joins: list[ModelJoin] = []
     for pj in persisted.joins:
         fj = fresh_by_sig.get(_join_sig(pj))

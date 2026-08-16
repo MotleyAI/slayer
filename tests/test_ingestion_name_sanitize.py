@@ -513,3 +513,82 @@ class TestJoinTargetsUseModelNames:
 
         refs_it = models["refs_it"]
         assert all(j.target_model in models for j in refs_it.joins)
+
+
+class TestEmptyJoinListIsNotNoJoinList:
+    """An empty join list means every join was dropped, not "none generated".
+
+    Conflating the two sent the fallback to introspect the skipped object and
+    emit `a__b.label` — a column name the SQL generator reads as a join path.
+    (`_columns_to_model` drops dotted names, so no bad model reached storage;
+    the cost was pointless introspection against an object with no model.)
+    """
+
+    def _fixture(self, workspace: Path):
+        ds = _sqlite_ds(
+            workspace,
+            """
+            CREATE TABLE a_b (id INTEGER PRIMARY KEY);
+            CREATE TABLE a__b (id INTEGER PRIMARY KEY, label TEXT);
+            CREATE TABLE refs_it (
+                id INTEGER PRIMARY KEY,
+                x INTEGER REFERENCES a__b(id)
+            );
+            """,
+        )
+        sa_engine = engine_factory.get_engine(ds.resolve_env_vars())
+        return sa_engine, sa.inspect(sa_engine)
+
+    def _introspect(self, workspace: Path, joins):
+        from slayer.engine.ingestion import _introspect_query_columns_via_inspector
+
+        sa_engine, inspector = self._fixture(workspace)
+        return [
+            c[0]
+            for c in _introspect_query_columns_via_inspector(
+                sa_engine=sa_engine,
+                inspector=inspector,
+                table_name="refs_it",
+                schema=None,
+                rollup_sql=None,
+                referenced_tables={"a__b"},
+                fk_columns_by_table={"refs_it": {"x"}},
+                joins=joins,
+            )
+        ]
+
+    def test_empty_joins_introspects_no_referenced_table(
+        self, workspace: Path
+    ) -> None:
+        assert self._introspect(workspace, []) == ["id", "x"]
+
+    def test_none_joins_still_falls_back(self, workspace: Path) -> None:
+        """`None` means joins were never generated — the fallback must stay."""
+        assert self._introspect(workspace, None) == [
+            "id", "x", "a__b.id", "a__b.label",
+        ]
+
+
+class TestSanitizedNamesDoNotLeakIntoColumns:
+    """A dropped join must not reappear as `__`-bearing dotted columns."""
+
+    def test_no_dotted_columns_for_a_skipped_target(self, workspace: Path) -> None:
+        ds = _sqlite_ds(
+            workspace,
+            """
+            CREATE TABLE a_b (id INTEGER PRIMARY KEY);
+            CREATE TABLE a__b (id INTEGER PRIMARY KEY, label TEXT);
+            CREATE TABLE refs_it (
+                id INTEGER PRIMARY KEY,
+                x INTEGER REFERENCES a__b(id)
+            );
+            """,
+        )
+        models = {m.name: m for m in ingest_datasource(datasource=ds)}
+        refs_it = models["refs_it"]
+        assert refs_it.joins == []
+        # The fallback used to fire on the now-empty join list and introspect
+        # the skipped object anyway, emitting `a__b.label` — a column name the
+        # SQL generator reads as a join path.
+        assert all("__" not in c.name for c in refs_it.columns)
+        assert all(not c.name.startswith("a_b.") for c in refs_it.columns)
