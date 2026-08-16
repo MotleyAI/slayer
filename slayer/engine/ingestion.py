@@ -1551,16 +1551,32 @@ def _repair_legacy_join_targets(
 
     Ingests before the sanitizing fix wrote the raw table name, and a model
     name can never contain ``__`` — so such a target resolves to nothing.
-    Repaired only when the sanitized name matches a fresh join's target, which
-    proves the model exists; otherwise the join is left for the user to see.
+
+    The repair demands a full signature match (sanitized target AND identical
+    ``join_pairs``) against a fresh join, so it can only ever rename the join
+    the bug produced. Matching on the target alone would repoint a
+    hand-authored join with different pairs, and could collapse two legacy
+    targets (``a__b`` and ``a___b`` both sanitize to ``a_b``) onto one name —
+    tripping the duplicate-target guard below and turning a tolerated store
+    into a failed re-ingest.
     """
-    fresh_targets = {j.target_model for j in fresh.joins}
+    fresh_sigs = {_join_sig(j) for j in fresh.joins}
+    claimed = {
+        j.target_model for j in persisted.joins
+        if sanitize_model_name(j.target_model) == j.target_model
+    }
     repaired = False
     joins: list[ModelJoin] = []
     for j in persisted.joins:
         candidate = sanitize_model_name(j.target_model)
-        if candidate != j.target_model and candidate in fresh_targets:
-            joins.append(j.model_copy(update={"target_model": candidate}))
+        renamed = j.model_copy(update={"target_model": candidate})
+        if (
+            candidate != j.target_model
+            and candidate not in claimed
+            and _join_sig(renamed) in fresh_sigs
+        ):
+            joins.append(renamed)
+            claimed.add(candidate)
             repaired = True
         else:
             joins.append(j)
