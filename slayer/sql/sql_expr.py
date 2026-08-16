@@ -103,9 +103,17 @@ def parse_sql_expr(
 
     # DEV-1784: single log-alias policy — the same rewrite the parser and
     # generator apply, keyed on ``SqlDialect.should_use_native_log`` rather than
-    # a local allowlist. ``dialect=None`` skips it (no dialect to key on).
+    # a local allowlist. ``dialect=None``, or a name sqlglot parses but SLayer's
+    # registry does not carry, skips the rewrite (matching the old allowlist's
+    # behaviour on a miss), so ``parse_sql_expr`` stays a total function over any
+    # dialect sqlglot can parse.
+    sql_dialect = None
     if dialect is not None:
-        sql_dialect = get_dialect(dialect)
+        try:
+            sql_dialect = get_dialect(dialect)
+        except KeyError:
+            sql_dialect = None
+    if sql_dialect is not None:
         parsed = parsed.transform(
             lambda n: rewrite_log_aliases(n, dialect=sql_dialect),
         )

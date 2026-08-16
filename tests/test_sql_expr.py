@@ -183,6 +183,14 @@ class TestLogAliasPreservation:
         canonical = parse_sql_expr("log(10, revenue) > 0").canonical_sql
         assert "log(10," in canonical.lower().replace(" ", "")
 
+    def test_unregistered_sqlglot_dialect_does_not_raise(self):
+        # parse_sql_expr is total over any sqlglot-parseable dialect: a name
+        # outside SLayer's registry ("hive") skips the log-alias policy rather
+        # than raising, leaving the generic 2-arg form (DEV-1784 — Codex).
+        key = parse_sql_expr("log(10, revenue)", dialect="hive")
+        assert isinstance(key, SqlExprKey)
+        assert "log(10," in key.canonical_sql.lower().replace(" ", "")
+
 
 # ---------------------------------------------------------------------------
 # Window detection
