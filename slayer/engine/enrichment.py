@@ -37,6 +37,7 @@ from slayer.core.formula import (
     parse_filter,
     parse_formula,
 )
+from slayer.core.errors import UnresolvableDimensionJoinError
 from slayer.core.models import Column, SlayerModel
 from slayer.core.query import OrderItem, SlayerQuery, substitute_variables
 from slayer.core.refs import DOTTED_IDENT_REF_RE as _DOTTED_IDENT_REF_RE
@@ -180,6 +181,7 @@ async def enrich_query(
     resolve_model=None,
     dialect: str = "postgres",
     drop_unreachable_filters: bool = False,
+    enforce_join_binding: bool = True,
 ) -> EnrichedQuery:
     """Resolve a SlayerQuery against model definitions into an EnrichedQuery.
 
@@ -1905,6 +1907,24 @@ async def enrich_query(
         extra_agg_names=custom_agg_names,
         dialect=dialect,
     )
+
+    # DEV-1780 safety net: never return a dim/time-dim whose join-path alias is
+    # absent from resolved_joins (it would render an unbound ``A__B`` reference).
+    # Skipped for virtual stages and the re-rooted CTE (enforce_join_binding=False).
+    if enforce_join_binding and model.source_model_origin is None:
+        _bound_aliases = {rj[1] for rj in resolved_joins}
+        _root_prefix = f"{model_name_str}."
+        for _bound_check in list(dimensions) + list(time_dimensions):
+            _mn = _bound_check.model_name
+            if _mn != model_name_str and _mn not in _bound_aliases:
+                _reference = _bound_check.alias
+                if _reference.startswith(_root_prefix):
+                    _reference = _reference[len(_root_prefix):]
+                raise UnresolvableDimensionJoinError(
+                    reference=_reference,
+                    root_model=model_name_str,
+                    available_joins=[j.target_model for j in model.joins],
+                )
 
     # Names that resolve at the query level (named measures, transforms,
     # expressions) — pass through as legitimate filter targets even though

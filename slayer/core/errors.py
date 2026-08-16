@@ -245,3 +245,48 @@ class UnresolvableOrderColumnError(SlayerError, ValueError):
             f"Project it (add to dimensions/measures), reference it in a filter, or "
             f"order by a projected field instead."
         )
+
+
+class UnresolvableDimensionJoinError(SlayerError, ValueError):
+    """A dimension / time-dimension dotted path that is not a valid direct-join
+    chain and cannot be uniquely routed to its target model (DEV-1780).
+
+    A dotted path resolves only when every hop is a direct join. A short form
+    (``Consumer.name`` — target model only) auto-resolves when exactly one route
+    reaches the target; otherwise (ambiguous route, unreachable target, or an
+    explicit multi-hop chain with a broken hop) the reference is rejected here
+    rather than emitting SQL that references an unbound table alias.
+
+    Multi-inherits ``ValueError`` (like ``UnresolvableOrderColumnError``) so
+    existing ``except ValueError`` sites keep working. ``__str__`` is computed
+    from the fields so ``suggested_path`` set after construction is reflected.
+    """
+
+    def __init__(
+        self,
+        *,
+        reference: str,
+        root_model: str,
+        reason: str | None = None,
+        available_joins: "list[str] | None" = None,
+        suggested_path: str | None = None,
+    ) -> None:
+        self.reference = reference
+        self.root_model = root_model
+        self.reason = reason
+        self.available_joins = available_joins
+        self.suggested_path = suggested_path
+        super().__init__()
+
+    def __str__(self) -> str:
+        msg = (
+            f"Cannot resolve dimension '{self.reference}': not a valid join path "
+            f"from '{self.root_model}'."
+        )
+        if self.reason:
+            msg += f" {self.reason}"
+        if self.available_joins is not None:
+            msg += f" Available joins from '{self.root_model}': {sorted(self.available_joins)}."
+        if self.suggested_path:
+            msg += f" Did you mean '{self.suggested_path}'?"
+        return msg
