@@ -120,7 +120,7 @@ slayer validate-models --datasource jaffle_shop --force-clean --yes
 
 Without a cardinality flag the output is the drift diff alone. With one, the report gains two labelled sections — `Schema drift` and `Join cardinality` — and any `--force-clean` apply happens *between* them, so profiling reads the repaired models.
 
-Exit code is `0` whatever the report contains, including hard contradictions. It is `1` when a datasource or model is unknown, when a datasource fails validation (an unscoped run validates each one explicitly rather than silently skipping failures), when profiling fails outright, or when `--force-clean` leaves residual drift.
+Exit code is `0` for any report about the data, including `contradicts_hard` — the command did its job and the answer is unwelcome. It is `1` when the command could not do its job: an unknown datasource or model, a datasource that failed validation (an unscoped run validates each one explicitly rather than silently skipping failures), a profiling failure, any `scan_failed` finding, or residual drift after `--force-clean`. Diagnostics go to stderr, so stdout stays parseable under `--format json`.
 
 #### Cardinality verdicts
 
@@ -132,7 +132,7 @@ Exit code is `0` whatever the report contains, including hard contradictions. It
 | `contradicts_hard` | The data **disproves** the stored value: a side it claimed unique has duplicates. |
 | `skipped_unsupported` | Not profilable — a non-`sql_table` model (sql-mode / query-backed) or an expression-valued join key. |
 | `no_evidence` | Profiled fine, but one side had no non-null key rows. An empty scan says nothing about arity, so nothing is detected or written. Worth re-running once data lands — unlike `skipped_unsupported`, which never becomes profilable. |
-| `scan_failed` | The scan itself raised; the message is in `note`. Contained per join, so one unreadable table costs one finding rather than the whole report. |
+| `scan_failed` | The scan itself raised; the message is in `note`. Contained per join, so one unreadable table costs one finding rather than the whole report — but the command still exits 1, since that join was not profiled. |
 
 Columns declared `unique` (or `primary_key`) that the data shows have duplicates are reported under `unique_contradictions`; detection never mutates `Column.unique`.
 

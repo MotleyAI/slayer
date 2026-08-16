@@ -270,17 +270,20 @@ def test_force_clean_ignores_out_of_scope_residual(workspace: Path, capsys) -> N
 
 def test_unknown_model_fails_fast(workspace: Path, capsys) -> None:
     store = _setup(workspace)
+    args = _args(store, model="nope")
     with pytest.raises(SystemExit) as exc:
-        _run_validate_models(_args(store, model="nope"))
+        _run_validate_models(args)
     assert exc.value.code == 1
-    assert "nope" in capsys.readouterr().out
+    assert "nope" in capsys.readouterr().err
 
 
 def test_unknown_datasource_fails_fast(workspace: Path, capsys) -> None:
     store = _setup(workspace)
+    args = _args(store, datasource="nope")
     with pytest.raises(SystemExit) as exc:
-        _run_validate_models(_args(store, datasource="nope"))
+        _run_validate_models(args)
     assert exc.value.code == 1
+    assert "nope" in capsys.readouterr().err
 
 
 def test_model_resolves_across_datasources(workspace: Path, capsys) -> None:
@@ -350,12 +353,54 @@ def test_datasource_failure_in_unscoped_run_exits_one(
 
     monkeypatch.setattr(SlayerQueryEngine, "detect_join_cardinality", _never)
 
+    args = _args(store, datasource=None, cardinality=True)
     with pytest.raises(SystemExit) as exc:
-        _run_validate_models(_args(store, datasource=None, cardinality=True))
+        _run_validate_models(args)
     assert exc.value.code == 1
-    out = capsys.readouterr().out
-    assert "ds2" in out
-    assert "boom" in out
+    err = capsys.readouterr().err
+    assert "ds2" in err
+    assert "boom" in err
+
+
+def test_every_datasource_failure_is_reported(
+    workspace: Path, monkeypatch, capsys
+) -> None:
+    """The per-datasource loop must not short-circuit on the first failure."""
+    store = _setup(workspace, ds_name="ds")
+    _setup(workspace, ds_name="ds2", store=store)
+
+    async def _boom(self, data_source=None):
+        raise RuntimeError(f"{data_source} exploded")
+
+    monkeypatch.setattr(SlayerQueryEngine, "validate_models", _boom)
+
+    args = _args(store, datasource=None)
+    with pytest.raises(SystemExit):
+        _run_validate_models(args)
+    err = capsys.readouterr().err
+    assert "ds exploded" in err
+    assert "ds2 exploded" in err
+
+
+def test_datasource_failure_keeps_json_parseable(
+    workspace: Path, monkeypatch, capsys
+) -> None:
+    store = _setup(workspace, ds_name="ds")
+    _setup(workspace, ds_name="ds2", store=store)
+
+    async def _flaky(self, data_source=None):
+        if data_source == "ds2":
+            raise RuntimeError("boom")
+        return []
+
+    monkeypatch.setattr(SlayerQueryEngine, "validate_models", _flaky)
+
+    args = _args(store, datasource=None, format="json")
+    with pytest.raises(SystemExit):
+        _run_validate_models(args)
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == {"drift": [], "cardinality": None}
+    assert "ds2" in captured.err
 
 
 def test_drift_failure_skips_profiling(workspace: Path, monkeypatch, capsys) -> None:
@@ -371,10 +416,11 @@ def test_drift_failure_skips_profiling(workspace: Path, monkeypatch, capsys) -> 
 
     monkeypatch.setattr(SlayerQueryEngine, "detect_join_cardinality", _never)
 
+    args = _args(store, cardinality=True)
     with pytest.raises(SystemExit) as exc:
-        _run_validate_models(_args(store, cardinality=True))
+        _run_validate_models(args)
     assert exc.value.code == 1
-    assert "drift exploded" in capsys.readouterr().out
+    assert "drift exploded" in capsys.readouterr().err
 
 
 def test_cardinality_failure_exits_one(workspace: Path, monkeypatch, capsys) -> None:
@@ -385,12 +431,34 @@ def test_cardinality_failure_exits_one(workspace: Path, monkeypatch, capsys) -> 
 
     monkeypatch.setattr(SlayerQueryEngine, "detect_join_cardinality", _boom)
 
+    args = _args(store, cardinality=True)
     with pytest.raises(SystemExit) as exc:
-        _run_validate_models(_args(store, cardinality=True))
+        _run_validate_models(args)
     assert exc.value.code == 1
-    out = capsys.readouterr().out
-    assert "cardinality" in out.lower()
-    assert "profiling exploded" in out
+    err = capsys.readouterr().err
+    assert "cardinality" in err.lower()
+    assert "profiling exploded" in err
+
+
+def test_scan_failure_reports_fully_but_exits_one(
+    workspace: Path, monkeypatch, capsys
+) -> None:
+    """A contained scan failure is still work the command did not do."""
+    store = _setup(workspace)
+
+    async def _boom(self, **kwargs):
+        raise RuntimeError("table is on fire")
+
+    monkeypatch.setattr(SlayerQueryEngine, "_side_stats", _boom)
+
+    args = _args(store, cardinality=True)
+    with pytest.raises(SystemExit) as exc:
+        _run_validate_models(args)
+    assert exc.value.code == 1
+    captured = capsys.readouterr()
+    # The report is still printed in full — containment is not silence.
+    assert "scan_failed" in captured.out
+    assert "could not be profiled" in captured.err
 
 
 def test_profiling_runs_after_the_force_clean_apply(

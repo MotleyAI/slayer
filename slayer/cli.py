@@ -1,6 +1,7 @@
 """CLI entry point for SLayer."""
 
 import argparse
+import asyncio
 import copy
 import json
 import os
@@ -17,6 +18,7 @@ from slayer.core.errors import (
     SlayerError,
 )
 from slayer.core.models import SlayerModel
+from slayer.engine.cardinality import CardinalityVerdict
 from slayer.engine.ingestion import (
     _print_ingest_addition,
     _print_ingest_drift_and_errors,
@@ -1486,7 +1488,10 @@ def _resolve_validate_scope(args, storage) -> None:
     storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
     if args.datasource:
         if run_sync(storage.get_datasource(args.datasource)) is None:
-            print(f"Datasource '{args.datasource}' not found in {storage_path}")
+            print(
+                f"Datasource '{args.datasource}' not found in {storage_path}",
+                file=sys.stderr,
+            )
             sys.exit(1)
     model = getattr(args, "model", None)
     if not model:
@@ -1499,15 +1504,24 @@ def _resolve_validate_scope(args, storage) -> None:
         for ds, name in identities
     ):
         where = f"datasource '{args.datasource}'" if args.datasource else storage_path
-        print(f"Model '{model}' not found in {where}")
+        print(f"Model '{model}' not found in {where}", file=sys.stderr)
         sys.exit(1)
 
 
-def _collect_drift(args, engine, storage) -> list:
-    """Drift entries for the requested scope, filtered by ``--model``.
+async def _validate_each_datasource(engine, ds_names: list[str]) -> list[tuple]:
+    """Validate every datasource concurrently, pairing each result with its name."""
+    results = await asyncio.gather(
+        *(engine.validate_models(data_source=name) for name in ds_names),
+        return_exceptions=True,
+    )
+    return list(zip(ds_names, results))
 
-    An unscoped run validates each datasource explicitly rather than through
-    ``validate_models(None)``, which suppresses per-datasource failures — a
+
+def _collect_drift(args, engine, storage) -> tuple[list, list]:
+    """``(entries, failures)`` for the requested scope, filtered by ``--model``.
+
+    Datasources are validated concurrently but attributed one by one:
+    ``validate_models(None)`` swallows a per-datasource failure, and a
     validation command must not report a clean bill for a datasource it never
     reached.
     """
@@ -1517,23 +1531,13 @@ def _collect_drift(args, engine, storage) -> list:
         ds_names = run_sync(storage.list_datasources())
 
     entries: list = []
-    failures: list[tuple[str, Exception]] = []
-    for ds_name in ds_names:
-        try:
-            entries.extend(run_sync(engine.validate_models(data_source=ds_name)))
-        except Exception as exc:  # noqa: BLE001 — surface DB/auth failures cleanly
-            if args.datasource:
-                print(f"validate-models failed: {exc}")
-                sys.exit(1)
-            failures.append((ds_name, exc))
-
-    entries = _filter_entries_by_model(entries, getattr(args, "model", None))
-    if failures:
-        print(_format_validate_models_output(entries))
-        for ds_name, exc in failures:
-            print(f"Datasource '{ds_name}' failed validation: {exc}")
-        sys.exit(1)
-    return entries
+    failures: list[tuple[str, BaseException]] = []
+    for ds_name, result in run_sync(_validate_each_datasource(engine, ds_names)):
+        if isinstance(result, BaseException):
+            failures.append((ds_name, result))
+        else:
+            entries.extend(result)
+    return _filter_entries_by_model(entries, getattr(args, "model", None)), failures
 
 
 def _filter_entries_by_model(entries: list, model: str | None) -> list:
@@ -1554,7 +1558,22 @@ def _collect_cardinality_report(args, engine):
             persist=persist,
         ))
     except Exception as exc:  # noqa: BLE001 — surface DB/introspection failures cleanly
-        print(f"validate-models: cardinality profiling failed: {exc}")
+        print(f"validate-models: cardinality profiling failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _exit_on_scan_failures(report) -> None:
+    """A contained scan failure is still work the command did not do."""
+    if report is None:
+        return
+    failed = [
+        f for f in report.findings if f.verdict is CardinalityVerdict.SCAN_FAILED
+    ]
+    if failed:
+        print(
+            f"{len(failed)} join(s) could not be profiled; see scan_failed above.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
 
@@ -1614,16 +1633,28 @@ def _run_validate_models(args):
     _resolve_validate_scope(args, storage)
     engine = SlayerQueryEngine(storage=storage)
 
-    entries = _collect_drift(args, engine, storage)
+    entries, failures = _collect_drift(args, engine, storage)
+    as_json = getattr(args, "format", "text") == "json"
     wants_cardinality = bool(
         getattr(args, "cardinality", False)
         or getattr(args, "persist_cardinality", False)
     )
 
-    if getattr(args, "format", "text") == "json":
-        _print_validate_json(
-            entries=entries, report=_collect_cardinality_report(args, engine),
-        )
+    if failures:
+        # Report what we did reach, on stdout in the requested format, then
+        # fail — profiling a set we could not fully validate would mislead.
+        if as_json:
+            _print_validate_json(entries=entries, report=None)
+        else:
+            _print_drift_section(entries, headed=False)
+        for ds_name, exc in failures:
+            print(f"Datasource '{ds_name}' failed validation: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    if as_json:
+        report = _collect_cardinality_report(args, engine)
+        _print_validate_json(entries=entries, report=report)
+        _exit_on_scan_failures(report)
         return
 
     _print_drift_section(entries, headed=wants_cardinality)
@@ -1633,6 +1664,7 @@ def _run_validate_models(args):
     report = _collect_cardinality_report(args, engine)
     if report is not None:
         _print_cardinality_section(report)
+    _exit_on_scan_failures(report)
 
 
 def _run_recommend_root_model(args):

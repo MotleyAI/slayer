@@ -477,7 +477,7 @@ def _pk_key_sets(
         else:
             # Only the bare-inspector path needs normalizing;
             # _safe_get_pk_constraint already guarantees a mapping.
-            pk = inspector.get_pk_constraint(table_name, schema=schema)
+            pk = inspector.get_pk_constraint(table_name=table_name, schema=schema)
             if not isinstance(pk, dict):
                 return []
     except Exception:
@@ -557,6 +557,24 @@ def _get_unique_key_sets(
         + _unique_index_key_sets(
             inspector=inspector, table_name=table_name, schema=schema,
         )
+    )
+
+
+def _solo_unique_columns_for_table(
+    *,
+    inspector: sa.engine.Inspector,
+    sa_engine: sa.Engine,
+    table_name: str,
+    schema: str | None,
+) -> set[str]:
+    """``_get_single_column_unique_names`` with the table's PK resolved for it."""
+    pk = _safe_get_pk_constraint(
+        inspector=inspector, sa_engine=sa_engine,
+        table_name=table_name, schema=schema,
+    )
+    return _get_single_column_unique_names(
+        inspector=inspector, table_name=table_name, schema=schema,
+        pk_cols=set(pk.get("constrained_columns", [])),
     )
 
 
@@ -967,13 +985,9 @@ def introspect_table_to_model(
         sql_table=sql_table,
         columns=columns,
     )
-    pk = _safe_get_pk_constraint(
+    unique_columns = _solo_unique_columns_for_table(
         inspector=inspector, sa_engine=sa_engine,
         table_name=table_name, schema=schema,
-    )
-    unique_columns = _get_single_column_unique_names(
-        inspector=inspector, table_name=table_name, schema=schema,
-        pk_cols=set(pk.get("constrained_columns", [])),
     )
     return _columns_to_model(
         name=model_name or table_name,
@@ -1029,13 +1043,9 @@ def ingest_datasource(
         referenced = set() if has_cycles else _compute_transitive_closure(fk_graph, table_name)
         sql_table = f"{schema}.{table_name}" if schema else table_name
 
-        table_pk = _safe_get_pk_constraint(
+        unique_columns = _solo_unique_columns_for_table(
             inspector=inspector, sa_engine=sa_engine,
             table_name=table_name, schema=schema,
-        )
-        unique_columns = _get_single_column_unique_names(
-            inspector=inspector, table_name=table_name, schema=schema,
-            pk_cols=set(table_pk.get("constrained_columns", [])),
         )
 
         if referenced:
