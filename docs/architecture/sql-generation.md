@@ -287,8 +287,11 @@ confirmed pinned.
   each public result key mapped to its `FieldMetadata(label, format)`.
   `_slot_result_keys` mirrors `_full_alias_for_slot`; only keys actually present
   in the rendered SQL are surfaced. Aggregate formats come from
-  `_infer_aggregated_format` (INTEGER for count/star, FLOAT for avg-family,
-  source-column format for sum/min/max).
+  `_infer_aggregated_format`, which shares one classifier (`classify_aggregation`,
+  DEV-1788) with `aggregated_type` (slot `DataType`) so the type and format axes
+  cannot drift: INTEGER for count/star; plain FLOAT for `corr`/`var`/`covar`;
+  the source column's format (else FLOAT) for the avg-family/`percentile`/`stddev`;
+  the source column's format (else None) for `sum`/`min`/`max`/`first`/`last`.
 
 `FieldMetadata` / `ResponseAttributes` / `_infer_aggregated_format` live here (not
 in `query_engine`) so the module imports nothing from the engine; `query_engine`

@@ -28,11 +28,15 @@ to avoid that cycle).
 
 from __future__ import annotations
 
-from typing import FrozenSet, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from slayer.core.enums import DataType, INTEGER_AGGREGATIONS
+from slayer.core.enums import (
+    AggregationValueClass,
+    DataType,
+    classify_aggregation,
+)
 from slayer.core.format import NumberFormat
 from slayer.core.keys import (
     AggregateKey,
@@ -163,36 +167,31 @@ class StrictQueryCarrier(BaseModel):
 # Key -> slot metadata
 # ---------------------------------------------------------------------------
 
-_FLOAT_AGGREGATIONS: FrozenSet[str] = frozenset({
-    "avg", "weighted_avg", "median",
-    "stddev_samp", "stddev_pop", "var_samp", "var_pop",
-    "corr", "covar_samp", "covar_pop", "percentile",
-})
-
-
 def aggregated_type(
     *,
     model: SlayerModel,
     measure_name: Optional[str],
     aggregation: str,
 ) -> Optional[DataType]:
-    """Type for an aggregated measure slot. Mirrors
-    ``_infer_aggregated_format`` (decision #2 of the Stage B plan):
+    """Type for an aggregated measure slot, via the shared
+    ``classify_aggregation`` (DEV-1788), so it cannot drift from
+    ``_infer_aggregated_format``:
 
-    * ``*:count`` (measure_name=``"*"``) → ``INT``
-    * ``count`` / ``count_distinct`` / ``count_distinct_approx`` → ``INT``
-    * ``avg`` / ``weighted_avg`` / ``median`` / parametric / stat aggs →
+    * ``COUNT`` (``*:count`` / count-family) → ``INT``
+    * ``FLOAT_SOURCE_UNITS`` / ``FLOAT_PLAIN`` (avg-family, stat, parametric) →
       ``DOUBLE``
-    * ``sum`` / ``min`` / ``max`` / ``first`` / ``last`` → inherit from
-      source column type (DOUBLE if absent).
+    * ``PRESERVING`` (sum / min / max / first / last, and custom aggs) → inherit
+      source column type (``None`` if absent).
     """
-    if measure_name == "*":
+    cls = classify_aggregation(measure_name=measure_name, aggregation=aggregation)
+    if cls is AggregationValueClass.COUNT:
         return DataType.INT
-    if aggregation in INTEGER_AGGREGATIONS:
-        return DataType.INT
-    if aggregation in _FLOAT_AGGREGATIONS:
+    if cls in (
+        AggregationValueClass.FLOAT_SOURCE_UNITS,
+        AggregationValueClass.FLOAT_PLAIN,
+    ):
         return DataType.DOUBLE
-    # sum / min / max / first / last — preserve source column type.
+    # PRESERVING — inherit source column type.
     if measure_name is None:
         return None
     col = model.get_column(measure_name)

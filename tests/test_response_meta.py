@@ -31,6 +31,7 @@ def _orders() -> SlayerModel:
                 type=DataType.DOUBLE,
                 format=NumberFormat(type=NumberFormatType.CURRENCY, symbol="€"),
             ),
+            Column(name="quantity", type=DataType.DOUBLE),
             Column(name="status", type=DataType.TEXT, label="Order status"),
         ],
         joins=[
@@ -145,3 +146,41 @@ def test_cross_model_aggregate_format_integer_for_count():
     assert fm.format is not None
     assert fm.format.type == NumberFormatType.CURRENCY
     assert fm.format.symbol == "$"
+
+
+# ---------------------------------------------------------------------------
+# DEV-1788: stat/parametric aggregation display format through the full
+# response-metadata path (query → plan → build_response_metadata → attributes).
+# ---------------------------------------------------------------------------
+
+
+def test_float_plain_aggregation_is_plain_float():
+    # var_samp is in squared units — the source currency is NOT inherited.
+    q = SlayerQuery(source_model="orders", measures=[{"formula": "amount:var_samp"}])
+    attrs, _cols, _sql = _meta_for(q)
+    fm = attrs.measures["orders.amount_var_samp"]
+    assert fm.format.type == NumberFormatType.FLOAT
+
+
+def test_avg_inherits_currency_format():
+    q = SlayerQuery(source_model="orders", measures=[{"formula": "amount:avg"}])
+    attrs, _cols, _sql = _meta_for(q)
+    fm = attrs.measures["orders.amount_avg"]
+    assert fm.format.type == NumberFormatType.CURRENCY
+    assert fm.format.symbol == "€"
+
+
+def test_avg_unformatted_measure_is_plain_float():
+    q = SlayerQuery(source_model="orders", measures=[{"formula": "quantity:avg"}])
+    attrs, _cols, _sql = _meta_for(q)
+    fm = attrs.measures["orders.quantity_avg"]
+    assert fm.format.type == NumberFormatType.FLOAT
+
+
+def test_preserving_unformatted_measure_omits_format_entry():
+    # quantity:sum has no source format and no label → no attributes entry,
+    # though the column is still projected in expected_columns.
+    q = SlayerQuery(source_model="orders", measures=[{"formula": "quantity:sum"}])
+    attrs, cols, _sql = _meta_for(q)
+    assert "orders.quantity_sum" in cols
+    assert "orders.quantity_sum" not in attrs.measures
