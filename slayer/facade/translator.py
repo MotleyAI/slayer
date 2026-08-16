@@ -2927,17 +2927,14 @@ def _build_source_model_from_join(
 
 
 def _dynamic_join_cardinality(plan: "_JoinPlan") -> JoinCardinality | None:
-    """A dynamic join is ``many_to_one`` only when the target column ALONE is a
-    PK/unique key on the target model — otherwise the arity is undetermined
-    (``None``). A member of a COMPOSITE primary key does not qualify: the join
-    constrains only that one column, so the composite key's uniqueness does not
-    carry (same subset rule as ``is_key_set_unique``). DEV-1688.
-    """
+    """``many_to_one`` when the target column alone is unique, else undetermined."""
     model_ref = plan.target_table.model_ref
     if model_ref is None:
         return None
     for col in model_ref.columns:
         if col.name.lower() == plan.target_col.lower():
+            # The join constrains one column, so a composite-PK member does
+            # not qualify — same subset rule as is_key_set_unique.
             if declares_solo_unique(columns=model_ref.columns, column=col):
                 return JoinCardinality.MANY_TO_ONE
             return None

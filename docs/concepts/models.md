@@ -305,13 +305,13 @@ joins:
 Auto-ingestion fills it structurally from key constraints: an FK join defaults to `many_to_one`, upgrading to `one_to_one` when the source key is itself unique. To infer it from the actual data instead, run:
 
 ```bash
-slayer joins detect-cardinality --datasource mydb           # report only
-slayer joins detect-cardinality --datasource mydb --persist  # write it back
+slayer validate-models --datasource mydb --cardinality                        # report only
+slayer validate-models --datasource mydb --cardinality --persist-cardinality  # write it back
 ```
 
 Detection full-scans each side of the join and reports the observed arity, a `verdict` (whether it confirms, refines, or hard-contradicts the stored value), and any column declared `unique` that the data shows has duplicates. It is a strong guess, not a guarantee — a duplicate disproves uniqueness with certainty, but the absence of duplicates only suggests it.
 
-A side with no non-null key rows reports `no_evidence` and detects nothing: an empty scan would trivially look unique, and that is not weak evidence — it is none. Re-run once the table has data.
+A side with no non-null key rows reports `no_evidence` and detects nothing: an empty scan would trivially look unique, and that is not weak evidence — it is none. Re-run once the table has data. A join whose scan fails outright reports `scan_failed` and does not stop the rest of the report. Full verdict table: [CLI reference](../reference/cli.md#slayer-validate-models).
 
 ### Path-based table aliases
 

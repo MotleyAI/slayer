@@ -95,6 +95,49 @@ slayer ingest --datasource my_postgres --exclude migrations,django_session
 | `--exclude` | No | Comma-separated tables to exclude |
 | `--storage` | No | Storage path |
 
+### `slayer validate-models`
+
+Diff persisted models against the live database schemas (read-only) and, optionally, profile each join's arity from the data. See [Schema Drift](../concepts/schema-drift.md) and [Join cardinality](../concepts/models.md#join-cardinality).
+
+```bash
+slayer validate-models                                   # every datasource
+slayer validate-models --datasource jaffle_shop
+slayer validate-models --model orders --format json
+slayer validate-models --cardinality                     # + profile join arity
+slayer validate-models --cardinality --persist-cardinality
+slayer validate-models --datasource jaffle_shop --force-clean --yes
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--datasource X` | all | Limit to one datasource. Unknown names fail fast. |
+| `--model M` | all | Limit the whole report — and `--force-clean` — to one model. Resolves across every datasource that has a model of that name. |
+| `--cardinality` | off | Also profile each join's arity from the data. Full-scans both sides of every join, so it is opt-in. |
+| `--persist-cardinality` | off | Write the detected `cardinality` back onto each matching join (identified by target model + key pairs). Implies `--cardinality`. |
+| `--format` | `text` | `text`, or `json` for one `{"drift": [...], "cardinality": {...}}` document. Cannot be combined with `--force-clean`. |
+| `--force-clean` | off | After printing the diff, prompt to apply each delete. Destructive; opt-in only. |
+| `-y` / `--yes` | off | With `--force-clean`, skip the confirmation prompt. |
+
+Without a cardinality flag the output is the drift diff alone. With one, the report gains two labelled sections — `Schema drift` and `Join cardinality` — and any `--force-clean` apply happens *between* them, so profiling reads the repaired models.
+
+Exit code is `0` whatever the report contains, including hard contradictions. It is `1` when a datasource or model is unknown, when a datasource fails validation (an unscoped run validates each one explicitly rather than silently skipping failures), when profiling fails outright, or when `--force-clean` leaves residual drift.
+
+#### Cardinality verdicts
+
+| Verdict | Meaning |
+|---------|---------|
+| `fills_none` | No cardinality was stored; the detected value fills the gap. |
+| `confirms` | Detected value matches what was stored. |
+| `refines` | Differs from the stored value, but the data does not disprove it — "no duplicates observed" only *suggests* uniqueness. |
+| `contradicts_hard` | The data **disproves** the stored value: a side it claimed unique has duplicates. |
+| `skipped_unsupported` | Not profilable — a non-`sql_table` model (sql-mode / query-backed) or an expression-valued join key. |
+| `no_evidence` | Profiled fine, but one side had no non-null key rows. An empty scan says nothing about arity, so nothing is detected or written. Worth re-running once data lands — unlike `skipped_unsupported`, which never becomes profilable. |
+| `scan_failed` | The scan itself raised; the message is in `note`. Contained per join, so one unreadable table costs one finding rather than the whole report. |
+
+Columns declared `unique` (or `primary_key`) that the data shows have duplicates are reported under `unique_contradictions`; detection never mutates `Column.unique`.
+
+Detection is a strong guess, not a guarantee: a duplicate disproves uniqueness with certainty, but its absence only suggests uniqueness.
+
 ### `slayer import-dbt`
 
 Import dbt Semantic Layer definitions into SLayer.
@@ -268,41 +311,6 @@ slayer search refresh-samples --data-source jaffle_shop --model orders --model c
 |------|---------|-------------|
 | `--data-source X` | all | Limit the refresh to one datasource. |
 | `--model M` | all | Repeatable; limit to specific models. |
-
-### `slayer joins detect-cardinality`
-
-Profile each join's arity from the data and report it. Full-scans both sides of every join, comparing non-null key rows against distinct key-tuples, and classifies the join as `one_to_one` / `one_to_many` / `many_to_one` / `many_to_many`. See [Join cardinality](../concepts/models.md#join-cardinality).
-
-Report-only by default — nothing is written unless you pass `--persist`.
-
-```bash
-slayer joins detect-cardinality
-slayer joins detect-cardinality --datasource jaffle_shop
-slayer joins detect-cardinality --datasource jaffle_shop --model orders --persist
-slayer joins detect-cardinality --format json
-```
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--datasource X` | all | Limit profiling to one datasource. |
-| `--model M` | all | Limit profiling to a single model. |
-| `--persist` | off | Write the detected `cardinality` back onto each matching join (identified by target model + key pairs). |
-| `--format` | `text` | `text` (one line per join) or `json` (full `JoinCardinalityReport`). |
-
-Each finding carries a `verdict` against the stored value:
-
-| Verdict | Meaning |
-|---------|---------|
-| `fills_none` | No cardinality was stored; the detected value fills the gap. |
-| `confirms` | Detected value matches what was stored. |
-| `refines` | Differs from the stored value, but the data does not disprove it — "no duplicates observed" only *suggests* uniqueness. |
-| `contradicts_hard` | The data **disproves** the stored value: a side it claimed unique has duplicates. |
-| `skipped_unsupported` | Not profilable — a non-`sql_table` model (sql-mode / query-backed) or an expression-valued join key. |
-| `no_evidence` | Profiled fine, but one side had no non-null key rows. An empty scan says nothing about arity, so nothing is detected or written. Worth re-running once data lands — unlike `skipped_unsupported`, which never becomes profilable. |
-
-Columns declared `unique` (or `primary_key`) that the data shows have duplicates are reported under `unique_contradictions`; detection never mutates `Column.unique`.
-
-Detection is a strong guess, not a guarantee: a duplicate disproves uniqueness with certainty, but its absence only suggests uniqueness.
 
 ### `slayer memory`
 

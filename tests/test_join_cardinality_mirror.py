@@ -1,12 +1,4 @@
-"""Inner-join reverse mirror must invert cardinality (DEV-1688).
-
-``JoinSyncStorage`` materialises a reverse ``B->A`` INNER join for every
-``A->B`` INNER join. The reverse edge's cardinality is the inverse of the
-forward edge: ``many_to_one`` on A->B becomes ``one_to_many`` on B->A;
-``one_to_one`` / ``many_to_many`` are self-inverse; ``None`` stays ``None``.
-The inversion must apply both when the reverse join is first created AND when
-an existing reverse join is reconciled after only the cardinality changed.
-"""
+"""The mirrored reverse INNER join must carry the inverted cardinality."""
 
 import tempfile
 

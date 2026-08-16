@@ -2522,14 +2522,11 @@ class SlayerQueryEngine:
         model: str | None = None,
         persist: bool = False,
     ) -> JoinCardinalityReport:
-        """Profile each join's two sides and classify its cardinality (DEV-1688).
+        """Profile each join's two sides and classify its cardinality.
 
-        Full-scans non-null key rows vs distinct key-tuples on both sides. The
-        report EVIDENCES and RECOMMENDS — ``persist=False`` (default) never
-        writes; ``persist=True`` writes the detected value onto each matching
-        join. Data can hard-disprove a stored value (``CONTRADICTS_HARD``).
-        Only ``sql_table`` models with bare-column join keys are profiled —
-        every other shape is reported ``SKIPPED_UNSUPPORTED``.
+        Full-scans non-null key rows vs distinct key-tuples, report-only unless
+        ``persist``. Only ``sql_table`` models with bare-column join keys are
+        profiled; the rest report ``SKIPPED_UNSUPPORTED``.
         """
         ds_names = (
             [data_source] if data_source
@@ -2558,8 +2555,8 @@ class SlayerQueryEngine:
     async def _resolve_detection_scope(self, *, ds_name, model):
         """In-scope models for one datasource, plus the name lookup for joins.
 
-        The lookup always spans the whole datasource even when ``model``
-        narrows the scope — join targets must still resolve.
+        The lookup spans the whole datasource even when ``model`` narrows the
+        scope — join targets must still resolve.
         """
         all_models = await _all_models_in_datasource(self.storage, ds_name)
         by_name = {m.name: m for m in all_models}
@@ -2591,11 +2588,25 @@ class SlayerQueryEngine:
         try:
             for m in scope:
                 for join in m.joins:
-                    finding, detected = await self._detect_one_join(
-                        model=m, join=join, by_name=by_name,
-                        client=client, sqlglot_name=sqlglot_name,
-                        data_source=ds_name, datasource_cfg=ds_cfg,
-                    )
+                    try:
+                        finding, detected = await self._detect_one_join(
+                            model=m, join=join, by_name=by_name,
+                            client=client, sqlglot_name=sqlglot_name,
+                            data_source=ds_name, datasource_cfg=ds_cfg,
+                        )
+                    except ForcedFilterError:
+                        # The session policy is fail-closed: downgrading it to
+                        # a report line would hand back unscoped statistics.
+                        raise
+                    except Exception as exc:  # noqa: BLE001
+                        # Contain per join: one unreadable table must not cost
+                        # the whole report.
+                        findings.append(
+                            _scan_failed_finding(
+                                data_source=ds_name, model=m, join=join, exc=exc,
+                            )
+                        )
+                        continue
                     findings.append(finding)
                     if detected is not None:
                         persist_entries.append(
@@ -2635,13 +2646,8 @@ class SlayerQueryEngine:
             key_cols=tgt_cols, sqlglot_name=sqlglot_name,
             datasource=datasource_cfg,
         )
-        # An EMPTY key population proves nothing. row_count == distinct_count
-        # == 0 would make observed_unique True on that side, so a join between
-        # two empty tables would "detect" one_to_one and persist=True would
-        # write it. Absence of rows is not weak evidence of uniqueness — it is
-        # NO evidence, so no value is detected and nothing is persisted. This
-        # is NO_EVIDENCE rather than SKIPPED_UNSUPPORTED: the shape profiled
-        # fine and is worth re-running once data lands.
+        # 0 == 0 would read as observed_unique, so an empty side would
+        # "detect" one_to_one and persist it. No rows is no evidence.
         empty_sides = [
             name
             for name, side in (("source", src_side), ("target", tgt_side))
@@ -2685,11 +2691,8 @@ class SlayerQueryEngine:
     def _side_stats_sql(*, table, key_cols, sqlglot_name) -> tuple[str, str]:
         """Build the (row-count, distinct-count) profiling SQL via sqlglot.
 
-        Built as an AST rather than by string concatenation, per the project
-        rule — the table and every key column go through sqlglot so identifiers
-        are quoted for the target dialect and can never break out of their
-        position. NULL key rows are excluded from BOTH counts so the two are
-        computed over the same population.
+        NULL key rows are excluded from BOTH counts, so the two are computed
+        over the same population.
         """
         tbl = exp.to_table(table)
         cols = [exp.column(c, quoted=True) for c in key_cols]
@@ -2715,22 +2718,16 @@ class SlayerQueryEngine:
     async def _side_stats(
         self, *, client, table, key_cols, sqlglot_name, datasource,
     ) -> SideStats:
-        """Full-scan one side of a join: non-null key rows vs distinct key-tuples.
-
-        DEV-1688 × DEV-1578: both scans go through ``_apply_policy`` so
-        profiling observes exactly the tenant-scoped rows the session is
-        allowed to see. Without it a configured ``SessionPolicy`` would be
-        bypassed — leaking cross-tenant cardinality and reporting an arity that
-        does not describe the caller's own view. Same reasoning as the
-        refresh-key scan. No-op (zero overhead) when no policy is configured.
-        """
+        """Full-scan one side of a join: non-null key rows vs distinct key-tuples."""
         rows_sql, dist_sql = self._side_stats_sql(
             table=table, key_cols=key_cols, sqlglot_name=sqlglot_name,
         )
-        # DEV-1627: give the correlated-subquery guard a version to gate on.
+        # Give the correlated-subquery guard a version to gate on.
         await self._preflight_clickhouse_correlated(
             dialect=sqlglot_name, datasource=datasource
         )
+        # Profile the tenant-scoped rows this session may see, like every
+        # other execution path; a no-op when no SessionPolicy is configured.
         rows_sql = self._apply_policy(
             sql=rows_sql, dialect=sqlglot_name, datasource=datasource
         )
@@ -4123,7 +4120,7 @@ class SlayerQueryEngine:
 
 
 # ---------------------------------------------------------------------------
-# Join-cardinality detection helpers (DEV-1688)
+# Join-cardinality detection helpers
 # ---------------------------------------------------------------------------
 
 
@@ -4132,8 +4129,26 @@ def _join_signature(join) -> tuple:
     return (join.target_model, tuple(sorted((p[0], p[1]) for p in join.join_pairs)))
 
 
+def _scan_failed_finding(*, data_source, model, join, exc) -> JoinCardinalityFinding:
+    """Report a join whose profiling scan raised, instead of aborting."""
+    logger.warning(
+        "detect_join_cardinality: %s -> %s failed: %s",
+        model.name, join.target_model, exc,
+    )
+    return JoinCardinalityFinding(
+        data_source=data_source,
+        model=model.name,
+        target_model=join.target_model,
+        join_pairs=[[p[0], p[1]] for p in join.join_pairs],
+        stored=join.cardinality,
+        detected=None,
+        verdict=CardinalityVerdict.SCAN_FAILED,
+        note=f"profiling scan failed: {exc}",
+    )
+
+
 def _detection_skip_reason(*, model, target, src_cols, tgt_cols) -> str | None:
-    """Why a join can't be profiled (v1 scope = sql_table + bare-column keys)."""
+    """Why a join can't be profiled; ``None`` when it can."""
     if model.sql_table is None:
         return (
             f"model {model.name!r} is not table-backed (sql/query-backed); "

@@ -288,6 +288,9 @@ examples:
 examples:
   slayer validate-models                      # check every datasource
   slayer validate-models --datasource my_pg
+  slayer validate-models --cardinality        # + profile join arity (full scans)
+  slayer validate-models --cardinality --persist-cardinality
+  slayer validate-models --model orders --format json
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -295,6 +298,33 @@ examples:
         "--datasource",
         default=None,
         help="Datasource name. If omitted, every datasource is validated.",
+    )
+    validate_parser.add_argument(
+        "--model",
+        default=None,
+        help="Limit the whole report (and --force-clean) to a single model.",
+    )
+    validate_parser.add_argument(
+        "--cardinality",
+        action="store_true",
+        help=(
+            "Also profile each join's arity from the data. Full-scans both "
+            "sides of every join, so it is off by default."
+        ),
+    )
+    validate_parser.add_argument(
+        "--persist-cardinality",
+        action="store_true",
+        help=(
+            "Write the detected cardinality back onto each matching join. "
+            "Implies --cardinality."
+        ),
+    )
+    validate_parser.add_argument(
+        "--format",
+        default="text",
+        choices=["text", "json"],
+        help="Output format. json emits one {drift, cardinality} document.",
     )
     validate_parser.add_argument(
         "--force-clean",
@@ -643,38 +673,6 @@ examples:
     )
     _add_storage_arg(migrate_types_parser)
 
-    # ── joins (DEV-1688) ─────────────────────────────────────────────
-    joins_parser = subparsers.add_parser(
-        "joins",
-        help="Join maintenance (DEV-1688: detect-cardinality profiles join arity)",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    joins_subparsers = joins_parser.add_subparsers(dest="joins_command")
-    detect_card_parser = joins_subparsers.add_parser(
-        "detect-cardinality",
-        help=(
-            "Full-scan each join's two sides and classify its cardinality "
-            "(one_to_one / one_to_many / many_to_one / many_to_many). "
-            "Report-only unless --persist."
-        ),
-    )
-    detect_card_parser.add_argument(
-        "--datasource", default=None,
-        help="Optional datasource filter; defaults to all datasources.",
-    )
-    detect_card_parser.add_argument(
-        "--model", default=None, help="Optional single model to profile.",
-    )
-    detect_card_parser.add_argument(
-        "--persist", action="store_true",
-        help="Write the detected cardinality back onto each join.",
-    )
-    detect_card_parser.add_argument(
-        "--format", default="text", choices=["text", "json"],
-        help="Output format.",
-    )
-    _add_storage_arg(detect_card_parser)
-
     # ── inspect (DEV-1588) ───────────────────────────────────────────
     inspect_parser = subparsers.add_parser(
         "inspect",
@@ -869,6 +867,11 @@ examples:
     elif args.command == "ingest":
         _run_ingest(args)
     elif args.command == "validate-models":
+        if args.format == "json" and args.force_clean:
+            parser.error(
+                "--format json cannot be combined with --force-clean "
+                "(the apply flow is interactive and prints progress)"
+            )
         _run_validate_models(args)
     elif args.command == "recommend-root-model":
         _run_recommend_root_model(args)
@@ -888,8 +891,6 @@ examples:
         _run_inspect(args=args, storage=_resolve_storage(args))
     elif args.command == "search":
         _run_search(args)
-    elif args.command == "joins":
-        _run_joins(args)
     elif args.command == "storage":
         _run_storage(args)
     else:
@@ -1453,86 +1454,132 @@ def _format_validate_models_output(entries) -> str:
     return "\n".join(lines)
 
 
-def _run_joins(args) -> None:
-    """Dispatch ``slayer joins [...]``."""
-    sub = getattr(args, "joins_command", None)
-    if sub == "detect-cardinality":
-        _run_joins_detect_cardinality(args)
-    else:
-        print("usage: slayer joins detect-cardinality [--datasource X] "
-              "[--model M] [--persist] [--format text|json]")
-        sys.exit(1)
-
-
-def _format_detect_cardinality_text(report) -> str:
+def _format_cardinality_report_text(report, *, indent: str = "") -> str:
     if not report.findings:
-        return "No joins found."
+        return f"{indent}No joins found."
     lines: list[str] = []
     for f in report.findings:
         detected = f.detected.value if f.detected else "-"
         stored = f.stored.value if f.stored else "-"
         lines.append(
-            f"{f.model} -> {f.target_model}: detected={detected} "
+            f"{indent}{f.model} -> {f.target_model}: detected={detected} "
             f"stored={stored} verdict={f.verdict.value}"
         )
         for c in f.unique_contradictions:
-            lines.append(f"    ! {c}")
+            lines.append(f"{indent}    ! {c}")
         if f.note:
-            lines.append(f"    ({f.note})")
+            lines.append(f"{indent}    ({f.note})")
     return "\n".join(lines)
 
 
-def _run_joins_detect_cardinality(args) -> None:
-    import json as _json
-
-    from slayer.engine.query_engine import SlayerQueryEngine
-
-    storage = _resolve_storage(args)
-    engine = SlayerQueryEngine(storage=storage)
-    try:
-        report = run_sync(engine.detect_join_cardinality(
-            data_source=getattr(args, "datasource", None),
-            model=getattr(args, "model", None),
-            persist=bool(getattr(args, "persist", False)),
-        ))
-    except Exception as exc:  # noqa: BLE001 — surface DB/introspection failures cleanly
-        print(f"detect-cardinality failed: {exc}")
-        sys.exit(1)
-
-    if getattr(args, "format", "text") == "json":
-        print(_json.dumps(report.model_dump(mode="json"), indent=2))
-    else:
-        print(_format_detect_cardinality_text(report))
+def _indent_block(text: str, *, indent: str = "  ") -> str:
+    return "\n".join(f"{indent}{line}" if line else line
+                     for line in text.split("\n"))
 
 
-def _run_validate_models(args):
-    from slayer.engine.query_engine import SlayerQueryEngine
+def _resolve_validate_scope(args, storage) -> None:
+    """Fail fast on a typoed --datasource / --model.
 
-    storage = _resolve_storage(args)
+    Either would otherwise yield an empty report, indistinguishable from
+    "no drift" — and exit 0.
+    """
+    storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
     if args.datasource:
-        # Fail fast on a typoed name. Without this check, ``validate_models``
-        # returns ``[]`` for an unknown datasource (no models match), which
-        # is indistinguishable from "no drift" and silently exits 0.
-        ds = run_sync(storage.get_datasource(args.datasource))
-        if ds is None:
-            storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
+        if run_sync(storage.get_datasource(args.datasource)) is None:
             print(f"Datasource '{args.datasource}' not found in {storage_path}")
             sys.exit(1)
-    engine = SlayerQueryEngine(storage=storage)
-    try:
-        entries = run_sync(engine.validate_models(data_source=args.datasource))
-    except Exception as exc:  # noqa: BLE001 — surface DB/auth/introspection failures cleanly
-        print(f"validate-models failed: {exc}")
+    model = getattr(args, "model", None)
+    if not model:
+        return
+    identities = run_sync(storage._list_all_model_identities())
+    # Models are keyed by (data_source, name), so an unscoped run matches the
+    # name in every datasource that has one.
+    if not any(
+        name == model and (not args.datasource or ds == args.datasource)
+        for ds, name in identities
+    ):
+        where = f"datasource '{args.datasource}'" if args.datasource else storage_path
+        print(f"Model '{model}' not found in {where}")
         sys.exit(1)
-    print(_format_validate_models_output(entries))
 
-    force_clean = bool(getattr(args, "force_clean", False))
-    if not force_clean:
-        return
 
-    if not entries:
-        return
+def _collect_drift(args, engine, storage) -> list:
+    """Drift entries for the requested scope, filtered by ``--model``.
 
+    An unscoped run validates each datasource explicitly rather than through
+    ``validate_models(None)``, which suppresses per-datasource failures — a
+    validation command must not report a clean bill for a datasource it never
+    reached.
+    """
+    if args.datasource:
+        ds_names = [args.datasource]
+    else:
+        ds_names = run_sync(storage.list_datasources())
+
+    entries: list = []
+    failures: list[tuple[str, Exception]] = []
+    for ds_name in ds_names:
+        try:
+            entries.extend(run_sync(engine.validate_models(data_source=ds_name)))
+        except Exception as exc:  # noqa: BLE001 — surface DB/auth failures cleanly
+            if args.datasource:
+                print(f"validate-models failed: {exc}")
+                sys.exit(1)
+            failures.append((ds_name, exc))
+
+    entries = _filter_entries_by_model(entries, getattr(args, "model", None))
+    if failures:
+        print(_format_validate_models_output(entries))
+        for ds_name, exc in failures:
+            print(f"Datasource '{ds_name}' failed validation: {exc}")
+        sys.exit(1)
+    return entries
+
+
+def _filter_entries_by_model(entries: list, model: str | None) -> list:
+    if not model:
+        return entries
+    return [e for e in entries if e.model_name == model]
+
+
+def _collect_cardinality_report(args, engine):
+    """Profile join arity, or ``None`` when neither cardinality flag is set."""
+    persist = bool(getattr(args, "persist_cardinality", False))
+    if not (persist or getattr(args, "cardinality", False)):
+        return None
+    try:
+        return run_sync(engine.detect_join_cardinality(
+            data_source=args.datasource,
+            model=getattr(args, "model", None),
+            persist=persist,
+        ))
+    except Exception as exc:  # noqa: BLE001 — surface DB/introspection failures cleanly
+        print(f"validate-models: cardinality profiling failed: {exc}")
+        sys.exit(1)
+
+
+def _print_validate_json(*, entries, report) -> None:
+    import json as _json
+
+    print(_json.dumps({
+        "drift": [e.model_dump(mode="json") for e in entries],
+        "cardinality": report.model_dump(mode="json") if report else None,
+    }, indent=2))
+
+
+def _print_drift_section(entries, *, headed: bool) -> None:
+    """Headers only appear when a cardinality section follows."""
+    body = _format_validate_models_output(entries)
+    print("Schema drift\n" + _indent_block(body) if headed else body)
+
+
+def _print_cardinality_section(report) -> None:
+    print("\nJoin cardinality")
+    print(_format_cardinality_report_text(report, indent="  "))
+
+
+def _apply_force_clean(args, engine, entries) -> None:
+    """Prompt for and apply the drift deletes; exits 1 on residual/errors."""
     if not _confirm(
         f"\nApply {len(entries)} delete(s) to storage?",
         assume_yes=bool(getattr(args, "yes", False)),
@@ -1546,13 +1593,46 @@ def _run_validate_models(args):
         print(f"Errors ({len(result.errors)}):")
         for err in result.errors:
             print(f"  - {err.tool} {err.model_name}: {err.error}")
-    if result.residual:
+    # apply_drift_deletes re-validates whole datasources, so scope the residual
+    # the same way the report was scoped — out-of-scope drift is not ours.
+    residual = _filter_entries_by_model(
+        result.residual, getattr(args, "model", None)
+    )
+    if residual:
         print("\nResidual drift after apply:")
-        print(_format_validate_models_output(result.residual))
+        print(_format_validate_models_output(residual))
         sys.exit(1)
     if result.errors:
         sys.exit(1)
     print("\n✓ no remaining drift")
+
+
+def _run_validate_models(args):
+    from slayer.engine.query_engine import SlayerQueryEngine
+
+    storage = _resolve_storage(args)
+    _resolve_validate_scope(args, storage)
+    engine = SlayerQueryEngine(storage=storage)
+
+    entries = _collect_drift(args, engine, storage)
+    wants_cardinality = bool(
+        getattr(args, "cardinality", False)
+        or getattr(args, "persist_cardinality", False)
+    )
+
+    if getattr(args, "format", "text") == "json":
+        _print_validate_json(
+            entries=entries, report=_collect_cardinality_report(args, engine),
+        )
+        return
+
+    _print_drift_section(entries, headed=wants_cardinality)
+    # Clean first: profiling a model we are about to repair is wasted work.
+    if bool(getattr(args, "force_clean", False)) and entries:
+        _apply_force_clean(args, engine, entries)
+    report = _collect_cardinality_report(args, engine)
+    if report is not None:
+        _print_cardinality_section(report)
 
 
 def _run_recommend_root_model(args):

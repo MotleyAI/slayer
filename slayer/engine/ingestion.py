@@ -305,32 +305,17 @@ class RollupGraphError(Exception):
 def _is_cross_schema_fk(
     fk: dict, schema: str | None, default_schema: str | None = None,
 ) -> bool:
-    """Does this FK point at a table in a DIFFERENT schema than the one ingested?
+    """Does this FK point at a table outside the schema being ingested?
 
-    Models are keyed by bare table name within a datasource, so a cross-schema
-    FK has no model to bind to. Without this guard it would silently bind to a
-    same-named table in the ingested schema — producing a join to the wrong
-    table and, since DEV-1688, inferring that join's cardinality from the
-    wrong table's key constraints.
-
-    ``referred_schema`` is ``None`` for same-schema FKs (and always ``None`` on
-    schemaless backends like SQLite), so that case is never cross-schema. When
-    it IS set, it is compared against the schema actually being ingested —
-    which is ``schema`` when given, else the connection's ``default_schema``.
-    Ingesting the default schema passes ``schema=None``, so without that
-    fallback a reflected ``referred_schema="other"`` would slip through
-    unskipped.
-
-    When an explicit ``referred_schema`` is set but the ingested schema cannot
-    be determined at all, the FK is SKIPPED rather than kept — the two cannot
-    be confirmed equal, and the failure modes are asymmetric: wrongly skipping
-    costs a missing join (visible, and addable by hand), while wrongly keeping
-    binds to the wrong table and silently derives cardinality from it.
+    Models are keyed by bare table name, so a cross-schema FK has no model to
+    bind to and would otherwise bind to a same-named local table.
     """
     referred_schema = fk.get("referred_schema")
-    if referred_schema is None:
+    if referred_schema is None:  # same-schema FK; always None on SQLite
         return False
+    # Ingesting the default schema passes schema=None, so fall back to it.
     effective_schema = schema if schema is not None else default_schema
+    # Unknown ingested schema: skip rather than risk binding to the wrong table.
     if effective_schema is None:
         return True
     return referred_schema != effective_schema
@@ -437,11 +422,8 @@ def _get_fk_constraint_groups(
     schema: str | None,
     table_set: set[str],
 ) -> list[tuple[str, list[tuple[str, str]]]]:
-    """Group FK relationships by constraint (DEV-1688).
-
-    Returns ``[(referred_table, [(src_col, tgt_col), ...]), ...]`` — one entry
-    per FK constraint so a composite FK stays a single grouped join instead of
-    being shredded into one join per column.
+    """``[(referred_table, [(src_col, tgt_col), ...]), ...]``, one entry per FK
+    constraint — so a composite FK stays one grouped join.
     """
     fks = inspector.get_foreign_keys(table_name, schema=schema)
     result: list[tuple[str, list[tuple[str, str]]]] = []
@@ -464,16 +446,8 @@ def _get_fk_constraint_groups(
 def _safe_introspect(fn) -> list:
     """Run a best-effort introspection call, yielding ``[]`` on failure.
 
-    Constraint/index reflection is unsupported or partial on several backends
-    (ClickHouse and BigQuery expose no FK metadata; duckdb-engine doesn't
-    reflect indices), so a raising call must degrade to "no evidence" rather
-    than abort ingestion.
-
-    The degrade is logged: an unsupported backend and a permissions error or
-    driver defect otherwise produce an identical silent ``[]``. The result is
-    not a crash but silently thinner metadata — a missing unique key-set makes
-    ``infer_structural_cardinality`` return ``None``, recording a real
-    ``many_to_one`` as undetermined with nothing in the logs to explain why.
+    Constraint/index reflection is unsupported or partial on several backends,
+    so a raising call degrades to "no uniqueness evidence" rather than aborting.
     """
     try:
         return list(fn())
@@ -491,11 +465,7 @@ def _pk_key_sets(
     schema: str | None,
     sa_engine: sa.Engine | None,
 ) -> list[list[str]]:
-    """The table's primary key as a single key-set (or none).
-
-    ``_safe_get_pk_constraint`` guarantees a mapping; the bare-inspector path
-    (no ``sa_engine``) is the one that still needs normalizing here.
-    """
+    """The table's primary key as a single key-set (or none)."""
     try:
         if sa_engine is not None:
             pk = _safe_get_pk_constraint(
@@ -505,6 +475,8 @@ def _pk_key_sets(
                 schema=schema,
             )
         else:
+            # Only the bare-inspector path needs normalizing;
+            # _safe_get_pk_constraint already guarantees a mapping.
             pk = inspector.get_pk_constraint(table_name, schema=schema)
             if not isinstance(pk, dict):
                 return []
@@ -531,27 +503,20 @@ def _unique_constraint_key_sets(
 def _is_partial_index(idx: dict) -> bool:
     """Does this index carry a filter predicate (a PARTIAL index)?
 
-    A partial unique index (``CREATE UNIQUE INDEX ... WHERE deleted_at IS
-    NULL``) only guarantees uniqueness among the rows matching its predicate,
-    so it is NOT evidence of whole-table uniqueness. SQLAlchemy surfaces the
-    predicate per dialect under ``dialect_options`` as ``<dialect>_where``
-    (``postgresql_where``, ``sqlite_where``, ...).
-
-    The predicate is never evaluated for truthiness: reflection usually yields
-    a string, but a dialect may hand back a SQLAlchemy expression object, and
-    ``ColumnElement.__bool__`` RAISES. This runs outside ``_safe_introspect``,
-    so a raising ``bool()`` would abort the whole ingest instead of skipping
-    one index. Strings are checked for non-emptiness; any other non-``None``
-    value counts as a predicate by its mere presence.
+    A partial unique index constrains only the rows matching its predicate, so
+    it is no evidence of whole-table uniqueness.
     """
     opts = idx.get("dialect_options") or {}
     for key, value in opts.items():
+        # SQLAlchemy names the predicate per dialect: postgresql_where, ...
         if not key.endswith("_where") or value is None:
             continue
         if isinstance(value, str):
             if value.strip():
                 return True
             continue
+        # Never bool() a non-string: ColumnElement.__bool__ raises, and this
+        # runs outside _safe_introspect. Presence alone means "predicate".
         return True
     return False
 
@@ -559,22 +524,7 @@ def _is_partial_index(idx: dict) -> bool:
 def _unique_index_key_sets(
     inspector: sa.engine.Inspector, table_name: str, schema: str | None,
 ) -> list[list[str]]:
-    """Key-sets from unique indexes that constrain the WHOLE table.
-
-    Two shapes are rejected rather than trusted:
-
-    * **Expression members.** SQLAlchemy reports expression-index members as
-      ``None`` in ``column_names`` (the text lives in ``expressions``), so
-      compacting them away would turn a unique index on
-      ``(email, lower(name))`` into a bogus single-column claim on ``email``.
-      Any falsy member rejects the whole key-set — same rule as
-      ``_unique_constraint_key_sets``.
-    * **Partial indexes.** A predicate-filtered unique index says nothing
-      about rows outside the predicate.
-
-    Either mistake would wrongly stamp ``Column.unique`` and infer a one-side
-    cardinality.
-    """
+    """Key-sets from unique indexes that constrain the WHOLE table."""
     out: list[list[str]] = []
     for idx in _safe_introspect(
         lambda: inspector.get_indexes(table_name, schema=schema)
@@ -582,6 +532,8 @@ def _unique_index_key_sets(
         if not idx.get("unique") or _is_partial_index(idx):
             continue
         cols = idx.get("column_names") or []
+        # Expression members reflect as None, so any falsy member rejects the
+        # whole set — else unique(email, lower(name)) claims email alone.
         if cols and all(cols):
             out.append(list(cols))
     return out
@@ -593,7 +545,7 @@ def _get_unique_key_sets(
     schema: str | None,
     sa_engine: sa.Engine | None = None,
 ) -> list[list[str]]:
-    """All PK + UNIQUE key-sets for a table, as ``list[list[str]]`` (DEV-1688)."""
+    """All PK + UNIQUE key-sets for a table."""
     return (
         _pk_key_sets(
             inspector=inspector, table_name=table_name,
@@ -617,11 +569,8 @@ def _get_single_column_unique_names(
 ) -> set[str]:
     """Names of columns that ALONE form a UNIQUE constraint / unique index.
 
-    PK columns are excluded — ``primary_key`` is the canonical marker and
-    ``unique`` is not redundantly stamped on them (DEV-1688). Composite
-    key-sets are skipped here by design: uniqueness of ``(a, b)`` says nothing
-    about ``a`` alone, so it is evaluated per key-set during cardinality
-    inference instead of being flattened onto individual columns.
+    PK columns are excluded (``primary_key`` is the canonical marker), and so
+    are composite key-sets — unique ``(a, b)`` says nothing about ``a`` alone.
     """
     key_sets = (
         _unique_constraint_key_sets(
@@ -643,15 +592,9 @@ def _generate_joins(
     table_set: set[str],
     sa_engine: sa.Engine | None = None,
 ) -> list[ModelJoin]:
-    """Generate direct ModelJoin objects from the source table's own FK relationships.
-
-    Only emits joins for FKs defined on ``source_table`` itself — multi-hop
-    reachability (e.g. orders → customers → regions) is resolved at query time
-    by walking the join graph through each intermediate model. Composite FKs
-    become a single grouped join (DEV-1688). Cardinality is inferred
-    structurally: FK target is verified unique from its constraints, so the
-    join defaults to ``many_to_one`` and upgrades to ``one_to_one`` when the
-    source key-set is itself unique.
+    """Direct ModelJoins from the source table's own FKs (multi-hop is resolved
+    at query time). A composite FK becomes one grouped join, and cardinality is
+    inferred from key constraints alone.
     """
     groups = _get_fk_constraint_groups(
         inspector=inspector,
@@ -747,14 +690,8 @@ def _safe_get_pk_constraint(
 ) -> dict:
     """Get PK constraint, falling back to INFORMATION_SCHEMA on failure.
 
-    SQLite has no information_schema views; its stock inspector reads
-    PRAGMA table_info() and is authoritative — empty constrained_columns
-    on SQLite means the table genuinely has no primary key.
-
-    ALWAYS returns a mapping, so callers can do ``result.get(...)`` without
-    guarding. The inspector is a third-party boundary (dialects outside
-    SQLAlchemy's own tree can return ``None`` or a non-mapping), and this
-    helper is the single place that normalizes it.
+    ALWAYS returns a mapping — the one place normalizing an inspector that may
+    hand back ``None``. SQLite's PRAGMA reflection is authoritative.
     """
     if sa_engine.dialect.name == "sqlite":
         try:
@@ -1254,10 +1191,9 @@ def _merge_joins_strict(
     duplicate-target / different-pairs conflict so callers don't end up
     with two joins pointing at the same target_model.
 
-    DEV-1688: a persisted join whose ``cardinality`` is ``None`` is filled
-    from the matching fresh join (additive — a user-set cardinality is never
-    overwritten). Returns a third ``metadata_changed`` flag so a metadata-only
-    fill still triggers a save.
+    An unset ``cardinality`` is filled from the matching fresh join; a
+    user-set one is never overwritten. The third return value flags a
+    metadata-only fill, which still has to trigger a save.
     """
     existing_join_sigs = _existing_join_signatures(persisted)
     existing_join_targets = {j.target_model for j in persisted.joins}
@@ -1331,7 +1267,7 @@ def _additive_merge_existing(
             model_name=persisted.name,
             sqlite_widen_enabled=sqlite_widen_enabled,
         )
-        # DEV-1688: set `unique` additively (never downgrade a user-set flag).
+        # Set `unique` additively — never downgrade a user-set flag.
         fresh_col = fresh_by_name.get(persisted_col.name)
         if fresh_col is not None and fresh_col.unique and not merged_col.unique:
             merged_col = merged_col.model_copy(update={"unique": True})
@@ -1394,8 +1330,8 @@ async def _process_one_table(
         fresh=fresh,
         sqlite_widen_enabled=(datasource.type or "").lower() == "sqlite",
     )
-    # DEV-1688: `merged is persisted` iff nothing changed (incl. metadata-only
-    # cardinality/unique fills), so this also persists metadata-only updates.
+    # `merged is persisted` iff nothing changed, including metadata-only
+    # cardinality/unique fills — so those get persisted too.
     if merged is not persisted:
         await storage.save_model(merged)
     return ModelAddition(

@@ -1,17 +1,4 @@
-"""Pure cardinality-inference helpers (DEV-1688).
-
-These functions are dialect/DB-free and encode the evidence model:
-
-* ``is_key_set_unique`` — a join key-set is unique iff some PK/unique key-set is
-  a NON-EMPTY SUBSET of it (if ``(a)`` is unique then ``(a, b)`` is unique;
-  a superset constraint does NOT imply it).
-* ``classify_cardinality`` — total function mapping the two sides' uniqueness to
-  a definite cardinality. Used by the data-profiling path (both booleans are
-  observed facts).
-* ``infer_structural_cardinality`` — the ingest-time guess. It returns ``None``
-  unless the target key-set is VERIFIED unique (Codex #1): a declared
-  relationship whose target isn't a known PK/unique must stay undetermined.
-"""
+"""Pure, DB-free cardinality-inference helpers."""
 
 from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.models import Column

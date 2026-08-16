@@ -110,6 +110,30 @@ slayer ingest --datasource my_postgres --exclude migrations,django_session
 | `--exclude` | No | Comma-separated tables to exclude |
 | `--storage` | No | Storage path |
 
+### `slayer validate-models`
+
+Diff persisted models against the live database schemas (read-only), and optionally profile each join's arity from the data. See [Schema Drift](../concepts/schema-drift.md) and [Join cardinality](../concepts/models.md#join-cardinality).
+
+```bash
+slayer validate-models
+slayer validate-models --datasource jaffle_shop
+slayer validate-models --model orders --format json
+slayer validate-models --cardinality --persist-cardinality
+slayer validate-models --force-clean --yes
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--datasource X` | all | Limit to one datasource. |
+| `--model M` | all | Limit the whole report — and `--force-clean` — to one model. |
+| `--cardinality` | off | Also profile join arity (full table scans). |
+| `--persist-cardinality` | off | Write the detected `cardinality` back onto each join. Implies `--cardinality`. |
+| `--format` | `text` | `text` or `json`. Not combinable with `--force-clean`. |
+| `--force-clean` | off | Prompt to apply each delete. Destructive. |
+| `-y` / `--yes` | off | Skip the `--force-clean` prompt. |
+
+With a cardinality flag the output gains two labelled sections, and each join reports a `verdict` — `fills_none`, `confirms`, `refines`, `contradicts_hard`, `skipped_unsupported`, `no_evidence`, or `scan_failed`. Full table: [CLI reference](../reference/cli.md#slayer-validate-models).
+
 ### `slayer import-dbt`
 
 Import dbt Semantic Layer definitions into SLayer.
@@ -219,26 +243,6 @@ slayer search refresh-samples
 slayer search refresh-samples --data-source jaffle_shop
 slayer search refresh-samples --data-source jaffle_shop --model orders --model customers
 ```
-
-### `slayer joins detect-cardinality`
-
-Profile each join's arity from the data — full-scans both sides and classifies the join as `one_to_one` / `one_to_many` / `many_to_one` / `many_to_many`. Report-only unless `--persist`. See [Join cardinality](../concepts/models.md#join-cardinality).
-
-```bash
-slayer joins detect-cardinality
-slayer joins detect-cardinality --datasource jaffle_shop
-slayer joins detect-cardinality --datasource jaffle_shop --model orders --persist
-slayer joins detect-cardinality --format json
-```
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--datasource X` | all | Limit profiling to one datasource. |
-| `--model M` | all | Limit profiling to a single model. |
-| `--persist` | off | Write the detected `cardinality` back onto each matching join. |
-| `--format` | `text` | `text` or `json` (full `JoinCardinalityReport`). |
-
-Each join reports a `verdict` — `fills_none`, `confirms`, `refines`, `contradicts_hard` (the data disproves a uniqueness the stored value asserted), `skipped_unsupported` (non-`sql_table` model or expression-valued join key), or `no_evidence` (one side had no non-null key rows, so the scan proves nothing — re-run once data lands).
 
 ### `slayer memory`
 

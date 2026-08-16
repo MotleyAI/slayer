@@ -158,12 +158,10 @@ class JoinType(StrEnum):
 
 
 class JoinCardinality(StrEnum):
-    """Arity of a join, read source->target (DEV-1688).
+    """Arity of a join, read source->target ("many orders -> one customer").
 
-    ``ModelJoin`` lives on the source model pointing at ``target_model``, so a
-    FK-style join reads ``many_to_one`` ("many orders -> one customer"). This
-    is orthogonal to ``JoinType`` (LEFT/INNER) — cardinality is descriptive
-    metadata, not a change to the emitted join.
+    Descriptive metadata, orthogonal to ``JoinType`` — it does not change the
+    emitted join.
     """
     ONE_TO_ONE = "one_to_one"
     ONE_TO_MANY = "one_to_many"
@@ -174,10 +172,8 @@ class JoinCardinality(StrEnum):
 def invert_cardinality(
     cardinality: "JoinCardinality | None",
 ) -> "JoinCardinality | None":
-    """Return the cardinality of the reverse edge (``target->source``).
-
-    ``many_to_one`` <-> ``one_to_many``; ``one_to_one`` / ``many_to_many`` /
-    ``None`` are self-inverse.
+    """Cardinality of the reverse edge; one_to_one / many_to_many / None are
+    self-inverse.
     """
     if cardinality is JoinCardinality.MANY_TO_ONE:
         return JoinCardinality.ONE_TO_MANY

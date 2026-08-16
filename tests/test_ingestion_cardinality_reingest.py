@@ -1,11 +1,4 @@
-"""Idempotent re-ingest persists cardinality/unique metadata (DEV-1688, Codex #3).
-
-``_additive_merge_existing`` historically returned ``persisted`` unchanged (no
-save) whenever there were no new columns/joins. Filling a ``None`` cardinality
-or setting ``unique`` is a metadata-only change that must now trigger a save —
-while NEVER overwriting a user-set cardinality and NEVER downgrading a user-set
-``unique`` flag (additive contract).
-"""
+"""Idempotent re-ingest must persist metadata-only cardinality/unique fills."""
 
 from __future__ import annotations
 

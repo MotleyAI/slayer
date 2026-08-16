@@ -1,12 +1,4 @@
-"""Opt-in data-profiling cardinality detection (DEV-1688).
-
-``engine.detect_join_cardinality`` full-scans each join's two sides (non-null
-key rows vs distinct key-tuples) and classifies the cardinality from observed
-uniqueness. It EVIDENCES and RECOMMENDS: ``persist=False`` (default) never
-writes — the report is the deliverable so a human/agent can decide. Data can
-DISPROVE a stored value with certainty (a duplicate is a counterexample); a
-hard disproof surfaces as ``CONTRADICTS_HARD``.
-"""
+"""Opt-in data-profiling cardinality detection via ``engine.detect_join_cardinality``."""
 
 from __future__ import annotations
 
@@ -377,11 +369,8 @@ class TestUniqueContradictions:
     ) -> None:
         """A member of a COMPOSITE primary key claims nothing on its own.
 
-        ``primary_key`` is stamped on every member of a composite PK, but
-        ``(a, b)`` being unique says nothing about ``a`` alone — the same
-        subset rule ``is_key_set_unique`` applies. Reporting it would misfire
-        on every composite-PK table (regression: jaffle_shop ``supplies``,
-        PK ``(id, sku)``, joined on ``sku`` alone).
+        Regression: jaffle_shop ``supplies``, PK ``(id, sku)``, joined on
+        ``sku`` alone.
         """
         engine, storage, _ = await _build_engine(workspace)
         # ck_child.a has duplicates; both a and b are stamped PK (composite).
@@ -438,21 +427,12 @@ class TestPersistence:
 
 
 class TestSessionPolicyAppliedToProfiling:
-    """DEV-1688 x DEV-1578.
-
-    A configured SessionPolicy must scope the profiling scans too. Otherwise
-    detection full-scans every tenant's rows -- leaking cross-tenant
-    cardinality and reporting an arity that does not describe the caller's own
-    view. Same reasoning as the refresh-key scan.
-    """
+    """A configured SessionPolicy must scope the profiling scans too."""
 
     async def test_profiling_sql_is_tenant_scoped(self, workspace: Path) -> None:
         """Assert at the EXECUTION boundary, not at ``_apply_policy``'s return.
 
-        Spying on ``_apply_policy`` only proves the rewrite was computed. If
-        the scan then discarded it and submitted the original SQL, that spy
-        would still pass while the report carried cross-tenant statistics. So
-        capture what actually reaches the SQL client.
+        Spying on the rewrite only proves it was computed, not submitted.
         """
         _, storage, _ = await _build_engine(workspace)
         # `region` exists on customers but not orders; "pass" lets the tables
@@ -556,10 +536,8 @@ class TestSideStatsSqlShape:
 class TestEmptyPopulationIsNoEvidence:
     """An empty key population proves nothing about arity.
 
-    row_count == distinct_count == 0 makes observed_unique True, so without a
-    guard a join between two empty tables would "detect" one_to_one and
-    persist=True would write it. Absence of rows is not weak evidence of
-    uniqueness -- it is no evidence.
+    0 == 0 reads as observed_unique, so without a guard two empty tables would
+    "detect" one_to_one and persist it.
     """
 
     async def test_empty_tables_detect_nothing(self, workspace: Path) -> None:
@@ -646,3 +624,43 @@ class TestEmptyPopulationIsNoEvidence:
         # Neither detects a value.
         assert empty.detected is None
         assert unsupported.detected is None
+
+
+class TestScanFailureIsContained:
+    """One unreadable join must not abort the whole report."""
+
+    async def test_failed_scan_becomes_a_finding(self, workspace: Path) -> None:
+        engine, _, _ = await _build_engine(workspace)
+        real_side_stats = SlayerQueryEngine._side_stats
+
+        async def _flaky(self, *, client, table, key_cols, sqlglot_name, datasource):
+            if table == "cart_lines":
+                raise RuntimeError("table is on fire")
+            return await real_side_stats(
+                self, client=client, table=table, key_cols=key_cols,
+                sqlglot_name=sqlglot_name, datasource=datasource,
+            )
+
+        with patch.object(SlayerQueryEngine, "_side_stats", _flaky):
+            report = await engine.detect_join_cardinality(data_source="ds")
+
+        failed = _find(report, "carts", "cart_lines")
+        assert failed.verdict is CardinalityVerdict.SCAN_FAILED
+        assert failed.detected is None
+        assert "table is on fire" in (failed.note or "")
+
+        # Every other join still reports.
+        healthy = _find(report, "orders", "customers")
+        assert healthy.detected is JoinCardinality.MANY_TO_ONE
+
+    async def test_failed_scan_persists_nothing(self, workspace: Path) -> None:
+        engine, storage, _ = await _build_engine(workspace)
+
+        async def _boom(self, **kwargs):
+            raise RuntimeError("nope")
+
+        with patch.object(SlayerQueryEngine, "_side_stats", _boom):
+            await engine.detect_join_cardinality(data_source="ds", persist=True)
+
+        reloaded = await storage.get_model("carts", data_source="ds")
+        assert all(j.cardinality is None for j in reloaded.joins)

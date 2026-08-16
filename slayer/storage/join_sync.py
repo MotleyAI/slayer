@@ -38,7 +38,6 @@ async def _mirror_inner_joins(model: SlayerModel, storage: StorageBackend) -> No
         if target is None:
             continue
         reverse_pairs = [[tgt, src] for src, tgt in join.join_pairs]
-        # DEV-1688: the reverse edge's arity is the inverse of the forward edge.
         reverse_cardinality = invert_cardinality(join.cardinality)
         existing = next(
             (j for j in target.joins

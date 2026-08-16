@@ -1,12 +1,4 @@
-"""Surfacing cardinality/unique (DEV-1688).
-
-* ``render_model_inspection`` shows cardinality (joins) + unique (columns) in
-  both markdown and JSON.
-* search-graph ``JOINS`` edge carries a ``cardinality`` property.
-* ``edit_model`` accepts the new fields via ``_upsert_entity.model_validate``.
-* The embedding corpus text is UNCHANGED (no re-embed churn): the new fields do
-  NOT appear in ``render_model_text`` / ``render_column_text``.
-"""
+"""Cardinality/unique surfacing in inspect, search graph, edit_model — not in embeddings."""
 
 from __future__ import annotations
 

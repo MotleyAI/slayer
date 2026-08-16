@@ -1,10 +1,4 @@
-"""Producers set/carry join cardinality (DEV-1688).
-
-* dbt: foreign->primary => many_to_one; peer (both unique) => one_to_one.
-* dbt in-memory inner-join mirror inverts cardinality (Codex #6).
-* OSI: relationship direction is from=many/to=one => many_to_one.
-* Facade: FacadeJoin carries a cardinality passthrough.
-"""
+"""dbt / OSI / facade producers set and carry join cardinality."""
 
 from pathlib import Path
 
@@ -247,13 +241,7 @@ class TestFacadeDynamicJoin:
         assert ext.joins[0].cardinality is None
 
     def test_dynamic_join_none_for_composite_pk_member(self) -> None:
-        """Joining ONE member of a composite PK does not make the target unique.
-
-        Every member of a composite primary key carries ``primary_key=True``,
-        but the join only constrains that single column, so the composite
-        key's uniqueness does not carry — same subset rule as
-        ``is_key_set_unique``.
-        """
+        """Joining ONE member of a composite PK does not make the target unique."""
         orders = SlayerModel(
             name="orders",
             data_source="jaffle",

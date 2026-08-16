@@ -1,16 +1,7 @@
-"""Join-cardinality inference helpers and the detection report (DEV-1688).
+"""Join-cardinality inference helpers and the detection report.
 
-Two layers of inference:
-
-* **Structural** (free, constraint metadata only) — ``infer_structural_cardinality``
-  returns a value only when the target key-set is *verified* unique. A declared
-  relationship whose target isn't a known PK/unique stays ``None``.
-* **Data-profiling** (opt-in, a strong guess) — ``classify_cardinality`` maps the
-  two sides' observed uniqueness to a definite cardinality. Uniqueness is
-  asymmetric evidence: a full-scan can *disprove* uniqueness (a duplicate is a
-  counterexample) but only *suggest* it. ``compute_verdict`` encodes that
-  asymmetry — a stored value is only ``CONTRADICTS_HARD`` when observed data
-  disproves a uniqueness the stored value asserted.
+Uniqueness is asymmetric evidence: a scan disproves it with one duplicate, but
+can never prove it.
 """
 
 from __future__ import annotations
@@ -30,9 +21,8 @@ def is_key_set_unique(
 ) -> bool:
     """Is the ``key_columns`` tuple unique given the known unique key-sets?
 
-    A join key-set is unique iff some PK/unique key-set is a NON-EMPTY SUBSET
-    of it: if ``(a)`` is unique then ``(a, b)`` is unique. A superset
-    constraint (unique on ``(a, b)``) does NOT make ``(a)`` alone unique.
+    Unique iff some key-set is a non-empty SUBSET: unique ``(a)`` makes
+    ``(a, b)`` unique, but unique ``(a, b)`` says nothing about ``(a)``.
     """
     key_set = set(key_columns)
     for uks in unique_key_sets:
@@ -44,12 +34,8 @@ def is_key_set_unique(
 def declares_solo_unique(*, columns, column) -> bool:
     """Does ``column`` ALONE carry a declared uniqueness among ``columns``?
 
-    ``Column.unique`` is single-column by definition. ``primary_key``, however,
-    is stamped on EVERY member of a composite primary key, and being one of
-    ``(id, sku)`` says nothing about ``sku`` on its own. This is the same
-    subset rule ``is_key_set_unique`` applies — ``(id, sku)`` is not a subset
-    of ``(sku)`` — so a PK column implies solo uniqueness only when it is the
-    whole primary key.
+    ``primary_key`` is stamped on every member of a composite PK, so it
+    implies solo uniqueness only when the column IS the whole primary key.
     """
     if column.unique:
         return True
@@ -97,11 +83,12 @@ class CardinalityVerdict(StrEnum):
     FILLS_NONE = "fills_none"
     CONTRADICTS_HARD = "contradicts_hard"
     SKIPPED_UNSUPPORTED = "skipped_unsupported"
-    #: Profiled fine, but the key population was empty — distinct from
-    #: SKIPPED_UNSUPPORTED, which means the shape can never be profiled. An
-    #: empty scan is not weak evidence of uniqueness, it is NO evidence, so no
-    #: value is detected and nothing is persisted. Re-run once data lands.
+    #: Profiled fine but the key population was empty — an empty scan is no
+    #: evidence of arity. Unlike SKIPPED_UNSUPPORTED, worth re-running later.
     NO_EVIDENCE = "no_evidence"
+    #: The scan itself failed; the message is in ``note``. Contained per join
+    #: so one unreadable table cannot abort the whole report.
+    SCAN_FAILED = "scan_failed"
 
 
 class SideStats(BaseModel):
@@ -137,10 +124,8 @@ def compute_verdict(
 ) -> CardinalityVerdict:
     """Classify a detected value against the stored one.
 
-    ``CONTRADICTS_HARD`` fires only when the data *disproves* a uniqueness the
-    stored value asserted (a side claimed unique but observed to have dups).
-    Every other mismatch is a soft ``REFINES`` — "no dups observed" cannot
-    disprove a non-uniqueness claim.
+    ``CONTRADICTS_HARD`` only when the data disproves a uniqueness the stored
+    value asserted; every other mismatch is a soft ``REFINES``.
     """
     if stored is None:
         return CardinalityVerdict.FILLS_NONE

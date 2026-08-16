@@ -1,11 +1,4 @@
-"""Ingestion: composite-FK fix + structural cardinality + Column.unique (DEV-1688).
-
-Uses a real SQLite database and the idempotent ingest entry point (matching
-``test_idempotent_ingestion.py``). Structural inference is free (constraint
-metadata only): FK-derived joins default ``many_to_one`` and upgrade to
-``one_to_one`` when the source key-set is itself unique. Composite FKs must
-become ONE ``ModelJoin`` with all pairs, not one join per column.
-"""
+"""Ingestion: composite-FK grouping, structural cardinality, and ``Column.unique``."""
 
 from __future__ import annotations
 
@@ -241,10 +234,8 @@ class TestColumnUnique:
     def test_expression_index_is_not_a_single_column_claim(self) -> None:
         """A unique EXPRESSION index must not collapse to a solo-unique claim.
 
-        SQLAlchemy reports expression members as ``None`` in ``column_names``
-        (the text lives in ``expressions``). Compacting those away would turn a
-        unique index on ``(email, lower(name))`` into a bogus single-column
-        uniqueness claim on ``email``.
+        Members reflect as ``None``, so compacting them would turn unique
+        ``(email, lower(name))`` into a bogus claim on ``email``.
         """
 
         class _FakeInspector:
@@ -270,9 +261,7 @@ class TestColumnUnique:
     def test_partial_unique_index_is_not_a_uniqueness_claim(self) -> None:
         """A predicate-filtered unique index constrains only matching rows.
 
-        `CREATE UNIQUE INDEX ... ON t (email) WHERE deleted_at IS NULL` (the
-        common soft-delete pattern) says nothing about rows outside the
-        predicate, so it must not stamp `unique` or imply a one-side arity.
+        The soft-delete pattern: `UNIQUE INDEX ... WHERE deleted_at IS NULL`.
         """
 
         class _FakeInspector:
@@ -329,10 +318,8 @@ class TestCrossSchemaFk:
         assert _is_cross_schema_fk(fk, None) is False
 
     def test_default_schema_ingest_still_skips_cross_schema(self) -> None:
-        """Ingesting the default schema passes schema=None.
-
-        Without falling back to the connection's default_schema_name, a
-        reflected referred_schema would slip through unskipped.
+        """Ingesting the default schema passes schema=None, so the fallback to
+        default_schema_name is what stops a cross-schema FK slipping through.
         """
         fk = {"referred_table": "customers", "referred_schema": "archive"}
         assert _is_cross_schema_fk(fk, None, "public") is True
@@ -344,12 +331,7 @@ class TestCrossSchemaFk:
     def test_explicit_target_schema_is_skipped_when_ingest_schema_unknown(
         self,
     ) -> None:
-        """Fail safe: an explicit target schema we cannot confirm is skipped.
-
-        The failure modes are asymmetric — wrongly skipping costs a missing
-        join (visible, addable by hand), while wrongly keeping binds to the
-        wrong table and silently derives cardinality from it.
-        """
+        """Fail safe: an explicit target schema we cannot confirm is skipped."""
         fk = {"referred_table": "customers", "referred_schema": "archive"}
         assert _is_cross_schema_fk(fk, None, None) is True
         # Also with neither the ingested schema nor a default available.

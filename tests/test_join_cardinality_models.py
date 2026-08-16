@@ -1,14 +1,4 @@
-"""Data-model coverage for join cardinality (DEV-1688).
-
-Adds:
-  * ``JoinCardinality`` StrEnum + module-level ``invert_cardinality`` helper.
-  * ``ModelJoin.cardinality: Optional[JoinCardinality] = None`` (source->target).
-  * ``Column.unique: bool = False``.
-
-Both new fields are additive/optional — no SlayerModel version bump — so old v7
-data without them validates unchanged, mirroring the DEV-1643 description/meta
-precedent (see ``test_osi_modeljoin_fields.py``).
-"""
+"""Data-model coverage for ``ModelJoin.cardinality`` and ``Column.unique``."""
 
 import tempfile
 

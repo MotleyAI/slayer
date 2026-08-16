@@ -187,7 +187,7 @@ class Column(BaseModel):
         ),
     )
     primary_key: bool = False
-    unique: bool = False  # DEV-1688: single-column uniqueness (non-PK). primary_key implies unique.
+    unique: bool = False  # single-column uniqueness (non-PK); primary_key implies it
     description: str | None = None
     label: str | None = None
     hidden: bool = False
@@ -442,8 +442,7 @@ class ModelJoin(BaseModel):
     target_model: str                               # Name of the joined model
     join_pairs: list[list[str]] = Field(...)        # [["source_dim", "target_dim"], ...]
     join_type: JoinType = JoinType.LEFT             # LEFT (default) or INNER
-    # DEV-1688: join arity, read source->target ("many orders -> one customer").
-    # Optional/additive (no schema-version bump); None = undetermined.
+    # Join arity, read source->target; None = undetermined.
     cardinality: JoinCardinality | None = None
     # DEV-1643: optional human/agent metadata (e.g. carrying OSI relationship
     # ai_context on import). Purely additive/optional — old data omits them and

@@ -979,9 +979,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                  "filter": "status = 'active'", "label": "..."}.
                 If a column with this name exists, only the provided fields are updated.
                 Types: string, number, time, date, boolean.
-                ``unique`` marks a single-column uniqueness constraint that is not the
-                primary key (``primary_key`` already implies uniqueness). It is
-                descriptive metadata used to infer join cardinality.
+                ``unique`` marks single-column uniqueness that is not the primary key
+                (``primary_key`` already implies it); it is used to infer join
+                cardinality.
             measures: Named formula measures to create or update (upsert by name). Each dict:
                 {"name": "aov", "formula": "revenue:sum / *:count", "label": "...",
                  "description": "...", "meta": {...}}.
@@ -997,12 +997,10 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                  "cardinality": "many_to_one", "description": "...", "meta": {...}}.
                 A composite key is one join with several ``join_pairs`` entries, not
                 one join per column. ``cardinality`` is the join's arity read
-                source->target ("many orders -> one customer"), one of
-                ``one_to_one`` / ``one_to_many`` / ``many_to_one`` / ``many_to_many``;
-                omit it when undetermined. It is descriptive metadata only: it
-                does not change ``join_type`` or query results. Auto-ingestion
-                fills it from key constraints, and ``slayer joins
-                detect-cardinality`` infers it from the data.
+                source->target, one of ``one_to_one`` / ``one_to_many`` /
+                ``many_to_one`` / ``many_to_many``; omit it when undetermined. It is
+                descriptive metadata only — it changes neither ``join_type`` nor
+                query results.
             add_filters: SQL filter strings to add (e.g. ["deleted_at IS NULL"]). Duplicates ignored.
             remove_filters: SQL filter strings to remove (exact match).
             remove: Named entities to delete, keyed by type:

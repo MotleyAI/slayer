@@ -52,7 +52,7 @@ FK columns from referenced tables are excluded from the source model to avoid re
 
 All models use `sql_table` (the source table) plus `joins` (direct FK joins only, storing source/target column pairs). Multi-hop JOINs are resolved dynamically at query time by walking the join graph. A **composite** foreign key becomes a single join carrying all of its column pairs, not one join per column.
 
-Each FK join also gets a structural [`cardinality`](models.md#join-cardinality) guess from the key constraints alone (no data is read): `many_to_one` by default, upgrading to `one_to_one` when the source key is itself unique. A side counts as unique only when some PK/unique key-set is a subset of the join key — if `(a)` is unique then `(a, b)` is too, but a constraint on `(a, b)` does not make `(a)` unique. When the target key cannot be *verified* unique from its constraints, cardinality is left unset rather than guessed. To infer it from the data instead, run `slayer joins detect-cardinality`.
+Each FK join also gets a structural [`cardinality`](models.md#join-cardinality) guess from the key constraints alone (no data is read): `many_to_one` by default, upgrading to `one_to_one` when the source key is itself unique. A side counts as unique only when some PK/unique key-set is a subset of the join key — if `(a)` is unique then `(a, b)` is too, but a constraint on `(a, b)` does not make `(a)` unique. When the target key cannot be *verified* unique from its constraints, cardinality is left unset rather than guessed. To infer it from the data instead, run `slayer validate-models --cardinality`.
 
 ### SQLite affinity probing
 
