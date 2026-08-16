@@ -180,7 +180,11 @@ class TestLegacyJoinTargetNormalisation:
 
         Repairing on the name alone would point both at `a_b`, and the
         duplicate-target guard in `_merge_joins_strict` would then turn a
-        tolerated (if dangling) store into a hard re-ingest failure.
+        tolerated (if dangling) store into a hard re-ingest failure. Only the
+        join whose pairs match the fresh one is the join the bug produced.
+
+        Looped, so this also covers idempotence: a repaired target sanitizes
+        to itself and later runs are no-ops.
         """
         import sqlite3
 
@@ -217,50 +221,17 @@ class TestLegacyJoinTargetNormalisation:
                 Column(name="x", type=DataType.INT),
             ],
             joins=[
+                # Matches the fresh join's pairs — this is the one to repair.
                 ModelJoin(target_model="a__b", join_pairs=[["x", "id"]]),
+                # Sanitizes to the same name but has different pairs, so it is
+                # somebody else's join and must be left alone.
                 ModelJoin(target_model="a___b", join_pairs=[["id", "id"]]),
             ],
         ))
 
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
-
-        reloaded = await storage.get_model("src", data_source="ds")
-        targets = [j.target_model for j in reloaded.joins]
-        assert len(targets) == len(set(targets)), f"duplicate targets: {targets}"
-
-    async def test_repair_is_idempotent(self, workspace: Path) -> None:
-        """A repaired target sanitizes to itself, so later re-ingests no-op."""
-        import sqlite3
-
-        from slayer.core.models import DatasourceConfig
-        from slayer.storage.yaml_storage import YAMLStorage
-
-        db = str(workspace / "idem.db")
-        conn = sqlite3.connect(db)
-        conn.executescript(
-            """
-            CREATE TABLE reports__patient__drug (id INTEGER PRIMARY KEY);
-            CREATE TABLE visits (
-                id INTEGER PRIMARY KEY,
-                report_id INTEGER REFERENCES reports__patient__drug(id)
-            );
-            """
-        )
-        conn.commit()
-        conn.close()
-
-        storage = YAMLStorage(base_dir=str(workspace / "store"))
-        ds = DatasourceConfig(name="ds", type="sqlite", database=db)
-        await storage.save_datasource(ds)
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
-
-        visits = await storage.get_model("visits", data_source="ds")
-        visits.joins[0].target_model = "reports__patient__drug"
-        await storage.save_model(visits)
-
         for _ in range(3):
             await ingest_datasource_idempotent(datasource=ds, storage=storage)
-            reloaded = await storage.get_model("visits", data_source="ds")
-            assert [j.target_model for j in reloaded.joins] == [
-                "reports_patient_drug"
-            ]
+            reloaded = await storage.get_model("src", data_source="ds")
+            targets = [j.target_model for j in reloaded.joins]
+            assert targets == ["a_b", "a___b"], targets
+            assert len(targets) == len(set(targets))
