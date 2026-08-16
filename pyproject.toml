@@ -38,7 +38,11 @@ fastapi = ">=0.100"
 uvicorn = ">=0.20"
 httpx = {version = ">=0.24", optional = true}
 pandas = {version = ">=2.0", optional = true}
-mcp = ">=1.0"
+# DEV-1757: mcp 2.x dropped the `mcp.server.fastmcp` module layout that
+# `slayer/mcp/server.py` imports (renamed to `mcp.server.mcpserver.MCPServer`).
+# An unbounded `>=1.0` let every lockfile-free install resolve 2.0.0 and ship a
+# broken MCP server. Cap until the 2.x migration lands, then raise the floor.
+mcp = ">=1.0,<2"
 psycopg2-binary = {version = ">=2.9", optional = true}
 asyncpg = {version = ">=0.27", optional = true}
 pymysql = {version = ">=1.0", optional = true}

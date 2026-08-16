@@ -1418,15 +1418,15 @@ class TestMultiStageMeasureRename:
                 f"expected 'rev_sum' in cached columns, got: {col_names}"
             )
             sql = loaded.backing_query_sql or ""
-            # Inner-stage wrap renames `"orders.rev" AS rev`; loose match on
-            # the alias keyword + name (newline-tolerant).
+            # Inner-stage wrap renames `"orders.rev" AS rev`; an all-lowercase
+            # short stays bare so it folds like the bare downstream reference.
             import re
             assert re.search(r"\bAS\s+rev\b", sql), (
                 f"expected inner-stage 'AS rev' rename in SQL:\n{sql}"
             )
             # The canonical name must not leak into the wrapped subquery's
             # exposed alias.
-            assert not re.search(r"\bAS\s+amount_sum\b", sql), (
+            assert not re.search(r'\bAS\s+"?amount_sum"?', sql), (
                 f"canonical 'amount_sum' must not be the surfaced inner alias:\n{sql}"
             )
         finally:
@@ -1491,6 +1491,7 @@ class TestMultiStageMeasureRename:
                 f"'name', got: {col_names}"
             )
             import re
+            # DEV-1756: an all-lowercase short stays bare (see above).
             assert re.search(r"\bAS\s+rev\b", virtual.sql), (
                 f"wrapped SQL must rename to user alias 'rev':\n{virtual.sql}"
             )

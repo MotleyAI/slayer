@@ -37,6 +37,7 @@ from slayer.core.formula import (
     parse_filter,
     parse_formula,
 )
+from slayer.core.errors import UnresolvableDimensionJoinError
 from slayer.core.models import Column, SlayerModel
 from slayer.core.query import OrderItem, SlayerQuery, substitute_variables
 from slayer.core.refs import DOTTED_IDENT_REF_RE as _DOTTED_IDENT_REF_RE
@@ -180,6 +181,7 @@ async def enrich_query(
     resolve_model=None,
     dialect: str = "postgres",
     drop_unreachable_filters: bool = False,
+    enforce_join_binding: bool = True,
 ) -> EnrichedQuery:
     """Resolve a SlayerQuery against model definitions into an EnrichedQuery.
 
@@ -344,6 +346,35 @@ async def enrich_query(
                 cm.user_declared = True
                 return True
         return False
+
+    def _repoint_alias(prev_alias: str, new_alias: str) -> None:
+        """DEV-1779: repoint every reference to ``prev_alias`` onto ``new_alias``.
+
+        A formula/transform enriched before the sibling measure it references
+        freezes that sibling's canonical alias (``orders.id_count``) into its
+        expression SQL / transform input. When the sibling is later renamed to
+        its declared name (``orders.order_count``), follow the rename in every
+        carrier: the alias resolver, the provenance-merge index, and the
+        already-frozen ``EnrichedExpression.sql`` / ``EnrichedTransform``.
+        """
+        if prev_alias == new_alias:
+            return
+        for k, v in known_aliases.items():
+            if v == prev_alias:
+                known_aliases[k] = new_alias
+        for k, v in measure_canonical_key_to_alias.items():
+            if v == prev_alias:
+                measure_canonical_key_to_alias[k] = new_alias
+        # Aliases are emitted only as whole quoted identifiers, so matching the
+        # closing quote is exact: ``"orders.id_count"`` never matches the
+        # prefix of ``"orders.id_count_2"``.
+        quoted_prev, quoted_new = f'"{prev_alias}"', f'"{new_alias}"'
+        for e in enriched_expressions:
+            if quoted_prev in e.sql:
+                e.sql = e.sql.replace(quoted_prev, quoted_new)
+        for t in enriched_transforms:
+            if t.measure_alias == prev_alias:
+                t.measure_alias = new_alias
 
     async def _ensure_aggregated_measure(
         alias_key: str,
@@ -1490,12 +1521,11 @@ async def enrich_query(
                                 break
                         known_aliases[target_name] = target_alias
                         known_aliases[canonical_name] = target_alias
-                        # DEV-1444 provenance merge: any canonical key
-                        # currently pointing at the pre-rename alias must
-                        # follow the rename.
-                        for k, v in list(measure_canonical_key_to_alias.items()):
-                            if v == prev_alias:
-                                measure_canonical_key_to_alias[k] = target_alias
+                        # DEV-1444 provenance merge + DEV-1779 frozen-carrier
+                        # rewrite: repoint resolver / provenance entries AND
+                        # any expression/transform that already froze the
+                        # pre-rename intercept alias onto the new alias.
+                        _repoint_alias(prev_alias, target_alias)
                         # canonical_to_user_name only fires when the
                         # user explicitly renamed via qfield.name; the
                         # auto-rename to cross-model canonical doesn't
@@ -1655,12 +1685,12 @@ async def enrich_query(
                         break
                 known_aliases[qfield.name] = user_alias
                 known_aliases[canonical_name] = user_alias
-                # DEV-1444 provenance merge: any canonical key currently
-                # pointing at the pre-rename alias must follow the rename
-                # so later auto-extracted refs collapse onto the new alias.
-                for k, v in list(measure_canonical_key_to_alias.items()):
-                    if v == prev_alias:
-                        measure_canonical_key_to_alias[k] = user_alias
+                # DEV-1444 provenance merge + DEV-1779 frozen-carrier rewrite:
+                # any resolver / provenance entry pointing at the pre-rename
+                # alias must follow the rename, AND any expression/transform
+                # that already froze the pre-rename alias must be rewritten so
+                # a formula enriched before this measure doesn't dangle.
+                _repoint_alias(prev_alias, user_alias)
                 # DEV-1443: record the canonical → user-name mapping so
                 # query filters and ORDER BY items referencing the raw
                 # ``col:agg`` formula can be remapped to the user alias
@@ -1877,6 +1907,24 @@ async def enrich_query(
         extra_agg_names=custom_agg_names,
         dialect=dialect,
     )
+
+    # DEV-1780 safety net: never return a dim/time-dim whose join-path alias is
+    # absent from resolved_joins (it would render an unbound ``A__B`` reference).
+    # Skipped for virtual stages and the re-rooted CTE (enforce_join_binding=False).
+    if enforce_join_binding and model.source_model_origin is None:
+        _bound_aliases = {rj[1] for rj in resolved_joins}
+        _root_prefix = f"{model_name_str}."
+        for _bound_check in list(dimensions) + list(time_dimensions):
+            _mn = _bound_check.model_name
+            if _mn != model_name_str and _mn not in _bound_aliases:
+                _reference = _bound_check.alias
+                if _reference.startswith(_root_prefix):
+                    _reference = _reference[len(_root_prefix):]
+                raise UnresolvableDimensionJoinError(
+                    reference=_reference,
+                    root_model=model_name_str,
+                    available_joins=[j.target_model for j in model.joins],
+                )
 
     # Names that resolve at the query level (named measures, transforms,
     # expressions) — pass through as legitimate filter targets even though

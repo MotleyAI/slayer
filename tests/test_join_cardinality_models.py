@@ -141,7 +141,14 @@ def test_old_column_without_unique_validates() -> None:
     assert c.unique is False
 
 
-def test_old_v7_model_validates_without_new_fields() -> None:
+def test_old_model_validates_without_new_fields() -> None:
+    """cardinality / unique are additive: pre-existing data validates unchanged.
+
+    The version is asserted against the model's own default rather than a
+    literal, so an unrelated bump (v8 added ``source_kind``) doesn't read as a
+    bump forced by these fields.
+    """
+    current_version = SlayerModel.model_fields["version"].default
     m = SlayerModel.model_validate(
         {
             "version": 7,
@@ -154,8 +161,7 @@ def test_old_v7_model_validates_without_new_fields() -> None:
             ],
         }
     )
-    # No version bump — v7 stays the current version and the fields default in.
-    assert m.version == 7
+    assert m.version == current_version
     assert m.joins[0].cardinality is None
     assert m.columns[0].unique is False
 
