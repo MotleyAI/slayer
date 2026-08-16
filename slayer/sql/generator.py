@@ -19,9 +19,15 @@ from slayer.core.enums import (
     DataType,
     TimeGranularity,
 )
-from slayer.core.errors import UnresolvableOrderColumnError
-from slayer.engine.enriched import EnrichedMeasure, EnrichedQuery, public_projection_aliases
+from slayer.core.errors import IdentifierCollisionError, UnresolvableOrderColumnError
+from slayer.engine.enriched import (
+    EnrichedMeasure,
+    EnrichedQuery,
+    all_projection_aliases,
+    public_projection_aliases,
+)
 from slayer.sql.dialects import SqlDialect, get_dialect
+from slayer.sql.dialects._identifier_fit import fit_identifier
 from slayer.sql.reserved_keywords import (
     SLAYER_RESERVED_KEYWORDS,
     prequote_reserved_identifiers,
@@ -259,17 +265,19 @@ def _parse_window_duration(value: str) -> list[tuple[int, str]]:
     return parts
 
 
-def _cte_name_from_alias(prefix: str, alias: str) -> str:
+def _cte_name_from_alias(prefix: str, alias: str, *, limit: int | None = None) -> str:
     """Build a unique CTE name from a measure alias.
 
-    Dots are replaced with ``__`` (double underscore) to avoid collision
-    with aliases that already contain underscores. E.g.:
-    - ``orders.revenue_sum``  -> ``_fm_orders__revenue_sum``
-    - ``orders_v2.revenue_sum`` -> ``_fm_orders_v2__revenue_sum``
+    Dots become ``__`` to avoid colliding with aliases that already contain
+    underscores: ``orders.revenue_sum`` -> ``_fm_orders__revenue_sum``.
+
+    The whole result is fitted to ``limit`` (the dialect's max), prefix
+    included. Pure function of ``(prefix, alias, limit)``, so a CTE's definition
+    and every reference derive the same name.
     """
     sanitized = alias.replace(".", "__")
     sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", sanitized)
-    return prefix + sanitized
+    return fit_identifier(name=prefix + sanitized, limit=limit)
 
 
 def _alias_prefixes(model_name: str) -> list:
@@ -403,6 +411,29 @@ class SQLGenerator:
             self._dialect: SqlDialect = dialect
         else:
             self._dialect = get_dialect(dialect)
+        # Per-statement CTE-name allocation, ``emitted -> (prefix, alias)``.
+        self._cte_names: dict[str, tuple[str, str]] = {}
+
+    def _cte_name(self, prefix: str, alias: str) -> str:
+        """Allocate a length-fitted CTE name, refusing a collision.
+
+        CTE names are emitted UNQUOTED, so two that fit to the same string
+        silently reference the wrong CTE. Keyed CASEFOLDED, since the server
+        folds unquoted names. Repeat calls with the same ``(prefix, alias)``
+        return the same name, not a collision.
+        """
+        name = _cte_name_from_alias(
+            prefix=prefix, alias=alias, limit=self._dialect.max_identifier_bytes,
+        )
+        owner = (prefix, alias)
+        prior = self._cte_names.setdefault(name.casefold(), owner)
+        if prior != owner:
+            raise IdentifierCollisionError(
+                first=f"{prior[0]}{prior[1]}", second=f"{prefix}{alias}",
+                emitted=name, dialect=self.dialect,
+                limit=self._dialect.max_identifier_bytes, namespace="CTE name",
+            )
+        return name
 
     @property
     def dialect(self) -> str:
@@ -596,6 +627,7 @@ class SQLGenerator:
             raise ValueError(
                 f"render_mode must be 'outer' or 'wrapped', got {render_mode!r}"
             )
+        self._cte_names = {}  # reset per-statement CTE-name allocation
         has_isolated = any(_has_cross_model_filter(m) for m in enriched.measures)
         has_windowed = any(_is_windowed_measure(m) for m in enriched.measures)
         has_cross_model = bool(enriched.cross_model_measures)
@@ -626,12 +658,12 @@ class SQLGenerator:
 
         if render_mode == "outer":
             sql = self._apply_outer_projection_trim(sql=sql, enriched=enriched)
-        # Dialect-driven post-pass: BigQuery mangles dotted aliases here.
-        # Default hook is identity for every other dialect (Postgres-shaped
-        # SqlDialect base). Fires for BOTH render modes — inner CTE column
-        # names are subject to the same dialect alias rules as the outer
-        # projection.
-        sql = self._dialect.rewrite_emitted_sql(sql)
+        # Dialect post-pass: fit over-limit aliases (DEV-1756), plus BigQuery/T-SQL
+        # dot-mangling. Fires for both render modes. Unfiltered alias set: hidden
+        # hoists are projected too and must be fitted with the same map.
+        sql = self._dialect.rewrite_emitted_sql(
+            sql=sql, aliases=all_projection_aliases(enriched),
+        )
         return sql
 
     def _apply_outer_projection_trim(
@@ -753,7 +785,7 @@ class SQLGenerator:
         # --- Cross-model measure CTEs ---
         seen_cm_ctes: set = set()
         for cm in enriched.cross_model_measures:
-            cte_name = _cte_name_from_alias("_cm_", cm.alias)
+            cte_name = self._cte_name(prefix="_cm_", alias=cm.alias)
             if cte_name in seen_cm_ctes:
                 measure_cte_refs.append((cte_name, cm.alias, None))
                 continue
@@ -838,7 +870,7 @@ class SQLGenerator:
         for measure in enriched.measures:
             if not _is_windowed_measure(measure):
                 continue
-            cte_name = _cte_name_from_alias("_wm_", measure.alias)
+            cte_name = self._cte_name(prefix="_wm_", alias=measure.alias)
             ctes.append((cte_name, self._generate_window_measure_cte(enriched=enriched, measure=measure)))
             measure_cte_refs.append((cte_name, measure.alias, None))
 
@@ -846,7 +878,7 @@ class SQLGenerator:
         for measure in enriched.measures:
             if not _has_cross_model_filter(measure):
                 continue
-            cte_name = _cte_name_from_alias("_fm_", measure.alias)
+            cte_name = self._cte_name(prefix="_fm_", alias=measure.alias)
 
             # Measure aggregation without CASE WHEN (the join IS the filter)
             unfiltered = copy.copy(measure)
@@ -1632,7 +1664,9 @@ class SQLGenerator:
             for t in deferred_self_joins:
                 src_cte = ctes[-1][0]
 
-                shift_name = f"shifted_{t.name}"
+                # Built from a user-supplied transform name; fit + collision-check
+                # like every CTE. Allocated once, reused for def and references.
+                shift_name = self._cte_name(prefix="shifted_", alias=t.name)
                 shifted_sql = self._generate_shifted_base(
                     enriched=enriched, transform=t,
                 )
@@ -1654,7 +1688,7 @@ class SQLGenerator:
                 join_cols = ", ".join(
                     f'{src_cte}.{self._q(a)}' for a in sorted(available_aliases)
                 )
-                join_layer = f"sjoin_{t.name}"
+                join_layer = self._cte_name(prefix="sjoin_", alias=t.name)
                 join_sql = (
                     f"SELECT {join_cols}, {col_sql} AS {self._q(t.alias)}\n"
                     f"FROM {src_cte}\n"
@@ -1791,9 +1825,9 @@ class SQLGenerator:
         layer_num: int,
     ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
         partition_aliases = getattr(transform, "partition_aliases", []) or []
-        reset_alias = _cte_name_from_alias("_cp_reset_", transform.alias)
-        reset_cte = _cte_name_from_alias(f"cp_reset_{layer_num}_", transform.alias)
-        value_cte = _cte_name_from_alias(f"cp_value_{layer_num}_", transform.alias)
+        reset_alias = self._cte_name(prefix="_cp_reset_", alias=transform.alias)
+        reset_cte = self._cte_name(prefix=f"cp_reset_{layer_num}_", alias=transform.alias)
+        value_cte = self._cte_name(prefix=f"cp_value_{layer_num}_", alias=transform.alias)
 
         def _quoted_col(name: str) -> exp.Column:
             return exp.Column(this=exp.to_identifier(name, quoted=True))

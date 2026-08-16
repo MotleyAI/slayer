@@ -85,6 +85,8 @@ slayer ingest --datasource my_postgres
 slayer ingest --datasource my_postgres --schema public
 slayer ingest --datasource my_postgres --include orders,customers
 slayer ingest --datasource my_postgres --exclude migrations,django_session
+slayer ingest --datasource my_postgres --no-views
+slayer ingest --datasource my_postgres --surface-internals
 ```
 
 | Flag | Required | Description |
@@ -93,7 +95,111 @@ slayer ingest --datasource my_postgres --exclude migrations,django_session
 | `--schema` | No | Database schema to inspect |
 | `--include` | No | Comma-separated tables to include |
 | `--exclude` | No | Comma-separated tables to exclude |
+| `--no-views` | No | Skip views and materialized views (ingested by default) |
+| `--surface-internals` | No | Ingest recognised ELT/migration internals visible instead of hidden |
 | `--storage` | No | Storage path |
+
+#### Views
+
+Views and materialized views are ingested alongside tables by default — dbt
+materializes staging models as views, so skipping them would hide most of a
+typical dbt project. Pass `--no-views` to restrict ingestion to base tables.
+
+A view-backed model records `source_kind: view` (or `materialized_view`) and is
+labelled `[view]` in the ingest output. Views expose no primary key and no
+foreign keys, so such models carry no primary-key column and get no
+auto-generated joins; add joins by hand if you need them.
+
+`--no-views` affects ingestion only. `slayer validate-models` always resolves
+models against tables *and* views, so a model pointing at a view is never
+mistaken for one whose table was dropped.
+
+#### Unmodellable objects
+
+Model names cannot contain `__` — it is reserved for join-path aliases in
+generated SQL. An object whose name contains it (dlt writes nested-JSON child
+tables like `reports__patient__drug`) is modelled under a sanitized name
+(`reports_patient_drug`) while `sql_table` keeps the real name, so queries
+still resolve.
+
+Objects that cannot be modelled at all — a sanitized name that collides with an
+existing object, a name containing `.`, `:`, `/` or `\`, or one that fails
+introspection — are listed under `Skipped` and the rest of the ingest proceeds.
+Use `--exclude <name>` to accept a skip permanently.
+
+#### Recognised internals
+
+ELT and migration tooling writes bookkeeping tables into the same schema as
+your data. These are modelled with `hidden: true` and listed under `Hidden`:
+
+```text
+Hidden (3) — recognised ELT/migration internals (excluded from models_summary; still queryable by name):
+  - _dlt_loads: dlt
+  - _dlt_pipeline_state: dlt
+  - _dlt_version: dlt
+  --surface-internals ingests NEW internals visible; use edit_model("<model>", data_source="my_postgres", hidden=false) to unhide an existing one.
+```
+
+The hint names the datasource because these models collide across datasources
+by construction — every dlt-loaded database has its own `_dlt_loads`, so a bare
+`edit_model("_dlt_loads", hidden=false)` resolves by [datasource
+priority](../concepts/models.md) and can un-hide the wrong one.
+
+A `__`-sanitized table also shows the model name it was given, since that is
+what `edit_model` takes: `- _dlt_loads__x (model: _dlt_loads_x): dlt`.
+
+Hidden, not skipped. The model still exists, is still queryable by name, and is
+still a valid join target — it is only absent from `models list`, MCP
+`models_summary`, the REST model listing, semantic search, and the BI catalogs.
+That keeps a deliberate use working (`_dlt_loads` answers "when did this last
+load?") while keeping the agent-facing model list free of junk that costs tokens
+in every session and invites an agent to aggregate or join it by mistake.
+
+Matching is case-insensitive and applies to the **live object name**, so a
+`__`-sanitized model is matched on the table it really points at.
+
+| Rule | Matches | Tool |
+|------|---------|------|
+| prefix `_dlt_` | `_dlt_loads`, `_dlt_pipeline_state`, `_dlt_version`, … | dlt |
+| prefix `_airbyte_` | `_airbyte_destination_state`, `_airbyte_raw_*` | Airbyte |
+| exact | `_fivetran_audit`, `_fivetran_audit_warning` | Fivetran |
+| exact | `flyway_schema_history`, `schema_version` | Flyway |
+| exact | `databasechangelog`, `databasechangeloglock` | Liquibase |
+| exact | `alembic_version` | Alembic |
+| exact | `django_migrations` | Django |
+| exact | `schema_migrations`, `ar_internal_metadata` | Rails |
+| exact | `sequelizemeta` | Sequelize |
+| exact | `pgmigrations` | node-pg-migrate |
+| exact | `__efmigrationshistory`, `__migrationhistory` | Entity Framework |
+| exact | `knex_migrations`, `knex_migrations_lock` | Knex |
+
+Prefix rules are limited to namespaces the vendor reserves by contract, in every
+warehouse it loads into. Fivetran and Singer get no prefix rule because their
+real surface is *columns* on your tables (`_fivetran_synced`, `_sdc_batched_at`,
+…), not tables. There is no `sqlite_` rule either: SQLite's own internals are
+filtered out by the inspector before SLayer sees them, so such a rule could only
+ever fire on a *non*-SQLite database, where `sqlite_backup` is an ordinary
+table. PostGIS (`spatial_ref_sys`, `geometry_columns`, …) and
+`pg_stat_statements` are deliberately not matched.
+
+Hiding happens **when the model is created**. A re-ingest never re-hides a model
+you un-hid, and never retro-hides one that already existed — so `edit_model(name,
+hidden=false)` sticks. For the same reason `--surface-internals` governs models
+the run creates; it cannot surface one an earlier run already hid.
+
+`--include` and `--exclude` choose *which* objects are scanned, not whether they
+are visible: `--include _dlt_loads` still ingests it hidden. Use `--exclude` to
+leave an internal out of the store entirely.
+
+#### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Ingest completed; nothing skipped and no errors |
+| `1` | One or more objects were skipped, a model failed to persist, or the schema contained no tables or views at all |
+
+An empty result prints the available schemas so a mistyped `--schema` is
+obvious rather than silent.
 
 ### `slayer import-dbt`
 
@@ -168,6 +274,8 @@ slayer datasources create demo --ingest        # bundled Jaffle Shop demo
 | `--schema` | No | (with `--ingest`) Schema to ingest from |
 | `--include` | No | (with `--ingest`) Comma-separated tables to include |
 | `--exclude` | No | (with `--ingest`) Comma-separated tables to exclude |
+| `--no-views` | No | (with `--ingest`) Skip views and materialized views (ingested by default) |
+| `--surface-internals` | No | (with `--ingest`) Ingest recognised ELT/migration internals visible instead of hidden |
 | `--years` | No | (demo only) Years of synthetic data to generate (default: 2) |
 | `-y`, `--yes` | No | Overwrite existing datasource / colliding models without prompting |
 | `--storage` | No | Storage path |
@@ -175,6 +283,8 @@ slayer datasources create demo --ingest        # bundled Jaffle Shop demo
 The demo path generates a DuckDB at `<storage>/demo/jaffle_shop.duckdb` and is idempotent — re-running reuses the existing file. Ingested demo models are enriched with curated column labels/descriptions, currency and percent formats, saved measures (e.g. `orders.total_revenue`, `orders.avg_order_value`, `orders.effective_tax_rate`), and a `weighted_avg` custom-aggregation example on `orders`. The enrichment is additive-only: labels/descriptions are filled only where unset and existing measures are never overwritten, so user edits survive re-runs. `duckdb` and `jafgen` are core dependencies of `motley-slayer`, so the demo works after a single `pip install motley-slayer` with no extras needed.
 
 If a datasource with the same name already exists, or (with `--ingest`) any generated model name collides with a stored model, SLayer prompts for confirmation. Use `--yes` for non-interactive use.
+
+With `--ingest`, the `Hidden` and `Skipped` sections described under [`slayer ingest`](#slayer-ingest) are printed after the models are written. Neither affects the exit code here — creating the datasource is this command's job, and it succeeded.
 
 ### `slayer inspect`
 

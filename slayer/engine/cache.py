@@ -27,6 +27,8 @@ from sqlglot import exp, parse_one
 from sqlglot.optimizer.normalize_identifiers import normalize_identifiers
 from sqlglot.optimizer.scope import Scope, traverse_scope
 
+from slayer.sql.engine_factory import EngineCacheKey
+
 # Marker alias prefix for refresh-key scan projections. Also lets tests
 # distinguish a refresh-key scan query from a data query.
 _RK_ALIAS_PREFIX = "slayer_rk_"
@@ -123,7 +125,7 @@ class _CacheEntry(BaseModel):
     sql: str
     ds_fingerprint: str
     dialect: str
-    ds_key: tuple[str, str]
+    ds_key: EngineCacheKey
     resolved_data_source: str | None = None
     original_input: Any = None
     variables: dict[str, Any] | None = None

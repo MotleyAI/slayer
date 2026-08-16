@@ -2,7 +2,7 @@
 
 import datetime  # noqa: F401  (kept for downstream imports of TimeGranularity)
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 
 class StrEnum(str, Enum):
@@ -155,6 +155,12 @@ class OrderDirection(StrEnum):
 class JoinType(StrEnum):
     LEFT = "left"
     INNER = "inner"
+
+
+# The kind of database object a ``sql_table``-mode model points at. A plain
+# ``Literal`` (not ``StrEnum``) so the values persist as bare strings in
+# YAML/SQLite without an enum-serialisation round-trip.
+ObjectKind = Literal["table", "view", "materialized_view"]
 
 
 # ---------------------------------------------------------------------------
