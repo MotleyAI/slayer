@@ -47,10 +47,7 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.errors import (
-    DistinctDimensionValuesError,
-    UnresolvableOrderColumnError,
-)
+from slayer.core.errors import DistinctDimensionValuesError
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -284,10 +281,13 @@ class TestUngroupedRowColumnSplit:
 # ===========================================================================
 class TestGroupedLocalRowColumnMaxWrapped:
     """DEV-1703 Phase 1 supersedes Stage 8's rejection: a LOCAL row column
-    ordered in a GROUPED query materialises as a hidden ``<col>:max``
-    aggregate and orders on that alias. MAX is order-preserving per group and
-    portable across every Tier-1 dialect. The wrap is a hidden slot, so it is
-    trimmed from the public projection."""
+    ordered in a GROUPED query materialises as a hidden aggregate wrap and
+    orders on that alias. The wrap is a hidden slot, so it is trimmed from the
+    public projection.
+
+    DEV-1747 D10 made the wrap DIRECTION-AWARE — ``MIN`` on ASC, ``MAX`` on
+    DESC — so each group is ordered by the extreme the direction actually puts
+    first. The tests below are DESC unless stated otherwise, hence MAX."""
 
     async def test_dedup_on_row_column_order_max_wraps(self, engine) -> None:
         query = SlayerQuery(
@@ -366,7 +366,7 @@ class TestGroupedLocalRowColumnMaxWrapped:
         order_cols = [name for _, name in _outer_order_by_columns(sql)]
         assert order_cols == ["orders.created_at_max", "orders.rev"], sql
 
-    async def test_max_wrap_bypasses_the_aggregation_gate(self, engine) -> None:
+    async def test_wrap_bypasses_the_aggregation_gate(self, engine) -> None:
         """The hidden sort wrap is interned post-bind, so a column that does
         not whitelist ``max`` can still be sorted on — the caller asked to
         SORT, not to aggregate. ``id`` is a primary key (restricted to
@@ -378,13 +378,16 @@ class TestGroupedLocalRowColumnMaxWrapped:
             order=[OrderItem(column=ColumnRef(name="id"), direction="asc")],
         )
         sql = await _sql(engine, query)
-        assert re.search(r"MAX\(\s*orders\.id\s*\)", sql), sql
+        # DEV-1747 D10 — the wrap is direction-aware: ASC sorts each group by
+        # its MINIMUM. The point of this test is the aggregation GATE, which
+        # the wrap bypasses regardless of which extreme it takes.
+        assert re.search(r"MIN\(\s*orders\.id\s*\)", sql), sql
 
 
 # ===========================================================================
-# Group 3 — joined row column -> UnresolvableOrderColumnError.
+# Group 3 — joined row column -> Law-1 join pull / host-rooted CTE (resolves).
 # ===========================================================================
-class TestJoinedRowColumnRejected:
+class TestJoinedRowColumnResolved:
     async def test_joined_row_column_ungrouped_pulls_join_and_splits(
         self, engine,
     ) -> None:
@@ -408,54 +411,75 @@ class TestJoinedRowColumnRejected:
         # The sort key is not projected — ordering must not change the shape.
         assert _outer_select_columns(sql) == ["orders.status"], sql
 
-    async def test_joined_row_column_grouped_raises(self, engine) -> None:
+    async def test_joined_row_column_grouped_resolves_host_rooted(
+        self, engine,
+    ) -> None:
+        """DEV-1747 D2: the GROUPED shape used to be rejected outright, because
+        a path-bearing aggregate source always routed to a TARGET-rooted CTE —
+        a scalar CROSS JOIN that gives every group the same global value.
+
+        It now resolves via a HOST-rooted CTE: the crossed join is pulled
+        INSIDE, the CTE groups on the query grain, and the host base joins the
+        per-group extreme back. The sort key is still not projected."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[ModelMeasure(formula="*:count")],
             order=[OrderItem(column=ColumnRef(name="customers.region"), direction="desc")],
         )
-        with pytest.raises(UnresolvableOrderColumnError):
-            await _sql(engine, query)
+        sql = await _sql(engine, query)
+        assert _outer_select_columns(sql) == ["orders.status", "orders._count"], sql
+        assert "WITH" in sql.upper(), sql
+        # DESC takes each group's MAXIMUM (D10) of the joined column.
+        assert re.search(r"MAX\(\s*customers\.region\s*\)", sql), sql
 
-    async def test_joined_reject_message_does_not_duplicate_qualifier(self, engine) -> None:
-        """The rejection message names the column once (``customers.region``),
-        not a duplicated ``customers.customers.region`` (CodeRabbit).
-
-        Uses the GROUPED shape — the ungrouped one now resolves (DEV-1703
-        Phase 1), so the message contract is pinned where the reject survives.
-        """
-        query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="*:count")],
-            order=[OrderItem(column=ColumnRef(name="customers.region"), direction="desc")],
-        )
-        with pytest.raises(UnresolvableOrderColumnError) as ei:
-            await _sql(engine, query)
-        msg = str(ei.value)
-        assert "customers.region" in msg
-        assert "customers.customers" not in msg
-
-    async def test_ungrouped_order_by_derived_crossing_column_rejected(self, engine) -> None:
+    async def test_ungrouped_order_by_derived_crossing_column_resolves(
+        self, engine,
+    ) -> None:
         """A hidden order-only LOCAL DERIVED column whose ``Column.sql`` crosses
-        a join (``cust_region`` = ``customers.region``) is not projected, so its
-        join is never pulled into the base FROM. Ordering on it must be rejected
-        rather than emit an unbound ``ORDER BY`` (CodeRabbit / T3)."""
-        query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            distinct_dimension_values=False,
-            order=[OrderItem(column=ColumnRef(name="cust_region"), direction="desc")],
-        )
-        with pytest.raises(UnresolvableOrderColumnError):
-            await _sql(engine, query)
+        a join (``cust_region`` = ``customers.region``) used to be rejected: it
+        is not projected, so its join was never pulled into the base FROM and
+        the sort term would have been unbound.
 
-    async def test_joined_order_ref_colliding_local_leaf_raises(self, tmp_path) -> None:
+        DEV-1747 D9 pulls it. Law 1 applies to a sort key exactly as it does to
+        a filter ref, so the join is bound and the term emits the same split
+        reference the BARE joined sort key emits — the two spellings name one
+        column, which is the consistency DEV-1735 asked for. Pinned positively
+        against the bare form rather than against a literal, so the two cannot
+        drift apart again."""
+        def _q(column: ColumnRef) -> SlayerQuery:
+            return SlayerQuery(
+                source_model="orders",
+                dimensions=[ColumnRef(name="status")],
+                distinct_dimension_values=False,
+                order=[OrderItem(column=column, direction="desc")],
+            )
+
+        derived_sql = await _sql(engine, _q(ColumnRef(name="cust_region")))
+        bare_sql = await _sql(engine, _q(ColumnRef(name="customers.region")))
+
+        assert ("customers", "region") in _outer_order_by_columns(derived_sql), (
+            derived_sql
+        )
+        assert (
+            _outer_order_by_columns(derived_sql)
+            == _outer_order_by_columns(bare_sql)
+        ), f"derived:\n{derived_sql}\nbare:\n{bare_sql}"
+        # Law 1 bound the join, and the sort key is still not projected.
+        assert re.search(r"(?i)\bJOIN\b", derived_sql), derived_sql
+        assert _outer_select_columns(derived_sql) == ["orders.status"], derived_sql
+
+    async def test_joined_order_ref_colliding_local_leaf_stays_joined(
+        self, tmp_path,
+    ) -> None:
         """A joined order ref whose LEAF collides with a local declared
         dimension (``owners.status`` vs a local ``status``) must NOT silently
-        bind to the local column and sort by the wrong field — it is a joined
-        ref and is rejected (Codex / DEV-1712)."""
+        bind to the local column and sort by the wrong field (Codex /
+        DEV-1712).
+
+        DEV-1747 D2 turned the rejection into a resolution, so the guarantee is
+        now pinned positively: the emitted SQL must actually reach ``owners``.
+        A silent rebind to the local column would leave it absent."""
         storage = YAMLStorage(base_dir=str(tmp_path))
         await storage.save_datasource(
             DatasourceConfig(name="test", type="sqlite", database=":memory:")
@@ -484,14 +508,14 @@ class TestJoinedRowColumnRejected:
             measures=[ModelMeasure(formula="*:count")],
             order=[OrderItem(column="owners.status", direction="desc")],  # joined
         )
-        with pytest.raises(UnresolvableOrderColumnError):
-            resp = await engine.execute(query, dry_run=True)
-            # If it did not raise, it must at least NOT have silently sorted by
-            # the local column (which would be the bug).
-            assert "owners" in (resp.sql or ""), (
-                f"joined order ref silently bound to the local column.\n"
-                f"SQL:\n{resp.sql}"
-            )
+        resp = await engine.execute(query, dry_run=True)
+        order_cols = _outer_order_by_columns(resp.sql or "")
+        assert any(
+            "owners" in table or "owners" in name for table, name in order_cols
+        ), (
+            f"joined order ref silently bound to the local column — the outer "
+            f"ORDER BY does not reference owners.\nSQL:\n{resp.sql}"
+        )
 
 
 # ===========================================================================

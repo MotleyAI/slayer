@@ -205,7 +205,7 @@ class TestScopeClosureInvariant:
             measures=[ModelMeasure(formula="balance:last(ordered_at)")],
         )
         sql = await _gen(query, _orders())
-        assert "_last_rn" in sql  # ranked subquery scope
+        assert "_rk_" in sql  # ranked CTE scope
         assert "ROW_NUMBER()" in sql
         assert "orders.ordered_at" in sql                    # explicit time carrier
         assert_scope_closed(sql)

@@ -97,6 +97,10 @@ class QueryResponse(BaseModel):
     columns: list[str]
     sql: str | None = None
     attributes: AttributesResponse | None = None
+    # DEV-1745 (W5/D2): advisories about the query itself — slack-normalization
+    # rewrites and filters that were dropped as unreachable. One list, each
+    # entry tagged with a ``kind`` discriminator the consumer switches on.
+    warnings: list[dict[str, Any]] = []
 
 
 class IngestRequest(BaseModel):
@@ -346,6 +350,9 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 row_count=result.row_count,
                 columns=result.columns,
                 attributes=attributes,
+                warnings=[
+                    w.model_dump(mode="json") for w in (result.warnings or [])
+                ],
             )
             if dry_run or explain:
                 response.sql = result.sql

@@ -101,7 +101,7 @@ A time dimension with a required granularity and an optional date range. Support
 
 ## OrderItem
 
-A sort specification: `column` is the short alias (`status`, `revenue_sum`, `*:count`), `direction` is `asc` or `desc`.
+A sort specification: `column` names a dimension (`status`), a declared measure's short alias (`revenue_sum`), or a formula (`*:count`); `direction` is `asc` or `desc`.
 
 ```json
 {"column": "*:count", "direction": "desc"}
@@ -128,9 +128,23 @@ What each shape of an *undeclared* order target does:
 | An inline **transform** (`rank(amount:sum)`, `cumsum(...)`, `change(...)`, `lag`/`lead`/`ntile`) | Computed hidden, sorted on, stripped. |
 | An inline **composite** (`revenue:sum / cnt:sum`, `abs(amount:sum)`, `change(amount:sum) / 2`) | Computed hidden, sorted on, stripped. |
 | A **windowed** aggregate (`amount:sum(window='90d')`), alone or inside a composite | Computed hidden in its own rolling-window CTE, sorted on, stripped. |
-| A raw row column, in a **raw-rows** query (`distinct_dimension_values: false`, no measures) | Sorted on directly (`ORDER BY orders.created_at`). |
-| A raw row column, in an **aggregated / dedup** query | Rejected (HTTP 400): it isn't in the `GROUP BY`. Add it to `dimensions`, or order by an aggregate of it (`created_at:max`). |
-| A **joined** row column (`customers.regions.name`) not projected | Rejected (HTTP 400): project it (add to `dimensions`) or order by a projected field. |
+| A raw row column, in a **raw-rows** query (`distinct_dimension_values: false`, no measures) | Sorted on directly (`ORDER BY orders.created_at`). Applies to a **joined** column (`customers.regions.name`) and to a derived column whose `sql` reaches through a join — the join is pulled in for the sort. |
+| A raw row column, in an **aggregated / dedup** query | Sorted on **per group**: ASC by each group's minimum, DESC by each group's maximum. The wrap is implicit — you do not write `created_at:min`. |
+| A **joined** row column (`customers.regions.name`) in an aggregated query | Same per-group wrap, computed in a CTE rooted at the source model with the join pulled inside, so each group gets its own extreme rather than one global value. |
+
+Ordering by an undeclared row column in a grouped query is **not** the same as
+ordering by the column itself — there is no single value per group to sort by.
+SLayer picks the extreme the direction puts first: `asc` sorts each group by its
+`min`, `desc` by its `max`. Write `{"column": "created_at:max", "direction": "asc"}`
+explicitly if you want the other one.
+
+NULLs sort **last** in both directions, on every database, so the same query
+returns the same row order regardless of backend. (SQL Server is the one
+exception: its native ordering is used because the portable emulation makes the
+statement fail there.)
+
+An order target that names nothing SLayer can resolve is an error, never a
+silently unsorted result.
 
 Transform and composite order targets accept the full formula syntax, so
 `{"column": "revenue:sum / cnt:sum"}` and `{"column": "change(revenue:sum)"}` both
@@ -152,10 +166,16 @@ Query results are returned as a `SlayerResponse`:
 | Field | Type | Description |
 |-------|------|-------------|
 | `data` | list[dict] | Rows as dictionaries |
-| `columns` | list[str] | Column names in `model_name.column_name` format (e.g., `"orders._count"`, `"orders.customers.regions.name"` for multi-hop) |
+| `columns` | list[str] | Column names in `model_name.column_name` format (e.g., `"orders._count"`, `"orders.customers.regions.name"` for multi-hop), **in the order you declared them** |
 | `row_count` | int | Number of rows |
 | `sql` | string | The generated SQL (useful for debugging) |
 | `attributes` | ResponseAttributes | Field metadata split by type: `attributes.dimensions` and `attributes.measures`, each a dict of column alias → FieldMetadata (label, format) |
+
+`columns` — and the key order of each row in `data` — follows the order you
+declared fields in the query: dimensions, then time dimensions, then measures,
+each in the order given. This holds regardless of how a measure is computed, so
+a measure on a joined model appears where you declared it rather than after the
+local ones. Fields used only for ordering are computed but not returned.
 
 ```json
 {
@@ -213,13 +233,16 @@ Use `and`, `or`, `not` within a single filter string:
 
 Multiple entries in the `filters` list are combined with AND.
 
-### String-Hygiene Operators
+### Scalar Functions in Filters
 
-Filters in `SlayerQuery.filters` accept a small allowlist of lowercase
-SQL scalar functions for case-folding, trimming, substring extraction,
-and string concatenation: `lower`, `upper`, `trim`, `replace`, `substr`,
-`instr`, `length`, `concat`. The SQL `||` concat operator is rewritten
-to `concat(...)` automatically.
+Filters in `SlayerQuery.filters` accept the closed Mode-B scalar
+allowlist: string hygiene (`lower`, `upper`, `trim`, `ltrim`,
+`rtrim`, `replace`, `substr`, `substring`, `instr`, `length`, `concat`),
+null handling (`coalesce`, `nullif`, `ifnull`), and math (`round`, `abs`,
+`ceil`, `floor`, `sign`, `log10`, …). The SQL `||` concat operator is
+rewritten to `concat(...)` automatically. See
+[references](references.md#scalar-functions-and-dialect-semantics) for the
+full list and per-dialect semantics.
 
 ```json
 "filters": [
@@ -227,17 +250,17 @@ to `concat(...)` automatically.
   "trim(name) = 'Smith'",
   "replace(category, ',', '') = 'books'",
   "substr(s, 1, instr(s, ',') - 1) = 'first_token'",
-  "length(replace(x, ',', '')) > 0",
+  "coalesce(nickname, name) = 'Ada'",
   "first || ' ' || last = 'jane doe'"
 ]
 ```
 
-Names are lowercase only — `LOWER(...)` is rejected. sqlglot translates
-each call to the target dialect's preferred spelling at SQL-generation
+Names are matched case-insensitively — `LOWER(...)` and `lower(...)` both bind.
+sqlglot translates each call to the target dialect's preferred spelling at SQL-generation
 time (`instr` → `POSITION` / `LOCATE` / `STRPOS`, `substr` →
-`SUBSTRING`, `concat` → `||` on SQLite). Calls outside the allowlist
-(`json_extract`, `coalesce`, …) belong in `Column.sql` /
-`Column.filter` / `SlayerModel.filters` (Mode A SQL).
+`SUBSTRING`, `concat` → `||` on SQLite). Raw SQL functions outside the
+allowlist (`json_extract`, `date_trunc`, `CASE WHEN`, …) belong in
+`Column.sql` / `Column.filter` / `SlayerModel.filters` (Mode A SQL).
 
 ### Filtering on Computed Columns
 

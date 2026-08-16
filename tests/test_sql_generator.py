@@ -18,7 +18,6 @@ from slayer.engine.stage_planner import plan_query
 from slayer.sql.generator import (
     AggRenderSpec,
     SQLGenerator,
-    _cte_name_from_alias,
     _validate_agg_param_value,
     _wrap_cast_for_type,
 )
@@ -866,7 +865,12 @@ class TestFields:
         # AST-based generation renders single-unit intervals via sqlglot's
         # per-dialect transpiler — Postgres caps the unit name.
         assert "INTERVAL '90 DAY'" in norm
-        assert '_src._w_dim_0 = _base."orders.status"' in norm
+        # The inner grain comparison is NULL-SAFE: a group whose dimension is
+        # NULL must receive its real windowed value, not NULL. The time-range
+        # bounds above stay plain inequalities — they are a range, not grain.
+        assert (
+            '_src._w_dim_0 IS NOT DISTINCT FROM _base."orders.status"' in norm
+        ), norm
 
     async def test_windowed_sum_preserves_other_time_dim_grain(
         self, generator: SQLGenerator, orders_model: SlayerModel,
@@ -1544,11 +1548,11 @@ class TestFields:
             measures=[ModelMeasure(formula="balance:last")],
         )
         sql = await _generate(generator, query, orders_model)
-        # ROW_NUMBER ranked subquery for latest row per group
+        # ROW_NUMBER ranking inside the measure's own ``_rk_`` CTE.
         assert "ROW_NUMBER()" in sql
-        assert "_last_rn" in sql
+        assert "_rk_rn" in sql
         assert "DESC" in sql
-        # Conditional aggregate: MAX(CASE WHEN _last_rn = 1 THEN col END)
+        # Conditional aggregate: MAX(CASE WHEN _rk_rn = 1 THEN col END)
         assert "MAX(" in sql
         assert "CASE" in sql
 
@@ -1568,7 +1572,11 @@ class TestFields:
         assert "DESC" in sql
 
     async def test_first_with_explicit_time_column(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
-        """first(ordered_at) should ORDER BY the explicit time column ASC."""
+        """first(ordered_at) should ORDER BY the explicit time column ascending.
+
+        Ascending is the ABSENCE of ``DESC`` rather than a literal ``ASC``: the
+        ranking clause emits the bare column, which is what ascending means and
+        what ``last`` differs from."""
         orders_model.default_time_dimension = "created_at"
         orders_model.columns.append(Column(name="balance", sql="balance", type=DataType.DOUBLE))
         orders_model.columns.append(Column(name="ordered_at", sql="ordered_at", type=DataType.TIMESTAMP))
@@ -1579,8 +1587,7 @@ class TestFields:
         )
         sql = await _generate(generator, query, orders_model)
         assert "ROW_NUMBER()" in sql
-        assert "orders.ordered_at" in sql
-        assert "ASC" in sql
+        assert "ORDER BY orders.ordered_at)" in _norm(sql), sql
 
     async def test_multiple_last_different_time_columns(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """Two last measures with different explicit time cols get separate ROW_NUMBER columns."""
@@ -1597,16 +1604,16 @@ class TestFields:
             ],
         )
         sql = await _generate(generator, query, orders_model)
-        # Two distinct ROW_NUMBER columns with different ORDER BY
+        norm = _norm(sql)
+        # Two rankings, one per measure, each in its own CTE ordering by its own
+        # time column. The rn-SUFFIX scheme (``_last_rn_2``) existed only to
+        # keep two rankings apart inside ONE shared scope; one scope per
+        # aggregate leaves it nothing to disambiguate.
         assert sql.count("ROW_NUMBER()") == 2
-        assert "orders.ordered_at" in sql
-        assert "orders.updated_at" in sql
-        # One gets no suffix, the other gets _2
-        assert "_last_rn " in sql or "_last_rn)" in sql
-        assert "_last_rn_2" in sql
-        # Each measure references its own rn column
-        assert "CASE WHEN _last_rn =" in sql or "CASE WHEN _last_rn=" in sql
-        assert "CASE WHEN _last_rn_2 =" in sql or "CASE WHEN _last_rn_2=" in sql
+        assert "ORDER BY orders.ordered_at DESC" in norm, sql
+        assert "ORDER BY orders.updated_at DESC" in norm, sql
+        assert "_last_rn_2" not in sql, sql
+        assert norm.count("CASE WHEN _rk_rn = 1") == 2, sql
 
     async def test_mixed_explicit_and_default_time_columns(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """One last with explicit time, one last with default — separate ROW_NUMBER columns."""
@@ -1641,13 +1648,16 @@ class TestFields:
             ],
         )
         sql = await _generate(generator, query, orders_model)
-        # One time column = one _last_rn and one _first_rn (no suffix)
-        assert "_last_rn_2" not in sql
-        assert "_first_rn_2" not in sql
-        assert "_last_rn" in sql
-        assert "_first_rn" in sql
-        assert "DESC" in sql
-        assert "ASC" in sql
+        norm = _norm(sql)
+        # Two aggregates over the SAME time column are still two aggregates, so
+        # two CTEs — the sharing this test was named for was an artefact of one
+        # scope carrying every ranking. What they share is the ORDER BY column;
+        # the DIRECTION is what makes them different aggregates.
+        assert sql.count("ROW_NUMBER()") == 2
+        assert "ORDER BY orders.ordered_at DESC" in norm, sql
+        assert "ORDER BY orders.ordered_at)" in norm, sql
+        assert "_last_rn" not in sql, sql
+        assert "_first_rn" not in sql, sql
 
     async def test_time_shift(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         orders_model.default_time_dimension = "created_at"
@@ -2149,10 +2159,26 @@ class TestRankFamilyTransforms:
         sql = await _generate(generator, query, orders_model)
         # PARTITION BY column order is semantically irrelevant; the typed
         # planner emits the keys in sorted order (customer_id before status).
-        assert (
+        #
+        # Compared against the re-emitted Window node rather than the raw text:
+        # the transform chain is assembled as AST (DEV-1747 D8), so an OVER
+        # clause this long is line-broken by sqlglot's pretty printer, and
+        # collapsing whitespace still leaves the spaces it puts inside the
+        # parens. The claim here is the window's SHAPE, not its line breaks.
+        window = next(
+            (
+                w
+                for w in sqlglot.parse_one(sql, read="postgres").find_all(
+                    sqlglot.exp.Window,
+                )
+                if isinstance(w.this, sqlglot.exp.Rank)
+            ),
+            None,
+        )
+        assert window is not None, sql
+        assert window.sql(dialect="postgres") == (
             'RANK() OVER (PARTITION BY "orders.customer_id", "orders.status" '
             'ORDER BY "orders.revenue_sum" DESC)'
-            in _norm(sql)
         )
 
     async def test_percent_rank_default(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
@@ -2936,10 +2962,11 @@ class TestMultiDialectGeneration:
         )
         sql = await _generate(generator=gen, query=query, model=m)
         _assert_valid_sql(sql, dialect=dialect)
-        # Two distinct rank columns per effective time column, both
-        # dialect-independent (no dialect rewrites ROW_NUMBER alias).
-        assert "_last_rn" in sql
-        assert "_last_rn_2" in sql
+        # Two rankings, one per ordered aggregate, each in its own CTE — so
+        # neither the rn-suffix scheme nor any dialect-specific alias rewrite
+        # is in play (no dialect rewrites the ROW_NUMBER alias).
+        assert sql.count("ROW_NUMBER()") == 2, sql
+        assert "_last_rn" not in sql, sql
         assert "revenue_last_created_at" in sql, (
             f"Materialised created_at alias missing on {dialect}:\n{sql}"
         )
@@ -2947,10 +2974,12 @@ class TestMultiDialectGeneration:
             f"Materialised updated_at alias missing on {dialect}:\n{sql}"
         )
         # The OUTER ORDER BY must reference each materialised alias as a
-        # SINGLE dotted-identifier column (the dotted body lives inside
-        # one quoted identifier; it must NOT decompose into a qualified
-        # ``"orders"."revenue_last_created_at"`` two-part name). Filter
-        # to Column terms because some dialects (MySQL) emit a synthetic
+        # SINGLE dotted identifier (the dotted body lives inside one quoted
+        # identifier; it must NOT decompose into a two-part name whose first
+        # part is read as a relation). The qualifier is the ranked CTE that
+        # OWNS the column — the same form a cross-model sort key takes, and the
+        # reason a re-parse of a dotted alias cannot go wrong here. Filter to
+        # Column terms because some dialects (MySQL) emit a synthetic
         # ``CASE WHEN x IS NULL`` term to emulate NULLS LAST — those are
         # NULL-ordering wrappers, not separate references.
         tree = sqlglot.parse_one(sql, dialect=dialect)
@@ -2962,11 +2991,11 @@ class TestMultiDialectGeneration:
             inner = ordered.this
             if not isinstance(inner, sqlglot.exp.Column):
                 continue
-            # ``table`` is the qualified-prefix slot. For a single dotted
-            # identifier (``"orders.revenue_last_created_at"``) it must be
-            # absent / empty.
+            # ``table`` is the qualified-prefix slot: either absent, or the
+            # ranked CTE's name. Anything else means the dotted alias was split
+            # and its first hop mistaken for a relation.
             tbl = inner.args.get("table")
-            assert tbl is None or not tbl.name, (
+            assert tbl is None or tbl.name.startswith("_rk_"), (
                 f"{dialect}: ORDER BY decomposes the dotted alias into a "
                 f"qualified two-part name (table={tbl!r}):\n{sql}"
             )
@@ -3826,15 +3855,17 @@ class TestMeasureSourceSqlJoinInference:
             measures=[ModelMeasure(formula="region_payment:last(orders.created_at)")],
         )
         sql = (await engine.execute(query, dry_run=True)).sql
-        # Widened Law-3 (D1): the crossing source isolates host-rooted.
-        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
-        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        # The crossing source isolates. It is the RANKED route (DEV-1748): a
+        # first/last isolates because it ranks, which subsumes the crossing
+        # trigger this test was written for — the verdict is the same one.
+        assert "_rk_" in sql, f"expected an isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_rk_\w+")
         assert "LEFT JOIN customers" in cm_body, cm_body
         assert "customers__regions" in cm_body, cm_body
         # The joins live ONLY inside the CTE — never in the host scope.
         assert sql.count("LEFT JOIN customers AS customers") == 1, sql
         self._assert_ref_only_in_val(sql, "customers__regions.payment_amount")
-        assert "THEN orders._val" in _norm(sql), sql
+        assert "THEN _val" in _norm(sql), sql
 
     async def test_local_last_with_single_dot_derived_source(
         self, engine: SlayerQueryEngine
@@ -3857,8 +3888,8 @@ class TestMeasureSourceSqlJoinInference:
             measures=[ModelMeasure(formula="cust_balance:last(orders.created_at)")],
         )
         sql = (await engine.execute(query, dry_run=True)).sql
-        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
-        assert "LEFT JOIN customers" in _extract_cte_body(sql, r"_cm_\w+"), sql
+        assert "_rk_" in sql, f"expected an isolation CTE:\n{sql}"
+        assert "LEFT JOIN customers" in _extract_cte_body(sql, r"_rk_\w+"), sql
         assert sql.count("LEFT JOIN customers AS customers") == 1, sql
         self._assert_ref_only_in_val(sql, "customers.balance")
 
@@ -3875,11 +3906,18 @@ class TestMeasureSourceSqlJoinInference:
             measures=[ModelMeasure(formula="region_payment:last(orders.created_at)")],
         )
         sql = (await engine.execute(query, dry_run=True)).sql
-        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        assert "_rk_" in sql, f"expected an isolation CTE:\n{sql}"
         self._assert_ref_only_in_val(sql, "customers__regions.payment_amount")
-        assert "_last_rn_f0" in sql, sql
-        assert "_match_f0" in sql, sql
-        assert "THEN orders._val" in _norm(sql), sql
+        # The measure's ``Column.filter`` is a WHERE on the rows being ranked.
+        # It used to be a dedicated sentinel rank column (``_last_rn_f0``) plus
+        # a match flag (``_match_f0``) consulted by alias from outside, because
+        # the ranking was shared with every other aggregate in the query and
+        # could not simply drop rows. In its own scope it can.
+        norm = _norm(sql)
+        assert "_last_rn_f0" not in norm, sql
+        assert "_match_f0" not in norm, sql
+        assert "WHERE orders.amount > 100" in norm, sql
+        assert "THEN _val" in norm, sql
 
     async def test_two_last_sharing_value_dedupe(
         self, engine: SlayerQueryEngine
@@ -3907,9 +3945,9 @@ class TestMeasureSourceSqlJoinInference:
         sql = (await engine.execute(query, dry_run=True)).sql
         self._assert_ref_only_in_val(sql, "customers__regions.payment_amount")
         norm = _norm(sql)
-        cm_cte_names = _re.findall(r"(_cm_\w+)\s+AS\s*\(", sql)
+        cm_cte_names = _re.findall(r"(_rk_\w+)\s+AS\s*\(", sql)
         assert len(cm_cte_names) == 2, (
-            f"expected one host-rooted CTE per distinct crossing aggregate; "
+            f"expected one isolation CTE per distinct crossing aggregate; "
             f"got {cm_cte_names}:\n{sql}"
         )
         # One _val materialisation per CTE, each consumed exactly once
@@ -3920,7 +3958,7 @@ class TestMeasureSourceSqlJoinInference:
             body = _extract_cte_body(sql, _re.escape(cte_name))
             body_norm = _norm(body)
             assert body_norm.count(" AS _val") == 1, sql
-            assert body_norm.count("THEN orders._val") == 1, sql
+            assert body_norm.count("THEN _val") == 1, sql
         assert '"orders.region_payment_a_last_created_at"' in norm, sql
         assert '"orders.region_payment_b_last_created_at"' in norm, sql
 
@@ -3969,7 +4007,7 @@ class TestMeasureSourceSqlJoinInference:
         # Composite lowering (F3): the crossing first/last LEAF isolates;
         # the `+ 1` composite renders in the combined SELECT via the CTE's
         # projected alias.
-        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        assert "_rk_" in sql, f"expected an isolation CTE:\n{sql}"
         self._assert_ref_only_in_val(sql, "customers__regions.payment_amount")
         outer = sql[sql.rfind("\n)") + 2:]
         assert "+ 1" in outer, (
@@ -3995,7 +4033,7 @@ class TestMeasureSourceSqlJoinInference:
         )
         sql = (await engine.execute(query, dry_run=True)).sql
         norm = _norm(sql)
-        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        assert "_rk_" in sql, f"expected an isolation CTE:\n{sql}"
         self._assert_ref_only_in_val(sql, "customers__regions.payment_amount")
         assert norm.count(" AS _val") == 1, sql
         # Routed to the combined SELECT's WHERE — never HAVING.
@@ -4029,14 +4067,19 @@ class TestMeasureSourceSqlJoinInference:
         assert "_val_0" not in allocated, (
             f"allocator must skip the model's own `_val_0` column:\n{sql}"
         )
-        assert f"THEN orders.{allocated[0]}" in norm, sql
+        assert f"THEN {allocated[0]}" in norm, sql
         self._assert_ref_only_in_val(sql, "customers__regions.payment_amount")
 
-    async def test_local_only_derived_first_last_no_val(
+    async def test_local_only_derived_first_last_pulls_no_join(
         self, engine: SlayerQueryEngine
     ) -> None:
-        """No-op negative (green): a LOCAL-only derived source (``amount * 2``)
-        crosses no join, so no ``_val`` materialisation happens."""
+        """The negative control: a LOCAL-only derived source (``amount * 2``)
+        crosses no join, so the ranked CTE pulls none.
+
+        This asserted no ``_val`` materialisation at all, which was how "crosses
+        no join" showed up when only a CROSSING value was materialised. Every
+        value crosses the ranked scope's projection boundary now (P-B), so the
+        observable claim is the one that was always the point: no JOIN."""
         model = self._orders_model(extra_columns=[
             Column(name="double_amount", sql="amount * 2", type=DataType.DOUBLE),
         ])
@@ -4046,15 +4089,13 @@ class TestMeasureSourceSqlJoinInference:
             measures=[ModelMeasure(formula="double_amount:last(orders.created_at)")],
         )
         sql = (await engine.execute(query, dry_run=True)).sql
-        assert "_val" not in sql, sql
-        assert "_cm_" not in sql, sql
-        assert _join_aliases(sql) == set(), sql
+        assert _join_aliases(_extract_cte_body(sql, r"_rk_\w+")) == set(), sql
+        assert "orders.amount * 2" in _norm(sql), sql
 
-    async def test_bare_source_first_last_no_val(
+    async def test_bare_source_first_last_pulls_no_join(
         self, engine: SlayerQueryEngine
     ) -> None:
-        """No-op negative (green): a bare same-table source needs no
-        materialisation."""
+        """The same control for a bare same-table source."""
         model = self._orders_model()
         await engine.storage.save_model(model)
         query = SlayerQuery(
@@ -4062,9 +4103,9 @@ class TestMeasureSourceSqlJoinInference:
             measures=[ModelMeasure(formula="amount:last(orders.created_at)")],
         )
         sql = (await engine.execute(query, dry_run=True)).sql
-        assert "_val" not in sql, sql
-        assert "_cm_" not in sql, sql
-        assert "THEN orders.amount" in _norm(sql), sql
+        assert _join_aliases(_extract_cte_body(sql, r"_rk_\w+")) == set(), sql
+        assert "orders.amount AS _val" in _norm(sql), sql
+        assert "THEN _val" in _norm(sql), sql
 
     # ------------------------------------------------------------------
     # Core path-alias discovery
@@ -4594,16 +4635,19 @@ class TestDev1709WidenedIsolationShapes:
             ],
         )
         sql = await self._sql(query, orders)
-        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        assert "_cm_" in sql, f"expected a crossing-input isolation CTE:\n{sql}"
         cm_body = _extract_cte_body(sql, r"_cm_\w+")
         assert "SUM(customers__regions.population)" in cm_body, sql
-        # The crossing ref never appears outside the CTE (the ranked host
-        # scope only carries the local first/last).
-        host_part = sql.replace(cm_body, "")
-        assert "customers__regions.population" not in host_part, sql
-        assert "THEN orders.amount" in _norm(host_part), sql
-        assert "LEFT JOIN" not in host_part, (
-            f"host ranked scope must stay join-free:\n{host_part}"
+        # Each aggregate owns a scope: the crossing SUM its ``_cm_``, the
+        # first/last its ``_rk_``. Neither ref appears in the other's, and
+        # ``_base`` — which now holds nothing at all — pulls no join.
+        rk_body = _extract_cte_body(sql, r"_rk_\w+")
+        assert "customers__regions.population" not in rk_body, sql
+        assert "THEN _val" in _norm(rk_body), sql
+        assert "ROW_NUMBER" not in cm_body, sql
+        rest = sql.replace(cm_body, "").replace(rk_body, "")
+        assert "LEFT JOIN" not in rest, (
+            f"the host base must stay join-free:\n{rest}"
         )
 
     async def test_crossing_kwarg_coexists_with_local_last(self) -> None:
@@ -4641,8 +4685,8 @@ class TestDev1709WidenedIsolationShapes:
             measures=[ModelMeasure(formula="amount:last(customers.signup_at)")],
         )
         sql = await self._sql(query, orders)
-        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
-        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "_rk_" in sql, f"expected an isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_rk_\w+")
         assert "customers.signup_at" in cm_body, sql
         assert "LEFT JOIN customers" in cm_body, sql
         host_part = sql.replace(cm_body, "")
@@ -4659,8 +4703,8 @@ class TestDev1709WidenedIsolationShapes:
             measures=[ModelMeasure(formula="amount:last(cross_time)")],
         )
         sql = await self._sql(query, orders)
-        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
-        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "_rk_" in sql, f"expected an isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_rk_\w+")
         assert "customers.signup_at" in cm_body, sql
         assert "LEFT JOIN customers" in cm_body, sql
 
@@ -4799,12 +4843,18 @@ class TestDev1709WidenedIsolationShapes:
             f"WHERE:\n{sql}"
         )
 
-    async def test_standalone_law2_same_sql_different_type_one_scope(self) -> None:
-        """Standalone Law-2 contract for the path that runs INSIDE a
-        host-rooted CTE (Codex test-review #1): with isolation disabled —
-        exactly how the recursive sub-plan is built — two same-sql,
-        different-CAST-type crossing first/lasts share ONE ranked subquery
-        and must materialise two DISTINCT ``(sql, type)``-keyed ``_val``s."""
+    async def test_ranked_isolation_survives_the_recursion_guard(self) -> None:
+        """With isolation DISABLED — exactly how the recursive sub-plan is
+        built — two same-sql, different-CAST-type crossing first/lasts still get
+        a ranked scope EACH, and each materialises its own type-distinct value.
+
+        This asserted they shared ONE ranked subquery, because the guard
+        suppressed isolation and the host base carried every ranking. The guard
+        exists to stop a CROSSING aggregate re-isolating forever inside its own
+        sub-plan; a ranked aggregate is rendered, never re-planned, and inside a
+        sub-plan it still needs its own row ordering — so it is deliberately not
+        suppressed. The type-distinctness claim is unchanged and is what the
+        two CASTs below still pin."""
         orders = self._orders_model(extra_columns=[
             Column(name="region_pay_d", sql="customers__regions.population * 2",
                    type=DataType.DOUBLE),
@@ -4828,22 +4878,28 @@ class TestDev1709WidenedIsolationShapes:
         gen = SQLGenerator(dialect="postgres")
         sql = gen.generate_from_planned(planned, bundle=bundle)
         norm = _norm(sql)
+        assert len(_re.findall(r"_rk_\w+\s+AS\s*\(", sql)) == 2, sql
         assert norm.count(" AS _val") == 2, (
-            f"same SQL, different type must materialise two _vals in ONE "
-            f"ranked scope:\n{sql}"
+            f"same SQL, different type must materialise two distinct _vals:"
+            f"\n{sql}"
         )
         assert _re.search(r"AS DOUBLE PRECISION\) AS _val_\d+", norm), sql
         assert _re.search(r"AS INT\) AS _val_\d+", norm), sql
         for val_alias in _re.findall(r"AS (_val_\d+)", norm):
-            assert f"THEN orders.{val_alias}" in norm, sql
+            assert f"THEN {val_alias}" in norm, sql
 
-    async def test_standalone_law2_crossing_kwarg_materialized(self) -> None:
-        """Standalone Law-2 for a crossing KWARG expression (Codex
-        test-review #2): forced through the ranked path (co-occurring
-        local last) with isolation disabled, the kwarg's expanded
-        expression must materialise as its own ``_val`` inside the ranked
-        subquery and be consumed via the bare alias in the outer aggregate
-        body — never referenced out of scope."""
+    async def test_a_ranked_sibling_no_longer_drags_a_kwarg_into_its_scope(
+        self,
+    ) -> None:
+        """A crossing KWARG next to a first/last, with isolation disabled.
+
+        This asserted the kwarg was materialised as a ``_val`` inside the RANKED
+        subquery — because one first/last used to wrap the whole host base, so
+        every sibling was computed over the ranked row set and any crossing ref
+        it carried had to cross that scope boundary. The ranking has its own
+        scope now, so the guard means exactly what it says: the crossing kwarg
+        renders INLINE in ``_base``, which is legal there, and the ranked CTE
+        neither sees it nor is affected by it."""
         orders = self._orders_model(extra_columns=[
             Column(name="region_weight", sql="customers__regions.weight",
                    type=DataType.DOUBLE),
@@ -4864,9 +4920,12 @@ class TestDev1709WidenedIsolationShapes:
         )
         gen = SQLGenerator(dialect="postgres")
         sql = gen.generate_from_planned(planned, bundle=bundle)
-        TestMeasureSourceSqlJoinInference._assert_ref_only_in_val(
-            sql, "customers__regions.weight",
-        )
+        base_body = _extract_cte_body(sql, r"_base")
+        assert "customers__regions.weight" in base_body, sql
+        assert "LEFT JOIN regions AS customers__regions" in base_body, sql
+        rk_body = _extract_cte_body(sql, r"_rk_\w+")
+        assert "customers__regions.weight" not in rk_body, sql
+        assert "ROW_NUMBER" in rk_body, sql
 
     @pytest.mark.xfail(strict=True, reason=(
         "DEV-1729: an IMPLICITLY-resolved crossing time column (model "
@@ -5012,9 +5071,11 @@ class TestAggParamSanitization:
         sql = await _generate(generator=gen, query=query, model=agg_model)
         # The literal `100` must NOT appear inside CASE WHEN; the value
         # column SHOULD still be CASE-wrapped.
-        assert "CASE WHEN status = 'active' THEN 100" not in sql
+        # ``status`` is not a declared column, so the Mode-A door qualifies it
+        # against the scope root like any other bare ref (DEV-1745 W1).
+        assert "CASE WHEN sales.status = 'active' THEN 100" not in sql
         assert "/ 100" in sql
-        assert "CASE WHEN status = 'active' THEN" in sql
+        assert "CASE WHEN sales.status = 'active' THEN" in sql
 
     async def test_filtered_weighted_avg_still_wraps_column_weight(
         self, gen: SQLGenerator, agg_model: SlayerModel,
@@ -5038,8 +5099,9 @@ class TestAggParamSanitization:
             ],
         )
         sql = await _generate(generator=gen, query=query, model=agg_model)
-        # Both legs are row-level references → both wrapped.
-        assert sql.count("CASE WHEN status = 'active'") >= 2
+        # Both legs are row-level references → both wrapped. (``status`` is
+        # undeclared, so the door qualifies it to the root — DEV-1745 W1.)
+        assert sql.count("CASE WHEN sales.status = 'active'") >= 2
 
     def test_injection_via_direct_agg_render_spec(self, gen: SQLGenerator) -> None:
         """Malicious agg_kwargs on a directly constructed AggRenderSpec are rejected
@@ -5147,7 +5209,14 @@ class TestFilteredMeasures:
     async def test_filtered_last_generates_dedicated_rn(
         self, generator: SQLGenerator, orders_model: SlayerModel,
     ) -> None:
-        """Filtered last measure generates a dedicated ROW_NUMBER with filter in ORDER BY."""
+        """A filtered ``last`` REMOVES the non-matching rows before ranking.
+
+        This asserted a dedicated ``_last_rn_f0`` column ranking every row with
+        ``CASE WHEN <filter> THEN 0 ELSE 1 END`` first, so the non-matching ones
+        sorted below the winners, plus a ``_match_f0`` flag the outer aggregate
+        consulted by alias. That machinery existed because the ranking was
+        shared with every other aggregate in the query and could not drop rows.
+        In its own scope it simply does."""
         orders_model.default_time_dimension = "created_at"
         orders_model.columns.append(
             Column(name="completed_balance", sql="amount", filter="status = 'completed'", type=DataType.DOUBLE)
@@ -5160,22 +5229,17 @@ class TestFilteredMeasures:
             measures=[ModelMeasure(formula="completed_balance:last")],
         )
         sql = await _generate(generator, query, orders_model)
-        # Should have a dedicated filtered ROW_NUMBER column
-        assert "_last_rn_f0" in sql
-        # The ORDER BY should include CASE WHEN filter THEN 0 ELSE 1 END
-        assert "CASE WHEN" in sql
-        assert "THEN 0 ELSE 1" in sql
-        # Standard ROW_NUMBER should NOT be present (no unfiltered first/last).
-        # Use regex word-boundary to avoid the obvious overlap with "_last_rn_f0".
-        assert _re.search(r"_last_rn(?!_f)", sql) is None, (
-            f"Bare _last_rn alias should not leak into SQL when only filtered "
-            f"first/last is requested: {sql}"
-        )
+        norm = _norm(sql)
+        assert "WHERE orders.status = 'completed'" in norm, sql
+        assert "THEN 0 ELSE 1" not in norm, sql
+        assert "_match_f0" not in norm, sql
+        assert _re.search(r"_(?:first|last)_rn", sql) is None, sql
 
     async def test_filtered_first_generates_dedicated_rn(
         self, generator: SQLGenerator, orders_model: SlayerModel,
     ) -> None:
-        """Filtered first measure generates a dedicated ROW_NUMBER with filter in ORDER BY."""
+        """The same for ``first``: the filter is a WHERE, and the ranking runs
+        ascending over what survives it."""
         orders_model.default_time_dimension = "created_at"
         orders_model.columns.append(
             Column(name="completed_balance", sql="amount", filter="status = 'completed'", type=DataType.DOUBLE)
@@ -5188,15 +5252,16 @@ class TestFilteredMeasures:
             measures=[ModelMeasure(formula="completed_balance:first")],
         )
         sql = await _generate(generator, query, orders_model)
-        assert "_first_rn_f0" in sql
-        assert "ASC" in sql
-        assert "CASE WHEN" in sql
-        assert "THEN 0 ELSE 1" in sql
+        norm = _norm(sql)
+        assert "WHERE orders.status = 'completed'" in norm, sql
+        assert "ORDER BY orders.created_at)" in norm, sql
+        assert "THEN 0 ELSE 1" not in norm, sql
+        assert _re.search(r"_(?:first|last)_rn", sql) is None, sql
 
     async def test_unfiltered_last_unchanged(
         self, generator: SQLGenerator, orders_model: SlayerModel,
     ) -> None:
-        """Unfiltered last measure uses the shared ROW_NUMBER, no _rn_f columns."""
+        """An unfiltered ``last`` ranks over every row — no WHERE of its own."""
         orders_model.default_time_dimension = "created_at"
         orders_model.columns.append(Column(name="balance", sql="amount", type=DataType.DOUBLE))
         query = SlayerQuery(
@@ -5207,13 +5272,16 @@ class TestFilteredMeasures:
             measures=[ModelMeasure(formula="balance:last")],
         )
         sql = await _generate(generator, query, orders_model)
-        assert "_last_rn" in sql
-        assert "_last_rn_f" not in sql
+        rk_body = _extract_cte_body(sql, r"_rk_\w+")
+        assert "ROW_NUMBER" in rk_body, sql
+        assert "WHERE" not in rk_body, sql
 
     async def test_mixed_filtered_and_unfiltered_last(
         self, generator: SQLGenerator, orders_model: SlayerModel,
     ) -> None:
-        """Both filtered and unfiltered last measures get separate ROW_NUMBER columns."""
+        """A filtered and an unfiltered ``last`` are two aggregates, so two
+        CTEs — the filtered one carrying its predicate as a WHERE, the other
+        ranking over the full row set."""
         orders_model.default_time_dimension = "created_at"
         orders_model.columns.append(Column(name="balance", sql="amount", type=DataType.DOUBLE))
         orders_model.columns.append(
@@ -5230,9 +5298,12 @@ class TestFilteredMeasures:
             ],
         )
         sql = await _generate(generator, query, orders_model)
-        # Should have both the shared _last_rn and the filtered _last_rn_f0
-        assert "_last_rn" in sql
-        assert "_last_rn_f0" in sql
+        names = _re.findall(r"(_rk_\w+)\s+AS\s*\(", sql)
+        assert len(names) == 2, sql
+        bodies = [_extract_cte_body(sql, _re.escape(n)) for n in names]
+        wheres = [b for b in bodies if "WHERE" in b]
+        assert len(wheres) == 1, sql
+        assert "orders.status = 'completed'" in _norm(wheres[0]), sql
 
     @staticmethod
     async def _filtered_last_cross_model_sql(generator: SQLGenerator) -> str:
@@ -5313,10 +5384,10 @@ class TestFilteredMeasures:
         self, generator: SQLGenerator,
     ) -> None:
         """Regression for CodeRabbit B6-4 — when a filtered first/last measure's
-        filter references a JOINED table (e.g. customers.status), the measure
-        is isolated into its own _cm_ CTE with a ranked subquery. The join lives
-        inside the ranked subquery so the filter resolves, and the final SELECT
-        does not reference the joined table directly."""
+        filter references a JOINED table (e.g. customers.status), the measure is
+        isolated into a CTE of its own. The join lives inside the ranked
+        subquery so the filter resolves, and the final SELECT does not reference
+        the joined table directly."""
 
         sql = await self._filtered_last_cross_model_sql(generator)
 
@@ -5332,14 +5403,13 @@ class TestFilteredMeasures:
             f"not in scope — should use CTE column references. "
             f"Final SELECT:\n{final_select}\n\nFull SQL:\n{sql}"
         )
-        # The isolated _cm_ CTE should contain a ranked subquery with _last_rn.
-        assert "_cm_" in sql, f"Expected isolated _cm_ CTE:\n{sql}"
-        assert "_last_rn" in sql, f"Expected _last_rn in isolated CTE:\n{sql}"
-        # The customers JOIN should be inside the _cm_ CTE's ranked subquery.
-        # Balanced-paren walker — the body wraps a nested ranked subquery.
-        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        # The isolated CTE contains the ranking.
+        assert "_rk_" in sql, f"Expected an isolated ranked CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_rk_\w+")
+        assert "ROW_NUMBER" in cm_body, cm_body
+        # ...and the customers JOIN, so the filter resolves where it is applied.
         assert "public.customers" in cm_body, (
-            f"Expected customers JOIN inside _cm_ CTE:\n{cm_body}"
+            f"Expected customers JOIN inside the ranked CTE:\n{cm_body}"
         )
 
     async def test_filter_with_dotted_string_literal_does_not_pull_spurious_join(
@@ -5404,12 +5474,16 @@ class TestFilteredMeasures:
             ],
         )
         sql = await _generate(generator, query, orders_model)
-        # Two distinct filtered ROW_NUMBER columns must exist in the ranked CTE.
-        assert "_last_rn_f0" in sql
-        assert "_last_rn_f1" in sql
-        # Both filter conditions must appear inside their CASE WHEN ORDER BY.
-        assert "status = 'active'" in sql
-        assert "status = 'completed'" in sql
+        norm = _norm(sql)
+        # Two filtered aggregates, two scopes, two predicates. The suffixed
+        # sentinel columns this test was written for (``_last_rn_f0`` /
+        # ``_last_rn_f1``) existed to keep two filtered rankings apart inside
+        # ONE scope; there is one ranking per scope now.
+        names = _re.findall(r"(_rk_\w+)\s+AS\s*\(", sql)
+        assert len(names) == 2, sql
+        assert _re.search(r"_(?:first|last)_rn", sql) is None, sql
+        assert "WHERE orders.status = 'active'" in norm, sql
+        assert "WHERE orders.status = 'completed'" in norm, sql
 
     # DEV-1484: the two source-alias tests that previously lived here
     # (test_filtered_measure_uses_source_alias_not_model_name and
@@ -6320,11 +6394,14 @@ class TestParameterizedAggCanonicalDistinct:
         self, generator: SQLGenerator
     ) -> None:
         """DEV-1501: two ORDER BY entries `revenue:last(created_at)` and
-        `revenue:last(updated_at)` must produce DISTINCT ranked aggregates
-        (one ROW_NUMBER per effective time column) and not collapse to a
-        single bare ``_last_rn``. The hidden materialised aggregates must
-        be trimmed from the public projection (the result keys stay
+        `revenue:last(updated_at)` must produce DISTINCT ranked aggregates and
+        not collapse onto one. The hidden materialised aggregates must be
+        absent from the public projection (the result keys stay
         ``orders.status`` + ``orders._count``).
+
+        The collapse it pinned was two specs sharing a bare ``_last_rn``; each
+        aggregate holds its own ranking now, so the same question is asked of
+        the two CTEs.
         """
 
         m = SlayerModel(
@@ -6349,10 +6426,11 @@ Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
             res = await engine.execute(query, dry_run=True)
             sql = res.sql
             _assert_valid_sql(sql, dialect=generator.dialect)
-            # The ranked subquery must carry two DISTINCT ROW_NUMBER columns,
-            # one per effective time column.
-            assert "_last_rn" in sql
-            assert "_last_rn_2" in sql
+            # Two DISTINCT rankings, one per effective time column.
+            assert len(_re.findall(r"_rk_\w+\s+AS\s*\(", sql)) == 2, sql
+            assert (
+                _re.search(r"_(?:first|last)_rn", sql) is None
+            ), sql
             assert (
                 _re.search(r"ORDER BY\s+orders\.created_at\s+DESC", sql)
                 is not None
@@ -6511,12 +6589,21 @@ def _orders_two_ts_model(*, default_td: "str | None" = None) -> SlayerModel:
 
 
 class TestDev1501HiddenFirstLastRender:
-    """DEV-1501 — hidden first/last aggregates in ORDER BY / HAVING must
-    trigger the ranked subquery, get their per-time-column ROW_NUMBER
-    suffix threaded correctly, and be trimmed from the public projection
-    by an outer wrap when materialised. See ``docs/architecture/planning.md``
-    (hidden-slot materialise + outer trim).
+    """DEV-1501 — first/last aggregates reached only through ORDER BY, HAVING
+    or a composite must still be materialised, must not collapse onto one
+    another, and must not surface in the public projection.
+
+    Every one of those claims survives DEV-1748; the MECHANISM they were
+    written against does not. There is no rn-suffix bookkeeping to thread and
+    no outer wrap to trim, because each aggregate owns a ``_rk_`` CTE: two
+    aggregates cannot collapse onto one rank column when they do not share a
+    rank column, and a hidden one is simply never projected from its CTE. The
+    assertions below are the same questions asked of the new shape.
     """
+
+    @staticmethod
+    def _ranked_ctes(sql: str) -> "list[str]":
+        return _re.findall(r"(_rk_\w+)\s+AS\s*\(", sql)
 
     async def test_order_by_first_and_last_different_time_cols(
         self, generator: SQLGenerator
@@ -6537,8 +6624,7 @@ class TestDev1501HiddenFirstLastRender:
             )
             sql = (await engine.execute(query, dry_run=True)).sql
             _assert_valid_sql(sql, dialect=generator.dialect)
-            assert "_first_rn" in sql
-            assert "_last_rn" in sql
+            assert len(self._ranked_ctes(sql)) == 2, sql
             assert "orders.created_at" in sql
             assert "orders.updated_at" in sql
             terms = _outer_order_terms(sql)
@@ -6550,21 +6636,19 @@ class TestDev1501HiddenFirstLastRender:
             assert dirs == ["asc", "desc"], (
                 f"first→ASC / last→DESC directions lost: {dirs}\n{sql}"
             )
-            # The first(created_at) rank window must order created_at ASC;
-            # the last(updated_at) rank window must order updated_at DESC.
-            assert _re.search(
-                r"ROW_NUMBER\(\)\s+OVER\s*\([^)]*ORDER BY\s+orders\.created_at\s+ASC", sql
-            ), f"first(created_at) rank not ASC:\n{sql}"
-            assert _re.search(
-                r"ROW_NUMBER\(\)\s+OVER\s*\([^)]*ORDER BY\s+orders\.updated_at\s+DESC", sql
-            ), f"last(updated_at) rank not DESC:\n{sql}"
+            # The first(created_at) rank window orders created_at ascending
+            # (the bare column); the last(updated_at) one orders descending.
+            norm = _norm(sql)
+            assert "ORDER BY orders.created_at)" in norm, sql
+            assert "ORDER BY orders.updated_at DESC)" in norm, sql
 
     async def test_order_by_first_and_last_same_time_col(
         self, generator: SQLGenerator
     ) -> None:
-        """``first(created_at)`` ASC + ``last(created_at)`` DESC share the
-        same suffix bucket (same effective time column) but produce TWO
-        rank columns (one ASC for first, one DESC for last).
+        """``first(created_at)`` ASC + ``last(created_at)`` DESC rank over the
+        same column in opposite directions, so they are two aggregates and get
+        two CTEs. The suffix bucketing this test was named for was the old
+        scheme for keeping them apart inside one shared scope.
         """
         m = _orders_two_ts_model()
         async with _persist_and_engine(m) as engine:
@@ -6579,10 +6663,11 @@ class TestDev1501HiddenFirstLastRender:
             )
             sql = (await engine.execute(query, dry_run=True)).sql
             _assert_valid_sql(sql, dialect=generator.dialect)
-            # Same time col → single suffix bucket (``""``) carrying both
-            # first and last rn columns; no ``_2`` suffix should appear.
-            assert "_first_rn" in sql and "_last_rn" in sql
-            assert "_last_rn_2" not in sql and "_first_rn_2" not in sql
+            assert len(self._ranked_ctes(sql)) == 2, sql
+            assert _re.search(r"_(?:first|last)_rn", sql) is None, sql
+            norm = _norm(sql)
+            assert "ORDER BY orders.created_at)" in norm, sql
+            assert "ORDER BY orders.created_at DESC)" in norm, sql
             terms = _outer_order_terms(sql)
             exprs = [t[0] for t in terms]
             assert len(terms) == 2 and exprs[0] != exprs[1], (
@@ -6609,7 +6694,7 @@ class TestDev1501HiddenFirstLastRender:
             )
             sql = (await engine.execute(query, dry_run=True)).sql
             _assert_valid_sql(sql, dialect=generator.dialect)
-            assert "_last_rn" in sql
+            assert len(self._ranked_ctes(sql)) == 1, sql
             assert (
                 _re.search(r"ORDER BY\s+orders\.created_at\s+DESC", sql)
                 is not None
@@ -6631,7 +6716,7 @@ class TestDev1501HiddenFirstLastRender:
             )
             sql = (await engine.execute(query, dry_run=True)).sql
             _assert_valid_sql(sql, dialect=generator.dialect)
-            assert "_last_rn" in sql
+            assert len(self._ranked_ctes(sql)) == 1, sql
             assert (
                 _re.search(r"ORDER BY\s+orders\.created_at\s+DESC", sql)
                 is not None
@@ -6658,47 +6743,38 @@ class TestDev1501HiddenFirstLastRender:
             res = await engine.execute(query, dry_run=True)
             sql = res.sql
             _assert_valid_sql(sql, dialect=generator.dialect)
-            # Two distinct rank columns (one per effective time column).
-            assert "_last_rn" in sql and "_last_rn_2" in sql
+            # One CTE per aggregate, whether or not it is projected.
+            names = self._ranked_ctes(sql)
+            assert len(names) == 2, sql
             # Result keys = projection only: status + projected last alias.
             assert set(res.columns) == {"orders.status", "orders.latest_cr"}, (
                 f"Result columns mismatch: {res.columns!r}\nSQL:\n{sql}"
             )
-            # The PROJECTED last(created_at) uses one suffix (the first
-            # bucket, created_at sorted first → ``""``) and the order-only
-            # last(updated_at) uses the OTHER suffix (``"_2"``). The two
-            # MUST be distinct or DEV-1501 isn't actually fixed. Inspect
-            # the inner (base) SELECT — the outer wrap is the trim layer,
-            # and the rn-based aggregates live in the inner.
-            tree = sqlglot.parse_one(sql, dialect="postgres")
-            inner_from = _outer_from_node(sql)
-            assert isinstance(inner_from, sqlglot.exp.Subquery), (
-                f"Expected outer-wrap subquery:\n{sql}"
-            )
-            inner_sql = inner_from.this.sql(dialect="postgres")
-            inner_rn = _projection_rn_by_alias(inner_sql)
-            assert "orders.latest_cr" in inner_rn, (
-                f"Projected latest_cr aggregate not found in inner SELECT:\n"
-                f"{inner_sql}"
-            )
-            assert "orders.revenue_last_updated_at" in inner_rn, (
-                f"Hidden order-only updated_at aggregate not found in inner:\n"
-                f"{inner_sql}"
-            )
-            assert inner_rn["orders.latest_cr"] != inner_rn["orders.revenue_last_updated_at"], (
-                f"Projected and order-only last() both bound to the same rank "
-                f"column ({inner_rn['orders.latest_cr']!r}) — distinct "
-                f"time cols collapsed.\nSQL:\n{sql}"
-            )
-            _ = tree  # keep tree variable for IDEs; assertion uses helper
+            # The two aggregates must not collapse onto one another: each
+            # ranks by its OWN time column, in its OWN CTE. Read off the
+            # windows rather than a rank-column alias, because there is no
+            # longer a shared alias space in which a collapse could hide.
+            norm = _norm(sql)
+            assert "ORDER BY orders.created_at DESC" in norm, sql
+            assert "ORDER BY orders.updated_at DESC" in norm, sql
+            # The PROJECTED one surfaces under the user's alias; the
+            # order-only one is named only by the ORDER BY.
+            assert '"orders.latest_cr"' in sql, sql
+            order_terms = _outer_order_terms(sql)
+            assert len(order_terms) == 1, order_terms
+            assert "revenue_last_updated_at" in order_terms[0][0], order_terms
 
     async def test_filter_only_last_with_having(
         self, generator: SQLGenerator
     ) -> None:
-        """A HAVING filter referencing a non-projected ``last(created_at)``
-        must build the ranked subquery and emit a HAVING term that resolves
-        ``_last_rn`` correctly. Regression for the hidden-filter-aggregate
-        path.
+        """A filter referencing a non-projected ``last(created_at)`` must
+        materialise that aggregate and apply the predicate where its value is
+        readable — the outer combined SELECT.
+
+        It was a HAVING on the host base, because the ranked value lived there.
+        It cannot be one now, and must not be: the ranked CTE is LEFT JOINed
+        back, so dropping a CTE row resurrects the host row carrying NULL
+        instead of removing it (the DEV-1503 rule).
         """
         m = _orders_two_ts_model(default_td="created_at")
         async with _persist_and_engine(m) as engine:
@@ -6711,19 +6787,16 @@ class TestDev1501HiddenFirstLastRender:
             res = await engine.execute(query, dry_run=True)
             sql = res.sql
             _assert_valid_sql(sql, dialect=generator.dialect)
-            # Ranked subquery must exist — the HAVING reference cannot dangle.
-            assert "_last_rn" in sql
+            names = self._ranked_ctes(sql)
+            assert len(names) == 1, sql
             assert _re.search(
                 r"ROW_NUMBER\(\)\s+OVER\s*\([^)]*ORDER BY\s+orders\.created_at\s+DESC", sql
             ), f"created_at rank window missing:\n{sql}"
-            # The HAVING clause must render the rank-based aggregate (not a
-            # bare-aggregate fallback that would have nothing to reference).
-            having_match = _re.search(r"HAVING(.*)$", sql, _re.DOTALL | _re.IGNORECASE)
-            assert having_match is not None, f"HAVING missing:\n{sql}"
-            having_sql = having_match.group(1)
-            assert _re.search(
-                r"MAX\(CASE WHEN _last_rn\s*=\s*1\s+THEN", having_sql
-            ), f"HAVING does not reference the rank-based aggregate:\n{having_sql}"
+            assert "HAVING" not in sql.upper(), sql
+            tail = sql[sql.rfind("WHERE"):]
+            assert tail.startswith("WHERE"), sql
+            assert names[0] in tail, sql
+            assert "> 100" in tail, sql
             # Hidden materialised alias must not surface in result keys.
             assert set(res.columns) == {"orders.status", "orders._count"}, (
                 f"Hidden filter aggregate leaked: {res.columns!r}\nSQL:\n{sql}"
@@ -6732,9 +6805,9 @@ class TestDev1501HiddenFirstLastRender:
     async def test_filter_only_last_two_time_cols(
         self, generator: SQLGenerator
     ) -> None:
-        """HAVING references TWO last() aggregates over different time
-        columns — both rank columns exist, the HAVING terms resolve to
-        distinct ``_last_rn{suffix}`` columns.
+        """A filter references TWO last() aggregates over different time
+        columns — each is materialised in its own CTE and the outer predicate
+        names both, so distinct time columns cannot collapse.
         """
         m = _orders_two_ts_model()
         async with _persist_and_engine(m) as engine:
@@ -6748,37 +6821,22 @@ class TestDev1501HiddenFirstLastRender:
             )
             sql = (await engine.execute(query, dry_run=True)).sql
             _assert_valid_sql(sql, dialect=generator.dialect)
-            assert "_last_rn" in sql and "_last_rn_2" in sql
-            # The outer wrap fires (hidden materialised aggregates exist
-            # for the filter refs), so HAVING lives in the INNER base
-            # SELECT — pull the inner SQL and look at HAVING there. Both
-            # rn columns must be referenced (one per filter operand) so
-            # distinct time cols don't collapse.
-            outer_from = _outer_from_node(sql)
-            assert isinstance(outer_from, sqlglot.exp.Subquery)
-            inner_sql = outer_from.this.sql(dialect="postgres")
-            having_match = _re.search(
-                r"HAVING(.*)$", inner_sql, _re.DOTALL | _re.IGNORECASE,
-            )
-            assert having_match is not None, (
-                f"HAVING missing in inner:\n{inner_sql}"
-            )
-            having_sql = having_match.group(1)
-            having_max_rns = _re.findall(
-                r"MAX\(CASE WHEN (_last_rn(?:_\d+)?)\s*=\s*1\s+THEN",
-                having_sql,
-            )
-            assert sorted(having_max_rns) == ["_last_rn", "_last_rn_2"], (
-                f"HAVING aggregate rn-suffix routing wrong. Found: "
-                f"{having_max_rns!r}\nHAVING:\n{having_sql}"
-            )
+            names = self._ranked_ctes(sql)
+            assert len(names) == 2, sql
+            assert "HAVING" not in sql.upper(), sql
+            tail = sql[sql.rfind("WHERE"):]
+            assert tail.startswith("WHERE"), sql
+            for name in names:
+                assert name in tail, (
+                    f"outer predicate does not reference {name!r}:\n{tail}"
+                )
 
     async def test_filter_and_order_last_different_time_cols(
         self, generator: SQLGenerator
     ) -> None:
-        """HAVING uses ``last(created_at)``, ORDER BY uses
-        ``last(updated_at)`` — each must resolve to its own distinct
-        ``_last_rn{suffix}``. Combined-surface regression (Codex MED 8).
+        """A filter uses ``last(created_at)`` while ORDER BY uses
+        ``last(updated_at)`` — each must resolve to its OWN materialised value.
+        Combined-surface regression (Codex MED 8).
         """
         m = _orders_two_ts_model()
         async with _persist_and_engine(m) as engine:
@@ -6791,27 +6849,15 @@ class TestDev1501HiddenFirstLastRender:
             )
             sql = (await engine.execute(query, dry_run=True)).sql
             _assert_valid_sql(sql, dialect=generator.dialect)
-            assert "_last_rn" in sql and "_last_rn_2" in sql
-            # HAVING lives in the INNER base SELECT (alongside its GROUP
-            # BY); outer wrap carries ORDER BY referencing the
-            # materialised alias.
-            inner = _outer_from_node(sql).this  # type: ignore[union-attr]
-            inner_sql = inner.sql(dialect="postgres")
-            having_match = _re.search(
-                r"HAVING(.*)$", inner_sql, _re.DOTALL | _re.IGNORECASE,
-            )
-            assert having_match is not None, f"HAVING missing in inner:\n{inner_sql}"
-            having_sql = having_match.group(1)
-            having_uses_first = _re.search(
-                r"\b_last_rn\b", having_sql
-            ) is not None
-            having_uses_second = "_last_rn_2" in having_sql
-            assert having_uses_first and not having_uses_second, (
-                f"HAVING did not reference the first-bucket _last_rn:\n"
-                f"{having_sql}"
-            )
+            assert len(self._ranked_ctes(sql)) == 2, sql
+            assert "HAVING" not in sql.upper(), sql
+            # The outer predicate names the created_at CTE and only it.
+            where_at = sql.rfind("WHERE")
+            where_clause = sql[where_at:sql.rfind("ORDER BY")]
+            assert "revenue_last_created_at" in where_clause, sql
+            assert "revenue_last_updated_at" not in where_clause, sql
             # Outer ORDER BY references the materialised alias for the
-            # updated_at first/last (the second bucket).
+            # updated_at first/last.
             terms = _outer_order_terms(sql)
             assert len(terms) == 1, terms
             assert "revenue_last_updated_at" in terms[0][0], (
@@ -6822,12 +6868,14 @@ class TestDev1501HiddenFirstLastRender:
     async def test_projected_two_last_different_time_cols_no_default(
         self, generator: SQLGenerator
     ) -> None:
-        """Two PROJECTED ``last(created_at)`` / ``last(updated_at)`` on a
-        model with NO ``default_time_dimension`` must resolve to DISTINCT
-        suffixes. Regression test for the ``_build_agg`` suffix-guard
-        bug (currently silently collapses to ``_last_rn`` because
-        ``default_time_col`` is None even though every spec carries an
-        explicit time arg).
+        """Two PROJECTED ``last(created_at)`` / ``last(updated_at)`` on a model
+        with NO ``default_time_dimension`` must stay DISTINCT.
+
+        The bug this pinned was a suffix guard that skipped when
+        ``default_time_col`` was ``None`` — so two specs each carrying an
+        explicit arg both collapsed onto a bare ``_last_rn``. There is no
+        shared rank column left for them to collapse onto; what is asserted is
+        the property, on the two scopes that now hold it.
         """
         m = _orders_two_ts_model()  # no default_td
         async with _persist_and_engine(m) as engine:
@@ -6841,36 +6889,33 @@ class TestDev1501HiddenFirstLastRender:
             )
             sql = (await engine.execute(query, dry_run=True)).sql
             _assert_valid_sql(sql, dialect=generator.dialect)
-            # Both rank columns must exist (and they do today)…
-            assert "_last_rn" in sql and "_last_rn_2" in sql
-            # …but each projected aggregate must reference its OWN suffix.
-            # Today both collapse to ``_last_rn`` (the suffix guard skips
-            # when default_time_col is None) — Change 4 fixes this. Parse
-            # the SQL and inspect each aliased projection's MAX(CASE WHEN
-            # …) so the assertion can't drift across aggregates.
-            rn_by_alias = _projection_rn_by_alias(sql)
-            assert "orders.lc" in rn_by_alias, (
-                f"lc projection missing or not rn-based:\n{sql}"
-            )
-            assert "orders.lu" in rn_by_alias, (
-                f"lu projection missing or not rn-based:\n{sql}"
-            )
-            assert rn_by_alias["orders.lc"] != rn_by_alias["orders.lu"], (
-                f"lc and lu reference the same rank column "
-                f"({rn_by_alias['orders.lc']!r}) — distinct-time-col specs collapsed.\n"
-                f"SQL:\n{sql}"
-            )
+            names = self._ranked_ctes(sql)
+            assert len(names) == 2, sql
+            norm = _norm(sql)
+            # Each ranks by its OWN time column…
+            assert "ORDER BY orders.created_at DESC" in norm, sql
+            assert "ORDER BY orders.updated_at DESC" in norm, sql
+            # …and each user alias is projected from a DIFFERENT CTE, which is
+            # the collapse this test exists to catch.
+            lc = _re.search(r'(_rk_\w+)\."orders\.lc"', norm)
+            lu = _re.search(r'(_rk_\w+)\."orders\.lu"', norm)
+            assert lc is not None, sql
+            assert lu is not None, sql
+            assert lc.group(1) != lu.group(1), sql
 
 
     async def test_filtered_first_last_in_having_uses_filtered_rn(
         self, generator: SQLGenerator
     ) -> None:
-        """A FILTERED ``last(time_col)`` (``Column.filter`` set) referenced
-        from HAVING must render with the dedicated filtered rank column
-        (``_last_rn_f0``) and the match-flag column (``_match_f0``) —
-        NOT the unfiltered ``_last_rn``. Without this, the HAVING term
-        ranks the wrong row (or references a column out of scope).
-        Codex review of DEV-1501 PR #159 (Group A).
+        """A FILTERED ``last(time_col)`` (``Column.filter`` set) referenced from
+        a filter must be ranked over the MATCHING rows only.
+
+        It used to need a dedicated rank column that sorted non-matching rows
+        to the bottom (``_last_rn_f0``) plus a match flag (``_match_f0``) the
+        predicate consulted, because the ranking was shared and could not drop
+        rows. In its own scope the filter is simply a WHERE, applied before the
+        ranking — which is the same answer by construction rather than by
+        careful alias bookkeeping.
         """
         async with _persist_and_engine(_orders_with_paid_amount_model()) as engine:
             query = SlayerQuery(
@@ -6881,46 +6926,29 @@ class TestDev1501HiddenFirstLastRender:
             )
             sql = (await engine.execute(query, dry_run=True)).sql
             _assert_valid_sql(sql, dialect=generator.dialect)
-            # The ranked subquery must include the filtered rn column and
-            # the match-flag column (filtered-first/last machinery).
-            assert "_last_rn_f0" in sql, (
-                f"Filtered rank column _last_rn_f0 missing:\n{sql}"
-            )
-            assert "_match_f0" in sql, (
-                f"Filter match-flag column _match_f0 missing:\n{sql}"
-            )
-            # HAVING must reference the FILTERED rank column, not bare
-            # ``_last_rn``. Inner SELECT carries HAVING (outer wrap holds
-            # ORDER BY only; this query has no ORDER BY but the materialise
-            # +trim wrap fires for the hidden filter aggregate too).
-            outer_from = _outer_from_node(sql)
-            inner_sql = (
-                outer_from.this.sql(dialect="postgres")
-                if isinstance(outer_from, sqlglot.exp.Subquery)
-                else sql
-            )
-            having_match = _re.search(
-                r"HAVING(.*)$", inner_sql, _re.DOTALL | _re.IGNORECASE,
-            )
-            assert having_match is not None, (
-                f"HAVING missing:\n{inner_sql}"
-            )
-            having_sql = having_match.group(1)
-            assert "_last_rn_f0" in having_sql, (
-                f"HAVING does not reference the filtered _last_rn_f0; falls back to "
-                f"unfiltered _last_rn (wrong row ranking). HAVING:\n{having_sql}"
-            )
+            names = self._ranked_ctes(sql)
+            assert len(names) == 1, sql
+            rk_body = _norm(_extract_cte_body(sql, _re.escape(names[0])))
+            assert "WHERE orders.status = 'paid'" in rk_body, sql
+            assert "_last_rn_f0" not in sql, sql
+            assert "_match_f0" not in sql, sql
+            # The predicate on the ranked value lands on the outer SELECT.
+            assert "HAVING" not in sql.upper(), sql
+            tail = sql[sql.rfind("WHERE"):]
+            assert tail.startswith("WHERE"), sql
+            assert names[0] in tail, sql
 
     async def test_filtered_first_last_in_nested_having_uses_filtered_rn(
         self, generator: SQLGenerator
     ) -> None:
-        """A FILTERED ``last(time_col)`` nested inside a scalar-function
-        call (``coalesce(agg, 0)``) on a HAVING expression must still
-        bind to the FILTERED rank column. Regression for the
-        ``_render_value_key_for_filter`` recursive call sites
-        (``ScalarCallKey`` / ``BetweenKey`` / ``InKey``) that previously
-        dropped ``aliases_by_slot_id`` through the recursion (Codex
-        review of DEV-1501 PR #159 round 2).
+        """A FILTERED ``last(time_col)`` nested inside a scalar-function call
+        (``coalesce(agg, 0)``) must still resolve to the aggregate's own
+        materialised value through the recursion.
+
+        Regression for the ``_render_value_key_for_filter`` recursive call
+        sites (``ScalarCallKey`` / ``BetweenKey`` / ``InKey``) that dropped
+        their alias environment on the way down: the leaf then rendered against
+        whatever the outer scope happened to have.
         """
         async with _persist_and_engine(_orders_with_paid_amount_model()) as engine:
             # ``coalesce(agg, 0)`` wraps the AggregateKey in a
@@ -6934,35 +6962,30 @@ class TestDev1501HiddenFirstLastRender:
             )
             sql = (await engine.execute(query, dry_run=True)).sql
             _assert_valid_sql(sql, dialect=generator.dialect)
-            outer_from = _outer_from_node(sql)
-            inner_sql = (
-                outer_from.this.sql(dialect="postgres")
-                if isinstance(outer_from, sqlglot.exp.Subquery)
-                else sql
-            )
-            having_match = _re.search(
-                r"HAVING(.*)$", inner_sql, _re.DOTALL | _re.IGNORECASE,
-            )
-            assert having_match is not None, (
-                f"HAVING missing in inner:\n{inner_sql}"
-            )
-            having_sql = having_match.group(1)
-            assert "_last_rn_f0" in having_sql, (
-                f"Nested-HAVING (ScalarCallKey wrap) did not reference "
-                f"filtered _last_rn_f0; aliases_by_slot_id dropped "
-                f"through the ScalarCallKey recursion.\nHAVING:\n{having_sql}"
+            names = self._ranked_ctes(sql)
+            assert len(names) == 1, sql
+            tail = sql[sql.rfind("WHERE"):]
+            assert tail.startswith("WHERE"), sql
+            assert "COALESCE" in tail.upper(), tail
+            assert names[0] in tail, (
+                f"the COALESCE wrap did not resolve its leaf to the ranked "
+                f"CTE — the alias environment was dropped through the "
+                f"ScalarCallKey recursion:\n{tail}"
             )
 
     async def test_composite_only_first_last_triggers_ranked_subquery(
         self, generator: SQLGenerator
     ) -> None:
         """A query whose ONLY first/last reference is INSIDE a composite
-        aggregate (no direct first/last sibling) must still trigger the
-        ranked-subquery wrap. Without composite-aware detection in
-        ``_has_first_last_aggregate``, the query takes the regular base
-        path and the composite render emits ``MAX(CASE WHEN _last_rn=1
-        …)`` referencing a column the bare FROM never projects. Codex
-        review of DEV-1501 PR #159 round 4.
+        aggregate (no direct first/last sibling) must still materialise each
+        operand. Codex review of DEV-1501 PR #159 round 4.
+
+        The failure it pinned was a composite render emitting
+        ``MAX(CASE WHEN _last_rn = 1 …)`` against a FROM that projected no such
+        column, because the ranked wrap was triggered by a scan that did not
+        look inside composites. Each operand is a slot with a plan of its own
+        now, so there is no trigger to miss — and the composite evaluates in
+        the combined SELECT, over the joined-back columns.
         """
         async with _persist_and_engine(_orders_two_ts_model()) as engine:
             query = SlayerQuery(
@@ -6976,25 +6999,20 @@ class TestDev1501HiddenFirstLastRender:
             )
             sql = (await engine.execute(query, dry_run=True)).sql
             _assert_valid_sql(sql, dialect=generator.dialect)
-            # Ranked subquery must be built with BOTH time-column rn cols.
-            assert "_last_rn" in sql and "_last_rn_2" in sql, (
-                f"Ranked subquery not built (composite-only first/last "
-                f"didn't trigger _has_first_last_aggregate):\n{sql}"
+            names = self._ranked_ctes(sql)
+            assert len(names) == 2, (
+                f"composite-only first/last did not materialise both "
+                f"operands:\n{sql}"
             )
-            # Both composite operands must reference distinct rn columns.
             diff_match = _re.search(
-                r"MAX\(CASE WHEN (_last_rn(?:_\d+)?)[\s\S]*?\+\s*"
-                r"MAX\(CASE WHEN (_last_rn(?:_\d+)?)[\s\S]*?"
-                r'AS "orders\.diff"',
-                sql,
+                r'(_rk_\w+)\."[^"]+" \+ (_rk_\w+)\."[^"]+" AS "orders\.diff"',
+                _norm(sql),
             )
             assert diff_match is not None, (
                 f"composite ``diff`` projection not found:\n{sql}"
             )
-            left_rn, right_rn = diff_match.group(1), diff_match.group(2)
-            assert {left_rn, right_rn} == {"_last_rn", "_last_rn_2"}, (
-                f"Composite operands collapsed: left={left_rn!r}, "
-                f"right={right_rn!r}\nSQL:\n{sql}"
+            assert diff_match.group(1) != diff_match.group(2), (
+                f"Composite operands collapsed onto one CTE:\n{sql}"
             )
 
     async def test_composite_first_last_without_default_time_dim_raises(
@@ -7077,12 +7095,14 @@ class TestDev1501HiddenFirstLastRender:
         self, generator: SQLGenerator
     ) -> None:
         """A FILTERED first/last operand inside a composite projection
-        (``paid_amount:last(created_at) + 1``) must bind to the
-        FILTERED rank column (``_last_rn_f0``) and match flag — not
-        bare ``_last_rn`` + raw filter. The composite synth's per-leaf
-        alias must match the alias the ranked subquery's
-        ``filtered_rn_map`` was keyed by. Codex review of DEV-1501 PR
-        #159 round 6.
+        (``paid_amount:last(created_at) + 1``) must be ranked over the MATCHING
+        rows.
+
+        The bug this pinned was an alias-key mismatch: the composite synth
+        minted a per-leaf alias, the ranked subquery keyed its filtered rank
+        columns by a different one, the lookup missed, and the operand silently
+        fell back to the unfiltered ranking. The leaf owns its scope now, so
+        there is no lookup to miss. Codex review of DEV-1501 PR #159 round 6.
         """
         async with _persist_and_engine(_orders_with_paid_amount_model()) as engine:
             query = SlayerQuery(
@@ -7095,34 +7115,32 @@ class TestDev1501HiddenFirstLastRender:
             )
             sql = (await engine.execute(query, dry_run=True)).sql
             _assert_valid_sql(sql, dialect=generator.dialect)
-            assert "_last_rn_f0" in sql, (
-                f"Filtered rank column _last_rn_f0 missing:\n{sql}"
-            )
-            assert "_match_f0" in sql, (
-                f"Filter match-flag column _match_f0 missing:\n{sql}"
-            )
-            # The composite's ``plus1`` projection's MAX must reference
-            # the FILTERED rn column — not bare ``_last_rn``.
+            names = self._ranked_ctes(sql)
+            assert len(names) == 1, sql
+            rk_body = _norm(_extract_cte_body(sql, _re.escape(names[0])))
+            assert "WHERE orders.status = 'paid'" in rk_body, sql
+            assert "_last_rn_f0" not in sql, sql
+            assert "_match_f0" not in sql, sql
             assert _re.search(
-                r'MAX\(CASE WHEN _last_rn_f0\s*=\s*1.*?AS "orders\.plus1"',
-                sql, _re.DOTALL,
+                rf'{_re.escape(names[0])}\."[^"]+" \+ 1 AS "orders\.plus1"',
+                _norm(sql),
             ), (
-                f"Composite operand did not bind to _last_rn_f0; falls back "
-                f"to bare _last_rn + raw filter (alias key mismatch).\n{sql}"
+                f"the composite operand did not read the filtered aggregate's "
+                f"own CTE:\n{sql}"
             )
 
     async def test_composite_first_last_in_projection_uses_correct_suffixes(
         self, generator: SQLGenerator
     ) -> None:
-        """A COMPOSITE aggregate measure containing first/last operands
-        with different explicit time columns
-        (``revenue:last(created_at) + revenue:last(updated_at)``) must
-        render each operand with its OWN ``_last_rn{suffix}``, not
-        collapse to bare ``_last_rn``. Triggered when the query ALSO
-        has a direct projected first/last so the first/last branch
-        fires — composite renders via ``_render_aggregate_composite_expr``
-        which previously didn't receive rn state. Codex review of
-        DEV-1501 PR #159 round 3.
+        """A COMPOSITE aggregate measure containing first/last operands with
+        different explicit time columns
+        (``revenue:last(created_at) + revenue:last(updated_at)``) must render
+        each operand against its OWN ranking, alongside a directly projected
+        first/last that shares one of those time columns.
+
+        The bug it pinned: the composite renderer never received the rn state,
+        so both operands emitted the bare ``_last_rn`` and the sum double-
+        counted one column. Codex review of DEV-1501 PR #159 round 3.
         """
         async with _persist_and_engine(_orders_two_ts_model(default_td="created_at")) as engine:
             query = SlayerQuery(
@@ -7140,37 +7158,46 @@ class TestDev1501HiddenFirstLastRender:
             )
             sql = (await engine.execute(query, dry_run=True)).sql
             _assert_valid_sql(sql, dialect=generator.dialect)
-            # Both rn columns must exist in the ranked subquery.
-            assert "_last_rn" in sql and "_last_rn_2" in sql
-            # The composite ``diff`` projection must contain BOTH
-            # ``_last_rn`` (created_at bucket) AND ``_last_rn_2``
-            # (updated_at bucket) — not two copies of ``_last_rn``.
+            # ``lc`` and the composite's created_at operand are the SAME
+            # aggregate (one structural key, one slot, one CTE); the
+            # updated_at operand is a second one.
+            names = self._ranked_ctes(sql)
+            assert len(names) == 2, sql
             diff_match = _re.search(
-                r"MAX\(CASE WHEN (_last_rn(?:_\d+)?)[\s\S]*?\+\s*"
-                r"MAX\(CASE WHEN (_last_rn(?:_\d+)?)[\s\S]*?"
-                r'AS "orders\.diff"',
-                sql,
+                r'(_rk_\w+)\."[^"]+" \+ (_rk_\w+)\."[^"]+" AS "orders\.diff"',
+                _norm(sql),
             )
             assert diff_match is not None, (
                 f"composite ``diff`` projection not found / wrong shape:\n{sql}"
             )
-            left_rn, right_rn = diff_match.group(1), diff_match.group(2)
-            assert {left_rn, right_rn} == {"_last_rn", "_last_rn_2"}, (
-                f"Composite first/last operands collapsed: left={left_rn!r}, "
-                f"right={right_rn!r} — expected one of each.\nSQL:\n{sql}"
+            left, right = diff_match.group(1), diff_match.group(2)
+            assert left != right, (
+                f"Composite first/last operands collapsed onto one CTE "
+                f"({left!r}):\n{sql}"
+            )
+            lc = _re.search(r'(_rk_\w+)\."orders\.lc"', _norm(sql))
+            assert lc is not None, sql
+            assert lc.group(1) == left, (
+                f"the projected ``lc`` and the composite's created_at operand "
+                f"are one aggregate and must share one CTE:\n{sql}"
             )
 
     async def test_cross_model_query_with_local_first_last_having_filter(
         self, generator: SQLGenerator
     ) -> None:
-        """A query carrying BOTH a cross-model aggregate AND a LOCAL
-        first/last filter in HAVING (``filters=["revenue:last(created_at)
-        > 100"]``) must NOT silently emit a HAVING that references a
-        dangling ``_last_rn``. Two acceptable outcomes (both are strict
-        improvements over the silent-dangling-SQL bug Codex flagged):
-        (a) emit valid SQL with a ranked subquery in ``_base``, or (b)
-        raise ``NotImplementedError`` with the existing local-first/last
-        + cross-model guard message. Codex review of DEV-1501 PR #159
+        """A query carrying BOTH a cross-model aggregate AND a LOCAL first/last
+        filter must emit valid SQL.
+
+        This shape was where the ranked base wrap and the cross-model CTE path
+        collided: the host base could not both be wrapped in a ranking and be
+        the ``_base`` of a combined SELECT, so the query either emitted a
+        HAVING referencing a dangling ``_last_rn`` or was refused outright. The
+        test allowed EITHER a working render or a clear ``NotImplementedError``,
+        because both beat silently invalid SQL.
+
+        Neither aggregate lives in ``_base`` now — each has its own CTE and
+        both join back on the grain — so the collision has no site left and
+        only the working outcome remains. Codex review of DEV-1501 PR #159
         round 6.
         """
         customers = SlayerModel(
@@ -7202,44 +7229,35 @@ class TestDev1501HiddenFirstLastRender:
                 dimensions=[ColumnRef(name="status")],
                 filters=["revenue:last(created_at) > 100"],
             )
-            try:
-                sql = (await engine.execute(query, dry_run=True)).sql
-            except NotImplementedError as exc:
-                # Acceptable outcome (b): the existing guard fires when
-                # the host base would need a ranked subquery alongside a
-                # cross-model aggregate. The clear error message replaces
-                # what was silently dangling-``_last_rn`` SQL.
-                assert "first/last" in str(exc).lower(), (
-                    f"NotImplementedError raised but with unexpected message: "
-                    f"{exc!r}"
-                )
-                return
+            sql = (await engine.execute(query, dry_run=True)).sql
             _assert_valid_sql(sql, dialect=generator.dialect)
-            # Acceptable outcome (a): if SQL is emitted, the host
-            # ``_base`` CTE must build the ranked subquery so HAVING
-            # resolves.
-            base_cte = _re.search(
-                r"_base AS \((.*?)\), _cm_", sql, _re.DOTALL,
-            )
-            assert base_cte is not None, f"_base CTE not found:\n{sql}"
-            base_sql = base_cte.group(1)
-            assert "ROW_NUMBER" in base_sql, (
-                f"Host _base CTE did NOT build the ranked subquery for the "
-                f"local first/last HAVING filter — _last_rn is dangling.\n"
-                f"_base:\n{base_sql}"
-            )
+            # Three scopes, each owning one thing: ``_base`` the grain, the
+            # ``_cm_`` CTE the cross-model SUM, the ``_rk_`` CTE the ranking.
+            base_sql = _extract_cte_body(sql, r"_base")
+            assert "ROW_NUMBER" not in base_sql, base_sql
+            assert "_cm_" in sql, sql
+            assert "_rk_" in sql, sql
+            assert "ROW_NUMBER" in _extract_cte_body(sql, r"_rk_\w+"), sql
+            # The predicate on the ranked value is an outer WHERE, never a
+            # HAVING that a LEFT JOIN back would turn into a NULL row.
+            assert "HAVING" not in sql.upper(), sql
+            tail = sql[sql.rfind("WHERE"):]
+            assert tail.startswith("WHERE"), sql
+            assert "> 100" in tail, sql
 
     async def test_cross_model_filtered_last_in_having(
         self, generator: SQLGenerator
     ) -> None:
         """A FILTERED cross-model ``last()`` (``Column.filter`` set on the
-        joined model's column) referenced from HAVING must, inside the
-        cross-model CTE, bind the HAVING aggregate to the dedicated
-        filtered rank column (``_last_rn_f0``) — same rn the CTE's SELECT
-        projects. Without ranked-state threading, the routed HAVING
-        re-emits ``_build_agg(synth)`` with no filtered_rn_map and binds
-        to bare ``_last_rn`` (wrong row). CodeRabbit review of DEV-1501
-        PR #159 (Group A.3).
+        joined model's column) referenced from a query filter must rank over
+        the MATCHING target rows, and the predicate must be applied where that
+        value is readable.
+
+        The bug it pinned was ranked-state threading: the routed HAVING
+        re-emitted the aggregate with no filtered-rank map, so it bound to the
+        unfiltered ranking and picked the wrong row. The filter is a WHERE
+        inside the ranked CTE now, so there is no second emission to keep in
+        step. CodeRabbit review of DEV-1501 PR #159 (Group A.3).
         """
         customers = SlayerModel(
             name="customers", sql_table="customers", data_source="test",
@@ -7280,31 +7298,19 @@ class TestDev1501HiddenFirstLastRender:
             )
             sql = (await engine.execute(query, dry_run=True)).sql
             _assert_valid_sql(sql, dialect=generator.dialect)
-            # The cross-model CTE must build a ranked subquery WITH the
-            # FILTERED rn column (``_last_rn_f0``) and the match flag,
-            # AND its HAVING must reference the FILTERED rn — not bare
-            # ``_last_rn``.
-            assert "_last_rn_f0" in sql, (
-                f"Cross-model filtered rank column _last_rn_f0 missing:\n{sql}"
-            )
-            assert "_match_f0" in sql, (
-                f"Cross-model filter match-flag column _match_f0 missing:\n{sql}"
-            )
-            # HAVING in the cross-model CTE must use the FILTERED rn-gated
-            # form. Bare ``_last_rn`` in HAVING would rank against unfiltered
-            # rows — wrong winner.
-            having_match = _re.search(
-                r"HAVING(.*?)(?:\)\s*$|\Z)", sql, _re.DOTALL | _re.IGNORECASE,
-            )
-            assert having_match is not None, (
-                f"Cross-model HAVING missing:\n{sql}"
-            )
-            having_sql = having_match.group(1)
-            assert "_last_rn_f0" in having_sql, (
-                f"Cross-model HAVING does not reference filtered _last_rn_f0; "
-                f"falls back to unfiltered _last_rn (wrong row ranking).\n"
-                f"HAVING:\n{having_sql}\nSQL:\n{sql}"
-            )
+            names = self._ranked_ctes(sql)
+            assert len(names) == 1, sql
+            rk_body = _norm(_extract_cte_body(sql, _re.escape(names[0])))
+            # The target's own rows are narrowed BEFORE the ranking.
+            assert "FROM customers AS customers" in rk_body, rk_body
+            assert "WHERE customers.active = TRUE" in rk_body, rk_body
+            assert "_last_rn_f0" not in sql, sql
+            assert "_match_f0" not in sql, sql
+            assert "HAVING" not in sql.upper(), sql
+            tail = sql[sql.rfind("WHERE"):]
+            assert tail.startswith("WHERE"), sql
+            assert names[0] in tail, sql
+            assert "> 50" in tail, sql
 
     async def test_derived_time_arg_pulls_in_referenced_join(
         self, generator: SQLGenerator,
@@ -7479,7 +7485,7 @@ class TestDev1501BroadTriggerAndGuards:
             res = await engine.execute(query, dry_run=True)
             sql = res.sql
             _assert_valid_sql(sql, dialect=generator.dialect)
-            assert "_last_rn" in sql
+            assert "_rk_" in sql
             # Public projection trimmed to dim only.
             assert set(res.columns) == {"orders.status"}, (
                 f"Hidden first/last alias leaked into dim-only result: "
@@ -7509,8 +7515,10 @@ class TestDev1501BroadTriggerAndGuards:
 
         History: this raised ``NotImplementedError``, then (DEV-1712 Stage 8) a
         plan-time ``ValueError``. DEV-1703 Phase 1 resolves it instead — the
-        column materialises as a hidden ``customer_id:max`` aggregate and the
-        ORDER BY names that alias. The invariant this test has always really
+        column materialises as a hidden aggregate wrap and the ORDER BY names
+        that alias — ``customer_id:min`` here, since DEV-1747 D10 made the wrap
+        direction-aware and this order is ASC. The invariant this test has always
+        really
         been about is preserved and pinned explicitly below: the sort key must
         NEVER reach GROUP BY, because widening the grain would change both the
         row count and every other measure's value.
@@ -7533,7 +7541,7 @@ class TestDev1501BroadTriggerAndGuards:
             )
             resp = await engine.execute(query, dry_run=True)
             sql = resp.sql
-            assert _re.search(r"MAX\(\s*orders\.customer_id\s*\)", sql), sql
+            assert _re.search(r"MIN\(\s*orders\.customer_id\s*\)", sql), sql
             # The sort key must not widen the grain: GROUP BY stays on status.
             inner = sqlglot.parse_one(sql, dialect="postgres").find(sqlglot.exp.Group)
             assert inner is not None, sql
@@ -7579,11 +7587,17 @@ class TestDev1501BroadTriggerAndGuards:
     async def test_order_by_with_limit_offset_on_outer_wrap(
         self, generator: SQLGenerator
     ) -> None:
-        """When the outer wrap fires (hidden order/filter aggregate
-        materialised), ORDER BY / LIMIT / OFFSET MUST live on the OUTER
-        SELECT — the inner base SELECT must NOT carry them, else the
-        pagination is applied at the wrong level and may slice rows
-        before the materialised aggregate values are visible.
+        """ORDER BY / LIMIT / OFFSET must be applied where the ordered value is
+        visible — never below it, which would slice rows before the aggregate
+        being sorted on exists.
+
+        The shape has changed: a hidden order-only first/last used to be
+        materialised INSIDE ``_base``, so the statement needed an outer wrap to
+        sort and paginate above it. Its value lives in a joined-back CTE now,
+        so the combined SELECT can see it directly and the wrap has nothing
+        left to do. What must not change is the level: the pagination sits on
+        the SELECT that reads the ranked column, and no scope below it carries
+        any of the three.
         """
         m = _orders_two_ts_model(default_td="created_at")
         async with _persist_and_engine(m) as engine:
@@ -7608,26 +7622,18 @@ class TestDev1501BroadTriggerAndGuards:
             assert tree.args.get("offset") is not None, (
                 f"Outer OFFSET missing:\n{sql}"
             )
-            # Inner base SELECT (inside the outer-wrap Subquery) must NOT
-            # carry ORDER BY / LIMIT / OFFSET — those are owned by the
-            # outer wrap.
-            outer_from = _outer_from_node(sql)
-            assert isinstance(outer_from, sqlglot.exp.Subquery), (
-                f"Expected outer-wrap Subquery FROM:\n{sql}"
-            )
-            inner = outer_from.this
-            assert isinstance(inner, sqlglot.exp.Select), (
-                f"Outer-wrap subquery body is not a Select:\n{sql}"
-            )
-            assert inner.args.get("order") is None, (
-                f"Inner base SELECT still carries ORDER BY:\n{sql}"
-            )
-            assert inner.args.get("limit") is None, (
-                f"Inner base SELECT still carries LIMIT:\n{sql}"
-            )
-            assert inner.args.get("offset") is None, (
-                f"Inner base SELECT still carries OFFSET:\n{sql}"
-            )
+            # ...and the ORDER BY reads the ranked CTE, so the pagination is
+            # applied above the value it sorts on.
+            assert "_rk_" in tree.args["order"].sql(dialect="postgres"), sql
+            # No CTE body carries any of the three.
+            with_node = tree.args.get("with_")
+            assert with_node is not None, sql
+            for cte in with_node.expressions:
+                body = cte.this
+                for key in ("order", "limit", "offset"):
+                    assert body.args.get(key) is None, (
+                        f"CTE {cte.alias_or_name!r} carries {key.upper()}:\n{sql}"
+                    )
 
     async def test_c13_duplicate_aliases_with_outer_wrap(
         self, generator: SQLGenerator
@@ -9067,8 +9073,9 @@ class TestIsolatedFilteredMeasureCTEs:
     async def test_isolated_last_cte_has_valid_ranked_subquery(
         self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
     ) -> None:
-        """The isolated _cm_ CTE for a last measure must contain a ROW_NUMBER
-        ranked subquery and produce valid SQL (not reference non-existent _last_rn)."""
+        """The isolated CTE for a last measure must contain a ROW_NUMBER ranked
+        subquery and produce valid SQL — no reference to a rank column its FROM
+        never projects."""
         query = SlayerQuery(
             source_model="claim_amount",
             measures=[ModelMeasure(formula="latest_payment:last")],
@@ -9082,17 +9089,16 @@ class TestIsolatedFilteredMeasureCTEs:
         # The _cm_ CTE for the isolated measure must exist and contain ROW_NUMBER.
         # Balanced-paren walker — the body carries a nested ranked subquery
         # whose ``\n)`` closes the inner subquery, not the CTE.
-        cm_body = _extract_cte_body(sql, r"_cm_\w*latest_payment\w*")
+        cm_body = _extract_cte_body(sql, r"_rk_\w*latest_payment\w*")
 
         assert "ROW_NUMBER" in cm_body, (
-            f"_cm_ CTE for latest_payment must contain ROW_NUMBER:\n{cm_body}"
+            f"the ranked CTE for latest_payment must contain ROW_NUMBER:\n{cm_body}"
         )
-        assert "_last_rn" in cm_body, (
-            f"_cm_ CTE must have _last_rn column:\n{cm_body}"
+        assert "_rk_rn" in cm_body, (
+            f"the ranked CTE must project its rank column:\n{cm_body}"
         )
-        # The aggregate must use MAX(CASE WHEN _last_rn = 1 ...)
-        assert "MAX(CASE WHEN" in cm_body, (
-            f"_cm_ CTE must use MAX(CASE WHEN _last_rn = 1 ...):\n{cm_body}"
+        assert "MAX(CASE WHEN _rk_rn = 1" in _norm(cm_body), (
+            f"the ranked CTE must pick rank 1 by aggregation:\n{cm_body}"
         )
         # Full SQL must parse as valid
         _assert_valid_sql(sql)
@@ -9100,8 +9106,12 @@ class TestIsolatedFilteredMeasureCTEs:
     async def test_mixed_isolated_and_local_first_last(
         self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
     ) -> None:
-        """Mixed case: one non-isolated last stays in host _base with ranked subquery,
-        one isolated last goes to its own _cm_ CTE with its own ranked subquery."""
+        """Mixed case: an unfiltered ``last`` and a cross-model-filtered one.
+
+        Both used to be treated differently — the unfiltered one wrapped the
+        host base in a ranking, the filtered one got a ``_cm_`` CTE of its own —
+        which is exactly the asymmetry B9 removes. They are two ranked
+        aggregates and get one CTE each; ``_base`` ranks nothing."""
         # total_amount has no cross-model filter → stays in base
         query = SlayerQuery(
             source_model="claim_amount",
@@ -9116,22 +9126,21 @@ class TestIsolatedFilteredMeasureCTEs:
         )
         sql = await self._sql(claim_amount_model_with_time, related_models, query)
 
-        # Host _base SHOULD have ROW_NUMBER (for the non-isolated total_amount:last).
         base_body = _extract_cte_body(sql, r"_base")
-        assert "ROW_NUMBER" in base_body, (
-            f"_base must have ROW_NUMBER for non-isolated last measure:\n{base_body}"
+        assert "ROW_NUMBER" not in base_body, (
+            f"the host base must hold no ranking of its own:\n{base_body}"
         )
-
-        # Isolated measure should get its own _cm_ CTE with its own ranked subquery.
-        cm_body = _extract_cte_body(sql, r"_cm_\w*latest_payment\w*")
-        assert "ROW_NUMBER" in cm_body, (
-            f"isolated _cm_ CTE must contain its own ROW_NUMBER:\n{cm_body}"
+        assert "total_amount" not in base_body, (
+            f"a ranked measure must not be computed in _base:\n{base_body}"
         )
-
-        # Non-isolated measure should be in the base.
-        assert "total_amount" in base_body, (
-            f"Non-isolated total_amount should be in base:\n{base_body}"
-        )
+        for pattern in (r"_rk_\w*total_amount\w*", r"_rk_\w*latest_payment\w*"):
+            cm_body = _extract_cte_body(sql, pattern)
+            assert "ROW_NUMBER" in cm_body, (
+                f"{pattern} must carry its own ranking:\n{cm_body}"
+            )
+        # Only the filtered one narrows its rows.
+        assert "WHERE" not in _extract_cte_body(sql, r"_rk_\w*total_amount\w*"), sql
+        assert "WHERE" in _extract_cte_body(sql, r"_rk_\w*latest_payment\w*"), sql
 
         _assert_valid_sql(sql)
 
@@ -9157,25 +9166,22 @@ class TestIsolatedFilteredMeasureCTEs:
         )
         sql = await self._sql(claim_amount_model_with_time, related_models, query)
 
-        # The _cm_ CTE should use first (ASC ordering). Balanced-paren
-        # walker — body carries the nested ranked subquery.
-        cm_body = _extract_cte_body(sql, r"_cm_\w*earliest_reserve\w*")
+        # The ranked CTE orders ASCENDING for ``first`` — the bare column,
+        # since ascending is the absence of DESC.
+        cm_body = _norm(_extract_cte_body(sql, r"_rk_\w*earliest_reserve\w*"))
 
-        assert "_first_rn" in cm_body, (
-            f"_cm_ CTE should use _first_rn for 'first' aggregation:\n{cm_body}"
-        )
-        # ASC ordering for first.
-        assert "ASC" in cm_body, f"Expected ASC ordering for first:\n{cm_body}"
-        # Should reference the explicit time column (updated_at), not the default TD.
-        assert "updated_at" in cm_body, (
-            f"Expected explicit time_column 'updated_at' in _cm_ CTE:\n{cm_body}"
+        assert _re.search(
+            r"ORDER BY claim_amount\.updated_at\s*\)", cm_body,
+        ), (
+            f"expected ascending ranking on the explicit time column:\n{cm_body}"
         )
         _assert_valid_sql(sql)
 
     async def test_multiple_isolated_first_last_separate_ctes(
         self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
     ) -> None:
-        """Two isolated first/last measures produce separate _cm_ CTEs, no ROW_NUMBER in base."""
+        """Two isolated first/last measures produce separate CTEs, no ROW_NUMBER
+        in base."""
         # latest_payment already has cross-model filter; add another.
         claim_amount_model_with_time.columns.append(
             Column(name="latest_reserve", sql="amount", filter="loss_reserve.has_flag = 1", type=DataType.DOUBLE),
@@ -9199,13 +9205,14 @@ class TestIsolatedFilteredMeasureCTEs:
             f"No ROW_NUMBER should be in base when all first/last are isolated:\n{base_body}"
         )
 
-        # Two separate _cm_ CTEs for the two filtered first/last measures.
-        cm_cte_names = _re.findall(r"(_cm_\w+)\s+AS\s*\(", sql)
+        # Two separate CTEs for the two filtered first/last measures.
+        cm_cte_names = _re.findall(r"(_rk_\w+)\s+AS\s*\(", sql)
         filtered_names = [
             n for n in cm_cte_names if "latest_payment" in n or "latest_reserve" in n
         ]
         assert len(filtered_names) == 2, (
-            f"Expected 2 filtered _cm_ CTEs, got {len(filtered_names)}: {filtered_names}\n{sql}"
+            f"Expected 2 filtered ranked CTEs, got {len(filtered_names)}: "
+            f"{filtered_names}\n{sql}"
         )
         # Each should have ROW_NUMBER. Balanced-paren walker because each
         # ``_cm_*`` body wraps a ranked subquery.
@@ -9572,16 +9579,12 @@ class TestIsolatedFilteredMeasureCTEs:
         self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
     ) -> None:
         """A filtered-local PARAMETRIC ``last(updated_at)`` referenced from
-        ORDER BY must materialise its ranked _last_rn INSIDE the host-rooted
-        _cm_ sub-plan (where the measure is isolated), and the outer ORDER BY
-        resolves through the CTE's joined-back column.
+        ORDER BY keeps its ranking INSIDE its own CTE, and the outer ORDER BY
+        resolves through that CTE's joined-back column.
 
-        Exercises the DEV-1501 × DEV-1503 interaction: parametric first/last
-        in ORDER BY adds hidden rank materialisation; for an ISOLATED
-        filtered-local measure that materialisation happens inside the _cm_
-        CTE, not the host base.
-
-        Pins Codex review #8 (parametric first/last filtered-local) — ORDER BY half.
+        Exercises the DEV-1501 × DEV-1503 interaction: the rank column is
+        scoped to the CTE, so an outer sort term naming it directly would be
+        unresolvable. Pins Codex review #8 — ORDER BY half.
         """
         claim_amount_model_with_time.columns.append(
             Column(name="updated_at", sql="updated_at", type=DataType.TIMESTAMP),
@@ -9602,19 +9605,18 @@ class TestIsolatedFilteredMeasureCTEs:
         )
         sql = await self._sql(claim_amount_model_with_time, related_models, query)
 
-        # The isolated _cm_ CTE contains the ranked _last_rn machinery (the
-        # parametric last is materialised inside the sub-plan).
-        cm_body = _extract_cte_body(sql, r"_cm_\w*latest_payment\w*")
-        assert "_last_rn" in cm_body, (
-            f"Isolated _cm_ CTE must materialise _last_rn for parametric last:\n{cm_body}"
+        cm_body = _extract_cte_body(sql, r"_rk_\w*latest_pmt\w*")
+        assert "_rk_rn" in cm_body, (
+            f"the ranked CTE must carry its own rank column:\n{cm_body}"
         )
         # The window's ORDER BY must use updated_at (the explicit time arg),
         # not the default TD (created_at).
-        assert "updated_at" in cm_body, (
-            f"_cm_ CTE must reference the explicit time arg 'updated_at':\n{cm_body}"
+        assert "ORDER BY claim_amount.updated_at DESC" in _norm(cm_body), (
+            f"the ranked CTE must rank by the explicit time arg:\n{cm_body}"
         )
-        # The outer ORDER BY references the joined-back aggregate alias —
-        # NOT _last_rn (which is scoped to the CTE).
+        # The outer ORDER BY references the joined-back aggregate column —
+        # NOT the rank column, which is scoped to the CTE.
+        assert "_rk_rn" not in sql[sql.rfind("ORDER BY"):], sql
         terms = _outer_order_terms(sql)
         assert any("latest_pmt" in expr or "latest_payment" in expr for expr, _ in terms), (
             f"Outer ORDER BY must reference the filtered-local aggregate alias; got {terms}\nSQL:\n{sql}"
@@ -9625,12 +9627,11 @@ class TestIsolatedFilteredMeasureCTEs:
         self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
     ) -> None:
         """A filtered-local PARAMETRIC ``last(updated_at)`` referenced from a
-        host filter (HAVING-style) routes as an AGGREGATE-phase filter to the
-        outer combined WHERE wrapper. The ranked _last_rn materialisation
-        stays inside the _cm_ sub-plan; the outer wrapper applies the
-        comparison against the joined-back aggregate alias.
+        host filter routes as an AGGREGATE-phase filter to the outer combined
+        WHERE. The ranking stays inside the CTE; the outer SELECT applies the
+        comparison against the joined-back column.
 
-        Pins Codex review #8 (parametric first/last filtered-local) — HAVING half.
+        Pins Codex review #8 — HAVING half.
         """
         claim_amount_model_with_time.columns.append(
             Column(name="updated_at", sql="updated_at", type=DataType.TIMESTAMP),
@@ -9646,13 +9647,12 @@ class TestIsolatedFilteredMeasureCTEs:
         )
         sql = await self._sql(claim_amount_model_with_time, related_models, query)
 
-        # The _cm_ CTE materialises the ranked _last_rn.
-        cm_body = _extract_cte_body(sql, r"_cm_\w*latest_payment\w*")
-        assert "_last_rn" in cm_body, (
-            f"Isolated _cm_ CTE must contain _last_rn:\n{cm_body}"
+        cm_body = _extract_cte_body(sql, r"_rk_\w*latest_pmt\w*")
+        assert "_rk_rn" in cm_body, (
+            f"the ranked CTE must contain its rank column:\n{cm_body}"
         )
-        assert "updated_at" in cm_body, (
-            f"_cm_ CTE must reference explicit time arg 'updated_at':\n{cm_body}"
+        assert "ORDER BY claim_amount.updated_at DESC" in _norm(cm_body), (
+            f"the ranked CTE must rank by the explicit time arg:\n{cm_body}"
         )
         # The aggregate-phase filter routes to the OUTER combined SELECT
         # wrapper (WHERE on the joined-back column), not inside the CTE
@@ -9808,7 +9808,7 @@ class TestIsolatedFilteredMeasureCTEs:
         assert "Loss_Payment" not in base_body
         assert "Loss_Reserve" not in base_body
         # ORDER BY must use the bare combined alias, NOT _base."<alias>".
-        order_match = _re.search(r"ORDER BY[^\n]+", sql)
+        order_match = _re.search(r"ORDER BY\s+[^\n]+", sql)
         assert order_match, f"Expected ORDER BY in:\n{sql}"
         order_clause = order_match.group(0)
         assert "total_loss" in order_clause, (
@@ -10105,20 +10105,6 @@ class TestIsolatedFilteredMeasureCTEs:
             f"host subquery FROM should render inside the _cm_ CTE:\n{sql}"
         )
         _assert_valid_sql(sql)
-
-
-class TestCteNameSanitization:
-    """CTE names from aliases must be collision-free."""
-
-    def test_dot_vs_underscore_no_collision(self) -> None:
-        """Aliases differing only in dot/underscore placement produce distinct CTE names."""
-
-        name_a = _cte_name_from_alias("_fm_", "a.b_c")
-        name_b = _cte_name_from_alias("_fm_", "a_b.c")
-        assert name_a != name_b, f"Collision: {name_a!r} == {name_b!r}"
-        # a.b_c → _fm_a__b_c, a_b.c → _fm_a_b__c
-        assert name_a == "_fm_a__b_c"
-        assert name_b == "_fm_a_b__c"
 
 
 class TestGetColumnTypesSql:
@@ -11031,7 +11017,7 @@ class TestStringHygieneDialectTranslation:
             ("postgres", "SUBSTRING(orders.status FROM 1 FOR 5)"),
             ("mysql", "SUBSTRING(orders.status, 1, 5)"),
             ("duckdb", "SUBSTRING(orders.status, 1, 5)"),
-            ("clickhouse", "SUBSTR(orders.status, 1, 5)"),
+            ("clickhouse", "SUBSTRING(orders.status, 1, 5)"),
         ],
     )
     async def test_substr_translates_per_dialect(
@@ -11052,11 +11038,17 @@ class TestStringHygieneDialectTranslation:
     @pytest.mark.parametrize(
         "dialect,expected_substring",
         [
-            # SQLite normalises CONCAT(...) → a || b at emit time.
+            # Every dialect whose sqlglot emitter prefers the operator now
+            # renders ``||``: the unified ScalarCall policy builds a typed
+            # ``exp.Concat`` instead of passing ``CONCAT`` through literally.
+            # On Postgres this is a SEMANTIC change as well as a spelling one —
+            # ``CONCAT()`` ignores NULL operands, ``||`` propagates them — and
+            # it aligns filters with the projection path, which has always
+            # emitted ``||`` here.
             ("sqlite", "orders.status || orders.status"),
-            ("postgres", "CONCAT(orders.status, orders.status)"),
+            ("postgres", "orders.status || orders.status"),
             ("mysql", "CONCAT(orders.status, orders.status)"),
-            ("duckdb", "CONCAT(orders.status, orders.status)"),
+            ("duckdb", "orders.status || orders.status"),
             ("clickhouse", "CONCAT(orders.status, orders.status)"),
         ],
     )
@@ -12390,14 +12382,17 @@ class TestCrossModelAggregateSourceSqlJoinInference:
     async def test_first_last_source_join_in_ranked_subquery(self, storage) -> None:
         engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
             Column(name="deep_pop", sql="regions.population", type=DataType.DOUBLE),
+            # The ranking column must be one of the TARGET's own — the ranked
+            # CTE is rooted there and a host column is not in its scope.
+            Column(name="signup_at", sql="signup_at", type=DataType.TIMESTAMP),
         ]))
         query = SlayerQuery(
             source_model="orders_x",
             measures=[ModelMeasure(
-                formula="customers_v2.deep_pop:last(orders_x.created_at)")],
+                formula="customers_v2.deep_pop:last(customers_v2.signup_at)")],
         )
         sql = (await engine.execute(query, dry_run=True)).sql
-        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        cm_body = _extract_cte_body(sql, r"_rk_\w+")
         assert "ROW_NUMBER()" in cm_body, cm_body
         normalized = _norm(cm_body)
         inner_start = normalized.find("FROM (")

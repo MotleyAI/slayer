@@ -58,6 +58,7 @@ from slayer.sql.generator import (  # type: ignore[attr-defined]
     ResolvedAggKwarg,
     SQLGenerator,
 )
+from slayer.sql.render.aggregates import resolve_agg_entry
 
 
 def _str_kwarg(value: str) -> ResolvedAggKwarg:
@@ -1074,3 +1075,55 @@ class TestBuilderTypePropagation:
         )
         assert spec.type is None
         assert spec.column_type is DataType.DOUBLE  # column_type still resolved
+
+
+# ---------------------------------------------------------------------------
+# DEV-1749 — ``_build_agg`` routes classification through the single
+# ``AGG_REGISTRY`` table (was: ``_AGG_FUNCTION_MAP`` + ``agg_class_map`` + the
+# ``count_distinct`` / ``median`` name-equality intercepts). Pin the merged
+# dispatch: a SIMPLE class, both former shadow-intercept specials, and the
+# unknown-name error path — the emitted SQL must be unchanged by the merge.
+# ---------------------------------------------------------------------------
+class TestBuildAggRegistryDispatch:
+    def _spec(self, aggregation: str, *, sql: str | None = "amount") -> AggRenderSpec:
+        return AggRenderSpec(
+            sql=sql,
+            name="amount" if sql else "",
+            model_name="orders",
+            aggregation=aggregation,
+            alias=f"orders.amount_{aggregation}",
+        )
+
+    def test_simple_class_comes_from_the_registry_entry(self) -> None:
+        gen = SQLGenerator(dialect="postgres")
+        expr, is_agg = gen._build_agg(self._spec("sum"))
+        assert is_agg is True
+        # The emitted node IS the registry entry's node_class — a hardcoded
+        # branch would decouple these.
+        assert type(expr) is resolve_agg_entry("sum").node_class
+        assert expr.sql(dialect="postgres") == "SUM(orders.amount)"
+
+    def test_count_star_renders_count_star(self) -> None:
+        gen = SQLGenerator(dialect="postgres")
+        expr, is_agg = gen._build_agg(self._spec("count", sql=None))
+        assert is_agg is True
+        assert expr.sql(dialect="postgres") == "COUNT(*)"
+
+    def test_count_distinct_builds_count_distinct(self) -> None:
+        gen = SQLGenerator(dialect="postgres")
+        expr, is_agg = gen._build_agg(self._spec("count_distinct"))
+        assert is_agg is True
+        assert expr.sql(dialect="postgres") == "COUNT(DISTINCT orders.amount)"
+
+    def test_median_routes_to_the_dialect_median_builder(self) -> None:
+        gen = SQLGenerator(dialect="postgres")
+        expr, is_agg = gen._build_agg(self._spec("median"))
+        assert is_agg is True
+        # Postgres emits the ordered-set aggregate for a median.
+        assert "PERCENTILE_CONT" in expr.sql(dialect="postgres").upper()
+
+    def test_unknown_aggregation_without_a_formula_raises(self) -> None:
+        gen = SQLGenerator(dialect="postgres")
+        spec = self._spec("definitely_not_an_aggregation")
+        with pytest.raises(ValueError, match="no formula"):
+            gen._build_agg(spec)

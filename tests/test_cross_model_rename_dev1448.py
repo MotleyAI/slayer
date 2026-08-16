@@ -61,7 +61,7 @@ from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
-from tests._engine_helpers import _outer_select
+from tests._engine_helpers import _norm, _outer_select
 
 # ---------------------------------------------------------------------------
 # Rendered-SQL helpers.
@@ -905,8 +905,8 @@ class TestCrossModelRenameCollisionGuards:
         aliases = _public_projection_aliases(sql)
         assert aliases == [
             "orders.status",
-            "orders.revenue_sum / 100",
             "orders.revenue_sum__div__100",
+            "orders.revenue_sum / 100",
         ], (
             f"the arithmetic measure and the renamed cross-model measure must "
             f"stay distinct public keys; got {aliases!r}\nSQL:\n{sql}"
@@ -1177,12 +1177,12 @@ class TestCrossModelRenameFilters:
         assert _public_projection_aliases(sql) == [
             "orders.status", "orders.cust_rev",
         ], sql
-        assert "HAVING\n  SUM(customers.lifetime_revenue) > 100" in sql, (
+        assert "HAVING SUM(customers.lifetime_revenue) > 100" in _norm(sql), (
             f"the bare user alias must resolve to a HAVING on the cross-model "
             f"aggregate:\n{sql}"
         )
         # Never a WHERE against a column that doesn't exist on the base table.
-        assert "orders.cust_rev > 100" not in sql, (
+        assert "orders.cust_rev > 100" not in _norm(sql), (
             f"the filter must not be emitted against a non-existent base-table "
             f"column:\n{sql}"
         )
@@ -1221,7 +1221,7 @@ class TestDeferredCrossModelFilterScope:
         assert _public_projection_aliases(sql) == [
             "orders.status", "orders.cust_rev",
         ], sql
-        assert "HAVING\n  SUM(customers.lifetime_revenue) > 100" in sql, (
+        assert "HAVING SUM(customers.lifetime_revenue) > 100" in _norm(sql), (
             f"colon-form cross-model filter must land as HAVING on the "
             f"cross-model aggregate:\n{sql}"
         )

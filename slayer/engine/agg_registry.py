@@ -1,8 +1,8 @@
 """Stage 4 (DEV-1450) — aggregation registry helpers.
 
-Lifts the agg-name collection BFS from ``enrichment.py`` and the
-parameter-resolution helpers from ``sql/generator.py`` so the new binder
-modules don't have to reach into those tangles. The helpers are pure:
+Collects the agg-name BFS and the parameter-resolution helpers so the new
+binder modules don't have to reach into ``sql/generator.py``'s tangles.
+The helpers are pure:
 given a model + a resolve_join_target callback, they produce structured
 results without touching storage or spawning side maps.
 

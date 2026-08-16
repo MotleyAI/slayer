@@ -37,6 +37,7 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import SlayerQuery
+from slayer.core.refs import IDENTIFIER_RE
 from slayer.sql.sql_predicate import parse_sql_predicate
 from slayer.engine.introspect_utils import _safe_get_columns
 from slayer.engine.ingestion import (
@@ -233,13 +234,10 @@ def _type_buckets_conflict(*, persisted: DataType, live: DataType) -> bool:
 
 
 def _is_bare_identifier(s: str | None) -> bool:
-    """``s`` is a bare SQL identifier (alphanumeric + underscore, no leading digit)."""
+    """``s`` is a bare SQL identifier per the canonical ``IDENTIFIER_RE``."""
     if not s:
         return False
-    s = s.strip()
-    if not s or s[0].isdigit():
-        return False
-    return all(c.isalnum() or c == "_" for c in s)
+    return IDENTIFIER_RE.match(s.strip()) is not None
 
 
 def _column_is_base(col_sql: str | None) -> bool:

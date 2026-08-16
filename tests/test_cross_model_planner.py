@@ -493,6 +493,7 @@ class TestInheritedFilterPolicy:
             phase=Phase.ROW,
             referenced_slot_ids=["rs_revenue"],
             text="customers.revenue > 100",
+            crossed_join_paths=(("customers",),),
         )]
         plan = planner.plan(
             aggregate_slot_id="cm1",
@@ -591,6 +592,7 @@ class TestInheritedFilterPolicy:
             phase=Phase.ROW,
             referenced_slot_ids=["rs_other"],
             text="warehouses.name = 'EU'",
+            crossed_join_paths=(("warehouses",),),
         )]
         plan = planner.plan(
             aggregate_slot_id="cm1",
@@ -618,6 +620,7 @@ class TestInheritedFilterPolicy:
             phase=Phase.ROW,
             referenced_slot_ids=["rs_target", "rs_other"],
             text="customers.revenue > warehouses.x",
+            crossed_join_paths=(("customers",), ("warehouses",)),
         )]
         plan = planner.plan(
             aggregate_slot_id="cm1",
@@ -733,6 +736,7 @@ class TestClassifyHostFilter:
         hf = HostFilterRouting(
             filter_id="f1", phase=Phase.ROW,
             referenced_slot_ids=["h"], text="",
+            crossed_join_paths=(("customers",),),
         )
         route = classify_host_filter(
             host_filter=hf,
@@ -759,6 +763,7 @@ class TestClassifyHostFilter:
         hf = HostFilterRouting(
             filter_id="f1", phase=Phase.ROW,
             referenced_slot_ids=["h"], text="",
+            crossed_join_paths=(("warehouses",),),
         )
         route = classify_host_filter(
             host_filter=hf,
@@ -798,35 +803,44 @@ class TestClassifyHostFilter:
         assert route == FilterRoute.DROP_HOST_LOCAL
 
     def test_classify_columnsqlkey_on_target_is_reachable(self):
-        # ColumnSqlKey with model in target_path → PROPAGATE_WHERE.
+        # A derived column anchored ON the target path → PROPAGATE_WHERE.
+        # Routed from the structural summary, not from the model NAME: the
+        # name-membership heuristic this replaces also called a SIBLING branch
+        # reachable whenever it happened to share a name with the target path.
         derived = ValueSlot(
-            id="d", key=ColumnSqlKey(model="customers", column_name="x"),
+            id="d",
+            key=ColumnSqlKey(
+                path=("customers",), model="customers", column_name="x",
+            ),
             declared_name="x", phase=Phase.ROW, hidden=True,
         )
         hf = HostFilterRouting(
             filter_id="f1", phase=Phase.ROW, referenced_slot_ids=["d"],
+            crossed_join_paths=(("customers",),),
         )
         route = classify_host_filter(
             host_filter=hf,
             host_slots=[derived],
             target_path=("customers",),
-            host_model_name="orders",
         )
         assert route == FilterRoute.PROPAGATE_WHERE
 
     def test_classify_columnsqlkey_on_other_branch_is_unreachable(self):
-        # ColumnSqlKey on a model not in target_path and not host → unreachable.
+        # A derived column anchored on a SIBLING branch → unreachable.
         derived = ValueSlot(
-            id="d", key=ColumnSqlKey(model="warehouses", column_name="x"),
+            id="d",
+            key=ColumnSqlKey(
+                path=("warehouses",), model="warehouses", column_name="x",
+            ),
             declared_name="x", phase=Phase.ROW, hidden=True,
         )
         hf = HostFilterRouting(
             filter_id="f1", phase=Phase.ROW, referenced_slot_ids=["d"],
+            crossed_join_paths=(("warehouses",),),
         )
         route = classify_host_filter(
             host_filter=hf,
             host_slots=[derived],
             target_path=("customers",),
-            host_model_name="orders",
         )
         assert route == FilterRoute.DROP_UNREACHABLE

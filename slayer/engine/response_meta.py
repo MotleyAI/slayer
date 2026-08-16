@@ -1,9 +1,7 @@
 """DEV-1450 stage 7b.15d — response metadata from the typed plan.
 
-The legacy engine derived ``SlayerResponse.attributes`` and
-``expected_columns`` from an ``EnrichedQuery``. The typed pipeline has no
-``EnrichedQuery``; this module rebuilds the same two artefacts from the root
-``PlannedQuery`` plus the final rendered SQL.
+This module builds ``SlayerResponse.attributes`` and ``expected_columns``
+from the root ``PlannedQuery`` plus the final rendered SQL.
 
 * ``expected_columns`` comes from the final SQL's ``named_selects`` — the
   literal result-key columns the rows come back keyed by. Deriving them from
@@ -28,6 +26,7 @@ from typing import Dict, List, Optional, Tuple
 import sqlglot
 from pydantic import BaseModel, Field as PydanticField
 
+from slayer.core.enums import AggregationValueClass, classify_aggregation
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.keys import (
     AggregateKey,
@@ -74,28 +73,28 @@ def _infer_aggregated_format(
     measure_name: str,
     aggregation: str,
 ) -> Optional[NumberFormat]:
-    """Infer NumberFormat for an aggregated measure based on aggregation type and source measure format.
+    """Infer the display NumberFormat for an aggregated measure via the shared
+    ``classify_aggregation`` (DEV-1788), so it cannot drift from
+    ``aggregated_type``:
 
-    Rules:
-    - count, count_distinct, count_distinct_approx: always INTEGER
-    - avg, weighted_avg, median: always FLOAT
-    - sum, min, max, first, last: inherit from source measure
-    - *:count (measure_name="*"): INTEGER
+    - COUNT (``*:count`` / count-family): INTEGER
+    - FLOAT_PLAIN (corr / var / covar): plain FLOAT
+    - FLOAT_SOURCE_UNITS (avg-family / percentile / stddev): inherit source
+      format, else FLOAT (the result is fractional even absent source units)
+    - PRESERVING (sum / min / max / first / last, and custom aggs): inherit
+      source format, else None
     """
-    if measure_name == "*":
+    cls = classify_aggregation(measure_name=measure_name, aggregation=aggregation)
+    if cls is AggregationValueClass.COUNT:
         return NumberFormat(type=NumberFormatType.INTEGER)
-
-    if aggregation in ("count", "count_distinct", "count_distinct_approx"):
-        return NumberFormat(type=NumberFormatType.INTEGER)
-
-    if aggregation in ("avg", "weighted_avg", "median"):
+    if cls is AggregationValueClass.FLOAT_PLAIN:
         return NumberFormat(type=NumberFormatType.FLOAT)
 
-    # sum, min, max, first, last: inherit from source column's format
     source_col = model.get_column(measure_name)
     if source_col and source_col.format:
         return source_col.format
-
+    if cls is AggregationValueClass.FLOAT_SOURCE_UNITS:
+        return NumberFormat(type=NumberFormatType.FLOAT)
     return None
 
 
@@ -203,9 +202,9 @@ def _measure_format(
     """Number format for a measure slot.
 
     Aggregate slots inherit via ``_infer_aggregated_format`` (INTEGER for
-    count(-distinct) / star, FLOAT for avg-family, source-column format for
-    sum/min/max). Transform / arithmetic / scalar-call slots default to FLOAT,
-    matching the legacy ``EnrichedQuery`` expression/transform handling.
+    count(-distinct) / star, plain FLOAT for corr / var / covar, source format
+    for the avg-family / percentile / stddev and for sum / min / max).
+    Transform / arithmetic / scalar-call slots default to FLOAT.
     """
     key = slot.key
     if isinstance(key, AggregateKey):

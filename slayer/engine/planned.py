@@ -23,7 +23,8 @@ yet. Stage 7b's engine cutover routes through them.
 
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
+from enum import Enum
+from typing import Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -61,10 +62,15 @@ __all__ = [
     "BoundExpr",
     "BoundFilterId",
     "CrossModelAggregatePlan",
+    "EmptyBaseGrainPlan",
     "FilterPhase",
+    "FilterReachability",
     "JoinRequirement",
     "OrderEntry",
+    "OrderScope",
     "PlannedQuery",
+    "RankedAggregatePlan",
+    "RankedGrainMember",
     "SlotId",
     "TransformLayer",
     "ValueSlot",
@@ -182,8 +188,15 @@ class CrossModelAggregatePlan(BaseModel):
       table row: cross-model agg-ref on the same target).
     - ``target_model_filters`` — the target model's own
       ``SlayerModel.filters`` (always-applied WHERE).
-    ``applied_filter_ids`` is the audit union of where + having for
-    backward compatibility with the spec's external surface.
+
+    ``applied_filter_ids`` is the AUDIT: which host filters some scope
+    evaluates. On the forward path that is exactly ``where ∪ having``. On a
+    RE-ROOTED plan the two diverge on purpose — ``rerooted_plan`` carries the
+    filters itself, and there is no forward CTE to route to, so where/having
+    are empty while the audit still records them. The distinction matters
+    because where/having are also an instruction to the host base to SKIP the
+    filter; a re-rooted CTE duplicates a host-evaluable predicate rather than
+    relocating it, so the host must keep applying it (DEV-1747 B6).
 
     ``hidden=True`` is used for order-only / filter-only refs whose
     aggregate value is materialised but not surfaced in the public
@@ -319,6 +332,87 @@ class SrcFilterRewrite(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# RankedAggregatePlan — DEV-1748
+# ---------------------------------------------------------------------------
+
+
+class RankedGrainMember(BaseModel):
+    """One member of a ranked aggregate's grain, in BOTH coordinate systems.
+
+    ``host_slot_id`` names the host row slot the CTE joins back to;
+    ``ranked_key`` is the same value anchored in the RANKED scope, which for a
+    target-rooted plan is a different expression against a different root.
+
+    Carried as one list because the renderer derives two things from it that
+    must agree: the ``PARTITION BY`` the ranking runs over, and the join-back
+    predicate. Deriving them separately is how a partition and a grain drift
+    apart — and a partition COARSER than the grain silently returns more than
+    one row per group, which the LEFT JOIN then multiplies into the host.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    host_slot_id: SlotId
+    ranked_key: ValueKey
+
+
+class RankedAggregatePlan(BaseModel):
+    """Plan for one ``first`` / ``last`` aggregate slot (DEV-1748, B9).
+
+    A ranked aggregate needs its OWN ROW ORDERING, which is one of the three
+    things P-C says an aggregate can need its own rows for — so like a crossing
+    aggregate (``_cm_``) and a windowed one (``_wm_``) it compiles to a
+    plan-shaped CTE rooted where its rows live and joined back on the query
+    grain null-safely. The host base keeps only purely-local aggregates, so
+    adding a first/last cannot change host cardinality.
+
+    It replaces a shape that did the opposite: ONE first/last anywhere wrapped
+    the entire host base in a ``ROW_NUMBER`` subquery, so every sibling
+    aggregate in the query was computed over the ranked row set, and several
+    rankings shared one scope — which is what the retired rn-suffix scheme
+    (``_last_rn_2``) and the filtered sentinel columns (``_last_rn_f0`` plus a
+    ``_match_f0`` flag consulted by alias) existed to disambiguate. One
+    aggregate per CTE removes the need for all of it.
+
+    ``ranking_time_key`` is resolved at PLAN time (P-D) and anchored in the
+    ranked scope's coordinates; the renderer emits it and never re-derives the
+    precedence. A measure's ``Column.filter`` is not carried here — it lives on
+    the aggregate's own key, and the renderer applies it as a predicate inside
+    this CTE, which is what "filtered variants are plan data" means.
+
+    Filter routing uses the same vocabulary, and the same audit-versus-
+    instruction distinction, as ``CrossModelAggregatePlan``: ``where`` and
+    ``having`` are instructions about where a filter is EVALUATED, while
+    ``applied_filter_ids`` only records that some scope evaluates it.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    aggregate_slot_id: SlotId
+    #: ``first`` ranks ascending, ``last`` descending. The direction is not a
+    #: separate field because it is not a separate decision.
+    agg: Literal["first", "last"]
+    #: The model the ranked rows come FROM — the host for a local aggregate,
+    #: the join target for a cross-model one.
+    root_model: str
+    datasource: str
+    #: The host-relative join path to ``root_model``; empty when host-rooted.
+    target_path: Tuple[str, ...] = ()
+    join_chain: List[JoinRequirement] = Field(default_factory=list)
+    ranking_time_key: ValueKey
+    grain: List[RankedGrainMember] = Field(default_factory=list)
+    where_filter_ids: List[BoundFilterId] = Field(default_factory=list)
+    having_filter_ids: List[BoundFilterId] = Field(default_factory=list)
+    applied_filter_ids: List[BoundFilterId] = Field(default_factory=list)
+    target_model_filters: List[str] = Field(default_factory=list)
+    dropped_filter_warnings: List[UnreachableFilterDroppedWarning] = Field(
+        default_factory=list,
+    )
+    public_alias: Optional[str] = None
+    hidden: bool = False
+
+
+# ---------------------------------------------------------------------------
 # TransformLayer
 # ---------------------------------------------------------------------------
 
@@ -358,15 +452,14 @@ class FilterPhase(BaseModel):
       walks the typed value-key tree.
     * ``text`` is a Mode-A SQL fragment — used for
       ``SlayerModel.filters`` (always-applied WHERE). The renderer
-      qualifies bare-identifier column refs in ``text_columns`` with
-      the source-relation alias and emits the result verbatim
-      (matching legacy ``_build_where_and_having`` qualification).
+      enters it through the source scope's Mode-A door, which
+      qualifies bare-identifier column refs and discovers crossed
+      joins as a side effect of rendering.
     """
 
     id: BoundFilterId
     phase: Phase
     text: Optional[str] = None
-    text_columns: Tuple[str, ...] = ()
     expression: Optional[BoundExpr] = None
 
 
@@ -375,25 +468,106 @@ class FilterPhase(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class OrderScope(str, Enum):
+    """WHERE the ordered value lives — the one thing a renderer needs to know
+    to build a sort term (DEV-1747 §5.10).
+
+    Every render site used to re-derive this, and they disagreed: one
+    dispatched on the slot KIND, one ran a five-way precedence chain over
+    alias maps, and one knew about neither. Naming the producing scope in the
+    plan is what lets a single resolver replace all of them (P-D).
+    """
+
+    #: Materialised in ``_base`` and projected publicly.
+    HOST_BASE = "host_base"
+    #: Materialised in ``_base`` but trimmed from the public projection —
+    #: an order-only aggregate or an unprojected host dimension.
+    HOST_BASE_HIDDEN = "host_base_hidden"
+    #: Lives in a cross-model / host-rooted isolated (``_cm_``) CTE.
+    CROSS_MODEL_CTE = "cross_model_cte"
+    #: Lives in a windowed (``_wm_``) CTE.
+    WINDOWED_CTE = "windowed_cte"
+    #: Lives in a ranked (``_rk_``) first/last CTE.
+    RANKED_CTE = "ranked_cte"
+    #: Produced by a step of the transform chain.
+    TRANSFORM_STEP = "transform_step"
+    #: A composite whose operands span scopes, so it can only be evaluated in
+    #: the outer combined SELECT — never inside ``_base``.
+    OUTER_COMPOSITE = "outer_composite"
+
+
 class OrderEntry(BaseModel):
-    """One entry in the ORDER BY of a planned query."""
+    """One entry in the ORDER BY of a planned query.
+
+    ``scope`` and ``phase`` are REQUIRED and have no default: a planner path
+    that forgets to classify must fail at construction rather than fall through
+    to the ``_base.``-qualified branch, which is how an order term silently
+    attached to the wrong scope.
+    """
 
     slot_id: SlotId
-    direction: str  # "asc" or "desc"
-
-    @field_validator("direction")
-    @classmethod
-    def _validate_direction(cls, v: str) -> str:
-        if v not in ("asc", "desc"):
-            raise ValueError(
-                f"OrderEntry.direction must be 'asc' or 'desc', got {v!r}"
-            )
-        return v
+    direction: Literal["asc", "desc"]
+    scope: OrderScope
+    phase: Phase
+    #: Null-ordering policy. ``"default"`` is NULLs last, which is what SLayer
+    #: means by unstated on every dialect — a semantic layer whose NULLs sort
+    #: first on SQLite and last on Postgres answers the same question two ways.
+    #: The dialect strategy owns the SPELLING (P-H) — an explicit clause, an
+    #: emulation, or T-SQL's native pin where the emulation does not run — so
+    #: no render site emits a NULLS clause of its own.
+    nulls: Literal["default", "first", "last"] = "default"
 
 
 # ---------------------------------------------------------------------------
 # PlannedQuery
 # ---------------------------------------------------------------------------
+
+
+class FilterReachability(BaseModel):
+    """DEV-1745 (W4 / D9) — one filter's structural reachability summary.
+
+    ``crossed_join_paths`` is every join path the filter's dependency tree is
+    anchored at, in THIS plan's coordinate system. ``has_host_local_ref`` marks
+    a dependency anchored at the plan's own root, which cannot be evaluated
+    inside a CTE rooted elsewhere.
+
+    Carried per filter on the owning ``PlannedQuery`` rather than on
+    ``ColumnSqlKey`` (interned, and rerooting copies unknown fields through
+    stale) or ``ValueSlot`` (slot-less filter-only keys are silently skipped,
+    and slots are copied into nested plans).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    filter_id: BoundFilterId
+    crossed_join_paths: Tuple[Tuple[str, ...], ...] = ()
+    has_host_local_ref: bool = False
+
+
+class EmptyBaseGrainPlan(BaseModel):
+    """The host base has no columns of its own (DEV-1503, §5.12).
+
+    Set when every projected value is an isolated aggregate — no host row
+    slots, no host-local aggregates — so ``_base`` has nothing to project and
+    becomes a one-row spine for the combined ``CROSS JOIN`` to hang off. Its
+    PRESENCE is the discriminator; there is no ``grain_slot_ids`` field because
+    in this shape the grain is empty by definition, which is precisely why the
+    join-back degenerates to a CROSS JOIN.
+
+    ``host_filter_ids`` are the ROW-phase filters that stay host-local (not
+    routed into a ``_cm_*`` CTE or the outer WHERE). When any exist the spine is
+    emitted as ``SELECT 1 AS _placeholder FROM <host> WHERE ... LIMIT 1``;
+    otherwise as a bare ``SELECT 1 AS _placeholder`` with no FROM at all.
+
+    The ``LIMIT 1`` is load-bearing rather than an optimisation: the filtered
+    form keeps the host FROM so the WHERE can gate the result, but a host FROM
+    yields N rows and CROSS JOINing N rows to a one-row scalar aggregate would
+    repeat the answer N times. ``LIMIT 1`` collapses the spine to a single row
+    while an empty match still yields zero rows overall. The unfiltered form
+    drops the FROM entirely for the same reason.
+    """
+
+    host_filter_ids: List[BoundFilterId] = Field(default_factory=list)
 
 
 class PlannedQuery(BaseModel):
@@ -416,6 +590,13 @@ class PlannedQuery(BaseModel):
     aggregate_slots: List[ValueSlot] = Field(default_factory=list)
     cross_model_aggregate_plans: List[CrossModelAggregatePlan] = Field(default_factory=list)
     windowed_aggregate_plans: List["WindowedAggregatePlan"] = Field(default_factory=list)
+    # DEV-1748 (B9) — one entry per ``first`` / ``last`` aggregate slot. A
+    # sibling of ``windowed_aggregate_plans``: both name aggregates that need
+    # their own rows and therefore their own CTE, joined back on the query
+    # grain (P-C). A RE-ROOTED cross-model first/last is NOT here — it stays on
+    # ``CrossModelAggregatePlan``, whose nested sub-plan carries the ranked plan
+    # instead, in the sub-plan's own coordinate system.
+    ranked_aggregate_plans: List["RankedAggregatePlan"] = Field(default_factory=list)
     combined_expression_slots: List[ValueSlot] = Field(default_factory=list)
     transform_layers: List[TransformLayer] = Field(default_factory=list)
     filters_by_phase: List[FilterPhase] = Field(default_factory=list)
@@ -454,6 +635,82 @@ class PlannedQuery(BaseModel):
     # equality-joined into ``_src`` (``_build_windowed_plans`` skips them), so
     # stripping a bound on one would leave that axis unconstrained.
     frame_bound_columns: List[ValueKey] = Field(default_factory=list)
+    # DEV-1745 (W3 / P-D) — ids of the AGGREGATE-phase filters that must be
+    # applied as a plain WHERE on the OUTER combined SELECT rather than as
+    # HAVING inside a ``_cm_*`` CTE (DEV-1503).
+    #
+    # A filtered-local ISOLATED aggregate lives in a CTE that LEFT JOINs back
+    # to ``_base``. Applying the comparison as HAVING inside that CTE drops CTE
+    # rows, but the LEFT JOIN then resurfaces the host row with a NULL
+    # aggregate — the wrong semantic. On the outer, non-aggregating SELECT the
+    # same comparison drops the row.
+    #
+    # Decided HERE because it is a routing decision, not an emission detail:
+    # the generator used to re-walk ``filters_by_phase`` at render time to
+    # rediscover it, which is policy chosen during emission. The generator now
+    # reads this field and never re-derives it, so clearing the field removes
+    # the outer WHERE.
+    outer_where_filter_ids: List[BoundFilterId] = Field(default_factory=list)
+    # DEV-1745 (W4 / D9) — per-filter structural reachability, in THIS plan's
+    # coordinate system. Recomputed for every plan (including the nested
+    # rerooted plan a cross-model CTE compiles), never copied down from a
+    # parent: the paths only mean anything relative to the root they were
+    # anchored at. Read via ``filter_reachability_for``.
+    filter_reachability: List[FilterReachability] = Field(default_factory=list)
+    # DEV-1746 (§5.12) — set when the host base has no columns of its own and
+    # is emitted as a one-row placeholder spine. Decided at plan time; the
+    # generator consumes it and never re-derives the shape.
+    empty_base_plan: Optional[EmptyBaseGrainPlan] = None
+
+    @model_validator(mode="after")
+    def _projection_is_public_and_well_formed(self) -> "PlannedQuery":
+        """``projection`` is the ONE authoritative public column list (§5.2).
+
+        Every renderer consumes it verbatim, which is what makes hidden-slot
+        trimming the absence of a step rather than a step. Two ways that could
+        break, both checked here rather than discovered as wrong SQL:
+
+        * a HIDDEN slot appearing in it — hidden slots carry no public name, so
+          the renderer would have nothing to alias the column as;
+        * a slot appearing MORE times than it has declared names. A slot may
+          legitimately repeat: C13 lets one key be selected under several user
+          names, and the plan lists it once per name, each occurrence consuming
+          the next alias. One occurrence too many means a column emitted twice
+          under the same name.
+        """
+        by_id = {
+            slot.id: slot
+            for slot in (
+                list(self.row_slots)
+                + list(self.aggregate_slots)
+                + list(self.combined_expression_slots)
+            )
+        }
+        counts: Dict[SlotId, int] = {}
+        for sid in self.projection:
+            counts[sid] = counts.get(sid, 0) + 1
+        for sid, count in counts.items():
+            slot = by_id.get(sid)
+            if slot is None:
+                # Slot tables can legitimately be partial in nested plans; the
+                # renderer resolves what it needs. Only slots we can SEE are
+                # checked, so this validator never rejects a plan for a reason
+                # it cannot substantiate.
+                continue
+            if slot.hidden:
+                raise ValueError(
+                    f"hidden slot {sid!r} appears in the public projection; "
+                    f"hidden slots carry no public name and must be absent",
+                )
+            declared = len(slot.public_aliases) or (1 if slot.public_name else 0)
+            if declared and count > declared:
+                raise ValueError(
+                    f"slot {sid!r} appears {count} times in the public "
+                    f"projection but declares only {declared} public name(s) "
+                    f"{list(slot.public_aliases) or [slot.public_name]!r} — "
+                    f"the extra occurrence would emit a duplicate column",
+                )
+        return self
 
 
 # ``CrossModelAggregatePlan.rerooted_plan`` is a forward reference to

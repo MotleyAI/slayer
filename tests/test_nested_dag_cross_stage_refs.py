@@ -1299,7 +1299,9 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
         hidden ``:max`` over the stage column and orders on that alias.
 
         The stage boundary is the point of this test: the wrap must resolve
-        against the ``s1`` rowset (``MAX(s1.customers__revenue_sum)``), never
+        against the ``s1`` rowset (``MIN(s1.customers__revenue_sum)`` — the
+        order defaults to ASC and DEV-1747 D10 made the wrap direction-aware),
+        never
         reach back into s1's own source tables, and must not widen the outer
         grain or leak into the public projection."""
         engine, tmp = await _engine_with_join_chain()
@@ -1319,12 +1321,12 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             sql = " ".join(resp.sql.split())
             # Wrapped against the STAGE rowset, not s1's underlying tables.
-            assert "MAX(s1.customers__revenue_sum)" in sql, sql
+            assert "MIN(s1.customers__revenue_sum)" in sql, sql
             # Outer grain unchanged, wrap trimmed from the public projection.
             assert "GROUP BY s1.customers__regions__name" in sql, sql
-            assert 'ORDER BY "s1.customers__revenue_sum_max"' in sql, sql
+            assert 'ORDER BY "s1.customers__revenue_sum_min"' in sql, sql
             outer_select = sql.rsplit(") AS _outer", 1)[0].rsplit("SELECT", 1)[0]
-            assert "customers__revenue_sum_max" not in outer_select.split(
+            assert "customers__revenue_sum_min" not in outer_select.split(
                 "FROM ("
             )[0], sql
         finally:

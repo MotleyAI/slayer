@@ -220,13 +220,23 @@ class TestWindowedMeasureValues:
         assert result.row_count == 1, result.data
         assert float(result.data[0][_key(result.data[0], "rev_90d")]) == 900.0, result.data
 
-    async def test_null_dimension_group_gets_null_windowed_value(
+    async def test_null_dimension_group_gets_its_real_windowed_value(
         self, windowed_engine: SlayerQueryEngine,
     ) -> None:
-        """A base group whose dimension value is NULL never matches ``_src`` rows
-        — the CTE join-back uses plain ``=`` and ``NULL = NULL`` is not TRUE — so
-        its windowed value comes back NULL. Documented consequence of the
-        equality join-back (the F1-style pinned semantic), not a bug."""
+        """A base group whose dimension is NULL receives its REAL windowed value.
+
+        This used to come back NULL, and was pinned as a documented consequence:
+        the ``_src`` join-back inside the ``_wm_`` CTE compared the grain with a
+        plain ``=``, and ``NULL = NULL`` is not TRUE, so the group matched no
+        rows. The outer join-back and the cross-model join-back were already
+        null-safe, so the answer depended on which isolation shape a measure
+        landed in. The inner comparison is now null-safe too, which is what makes
+        the value appear.
+
+        Executed against real engines because this is a VALUE change, not a
+        spelling one — and the two dialects spell null-safe equality differently
+        (``IS NOT DISTINCT FROM`` on DuckDB, bare ``IS`` on SQLite).
+        """
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="region")],
@@ -238,8 +248,16 @@ class TestWindowedMeasureValues:
         result = await windowed_engine.execute(query=query)
         null_rows = [r for r in result.data if r[_key(r, "region")] is None]
         assert null_rows, result.data
-        for r in null_rows:
-            assert r[_key(r, "rev_90d")] is None, r
+        by_month = {
+            str(r[_key(r, "created_at")])[:7]: float(r[_key(r, "rev_90d")])
+            for r in null_rows
+        }
+        # The NULL-region rows are 300 (2024-02-15) and 400 (2024-03-15).
+        # February's 90-day window reaches back over 300 only; March's reaches
+        # back over both, so the two months differ and neither matches the
+        # single-month sum by accident.
+        assert by_month.get("2024-02") == 300.0, result.data
+        assert by_month.get("2024-03") == 700.0, result.data
         # Sanity: a non-NULL dimension group still computes a real rolling value
         # (the US rows, both in January, roll up to 300).
         us_rows = [r for r in result.data if r[_key(r, "region")] == "US"]
@@ -408,20 +426,20 @@ class TestHiddenOrderOnlyWindowedValues(object):
     async def test_order_only_windowed_region_grain_discriminates(
         self, windowed_engine: SlayerQueryEngine,
     ) -> None:
-        """The assertion a plain-``SUM`` regression cannot satisfy under ANY
-        tie-break, and the NULL join-back semantic in one.
+        """The ROLLING value drives the sort on a grain with a NULL dimension.
 
-        On the ``region`` + month grain the groups are (US, Jan), (NULL, Feb),
-        (NULL, Mar). A NULL-dimension group never matches ``_src`` (the
-        join-back is an equality and ``NULL = NULL`` is not TRUE), so its
-        ROLLING value is NULL — pinned by
-        ``test_null_dimension_group_gets_null_windowed_value``. The rolling
-        values are therefore ``US/Jan = 300`` and NULL for both others, so
-        ``DESC`` puts the US row first on every engine that sorts NULLs last.
+        This test used to discriminate through the NULL group's value being
+        NULL: rolling gave ``US/Jan = 300`` and NULL elsewhere, while a plain
+        ``SUM`` gave ``NULL/Mar = 400`` first, so the two orderings could not
+        coincide. Now that the ``_src`` join-back is null-safe the NULL groups
+        carry real rolling values (Feb 300, Mar 700), and on THIS seed the
+        rolling and plain-sum orderings agree — so the ordering alone no longer
+        proves the window survived.
 
-        The PLAIN sums are US/Jan 300, NULL/Feb 300, NULL/Mar 400 — all
-        non-NULL — so a plain-sum regression puts the NULL/Mar row (400) first.
-        The two orderings cannot coincide.
+        The discrimination is therefore structural as well: the ORDER BY must
+        reference the windowed CTE's column. A plain-``SUM`` regression (the
+        DEV-1733 defect, where the window was silently dropped) emits no ``_wm_``
+        CTE at all, so it cannot satisfy that no matter how the rows tie.
         """
         query = SlayerQuery(
             source_model="orders",
@@ -432,16 +450,27 @@ class TestHiddenOrderOnlyWindowedValues(object):
             measures=[{"formula": "id:count", "name": "n"}],
             order=[{"column": "revenue:sum(window='90d')", "direction": "desc"}],
         )
+        sql = (await windowed_engine.execute(query=query, dry_run=True)).sql or ""
+        assert "_wm_" in sql, (
+            f"no windowed CTE was emitted — the window was dropped and the "
+            f"ORDER BY is over a plain SUM:\n{sql}"
+        )
+        order_at = sql.rfind("ORDER BY")
+        assert order_at != -1, sql
+        assert "_wm_" in sql[order_at:], (
+            f"the ORDER BY does not reference the windowed CTE:\n{sql}"
+        )
+
         result = await windowed_engine.execute(query=query)
         regions = [r[_key(r, "region")] for r in result.data]
         assert len(regions) == 3, result.data
-        assert regions[0] == "US", (
-            f"the US/Jan group is the only one with a non-NULL ROLLING value, "
-            f"so it must sort first; a plain SUM would lead with the NULL/Mar "
-            f"group (400). got: {regions}\nrows: {result.data}"
+        # Rolling values: US/Jan 300, NULL/Feb 300, NULL/Mar 700 -> Mar leads.
+        assert regions[0] is None, (
+            f"the NULL/Mar group has the largest ROLLING value (700, its own "
+            f"400 plus February's 300 inside the 90-day window), so it must "
+            f"sort first. got: {regions}\nrows: {result.data}"
         )
-        assert regions[1] is None, result.data
-        assert regions[2] is None, result.data
+        assert set(regions[1:]) == {"US", None}, result.data
         assert all("90d" not in c for c in result.columns), result.columns
 
 

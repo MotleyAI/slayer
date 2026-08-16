@@ -13,7 +13,7 @@ fields use class-level defaults (``sqlglot_name: str = "postgres"``).
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, Optional
 from collections.abc import Callable
 
 from pydantic import BaseModel, ConfigDict
@@ -211,11 +211,83 @@ class SqlDialect(BaseModel):
 
         Base (Postgres-family) uses sqlglot's ``NullSafeEQ`` → ``IS NOT DISTINCT
         FROM``, which sqlglot also transpiles correctly for DuckDB / Snowflake /
-        BigQuery / Trino / Databricks / ClickHouse. MySQL overrides to ``<=>``;
-        SQLite to bare ``IS``; dialects with no native form (T-SQL / Oracle /
+        BigQuery / Trino / Databricks / ClickHouse — and for MySQL, where it
+        emits ``<=>``. MySQL therefore needs no override here (an earlier
+        version of this docstring claimed one existed). ``SqliteDialect``
+        overrides to bare ``IS``; dialects with no native form (T-SQL / Oracle /
         Redshift) to the expanded ``a = b OR (a IS NULL AND b IS NULL)``.
         """
         return exp.NullSafeEQ(this=left, expression=right)
+
+    # ------------------------------------------------------------------
+    # ORDER BY term construction (DEV-1747 D5 / P-H)
+    # ------------------------------------------------------------------
+
+    def build_ordered(
+        self,
+        order_col: exp.Expression,
+        *,
+        descending: bool,
+        nulls: Literal["default", "first", "last"] = "default",
+    ) -> exp.Ordered:
+        """Build one ``ORDER BY`` term with its null-ordering policy applied.
+
+        The single place any render site turns a resolved column plus a
+        direction into an ``exp.Ordered`` (P-H). It previously lived on the
+        generator as ``_ordered``, which meant the combined and transform-chain
+        paths — which built their own ``exp.Ordered`` — silently skipped it.
+
+        ``nulls="default"`` leaves ``nulls_first`` unset, which sqlglot renders
+        as **nulls last on every dialect** — an explicit ``NULLS LAST`` where
+        the native default differs and the syntax exists, a ``CASE WHEN <col>
+        IS NULL …`` emulation where it does not (MySQL / SQLite). That
+        uniformity is the point: a semantic layer whose NULLs sort first on
+        SQLite and last on Postgres answers the same question two ways.
+
+        T-SQL is the one exception and overrides this, because its emulation
+        does not merely look different — the bracketed alias inside the CASE
+        re-resolves against the FROM scope and the statement fails.
+
+        ``"first"`` / ``"last"`` are an explicit intent and are honoured as
+        asked, emulation included — that is the only way to express them on a
+        dialect with no NULLS syntax.
+        """
+        kwargs: dict = {"this": order_col, "desc": descending}
+        if nulls == "first":
+            kwargs["nulls_first"] = True
+        elif nulls == "last":
+            kwargs["nulls_first"] = False
+        return exp.Ordered(**kwargs)
+
+    def native_nulls_first(self, *, descending: bool) -> bool:
+        """Where NULLs sort in this dialect's OWN ordering for ``descending``.
+
+        Setting ``nulls_first`` to this value is what makes sqlglot emit a bare
+        ``ORDER BY``: no NULLS clause, no ``CASE WHEN … IS NULL`` emulation.
+        That is wanted for orderings that are internal machinery rather than a
+        user-visible sort — a window frame's ``OVER (ORDER BY …)``, where an
+        emulation term would change which rows the frame covers.
+
+        Read from the same dialect class that GENERATES the clause, for the
+        same reason :func:`_sqlglot_backslash_escapes` reads the tokenizer: a
+        hand-kept table would silently disagree with the emitter, and the
+        symptom is a wrong sort rather than an error.
+        """
+        ordering = getattr(
+            _SqlglotDialect.get_or_raise(self.sqlglot_name),
+            "NULL_ORDERING", None,
+        )
+        if ordering == "nulls_are_last":
+            return False
+        if ordering == "nulls_are_small":
+            return not descending
+        if ordering == "nulls_are_large":
+            return descending
+        raise RuntimeError(
+            f"Cannot derive the native null ordering for sqlglot dialect "
+            f"{self.sqlglot_name!r}: NULL_ORDERING is {ordering!r}. A sqlglot "
+            f"upgrade may have changed this API.",
+        )
 
     @staticmethod
     def _expanded_null_safe_eq(
@@ -451,6 +523,33 @@ class SqlDialect(BaseModel):
         """
         return tree
 
+    def apply_pagination(
+        self,
+        select: exp.Select,
+        *,
+        limit: Optional[int],
+        offset: Optional[int],
+    ) -> exp.Select:
+        """Apply LIMIT/OFFSET to a completed ``SELECT`` (P-H).
+
+        The single place pagination is expressed. Every render path routes
+        here, so a dialect that spells pagination differently is handled once
+        rather than per path — the cross-model combined statement used to append
+        raw ``LIMIT``/``OFFSET`` text and emitted literal ``LIMIT`` on SQL
+        Server, while the same query carrying a transform layer went through the
+        outer wrap and came out correct.
+
+        Setting the bounds on the ``Select`` is what makes transposition work:
+        sqlglot rewrites them per dialect only when generating the wrapping
+        SELECT, never from a free-standing ``Limit`` node.
+        """
+        out = select
+        if limit is not None:
+            out = out.limit(limit)
+        if offset is not None:
+            out = out.offset(offset)
+        return out
+
     def emit_outer_wrap(
         self,
         *,
@@ -464,13 +563,14 @@ class SqlDialect(BaseModel):
         """Emit the DEV-1444 outer-projection wrap around ``inner_sql``.
 
         Contract: ``inner_sql`` is the inner SELECT with **trailing
-        pagination already detached** (``SQLGenerator._build_outer_wrap``
-        owns the strip). ``order`` / ``limit`` / ``offset_arg`` are the
-        detached sqlglot AST nodes the caller pulled off the inner; the
-        hook re-emits them on the outer statement.
+        pagination already detached** (the planned outer-wrap path,
+        ``SQLGenerator._emit_planned_outer_wrap``, owns it — pagination
+        arrives as detached AST from the plan). ``order`` / ``limit`` /
+        ``offset_arg`` are the detached sqlglot AST nodes the caller pulled
+        off the inner; the hook re-emits them on the outer statement.
 
         ``parse`` is the generator's ``_parse`` callback when the
-        generator is the caller (``SQLGenerator._build_outer_wrap``).
+        generator is the caller (``SQLGenerator._emit_planned_outer_wrap``).
         T-SQL needs it to preserve SLayer-specific AST rewrites (LOG10/
         LOG2 alias preservation, SQLite JSONExtract function-form) when
         the override re-parses ``inner_sql`` to detach the WITH clause.
@@ -528,8 +628,8 @@ class SqlDialect(BaseModel):
         generator output.
 
         Symmetric companion to ``rewrite_parsed_ast`` (the input-side
-        hook): write-side, applied at the end of
-        ``SQLGenerator.generate()`` AFTER ``_apply_outer_projection_trim``.
+        hook): write-side, applied at the end of the generator's terminal
+        SQL emit (``generate_planned_stages``).
 
         Contract: preserve query semantics. Suitable for alias renames,
         identifier mangling/escape, dialect-quoting fixes. Do NOT change

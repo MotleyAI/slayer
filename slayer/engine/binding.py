@@ -54,6 +54,7 @@ from slayer.core.enums import (
 )
 from slayer.core.keys import (
     SCALAR_FUNCTIONS,
+    check_scalar_arity,
     AggregateKey,
     ArithmeticKey,
     BetweenKey,
@@ -505,6 +506,19 @@ def _bind_in(
         LiteralKey(value=normalize_scalar(elt.value))
         for elt in parsed.right.elements
     )
+    # SQL's three-valued logic makes a NULL in the list a trap rather than a
+    # member test. ``col IN (a, NULL)`` never matches on the NULL, and
+    # ``col NOT IN (a, NULL)`` evaluates to NULL for EVERY row — so the filter
+    # silently returns zero rows instead of "everything except a". Neither is
+    # what the author meant, and neither announces itself.
+    if any(v.value is None for v in values):
+        raise ValueError(
+            f"NULL is not allowed inside an {parsed.op!r} list: SQL compares "
+            f"it by three-valued logic, so 'not in' with a NULL matches NO "
+            f"rows at all. Test for null separately — e.g. "
+            f"`col is null` / `col is not null` — combined with the "
+            f"{parsed.op!r} over the non-null values."
+        )
     return InKey(
         column=column,
         values=values,
@@ -828,8 +842,7 @@ def _bind_agg(
     column_filter_key = _resolve_column_filter_key(
         source=source, bundle=bundle,
     )
-    # Codex review: enforce per-column aggregation eligibility gates
-    # the legacy enrichment site at ``enrichment.py:401-417`` enforced.
+    # Codex review: enforce the per-column aggregation eligibility gates.
     # Without this, ``id:sum`` (a PK) or ``status:avg`` (text) compile
     # silently in the typed pipeline. The check is best-effort against
     # the bundle — sources whose target model can't be resolved (e.g.
@@ -939,7 +952,7 @@ def _validate_agg_eligibility(
     token exactly matches a custom aggregation registered on the owning model,
     so a custom ``countd`` wins over the ``countd -> count_distinct`` alias.
 
-    Gate order (mirrors the legacy ``enrichment.py`` v2 contract):
+    Gate order (the binding contract):
 
     0. Unknown-name-first: a name that is neither a built-in nor a model
        custom aggregation raises ``"Unknown aggregation ..."`` **before** the
@@ -1285,11 +1298,20 @@ def _bind_scalar(
                 f"{sorted(SCALAR_FUNCTIONS)}."
             ),
         )
-    if parsed.name == "like" and len(parsed.args) != 2:
-        raise ValueError(
-            f"Scalar function 'like' takes exactly 2 arguments "
-            f"(value, pattern); got {len(parsed.args)}."
-        )
+    # Arity for EVERY allowlisted scalar, not just like. sqlglot's own
+    # handling is inconsistent — a wrong-arity round silently drops the
+    # extra argument, length emits SQL the database rejects — so a
+    # mistyped filter deserves a clear error here instead.
+    arity_error = check_scalar_arity(
+        name=parsed.name, argc=len(parsed.args),
+    )
+    if arity_error is not None:
+        if parsed.name == "like":
+            raise ValueError(
+                f"Scalar function 'like' takes exactly 2 arguments "
+                f"(value, pattern); got {len(parsed.args)}."
+            )
+        raise ValueError(arity_error)
     args = tuple(
         _bind(a, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map)
         for a in parsed.args

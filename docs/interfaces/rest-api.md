@@ -68,9 +68,25 @@ Response:
     {"orders.status": "pending", "orders._count": 15}
   ],
   "row_count": 2,
-  "columns": ["orders.status", "orders._count"]
+  "columns": ["orders.status", "orders._count"],
+  "warnings": []
 }
 ```
+
+`warnings` carries advisories about the query itself; it is `[]` for a clean
+query. Every entry has a `kind` discriminator — switch on it rather than on the
+presence of a field:
+
+| `kind` | Meaning | Extra fields |
+| -- | -- | -- |
+| `normalization` | The input was rewritten to canonical form | `rule_id`, `original`, `normalized`, `location`, `rule_doc_url` (nullable) |
+| `unreachable_filter_dropped` | A filter could not be applied inside a cross-model CTE and was dropped from it (it still applies at the host) | `filter_text`, `location`, `reason` |
+
+The filter still applies to the host's own rows; it is dropped only from the
+cross-model CTE, whose aggregate is therefore computed without it. That measure
+can come back wider than the filter implies — and where it feeds a `HAVING`,
+`ORDER BY`, or pagination, that can change which rows surface — so it is worth
+surfacing to whoever wrote the query.
 
 ### Models
 

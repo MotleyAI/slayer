@@ -36,7 +36,6 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
-from slayer.engine.cross_model_planner import _local_agg_formula
 from slayer.engine.planned import CrossModelAggregatePlan
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import plan_query
@@ -671,17 +670,20 @@ class TestHostModelFiltersInteractions:
 
 
 class TestFirstLastNoNestedCmaPlans:
-    """``_build_base_select_for_planned`` raises NotImplementedError when
-    ``skip_cross_model_aggs=True`` AND any local first/last aggregate is in
-    base_render_order. The isolated filtered-local first/last case routes
-    through that combination — so the host-rooted sub-plan MUST NOT contain
-    any nested cross-model aggregate plans, or the renderer crashes.
+    """A filtered-local first/last isolates FLATLY — one ranked plan, no nested
+    sub-plan at all.
 
-    Pin this structurally on the sub-plan; the rendering test that proves
-    the SQL emits ``_last_rn`` inside the _cm_ CTE lives in
-    ``test_sql_generator.py::TestIsolatedFilteredMeasureCTEs``."""
+    It used to be a host-rooted ``_cm_`` plan wrapping a re-rooted sub-plan that
+    carried the ranking, and this class pinned the one thing that made that
+    legal: the sub-plan had to contain no nested cross-model plan of its own, or
+    the generator hit ``first/last`` + ``skip_cross_model_aggs`` and raised.
 
-    def test_filtered_local_first_last_sub_plan_is_clean(self):
+    ``RankedAggregatePlan`` removes the nesting rather than constraining it. The
+    aggregate's ``Column.filter`` is a predicate inside its own CTE, which is
+    where the crossing it introduces belongs — so there is no second plan to
+    keep clean."""
+
+    def test_filtered_local_first_last_isolates_without_nesting(self):
         host = _claim_amount(with_time=True, with_filter_first=True)
         q = SlayerQuery(
             source_model="claim_amount",
@@ -695,17 +697,17 @@ class TestFirstLastNoNestedCmaPlans:
             ],
         )
         planned = plan_query(query=q, bundle=_bundle(host))
-        assert len(planned.cross_model_aggregate_plans) == 1
-        plan = planned.cross_model_aggregate_plans[0]
-        assert plan.rerooted_plan is not None
-        # The host-rooted sub-plan carries the local first/last aggregate.
-        # It must not contain any nested cross-model aggregate plans —
-        # otherwise the generator's first/last + skip_cross_model_aggs
-        # combination would raise NotImplementedError.
-        assert plan.rerooted_plan.cross_model_aggregate_plans == [], (
-            f"Filtered-local first/last sub-plan must be clean of nested CMA plans; "
-            f"got {plan.rerooted_plan.cross_model_aggregate_plans}"
+        assert planned.cross_model_aggregate_plans == []
+        assert len(planned.ranked_aggregate_plans) == 1
+        plan = planned.ranked_aggregate_plans[0]
+        assert plan.root_model == "claim_amount"
+        assert plan.target_path == ()
+        # The measure's crossing ``Column.filter`` rides on the aggregate's own
+        # key, which this plan names — nothing about it needs a second plan.
+        slot = next(
+            s for s in planned.aggregate_slots if s.id == plan.aggregate_slot_id
         )
+        assert slot.key.column_filter_key is not None
 
 
 # ---------------------------------------------------------------------------
@@ -803,6 +805,27 @@ def _s5_plans(formula: str, *, dimensions=None, **plan_kwargs):
     return planned, planned.cross_model_aggregate_plans
 
 
+def _assert_single_ranked_host(planned) -> None:
+    """A first/last isolates through the RANKED route (DEV-1748).
+
+    Its crossing input still triggers isolation — the widened Law-3 verdict is
+    unchanged — but the kind is ranked, because needing its own ROW ORDERING is
+    the stronger reason and subsumes the crossing one. Asserted flatly: there is
+    no nested sub-plan on this route, so there is nothing to recurse into.
+    """
+    assert planned.cross_model_aggregate_plans == [], (
+        f"a ranked aggregate must not ALSO produce a cross-model plan; "
+        f"got {planned.cross_model_aggregate_plans}"
+    )
+    assert len(planned.ranked_aggregate_plans) == 1, (
+        f"Expected exactly one ranked isolation plan; "
+        f"got {planned.ranked_aggregate_plans}"
+    )
+    plan = planned.ranked_aggregate_plans[0]
+    assert plan.root_model == "orders", plan
+    assert plan.target_path == (), plan
+
+
 def _assert_single_host_rooted(plans) -> CrossModelAggregatePlan:
     assert len(plans) == 1, (
         f"Expected exactly one host-rooted isolation plan; got {len(plans)}: {plans}"
@@ -833,12 +856,49 @@ def test_aggregate_input_paths_module_exists():
     importlib.import_module("slayer.engine.aggregate_input_paths")
 
 
+class TestCrossingFirstLastStaysRanked:
+    """DEV-1709 x DEV-1748 — a first/last isolates via the RANKED route
+    whatever its inputs do: needing its own ROW ORDERING is the stronger reason
+    and subsumes the crossing one, so the classifier routes it to a ranked CTE
+    BEFORE the crossing-input branch runs. These pin that INTERACTION — a
+    crossing first/last produces ONE flat ranked host plan, not a second
+    cross-model ``_cm_`` plan — which is not redundant with the ranked-render
+    coverage.
+
+    The crossed hop is NOT visible on a host-rooted ranked plan (join_chain is
+    always ``[]``, target_path ``()``); only the ranking TIME arg surfaces it,
+    asserted below for the structural case. The crossings buried in a derived
+    ``Column.sql`` (the source and derived-time-arg cases) are pinned at the
+    RENDER level by the DEV-1748 first/last matrix and ranked-CTE tests
+    (``test_dev1748_first_last_matrix.py`` / ``test_dev1748_ranked_plan.py``)."""
+
+    def test_derived_source_first_last_stays_ranked(self):
+        planned, _ = _s5_plans("region_pay:last(orders.created_at)")
+        _assert_single_ranked_host(planned)
+
+    def test_structural_time_arg_stays_ranked(self):
+        planned, _ = _s5_plans("amount:last(customers.signup_at)")
+        _assert_single_ranked_host(planned)
+        # The one plan-level handle the crossing surfaces on: the ranking key
+        # reaches through the customers join. A non-crossing time arg has path
+        # ``()``, so this is what makes the case discriminate crossing at all.
+        assert planned.ranked_aggregate_plans[0].ranking_time_key.path == (
+            "customers",
+        )
+
+    def test_derived_time_arg_stays_ranked(self):
+        planned, _ = _s5_plans("amount:last(cross_time)")
+        _assert_single_ranked_host(planned)
+
+
 class TestWidenedLaw3TriggerCrossingInputs:
     """DEV-1709 — a LOCAL aggregate isolates host-rooted when ANY input
     crosses a join: source ``Column.sql`` (D1), positional args incl. the
     explicit time arg (D2), kwargs (typed refs, user template fragments,
     and model-default ``AggregationParam`` fragments). ``Column.filter``
-    crossing is the pre-existing DEV-1503 half, pinned above."""
+    crossing is the pre-existing DEV-1503 half, pinned above. The first/last
+    manifestations of these triggers route to the ranked CTE instead — see
+    ``TestCrossingFirstLastStaysRanked``."""
 
     # -- source Column.sql crossing (D1) ---------------------------------
 
@@ -854,20 +914,6 @@ class TestWidenedLaw3TriggerCrossingInputs:
         # doubled_pop -> pop_helper -> customers__regions: the scan must
         # expand sibling derived refs before looking for crossed paths.
         _, plans = _s5_plans("doubled_pop:sum")
-        _assert_single_host_rooted(plans)
-
-    def test_derived_source_first_last_triggers(self):
-        _, plans = _s5_plans("region_pay:last(orders.created_at)")
-        _assert_single_host_rooted(plans)
-
-    # -- positional args incl. explicit time arg (D2) --------------------
-
-    def test_structural_time_arg_triggers(self):
-        _, plans = _s5_plans("amount:last(customers.signup_at)")
-        _assert_single_host_rooted(plans)
-
-    def test_derived_time_arg_triggers(self):
-        _, plans = _s5_plans("amount:last(cross_time)")
         _assert_single_host_rooted(plans)
 
     # -- kwargs ----------------------------------------------------------
@@ -1050,71 +1096,3 @@ class TestWidenedLaw3TriggerCrossingInputs:
             f"Pathed host ROW filter must propagate into the host-rooted "
             f"sub-plan; got sub-plan filters {sub.filters_by_phase!r}"
         )
-
-
-class TestLocalAggFormulaRoundTrip:
-    """Codex plan-review F3 — ``_local_agg_formula`` is the serialize
-    boundary between the host plan and the host-rooted sub-plan. For every
-    input shape the widened trigger admits, key → formula-text → re-bind
-    must reproduce an EQUAL ``AggregateKey`` (otherwise the CTE aggregates
-    something other than what the host query asked for)."""
-
-    @staticmethod
-    def _harvest_key(formula: str) -> AggregateKey:
-        q = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": formula, "name": "m0"}],
-        )
-        planned = plan_query(query=q, bundle=_s5_bundle())
-        for slot in planned.aggregate_slots:
-            if isinstance(slot.key, AggregateKey):
-                return slot.key
-        raise AssertionError(f"no AggregateKey slot for formula {formula!r}")
-
-    def _assert_round_trip(self, formula: str) -> None:
-        key = self._harvest_key(formula)
-        text = _local_agg_formula(key)
-        key2 = self._harvest_key(text)
-        assert key2 == key, (
-            f"_local_agg_formula round-trip drifted for {formula!r}:\n"
-            f"  reconstructed text: {text!r}\n"
-            f"  original key:      {key!r}\n"
-            f"  re-bound key:      {key2!r}"
-        )
-
-    def test_rt_bare_sum(self):
-        self._assert_round_trip("amount:sum")
-
-    def test_rt_derived_crossing_source(self):
-        self._assert_round_trip("region_pay:sum")
-
-    def test_rt_star_count(self):
-        self._assert_round_trip("*:count")
-
-    def test_rt_local_time_arg(self):
-        self._assert_round_trip("region_pay:last(orders.created_at)")
-
-    def test_rt_structural_time_arg(self):
-        self._assert_round_trip("amount:last(customers.signup_at)")
-
-    def test_rt_derived_time_arg(self):
-        self._assert_round_trip("amount:last(cross_time)")
-
-    def test_rt_structural_kwarg(self):
-        self._assert_round_trip("amount:weighted_avg(weight=customers.weight)")
-
-    def test_rt_derived_kwarg(self):
-        self._assert_round_trip("amount:weighted_avg(weight=region_pay)")
-
-    def test_rt_scalar_kwarg(self):
-        self._assert_round_trip("amount:scaled_sum(scale=100)")
-
-    def test_rt_template_fragment_kwarg(self):
-        self._assert_round_trip("amount:scaled_sum(scale='amount * 2')")
-
-    def test_rt_template_fragment_kwarg_with_quote(self):
-        # String-escaping round-trip: repr() must survive re-parsing.
-        self._assert_round_trip('amount:scaled_sum(scale="it\'s fine")')
-
-    # bool / None kwargs are rejected by the AggregateKey shape itself
-    # (slayer/core/refs.py raises TypeError) — nothing to round-trip.

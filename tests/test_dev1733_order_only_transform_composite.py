@@ -51,8 +51,8 @@ from sqlglot import exp
 from slayer.core.enums import DataType
 from slayer.core.errors import (
     DistinctDimensionValuesError,
+    RenderContextMissingFacilityError,
     UnknownReferenceError,
-    UnresolvableOrderColumnError,
 )
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
@@ -61,6 +61,15 @@ from slayer.sql.scope_check import assert_scope_closed
 from slayer.storage.yaml_storage import YAMLStorage
 
 _MONTH = [TimeDimension(dimension="created_at", granularity="month")]
+
+# DEV-1763: the composite renderer routes through ``render_value_key`` on a
+# scope-less context, so a bare ROW-column operand fails closed with
+# ``RenderContextMissingFacilityError`` (a ``ValueError``) rather than the legacy
+# terminal ``NotImplementedError``. Both REJECT — the security-relevant contract
+# is "raises, never stringified" — so the row-operand guards below accept either.
+# (The legacy renderer still raises ``NotImplementedError``; its direct tests
+# stay pinned — P-J state 1.)
+_ROW_OPERAND_REJECTED = (NotImplementedError, RenderContextMissingFacilityError)
 
 
 # ---------------------------------------------------------------------------
@@ -1002,19 +1011,40 @@ class TestWindowedStillGuarded:
 
 
 # ===========================================================================
-# Group 8 — shapes that must KEEP raising. Widening the hidden-order branch
-# must not swallow the Stage-8 rejections.
+# Group 8 — widening the hidden-order branch must not cross its boundaries:
+# some shapes must KEEP raising; the newly-resolved ones must not change grain.
 # ===========================================================================
-class TestStillRejected:
-    async def test_joined_row_column_order_still_raises(self, engine) -> None:
+class TestStillGuarded:
+    async def test_joined_row_column_order_resolves_host_rooted(
+        self, engine,
+    ) -> None:
+        """DEV-1747 D2 replaced this rejection with a host-rooted CTE. What
+        Group 8 still guards is that widening the hidden-order branch did not
+        change the GRAIN: the sort key must not join the base or reach the
+        projection."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[ModelMeasure(formula="*:count")],
             order=[OrderItem(column="customers.region", direction="desc")],
         )
-        with pytest.raises(UnresolvableOrderColumnError):
-            await _sql(engine, query)
+        sql = await _sql(engine, query)
+        parsed = _outermost_select(sql, dialect="sqlite")
+        assert [e.alias_or_name for e in parsed.expressions] == [
+            "orders.status", "orders._count",
+        ], sql
+        # Grain unchanged: the base CTE still groups on the query dim only —
+        # the joined sort key did NOT widen the base GROUP BY nor join the base.
+        base_cte = next(
+            (c.this for c in sqlglot.parse_one(sql, dialect="sqlite").find_all(exp.CTE)
+             if c.alias == "_base"), None,
+        )
+        assert base_cte is not None, f"expected a `_base` CTE.\nSQL:\n{sql}"
+        group = base_cte.args.get("group")
+        assert group is not None, f"`_base` has no GROUP BY.\nSQL:\n{sql}"
+        assert [g.name for g in group.expressions] == ["status"], (
+            f"base GROUP BY grain widened past the query dims.\nSQL:\n{sql}"
+        )
 
     async def test_ungrouped_row_column_still_splits(self, engine) -> None:
         """The DEV-1712 split-emission path must be untouched."""
@@ -1096,7 +1126,7 @@ class TestStillRejected:
             measures=[ModelMeasure(formula="*:count")],
             order=[OrderItem(column=formula, direction="desc")],
         )
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(_ROW_OPERAND_REJECTED):
             await _sql(engine, query)
 
     async def test_arithmetic_with_row_operand_raises(self, engine) -> None:
@@ -1108,7 +1138,7 @@ class TestStillRejected:
             measures=[ModelMeasure(formula="*:count")],
             order=[OrderItem(column="amount:sum / id", direction="desc")],
         )
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(_ROW_OPERAND_REJECTED):
             await _sql(engine, query)
 
     def test_hidden_order_branch_rejects_unlisted_slot_kinds(self) -> None:
@@ -1126,7 +1156,9 @@ class TestStillRejected:
         is not in the GROUP BY.
         """
         from slayer.core.keys import ColumnKey, Phase
-        from slayer.engine.planned import OrderEntry, PlannedQuery, ValueSlot
+        from slayer.engine.planned import (
+            OrderEntry, OrderScope, PlannedQuery, ValueSlot,
+        )
         from slayer.sql.generator import SQLGenerator
 
         slot = ValueSlot(
@@ -1139,14 +1171,18 @@ class TestStillRejected:
         planned = PlannedQuery(
             source_relation="orders",
             row_slots=[slot],
-            order=[OrderEntry(slot_id="s0", direction="asc")],
+            order=[OrderEntry(
+                slot_id="s0", direction="asc",
+                # DEV-1747 §5.10 — classification is required on every entry.
+                scope=OrderScope.HOST_BASE_HIDDEN, phase=Phase.ROW,
+            )],
         )
         # Everything that can throw is built OUTSIDE the raises block, so the
         # only invocation under test is the call itself.
         generator = SQLGenerator(dialect="sqlite")
         select = exp.Select()
         with pytest.raises(NotImplementedError) as ei:
-            generator._apply_order_limit_from_planned(
+            generator._apply_planned_order_limit(
                 select=select,
                 planned_query=planned,
                 source_relation="orders",
@@ -1293,32 +1329,46 @@ class TestExecution:
         """``change(amount:sum)``: January has no prior bucket so its delta is
         NULL; February's is 25 - 50 = -25.
 
-        SQLite sorts NULL below every value, so DESC puts February (-25) first
-        and January (NULL) last, and ASC reverses it. Asserting BOTH directions
-        is what makes this non-vacuous: an absent or dropped ORDER BY returns
-        the same (bucket) order twice, so it cannot satisfy both.
+        SLayer sorts NULLs LAST on every dialect (``OrderEntry.nulls`` default;
+        the dialect strategy owns the spelling), so the NULL bucket is last in
+        BOTH directions and February leads either way. That is a real claim
+        rather than an accident of SQLite's native ordering, which puts NULLs
+        first on ASC — the transform chain used to inherit that, so the same
+        query sorted differently depending on whether it carried a transform.
+
+        Non-vacuous because of the CONTROL: the same shape ordered by
+        ``amount:sum`` DESC leads with January. A dropped ORDER BY cannot
+        produce both leaders, so the sort demonstrably runs and reads the term
+        the query asked for.
         """
         def _months(rows) -> list[str]:
             return [str(r["orders.created_at"])[:7] for r in rows]
 
-        desc = SlayerQuery(
-            source_model="orders",
-            time_dimensions=_MONTH,
-            measures=[ModelMeasure(formula="amount:sum")],
-            order=[OrderItem(column="change(amount:sum)", direction="desc")],
+        def _query(order: OrderItem) -> SlayerQuery:
+            return SlayerQuery(
+                source_model="orders",
+                time_dimensions=_MONTH,
+                measures=[ModelMeasure(formula="amount:sum")],
+                order=[order],
+            )
+
+        resp_desc = await exec_engine.execute(
+            _query(OrderItem(column="change(amount:sum)", direction="desc")),
         )
-        resp_desc = await exec_engine.execute(desc)
         assert _months(resp_desc.data) == ["2025-02", "2025-01"], resp_desc.data
 
-        asc = SlayerQuery(
-            source_model="orders",
-            time_dimensions=_MONTH,
-            measures=[ModelMeasure(formula="amount:sum")],
-            order=[OrderItem(column="change(amount:sum)", direction="asc")],
+        resp_asc = await exec_engine.execute(
+            _query(OrderItem(column="change(amount:sum)", direction="asc")),
         )
-        resp_asc = await exec_engine.execute(asc)
-        assert _months(resp_asc.data) == ["2025-01", "2025-02"], resp_asc.data
+        assert _months(resp_asc.data) == ["2025-02", "2025-01"], resp_asc.data
         assert set(resp_asc.columns) == {"orders.created_at", "orders.amount_sum"}
+
+        resp_control = await exec_engine.execute(
+            _query(OrderItem(column="amount_sum", direction="desc")),
+        )
+        assert _months(resp_control.data) == ["2025-01", "2025-02"], (
+            resp_control.data
+        )
 
     async def test_hidden_order_slots_stripped_from_response(self, exec_engine) -> None:
         query = SlayerQuery(

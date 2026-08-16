@@ -7,6 +7,7 @@ import copy
 import decimal
 import logging
 import re
+import warnings as _warnings_module
 from collections.abc import Callable
 from typing import Any, Dict, List, Optional
 
@@ -36,7 +37,11 @@ from slayer.core.query import (
     list_valued_variable_names,
     substitute_variables,
 )
-from slayer.core.warnings import NormalizationWarning
+from slayer.core.warnings import (
+    AnySlayerWarning,
+    DroppedFilterWarning,
+    NormalizationWarning,
+)
 from slayer.core.recommend import (
     CandidateCoverage,
     ItemPath,
@@ -362,6 +367,81 @@ def _build_explain_sql(dialect: str, sql: str) -> str:
     return get_dialect(dialect).build_explain_sql(sql)
 
 
+def _walk_cross_model_plans(planned):
+    """Every cross-model plan on ``planned``, including nested rerooted plans.
+
+    A nested plan carries its OWN dropped-filter warnings for the same user
+    filter, which is why the old per-plan emission double-fired.
+    """
+    for plan in getattr(planned, "cross_model_aggregate_plans", ()) or ():
+        yield plan
+        nested = getattr(plan, "rerooted_plan", None)
+        if nested is not None:
+            yield from _walk_cross_model_plans(nested)
+
+
+def _stage_location(stages, index: int) -> str:
+    """Human-readable pointer to the stage a filter came from.
+
+    Part of the dedup identity (D8), so it must distinguish two stages that
+    carry the SAME filter text — those are two distinct user filters.
+    """
+    name = getattr(stages[index], "name", None) if index < len(stages) else None
+    return f"stage {name!r}.filters" if name else f"stages[{index}].filters"
+
+
+def _collect_dropped_filter_warnings(
+    *, planned_list, stages,
+) -> List[DroppedFilterWarning]:
+    """Dropped-filter payloads for the whole pipeline, one per user filter.
+
+    Identity is ``(location, original filter text)`` — stated in the terms the
+    author sees, because the contract is user-facing. The same filter dropped
+    by several cross-model plans is ONE warning.
+
+    Reasons for the same filter must AGREE. A disagreement means two plans
+    reached different conclusions about one filter, which is a planner
+    inconsistency; raising beats silently keeping whichever came first.
+    """
+    by_identity: "dict[tuple[str, str], DroppedFilterWarning]" = {}
+    for index, planned in enumerate(planned_list):
+        location = _stage_location(stages, index)
+        for plan in _walk_cross_model_plans(planned):
+            for w in plan.dropped_filter_warnings or ():
+                identity = (location, w.filter_text)
+                existing = by_identity.get(identity)
+                if existing is None:
+                    by_identity[identity] = DroppedFilterWarning(
+                        filter_text=w.filter_text,
+                        location=location,
+                        reason=w.reason,
+                    )
+                elif existing.reason != w.reason:
+                    raise ValueError(
+                        f"Planner inconsistency: filter {w.filter_text!r} at "
+                        f"{location} was dropped for two different reasons — "
+                        f"{existing.reason!r} vs {w.reason!r}."
+                    )
+    return list(by_identity.values())
+
+
+def _emit_dropped_filter_warnings(response) -> None:
+    """Emit one ``UnreachableFilterDroppedWarning`` per dropped user filter.
+
+    Called once, at the outermost boundary, AFTER the response is built.
+    """
+    from slayer.core.errors import UnreachableFilterDroppedWarning
+
+    for w in response.warnings or ():
+        if isinstance(w, DroppedFilterWarning):
+            _warnings_module.warn(
+                UnreachableFilterDroppedWarning(
+                    filter_text=w.filter_text, reason=w.reason,
+                ),
+                stacklevel=3,
+            )
+
+
 class SlayerResponse(BaseModel):
     """Response from a SLayer query."""
 
@@ -369,13 +449,14 @@ class SlayerResponse(BaseModel):
     columns: List[str] = PydanticField(default_factory=list)
     sql: Optional[str] = None
     attributes: ResponseAttributes = PydanticField(default_factory=ResponseAttributes)
-    # DEV-1450 stage 6 — slack-normalization warnings.
-    # Structured payload for each slack rewrite the normalization layer
-    # performed on the input (function-style aggs, misplaced measures,
-    # AST-resolvable dotted refs in raw SQL). Empty for queries that
-    # arrived in canonical form. Surfaced alongside the result so
-    # REST / MCP / CLI consumers can echo the rewrites back to authors.
-    warnings: List[NormalizationWarning] = PydanticField(default_factory=list)
+    # Advisories about the query itself, discriminated on ``kind``:
+    # ``normalization`` for a slack rewrite the normalization layer performed
+    # on the input (function-style aggs, misplaced measures, AST-resolvable
+    # dotted refs in raw SQL), and ``unreachable_filter_dropped`` for a user
+    # filter dropped from a cross-model CTE. Empty for a clean query. Surfaced
+    # alongside the result so REST / MCP / CLI consumers can echo them back to
+    # authors; switch on ``kind`` rather than on the presence of a field.
+    warnings: List[AnySlayerWarning] = PydanticField(default_factory=list)
 
     @model_validator(mode="after")
     def _populate_columns(self) -> "SlayerResponse":
@@ -433,7 +514,7 @@ class _Prepared(BaseModel):
     """DB-free product of ``_prepare_pipeline`` (DEV-1715).
 
     Everything the execute / cache-hook / evict / refresh paths need after
-    resolve→enrich→plan→SQL-gen→policy but BEFORE any SQL-client construction.
+    resolve→bind→plan→SQL-gen→policy but BEFORE any SQL-client construction.
     ``sql`` is the FINAL, policy-rewritten SQL that is actually executed, so a
     cache key computed from it (``make_key(sql, ds_fingerprint)``) always
     matches the executed statement. ``resolved_data_source`` is
@@ -744,7 +825,7 @@ class SlayerQueryEngine:
         main_query, named_queries, prefer_data_source = await self._normalize_input(
             query, runtime_kwarg=runtime_kwarg, prefer_data_source=data_source
         )
-        return await self._execute_pipeline(
+        response = await self._execute_pipeline(
             query=main_query,
             named_queries=named_queries,
             runtime_kwarg=runtime_kwarg,
@@ -755,6 +836,14 @@ class SlayerQueryEngine:
             original_input=query,
             original_data_source=data_source,
         )
+        # DEV-1745 (W5): the ONE Python-warnings emission, at the outermost
+        # boundary and after the structured response exists. Ordering is
+        # load-bearing — under ``-W error`` this raises, and the contract is
+        # that the payload was fully built first. Emitting here rather than
+        # mid-render also makes it path-independent: dry_run, explain and a
+        # real execute all reach it.
+        _emit_dropped_filter_warnings(response)
+        return response
 
     async def _normalize_input(  # NOSONAR S3776 — public dispatch over str/dict/list/SlayerQuery; splitting hides the input-shape contract
         self,
@@ -866,7 +955,7 @@ class SlayerQueryEngine:
 
         return main_query, named_queries, model.data_source or prefer_data_source
 
-    async def _prepare_pipeline(  # NOSONAR S3776 — linear pipeline (resolve→enrich→generate→policy); breaking it up obscures the order of operations
+    async def _prepare_pipeline(  # NOSONAR S3776 — linear pipeline (resolve→bind→generate→policy); breaking it up obscures the order of operations
         self,
         query: SlayerQuery,
         named_queries: Dict[str, SlayerQuery],
@@ -876,7 +965,7 @@ class SlayerQueryEngine:
         override_datasource: Optional[DatasourceConfig] = None,
     ) -> _Prepared:
         """DB-free-ish prepare portion shared by execute / evict / refresh
-        (DEV-1715): resolve→enrich→normalize→plan→SQL-gen→ClickHouse-preflight→
+        (DEV-1715): resolve→bind→normalize→plan→SQL-gen→ClickHouse-preflight→
         policy-rewrite→response-metadata. Produces the FINAL executed SQL and
         the datasource fingerprint but constructs **no** SQL client on the
         common (no-policy) path — so ``evict()`` recomputes a cache key without
@@ -1027,6 +1116,14 @@ class SlayerQueryEngine:
         planned_list = plan_stages(queries=stages, bundle=bundle)
         root_planned = planned_list[-1]
 
+        # DEV-1745 (W5): collect dropped-filter payloads across EVERY plan in
+        # the pipeline (including nested rerooted subplans) and dedup them per
+        # user filter. Collection happens here, with the plans in hand; the
+        # Python-warnings emission happens later, at the outermost boundary.
+        slack_warnings.extend(_collect_dropped_filter_warnings(
+            planned_list=planned_list, stages=stages,
+        ))
+
         dialect = self._dialect_for_type(datasource.type)
         sql = generate_planned_stages(
             planned_list, bundle=bundle, dialect=dialect,
@@ -1051,7 +1148,7 @@ class SlayerQueryEngine:
         )
 
         # Models whose live schema a query-time DBAPI error could be attributed
-        # to (the typed-plan equivalent of the legacy enriched-derived set).
+        # to, derived from the typed plan.
         touched = self._touched_models_for_plan(
             bundle=bundle,
             planned_list=planned_list,
@@ -1312,7 +1409,7 @@ class SlayerQueryEngine:
         *,
         data_source: Optional[str] = None,
     ) -> bool:
-        """Remove one cached entry, recomputing its key DB-free (resolve→enrich
+        """Remove one cached entry, recomputing its key DB-free (resolve→bind
         →SQL-gen→policy). Returns ``True`` if an entry was present. Never
         constructs a SQL client on the no-policy path."""
         runtime_kwarg = variables or {}
@@ -1669,8 +1766,6 @@ class SlayerQueryEngine:
 
         ``touched_models`` is computed from the resolved bundle / plan; the
         join graph is widened via ``_expand_join_graph`` before attribution.
-        (DEV-1485 Stage D removed the alternative ``enriched=`` mode, which
-        derived the same set from a legacy ``EnrichedQuery``.)
 
         Any error from ``validate_models`` itself is swallowed so the
         original exception is never masked.
@@ -1746,7 +1841,7 @@ class SlayerQueryEngine:
     ) -> Dict[str, str]:
         """Infer column types for a model's columns via a type-probe query.
 
-        Builds a real query through the engine's enrich+generate pipeline
+        Builds a real query through the engine's bind+generate pipeline
         so cross-model measures (with JOINs) are resolved correctly.
 
         Returns {column_name: type_category} where type_category is
@@ -2443,8 +2538,7 @@ class SlayerQueryEngine:
         named_q = {q.name: q for q in stages[:-1] if q.name}
 
         # 2. Build resolved source bundle for the final stage. Stage B
-        # mirrors the legacy ``_query_as_model`` data_source behaviour: the
-        # bundle is built WITHOUT a DS hint, so the inner resolution falls
+        # builds the bundle WITHOUT a DS hint, so the inner resolution falls
         # back to the unique-match / priority-list resolver. This lets
         # ``get_column_types`` recover from a stale persisted
         # ``model.data_source`` (the cache populator may not have refreshed
@@ -2654,7 +2748,7 @@ class SlayerQueryEngine:
                 )
             raise ValueError(f"Model '{model_name}' not found")
 
-        # If model has source_queries, re-enrich from stored queries.
+        # If model has source_queries, re-expand from stored queries.
         # Model-level defaults are folded into outer_vars by the helper
         # (precedence: runtime > stage > outer > model_defaults).
         return await self._expand_query_backed_model(
@@ -2808,10 +2902,10 @@ class SlayerQueryEngine:
         query-backed models, persists as-is.
 
         DEV-1450 stage 6 — runs the slack-normalization layer over the
-        incoming model so persisted formulas land in canonical form. The
-        (Before DEV-1485 the legacy in-tree rewriters also fired during
-        enrichment for callers that loaded and re-executed persisted models;
-        normalization at save time is now the only such rewrite.)
+        incoming model so persisted formulas land in canonical form.
+        (Before DEV-1485 the legacy in-tree rewriters also fired when
+        callers loaded and re-executed persisted models; normalization at
+        save time is now the only such rewrite.)
 
         DEV-1500 — the FUNC_STYLE_AGG rewrite recognises custom aggregations
         defined on joined models via ``_reachable_aggs_for_save`` (best-effort

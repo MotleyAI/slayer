@@ -1225,6 +1225,17 @@ def _parse_cli_variables(args) -> dict:
     return out
 
 
+def _print_query_warnings(result) -> None:
+    """Print query advisories to STDERR.
+
+    Stderr specifically, so a piped ``slayer query`` keeps emitting clean data
+    on stdout while the operator still sees that a filter was dropped from a
+    cross-model CTE (it still applies at the host).
+    """
+    for w in (getattr(result, "warnings", None) or []):
+        print(f"warning: {w.human_message()}", file=sys.stderr)
+
+
 def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straight-line function reads better than threaded helpers
     from slayer.engine.query_engine import SlayerQueryEngine
 
@@ -1268,6 +1279,8 @@ def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straigh
             dry_run=bool(args.dry_run),
             explain=bool(args.explain),
         )
+
+    _print_query_warnings(result)
 
     if args.dry_run:
         print(result.sql)

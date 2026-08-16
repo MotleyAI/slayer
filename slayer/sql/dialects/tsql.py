@@ -27,14 +27,14 @@ T-SQL is the most divergent Tier-1 dialect:
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Literal
 from collections.abc import Callable
 
 import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import TimeGranularity
-from slayer.sql.naming import decode_alias, encode_alias
+from slayer.sql.naming import OUTER_WRAP_ALIAS, decode_alias, encode_alias
 from slayer.sql.dialects.base import SqlDialect, _build_covar_decomposition
 
 
@@ -63,6 +63,20 @@ _TSQL_STAT_NAMES: dict[str, str] = {
 _TSQL_DOTTED_ALIAS_RE = re.compile(r"\[(\w+(?:\.\w+)+)\]", re.ASCII)
 
 
+def _offset_ordering_fallback(
+    order: "exp.Expression | None", offset_arg: "exp.Expression | None",
+) -> "exp.Expression | None":
+    """The ORDER BY an OFFSET-bearing outer wrap must carry: the caller's, or a
+    synthesized ``ORDER BY (SELECT NULL)`` no-op when there is none (SQL Server
+    rejects OFFSET without ORDER BY). Returns ``order`` unchanged otherwise, so
+    a user's ordering is never replaced (DEV-1783)."""
+    if order is not None or offset_arg is None:
+        return order
+    return exp.Order(expressions=[
+        exp.Ordered(this=exp.Subquery(this=exp.Select().select(exp.Null()))),
+    ])
+
+
 class TsqlDialect(SqlDialect):
     sqlglot_name: str = "tsql"
     ds_type_aliases: frozenset[str] = frozenset({"mssql", "sqlserver", "tsql"})
@@ -77,6 +91,34 @@ class TsqlDialect(SqlDialect):
         """DEV-1708: T-SQL has no ``IS NOT DISTINCT FROM`` / ``<=>`` — emit the
         portable expanded ``a = b OR (a IS NULL AND b IS NULL)``."""
         return self._expanded_null_safe_eq(left, right)
+
+    def build_ordered(
+        self,
+        order_col: exp.Expression,
+        *,
+        descending: bool,
+        nulls: Literal["default", "first", "last"] = "default",
+    ) -> exp.Ordered:
+        """DEV-1571 Bug 2 / DEV-1716 — pin ``nulls_first`` to T-SQL's native
+        default for the direction (FIRST on ASC, LAST on DESC).
+
+        Left unset, sqlglot emits ``CASE WHEN <alias> IS NULL THEN 1 ELSE 0
+        END, <alias>`` to emulate the nulls-last ordering every other dialect
+        gets; the bracketed alias INSIDE the CASE WHEN mis-resolves against the
+        FROM scope (``Invalid column name``). So T-SQL trades null-ordering
+        parity for a statement that runs — the one place SLayer's null ordering
+        is dialect-specific, and only because the portable form is unavailable.
+
+        An EXPLICIT ``first`` / ``last`` policy is honoured as asked — the pin
+        exists to avoid the emulation, not to override a stated intent.
+        """
+        if nulls == "default":
+            return exp.Ordered(
+                this=order_col, desc=descending, nulls_first=not descending,
+            )
+        return super().build_ordered(
+            order_col, descending=descending, nulls=nulls,
+        )
 
     def build_approx_count_distinct(
         self,
@@ -243,6 +285,37 @@ class TsqlDialect(SqlDialect):
     # DEV-1571 Bug 1: emit_outer_wrap hoists inner top-level CTEs
     # ------------------------------------------------------------------
 
+    def apply_pagination(
+        self,
+        select: exp.Select,
+        *,
+        limit: "int | None",
+        offset: "int | None",
+    ) -> exp.Select:
+        """T-SQL pagination, with the ``OFFSET`` ordering requirement made
+        explicit.
+
+        SQL Server rejects ``OFFSET`` without an ``ORDER BY``. When the query is
+        genuinely unordered we supply ``ORDER BY (SELECT NULL)`` — the
+        conventional no-op ordering, which adds no semantics because there were
+        none to preserve, and only makes the statement legal.
+
+        sqlglot happens to inject the same thing today, but that is its
+        behaviour and not our contract: doing it here means the rule survives a
+        sqlglot upgrade, and it puts the ordering in the AST where a caller (and
+        our tests) can see it rather than only in the generated string. A user's
+        own ORDER BY is never replaced.
+
+        ``TOP`` versus ``FETCH`` needs no special handling — sqlglot picks
+        ``TOP`` for a bare limit and ``OFFSET … FETCH`` once an offset is
+        present, which is the correct T-SQL in both cases.
+        """
+        if offset is not None and select.args.get("order") is None:
+            select = select.order_by(
+                exp.Subquery(this=exp.Select().select(exp.Null())),
+            )
+        return super().apply_pagination(select, limit=limit, offset=offset)
+
     def emit_outer_wrap(
         self,
         *,
@@ -288,6 +361,10 @@ class TsqlDialect(SqlDialect):
         to the base impl — T-SQL will still reject malformed SQL at the
         DB layer, but we don't make it worse.
         """
+        # SQL Server rejects OFFSET without ORDER BY. Resolve the effective
+        # ordering BEFORE branching, so BOTH the AST path AND the base-impl
+        # fallback (a non-Select inner, base.py also emits a bare OFFSET) get it.
+        order = _offset_ordering_fallback(order, offset_arg)
         parse_fn = parse if parse is not None else (
             lambda s: sqlglot.parse_one(s, dialect=self.sqlglot_name)
         )
@@ -325,7 +402,7 @@ class TsqlDialect(SqlDialect):
                     col.set("table", None)
         derived = exp.Subquery(
             this=parsed,
-            alias=exp.TableAlias(this=exp.to_identifier("_outer")),
+            alias=exp.TableAlias(this=exp.to_identifier(OUTER_WRAP_ALIAS)),
         )
         outer = exp.Select()
         for a in public:

@@ -35,9 +35,12 @@ from slayer.core.keys import (
 )
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
-from slayer.engine.cross_model_planner import _local_agg_formula
-from slayer.engine.planned import PlannedQuery, ValueSlot
+from slayer.engine.planned import ValueSlot
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.ranked_planner import (
+    explicit_ranking_time_arg,
+    resolve_ranking_time_key,
+)
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import plan_query
 from slayer.sql.generator import SQLGenerator
@@ -46,54 +49,6 @@ from slayer.sql.scope import ScopeFrame
 from slayer.storage.yaml_storage import YAMLStorage
 
 
-# ---------------------------------------------------------------------------
-# Unit: DEV-1476 bug (c) — reroot strips target prefix from key.args
-# (symmetric to the kwarg reroot already tested in
-# tests/test_dev1450fix_cross_model_derived.py).
-# ---------------------------------------------------------------------------
-
-
-def test_local_agg_formula_reroots_positional_columnkey_arg() -> None:
-    """``customers.amount:last(customers.signup_at)`` rerooted to the
-    customers scope: the positional ``ColumnKey`` arg drops its
-    ``customers`` prefix and renders as a target-local identifier
-    (``signup_at``), NOT as a Pydantic-repr scalar literal.
-    """
-    key = AggregateKey(
-        source=ColumnKey(path=("customers",), leaf="amount"),
-        agg="last",
-        args=(ColumnKey(path=("customers",), leaf="signup_at"),),
-    )
-    assert _local_agg_formula(key) == "amount:last(signup_at)"
-
-
-def test_local_agg_formula_reroots_positional_columnsqlkey_arg() -> None:
-    """Same as above for ``ColumnSqlKey`` (derived-column variant)."""
-    key = AggregateKey(
-        source=ColumnKey(path=("customers",), leaf="amount"),
-        agg="last",
-        args=(
-            ColumnSqlKey(
-                path=("customers",),
-                model="customers",
-                column_name="signup_at_alias",
-            ),
-        ),
-    )
-    assert _local_agg_formula(key) == "amount:last(signup_at_alias)"
-
-
-def test_local_agg_formula_keeps_residual_path_in_args_for_deeper_hop() -> None:
-    """A positional arg one hop past the target keeps its residual path
-    (mirrors the kwarg-side behaviour pinned in
-    ``test_local_agg_formula_keeps_residual_path_for_deeper_kwarg``).
-    """
-    key = AggregateKey(
-        source=ColumnKey(path=("customers",), leaf="amount"),
-        agg="last",
-        args=(ColumnKey(path=("customers", "regions"), leaf="opened_at"),),
-    )
-    assert _local_agg_formula(key) == "amount:last(regions.opened_at)"
 
 
 def _orders_model(with_amount: bool = False) -> SlayerModel:
@@ -920,6 +875,12 @@ class TestTimeArgJoinDiscovery:
         assert seen == [], f"cross-model arg was resolved: {seen!r}"
 
     def test_residual_path_bearing_columnsqlkey_skipped_without_raise(self) -> None:
+        # PINS A DEAD BRANCH. ``_resolve_agg_inputs_via_scope`` still runs, but
+        # its first/last sub-pass never sees one since DEV-1748 — a ranked
+        # aggregate is excluded from ``base_render_order``, which is what this
+        # walker iterates. Kept until PR 6 removes the sub-pass, per P-J, so the
+        # removal is reviewed as a removal rather than smuggled in here.
+        #
         # A path-bearing ColumnSqlKey time arg (a hop PAST the target, the shape
         # the render seam raises DEV-1526 on) must be SKIPPED by discovery — no
         # raise, no bogus registration. Built by hand: this residual shape only
@@ -955,42 +916,31 @@ class TestTimeArgJoinDiscovery:
 
 
 # --------------------------------------------------------------------------- #
-# Group 2b — the raise-gate in ``_build_first_last_base_select`` uses the SAME
-# ``_explicit_time_arg_of`` contract as the render seam (Codex F1). A first/last
-# whose FIRST positional arg is a scalar (a later arg being a column) has NO
-# explicit time arg under the first-arg-only contract; with no default time
-# column the gate must raise the clean "ranking time" error. A retained
-# ``any(isinstance(a, (ColumnKey, ColumnSqlKey)) ...)`` gate would instead skip
-# the raise and later blow up building the ``ROW_NUMBER`` map — proving the two
-# sites had drifted.
+# Group 2b — the live ranking-time gate (``ranked_planner.resolve_ranking_time_key``)
+# uses the SAME first-arg-only selection (``explicit_ranking_time_arg``) as every
+# other consumer. A first/last whose FIRST positional arg is a scalar (a later arg
+# being a column) has NO explicit time arg under that contract; with no default
+# time column the gate must raise the clean "ranking time" error rather than skip
+# it and later blow up building the ``ROW_NUMBER`` map.
+# (DEV-1749: migrated off the deleted host-base ``_build_first_last_base_select``
+# gate onto its single-sourced successor.)
 # --------------------------------------------------------------------------- #
 class TestGateUsesSharedArgSelection:
-    def test_scalar_first_arg_gate_requires_default_time(self) -> None:
-        gen = SQLGenerator(dialect="postgres")
-        orders = _u_orders()  # no default_time_dimension
-        bundle = _u_bundle(orders)
-        key = AggregateKey(
+    def _scalar_first_arg_key(self) -> AggregateKey:
+        return AggregateKey(
             source=ColumnKey(leaf="amount"), agg="last",
             args=(Decimal("5"), ColumnKey(leaf="created_at")),
         )
-        slot = ValueSlot(
-            id="s0", key=key, declared_name="x", public_name="x",
-            phase=Phase.AGGREGATE, type=None,
-        )
-        pq = PlannedQuery(
-            source_relation="orders", aggregate_slots=[slot], projection=["s0"],
-        )
-        from_clause, base_joins = gen._build_from_and_joins(
-            source_model=orders, source_relation="orders",
-            joined_paths=[], bundle=bundle,
-        )
+
+    def test_scalar_first_positional_is_not_an_explicit_time_arg(self) -> None:
+        assert explicit_ranking_time_arg(self._scalar_first_arg_key()) is None
+
+    def test_scalar_first_arg_gate_requires_default_time(self) -> None:
+        orders = _u_orders()  # no default_time_dimension
+        bundle = _u_bundle(orders)
+        key = self._scalar_first_arg_key()
         with pytest.raises(ValueError, match="ranking time"):
-            gen._build_first_last_base_select(
-                planned_query=pq, bundle=bundle, source_model=orders,
-                source_relation="orders", base_render_order=["s0"],
-                slots_by_id={"s0": slot}, from_clause=from_clause,
-                base_joins=base_joins,
-            )
+            resolve_ranking_time_key(key=key, root_model=orders, bundle=bundle)
 
 
 # --------------------------------------------------------------------------- #
@@ -1086,6 +1036,15 @@ class TestResolveExplicitTimeColViaResolver:
             )
 
     def test_path_bearing_columnsqlkey_raises_dev1526_with_bundle(self) -> None:
+        # PINS A DEAD BRANCH. ``_resolve_explicit_time_col`` is still called
+        # for every aggregate, but no first/last reaches it since DEV-1748, so
+        # this guard cannot fire outside a direct unit call like this one. The
+        # ranked CTE resolves its ranking key through its own scope, which is
+        # what removed the limitation the guard describes (see the un-xfailed
+        # ``test_a_joined_derived_time_arg_ranks_by_the_joined_expression`` in
+        # tests/test_dev1748_first_last_matrix.py). Kept until PR 6 removes the
+        # branch, per P-J.
+        #
         # The residual-hop guard fires BEFORE resolution even when a bundle is
         # available — the existing guard pin (test_reroot_aggregate_key.py) runs
         # bundle=None; this fixes the ordering with a bundle set.
@@ -1242,12 +1201,15 @@ async def test_e2e_local_derived_crossing_time_arg() -> None:
 
 
 async def test_e2e_time_arg_join_dedup_with_dimension() -> None:
-    """Codex F6 dedup, updated for DEV-1709 (Stage 5): the crossing time
-    arg isolates the aggregate into a host-rooted ``_cm_*`` CTE, so the
-    ``customers`` join now appears once PER SCOPE — once in the host base
-    (the dimension's row-level pull) and once inside the CTE (the time
-    arg's pull, deduped against the CTE's own dimension pull) — never
-    twice within one scope.
+    """Codex F6 dedup: the crossing time arg isolates the aggregate into its own
+    CTE, so the ``customers`` join appears once PER SCOPE — once in the host
+    base (the dimension's row-level pull) and once inside the CTE (the time
+    arg's pull, deduped against the CTE's own dimension pull) — never twice
+    within one scope.
+
+    The CTE is a ranked ``_rk_`` one rather than the generic ``_cm_`` one it was
+    under DEV-1709: a first/last now isolates because it RANKS, which subsumes
+    the crossing-input trigger that used to be its only reason.
     """
     engine = await _multi_hop_engine()
     resp = await engine.execute(SlayerQuery(
@@ -1256,8 +1218,8 @@ async def test_e2e_time_arg_join_dedup_with_dimension() -> None:
         measures=[{"formula": "amount:last(customers.signup_at)"}],
     ))
     assert resp.data, resp.sql
-    assert "_cm_" in resp.sql, (
-        f"crossing time arg must isolate (DEV-1709):\n{resp.sql}"
+    assert "_rk_" in resp.sql, (
+        f"crossing time arg must isolate:\n{resp.sql}"
     )
     joins = re.findall(r"JOIN\s+customers\b", resp.sql, re.I)
     assert len(joins) == 2, (

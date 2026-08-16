@@ -66,7 +66,7 @@ CTE back without changing cardinality.
 ### Rerooting the aggregate's embedded references (`reroot_aggregate_key`)
 
 When the forward `_cm_*` CTE (`_render_cross_model_cte`), its HAVING route, and
-the re-rooted-plan formula (`_local_agg_formula`) render a cross-model aggregate
+the re-rooted plan render a cross-model aggregate
 in its target scope, every reference embedded in the `AggregateKey` — the
 `source`, positional `args` (e.g. the `first`/`last` explicit time arg), keyword
 `kwargs` values (e.g. `weighted_avg(weight=…)`), and `column_filter_key` — must
@@ -110,10 +110,10 @@ flowchart TB
 ```
 
 It re-roots each host dimension/time-dimension/filter from the host's perspective
-to the target's (`_reroot_ref`: host-local → `<host>.<name>`; on-target → bare;
-through-target → strip the prefix), drops anything unreachable from the target
-(matching legacy), reconstructs the local aggregate formula
-(`_local_agg_formula`), builds a fresh `SlayerQuery` rooted at the target, and
+to the target's (`reroot_value_key`: host-local → `<host>.<name>`; on-target →
+bare; through-target → strip the prefix), drops anything unreachable from the
+target, re-anchors the aggregate as a typed key (`reroot_aggregate_key`), builds
+a fresh `SlayerQuery` rooted at the target, and
 compiles it via the injected `subplan_builder` callback (which `plan_query`
 supplies as a `plan_query` recursion — keeping `cross_model_planner.py` free of a
 `stage_planner` import). The sub-plan is rendered by
@@ -171,8 +171,9 @@ The trigger predicate is structural:
 `agg_path` non-empty (forward cross-model, target-rooted) **OR** any
 crossing input (host-rooted). Both route through
 `IsolatedCteCrossModelPlanner.plan`; the host-rooted branch
-calls `_plan_filtered_local`, which rebuilds the measure's formula text
-via `_local_agg_formula` (round-trip-tested for every input shape) into a
+calls `_plan_filtered_local`, which carries the EXISTING typed `aggregate_key`
+unchanged (the sub-plan is rooted at the SAME host model, so there is nothing to
+re-root) into a
 **host-rooted** nested `PlannedQuery` (same `source_model`, same dims/TDs,
 only the crossing measure as the single aggregate) and attaches it via the
 same `rerooted_plan` / `rerooted_grain_pairs` / `rerooted_agg_slot_id`
@@ -210,18 +211,14 @@ the leaves' projected aliases. This holds for projected composites,
 filter-only composites (routed to the outer WHERE), and order-only
 aggregate refs.
 
-### Law 2 inside the ranked scope
+### first/last is a route of its own
 
-The first/last ranked subquery re-exports only `source_relation.*` plus
-rank/`_td`/`_dim` columns, so any crossing expression the outer SELECT
-consumes — an aggregate SOURCE or a column-ref KWARG value — is
-materialised as a `_val_<n>` projection inside the subquery
-(`_build_first_last_base_select`, mirroring the Stage-4 CTE path). The
-projection is the **resolved** value (qualified, with the `Column.type`
-inner CAST for non-bare expressions), so `SUM(CAST(x AS t))` semantics are
-preserved and same-sql-different-type aggregates keep distinct
-materialisations; HAVING and composite consumers bind to the same alias
-via `FirstLastRenderState.value_alias_by_sql` (keyed by resolved text).
+A `first`/`last` aggregate does NOT reach the cross-model route. It needs its
+own ROW ORDERING, so it isolates for that reason — which subsumes the
+crossing-input trigger — and compiles to a `_rk_` CTE. See
+[Ranked aggregates](ranked-aggregates.md). The one exception is a **re-rooted**
+cross-model `first`/`last`, which keeps its `CrossModelAggregatePlan`: the
+ranked plan belongs to its nested sub-plan.
 
 ### Filter routing for filtered-local
 
@@ -280,19 +277,18 @@ register their joins in a **pre-pass** that walks the full `ValueKey` tree
 `column_filter`) before the `FROM` is built, so a HAVING — rendered later, once
 the ranked-subquery rank columns exist — still contributes its joins.
 
-**First/last value materialization (Law 2).** When the CTE wraps its rows in a
-`ROW_NUMBER`-ranked subquery and the first/last **source value** crosses a join,
-the crossing value is materialized as a `_val_<n>` projection *inside* the
-subquery and the outer `MAX(CASE WHEN _last_rn = 1 THEN _val_<n> END)` references
-the alias — a raw crossing ref there is bound only inside the subquery. A HAVING
-on the same aggregate binds the same alias. The **shared grain** obeys the same
-law (DEV-1728): a crossing derived grain is materialized as a `_val_<n>`
-projection inside the subquery, the outer `SELECT`/`GROUP BY` reference the
-alias, and `PARTITION BY` keeps the raw expression (evaluated where the join is
-bound). `generate_from_planned` installs one generation-wide `AliasAllocator`
-(save/restore) so inline forward CTEs, grain projections, and the host base
-never collide on `_val_<n>`; the CTE reserves the target's physical column names
-so a minted alias never shadows a `target.*` column.
+**Projection boundaries (Law 2).** A `_cm_` CTE consumes a value from an inner
+scope by ALIAS, never by re-reaching for the expression: a ref that crosses a
+join is bound only where that join is, so the inner scope projects it as
+`_val_<n>` and the outer names the alias. The projection is the **resolved**
+value (qualified, with the `Column.type` inner CAST for non-bare expressions),
+so `SUM(CAST(x AS t))` semantics are preserved and same-sql-different-type
+aggregates keep distinct materialisations. `generate_from_planned` installs one
+generation-wide `AliasAllocator` (save/restore) so inline forward CTEs, grain
+projections, and the host base never collide on `_val_<n>`; each CTE reserves
+its root model's physical column names so a minted alias never shadows a real
+column. The ranked (`_rk_`) route obeys the same law through the same
+`ScopeFrame` table — see [Ranked aggregates](ranked-aggregates.md).
 
 ### Derived shared-grain rendering (DEV-1728)
 

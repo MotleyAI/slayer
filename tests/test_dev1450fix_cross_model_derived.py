@@ -8,7 +8,7 @@ Extends the #4a/#4b ``ColumnSqlKey`` support to the cross-model CTE path:
   target CTE renders the expanded predicate.
 * CR[7] — ``agg_kwarg_canonical_str`` canonicalizes a ``ColumnSqlKey``
   arg/kwarg instead of raising ``TypeError``.
-* CR[9] — ``_local_agg_formula`` re-roots column-valued kwargs (strips the
+* CR[9] — typed re-rooting re-roots column-valued kwargs (strips the
   agg-source/target prefix) instead of dropping the path.
 * CR[11] — aggregate metadata for a derived source resolves via ``src.model``.
 """
@@ -23,11 +23,10 @@ from typing import AsyncIterator
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.keys import AggregateKey, ColumnKey, ColumnSqlKey
+from slayer.core.keys import ColumnSqlKey
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.core.refs import agg_kwarg_canonical_str
-from slayer.engine.cross_model_planner import _local_agg_formula
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -47,30 +46,6 @@ def test_agg_kwarg_canonical_str_columnsqlkey_joined():
     assert agg_kwarg_canonical_str(v) == "customers.net"
 
 
-# ---------------------------------------------------------------------------
-# Unit: CR[9] _local_agg_formula re-roots column kwargs (strips target prefix)
-# ---------------------------------------------------------------------------
-
-
-def test_local_agg_formula_reroots_column_kwarg_on_target():
-    # corr(other=customers.region_id) with the agg rooted at ("customers",):
-    # the kwarg is on the target, so it becomes target-local ``region_id``.
-    key = AggregateKey(
-        source=ColumnKey(path=("customers",), leaf="revenue"),
-        agg="corr",
-        kwargs=(("other", ColumnKey(path=("customers",), leaf="region_id")),),
-    )
-    assert _local_agg_formula(key) == "revenue:corr(other=region_id)"
-
-
-def test_local_agg_formula_keeps_residual_path_for_deeper_kwarg():
-    # A kwarg one hop past the target keeps its residual path.
-    key = AggregateKey(
-        source=ColumnKey(path=("customers",), leaf="revenue"),
-        agg="corr",
-        kwargs=(("other", ColumnKey(path=("customers", "regions"), leaf="code")),),
-    )
-    assert _local_agg_formula(key) == "revenue:corr(other=regions.code)"
 
 
 # ---------------------------------------------------------------------------

@@ -318,9 +318,16 @@ async def test_mysql_time_shift_inner_cte_uses_backticks_not_ansi_quotes() -> No
     # The outer ORDER BY must reference a backticked identifier, not a
     # single-quoted string literal (which is what sqlglot emits when it
     # re-parses an ANSI-quoted alias under MySQL dialect).
-    assert "ORDER BY\n  `orders.created_at`" in sql or "ORDER BY `orders.created_at`" in sql, (
+    #
+    # Asserted over the ORDER BY *clause* rather than the text immediately
+    # after the keyword: MySQL has no NULLS syntax, so the term is preceded by
+    # sqlglot's ``CASE WHEN <col> IS NULL …`` emulation of the nulls-last
+    # ordering every dialect gets. Which term comes first is not this test's
+    # subject — how the alias is quoted is.
+    order_clause = sql[sql.rindex("ORDER BY"):]
+    assert "`orders.created_at`" in order_clause, (
         f"ORDER BY must reference a backticked alias, not a string literal:\n{sql}"
     )
-    assert "ORDER BY\n  'orders.created_at'" not in sql, (
+    assert "'orders.created_at'" not in order_clause, (
         f"sqlglot re-parsed an ANSI-quoted identifier as a string literal:\n{sql}"
     )
