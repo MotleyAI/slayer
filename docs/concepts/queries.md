@@ -101,7 +101,7 @@ A time dimension with a required granularity and an optional date range. Support
 
 ## OrderItem
 
-A sort specification: `column` is the short alias (`status`, `revenue_sum`, `*:count`), `direction` is `asc` or `desc`.
+A sort specification: `column` names a dimension (`status`), a declared measure's short alias (`revenue_sum`), or a formula (`*:count`); `direction` is `asc` or `desc`.
 
 ```json
 {"column": "*:count", "direction": "desc"}
