@@ -1533,6 +1533,10 @@ def _collect_drift(args, engine, storage) -> tuple[list, list]:
     entries: list = []
     failures: list[tuple[str, BaseException]] = []
     for ds_name, result in run_sync(_validate_each_datasource(engine, ds_names)):
+        # gather() reports a cancelled child as a CancelledError value; that is
+        # cancellation, not a datasource that failed validation.
+        if isinstance(result, asyncio.CancelledError):
+            raise result
         if isinstance(result, BaseException):
             failures.append((ds_name, result))
         else:

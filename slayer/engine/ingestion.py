@@ -1003,6 +1003,20 @@ def introspect_table_to_model(
 # ---------------------------------------------------------------------------
 
 
+def _collect_fk_columns_by_table(
+    *,
+    inspector: sa.engine.Inspector,
+    table_names: list[str],
+    schema: str | None,
+) -> dict[str, set[str]]:
+    """FK-constrained column names per table, for excluding them from rollups."""
+    out: dict[str, set[str]] = defaultdict(set)
+    for table_name in table_names:
+        for fk in inspector.get_foreign_keys(table_name, schema=schema):
+            out[table_name].update(fk["constrained_columns"])
+    return out
+
+
 def ingest_datasource(
     datasource: DatasourceConfig,
     include_tables: list[str] | None = None,
@@ -1030,13 +1044,9 @@ def ingest_datasource(
         logger.warning(f"FK graph has cycles, skipping rollup: {e}")
         has_cycles = True
 
-    # Collect FK columns per table (for excluding from rollup)
-    fk_columns_by_table: dict[str, set[str]] = defaultdict(set)
-    for table_name in table_names:
-        fks = inspector.get_foreign_keys(table_name, schema=schema)
-        for fk in fks:
-            for col in fk["constrained_columns"]:
-                fk_columns_by_table[table_name].add(col)
+    fk_columns_by_table = _collect_fk_columns_by_table(
+        inspector=inspector, table_names=table_names, schema=schema,
+    )
 
     models = []
     for table_name in table_names:
