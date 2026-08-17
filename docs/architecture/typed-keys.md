@@ -147,7 +147,9 @@ SCALAR_FUNCTIONS = frozenset({
     "nullif", "coalesce", "ifnull",
     # math
     "ln", "log10", "log2", "log", "exp", "sqrt", "pow", "power",
-    "abs", "floor", "ceil", "ceiling", "round", "sign",
+    "abs", "floor", "ceil", "ceiling", "round", "sign", "trunc", "mod",
+    # scalar min/max over the arguments (NOT the min:/max: aggregations)
+    "greatest", "least",
     # string hygiene (was DEV-1378's STRING_HYGIENE_OPS)
     "lower", "upper", "trim", "ltrim", "rtrim",
     "replace", "substr", "substring", "instr", "length", "concat",
@@ -155,6 +157,15 @@ SCALAR_FUNCTIONS = frozenset({
     "like",
 })
 ```
+
+`greatest` / `least` / `trunc` / `mod` were the last four parser-only names
+(DEV-1753): admitted to the binder to match the parser's `SCALAR_PASSTHROUGH`,
+closing that divergence (`SCALAR_PASSTHROUGH - SCALAR_FUNCTIONS == set()`).
+`mod` renders through the `%` composer rather than a raw `exp.Mod` (which
+mis-groups a complex operand); `greatest` / `least` keep each backend's native
+NULL behaviour (ignore on Postgres/DuckDB/SQL Server/Snowflake, propagate on
+SQLite/MySQL/ClickHouse/BigQuery — a ratified divergence, see `DECISIONS.md`;
+SQL Server's `GREATEST`/`LEAST` also need SQL Server 2022+).
 
 Anything outside this set (plus the transform and aggregation registries) raises
 `UnknownFunctionError` in Mode B. This replaces the deleted

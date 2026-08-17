@@ -42,7 +42,9 @@ SCALAR_FUNCTIONS: frozenset[str] = frozenset({
     "nullif", "coalesce", "ifnull",
     # Math
     "ln", "log10", "log2", "log", "exp", "sqrt", "pow", "power",
-    "abs", "floor", "ceil", "ceiling", "round", "sign",
+    "abs", "floor", "ceil", "ceiling", "round", "sign", "trunc", "mod",
+    # Scalar min/max over the arguments (NOT the min:/max: aggregations).
+    "greatest", "least",
     # String hygiene (was DEV-1378's STRING_HYGIENE_OPS)
     "lower", "upper", "trim", "ltrim", "rtrim",
     "replace", "substr", "substring", "instr", "length", "concat",
@@ -73,11 +75,21 @@ SCALAR_FUNCTION_ARITY: dict[str, tuple[int, Optional[int]]] = {
     # node. Pinned at 1: a 2-arg call silently emits ``CEIL(x, y)``, and a
     # 3-arg one becomes DuckDB's unrelated ``CEIL(x TO z)`` rounding form.
     "ceiling": (1, 1), "sign": (1, 1),
+    # 1-arg only: 2-arg ``trunc(x, digits)`` SILENTLY drops the digits on
+    # SQLite (emits ``TRUNC(x)``), a wrong answer rather than an error.
+    "trunc": (1, 1),
+    # ``mod`` is the ``%`` operator, admitted with the two-arg operator shape.
+    "mod": (2, 2),
+    # Variadic, min two: SQLite's one-arg ``MAX``/``MIN`` parses as the
+    # AGGREGATE, not the scalar, and MySQL requires at least two arguments —
+    # refuse a one-arg call here rather than let a backend reject it.
+    "greatest": (2, None), "least": (2, None),
     "lower": (1, 1), "upper": (1, 1), "trim": (1, 1), "length": (1, 1),
     # The trims take the string only, matching ``trim``. The 2-arg
-    # strip-these-characters form is deliberately NOT admitted: sqlglot emits
-    # a literal ``LTRIM(str, chars)`` for some targets, and MySQL's ``LTRIM``
-    # accepts one argument — so it would be SQL the server rejects.
+    # strip-these-characters form is deliberately NOT admitted (deferred to
+    # DEV-1793): its second argument is a character SET on most backends but an
+    # exact SUBSTRING on MySQL (``TRIM(LEADING remstr FROM str)``) — a silent
+    # cross-dialect divergence needing its own ruling.
     "ltrim": (1, 1), "rtrim": (1, 1),
     "replace": (3, 3), "substr": (2, 3), "substring": (2, 3), "instr": (2, 2),
     "concat": (1, None),

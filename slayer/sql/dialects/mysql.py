@@ -26,6 +26,15 @@ class MysqlDialect(SqlDialect):
     log10_native: bool = True
     log2_native: bool = True
 
+    def rewrite_target_ast(self, tree: exp.Expression) -> exp.Expression:
+        """MySQL's ``TRUNCATE`` has no single-argument form — ``TRUNCATE(x)`` is
+        a syntax error. A 1-arg ``trunc(x)`` becomes ``TRUNCATE(x, 0)``."""
+        def _fix(node: exp.Expression) -> exp.Expression:
+            if isinstance(node, exp.Trunc) and node.args.get("decimals") is None:
+                node.set("decimals", exp.Literal.number(0))
+            return node
+        return tree.transform(_fix)
+
     def build_median(
         self,
         inner: exp.Expression,
