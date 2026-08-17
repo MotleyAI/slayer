@@ -35,7 +35,9 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.sql.scope_check import ScopeLeakError
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._mode_a_scope_fixtures import (
+# The orders/customers/regions ScopeFrame fixtures are shared with the DEV-1745
+# door pack; import them rather than duplicate the fixture triple.
+from tests.test_dev1745_mode_a_door import (
     _customers,
     _orders,
     _regions,
