@@ -57,9 +57,10 @@ Models can declare LEFT JOIN relationships to other models:
 joins:
   - target_model: customers
     join_pairs: [["customer_id", "id"]]
+    cardinality: many_to_one   # optional; source→target arity
 ```
 
-Enables cross-model measures (`customers.score:avg`), multi-hop dimensions (`customers.regions.name`), and transforms on joined measures (`cumsum(customers.score:avg)`). Auto-ingestion creates one direct join per FK on the source table. Multi-hop paths (e.g. `orders → customers → regions`) are resolved at query time by walking each intermediate model's own joins. Diamond joins (same table via different paths) are supported — each path gets a unique `__`-delimited alias (e.g., `customers__regions` vs `warehouses__regions`).
+Enables cross-model measures (`customers.score:avg`), multi-hop dimensions (`customers.regions.name`), and transforms on joined measures (`cumsum(customers.score:avg)`). Auto-ingestion creates one direct join per FK on the source table (composite FKs stay a single join with multiple `join_pairs`). `cardinality` (`one_to_one` / `one_to_many` / `many_to_one` / `many_to_many`, omit when undetermined) is descriptive metadata, orthogonal to the always-LEFT join type; auto-ingestion fills it structurally, and `slayer validate-models --cardinality [--persist-cardinality]` infers it from the data. See [models.md#join-cardinality](../../docs/concepts/models.md#join-cardinality). Multi-hop paths (e.g. `orders → customers → regions`) are resolved at query time by walking each intermediate model's own joins. Diamond joins (same table via different paths) are supported — each path gets a unique `__`-delimited alias (e.g., `customers__regions` vs `warehouses__regions`).
 
 **Derived-on-derived chaining.** A `Column.sql` may reference another *derived* column — local same-model or via the join graph (single-dot `B.col` or `__`-delimited `B__C.col` path). Same-model refs can be **bare** (`A.ratio = "bar / foo_normalized"`) or **qualified** (`A.ratio = "A.bar / A.foo_normalized"`) — both inline identically. The engine recursively inlines those references at query time, so you can write `A.ratio = "A.bar / B.foo_normalized"` even when `B.foo_normalized.sql = "foo_raw / 100.0"`. No need to inline derivations at every consumer site. Refs inside a nested scope (sub-query, `UNION` branch, CTE, `VALUES`) are left alone — they belong to the inner rowset. Cycles raise `ColumnCycleError` (a subclass of `ValueError`) at `save_model` time, so a cyclic model never reaches a query.
 
@@ -148,7 +149,7 @@ models = ingest_datasource(datasource=ds, schema="public")
 ```
 
 Generates:
-- One `Column` per non-joined database column (with `type` inferred). PK columns get `primary_key=True`. A column literally named `count` is renamed to `count_col` to avoid clashing with `*:count`.
+- One `Column` per non-joined database column (with `type` inferred). PK columns get `primary_key=True`; single-column `UNIQUE` constraints set `unique=True`. A column literally named `count` is renamed to `count_col` to avoid clashing with `*:count`.
 - `*:count` is always available without an explicit definition; aggregation is picked per query via colon syntax (e.g., `amount:sum`).
 - **Dynamic joins**: detects FK relationships and emits explicit join metadata (LEFT JOINs built at query time).
 - FK columns are excluded from joinable models; ID-like columns (`*_id`, `*_key`) are usable as group-by columns only via the `primary_key` flag.

@@ -22,6 +22,7 @@ from slayer.core.enums import (
     DEFAULT_AGGREGATIONS_BY_TYPE,
     PRIMARY_KEY_AGGREGATIONS,
     DataType,
+    JoinCardinality,
     JoinType,
 )
 from slayer.core.models import (
@@ -75,6 +76,7 @@ class FacadeJoin(BaseModel):
     target_model: str
     join_pairs: list[list[str]]
     join_type: JoinType = JoinType.LEFT
+    cardinality: JoinCardinality | None = None
 
 
 class FacadeTable(BaseModel):
@@ -344,6 +346,7 @@ def _facade_join_from(*, join: ModelJoin) -> FacadeJoin:
         target_model=join.target_model,
         join_pairs=[list(pair) for pair in join.join_pairs],
         join_type=join.join_type,
+        cardinality=join.cardinality,
     )
 
 

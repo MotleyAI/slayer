@@ -11,6 +11,7 @@ from sqlalchemy.engine import URL as _SA_URL
 from slayer.core.enums import (
     BUILTIN_AGGREGATIONS,
     DataType,
+    JoinCardinality,
     JoinType,
     ObjectKind,
     _coerce_legacy_datatype,
@@ -200,6 +201,7 @@ class Column(BaseModel):
         ),
     )
     primary_key: bool = False
+    unique: bool = False  # single-column uniqueness (non-PK); primary_key implies it
     description: str | None = None
     label: str | None = None
     hidden: bool = False
@@ -454,6 +456,8 @@ class ModelJoin(BaseModel):
     target_model: str                               # Name of the joined model
     join_pairs: list[list[str]] = Field(...)        # [["source_dim", "target_dim"], ...]
     join_type: JoinType = JoinType.LEFT             # LEFT (default) or INNER
+    # Join arity, read source->target; None = undetermined.
+    cardinality: JoinCardinality | None = None
     # DEV-1643: optional human/agent metadata (e.g. carrying OSI relationship
     # ai_context on import). Purely additive/optional — old data omits them and
     # validates unchanged, so no SlayerModel schema-version bump is needed.

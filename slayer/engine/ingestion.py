@@ -27,6 +27,10 @@ from slayer.core.models import (
     SlayerModel,
     sanitize_model_name,
 )
+from slayer.engine.cardinality import (
+    infer_structural_cardinality,
+    is_key_set_unique,
+)
 from slayer.engine.internal_tables import internal_table_rule
 from slayer.engine.introspect_utils import (  # noqa: F401  (re-exported for back-compat)
     _FLOAT_LIKE_INFO_SCHEMA_TYPES,
@@ -306,6 +310,25 @@ class RollupGraphError(Exception):
 # ---------------------------------------------------------------------------
 
 
+def _is_cross_schema_fk(
+    fk: dict, schema: str | None, default_schema: str | None = None,
+) -> bool:
+    """Does this FK point at a table outside the schema being ingested?
+
+    Models are keyed by bare table name, so a cross-schema FK has no model to
+    bind to and would otherwise bind to a same-named local table.
+    """
+    referred_schema = fk.get("referred_schema")
+    if referred_schema is None:  # same-schema FK; always None on SQLite
+        return False
+    # Ingesting the default schema passes schema=None, so fall back to it.
+    effective_schema = schema if schema is not None else default_schema
+    # Unknown ingested schema: skip rather than risk binding to the wrong table.
+    if effective_schema is None:
+        return True
+    return referred_schema != effective_schema
+
+
 def _get_fk_relationships(
     inspector: sa.engine.Inspector,
     table_name: str,
@@ -329,6 +352,12 @@ def _get_fk_relationships(
     for fk in fks:
         referred_table = fk["referred_table"]
         if referred_table not in table_set or referred_table == table_name:
+            continue
+        if _is_cross_schema_fk(
+            fk=fk,
+            schema=schema,
+            default_schema=getattr(inspector, "default_schema_name", None),
+        ):
             continue
         constrained = fk["constrained_columns"]
         referred = fk["referred_columns"]
@@ -403,39 +432,256 @@ def _compute_transitive_closure(graph: dict[str, set[str]], source: str) -> set[
 # ---------------------------------------------------------------------------
 
 
+def _get_fk_constraint_groups(
+    inspector: sa.engine.Inspector,
+    table_name: str,
+    schema: str | None,
+    table_set: set[str],
+) -> list[tuple[str, list[tuple[str, str]]]]:
+    """``[(referred_table, [(src_col, tgt_col), ...]), ...]``, one entry per FK
+    constraint — so a composite FK stays one grouped join.
+    """
+    fks = inspector.get_foreign_keys(table_name, schema=schema)
+    result: list[tuple[str, list[tuple[str, str]]]] = []
+    for fk in fks:
+        referred_table = fk["referred_table"]
+        if referred_table not in table_set or referred_table == table_name:
+            continue
+        if _is_cross_schema_fk(
+            fk=fk,
+            schema=schema,
+            default_schema=getattr(inspector, "default_schema_name", None),
+        ):
+            continue
+        pairs = list(zip(fk["constrained_columns"], fk["referred_columns"]))
+        if pairs:
+            result.append((referred_table, pairs))
+    return result
+
+
+def _safe_introspect(fn) -> list:
+    """Run a best-effort introspection call, yielding ``[]`` on failure.
+
+    Constraint/index reflection is unsupported or partial on several backends,
+    so a raising call degrades to "no uniqueness evidence" rather than aborting.
+    """
+    try:
+        return list(fn())
+    except Exception as exc:  # noqa: BLE001 — degrade to "no evidence"
+        logger.debug(
+            "Constraint/index reflection unavailable (%s); "
+            "treating as no uniqueness evidence.", exc,
+        )
+        return []
+
+
+def _pk_key_sets(
+    inspector: sa.engine.Inspector,
+    table_name: str,
+    schema: str | None,
+    sa_engine: sa.Engine | None,
+) -> list[list[str]]:
+    """The table's primary key as a single key-set (or none)."""
+    try:
+        if sa_engine is not None:
+            pk = _safe_get_pk_constraint(
+                inspector=inspector,
+                sa_engine=sa_engine,
+                table_name=table_name,
+                schema=schema,
+            )
+        else:
+            # Only the bare-inspector path needs normalizing;
+            # _safe_get_pk_constraint already guarantees a mapping.
+            pk = inspector.get_pk_constraint(table_name=table_name, schema=schema)
+            if not isinstance(pk, dict):
+                return []
+    except Exception:
+        return []
+    cols = pk.get("constrained_columns")
+    return [list(cols)] if cols else []
+
+
+def _unique_constraint_key_sets(
+    inspector: sa.engine.Inspector, table_name: str, schema: str | None,
+) -> list[list[str]]:
+    """Key-sets from declared UNIQUE constraints."""
+    out: list[list[str]] = []
+    for uc in _safe_introspect(
+        lambda: inspector.get_unique_constraints(table_name, schema=schema)
+    ):
+        cols = uc.get("column_names") or []
+        if cols and all(cols):
+            out.append(list(cols))
+    return out
+
+
+def _is_partial_index(idx: dict) -> bool:
+    """Does this index carry a filter predicate (a PARTIAL index)?
+
+    A partial unique index constrains only the rows matching its predicate, so
+    it is no evidence of whole-table uniqueness.
+    """
+    opts = idx.get("dialect_options") or {}
+    for key, value in opts.items():
+        # SQLAlchemy names the predicate per dialect: postgresql_where, ...
+        if not key.endswith("_where") or value is None:
+            continue
+        if isinstance(value, str):
+            if value.strip():
+                return True
+            continue
+        # Never bool() a non-string: ColumnElement.__bool__ raises, and this
+        # runs outside _safe_introspect. Presence alone means "predicate".
+        return True
+    return False
+
+
+def _unique_index_key_sets(
+    inspector: sa.engine.Inspector, table_name: str, schema: str | None,
+) -> list[list[str]]:
+    """Key-sets from unique indexes that constrain the WHOLE table."""
+    out: list[list[str]] = []
+    for idx in _safe_introspect(
+        lambda: inspector.get_indexes(table_name, schema=schema)
+    ):
+        if not idx.get("unique") or _is_partial_index(idx):
+            continue
+        cols = idx.get("column_names") or []
+        # Expression members reflect as None, so any falsy member rejects the
+        # whole set — else unique(email, lower(name)) claims email alone.
+        if cols and all(cols):
+            out.append(list(cols))
+    return out
+
+
+def _get_unique_key_sets(
+    inspector: sa.engine.Inspector,
+    table_name: str,
+    schema: str | None,
+    sa_engine: sa.Engine | None = None,
+) -> list[list[str]]:
+    """All PK + UNIQUE key-sets for a table."""
+    return (
+        _pk_key_sets(
+            inspector=inspector, table_name=table_name,
+            schema=schema, sa_engine=sa_engine,
+        )
+        + _unique_constraint_key_sets(
+            inspector=inspector, table_name=table_name, schema=schema,
+        )
+        + _unique_index_key_sets(
+            inspector=inspector, table_name=table_name, schema=schema,
+        )
+    )
+
+
+def _solo_unique_columns_for_table(
+    *,
+    inspector: sa.engine.Inspector,
+    sa_engine: sa.Engine,
+    table_name: str,
+    schema: str | None,
+) -> set[str]:
+    """``_get_single_column_unique_names`` with the table's PK resolved for it."""
+    pk = _safe_get_pk_constraint(
+        inspector=inspector, sa_engine=sa_engine,
+        table_name=table_name, schema=schema,
+    )
+    return _get_single_column_unique_names(
+        inspector=inspector, table_name=table_name, schema=schema,
+        pk_cols=set(pk.get("constrained_columns", [])),
+    )
+
+
+def _get_single_column_unique_names(
+    inspector: sa.engine.Inspector,
+    table_name: str,
+    schema: str | None,
+    *,
+    pk_cols: set[str],
+) -> set[str]:
+    """Names of columns that ALONE form a UNIQUE constraint / unique index.
+
+    PK columns are excluded (``primary_key`` is the canonical marker), and so
+    are composite key-sets — unique ``(a, b)`` says nothing about ``a`` alone.
+    """
+    key_sets = (
+        _unique_constraint_key_sets(
+            inspector=inspector, table_name=table_name, schema=schema,
+        )
+        + _unique_index_key_sets(
+            inspector=inspector, table_name=table_name, schema=schema,
+        )
+    )
+    names = {ks[0] for ks in key_sets if len(ks) == 1}
+    return names - set(pk_cols)
+
+
 def _generate_joins(
     inspector: sa.engine.Inspector,
     source_table: str,
     referenced_tables: set[str],
     schema: str | None,
     table_set: set[str],
+    sa_engine: sa.Engine | None = None,
+    model_name_by_table: dict[str, str] | None = None,
 ) -> list[ModelJoin]:
-    """Generate direct ModelJoin objects from the source table's own FK relationships.
+    """Direct ModelJoins from the source table's own FKs (multi-hop is resolved
+    at query time). A composite FK becomes one grouped join, and cardinality is
+    inferred from key constraints alone.
 
-    Only emits joins for FKs defined on ``source_table`` itself — multi-hop
-    reachability (e.g. orders → customers → regions) is resolved at query time
-    by walking the join graph through each intermediate model.
+    ``model_name_by_table`` maps live object names to the model names they were
+    ingested under; a join names the MODEL, and a target with no model is
+    dropped rather than left dangling.
     """
-    fk_rels = _get_fk_relationships(
+    groups = _get_fk_constraint_groups(
         inspector=inspector,
         table_name=source_table,
         schema=schema,
         table_set=table_set,
     )
+    source_uniques = _get_unique_key_sets(
+        inspector=inspector, table_name=source_table,
+        schema=schema, sa_engine=sa_engine,
+    )
 
     joins = []
-    seen_signatures: set[tuple[str, str, str]] = set()
-    for src_col, ref_table, tgt_col in fk_rels:
+    seen_signatures: set[tuple] = set()
+    for ref_table, pairs in groups:
         if ref_table not in referenced_tables:
             continue
-        signature = (ref_table, src_col, tgt_col)
+        # Model names strip `__`, so the live name is not always the model name.
+        target_name = (
+            ref_table if model_name_by_table is None
+            else model_name_by_table.get(ref_table)
+        )
+        if target_name is None:
+            continue  # target collided on sanitization and was never ingested
+        signature = (ref_table, tuple(pairs))
         if signature in seen_signatures:
             continue
         seen_signatures.add(signature)
+
+        source_cols = [s for s, _ in pairs]
+        target_cols = [t for _, t in pairs]
+        target_uniques = _get_unique_key_sets(
+            inspector=inspector, table_name=ref_table,
+            schema=schema, sa_engine=sa_engine,
+        )
+        cardinality = infer_structural_cardinality(
+            source_unique=is_key_set_unique(
+                key_columns=source_cols, unique_key_sets=source_uniques
+            ),
+            target_verified_unique=is_key_set_unique(
+                key_columns=target_cols, unique_key_sets=target_uniques
+            ),
+        )
         joins.append(
             ModelJoin(
-                target_model=ref_table,
-                join_pairs=[[src_col, tgt_col]],
+                target_model=target_name,
+                join_pairs=[[s, t] for s, t in pairs],
+                cardinality=cardinality,
             )
         )
 
@@ -490,15 +736,15 @@ def _safe_get_pk_constraint(
 ) -> dict:
     """Get PK constraint, falling back to INFORMATION_SCHEMA on failure.
 
-    SQLite has no information_schema views; its stock inspector reads
-    PRAGMA table_info() and is authoritative — empty constrained_columns
-    on SQLite means the table genuinely has no primary key.
+    ALWAYS returns a mapping — the one place normalizing an inspector that may
+    hand back ``None``. SQLite's PRAGMA reflection is authoritative.
     """
     if sa_engine.dialect.name == "sqlite":
         try:
-            return inspector.get_pk_constraint(table_name, schema=schema)
+            result = inspector.get_pk_constraint(table_name=table_name, schema=schema)
         except Exception:
             return {"constrained_columns": []}
+        return result if isinstance(result, dict) else {"constrained_columns": []}
     try:
         result = inspector.get_pk_constraint(table_name, schema=schema)
         if result.get("constrained_columns"):
@@ -518,6 +764,7 @@ def _introspect_query_columns_via_inspector(
     referenced_tables: set[str],
     fk_columns_by_table: dict[str, set[str]],
     joins: list[ModelJoin] | None = None,
+    live_name_by_model: dict[str, str] | None = None,
 ) -> list[tuple]:
     """Introspect columns from a rollup query or plain table.
 
@@ -555,14 +802,21 @@ def _introspect_query_columns_via_inspector(
     # Build list of (ref_table, dotted_path) from joins — supports diamond joins
     # where the same table appears via multiple paths
     table_path_pairs: list[tuple] = []
-    if joins:
+    # `is not None`, not truthiness: an EMPTY join list means every candidate
+    # join was dropped, which is not the same as "joins were never generated".
+    if joins is not None:
+        lookup = live_name_by_model or {}
         for mj in joins:
             if mj.join_pairs and "." in mj.join_pairs[0][0]:
                 prefix = mj.join_pairs[0][0].split(".")[0]
                 path = f"{prefix}.{mj.target_model}"
             else:
                 path = mj.target_model
-            table_path_pairs.append((mj.target_model, path))
+            # The path alias is the MODEL name; introspection needs the live
+            # object name, and sanitization can make the two differ.
+            table_path_pairs.append(
+                (lookup.get(mj.target_model, mj.target_model), path)
+            )
     else:
         # Fallback: one entry per referenced table
         for ref_table in referenced_tables:
@@ -606,6 +860,7 @@ def _columns_to_model(
     data_source: str,
     sql_table: str | None = None,
     joins: list[ModelJoin] | None = None,
+    unique_columns: set[str] | None = None,
     source_kind: ObjectKind | None = None,
     hidden: bool = False,
     meta: dict[str, Any] | None = None,
@@ -619,6 +874,7 @@ def _columns_to_model(
     carried through verbatim (set only for opaque ``UNKNOWN`` columns).
     """
     cols: list[Column] = []
+    unique_set = unique_columns or set()
 
     _INT_FORMAT = NumberFormat(type=NumberFormatType.INTEGER)
     _FLOAT_FORMAT = NumberFormat(type=NumberFormatType.FLOAT)
@@ -647,6 +903,7 @@ def _columns_to_model(
                 type=data_type,
                 db_type=db_type,
                 primary_key=is_pk,
+                unique=(col_name in unique_set),
                 format=fmt,
             )
         )
@@ -774,11 +1031,16 @@ def introspect_table_to_model(
         sql_table=sql_table,
         columns=columns,
     )
+    unique_columns = _solo_unique_columns_for_table(
+        inspector=inspector, sa_engine=sa_engine,
+        table_name=table_name, schema=schema,
+    )
     return _columns_to_model(
         name=model_name or table_name,
         columns=columns,
         data_source=data_source,
         sql_table=sql_table,
+        unique_columns=unique_columns,
         source_kind=source_kind,
     )
 
@@ -974,6 +1236,8 @@ def _build_one_model(
     has_cycles: bool,
     fk_columns_by_table: dict[str, set[str]],
     table_set: set[str],
+    model_name_by_table: dict[str, str] | None = None,
+    live_name_by_model: dict[str, str] | None = None,
     internal_tool: str | None = None,
 ) -> SlayerModel:
     """Introspect one live object into a model. Raises on failure; the caller
@@ -997,6 +1261,8 @@ def _build_one_model(
             referenced_tables=referenced,
             schema=schema,
             table_set=table_set,
+            sa_engine=sa_engine,
+            model_name_by_table=model_name_by_table,
         )
 
     columns = _introspect_query_columns_via_inspector(
@@ -1008,6 +1274,7 @@ def _build_one_model(
         referenced_tables=referenced,
         fk_columns_by_table=fk_columns_by_table,
         joins=model_joins,
+        live_name_by_model=live_name_by_model,
     )
     columns = _sqlite_probe_integer_columns(
         sa_engine=sa_engine,
@@ -1021,6 +1288,10 @@ def _build_one_model(
         data_source=data_source,
         sql_table=sql_table,
         joins=model_joins,
+        unique_columns=_solo_unique_columns_for_table(
+            inspector=inspector, sa_engine=sa_engine,
+            table_name=obj.name, schema=schema,
+        ),
         source_kind=obj.kind,
         hidden=internal_tool is not None,
         meta=meta,
@@ -1099,6 +1370,7 @@ def ingest_datasource_report(
         table_set = set(table_names)
 
         name_by_object, skipped = _assign_model_names(objects)
+        live_by_model = {model: live for live, model in name_by_object.items()}
 
         # Build FK graph, check for cycles
         fk_graph = _build_fk_graph(
@@ -1137,6 +1409,8 @@ def ingest_datasource_report(
                         has_cycles=has_cycles,
                         fk_columns_by_table=fk_columns_by_table,
                         table_set=table_set,
+                        model_name_by_table=name_by_object,
+                        live_name_by_model=live_by_model,
                         internal_tool=None if surface_internals else tool,
                     )
                 )
@@ -1266,15 +1540,78 @@ def _merge_persisted_column_with_probe(
     return persisted_col.model_copy(update=updates), True
 
 
+def _join_sig(j: ModelJoin) -> tuple:
+    return (j.target_model, tuple(sorted((p[0], p[1]) for p in j.join_pairs)))
+
+
+def _repair_legacy_join_targets(
+    persisted: SlayerModel, fresh: SlayerModel,
+) -> tuple[SlayerModel, bool]:
+    """Rewrite persisted join targets that name the live object, not the model.
+
+    Ingests before the sanitizing fix wrote the raw table name, and a model
+    name can never contain ``__`` — so such a target resolves to nothing.
+
+    The repair demands a full signature match (sanitized target AND identical
+    ``join_pairs``) against a fresh join, so it can only ever rename the join
+    the bug produced. Matching on the target alone would repoint a
+    hand-authored join with different pairs, and could collapse two legacy
+    targets (``a__b`` and ``a___b`` both sanitize to ``a_b``) onto one name —
+    tripping the duplicate-target guard below and turning a tolerated store
+    into a failed re-ingest.
+    """
+    fresh_sigs = {_join_sig(j) for j in fresh.joins}
+    claimed = {
+        j.target_model for j in persisted.joins
+        if sanitize_model_name(j.target_model) == j.target_model
+    }
+    repaired = False
+    joins: list[ModelJoin] = []
+    for j in persisted.joins:
+        candidate = sanitize_model_name(j.target_model)
+        renamed = j.model_copy(update={"target_model": candidate})
+        if (
+            candidate != j.target_model
+            and candidate not in claimed
+            and _join_sig(renamed) in fresh_sigs
+        ):
+            joins.append(renamed)
+            claimed.add(candidate)
+            repaired = True
+        else:
+            joins.append(j)
+    if not repaired:
+        return persisted, False
+    return persisted.model_copy(update={"joins": joins}), True
+
+
 def _merge_joins_strict(
     persisted: SlayerModel, fresh: SlayerModel,
-) -> tuple[list[ModelJoin], list[str]]:
+) -> tuple[list[ModelJoin], list[str], bool]:
     """Append joins whose signature isn't already present. Raises on the
     duplicate-target / different-pairs conflict so callers don't end up
-    with two joins pointing at the same target_model."""
+    with two joins pointing at the same target_model.
+
+    An unset ``cardinality`` is filled from the matching fresh join; a
+    user-set one is never overwritten. The third return value flags a
+    metadata-only fill, which still has to trigger a save.
+    """
+    persisted, target_repaired = _repair_legacy_join_targets(persisted, fresh)
+
     existing_join_sigs = _existing_join_signatures(persisted)
     existing_join_targets = {j.target_model for j in persisted.joins}
-    new_joins: list[ModelJoin] = list(persisted.joins)
+    fresh_by_sig = {_join_sig(j): j for j in fresh.joins}
+
+    metadata_changed = target_repaired
+    new_joins: list[ModelJoin] = []
+    for pj in persisted.joins:
+        fj = fresh_by_sig.get(_join_sig(pj))
+        if pj.cardinality is None and fj is not None and fj.cardinality is not None:
+            new_joins.append(pj.model_copy(update={"cardinality": fj.cardinality}))
+            metadata_changed = True
+        else:
+            new_joins.append(pj)
+
     new_join_targets: list[str] = []
     for j in fresh.joins:
         sig = (j.target_model, tuple(sorted((p[0], p[1]) for p in j.join_pairs)))
@@ -1291,7 +1628,7 @@ def _merge_joins_strict(
             )
         new_joins.append(j)
         new_join_targets.append(j.target_model)
-    return new_joins, new_join_targets
+    return new_joins, new_join_targets, metadata_changed
 
 
 class AdditiveMergeResult(BaseModel):
@@ -1302,6 +1639,9 @@ class AdditiveMergeResult(BaseModel):
     new_joins: list[str] = Field(default_factory=list)
     widened_columns: list[str] = Field(default_factory=list)
     kind_changed: bool = False
+    #: A metadata-only fill (join cardinality / column unique) that still
+    #: has to be saved even when no column or join was added.
+    metadata_changed: bool = False
 
 
 def _additive_merge_existing(
@@ -1335,6 +1675,7 @@ def _additive_merge_existing(
 
     widened_column_names: list[str] = []
     merged_columns: list[Column] = []
+    metadata_changed = False
     for persisted_col in persisted.columns:
         merged_col, did_widen = _merge_persisted_column_with_probe(
             persisted_col=persisted_col,
@@ -1342,6 +1683,11 @@ def _additive_merge_existing(
             model_name=persisted.name,
             sqlite_widen_enabled=sqlite_widen_enabled,
         )
+        # Set `unique` additively — never downgrade a user-set flag.
+        fresh_col = fresh_by_name.get(persisted_col.name)
+        if fresh_col is not None and fresh_col.unique and not merged_col.unique:
+            merged_col = merged_col.model_copy(update={"unique": True})
+            metadata_changed = True
         merged_columns.append(merged_col)
         if did_widen:
             widened_column_names.append(persisted_col.name)
@@ -1353,7 +1699,10 @@ def _additive_merge_existing(
         merged_columns.append(fresh_col)
         new_column_names.append(fresh_col.name)
 
-    new_joins, new_join_targets = _merge_joins_strict(persisted, fresh)
+    new_joins, new_join_targets, joins_metadata_changed = _merge_joins_strict(
+        persisted, fresh
+    )
+    metadata_changed = metadata_changed or joins_metadata_changed
 
     # In the short-circuit below (not just the update dict), else a view→table
     # flip that changes nothing else would never reach the refresh.
@@ -1367,6 +1716,7 @@ def _additive_merge_existing(
         or new_join_targets
         or widened_column_names
         or kind_changed
+        or metadata_changed
     ):
         return AdditiveMergeResult(merged=persisted)
 
@@ -1380,6 +1730,7 @@ def _additive_merge_existing(
         new_joins=new_join_targets,
         widened_columns=widened_column_names,
         kind_changed=kind_changed,
+        metadata_changed=metadata_changed,
     )
 
 
@@ -1416,13 +1767,15 @@ async def _process_one_table(
         fresh=fresh,
         sqlite_widen_enabled=(datasource.type or "").lower() == "sqlite",
     )
-    # ``kind_changed`` gates the save too — a view→table flip usually adds no
-    # columns or joins, so otherwise the refreshed model would be discarded.
+    # ``kind_changed`` and ``metadata_changed`` gate the save too: a view→table
+    # flip, or a cardinality / unique fill, usually adds no columns or joins, so
+    # otherwise the refreshed model would be discarded.
     if (
         outcome.new_columns
         or outcome.new_joins
         or outcome.widened_columns
         or outcome.kind_changed
+        or outcome.metadata_changed
     ):
         await storage.save_model(outcome.merged)
     kind_change = None
