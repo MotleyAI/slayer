@@ -138,10 +138,12 @@ Five consequences worth knowing:
 * **`greatest` / `least` NULL handling is backend-specific.** They pass through
   to each backend's native form, and those forms disagree on `NULL`: Postgres,
   DuckDB, SQL Server and Snowflake *ignore* `NULL` arguments (returning `NULL`
-  only when every argument is `NULL`), while SQLite (scalar `MAX`/`MIN`), MySQL
-  and BigQuery *propagate* `NULL` (any `NULL` argument makes the result `NULL`).
-  SLayer does not normalise this — wrap arguments in `ifnull(...)` /
-  `coalesce(...)` if you need one behaviour on every backend.
+  only when every argument is `NULL`), while SQLite (scalar `MAX`/`MIN`), MySQL,
+  ClickHouse and BigQuery *propagate* `NULL` (any `NULL` argument makes the
+  result `NULL`). SLayer does not normalise this — wrap arguments in
+  `ifnull(...)` / `coalesce(...)` if you need one behaviour on every backend.
+  On SQL Server, `GREATEST` / `LEAST` require SQL Server 2022 or newer; earlier
+  versions reject the generated SQL.
 
 * **`log10` / `log2` keep their single-argument form** on the backends that
   provide one, rather than becoming the generic two-argument `LOG(base, x)`.

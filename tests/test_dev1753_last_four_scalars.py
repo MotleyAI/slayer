@@ -91,7 +91,8 @@ class TestArityBoundaries:
     def test_trunc_is_one_arg_only(self) -> None:
         assert check_scalar_arity(name="trunc", argc=1) is None
         msg = check_scalar_arity(name="trunc", argc=2)
-        assert msg is not None and "trunc" in msg
+        assert msg is not None
+        assert "trunc" in msg
 
     def test_greatest_least_need_at_least_two(self) -> None:
         for name in ("greatest", "least"):
@@ -137,7 +138,8 @@ _TRUNC_EXPECTED = {
     "sqlite": "TRUNC(x)",
     "postgres": "TRUNC(x)",
     "duckdb": "TRUNC(x)",
-    "mysql": "TRUNCATE(x)",
+    # MySQL has no single-arg TRUNCATE; SLayer adds the ``, 0`` (DEV-1753).
+    "mysql": "TRUNCATE(x, 0)",
     "clickhouse": "trunc(x)",
     "tsql": "ROUND(x, 0, 1)",
     "snowflake": "TRUNC(x)",
@@ -324,15 +326,13 @@ class TestEndToEndBinding:
     async def test_arity_errors_surface_at_bind_time(
         self, engine, predicate, func,
     ) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count", name="n")],
+            filters=[predicate],
+        )
         with pytest.raises(ValueError, match=func):
-            await engine.execute(
-                SlayerQuery(
-                    source_model="orders",
-                    measures=[ModelMeasure(formula="*:count", name="n")],
-                    filters=[predicate],
-                ),
-                dry_run=True,
-            )
+            await engine.execute(query, dry_run=True)
 
 
 class TestGreatestLeastNullSemanticsSqlite:
