@@ -122,10 +122,8 @@ def sanitize_model_name(name: str) -> str:
     """Collapse runs of 2+ underscores so ``name`` passes ``_NO_DUNDER``.
 
     Regex, not ``replace("__", "_")``: ``str.replace`` is non-overlapping, so
-    ``"a___b"`` would become ``"a__b"`` and still fail validation.
-
-    Only ``__`` is handled — a dotted name would leave ``sql_table`` ambiguous
-    with schema qualification, so the caller skips those instead.
+    ``"a___b"`` would become ``"a__b"`` and still fail. Dotted names aren't
+    handled here (ambiguous with schema qualification) — the caller skips them.
     """
     return _DUNDER_RUN_RE.sub("_", name)
 
@@ -433,12 +431,10 @@ class SlayerModel(BaseModel):
     version: int = 8
     name: str
     sql_table: str | None = None
-    # What kind of database object ``sql_table`` names. ``None``
-    # means unknown — correct for pre-v8 persisted models, hand-authored
-    # models, and ``sql`` / query-backed models, which have no live object to
-    # classify. Only auto-ingestion sets it. Views carry no primary key, so
-    # this is what explains *why* a model has none and that re-ingesting will
-    # never produce one.
+    # What kind of database object ``sql_table`` names; only auto-ingestion sets
+    # it. ``None`` = unknown (pre-v8, hand-authored, or sql/query-backed models
+    # with no live object to classify), and explains why a view-backed model has
+    # no primary key.
     source_kind: Optional[ObjectKind] = None
     sql: str | None = None
     source_queries: Annotated[

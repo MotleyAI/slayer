@@ -37,8 +37,8 @@ A query then asks for `revenue:sum` (aggregate the `revenue` column), `aov` (the
 | `query_variables` | dict | No | Defaults for `{var}` placeholders (query-backed models only) |
 | `backing_query_sql` | string | No | Engine-managed cache of the rendered backing query |
 | `description` | string | No | Helps agents and users understand the model |
-| `hidden` | bool | No | Hide from listings |
-| `meta` | dict | No | Arbitrary JSON metadata for caller bookkeeping |
+| `hidden` | bool | No | Hide from listings (still queryable by name and joinable). Set automatically at ingest for recognised ELT/migration internals — see [Recognised internals](../reference/cli.md#recognised-internals) |
+| `meta` | dict | No | Arbitrary JSON metadata for caller bookkeeping. Ingestion writes `internal_table: <tool>` on auto-hidden internals |
 | `version` | int | No | Schema version stamp (currently `8`) |
 
 ## Source modes

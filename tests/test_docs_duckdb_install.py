@@ -1,11 +1,4 @@
-"""Docs must not advertise a `motley-slayer[duckdb]` extra.
-
-It does not exist: `duckdb`/`duckdb-engine` are unconditional core deps, so
-the extra is warned about and ignored. Deliberately NOT fixed in pyproject —
-listing them under `[tool.poetry.extras]` would *gate* rather than alias them,
-breaking bare `pip install motley-slayer`, and duckdb is load-bearing for the
-Postgres facade.
-"""
+"""Docs must not advertise a `motley-slayer[duckdb]` extra: duckdb is a core dep, so the extra is warned about and ignored."""
 from __future__ import annotations
 
 import tomllib
@@ -34,9 +27,7 @@ def test_no_doc_advertises_a_duckdb_extra(path: Path) -> None:
 
 
 def test_duckdb_remains_a_core_dependency() -> None:
-    """Pins the premise of the docs fix. If duckdb ever legitimately becomes
-    an extra, this fails and the docs must change back — deliberately coupled
-    so the two cannot drift apart."""
+    """Pins the docs premise: if duckdb ever becomes an extra, this fails so the docs must change back."""
     data = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text())
     deps = data["tool"]["poetry"]["dependencies"]
 
