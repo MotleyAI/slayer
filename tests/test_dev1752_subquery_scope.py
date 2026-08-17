@@ -10,10 +10,12 @@ silently rebinding the inner ``amount`` to the wrong table.
 Contract: a Mode-A subquery must be self-contained (scope-closed). A bare name
 binds to the subquery's own FROM; the expander leaves it alone. Correlation to
 the outer model is NOT a supported Mode-A feature — an explicit outer reference
-(``orders.col``) is a scope leak that ``assert_scope_closed`` rejects (the only
-legal correlated ref in generated SQL is the RLS session-policy EXISTS). The
-expander is scope-aware and does not rebind such refs; the scope-closure guard,
-not the expander, is what forbids correlation.
+(``orders.col``) is a scope leak flagged by the ``assert_scope_closed``
+invariant (enabled by ``SLAYER_VALIDATE_SCOPES``: on in CI, off in production for
+performance; the only legal correlated ref in generated SQL is the RLS
+session-policy EXISTS). The expander is scope-aware and does not rebind such
+refs; the scope-closure guard, not the expander, is what flags correlation, so
+correlation is unsupported/undefined rather than hard-rejected at runtime.
 """
 from __future__ import annotations
 
@@ -277,12 +279,18 @@ class TestExecution:
             )
             assert _ids(resp) == {1, 3}, resp.data
 
-    async def test_correlated_subquery_is_rejected(self) -> None:
+    async def test_correlated_subquery_is_rejected_under_scope_validation(
+        self, monkeypatch,
+    ) -> None:
         """Contract: a correlated Mode-A subquery references the outer relation,
-        which SLayer forbids — the scope-closure guard rejects it. Correlation is
-        not a supported Mode-A feature; subqueries must be self-contained. (The
-        fix leaves the outer ref untouched; assert_scope_closed is what rejects
-        it.)"""
+        which the scope-closure invariant flags as a leak. That invariant is
+        SLayer's ``assert_scope_closed`` pass, enabled by ``SLAYER_VALIDATE_SCOPES``
+        (on in CI; the conftest autouse fixture sets it — here it is set
+        explicitly so the test does not silently depend on the ambient default,
+        and is off in production for performance). The DEV-1752 fix leaves the
+        outer ref untouched; the guard, not the expander, is what rejects it —
+        so correlation is an unsupported Mode-A shape, not a supported feature."""
+        monkeypatch.setenv("SLAYER_VALIDATE_SCOPES", "1")
         with tempfile.TemporaryDirectory() as d:
             db = os.path.join(d, "corpus.db")
             _seed_sqlite(db)
