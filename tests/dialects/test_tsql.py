@@ -803,7 +803,7 @@ async def test_tsql_explain_does_not_decode_data_rows() -> None:
         query = SlayerQuery(source_model="orders", dimensions=[ColumnRef(name="status")])
         with patch.object(
             TsqlDialect, "decode_result_keys", autospec=True,
-            side_effect=lambda self, rows: rows,
+            side_effect=lambda self, rows, **kw: rows,
         ) as spy:
             await engine.execute(query, explain=True)
         decoded_args = [call.args[-1] for call in spy.call_args_list]

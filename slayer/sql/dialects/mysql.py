@@ -25,6 +25,8 @@ class MysqlDialect(SqlDialect):
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
+    # Conservative: MySQL allows 256 for column aliases but errors (not truncates).
+    max_identifier_bytes: int | None = 64
 
     def rewrite_target_ast(self, tree: exp.Expression) -> exp.Expression:
         """MySQL's ``TRUNCATE`` has no single-argument form — ``TRUNCATE(x)`` is

@@ -428,7 +428,7 @@ async def test_generator_dispatches_through_rewrite_emitted_sql_hook() -> None:
         PostgresDialect,
         "rewrite_emitted_sql",
         autospec=True,
-        side_effect=lambda self, sql: sql,
+        side_effect=lambda self, sql, **kw: sql,
     ) as spy:
         await _engine_generate(
             query=query, model=_minimal_orders_model(), dialect="postgres",
@@ -472,7 +472,7 @@ async def test_engine_dispatches_through_decode_result_keys_hook() -> None:
             PostgresDialect,
             "decode_result_keys",
             autospec=True,
-            side_effect=lambda self, rows: rows,
+            side_effect=lambda self, rows, **kw: rows,
         ) as spy:
             await engine.execute(SlayerQuery(
                 source_model="orders",
@@ -813,7 +813,7 @@ async def test_bigquery_dry_run_does_not_decode_data_rows() -> None:
         query = SlayerQuery(source_model="orders", dimensions=["status"])
         with patch.object(
             BigqueryDialect, "decode_result_keys", autospec=True,
-            side_effect=lambda self, rows: rows,
+            side_effect=lambda self, rows, **kw: rows,
         ) as spy:
             await engine.execute(query, dry_run=True)
         decoded_args = [call.args[-1] for call in spy.call_args_list]

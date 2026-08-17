@@ -21,6 +21,7 @@ class DuckdbDialect(SqlDialect):
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
+    max_identifier_bytes: int | None = 256  # safe documented ceiling
 
     def build_approx_count_distinct(
         self,

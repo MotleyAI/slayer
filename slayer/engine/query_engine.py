@@ -63,6 +63,7 @@ from slayer.engine.response_meta import (
     FieldMetadata as FieldMetadata,  # re-export for slayer_client / tests
     ResponseAttributes,
     build_response_metadata,
+    projection_result_keys,
 )
 from slayer.engine.source_bundle import (
     ResolvedSourceBundle,
@@ -1132,6 +1133,9 @@ class SlayerQueryEngine:
         dialect = self._dialect_for_type(datasource.type)
         sql = generate_planned_stages(
             planned_list, bundle=bundle, dialect=dialect,
+            # DEV-1756: plan-derived canonical projection keys drive the
+            # write-side length fit; the read side decodes against the same set.
+            projection_aliases=projection_result_keys(root_planned=planned_list[-1]),
         )
         # DEV-1578: forced-filter (RLS) rewrite — scope each physical table to
         # the configured tenant. Applied to the rendered SQL before dry-run /
@@ -1310,7 +1314,12 @@ class SlayerQueryEngine:
                 err=exc, model=prepared.model, touched_models=prepared.touched
             )
             raise
-        return get_dialect(prepared.dialect).decode_result_keys(rows)
+        # DEV-1756: pass the canonical projection aliases so length-fitted keys
+        # (unrecoverable from the emitted form alone) are restored; dialect
+        # alias-mangling is reversed by the same hook.
+        return get_dialect(prepared.dialect).decode_result_keys(
+            rows, aliases=prepared.expected_columns,
+        )
 
     async def _scan_one_table_values(
         self,
@@ -1934,7 +1943,10 @@ class SlayerQueryEngine:
             planned = plan_stages(queries=[probe_query], bundle=bundle)
             root = planned[-1]
             dialect = self._dialect_for_type(datasource.type)
-            sql = generate_planned_stages(planned, bundle=bundle, dialect=dialect)
+            sql = generate_planned_stages(
+                planned, bundle=bundle, dialect=dialect,
+                projection_aliases=projection_result_keys(root_planned=root),
+            )
             # DEV-1578: type probing is a user-visible execution path, so it
             # honours the forced-filter policy too — a policy failure
             # (block / fail-closed) degrades to {} via this try/except rather
@@ -1960,11 +1972,14 @@ class SlayerQueryEngine:
             )
             return {}
 
-        # DEV-1716: on BigQuery / T-SQL the probe SQL is alias-mangled (it has to
-        # be, to execute), so the cursor returns mangled keys like
-        # ``orders___revenue_max``. Decode them back to the canonical dotted form
-        # the ``full`` lookups below use. Identity for every non-mangling dialect.
-        raw_types = get_dialect(dialect).decode_result_keys([raw_types])[0]
+        # DEV-1716 / DEV-1756: on BigQuery / T-SQL the probe SQL is alias-mangled
+        # (it has to be, to execute), and any over-limit alias is length-fitted,
+        # so the cursor returns emitted keys like ``orders___revenue_max``.
+        # Decode them back to the canonical dotted form the ``full`` lookups
+        # below use, keyed by the plan's projection result keys.
+        raw_types = get_dialect(dialect).decode_result_keys(
+            [raw_types], aliases=projection_result_keys(root_planned=root),
+        )[0]
 
         # Map qualified aliases (e.g., "orders.revenue_max") back to bare
         # measure names. Probe sources can be ColumnKey (.leaf) or

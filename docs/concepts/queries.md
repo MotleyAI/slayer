@@ -189,6 +189,14 @@ local ones. Fields used only for ordering are computed but not returned.
 }
 ```
 
+Result keys are always this canonical dotted form, on every backend. Where a
+database's own rules force a different spelling in the emitted SQL — BigQuery
+and SQL Server reject dotted column aliases, and most engines cap identifier
+length — the alias is rewritten on the way out and restored on the way back, so
+`data` and `columns` do not vary by dialect. Only `sql` shows the rewritten
+form, since that is what actually ran. See
+[Database support](../database-support.md#identifier-length-limits).
+
 ---
 
 ## Filters
