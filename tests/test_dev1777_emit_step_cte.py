@@ -86,7 +86,8 @@ def test_multi_slot_one_batch_preserves_caller_order() -> None:
     )
     assert new_tail == "step1"
     sql = ctes[-1].query.sql(dialect="postgres")
-    assert '"orders.a"' in sql and '"orders.b"' in sql
+    assert '"orders.a"' in sql
+    assert '"orders.b"' in sql
     # Deterministic: the caller's slot order is the emitted column order.
     assert sql.index('"orders.a"') < sql.index('"orders.b"')
 

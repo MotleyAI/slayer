@@ -1739,80 +1739,17 @@ class SQLGenerator:
                     )
             pending_layers = not_ready
 
-        # 7b.11 — materialise POST-phase ArithmeticKey / ScalarCallKey slots
-        # the user projected but no transform layer rendered.
-        unmaterialised = self._unmaterialised_post_slots(
-            planned_query, aliases_by_slot_id,
-        )
-        if unmaterialised:
-            chain_tail, step_num = self._emit_step_cte(
-                ctes=ctes,
-                chain_tail=chain_tail,
-                step_num=step_num,
-                cte_allocator=cte_allocator,
-                aliases_by_slot_id=aliases_by_slot_id,
-                available_alias_by_slot_id=available_alias_by_slot_id,
-                source_relation=source_relation,
-                slot_entries=[(cslot.id, cslot) for cslot in unmaterialised],
-                render=lambda cslot: render_value_key(
-                    key=cslot.key,
-                    ctx=RenderContext(
-                        dialect=self._dialect,
-                        aliases=AliasFacilities(
-                            slot_id_by_key=slot_id_by_key,
-                            available_alias_by_slot_id=available_alias_by_slot_id,
-                        ),
-                    ),
-                ),
-            )
-
-        # Inner SELECT inside _outer wrap: ALL carried aliases in PLAN order (B8).
-        inner_select = self._inner_select_from_final_cte(
-            chain_tail=chain_tail, aliases_by_slot_id=aliases_by_slot_id,
-        )
-
-        chain_sql = assemble_with_chain(
-            entries=ctes, final=inner_select,
-        ).sql(dialect=self.dialect, pretty=True)
-
-        # POST-phase filter wrap (filters referencing transform / arith
-        # slots). Mirrors legacy _generate_with_computed:1627-1648 —
-        # ``SELECT * FROM (<chain>) AS _filtered WHERE <conditions>``.
-        post_filter_conditions = self._render_post_phase_filter_conditions(
-            planned_query=planned_query,
-            slot_id_by_key=slot_id_by_key,
+        return self._finalise_transform_chain(
+            ctes=ctes,
+            chain_tail=chain_tail,
+            step_num=step_num,
+            cte_allocator=cte_allocator,
+            aliases_by_slot_id=aliases_by_slot_id,
             available_alias_by_slot_id=available_alias_by_slot_id,
-        )
-        if post_filter_conditions:
-            chain_sql = (
-                f"SELECT *\nFROM (\n{chain_sql}\n) AS {FILTERED_ALIAS}"
-                f"\nWHERE {_SQL_AND_JOINER.join(post_filter_conditions)}"
-            )
-
-        # Outer SELECT in user-projection order (public slots only).
-        # Per-slot index walks each slot's public_aliases so duplicate
-        # interned names (DEV-1450 C13) both surface in the result.
-        public_aliases_user_order: list[str] = []
-        outer_alias_index: Dict[str, int] = {}
-        for sid in planned_query.projection:
-            slot = slots_by_id[sid]
-            if slot.hidden:
-                continue
-            all_aliases = aliases_by_slot_id.get(sid, [])
-            if not all_aliases:
-                continue
-            idx = outer_alias_index.setdefault(sid, 0)
-            alias = (
-                all_aliases[idx] if idx < len(all_aliases) else all_aliases[-1]
-            )
-            outer_alias_index[sid] = idx + 1
-            public_aliases_user_order.append(alias)
-        return self._emit_planned_outer_wrap(
-            chain_sql=chain_sql,
-            public_aliases=public_aliases_user_order,
-            planned_query=planned_query,
+            source_relation=source_relation,
             slots_by_id=slots_by_id,
-            available_alias_by_slot_id=available_alias_by_slot_id,
+            slot_id_by_key=slot_id_by_key,
+            planned_query=planned_query,
         )
 
     # -----------------------------------------------------------------
@@ -1903,6 +1840,98 @@ class SQLGenerator:
         return exp.Select().select(
             *(exp.column(a, quoted=True) for a in inner_aliases),
         ).from_(chain_tail)
+
+    def _finalise_transform_chain(
+        self,
+        *,
+        ctes: List[CteEntry],
+        chain_tail: str,
+        step_num: int,
+        cte_allocator,
+        aliases_by_slot_id: Dict[str, List[str]],
+        available_alias_by_slot_id: Dict[str, str],
+        source_relation: str,
+        slots_by_id: Dict[str, Any],
+        slot_id_by_key: Dict[Any, str],
+        planned_query,
+    ) -> str:
+        """Close a transform chain (host or cross-model): materialise any
+        leftover POST-phase slot, assemble the WITH chain, apply the POST-phase
+        filter wrap, and emit the outer user-projection wrap.
+        """
+        # 7b.11 — materialise POST-phase ArithmeticKey / ScalarCallKey slots
+        # the user projected but no transform layer rendered.
+        unmaterialised = self._unmaterialised_post_slots(
+            planned_query, aliases_by_slot_id,
+        )
+        if unmaterialised:
+            chain_tail, step_num = self._emit_step_cte(
+                ctes=ctes,
+                chain_tail=chain_tail,
+                step_num=step_num,
+                cte_allocator=cte_allocator,
+                aliases_by_slot_id=aliases_by_slot_id,
+                available_alias_by_slot_id=available_alias_by_slot_id,
+                source_relation=source_relation,
+                slot_entries=[(cslot.id, cslot) for cslot in unmaterialised],
+                render=lambda cslot: render_value_key(
+                    key=cslot.key,
+                    ctx=RenderContext(
+                        dialect=self._dialect,
+                        aliases=AliasFacilities(
+                            slot_id_by_key=slot_id_by_key,
+                            available_alias_by_slot_id=available_alias_by_slot_id,
+                        ),
+                    ),
+                ),
+            )
+
+        # Inner SELECT inside _outer wrap: ALL carried aliases in PLAN order (B8).
+        inner_select = self._inner_select_from_final_cte(
+            chain_tail=chain_tail, aliases_by_slot_id=aliases_by_slot_id,
+        )
+        chain_sql = assemble_with_chain(
+            entries=ctes, final=inner_select,
+        ).sql(dialect=self.dialect, pretty=True)
+
+        # POST-phase filter wrap (filters referencing transform / arith slots):
+        # ``SELECT * FROM (<chain>) AS _filtered WHERE <conditions>``.
+        post_filter_conditions = self._render_post_phase_filter_conditions(
+            planned_query=planned_query,
+            slot_id_by_key=slot_id_by_key,
+            available_alias_by_slot_id=available_alias_by_slot_id,
+        )
+        if post_filter_conditions:
+            chain_sql = (
+                f"SELECT *\nFROM (\n{chain_sql}\n) AS {FILTERED_ALIAS}"
+                f"\nWHERE {_SQL_AND_JOINER.join(post_filter_conditions)}"
+            )
+
+        # Outer SELECT in user-projection order (public slots only). Per-slot
+        # index walks each slot's public_aliases so duplicate interned names
+        # (DEV-1450 C13) both surface in the result.
+        public_aliases_user_order: list[str] = []
+        outer_alias_index: Dict[str, int] = {}
+        for sid in planned_query.projection:
+            slot = slots_by_id[sid]
+            if slot.hidden:
+                continue
+            all_aliases = aliases_by_slot_id.get(sid, [])
+            if not all_aliases:
+                continue
+            idx = outer_alias_index.setdefault(sid, 0)
+            alias = (
+                all_aliases[idx] if idx < len(all_aliases) else all_aliases[-1]
+            )
+            outer_alias_index[sid] = idx + 1
+            public_aliases_user_order.append(alias)
+        return self._emit_planned_outer_wrap(
+            chain_sql=chain_sql,
+            public_aliases=public_aliases_user_order,
+            planned_query=planned_query,
+            slots_by_id=slots_by_id,
+            available_alias_by_slot_id=available_alias_by_slot_id,
+        )
 
     # -----------------------------------------------------------------
     # Stage 7b.10 helpers
@@ -4749,72 +4778,17 @@ class SQLGenerator:
             )
             pending_layers = not_ready
 
-        # Materialise any projected POST-phase ArithmeticKey / ScalarCallKey
-        # slot a window layer didn't render (``cumsum(x) + 1``-style combos).
-        unmaterialised = self._unmaterialised_post_slots(
-            planned_query, aliases_by_slot_id,
-        )
-        if unmaterialised:
-            chain_tail, step_num = self._emit_step_cte(
-                ctes=ctes,
-                chain_tail=chain_tail,
-                step_num=step_num,
-                cte_allocator=cte_allocator,
-                aliases_by_slot_id=aliases_by_slot_id,
-                available_alias_by_slot_id=available_alias_by_slot_id,
-                source_relation=source_relation,
-                slot_entries=[(cslot.id, cslot) for cslot in unmaterialised],
-                render=lambda cslot: render_value_key(
-                    key=cslot.key,
-                    ctx=RenderContext(
-                        dialect=self._dialect,
-                        aliases=AliasFacilities(
-                            slot_id_by_key=slot_id_by_key,
-                            available_alias_by_slot_id=available_alias_by_slot_id,
-                        ),
-                    ),
-                ),
-            )
-
-        inner_select = self._inner_select_from_final_cte(
-            chain_tail=chain_tail, aliases_by_slot_id=aliases_by_slot_id,
-        )
-        chain_sql = assemble_with_chain(
-            entries=ctes, final=inner_select,
-        ).sql(dialect=self.dialect, pretty=True)
-
-        post_filter_conditions = self._render_post_phase_filter_conditions(
-            planned_query=planned_query,
-            slot_id_by_key=slot_id_by_key,
+        return self._finalise_transform_chain(
+            ctes=ctes,
+            chain_tail=chain_tail,
+            step_num=step_num,
+            cte_allocator=cte_allocator,
+            aliases_by_slot_id=aliases_by_slot_id,
             available_alias_by_slot_id=available_alias_by_slot_id,
-        )
-        if post_filter_conditions:
-            chain_sql = (
-                f"SELECT *\nFROM (\n{chain_sql}\n) AS {FILTERED_ALIAS}"
-                f"\nWHERE {_SQL_AND_JOINER.join(post_filter_conditions)}"
-            )
-
-        public_aliases_user_order: list[str] = []
-        outer_alias_index: Dict[str, int] = {}
-        for sid in planned_query.projection:
-            slot = slots_by_id[sid]
-            if slot.hidden:
-                continue
-            all_aliases = aliases_by_slot_id.get(sid, [])
-            if not all_aliases:
-                continue
-            idx = outer_alias_index.setdefault(sid, 0)
-            alias = (
-                all_aliases[idx] if idx < len(all_aliases) else all_aliases[-1]
-            )
-            outer_alias_index[sid] = idx + 1
-            public_aliases_user_order.append(alias)
-        return self._emit_planned_outer_wrap(
-            chain_sql=chain_sql,
-            public_aliases=public_aliases_user_order,
-            planned_query=planned_query,
+            source_relation=source_relation,
             slots_by_id=slots_by_id,
-            available_alias_by_slot_id=available_alias_by_slot_id,
+            slot_id_by_key=slot_id_by_key,
+            planned_query=planned_query,
         )
 
     def _canonical_cross_model_alias(
