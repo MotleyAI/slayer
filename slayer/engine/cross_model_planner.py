@@ -927,7 +927,7 @@ class IsolatedCteCrossModelPlanner:
                 model=host_model,
                 public_alias=public_alias,
             ),
-            grain_measures=list(_grain_declared_measures(host_prebound)),
+            grain_measures=list(host_prebound.grain_declared_measures),
             inherited_filters=[
                 routing_by_id[fid].bound
                 for fid in host_rooted_routes.applied
@@ -1014,13 +1014,6 @@ class IsolatedCteCrossModelPlanner:
 # render-strategy decision (forward vs re-rooted) is owned by the strategy.
 # The recursive ``plan_query`` call is injected as ``subplan_builder`` so this
 # module does not import ``stage_planner`` (no cycle).
-
-
-def _grain_declared_measures(prebound: PreboundQuery) -> List[DeclaredMeasure]:
-    """The host's dimension + time-dimension declarations — the grain prefix of
-    ``declared_measures``, which the nested plan groups by unchanged."""
-    n = prebound.n_dims + prebound.n_time_dimensions
-    return list(prebound.declared_measures[:n])
 
 
 def _aggregate_declared_measure(
@@ -1314,14 +1307,15 @@ def _maybe_reroot_cross_model_plan(  # NOSONAR(S3776) — one re-rooting decisio
         # On the host->target path (handled by the forward-path CTE already).
         return bool(path) and path == target_path[: len(path)]
 
-    n_dims = host_prebound.n_dims
-    n_tds = host_prebound.n_time_dimensions
     grain_declared: List[DeclaredMeasure] = []
     grain_host_sids: List[str] = []
     grain_rerooted_keys: List[ValueKey] = []
     needs_reroot = False
 
-    for i, dm in enumerate(host_prebound.declared_measures[: n_dims + n_tds]):
+    # The public_projection[i] positional pairing (and its silent None
+    # fallback) is deliberately left as-is; the cardinality/ambiguity concern
+    # it encodes is out of scope here (DEV-1688).
+    for i, dm in enumerate(host_prebound.grain_declared_measures):
         host_sid = public_projection[i] if i < len(public_projection) else None
         host_key = dm.bound.value_key
         inner = (
