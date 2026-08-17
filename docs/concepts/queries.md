@@ -238,8 +238,9 @@ Multiple entries in the `filters` list are combined with AND.
 Filters in `SlayerQuery.filters` accept the closed Mode-B scalar
 allowlist: string hygiene (`lower`, `upper`, `trim`, `ltrim`,
 `rtrim`, `replace`, `substr`, `substring`, `instr`, `length`, `concat`),
-null handling (`coalesce`, `nullif`, `ifnull`), and math (`round`, `abs`,
-`ceil`, `floor`, `sign`, `log10`, …). The SQL `||` concat operator is
+null handling (`coalesce`, `nullif`, `ifnull`), math (`round`, `abs`,
+`ceil`, `floor`, `sign`, `trunc`, `mod`, `log10`, …), and scalar min/max
+(`greatest`, `least`). The SQL `||` concat operator is
 rewritten to `concat(...)` automatically. See
 [references](references.md#scalar-functions-and-dialect-semantics) for the
 full list and per-dialect semantics.
