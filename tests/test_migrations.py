@@ -90,15 +90,18 @@ def test_migrate_chain_runs_in_order(monkeypatch) -> None:
 
 
 def test_register_migration_rejects_duplicates(monkeypatch) -> None:
+    # Synthetic entity: registering against ("SlayerModel", N) breaks the
+    # moment N becomes a real step, as the v7→v8 bump showed. The guard under
+    # test is entity-agnostic, so a fake entity pins it without the coupling.
     monkeypatch.setattr(mig, "_REGISTRY", dict(mig._REGISTRY))
 
-    @mig.register_migration("SlayerModel", 7)
+    @mig.register_migration("_DuplicateProbeEntity", 1)
     def _first(data: dict) -> dict:
         return data
 
     with pytest.raises(ValueError, match="Duplicate migration"):
 
-        @mig.register_migration("SlayerModel", 7)
+        @mig.register_migration("_DuplicateProbeEntity", 1)
         def _second(data: dict) -> dict:
             return data
 

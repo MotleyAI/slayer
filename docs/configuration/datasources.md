@@ -59,8 +59,12 @@ These databases are verified by integration tests and runnable Docker examples. 
 | `postgres` / `postgresql` | `motley-slayer[postgres]` | `postgresql://user:pass@localhost:5432/db` |
 | `mysql` / `mariadb` | `motley-slayer[mysql]` | `mysql+pymysql://user:pass@localhost:3306/db` |
 | `clickhouse` | `motley-slayer[clickhouse]` | `clickhouse+http://user:pass@localhost:8123/db` |
-| `duckdb` | `motley-slayer[duckdb]` | `duckdb:///path/to/db.duckdb` |
+| `duckdb` | (built-in, no extra needed) | `duckdb:///path/to/db.duckdb` |
 | `snowflake` | `motley-slayer[snowflake]` | `snowflake://?connection_name=default` (TOML-driven) or `snowflake://user:pw@account/db/schema?warehouse=wh&role=role` (inline). See [Snowflake](#snowflake) below. |
+
+`duckdb` has no install extra because `duckdb` and `duckdb-engine` are core
+dependencies — the bundled demo datasource and the Postgres facade both need
+them, so they are always present.
 
 #### Additional support
 
@@ -160,11 +164,27 @@ Statement-level timeout is enforced via
 | `username` | string | No | Database username |
 | `password` | string | No | Database password |
 | `connection_string` | string | No | Full connection string (alternative to individual fields) |
-| `credentials_json` | string | No | Credentials JSON (used for BigQuery service accounts) |
+| `credentials_json` | string | No | BigQuery service-account key JSON |
+| `oauth_credentials_json` | string | No | BigQuery OAuth authorized-user grant JSON |
 | `schema_name` | string | No | Default schema name |
 
 !!! note
     Both `username` and `user` field names are accepted. The `user` alias is automatically mapped to `username` for compatibility with common database tooling conventions.
+
+### BigQuery credentials
+
+Three ways to authenticate, in the order SLayer prefers them:
+
+1. **`oauth_credentials_json`** — an OAuth *authorized user* grant, the shape `google.oauth2.credentials.Credentials.from_authorized_user_info` accepts (`token`, `refresh_token`, `client_id`, `client_secret`, `token_uri`). Queries run as that end user, against that user's own BigQuery permissions. An OAuth grant carries no project of its own, so one must come from the connection string — `bigquery://<project>/<dataset>` — or from a `quota_project_id` in the grant, which SLayer falls back to when the connection string omits it.
+2. **`credentials_json`** — a service-account key file's contents. One shared identity for every caller.
+3. **Neither** — Application Default Credentials (`GOOGLE_APPLICATION_CREDENTIALS`, or the attached compute identity).
+
+Setting both (1) and (2) is an error rather than a silent precedence win: they name different identities, and guessing is how a per-user query quietly runs as the shared service account.
+
+An authorized-user grant will **not** work in `credentials_json` — `sqlalchemy-bigquery` routes that field to `service_account.Credentials.from_service_account_info`, which only understands key files. SLayer detects the mix-up and says so.
+
+!!! note "Engine caching and credentials"
+    Cached engines are keyed by credentials as well as by URL, so two identities never share a connection pool. The cache is bounded (default 64 engines, `SLAYER_MAX_CACHED_ENGINES`) and evicts least-recently-used, which matters once per-user credentials make its size track *users* rather than datasources. For OAuth grants the key uses the durable part of the grant, so a refreshed access token reuses its engine instead of leaking a new one. An engine whose credentials get rejected — a revoked grant, a rotated key — is dropped and rebuilt on the next call.
 
 ## Ingesting at Startup
 

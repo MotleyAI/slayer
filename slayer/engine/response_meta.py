@@ -113,6 +113,29 @@ def expected_columns_from_sql(*, sql: str, dialect: str) -> List[str]:
     return list(parsed.named_selects)
 
 
+def projection_result_keys(*, root_planned: PlannedQuery) -> List[str]:
+    """Canonical result keys for the projected, non-hidden slots.
+
+    Plan-derived, so independent of what the emitted SQL carries — DEV-1756
+    length-fitting and dialect alias-mangling both change the emitted alias but
+    not this. The read side re-runs the pure fit over these to rebuild the
+    ``emitted -> canonical`` map, restoring keys that length-fitting makes
+    unrecoverable from the emitted form alone.
+    """
+    source_relation = root_planned.source_relation
+    projection_ids = set(root_planned.projection)
+    return [
+        rk
+        for slot in (
+            list(root_planned.row_slots)
+            + list(root_planned.aggregate_slots)
+            + list(root_planned.combined_expression_slots)
+        )
+        if not slot.hidden and slot.id in projection_ids
+        for rk in _slot_result_keys(slot=slot, source_relation=source_relation)
+    ]
+
+
 def _model_for_path(
     *, bundle: ResolvedSourceBundle, path: Tuple[str, ...]
 ) -> Optional[SlayerModel]:
@@ -267,29 +290,35 @@ def build_response_metadata(  # NOSONAR(S3776) — flat per-slot metadata classi
     Only keys that actually appear in the rendered projection are surfaced —
     a guard against any divergence between this derivation and the generator.
     """
-    expected_columns = expected_columns_from_sql(sql=sql, dialect=dialect)
-    # DEV-1716: on BigQuery / T-SQL the rendered SQL carries alias-mangled
-    # projection names (``orders___status``); decode them back to the canonical
-    # dotted form so ``expected_columns`` and the attribute-matching below
-    # operate in the same space as the plan's slot result keys. Reuses the
-    # dialect read-side hook (identity for every non-mangling dialect) via a
-    # synthetic-row wrap — no ``decode_columns`` method needed.
-    if expected_columns:
-        expected_columns = list(
-            get_dialect(dialect).decode_result_keys([dict.fromkeys(expected_columns)])[0]
-        )
-    public_keys = set(expected_columns)
     source_relation = root_planned.source_relation
-
-    dim_meta: Dict[str, FieldMetadata] = {}
-    measure_meta: Dict[str, FieldMetadata] = {}
-
     projection_ids = set(root_planned.projection)
     candidate_slots = (
         list(root_planned.row_slots)
         + list(root_planned.aggregate_slots)
         + list(root_planned.combined_expression_slots)
     )
+    # DEV-1756: the canonical projection result keys, derived from the plan
+    # (independent of the emitted SQL, which may carry length-fitted and/or
+    # alias-mangled names). The read side rebuilds the ``emitted -> canonical``
+    # map by re-running the pure fit over these.
+    plan_aliases = projection_result_keys(root_planned=root_planned)
+
+    expected_columns = expected_columns_from_sql(sql=sql, dialect=dialect)
+    # DEV-1716 / DEV-1756: the rendered SQL carries emitted projection names —
+    # alias-mangled (``orders___status``) and/or length-fitted; decode them back
+    # to the canonical dotted form so ``expected_columns`` and the attribute
+    # matching below operate in the same space as the plan's slot result keys.
+    if expected_columns:
+        expected_columns = list(
+            get_dialect(dialect).decode_result_keys(
+                [dict.fromkeys(expected_columns)], aliases=plan_aliases,
+            )[0]
+        )
+    public_keys = set(expected_columns)
+
+    dim_meta: Dict[str, FieldMetadata] = {}
+    measure_meta: Dict[str, FieldMetadata] = {}
+
     for slot in candidate_slots:
         if slot.hidden or slot.id not in projection_ids:
             continue

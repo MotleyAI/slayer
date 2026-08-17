@@ -37,8 +37,10 @@ import sqlglot
 from pydantic import BaseModel, ConfigDict, PrivateAttr
 from sqlglot import exp
 
+from slayer.core.errors import IdentifierCollisionError
 from slayer.core.keys import StarKey
 from slayer.core.refs import agg_kwarg_canonical_str, canonical_agg_name
+from slayer.sql.dialects._identifier_fit import fit_identifier
 
 if TYPE_CHECKING:  # pragma: no cover — typing only, keeps the import leaf clean
     from slayer.core.keys import AggregateKey
@@ -259,9 +261,21 @@ _NON_IDENT_CHAR_RE = re.compile(r"[^a-zA-Z0-9_]")  # NOSONAR(S6353) — see abov
 
 
 def cte_name_from_alias(
-    *, prefix: str, alias: str, allocator: "AliasAllocator",
+    *,
+    prefix: str,
+    alias: str,
+    allocator: "AliasAllocator",
+    dialect: str = "postgres",
+    limit: Optional[int] = None,
 ) -> str:
     """Mint a collision-safe CTE name for ``alias`` under ``prefix``.
+
+    DEV-1756: the sanitised name is length-fitted to ``limit`` (the dialect's
+    ``max_identifier_bytes``, ``None`` = unbounded) BEFORE allocation, so a deep
+    cross-model ``_cm_…`` name cannot silently truncate on Postgres and collide.
+    If the allocator's uniquifying ``_2`` suffix then pushes a fitted name back
+    over the limit — only a digest collision between two distinct over-limit
+    aliases can reach here — raise rather than emit a name the server truncates.
 
     The alias is flattened (:func:`flat_name` maps ``.`` to ``__``) and then
     sanitised to the identifier alphabet. BOTH steps are lossy and neither is
@@ -278,7 +292,14 @@ def cte_name_from_alias(
     string.
     """
     sanitized = _NON_IDENT_CHAR_RE.sub("_", flat_name(alias))
-    return allocator.allocate_cte(prefix + sanitized)
+    preferred = fit_identifier(name=prefix + sanitized, limit=limit)
+    name = allocator.allocate_cte(preferred)
+    if limit is not None and len(name.encode("utf-8")) > limit:
+        raise IdentifierCollisionError(
+            first=preferred, second=name, emitted=name,
+            dialect=dialect, limit=limit, namespace="CTE name",
+        )
+    return name
 
 
 # ---------------------------------------------------------------------------

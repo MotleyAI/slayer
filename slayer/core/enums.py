@@ -3,7 +3,7 @@
 import datetime  # noqa: F401  (kept for downstream imports of TimeGranularity)
 import difflib
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 
 class StrEnum(str, Enum):
@@ -156,6 +156,14 @@ class OrderDirection(StrEnum):
 class JoinType(StrEnum):
     LEFT = "left"
     INNER = "inner"
+
+
+# The kind of database object a ``sql_table``-mode model points at.
+# A plain ``Literal`` rather than a ``StrEnum`` because the values are written
+# straight into persisted YAML/SQLite and read back by ``SlayerModel``; keeping
+# them bare strings avoids an enum-serialisation round-trip on a field whose
+# whole job is to be inspected by humans and agents.
+ObjectKind = Literal["table", "view", "materialized_view"]
 
 
 # ---------------------------------------------------------------------------
