@@ -39,7 +39,6 @@ from decimal import Decimal
 
 import pytest
 
-from slayer.core.enums import DataType
 from slayer.core.keys import (
     AggregateKey,
     ColumnKey,
@@ -48,8 +47,6 @@ from slayer.core.keys import (
     StarKey,
     reroot_aggregate_key,
 )
-from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.sql.generator import SQLGenerator
 
 
 # ===========================================================================
@@ -457,91 +454,3 @@ def test_reroot_does_not_mutate_input_key() -> None:
     # host-rooted (no accidental in-place surgery / aliasing).
     assert key.source == ColumnKey(path=("customers",), leaf="amount")
     assert key.args == (ColumnKey(path=("customers",), leaf="signup_at"),)
-
-
-
-
-# ===========================================================================
-# Section G — reworded residual-hop guard (DEV-1526 pointer)
-# ===========================================================================
-# PINS A DEAD BRANCH. ``_resolve_explicit_time_col`` is still CALLED — every
-# aggregate reaches it through ``_build_agg_render_spec_from_planned`` — but no
-# first/last does since DEV-1748, so it returns ``None`` on every production
-# call and the residual-hop guard below can no longer fire outside a direct
-# unit call like this one. The ranked CTE resolves its ranking key through its
-# OWN scope, which pulls the residual join this guard exists to refuse; the
-# end-to-end proof is the un-xfailed
-# ``test_a_joined_derived_time_arg_ranks_by_the_joined_expression`` in
-# tests/test_dev1748_first_last_matrix.py. Kept until PR 6 removes the branch,
-# per P-J, so the removal is reviewed as a removal.
-#
-# After the unified reroot, a path-bearing ``ColumnSqlKey`` reaching
-# ``_resolve_explicit_time_col`` is the deeper-hop RESIDUAL case (source
-# shallower than the derived time arg): the isolated CTE does not yet pull
-# the residual join (Stage 4 / DEV-1526). The guard stays a loud
-# ``NotImplementedError`` but its message must point at DEV-1526, not the
-# now-closed DEV-1476.
-
-
-def _guard_source_model() -> SlayerModel:
-    return SlayerModel(
-        name="customers",
-        sql_table="customers",
-        data_source="prod",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="amount", type=DataType.DOUBLE),
-        ],
-        joins=[
-            ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]]),
-        ],
-    )
-
-
-def test_residual_columnsqlkey_time_arg_raises_dev1526() -> None:
-    gen = SQLGenerator(dialect="postgres")
-    key = AggregateKey(
-        source=ColumnKey(path=(), leaf="amount"),
-        agg="last",
-        # Residual path survives reroot when the derived time col is a hop
-        # PAST the target.
-        args=(
-            ColumnSqlKey(
-                path=("regions",), model="regions", column_name="opened_day",
-            ),
-        ),
-    )
-    # Hoisted out of the ``pytest.raises`` block so the ONLY call that can
-    # raise inside it is the one under test (Sonar S5778).
-    source_model = _guard_source_model()
-    with pytest.raises(NotImplementedError) as excinfo:
-        gen._resolve_explicit_time_col(
-            key=key,
-            source_model=source_model,
-            source_relation="customers",
-            bundle=None,
-        )
-    assert "DEV-1526" in str(excinfo.value)
-    assert "DEV-1476" not in str(excinfo.value)
-
-
-def test_non_first_last_agg_returns_none_before_residual_guard() -> None:
-    # The ``agg not in (first, last)`` short-circuit must precede the
-    # residual-path raise: a non-ranking aggregate with a path-bearing
-    # ColumnSqlKey arg returns None, never reaching the guard.
-    gen = SQLGenerator(dialect="postgres")
-    key = AggregateKey(
-        source=ColumnKey(path=(), leaf="amount"),
-        agg="sum",
-        args=(
-            ColumnSqlKey(
-                path=("regions",), model="regions", column_name="opened_day",
-            ),
-        ),
-    )
-    assert gen._resolve_explicit_time_col(
-        key=key,
-        source_model=_guard_source_model(),
-        source_relation="customers",
-        bundle=None,
-    ) is None
