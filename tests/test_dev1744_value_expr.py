@@ -1905,24 +1905,16 @@ class TestNewlyAdmittedScalars:
 
 
 class TestParserAndBinderScalarSetsAgree:
-    """A tripwire on the remaining parser/binder divergence.
+    """A tripwire on parser/binder divergence.
 
-    ``SCALAR_PASSTHROUGH`` still admits four names the binder does not. Each
-    needs a decision this PR deliberately does not make: ``greatest`` / ``least``
-    fall back to SQLite's ``MAX(a, b)`` / ``MIN(a, b)``, which return NULL when
-    an argument is NULL where Postgres ignores NULLs; ``trunc`` has four target
-    forms including T-SQL ``ROUND(x, 0, 1)`` and a lowercase ClickHouse
-    spelling; and ``mod`` is operator-shaped, so it does not even build through
-    the shared scalar policy today.
-
-    Pinned as an exact set so neither side can drift again unnoticed — and so
-    admitting one of the four is a deliberate edit here, not a silent one.
+    DEV-1753 admitted the last four parser-only names (``greatest``, ``least``,
+    ``trunc``, ``mod``), so the parser and binder now admit exactly the same
+    pass-through scalars. Pinned as the empty set so neither side can drift
+    again unnoticed — adding a name to one set without the other fails here.
     """
 
-    def test_parser_only_names_are_exactly_the_deferred_four(self) -> None:
-        assert SCALAR_PASSTHROUGH - SCALAR_FUNCTIONS == {
-            "greatest", "least", "mod", "trunc",
-        }
+    def test_no_parser_only_names_remain(self) -> None:
+        assert SCALAR_PASSTHROUGH - SCALAR_FUNCTIONS == set()
 
     def test_like_is_the_only_binder_only_name(self) -> None:
         """``like`` is an operator, not a pass-through function — the parser

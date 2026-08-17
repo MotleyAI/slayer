@@ -544,6 +544,12 @@ def render_scalar_call(
         raise NotImplementedError(arity_error)
     if name == "like":
         return exp.Like(this=args[0], expression=args[1])
+    if name == "mod":
+        # ``%`` is an operator, not a Func: ``exp.func("MOD", …)`` raises at
+        # build time, and a raw ``exp.Mod`` mis-groups a complex operand
+        # (``mod(a + b, c)`` → ``a + b % c``). The ``%`` composer runs the
+        # operand-precedence pass that parenthesises both sides correctly.
+        return render_arithmetic(op="%", operands=args)
     node = dialect.rewrite_target_ast(exp.func(name.upper(), *args))
     return rewrite_log_alias(node, dialect=dialect)
 
