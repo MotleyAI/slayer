@@ -12,6 +12,7 @@ fields use class-level defaults (``sqlglot_name: str = "postgres"``).
 
 from __future__ import annotations
 
+import hashlib
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Literal, Optional
 from collections.abc import Callable
@@ -165,6 +166,14 @@ def _sqlglot_backslash_escapes(sqlglot_name: str) -> bool:
             f"sqlglot upgrade may have changed this internal API (DEV-1727)."
         )
     return "\\" in escapes
+
+
+def _digest(secret: str | None) -> str:
+    """Non-reversible id for secret material in cache keys. 16 hex chars keeps
+    it log-readable; collisions are negligible at this scale."""
+    if not secret:
+        return ""
+    return hashlib.sha256(secret.encode("utf-8")).hexdigest()[:16]
 
 
 class SqlDialect(BaseModel):
@@ -723,6 +732,20 @@ class SqlDialect(BaseModel):
         ``snowflake.connector.connect(connection_name=...)``.
         """
         return None
+
+    # ------------------------------------------------------------------
+    # Credential identity (engine-cache safety)
+    # ------------------------------------------------------------------
+
+    def credential_fingerprint(self, datasource: "DatasourceConfig") -> str:
+        """Opaque identity of the credentials this datasource authenticates with.
+
+        Part of the engine cache key: a dialect whose secret is *not* in the
+        connection string MUST override this, or callers with different
+        credentials share one engine. Return a digest, never raw secret —
+        keys reach logs.
+        """
+        return _digest(datasource.credentials_json)
 
     def apply_session_overrides(
         self,

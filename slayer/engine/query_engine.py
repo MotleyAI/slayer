@@ -81,7 +81,8 @@ from slayer.memories.resolver import (
 from slayer.sql.client import SlayerSQLClient
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type, get_dialect
 from slayer.sql import engine_factory
-from slayer.sql.engine_factory import _runtime_fingerprint
+from slayer.sql.engine_factory import EngineCacheKey
+from slayer.sql.engine_factory import _cache_key as _engine_cache_key
 from slayer.sql.generator import generate_planned_stages
 from slayer.sql.session_policy import ScopedTable, apply_session_policy
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
@@ -212,15 +213,19 @@ def _build_recommend_coverage(
 _PLACEHOLDER_FILL_VALUE = "0"
 
 
-def _sql_client_cache_key(datasource: DatasourceConfig) -> tuple[str, str]:
+def _sql_client_cache_key(datasource: DatasourceConfig) -> EngineCacheKey:
     """Cache key for ``SlayerQueryEngine._sql_clients``.
 
-    Mirrors ``engine_factory``'s cache key so two datasources differing
-    in (e.g.) Snowflake ``warehouse`` get distinct ``SlayerSQLClient``
-    instances (and therefore distinct factory-cached engines with the
-    correct per-connection ``USE`` listener) — DEV-1551.
+    Delegates to ``engine_factory``'s key builder rather than re-deriving it
+    (DEV-1755): each client memoizes the engine it got from the factory, so if
+    the two keys disagreed a caller could be handed a client whose engine was
+    built for different credentials (e.g. a different user's BigQuery OAuth
+    token). Sharing one implementation makes that impossible. Distinct
+    ``connection_name`` / warehouse / role datasources still key apart (DEV-1551).
     """
-    return (datasource.get_connection_string(), _runtime_fingerprint(datasource))
+    return _engine_cache_key(
+        datasource=datasource, connection_string=datasource.get_connection_string(),
+    )
 
 
 def _merge_query_variables(
@@ -569,7 +574,7 @@ class SlayerQueryEngine:
         # ``engine_factory``'s cache so Snowflake datasources sharing a
         # connection_name but differing in warehouse/role/database/schema get
         # distinct clients (DEV-1551).
-        self._sql_clients: dict[tuple[str, str], SlayerSQLClient] = {}
+        self._sql_clients: dict[EngineCacheKey, SlayerSQLClient] = {}
         # DEV-1578: immutable, engine-global forced-filter policy. When set,
         # every generated SQL is rewritten to scope each physical table to the
         # configured tenant before execution / dry-run / explain.
@@ -583,7 +588,7 @@ class SlayerQueryEngine:
         # datasource, for the correlated-subquery join-rule gate. ``None`` (or a
         # missing entry) fails closed. Populated by
         # ``_preflight_clickhouse_correlated`` before the policy rewrite.
-        self._ch_version_cache: dict[tuple[str, str], tuple[int, int] | None] = {}
+        self._ch_version_cache: dict[EngineCacheKey, tuple[int, int] | None] = {}
 
     # ---- query cache management (DEV-1587 / DEV-1715) ----------------------
 

@@ -85,9 +85,9 @@ async def test_file_backed_sqlite_engine_cached_in_module(tmp_path: Path) -> Non
     engine_factory.reset_cache()
     client = SlayerSQLClient(datasource=ds)
     await client.execute("SELECT 1")
-    # Engine is cached in the factory under the (connection_string, '')
-    # key (empty runtime fingerprint for non-snowflake datasources).
-    assert (conn_str, "") in engine_factory._engine_cache
+    # Engine is cached in the factory under the datasource's engine identity
+    # (connection_string plus empty runtime/credential fingerprints here).
+    assert engine_factory._cache_key(ds, conn_str) in engine_factory._engine_cache
     # Per-client engine now holds the factory-cached instance directly,
     # so a second client on the same datasource reuses the same engine.
     client2 = SlayerSQLClient(datasource=ds)

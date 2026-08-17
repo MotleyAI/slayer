@@ -34,7 +34,7 @@ from sqlglot import exp
 
 from slayer.core.enums import TimeGranularity
 from slayer.sql.naming import decode_alias, encode_alias
-from slayer.sql.dialects.base import SqlDialect
+from slayer.sql.dialects.base import SqlDialect, _digest
 
 if TYPE_CHECKING:
     from slayer.core.models import DatasourceConfig
@@ -64,6 +64,58 @@ if TYPE_CHECKING:
 #     ``tests/dialects/test_bigquery.py::test_rewrite_emitted_sql_false_positive_on_single_backticked_dotted_path``
 #     for the characterization pin.
 _DOTTED_ALIAS_RE = re.compile(r"`(\w+(?:\.\w+)+)`", re.ASCII)
+
+
+# ---------------------------------------------------------------------------
+# Credential parsing
+# ---------------------------------------------------------------------------
+
+
+# ``type`` marker Google writes into an OAuth authorized-user JSON, as
+# opposed to ``"service_account"`` in a key file.
+_AUTHORIZED_USER_TYPE = "authorized_user"
+
+# Fields of an authorized-user grant that change on every token refresh
+# without changing *whose* grant it is.
+_ROTATING_OAUTH_FIELDS = frozenset({"token", "access_token", "expiry", "id_token"})
+
+
+def _parse_credentials_object(
+    *,
+    raw: str | None,
+    field: str,
+    datasource_name: str,
+) -> dict[str, Any]:
+    """Decode a credentials JSON string, or raise naming the offending field."""
+    try:
+        parsed = json.loads(raw or "")
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Datasource '{datasource_name}': {field} is not valid JSON: {exc}"
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(
+            f"Datasource '{datasource_name}': {field} must be a JSON object"
+        )
+    return parsed
+
+
+def _durable_oauth_material(raw: str) -> str:
+    """Canonical string identifying *whose* OAuth grant ``raw`` is.
+
+    Strips the rotating token fields when a refresh token is present, so a
+    refreshed grant keeps its cache identity. Unparseable input falls back
+    to the raw string: a bad blob still gets a distinct identity, and
+    ``build_engine`` is where it earns its error message.
+    """
+    try:
+        info = json.loads(raw)
+    except json.JSONDecodeError:
+        return raw
+    if not isinstance(info, dict) or not info.get("refresh_token"):
+        return raw
+    durable = {k: v for k, v in info.items() if k not in _ROTATING_OAUTH_FIELDS}
+    return json.dumps(durable, sort_keys=True, default=str)
 
 
 # ---------------------------------------------------------------------------
@@ -157,32 +209,114 @@ class BigqueryDialect(SqlDialect):
         *,
         connection_string: str,
     ) -> "sa.Engine | None":
-        """Construct the SQLAlchemy engine with inline service-account JSON
-        when ``DatasourceConfig.credentials_json`` is set.
+        """Build the engine for whichever auth path is configured, in order:
 
-        ``sqlalchemy-bigquery`` accepts a ``credentials_info`` kwarg on
-        ``create_engine`` — a dict matching the service-account key file's
-        shape. Parse the JSON string into a dict and pass it through; the
-        BigQuery client builds credentials from it directly, no temp file
-        needed. When ``credentials_json`` is unset, return ``None`` so
-        ``engine_factory`` falls back to the default ``create_engine`` and
-        the BigQuery client picks up Application Default Credentials.
+        1. ``oauth_credentials_json`` — per-end-user grant, see
+           :meth:`_build_oauth_engine`.
+        2. ``credentials_json`` — service-account key, passed straight through
+           as ``credentials_info``. One shared identity for every caller.
+        3. Neither — ``None``, so the factory falls back to a plain
+           ``create_engine`` and the client picks up ADC.
+
+        Setting both is an error rather than a silent precedence win: they are
+        different identities, and guessing is how a per-user query quietly runs
+        as the service account.
         """
-        credentials_json = datasource.credentials_json
-        if not credentials_json:
+        if datasource.oauth_credentials_json and datasource.credentials_json:
+            raise ValueError(
+                f"Datasource '{datasource.name}': credentials_json and "
+                f"oauth_credentials_json are mutually exclusive — they select "
+                f"different identities (shared service account vs. end user). "
+                f"Set exactly one."
+            )
+        if datasource.oauth_credentials_json:
+            return self._build_oauth_engine(
+                datasource=datasource, connection_string=connection_string,
+            )
+        if not datasource.credentials_json:
             return None
-        try:
-            credentials_info = json.loads(credentials_json)
-        except json.JSONDecodeError as exc:
+        credentials_info = _parse_credentials_object(
+            raw=datasource.credentials_json,
+            field="credentials_json",
+            datasource_name=datasource.name,
+        )
+        if credentials_info.get("type") == _AUTHORIZED_USER_TYPE:
             raise ValueError(
-                f"Datasource '{datasource.name}': credentials_json is not valid JSON: {exc}"
-            ) from exc
-        if not isinstance(credentials_info, dict):
-            raise ValueError(
-                f"Datasource '{datasource.name}': credentials_json must be a JSON object"
+                f"Datasource '{datasource.name}': credentials_json holds an "
+                f"'{_AUTHORIZED_USER_TYPE}' OAuth grant, but it only accepts a "
+                f"service-account key. Put OAuth grants in "
+                f"oauth_credentials_json instead."
             )
         return sa.create_engine(
-            connection_string,
+            url=connection_string,
             credentials_info=credentials_info,
             pool_pre_ping=True,
         )
+
+    def _build_oauth_engine(
+        self,
+        *,
+        datasource: "DatasourceConfig",
+        connection_string: str,
+    ) -> "sa.Engine":
+        """Build an engine bound to a caller-supplied OAuth user grant.
+
+        ``sqlalchemy-bigquery`` has no OAuth kwarg — every credentials kwarg it
+        has routes to ``service_account.Credentials``. Its ``user_supplied_client``
+        URL flag is the supported escape hatch: with it set, the driver takes our
+        client from ``connect_args`` instead of first building an ADC one (which
+        fails outright where no ADC exists), so the flag is load-bearing.
+
+        A grant carries no project, so it comes from the URL host or the grant's
+        ``quota_project_id``. Config is validated before the ``google.*``
+        imports — they ship only with the 'bigquery' extra, and a misconfigured
+        datasource should report that, not a missing dependency.
+        """
+        info = _parse_credentials_object(
+            raw=datasource.oauth_credentials_json,
+            field="oauth_credentials_json",
+            datasource_name=datasource.name,
+        )
+        url = sa.engine.make_url(connection_string)
+        project = url.host or info.get("quota_project_id")
+        if not project:
+            raise ValueError(
+                f"Datasource '{datasource.name}': no BigQuery project resolved. "
+                f"An OAuth grant carries none of its own, so it must be given in "
+                f"the connection string as 'bigquery://<project>/<dataset>', or "
+                f"as 'quota_project_id' inside oauth_credentials_json."
+            )
+        from google.cloud import bigquery  # noqa: PLC0415  (optional 'bigquery' extra)
+        from google.oauth2.credentials import Credentials  # noqa: PLC0415
+
+        try:
+            credentials = Credentials.from_authorized_user_info(info)
+        except ValueError as exc:
+            raise ValueError(
+                f"Datasource '{datasource.name}': oauth_credentials_json is not "
+                f"a usable authorized-user grant: {exc}"
+            ) from exc
+        return sa.create_engine(
+            url=url.update_query_dict({"user_supplied_client": "true"}),
+            connect_args={"client": bigquery.Client(
+                project=project, credentials=credentials,
+            )},
+            pool_pre_ping=True,
+        )
+
+    def credential_fingerprint(self, datasource: "DatasourceConfig") -> str:
+        """Identity across both auth paths, so a cached engine never crosses
+        between a service account and an end user, or between two end users.
+
+        The OAuth half digests the *durable* grant: keying on a rotating access
+        token would mint a fresh engine per refresh. Dropping those fields is
+        only safe while a refresh token pins the identity — without one the
+        access token is the whole identity.
+        """
+        material = [datasource.credentials_json or ""]
+        raw_oauth = datasource.oauth_credentials_json
+        if raw_oauth:
+            material.append(_durable_oauth_material(raw_oauth))
+        if not any(material):
+            return ""
+        return _digest("\x00".join(material))

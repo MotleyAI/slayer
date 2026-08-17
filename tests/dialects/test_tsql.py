@@ -27,7 +27,7 @@ import pytest
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
-from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.query_engine import SlayerQueryEngine, _sql_client_cache_key
 from slayer.sql.dialects.tsql import TsqlDialect
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -702,7 +702,7 @@ async def _build_tsql_engine(rows: list[dict]) -> tuple[SlayerQueryEngine, tempf
     )
     await storage.save_model(model)
     engine = SlayerQueryEngine(storage=storage)
-    engine._sql_clients[(ds.get_connection_string(), "")] = _FakeTsqlClient(rows)
+    engine._sql_clients[_sql_client_cache_key(ds)] = _FakeTsqlClient(rows)
     return engine, tmp, ds
 
 
@@ -769,7 +769,7 @@ async def _build_labeled_tsql_engine(
     )
     await storage.save_model(model)
     engine = SlayerQueryEngine(storage=storage)
-    engine._sql_clients[(ds.get_connection_string(), "")] = _FakeTsqlClient(rows)
+    engine._sql_clients[_sql_client_cache_key(ds)] = _FakeTsqlClient(rows)
     return engine, tmp, ds
 
 
