@@ -141,11 +141,10 @@ DEEP = "SandboxSubscription.SandboxCustomer.SandboxConsumer"
 class TestPostgresIdentifierLength:
     async def test_server_truncates_at_63_bytes(self, chain_env) -> None:
         """Pin the 63-byte truncation premise against the live server."""
-        client = chain_env._get_client(
+        client = chain_env._client_for(
             await chain_env._resolve_datasource(
                 model=await chain_env.storage.get_model("SandboxInvoiceV2", data_source=DS),
             ),
-            ("probe", "probe"),
         )
         rows = await client.execute(sql=f'SELECT 1 AS "{LONG_EMAIL}"')
         assert list(rows[0])[0] != LONG_EMAIL, "server did not truncate; premise broken"
