@@ -129,3 +129,69 @@ def test_unknown_alias_left_untouched() -> None:
     # cte_x.value untouched; A.bar stays qualified to the host alias.
     assert "cte_x.value" in _norm(out)
     assert "A.bar" in _norm(out)
+
+
+def test_dev1752_subquery_inner_ref_not_qualified() -> None:
+    """DEV-1752: qualification is gated on root scope. The OUTER ``bar``
+    qualifies to the host alias; the inner ``bar`` (a column of the subquery's
+    own FROM) is left bare even though ``bar`` is also a model column."""
+    a = _model_a()
+    out = expand_derived_refs_sync(
+        sql="bar IN (SELECT bar FROM other_tbl)", model=a, alias_path="A",
+        resolve_model=_resolver({"A": a}), dialect="sqlite",
+    )
+    assert _norm(out) == "A.bar IN (SELECT bar FROM other_tbl)"
+
+
+def test_dev1752_root_inlines_while_subquery_local_untouched() -> None:
+    """DEV-1752 over-gating guard (non-differential): the root ``c1`` still
+    inlines to its definition; the inner ``c1`` is untouched. Non-differential
+    because the buggy qualification branch never fired for a DERIVED inner
+    column — only for trivial-base / non-model columns — so this guards against
+    the fix over-gating root inlining, not the bug itself."""
+    a = _model_a()
+    out = expand_derived_refs_sync(
+        sql="c1 IN (SELECT c1 FROM other_tbl)", model=a, alias_path="A",
+        resolve_model=_resolver({"A": a}), dialect="sqlite",
+    )
+    assert _norm(out) == "(A.raw_a + 1) IN (SELECT c1 FROM other_tbl)"
+
+
+def test_dev1752_nonroot_explicit_ref_not_requalified() -> None:
+    """DEV-1752 (differential, alias != model name): an inner ref explicitly
+    qualified with the model name is left byte-for-byte untouched — it is NOT
+    rewritten to the host alias. Proves non-root columns are untouched, not just
+    coincidentally unchanged when alias == model name."""
+    a = _model_a()
+    out = expand_derived_refs_sync(
+        sql="bar IN (SELECT A.bar FROM other_tbl)", model=a, alias_path="A_host",
+        resolve_model=_resolver({"A": a}), dialect="sqlite",
+    )
+    # Outer bare bar -> host alias; inner A.bar stays A.bar (NOT A_host.bar).
+    assert _norm(out) == "A_host.bar IN (SELECT A.bar FROM other_tbl)"
+
+
+def test_dev1752_set_operation_branches_leave_inner_bare() -> None:
+    """DEV-1752: both legs of a UNION are non-root scopes; their inner columns
+    stay bare even though ``bar`` is a model column."""
+    a = _model_a()
+    out = expand_derived_refs_sync(
+        sql="bar IN (SELECT bar FROM t1 UNION SELECT bar FROM t2)",
+        model=a, alias_path="A",
+        resolve_model=_resolver({"A": a}), dialect="sqlite",
+    )
+    assert _norm(out) == "A.bar IN (SELECT bar FROM t1 UNION SELECT bar FROM t2)"
+
+
+def test_dev1752_cte_body_leaves_inner_bare() -> None:
+    """DEV-1752: a CTE (WITH) inside Mode-A is a non-root scope; refs in its
+    body and its select stay bare."""
+    a = _model_a()
+    out = expand_derived_refs_sync(
+        sql="bar IN (WITH c AS (SELECT bar FROM t) SELECT bar FROM c)",
+        model=a, alias_path="A",
+        resolve_model=_resolver({"A": a}), dialect="sqlite",
+    )
+    assert _norm(out) == (
+        "A.bar IN (WITH c AS (SELECT bar FROM t) SELECT bar FROM c)"
+    )

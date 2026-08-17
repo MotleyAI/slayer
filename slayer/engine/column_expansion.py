@@ -256,6 +256,11 @@ def _process_column_node_sync(
     """
     if col.args.get("db") or col.args.get("catalog"):
         return None
+    # DEV-1752: gate BEFORE qualifying. A column outside the root scope belongs
+    # to a subquery / CTE / set-op branch and binds in its own scope, so it is
+    # left untouched — neither qualified against the outer root nor inlined.
+    if id(col) not in root_scope_ids:
+        return None
     table_id = col.args.get("table")
     col_name = col.name
     table_alias = table_id.name if table_id is not None else alias_path
@@ -271,8 +276,6 @@ def _process_column_node_sync(
     target_col = target_model.get_column(col_name)
     if target_col is None or _is_trivial_base(column=target_col):
         col.set("table", exp.to_identifier(canonical_alias))
-        return None
-    if id(col) not in root_scope_ids:
         return None
     next_is_root = is_root and (target_model is model)
     key = (target_model.name, col_name)

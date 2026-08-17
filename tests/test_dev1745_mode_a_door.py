@@ -207,20 +207,10 @@ class TestOpaqueReferencesSurvive:
         )
         assert "some_cte.flag" in out, out
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1752: known defect, tracked separately and deliberately NOT "
-            "fixed in this PR: qualification in _process_column_node_sync happens "
-            "BEFORE the root_scope_ids gate, so it is not scope-aware. Only "
-            "derived INLINING is gated. A column inside a subquery with its "
-            "own FROM is therefore qualified against the OUTER root: "
-            "'amount IN (SELECT amount FROM other_tbl)' becomes "
-            "'orders.amount IN (SELECT orders.amount FROM other_tbl)', "
-            "silently rebinding the inner reference to the wrong table."
-        ),
-    )
     def test_subquery_column_is_not_qualified_against_outer_root(self) -> None:
+        # DEV-1752 fixed: qualification is now gated on root scope, so a column
+        # inside a subquery is left to bind in its own scope. See
+        # tests/test_dev1752_subquery_scope.py for the full pack.
         out = _sql_of(
             _scope().enter_predicate("amount IN (SELECT amount FROM other_tbl)")
         )
