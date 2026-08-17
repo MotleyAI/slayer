@@ -538,11 +538,16 @@ class TestAllocatorDeterminism:
         sql2 = await _gen(query)
         assert sql1 == sql2
         assert_scope_closed(sql1)
-        # Within-scope: no CTE body defines the same _val alias twice.
-        for pat in (r"_rk_\w*deep_pop\w*", r"_rk_\w*deep_weight\w*"):
-            body = _extract_cte_body(sql1, pat)
+        # Within-scope: no CTE body defines the same _val alias twice. DEV-1756
+        # may length-fit an over-limit ranked CTE name (dropping the measure
+        # substring — the two CTEs here differ only by hash), so locate them by
+        # the ``_rk_`` prefix rather than the measure name.
+        rk_names = _re.findall(r"(_rk_\w+)\s+AS\s*\(", sql1)
+        assert len(rk_names) >= 2, f"expected two ranked CTEs:\n{sql1}"
+        for name in rk_names:
+            body = _extract_cte_body(sql1, _re.escape(name))
             vals = _re.findall(r"AS (_val_\d+)", body)
-            assert len(vals) == len(set(vals)), f"dup _val in {pat}: {vals}"
+            assert len(vals) == len(set(vals)), f"dup _val in {name}: {vals}"
         # Design invariant (DEV-1703 D-E generation-wide allocator, per
         # slayer/sql/naming.py): sibling CTEs in one generation never mint the
         # same _val_<n>. Pinned as a regression guard for that locked decision.

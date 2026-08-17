@@ -2,9 +2,13 @@
 
 import json
 import logging
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from typing import Any
 
 import sqlalchemy as sa
+
+from slayer import __version__
 
 from slayer.core.errors import (
     AmbiguousModelError,
@@ -22,7 +26,12 @@ from slayer.core.models import (
 )
 from slayer.core.query import ModelExtension, SlayerQuery
 from slayer.core.recommend import render_recommendation_markdown
-from slayer.engine.ingestion import _friendly_db_error
+from slayer.engine.ingestion import (
+    _empty_ingest_message as _shared_empty_ingest_message,
+    _friendly_db_error,
+    _get_schemas,
+    list_ingestable_objects,
+)
 from slayer.engine.profiling import handle_edit_refresh
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.memories.help_seed import seed_help_memories
@@ -55,6 +64,76 @@ logger = logging.getLogger(__name__)
 VALID_DIMENSION_TYPES = {"string", "time", "date", "boolean", "number"}
 _UNSET = object()  # Sentinel to distinguish "not provided" from "explicitly set to None"
 
+# DEV-1757: every branch of the import failure below offers the same remedy.
+# The direct constrained install leads because it works whatever SLayer
+# release the caller is on; "upgrade SLayer" is the secondary hint, since
+# telling someone already on the latest release to reinstall it is precisely
+# the misdirection the old "Reinstall SLayer" message caused.
+_MCP_REMEDY = (
+    "Install a supported version: pip install 'mcp>=1.0,<2' "
+    "(or upgrade SLayer, which pins mcp<2: pip install -U motley-slayer)."
+)
+
+
+def _mcp_major(version_str: str) -> int | None:
+    """Best-effort major-version parse; ``None`` when unparseable."""
+    try:
+        return int(version_str.split(".", 1)[0].strip())
+    except ValueError:
+        return None
+
+
+def _import_fastmcp():
+    """Return the mcp 1.x ``FastMCP`` class, or raise an actionable ImportError.
+
+    DEV-1757: mcp 2.x renamed ``mcp.server.fastmcp`` to
+    ``mcp.server.mcpserver``, so an unbounded pin resolved a major SLayer
+    cannot import. Absent package and wrong major need different remedies,
+    and the old message ("Reinstall SLayer") was wrong for both.
+    """
+    try:
+        from mcp.server.fastmcp import FastMCP
+    except ImportError as exc:
+        try:
+            installed = _pkg_version("mcp")
+        except PackageNotFoundError:
+            raise ImportError(f"MCP package not found. {_MCP_REMEDY}") from exc
+        major = _mcp_major(installed)
+        if major is not None and major >= 2:
+            detail = (
+                f"mcp {installed} is installed, but SLayer targets the mcp 1.x "
+                f"FastMCP API: mcp 2.x dropped 'mcp.server.fastmcp' (renamed to "
+                f"mcp.server.mcpserver.MCPServer)."
+            )
+        else:
+            # A genuine 1.x whose import failed for some other reason — a
+            # broken transitive dep, say. Blaming the 2.x rename here would
+            # just be a fresh misdiagnosis, so report what actually happened.
+            detail = (
+                f"mcp {installed} is installed, but 'mcp.server.fastmcp' could "
+                f"not be imported: {exc}"
+            )
+        raise ImportError(f"{detail} {_MCP_REMEDY}") from exc
+    return FastMCP
+
+
+def _set_server_version(mcp) -> None:
+    """Stamp SLayer's version onto the lowlevel MCP server.
+
+    DEV-1757: FastMCP 1.x exposes no ``version`` kwarg and never forwards one
+    to the lowlevel ``Server``, which then reports the *mcp SDK's* own version
+    as ``serverInfo.version``. Both degradation paths are tolerated so a future
+    SDK change cannot abort server construction over a cosmetic field.
+    """
+    lowlevel = getattr(mcp, "_mcp_server", None)
+    if lowlevel is None:
+        logger.debug("MCP server exposes no _mcp_server; leaving serverInfo.version")
+        return
+    try:
+        lowlevel.version = __version__
+    except AttributeError:
+        logger.debug("MCP serverInfo.version is read-only; leaving it", exc_info=True)
+
 
 def _ambiguous_with_mcp_hint(exc: AmbiguousModelError) -> str:
     """Render an ``AmbiguousModelError`` for the MCP surface.
@@ -82,32 +161,28 @@ def _test_connection(ds: DatasourceConfig) -> tuple[bool, str]:
         return False, _friendly_db_error(e)
 
 
-def _get_schemas(ds: DatasourceConfig) -> list[str]:
-    """List available schemas for a datasource."""
-    try:
-        from slayer.sql import engine_factory
-        engine = engine_factory.get_engine(ds.resolve_env_vars())
-        inspector = sa.inspect(engine)
-        schemas = inspector.get_schema_names()
-        return schemas
-    except Exception:
-        return []
-
-
 def _fetch_tables(
     ds: DatasourceConfig, schema_name: str | None = None,
 ) -> tuple[list[str] | None, str | None]:
-    """Inspect a datasource's table names.
+    """Inspect a datasource's table AND view names.
 
-    Returns ``(tables, None)`` on success or ``(None, friendly_error_message)``
+    Returns ``(objects, None)`` on success or ``(None, friendly_error_message)``
     on failure. ``schema_name=None`` uses the dialect's default schema.
+
+    Views are always included here, independent of the ingest-side
+    ``--no-views`` flag. This helper backs ``describe_datasource`` and the
+    empty-ingest probe, and a views-only schema previously reported "No tables
+    found — try another schema", misdirecting the agent away from a schema
+    that was in fact full of objects.
     """
     try:
         from slayer.sql import engine_factory
         sa_engine = engine_factory.get_engine(ds.resolve_env_vars())
         inspector = sa.inspect(sa_engine)
-        tables = inspector.get_table_names(schema=schema_name)
-        return sorted(tables), None
+        objects = list_ingestable_objects(
+            inspector=inspector, schema=schema_name, include_views=True
+        )
+        return sorted(o.name for o in objects), None
     except Exception as e:
         if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
             return None, _friendly_db_error(e)
@@ -115,15 +190,14 @@ def _fetch_tables(
 
 
 def _empty_ingest_message(*, schema_name: str, ds: DatasourceConfig) -> str:
-    schema_label = f" in schema '{schema_name}'" if schema_name else ""
-    lines = [f"No tables found{schema_label}."]
-    schemas = _get_schemas(ds)
-    if schemas:
-        lines.append(f"Available schemas: {', '.join(schemas)}")
-        lines.append(
+    """Agent-facing wrapper over the shared engine renderer."""
+    return _shared_empty_ingest_message(
+        schema_name=schema_name,
+        ds=ds,
+        retry_hint=(
             "Try: ingest_datasource_models with schema_name set to one of these."
-        )
-    return "\n".join(lines)
+        ),
+    )
 
 
 def _render_new_models_section(new_models: list[Any]) -> list[str]:
@@ -287,10 +361,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         run_sync(
             ingest_all_datasources_idempotent(storage=storage, stream=sys.stderr)
         )
-    try:
-        from mcp.server.fastmcp import FastMCP
-    except ImportError:
-        raise ImportError("MCP package not found. Reinstall SLayer: pip install motley-slayer")
+    FastMCP = _import_fastmcp()  # NOSONAR(S117) — holds a class object; CapWords matches the class it aliases
 
     mcp = FastMCP(
         "SLayer",
@@ -303,6 +374,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             "To connect a new database: create_datasource → describe_datasource (verify + list tables) → ingest_datasource_models → models_summary."
         ),
     )
+    _set_server_version(mcp)
     engine = SlayerQueryEngine(storage=storage)
     # DEV-1656: expose the closure engine so callers (bird-interact-agents on
     # the cloud Ray runner, where one actor process is reused across many

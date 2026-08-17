@@ -85,6 +85,7 @@ slayer ingest --datasource my_postgres
 slayer ingest --datasource my_postgres --schema public
 slayer ingest --datasource my_postgres --include orders,customers
 slayer ingest --datasource my_postgres --exclude migrations,django_session
+slayer ingest --datasource my_postgres --no-views
 ```
 
 | Flag | Required | Description |
@@ -93,7 +94,46 @@ slayer ingest --datasource my_postgres --exclude migrations,django_session
 | `--schema` | No | Database schema to inspect |
 | `--include` | No | Comma-separated tables to include |
 | `--exclude` | No | Comma-separated tables to exclude |
+| `--no-views` | No | Skip views and materialized views (ingested by default) |
 | `--storage` | No | Storage path |
+
+#### Views
+
+Views and materialized views are ingested alongside tables by default — dbt
+materializes staging models as views, so skipping them would hide most of a
+typical dbt project. Pass `--no-views` to restrict ingestion to base tables.
+
+A view-backed model records `source_kind: view` (or `materialized_view`) and is
+labelled `[view]` in the ingest output. Views expose no primary key and no
+foreign keys, so such models carry no primary-key column and get no
+auto-generated joins; add joins by hand if you need them.
+
+`--no-views` affects ingestion only. `slayer validate-models` always resolves
+models against tables *and* views, so a model pointing at a view is never
+mistaken for one whose table was dropped.
+
+#### Unmodellable objects
+
+Model names cannot contain `__` — it is reserved for join-path aliases in
+generated SQL. An object whose name contains it (dlt writes nested-JSON child
+tables like `reports__patient__drug`) is modelled under a sanitized name
+(`reports_patient_drug`) while `sql_table` keeps the real name, so queries
+still resolve.
+
+Objects that cannot be modelled at all — a sanitized name that collides with an
+existing object, a name containing `.`, `:`, `/` or `\`, or one that fails
+introspection — are listed under `Skipped` and the rest of the ingest proceeds.
+Use `--exclude <name>` to accept a skip permanently.
+
+#### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Ingest completed; nothing skipped and no errors |
+| `1` | One or more objects were skipped, a model failed to persist, or the schema contained no tables or views at all |
+
+An empty result prints the available schemas so a mistyped `--schema` is
+obvious rather than silent.
 
 ### `slayer import-dbt`
 
@@ -168,6 +208,7 @@ slayer datasources create demo --ingest        # bundled Jaffle Shop demo
 | `--schema` | No | (with `--ingest`) Schema to ingest from |
 | `--include` | No | (with `--ingest`) Comma-separated tables to include |
 | `--exclude` | No | (with `--ingest`) Comma-separated tables to exclude |
+| `--no-views` | No | (with `--ingest`) Skip views and materialized views (ingested by default) |
 | `--years` | No | (demo only) Years of synthetic data to generate (default: 2) |
 | `-y`, `--yes` | No | Overwrite existing datasource / colliding models without prompting |
 | `--storage` | No | Storage path |

@@ -74,9 +74,19 @@ A column's `sql` may contain a window function (e.g. `row_number() over (order b
 ## Source modes
 
 A SlayerModel has exactly one source mode (mutually exclusive):
-- `sql_table`: physical table.
+- `sql_table`: physical table **or view**.
 - `sql`: explicit SQL subquery.
 - `source_queries`: list of `SlayerQuery` stages — the model is **query-backed**.
+
+`source_kind` (`table` / `view` / `materialized_view` / `null` for unknown)
+records which kind of object `sql_table` names. Auto-ingestion sets it and
+refreshes it on re-ingest. A view has no primary key and no foreign keys, so a
+view-backed model has no primary-key column and no auto-generated joins —
+`source_kind: view` is the signal that this is inherent, not missing data.
+
+Model names cannot contain `__` (reserved for join-path aliases), but
+`sql_table` can. Ingestion sanitizes only the name: object
+`reports__patient__drug` → model `reports_patient_drug`, `sql_table` unchanged.
 
 ## Query-backed models
 

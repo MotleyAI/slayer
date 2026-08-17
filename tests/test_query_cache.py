@@ -63,7 +63,7 @@ def _make_entry(*, created_at: float = 0.0, sql: str = "SELECT 1", response=None
         sql=sql,
         ds_fingerprint="fp",
         dialect="sqlite",
-        ds_key=("conn", "rt"),
+        ds_key=("conn", "rt", "cred"),
         created_at=created_at,
     )
 

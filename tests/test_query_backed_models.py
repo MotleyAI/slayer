@@ -1451,9 +1451,9 @@ class TestMultiStageMeasureRename:
             )
             sql = loaded.backing_query_sql or ""
             # Inner-stage wrap renames the column to ``rev``; DEV-1452 Stage B's
-            # ``build_flat_rename_wrapper`` emits the alias quoted
-            # (``AS "rev"``). The legacy renderer emitted it unquoted
-            # (``AS rev``); both forms satisfy the rename contract.
+            # ``build_flat_rename_wrapper`` may emit the alias quoted
+            # (``AS "rev"``) or bare (``AS rev``); both forms satisfy the
+            # rename contract, so the assertion accepts either.
             import re
             assert re.search(r'\bAS\s+"?rev"?(?:\s|$)', sql), (
                 f"expected inner-stage 'AS rev' rename in SQL:\n{sql}"

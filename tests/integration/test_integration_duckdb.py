@@ -1371,3 +1371,81 @@ class TestDev1728DerivedSharedGrain:
         # region 1 (pop 100): customers 1 (Jan) & 2 (Mar) → latest = 30.
         assert float(by_pop[100.0]) == pytest.approx(30.0), result.data
         assert float(by_pop[200.0]) == pytest.approx(20.0), result.data
+
+
+# ---------------------------------------------------------------------------
+# DEV-1753: greatest/least NULL-ignoring witness (GREATEST-native backend).
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def _dev1753_storage(tmp_path_factory):
+    """A DuckDB with a nullable ``disc`` column: DuckDB's ``GREATEST``/``LEAST``
+    IGNORE NULLs (the ratified Postgres-side of the DEV-1753 divergence), the
+    counterpart to SQLite's propagating ``MAX(a,b)``."""
+    tmp_path = tmp_path_factory.mktemp("dev1753")
+    db_path = tmp_path / "nulls.duckdb"
+    conn = duckdb.connect(str(db_path))
+    conn.execute(
+        "CREATE TABLE orders (id INTEGER PRIMARY KEY, amount DOUBLE, disc DOUBLE)"
+    )
+    conn.executemany(
+        "INSERT INTO orders VALUES (?, ?, ?)",
+        [(1, 10.0, None), (2, 20.0, 5.0), (3, 30.0, None), (4, None, None)],
+    )
+    conn.close()
+
+    storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
+    run_sync(storage.save_datasource(DatasourceConfig(
+        name="testduckdb", type="duckdb", database=str(db_path),
+    )))
+    run_sync(storage.save_model(SlayerModel(
+        name="orders", sql_table="orders", data_source="testduckdb",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            Column(name="disc", sql="disc", type=DataType.DOUBLE),
+        ],
+    )))
+    return storage
+
+
+@pytest.fixture
+def dev1753_env(_dev1753_storage) -> SlayerQueryEngine:
+    return SlayerQueryEngine(storage=_dev1753_storage)
+
+
+@pytest.mark.integration
+class TestDev1753GreatestLeastIgnoreNulls:
+    async def _values(self, engine, formula):
+        result = await engine.execute(query=SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="id")],
+            measures=[ModelMeasure(formula=formula, name="g")],
+        ))
+        return {int(r["orders.id"]): r["orders.g"] for r in result.data}
+
+    async def test_greatest_ignores_null(self, dev1753_env) -> None:
+        got = await self._values(dev1753_env, "greatest(amount:max, disc:max)")
+        # id 1/3: the non-null operand wins; id 4: both NULL -> NULL.
+        assert got[1] == pytest.approx(10.0)
+        assert got[2] == pytest.approx(20.0)
+        assert got[3] == pytest.approx(30.0)
+        assert got[4] is None
+
+    async def test_least_ignores_null(self, dev1753_env) -> None:
+        got = await self._values(dev1753_env, "least(amount:max, disc:max)")
+        assert got[1] == pytest.approx(10.0)
+        assert got[2] == pytest.approx(5.0)
+        assert got[3] == pytest.approx(30.0)
+        assert got[4] is None
+
+    async def test_trunc_executes(self, dev1753_env) -> None:
+        """DuckDB ``TRUNC`` toward zero on a live server."""
+        result = await dev1753_env.execute(query=SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count", name="n")],
+            filters=["trunc(amount) == 10"],
+        ))
+        assert result.data[0]["orders.n"] == 1
+        assert "TRUNC(" in (result.sql or ""), result.sql

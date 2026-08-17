@@ -11,6 +11,7 @@ Entry points: ``generate_from_planned`` (one stage) and
 
 import logging
 import re
+from collections.abc import Sequence
 from typing import (
     AbstractSet,
     Any,
@@ -3973,6 +3974,7 @@ class SQLGenerator:
                 continue
             cte_name = cte_name_from_alias(
                 prefix="_cm_", alias=canonical_alias, allocator=cm_allocator,
+                dialect=self.dialect, limit=self._dialect.max_identifier_bytes,
             )
             cm_cte_name_by_identity[identity] = cte_name
             cm_cte_name_for_plan[plan.aggregate_slot_id] = cte_name
@@ -4037,6 +4039,7 @@ class SQLGenerator:
             )
             cte_name = cte_name_from_alias(
                 prefix="_wm_", alias=full_agg_alias, allocator=wm_allocator,
+                dialect=self.dialect, limit=self._dialect.max_identifier_bytes,
             )
             cte_query, grain_aliases = self._render_window_measure_cte_from_planned(
                 plan=plan, agg_slot=agg_slot, source_model=source_model,
@@ -4073,6 +4076,7 @@ class SQLGenerator:
             )
             cte_name = cte_name_from_alias(
                 prefix=RANKED_CTE_PREFIX, alias=full_agg_alias, allocator=rk_allocator,
+                dialect=self.dialect, limit=self._dialect.max_identifier_bytes,
             )
             cte_query, grain_aliases = self._render_ranked_cte_from_planned(
                 plan=plan, agg_slot=agg_slot, bundle=bundle,
@@ -6817,9 +6821,19 @@ class SQLGenerator:
         else:
             slot_aliases = [cte_allocator.allocate_cte(slot.declared_name)]
         cte_name_alias = slot_aliases[0]
-        # DEV-1692: allocate collision-free CTE names too.
-        shifted_cte_name = cte_allocator.allocate_cte(f"shifted_{cte_name_alias}")
-        sjoin_cte_name = cte_allocator.allocate_cte(f"sjoin_{cte_name_alias}")
+        # DEV-1692: allocate collision-free CTE names too. DEV-1756: length-fit
+        # them so a long transform name can't push ``shifted_``/``sjoin_`` past
+        # the dialect's identifier limit and silently truncate.
+        _fit_kw = dict(
+            allocator=cte_allocator, dialect=self.dialect,
+            limit=self._dialect.max_identifier_bytes,
+        )
+        shifted_cte_name = cte_name_from_alias(
+            prefix="shifted_", alias=cte_name_alias, **_fit_kw,
+        )
+        sjoin_cte_name = cte_name_from_alias(
+            prefix="sjoin_", alias=cte_name_alias, **_fit_kw,
+        )
 
         # The shifted CTE reads the SOURCE table, not the chain, so it declares
         # no dependency; the assembler keeps it in declaration order.
@@ -8605,6 +8619,7 @@ def generate_planned_stages(
     *,
     bundle,
     dialect: str = "postgres",
+    projection_aliases: "Sequence[str]" = (),
 ) -> str:
     """Render a multi-stage DAG (``plan_stages`` output) to one SQL string.
 
@@ -8627,7 +8642,11 @@ def generate_planned_stages(
         sql = generate_from_planned(
             planned_queries[0], bundle=bundle, dialect=dialect,
         )
-        sql = get_dialect(dialect).rewrite_emitted_sql(sql)
+        # DEV-1756: length-fit over-limit projection aliases. ``projection_
+        # aliases`` are the plan-derived canonical result keys (same source the
+        # read side decodes against), passed in rather than parsed off the
+        # pre-mangle SQL — BigQuery can't parse a backticked dotted alias.
+        sql = get_dialect(dialect).rewrite_emitted_sql(sql, aliases=projection_aliases)
         # DEV-1705: validate the final POST-mangle, pre-RLS statement (env-gated).
         maybe_validate_scopes(sql, dialect=dialect)
         return sql
@@ -8686,8 +8705,10 @@ def generate_planned_stages(
     # otherwise). The re-parse/with_ grafting above can surface dotted aliases
     # the per-stage emits already mangled, so mangle once more here
     # (idempotent) to catch the root's own projection.
+    # DEV-1756: length-fit over-limit projection aliases (plan-derived, passed
+    # in — see the single-stage branch above).
     sql = root_ast.sql(dialect=dialect, pretty=True)
-    sql = get_dialect(dialect).rewrite_emitted_sql(sql)
+    sql = get_dialect(dialect).rewrite_emitted_sql(sql, aliases=projection_aliases)
     # DEV-1705: validate the final POST-mangle, pre-RLS multi-stage root
     # (env-gated). One validation per final terminal (single- vs multi-stage).
     maybe_validate_scopes(sql, dialect=dialect)
