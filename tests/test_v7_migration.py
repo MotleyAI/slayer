@@ -27,18 +27,12 @@ from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
 
 
-def test_current_slayer_model_version_is_v7() -> None:
-    assert mig.CURRENT_VERSIONS["SlayerModel"] == 7
-
-
-def test_slayer_model_default_version_is_v7() -> None:
-    m = SlayerModel(name="orders", sql_table="orders", data_source="ds")
-    assert m.version == 7
-
-
-def test_slayer_model_dump_writes_v7() -> None:
-    m = SlayerModel(name="orders", sql_table="orders", data_source="ds")
-    assert m.model_dump(mode="json", exclude_none=True)["version"] == 7
+def test_v7_step_is_registered() -> None:
+    """v8 exists, so this file no longer pins the *current* version (see
+    ``tests/test_model_source_kind.py``). What stays true is that the chain
+    reaches v7 and has a step out of it."""
+    assert mig.CURRENT_VERSIONS["SlayerModel"] >= 7
+    assert ("SlayerModel", 6) in mig._REGISTRY
 
 
 def test_v6_to_v7_no_op_forward() -> None:
@@ -74,7 +68,8 @@ def test_v6_payload_loads_with_new_fields_none() -> None:
         ],
     }
     m = SlayerModel.model_validate(raw)
-    assert m.version == 7
+    # Current-version, not literally 7: the chain now extends to v8.
+    assert m.version == mig.CURRENT_VERSIONS["SlayerModel"]
     # The new optional fields default to None — no explicit migration step,
     # just Pydantic field defaults.
     for col in m.columns:
@@ -104,7 +99,7 @@ def test_v7_payload_round_trips_with_populated_fields() -> None:
         ],
     }
     m = SlayerModel.model_validate(raw)
-    assert m.version == 7
+    assert m.version == mig.CURRENT_VERSIONS["SlayerModel"]
     col = m.columns[0]
     assert col.sampled == "paid, refunded, cancelled"
     assert col.sampled_values == ["paid", "refunded", "cancelled"]
@@ -195,7 +190,7 @@ async def test_yaml_round_trips_v6_payload_to_v7_with_new_fields_none() -> None:
 
         loaded = await storage.get_model("orders", data_source="ds")
         assert loaded is not None
-        assert loaded.version == 7
+        assert loaded.version == mig.CURRENT_VERSIONS["SlayerModel"]
         for col in loaded.columns:
             assert col.sampled_values is None
             assert col.distinct_count is None
@@ -231,7 +226,7 @@ async def test_sqlite_round_trips_v6_payload_to_v7_with_new_fields_none() -> Non
 
         loaded = await storage.get_model("orders", data_source="ds")
         assert loaded is not None
-        assert loaded.version == 7
+        assert loaded.version == mig.CURRENT_VERSIONS["SlayerModel"]
         for col in loaded.columns:
             assert col.sampled_values is None
             assert col.distinct_count is None
@@ -243,7 +238,10 @@ async def test_sqlite_round_trips_v6_payload_to_v7_with_new_fields_none() -> Non
 
 
 def test_v5_payload_walks_through_chain_to_v7() -> None:
-    """End-to-end migration from v5 through v6 to v7 via the orchestrator."""
+    """End-to-end migration from v5 through v6 to v7 via the orchestrator.
+
+    Asserts the current version rather than a literal 7: the point is that the
+    walk completes, not where it stops today."""
     raw = {
         "version": 5,
         "name": "orders",
@@ -252,4 +250,4 @@ def test_v5_payload_walks_through_chain_to_v7() -> None:
         "columns": [{"name": "amount", "type": "DOUBLE"}],
     }
     out = mig.migrate("SlayerModel", raw)
-    assert out["version"] == 7
+    assert out["version"] == mig.CURRENT_VERSIONS["SlayerModel"]

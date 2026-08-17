@@ -17,6 +17,7 @@ import asyncio
 import logging
 from typing import (
     Annotated,
+    Any,
     List,
     Literal,
     Optional,
@@ -116,6 +117,13 @@ class ModelAddition(BaseModel):
     # DEV-1538: persisted INT columns whose type widened (to DOUBLE or TEXT)
     # because the SQLite affinity probe disagreed with the declared type.
     widened_columns: list[str] = Field(default_factory=list)
+    # Output metadata — lets the renderer label a view-backed model
+    # without reloading it. Distinct from the persisted
+    # ``SlayerModel.source_kind``, which is the durable record.
+    source_kind: str | None = None
+    # Human-readable transition (e.g. "view → table") when a re-ingest found
+    # the live object had changed kind. None when nothing changed.
+    kind_change: str | None = None
 
 
 class IngestionError(BaseModel):
@@ -132,6 +140,16 @@ class IdempotentIngestResult(BaseModel):
     additions: list[ModelAddition] = Field(default_factory=list)
     to_delete: list[ToDeleteEntry] = Field(default_factory=list)
     errors: list[IngestionError] = Field(default_factory=list)
+    # ``skipped`` holds live objects that could not be modelled at
+    # all — reported separately from ``errors`` because the cause and the fix
+    # differ ("can't represent this name" vs "couldn't persist this model").
+    skipped: list[Any] = Field(default_factory=list)
+    # Every live object discovered this pass, whether or not it produced a
+    # model. Lets the CLI distinguish an empty schema (worth a hint) from a
+    # healthy no-op re-ingest (worth silence). Typed ``Any`` to avoid a
+    # circular import with ``engine.ingestion``; runtime entries are
+    # ``IngestableObject``.
+    objects: list[Any] = Field(default_factory=list)
 
 
 class AppliedEntry(BaseModel):
@@ -1680,15 +1698,33 @@ def _live_schema_for_datasource(
     datasource: DatasourceConfig,
     schema: str | None = None,
 ) -> dict[str, LiveTable]:
-    """Return ``{table_name: LiveTable}`` for every live table in the DS,
-    using SQLAlchemy ``Inspector`` and the same fallback path as
+    """Return ``{object_name: LiveTable}`` for every live table AND view in
+    the DS, using SQLAlchemy ``Inspector`` and the same fallback path as
     auto-ingestion (``slayer/engine/ingestion.py``).
+
+    Views are included **unconditionally** — there is deliberately no
+    ``include_views`` parameter here, and adding one would be a bug.
+
+    This map is only ever a lookup target: ``validate_datasource`` iterates the
+    *persisted* models and resolves each model's ``sql_table`` against it, so
+    including views can never manufacture a model or a drift entry. What it
+    does fix is the reverse: a model whose ``sql_table`` names a view used to
+    resolve to ``None``, which ``diff_sql_table_model`` reports as a
+    ``WholeModelDelete`` — and ``validate-models --force-clean`` acts on that.
+    Gating this on the ingest-side ``--no-views`` flag would re-arm that
+    data-loss bug for anyone who opted out of ingesting views.
     """
+    from slayer.engine.ingestion import _dispose_quietly, list_ingestable_objects
     from slayer.sql import engine_factory
     sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
     try:
         inspector = sa.inspect(sa_engine)
-        table_names = list(inspector.get_table_names(schema=schema))
+        table_names = [
+            o.name
+            for o in list_ingestable_objects(
+                inspector=inspector, schema=schema, include_views=True
+            )
+        ]
         out: dict[str, LiveTable] = {}
         for table_name in table_names:
             try:
@@ -1711,8 +1747,9 @@ def _live_schema_for_datasource(
         # Same rationale as ``ingest_datasource``: this is a one-shot
         # admin path. Disposing releases the underlying connection so
         # external direct file access (e.g. ``duckdb.connect(file)``)
-        # in the same process isn't blocked.
-        sa_engine.dispose()
+        # in the same process isn't blocked. Quiet, so a raising dispose
+        # can't replace an in-flight introspection error.
+        _dispose_quietly(sa_engine)
 
 
 def _introspect_one_table(
