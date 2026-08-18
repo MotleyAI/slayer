@@ -1786,18 +1786,18 @@ class SQLGenerator:
         carry_aliases = self._carry_aliases_in_plan_order(aliases_by_slot_id)
         step_parts = [exp.column(a, quoted=True) for a in carry_aliases]
         for map_key, slot in slot_entries:
-            alias = (
-                slot.public_aliases[0]
-                if slot.public_aliases
-                else slot.declared_name
-            )
-            full_alias = f"{source_relation}.{alias}"
+            names = list(slot.public_aliases) or [slot.declared_name]
             rendered = render(slot)
             if slot.type is not None:
                 rendered = _wrap_cast_for_type(rendered, slot.type)
-            step_parts.append(rendered.as_(full_alias, quoted=True))
-            aliases_by_slot_id.setdefault(map_key, []).append(full_alias)
-            available_alias_by_slot_id.setdefault(map_key, full_alias)
+            # One column per declared name (C13, DEV-1798); the first stays
+            # the canonical handle. ``as_`` copies its child, so the rendered
+            # node is safely reused.
+            for alias in names:
+                full_alias = f"{source_relation}.{alias}"
+                step_parts.append(rendered.as_(full_alias, quoted=True))
+                aliases_by_slot_id.setdefault(map_key, []).append(full_alias)
+                available_alias_by_slot_id.setdefault(map_key, full_alias)
         ctes.append(CteEntry(
             name=step_name,
             query=exp.Select().select(*step_parts).from_(prev_cte),
