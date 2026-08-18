@@ -3007,7 +3007,6 @@ class SlayerQueryEngine:
             "data_source": virtual.data_source,
         })
 
-
     async def _resolve_datasource(self, model: SlayerModel) -> DatasourceConfig:
         ds_name = model.data_source
         if not ds_name:
