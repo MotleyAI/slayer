@@ -7317,7 +7317,8 @@ class TestDev1501HiddenFirstLastRender:
     ) -> None:
         """DEV-1501 (Codex round 8): a DERIVED first/last time arg whose
         ``Column.sql`` references a joined column must pull that join into
-        the base FROM. ``_resolve_explicit_time_col`` expands
+        the base FROM. Join discovery (``_resolve_agg_inputs_via_scope`` via
+        ``_explicit_time_arg_of``) registers it, and the ranked plan expands
         ``net_signed_at.sql = "customers.signed_up_at"`` so the ranked
         subquery's ``ORDER BY`` emits ``customers.signed_up_at``; without
         a corresponding ``LEFT JOIN customers`` the SQL is broken.
