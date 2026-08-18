@@ -60,6 +60,10 @@ logger = logging.getLogger(__name__)
 # _sa_type_to_data_type). Keyed by upper-cased class name.
 _logged_unmapped_sa_types: set[str] = set()
 
+# Inspectors that report primary keys correctly, so empty means "no primary
+# key" rather than "ask INFORMATION_SCHEMA" (which BigQuery cannot resolve).
+_PK_AUTHORITATIVE_DIALECTS = frozenset({"sqlite", "bigquery"})
+
 # Database types with no usable equality operator — grouping, DISTINCT or
 # aggregating them fails at the database ("could not identify an equality
 # operator for type point"). These map to ``DataType.UNKNOWN``: stored and
@@ -728,6 +732,20 @@ def _get_pk_constraint_fallback(
     return {"constrained_columns": [row[0] for row in rows]}
 
 
+def _normalized_pk(result: object) -> dict | None:
+    """The inspector's mapping if it carries a list of column names, else None.
+
+    Callers feed ``constrained_columns`` straight to ``set()``, where ``None``
+    raises and a bare string silently becomes a set of characters.
+    """
+    if not isinstance(result, dict):
+        return None
+    columns = result.get("constrained_columns")
+    if isinstance(columns, list) and all(isinstance(c, str) for c in columns):
+        return result
+    return None
+
+
 def _safe_get_pk_constraint(
     inspector: sa.engine.Inspector,
     sa_engine: sa.Engine,
@@ -737,22 +755,27 @@ def _safe_get_pk_constraint(
     """Get PK constraint, falling back to INFORMATION_SCHEMA on failure.
 
     ALWAYS returns a mapping — the one place normalizing an inspector that may
-    hand back ``None``. SQLite's PRAGMA reflection is authoritative.
+    hand back ``None``. Having no primary key is a normal shape, so a failed
+    lookup yields no columns rather than sinking the whole table.
     """
-    if sa_engine.dialect.name == "sqlite":
+    if sa_engine.dialect.name in _PK_AUTHORITATIVE_DIALECTS:
         try:
             result = inspector.get_pk_constraint(table_name=table_name, schema=schema)
         except Exception:
             return {"constrained_columns": []}
-        return result if isinstance(result, dict) else {"constrained_columns": []}
+        return _normalized_pk(result) or {"constrained_columns": []}
     try:
-        result = inspector.get_pk_constraint(table_name, schema=schema)
-        if result.get("constrained_columns"):
-            return result
-        # DuckDB's inspector returns empty PK — try INFORMATION_SCHEMA
+        normalized = _normalized_pk(inspector.get_pk_constraint(table_name, schema=schema))
+        if normalized and normalized["constrained_columns"]:
+            return normalized
+    except Exception:
+        logger.debug("Inspector PK lookup failed for %r", table_name, exc_info=True)
+    # DuckDB's inspector returns empty PK — try INFORMATION_SCHEMA.
+    try:
         return _get_pk_constraint_fallback(sa_engine, table_name, schema)
     except Exception:
-        return _get_pk_constraint_fallback(sa_engine, table_name, schema)
+        logger.debug("PK fallback failed for %r", table_name, exc_info=True)
+        return {"constrained_columns": []}
 
 
 def _introspect_query_columns_via_inspector(
