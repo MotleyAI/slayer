@@ -1789,7 +1789,7 @@ class SQLGenerator:
             names = list(slot.public_aliases) or [slot.declared_name]
             rendered = render(slot)
             if slot.type is not None:
-                rendered = _wrap_cast_for_type(rendered, slot.type)
+                rendered = _wrap_cast_for_type(expr=rendered, dt=slot.type)
             # One column per declared name (C13, DEV-1798); the first stays
             # the canonical handle. ``as_`` copies its child, so the rendered
             # node is safely reused.
@@ -7107,18 +7107,25 @@ class SQLGenerator:
             default=exp.Literal.number(0),
         )
         cp_value_cte_name = cte_allocator.allocate_cte(f"cp_value_{slot_alias}")
+        # One value column per declared name (C13, DEV-1798); the first stays
+        # canonical. The internal cp_reset alias stays single (not user-facing).
+        output_aliases = [
+            f"{source_relation}.{a}" for a in slot.public_aliases
+        ] or [full_slot_alias]
         ctes.append(CteEntry(
             name=cp_value_cte_name,
             query=exp.Select().select(
                 *(c.copy() for c in carry_cols),
-                value_outer_case.as_(full_slot_alias, quoted=True),
+                *(value_outer_case.copy().as_(oa, quoted=True)
+                  for oa in output_aliases),
             ).from_(cp_reset_cte_name),
             depends_on=[cp_reset_cte_name],
         ))
 
-        # Record the slot's alias for downstream lookups.
-        aliases_by_slot_id.setdefault(slot.id, []).append(full_slot_alias)
-        available_alias_by_slot_id.setdefault(slot.id, full_slot_alias)
+        # Record the slot's aliases for downstream lookups.
+        for oa in output_aliases:
+            aliases_by_slot_id.setdefault(slot.id, []).append(oa)
+            available_alias_by_slot_id.setdefault(slot.id, oa)
         return cp_value_cte_name
 
     @staticmethod

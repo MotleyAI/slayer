@@ -102,6 +102,19 @@ def test_two_names_carried_through_later_step() -> None:
     ]
 
 
+@pytest.mark.parametrize("dialect", ["postgres", "sqlite"])
+def test_consecutive_periods_two_names_both_surface(dialect: str) -> None:
+    # consecutive_periods has its own cp_reset/cp_value CTE path, distinct from
+    # _emit_step_cte; it must surface both names too (Codex review of #311).
+    sql = _generate([
+        {"formula": "consecutive_periods(amount:sum)", "name": "streak_a"},
+        {"formula": "consecutive_periods(amount:sum)", "name": "streak_b"},
+    ], dialect=dialect)
+    assert _outer_projection(sql, dialect) == [
+        "orders.created_at", "orders.streak_a", "orders.streak_b",
+    ]
+
+
 def test_cross_model_transform_two_names_both_surface() -> None:
     sql = _generate([
         {"formula": "cumsum(customers.spend:sum)", "name": "run_a"},
