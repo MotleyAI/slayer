@@ -223,7 +223,7 @@ total per status, not one running total across the whole result set.
 
 **Self-join transforms vs window-function transforms:**
 
-`time_shift` uses a **self-join CTE** with an INTERVAL-shifted time column. `change` and `change_pct` are desugared into a hidden `time_shift` + arithmetic expression at query enrichment time. The shifted sub-query applies the time offset everywhere (WHERE, GROUP BY, SELECT), so it can reach outside the current result set — no edge NULLs when the database has the data, and correct handling of gaps in time series.
+`time_shift` uses a **self-join CTE** with an INTERVAL-shifted time column. `change` and `change_pct` are desugared into a hidden `time_shift` + arithmetic expression when the query is compiled. The shifted sub-query applies the time offset everywhere (WHERE, GROUP BY, SELECT), so it can reach outside the current result set — no edge NULLs when the database has the data, and correct handling of gaps in time series.
 
 The self-join matches on **every projected dimension as well as the shifted time column** — plain columns, joined columns (`stores.name`), derived columns, and any secondary time dimension all take part in the join grain (e.g. `ON base.month IS NOT DISTINCT FROM shifted.month AND base.store IS NOT DISTINCT FROM shifted.store`). So these transforms are partition-safe: each group's series is compared only against itself, and per-group series reset cleanly. One store's first month is never diffed against another store's last month. The grain match is **null-safe** (`IS NOT DISTINCT FROM`, or the dialect equivalent), so a group with a NULL dimension value — for example rows with no matching row across a LEFT join — still lines up against its own prior period instead of dropping to a NULL shifted value.
 
@@ -393,4 +393,4 @@ Both field and filter formulas are parsed by `slayer/core/formula.py` using Pyth
 - **TransformField** — function call, possibly nested (`"cumsum(revenue:sum)"`)
 - **MixedArithmeticField** — arithmetic containing function calls. Covers both transform calls (`"cumsum(revenue:sum) / *:count"`) and non-transform SQL function calls wrapping aggregated refs, e.g. `"*:count / nullif(revenue:max, 0)"` or `"coalesce(revenue:sum, 0) + amount:avg"`. Aggregated refs nested inside non-transform calls are resolved as their own measure aliases; the call passes through to emitted SQL unchanged.
 
-The query engine's `_enrich()` method processes field formulas into ordered enrichment steps, and the SQL generator translates them into stacked CTEs.
+The query engine binds and expands field formulas into ordered planned stages, and the SQL generator translates them into stacked CTEs.
