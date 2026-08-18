@@ -894,14 +894,6 @@ class SQLGenerator:
             expr=expr, intervals=intervals, sign=sign,
         )
 
-
-
-
-
-
-
-
-
     def _build_date_trunc(self, col_expr: exp.Expression, granularity: TimeGranularity) -> exp.Expression:
         """Build a DATE_TRUNC expression. Dispatches to the dialect strategy
         (DEV-1716).
