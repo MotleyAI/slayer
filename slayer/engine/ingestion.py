@@ -60,6 +60,10 @@ logger = logging.getLogger(__name__)
 # _sa_type_to_data_type). Keyed by upper-cased class name.
 _logged_unmapped_sa_types: set[str] = set()
 
+# Inspectors that report primary keys correctly, so empty means "no primary
+# key" rather than "ask INFORMATION_SCHEMA" (which BigQuery cannot resolve).
+_PK_AUTHORITATIVE_DIALECTS = frozenset({"sqlite", "bigquery"})
+
 # Database types with no usable equality operator — grouping, DISTINCT or
 # aggregating them fails at the database ("could not identify an equality
 # operator for type point"). These map to ``DataType.UNKNOWN``: stored and
@@ -737,9 +741,10 @@ def _safe_get_pk_constraint(
     """Get PK constraint, falling back to INFORMATION_SCHEMA on failure.
 
     ALWAYS returns a mapping — the one place normalizing an inspector that may
-    hand back ``None``. SQLite's PRAGMA reflection is authoritative.
+    hand back ``None``. Having no primary key is a normal shape, so a failed
+    lookup yields no columns rather than sinking the whole table.
     """
-    if sa_engine.dialect.name == "sqlite":
+    if sa_engine.dialect.name in _PK_AUTHORITATIVE_DIALECTS:
         try:
             result = inspector.get_pk_constraint(table_name=table_name, schema=schema)
         except Exception:
@@ -747,12 +752,16 @@ def _safe_get_pk_constraint(
         return result if isinstance(result, dict) else {"constrained_columns": []}
     try:
         result = inspector.get_pk_constraint(table_name, schema=schema)
-        if result.get("constrained_columns"):
+        if result and result.get("constrained_columns"):
             return result
-        # DuckDB's inspector returns empty PK — try INFORMATION_SCHEMA
+    except Exception:
+        logger.debug("Inspector PK lookup failed for %r", table_name, exc_info=True)
+    # DuckDB's inspector returns empty PK — try INFORMATION_SCHEMA.
+    try:
         return _get_pk_constraint_fallback(sa_engine, table_name, schema)
     except Exception:
-        return _get_pk_constraint_fallback(sa_engine, table_name, schema)
+        logger.debug("PK fallback failed for %r", table_name, exc_info=True)
+        return {"constrained_columns": []}
 
 
 def _introspect_query_columns_via_inspector(

@@ -247,6 +247,85 @@ class TestGenerateJoinsDedup:
         assert len(joins) == 1
 
 
+class TestPkFallbackNeverSinksTheTable:
+    """A failing PK lookup must not take the table down with it.
+
+    BigQuery skipped every table: its inspector reports no primary keys, the
+    empty result was read as failure, and the unqualified INFORMATION_SCHEMA
+    fallback raised from both branches — the second time uncaught.
+    """
+
+    @staticmethod
+    def _inspector(pk):
+        inspector = MagicMock()
+        inspector.get_pk_constraint.return_value = pk
+        return inspector
+
+    @staticmethod
+    def _engine(dialect_name):
+        engine = MagicMock(spec=sa.Engine)
+        engine.dialect = MagicMock()
+        engine.dialect.name = dialect_name
+        return engine
+
+    def test_bigquery_skips_the_fallback_entirely(self):
+        """It can only fail there, and each attempt is a billed query."""
+        with patch(
+            "slayer.engine.ingestion._get_pk_constraint_fallback"
+        ) as fallback:
+            result = _safe_get_pk_constraint(
+                inspector=self._inspector({"constrained_columns": []}),
+                sa_engine=self._engine("bigquery"),
+                table_name="orders",
+                schema="core",
+            )
+        assert result == {"constrained_columns": []}
+        fallback.assert_not_called()
+
+    def test_failing_fallback_yields_no_pk_instead_of_raising(self):
+        with patch(
+            "slayer.engine.ingestion._get_pk_constraint_fallback",
+            side_effect=Exception("403 Access Denied: information_schema"),
+        ) as fallback:
+            result = _safe_get_pk_constraint(
+                inspector=self._inspector({"constrained_columns": []}),
+                sa_engine=self._engine("postgresql"),
+                table_name="orders",
+                schema="public",
+            )
+        assert result == {"constrained_columns": []}
+        # Once, not twice: the old except branch re-ran the failing call.
+        assert fallback.call_count == 1
+
+    def test_fallback_still_answers_when_the_inspector_is_empty(self):
+        """DuckDB's case — the reason the fallback exists."""
+        with patch(
+            "slayer.engine.ingestion._get_pk_constraint_fallback",
+            return_value={"constrained_columns": ["id"]},
+        ) as fallback:
+            result = _safe_get_pk_constraint(
+                inspector=self._inspector({"constrained_columns": []}),
+                sa_engine=self._engine("duckdb"),
+                table_name="orders",
+                schema=None,
+            )
+        assert result == {"constrained_columns": ["id"]}
+        assert fallback.call_count == 1
+
+    def test_inspector_pk_short_circuits_the_fallback(self):
+        with patch(
+            "slayer.engine.ingestion._get_pk_constraint_fallback"
+        ) as fallback:
+            result = _safe_get_pk_constraint(
+                inspector=self._inspector({"constrained_columns": ["id"]}),
+                sa_engine=self._engine("postgresql"),
+                table_name="orders",
+                schema=None,
+            )
+        assert result == {"constrained_columns": ["id"]}
+        fallback.assert_not_called()
+
+
 class TestSqliteSafeGetters:
     """Regression tests: SQLite engines must not hit information_schema fallback.
 
