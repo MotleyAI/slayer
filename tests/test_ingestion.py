@@ -312,6 +312,47 @@ class TestPkFallbackNeverSinksTheTable:
         assert result == {"constrained_columns": ["id"]}
         assert fallback.call_count == 1
 
+    @pytest.mark.parametrize(
+        "malformed",
+        [
+            {"constrained_columns": None},
+            {"constrained_columns": "id"},
+            {"constrained_columns": [1, 2]},
+            {},
+            None,
+        ],
+        ids=["none", "bare-string", "non-str-items", "missing-key", "not-a-dict"],
+    )
+    def test_malformed_inspector_pk_normalizes(self, malformed):
+        """Callers feed the value to set(): None raises, a string splits to chars."""
+        with patch(
+            "slayer.engine.ingestion._get_pk_constraint_fallback",
+            return_value={"constrained_columns": []},
+        ):
+            result = _safe_get_pk_constraint(
+                inspector=self._inspector(malformed),
+                sa_engine=self._engine("bigquery"),
+                table_name="orders",
+                schema=None,
+            )
+        assert result == {"constrained_columns": []}
+        assert set(result.get("constrained_columns", [])) == set()
+
+    def test_malformed_pk_still_reaches_the_fallback(self):
+        """Unusable is not an answer — try INFORMATION_SCHEMA, as for empty."""
+        with patch(
+            "slayer.engine.ingestion._get_pk_constraint_fallback",
+            return_value={"constrained_columns": ["id"]},
+        ) as fallback:
+            result = _safe_get_pk_constraint(
+                inspector=self._inspector({"constrained_columns": "id"}),
+                sa_engine=self._engine("postgresql"),
+                table_name="orders",
+                schema=None,
+            )
+        assert result == {"constrained_columns": ["id"]}
+        assert fallback.call_count == 1
+
     def test_inspector_pk_short_circuits_the_fallback(self):
         with patch(
             "slayer.engine.ingestion._get_pk_constraint_fallback"

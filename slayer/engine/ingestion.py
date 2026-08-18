@@ -732,6 +732,20 @@ def _get_pk_constraint_fallback(
     return {"constrained_columns": [row[0] for row in rows]}
 
 
+def _normalized_pk(result: object) -> dict | None:
+    """The inspector's mapping if it carries a list of column names, else None.
+
+    Callers feed ``constrained_columns`` straight to ``set()``, where ``None``
+    raises and a bare string silently becomes a set of characters.
+    """
+    if not isinstance(result, dict):
+        return None
+    columns = result.get("constrained_columns")
+    if isinstance(columns, list) and all(isinstance(c, str) for c in columns):
+        return result
+    return None
+
+
 def _safe_get_pk_constraint(
     inspector: sa.engine.Inspector,
     sa_engine: sa.Engine,
@@ -749,11 +763,11 @@ def _safe_get_pk_constraint(
             result = inspector.get_pk_constraint(table_name=table_name, schema=schema)
         except Exception:
             return {"constrained_columns": []}
-        return result if isinstance(result, dict) else {"constrained_columns": []}
+        return _normalized_pk(result) or {"constrained_columns": []}
     try:
-        result = inspector.get_pk_constraint(table_name, schema=schema)
-        if result and result.get("constrained_columns"):
-            return result
+        normalized = _normalized_pk(inspector.get_pk_constraint(table_name, schema=schema))
+        if normalized and normalized["constrained_columns"]:
+            return normalized
     except Exception:
         logger.debug("Inspector PK lookup failed for %r", table_name, exc_info=True)
     # DuckDB's inspector returns empty PK — try INFORMATION_SCHEMA.
