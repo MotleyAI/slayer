@@ -76,10 +76,20 @@ def _get_columns_fallback(
     schema: Optional[str],
 ) -> List[Dict]:
     """Get columns via INFORMATION_SCHEMA when Inspector.get_columns() fails."""
+    source = "information_schema.columns"
+    if getattr(getattr(sa_engine, "dialect", None), "name", "") == "bigquery":
+        # BigQuery only exposes INFORMATION_SCHEMA per dataset; the bare name
+        # resolves to a project-level view a dataset-scoped account cannot read.
+        dataset = schema
+        if "." in table_name:
+            dataset, table_name = table_name.rsplit(".", 1)
+        if dataset:
+            source = f"`{dataset}`.INFORMATION_SCHEMA.COLUMNS"
+            schema = None
     if schema:
         sql = (
             "SELECT column_name, data_type "
-            "FROM information_schema.columns "
+            f"FROM {source} "
             "WHERE table_name = :table_name "
             "AND table_schema = :schema "
             "ORDER BY ordinal_position"
@@ -88,7 +98,7 @@ def _get_columns_fallback(
     else:
         sql = (
             "SELECT column_name, data_type "
-            "FROM information_schema.columns "
+            f"FROM {source} "
             "WHERE table_name = :table_name "
             "ORDER BY ordinal_position"
         )

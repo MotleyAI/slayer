@@ -2,6 +2,7 @@
 
 import os
 import tempfile
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -86,6 +87,20 @@ class TestGetColumnsFallback:
 
         params = args[1] if len(args) > 1 else kwargs
         assert params == {"table_name": "orders", "schema": "public"}
+
+    def test_bigquery_uses_dataset_qualified_information_schema(self):
+        """A dataset-scoped BigQuery account cannot read the project-level view."""
+        engine, conn = _setup_mock_engine([("id", "INTEGER")])
+        engine.dialect = SimpleNamespace(name="bigquery")
+        _get_columns_fallback(
+            sa_engine=engine, table_name="core.mart__kpis", schema=None,
+        )
+
+        args, kwargs = conn.execute.call_args
+        sql_str = str(args[0])
+        assert "`core`.INFORMATION_SCHEMA.COLUMNS" in sql_str
+        params = args[1] if len(args) > 1 else kwargs
+        assert params == {"table_name": "mart__kpis"}
 
     def test_no_fstring_interpolation(self):
         """Ensure table_name/schema values never appear literally in the SQL text."""

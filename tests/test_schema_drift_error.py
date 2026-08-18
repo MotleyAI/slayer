@@ -233,3 +233,52 @@ class TestModelsTouchedComputation:
         # Both source_model and the join target must be reported as touched.
         assert "orders" in exc.value.models
         assert "customers" in exc.value.models
+
+
+class TestIntrospectionUnavailable:
+    """A datasource whose every table fails to introspect is 'unknown', not
+    'everything was dropped' — otherwise ``--force-clean`` deletes a tenant."""
+
+    def _ds_with_one_table(self, tmpdir: str) -> DatasourceConfig:
+        import sqlalchemy as sa
+
+        db_path = str(Path(tmpdir) / "live.db")
+        engine = sa.create_engine(f"sqlite:///{db_path}")
+        with engine.connect() as c:
+            c.execute(sa.text("CREATE TABLE t (id INTEGER PRIMARY KEY)"))
+            c.commit()
+        return DatasourceConfig(name="live", type="sqlite", database=db_path)
+
+    def test_live_schema_raises_when_every_table_fails(self) -> None:
+        from slayer.engine.schema_drift import (
+            IntrospectionUnavailable,
+            _live_schema_for_datasource,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ds = self._ds_with_one_table(tmpdir)
+            with patch(
+                "slayer.engine.schema_drift._introspect_one_table",
+                side_effect=PermissionError("403 Access Denied"),
+            ), pytest.raises(IntrospectionUnavailable):
+                _live_schema_for_datasource(datasource=ds)
+
+    async def test_drift_verdict_skipped_when_introspection_unavailable(self) -> None:
+        from slayer.engine.schema_drift import _collect_sql_table_diffs
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ds = self._ds_with_one_table(tmpdir)
+            model = SlayerModel(
+                name="t", sql_table="t", data_source="live",
+                columns=[Column(name="id", sql="id", type=DataType.INT)],
+            )
+            with patch(
+                "slayer.engine.schema_drift._introspect_one_table",
+                side_effect=PermissionError("403 Access Denied"),
+            ):
+                diffs = await _collect_sql_table_diffs(
+                    datasource=ds,
+                    sql_table_models=[model],
+                    available_in_ds={"t"},
+                )
+            assert diffs == {}, f"must not recommend deletes: {diffs}"

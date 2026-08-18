@@ -498,15 +498,32 @@ class SqlDialect(BaseModel):
             return base
         out = base
         if order is not None:
-            for col in order.find_all(exp.Column):
-                if col.args.get("table") is not None:
-                    col.set("table", None)
+            for col in list(order.find_all(exp.Column)):
+                if len(col.parts) > 1:
+                    col.replace(
+                        self._outer_order_column(col=col, inner_sql=inner_sql)
+                    )
             out += "\n" + order.sql(dialect=self.sqlglot_name, pretty=True)
         if limit is not None:
             out += "\n" + limit.sql(dialect=self.sqlglot_name, pretty=True)
         if offset_arg is not None:
             out += "\n" + offset_arg.sql(dialect=self.sqlglot_name, pretty=True)
         return out
+
+    def _outer_order_column(self, *, col: exp.Column, inner_sql: str) -> exp.Column:
+        """Re-resolve a qualified ORDER BY column against the ``_outer`` scope.
+
+        BigQuery parses a quoted dotted alias (`` `orders.created_at` ``) into
+        one part per segment, so clearing the ``table`` arg would both drop the
+        model prefix and leave an empty qualifier; instead keep the longest
+        part-suffix the inner SELECT actually projects.
+        """
+        names = [p.name for p in col.parts]
+        for i in range(len(names)):
+            candidate = ".".join(names[i:])
+            if self.quote_identifier(candidate) in inner_sql:
+                return exp.Column(this=exp.Identifier(this=candidate, quoted=True))
+        return exp.Column(this=col.parts[-1].copy())
 
     # DEV-1756 identifier-length fitting. Aliases stay canonical inside SLayer,
     # fitted only on emission and restored on the result keys.
