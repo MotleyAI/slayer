@@ -117,6 +117,7 @@ from slayer.engine.prebound import (
     StrictQueryCarrier,
     measure_key_format_description,
     measure_key_type,
+    partition_declared_measures,
 )
 from slayer.engine.source_bundle import (
     ResolvedSourceBundle,
@@ -739,7 +740,10 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     n_dims = len(query.dimensions or [])
     n_tds = len(query.time_dimensions or [])
     filter_alias_map: Dict[str, ValueKey] = {}
-    for dm in declared_measures[n_dims + n_tds:]:
+    _, _, _agg_dms = partition_declared_measures(
+        declared_measures=declared_measures, n_dims=n_dims, n_time_dimensions=n_tds,
+    )
+    for dm in _agg_dms:
         for alias in (dm.public_name, dm.declared_name, dm.canonical_alias):
             if alias is not None:
                 filter_alias_map.setdefault(alias, dm.bound.value_key)
@@ -1021,8 +1025,9 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     # not the raw timestamp — which would silently widen the grain). Runs BEFORE
     # interning so a rewritten key never leaves a stale slot behind (identity is
     # only touched on the rewritten rank transform).
-    _dim_dms = declared_measures[:n_dims]
-    _td_dms = declared_measures[n_dims:n_dims + n_tds]
+    _dim_dms, _td_dms, _ = partition_declared_measures(
+        declared_measures=declared_measures, n_dims=n_dims, n_time_dimensions=n_tds,
+    )
     _dim_key_set = {dm.bound.value_key for dm in _dim_dms}
     # A source column carrying two time-dimension granularities (``created_at``
     # at both month and day) maps to two distinct ``TimeTruncKey`` buckets — a
@@ -1399,6 +1404,9 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
 
     filters_by_phase: List[FilterPhase] = []
     bound_filter_ids: List[str] = []
+    # Capture the date-range fids as they are minted; the windowed ``_src``
+    # row-filter routing below reuses this exact set instead of re-deriving it.
+    date_range_fids: set = set()
     for i, bf in enumerate(bound_filters[:n_date_range]):
         fid = f"f{i}"
         filters_by_phase.append(
@@ -1408,6 +1416,7 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
             ),
         )
         bound_filter_ids.append(fid)
+        date_range_fids.add(fid)
     filters_by_phase.extend(text_filter_entries)
     for i, bf in enumerate(bound_filters[n_date_range:], start=n_date_range):
         fid = f"f{i}"
@@ -1668,7 +1677,6 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     # POST-reclassified windowed-measure filters are already excluded
     # (phase != ROW).
     if windowed_plans:
-        date_range_fids = {f"f{i}" for i in range(n_date_range)}
         src_where_ids, src_rewrites = _plan_src_row_filters(
             filters_by_phase=filters_by_phase,
             date_range_fids=date_range_fids,

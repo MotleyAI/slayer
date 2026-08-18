@@ -86,6 +86,18 @@ def _cases() -> dict:
             measures=[{"formula": "amount:sum(window='90d')", "name": "w"}],
             order=[{"column": "w", "direction": "desc"}],
         ),
+        # DEV-1777 C-a: a windowed measure WITH a well-formed date_range mints a
+        # date-range filter routed via ``date_range_fids`` (the src-row-phase
+        # gate the coupling re-derives). Pins the emitted BETWEEN so capturing
+        # the minted fid set instead of re-deriving it stays byte-identical.
+        "order/windowed_cte_date_range": _q(
+            time_dimensions=[{
+                "dimension": "created_at", "granularity": "month",
+                "date_range": ["2024-01-01", "2024-06-30"],
+            }],
+            measures=[{"formula": "amount:sum(window='90d')", "name": "w"}],
+            order=[{"column": "w", "direction": "desc"}],
+        ),
         "order/transform_chain_wrap": _q(
             time_dimensions=_MONTH,
             measures=[{"formula": "cumsum(amount:sum)", "name": "cs"}],
@@ -165,6 +177,21 @@ def _cases() -> dict:
                 {"formula": "customers.spend:sum", "name": "cs"},
                 {"formula": "cumsum(customers.spend:sum)", "name": "run"},
             ],
+        ),
+        # --- DEV-1777 A0: dependency-split step-CTE shapes (Codex finding 2). ---
+        # A window over a window -> two dependent batches -> step1 then step2
+        # (the dependency-split the extracted helper's ordering invariant guards).
+        # Single aggregate per case, so the base CTE has one column and the
+        # emitted SQL is deterministic across processes (multi-aggregate base
+        # column order is hash-seed dependent — see the _emit_step_cte unit test,
+        # which pins the multi-slot batch body deterministically instead).
+        "chain/local_nested_window": _q(
+            time_dimensions=_MONTH,
+            measures=[{"formula": "cumsum(cumsum(amount:sum))", "name": "cc"}],
+        ),
+        "chain/cross_model_nested_window": _q(
+            time_dimensions=_MONTH,
+            measures=[{"formula": "cumsum(cumsum(customers.spend:sum))", "name": "cc"}],
         ),
     }
 
@@ -255,3 +282,51 @@ def test_reroot_cases_actually_reroot(baseline) -> None:
             f"{key} is a re-rooting case with no ``_cm_`` alias — it stopped "
             f"re-rooting:\n{value}"
         )
+
+
+#: DEV-1777 (Codex plan-review finding 2): the step-CTE structure each
+#: transform-chain case must still emit. ``step2`` distinguishes a dependency
+#: split (a second Kahn batch, or a window followed by an unmaterialised POST)
+#: from a single batch — the ``_emit_step_cte`` extraction must not collapse or
+#: multiply batches. ``consecutive_periods`` layers its own ``cp_`` CTEs, not
+#: ``step<n>``.
+_CHAIN_STEP_EXPECTATIONS: dict[str, dict[str, bool]] = {
+    "chain/local_multi_step": {"step1": True, "step2": True},
+    "chain/local_consecutive_periods": {"cp": True},
+    "chain/cross_model_window": {"step1": True, "step2": False},
+    "chain/local_nested_window": {"step1": True, "step2": True},
+    "chain/cross_model_nested_window": {"step1": True, "step2": True},
+}
+
+
+def test_chain_cases_emit_expected_step_ctes(baseline) -> None:
+    """Vacuity guard for the transform-chain half. A case that silently stopped
+    reaching a step block would still "match golden" forever once the step-less
+    form was blessed; pin the presence/absence of ``step1`` / ``step2`` so a
+    dropped or collapsed batch fails loudly."""
+    seen = set()
+    for key, value in baseline.items():
+        if not key.startswith("chain/"):
+            continue
+        case_id = key.split("::", 1)[0]
+        seen.add(case_id)
+        expect = _CHAIN_STEP_EXPECTATIONS.get(case_id)
+        assert expect is not None, (
+            f"{case_id} has no step-CTE expectation — add one to "
+            f"_CHAIN_STEP_EXPECTATIONS so the vacuity guard covers it"
+        )
+        assert isinstance(value, str), f"{key} records an error, not SQL: {value}"
+        if expect.get("cp"):
+            assert "cp_" in value, (
+                f"{key} is a consecutive-periods case with no ``cp_`` CTE:\n{value}"
+            )
+            continue
+        assert ("step1" in value) is expect["step1"], (
+            f"{key} step1 presence != {expect['step1']}:\n{value}"
+        )
+        assert ("step2" in value) is expect["step2"], (
+            f"{key} step2 presence != {expect['step2']} (batch collapsed or "
+            f"multiplied):\n{value}"
+        )
+    unseen = set(_CHAIN_STEP_EXPECTATIONS) - seen
+    assert not unseen, f"expectations name cases not in the matrix: {sorted(unseen)}"
