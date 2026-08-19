@@ -178,6 +178,24 @@ def _cases() -> dict:
                 {"formula": "cumsum(customers.spend:sum)", "name": "run"},
             ],
         ),
+        # DEV-1798 (C13): one transform key projected under TWO names — the
+        # step CTE must surface both, not re-emit the first.
+        "chain/transform_two_names": _q(
+            time_dimensions=_MONTH,
+            measures=[
+                {"formula": "cumsum(amount:sum)", "name": "run_a"},
+                {"formula": "cumsum(amount:sum)", "name": "run_b"},
+            ],
+        ),
+        # DEV-1798: consecutive_periods (own cp_reset/cp_value CTE path) under
+        # TWO names must surface both, not re-emit the first.
+        "chain/consecutive_periods_two_names": _q(
+            time_dimensions=_MONTH,
+            measures=[
+                {"formula": "consecutive_periods(amount:sum)", "name": "streak_a"},
+                {"formula": "consecutive_periods(amount:sum)", "name": "streak_b"},
+            ],
+        ),
         # --- DEV-1777 A0: dependency-split step-CTE shapes (Codex finding 2). ---
         # A window over a window -> two dependent batches -> step1 then step2
         # (the dependency-split the extracted helper's ordering invariant guards).
@@ -292,6 +310,8 @@ def test_reroot_cases_actually_reroot(baseline) -> None:
 #: ``step<n>``.
 _CHAIN_STEP_EXPECTATIONS: dict[str, dict[str, bool]] = {
     "chain/local_multi_step": {"step1": True, "step2": True},
+    "chain/transform_two_names": {"step1": True, "step2": False},
+    "chain/consecutive_periods_two_names": {"cp": True},
     "chain/local_consecutive_periods": {"cp": True},
     "chain/cross_model_window": {"step1": True, "step2": False},
     "chain/local_nested_window": {"step1": True, "step2": True},
