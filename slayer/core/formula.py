@@ -609,7 +609,7 @@ def parse_formula(
     )
 
 
-def _bare_name_message(name: str, known_measures: frozenset[str]) -> str:
+def _bare_name_message(*, name: str, known_measures: frozenset[str]) -> str:
     """Explain a bare name that expanded to no saved measure.
 
     A bare name is only ever a saved measure, and by this point expansion has
@@ -642,7 +642,9 @@ def _parse_node(
     if isinstance(node, ast.Name):
         if node.id in agg_refs:
             return agg_refs[node.id]
-        raise ValueError(_bare_name_message(node.id, known_measures))
+        raise ValueError(
+            _bare_name_message(name=node.id, known_measures=known_measures)
+        )
 
     # Dotted name → cross-model measure must include aggregation
     if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
@@ -713,7 +715,11 @@ def _parse_node(
                         f"Cross-model measure '{mname}' must include an aggregation "
                         f"(e.g., '{mname}:sum')."
                     )
-                raise ValueError(_bare_name_message(mname, known_measures))
+                raise ValueError(
+                    _bare_name_message(
+                        name=mname, known_measures=known_measures
+                    )
+                )
         field_agg_refs = {n: agg_refs[n] for n in measure_names if n in agg_refs}
         return ArithmeticField(
             sql=ast.unparse(node),

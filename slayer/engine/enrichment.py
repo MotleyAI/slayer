@@ -170,7 +170,7 @@ def _public_field_name(qfield: Any) -> str:
     )
 
 
-def _close_name_hint(name: str, model: Any) -> str:
+def _close_name_hint(*, name: str, model: Any) -> str:
     """A ' Did you mean ...?' clause drawn from every name the model offers.
 
     ``ModelMeasure.name`` is optional, so unnamed measures are dropped rather
@@ -199,7 +199,7 @@ def _unknown_column_message(
             f"column, so it takes no aggregation. Reference it as '{measure_name}' "
             f"instead of '{measure_name}:{aggregation_name}'."
         )
-    hint = _close_name_hint(measure_name, model)
+    hint = _close_name_hint(name=measure_name, model=model)
     return f"Column '{measure_name}' not found in model '{model.name}'.{hint}"
 
 
@@ -215,7 +215,7 @@ def _bare_name_in_expression_message(*, model: Any, name: str) -> str:
             f"aggregation inside an expression — write '{name}:sum', or another "
             f"aggregation."
         )
-    hint = _close_name_hint(name, model)
+    hint = _close_name_hint(name=name, model=model)
     return (
         f"'{name}' is not a saved measure on model '{model.name}'.{hint} "
         f"Aggregate a column with colon syntax (e.g., '{name}:sum')."
