@@ -4578,6 +4578,8 @@ class SQLGenerator:
                 slots_by_id=slots_by_id,
                 combined_aliases_by_slot_id=combined_aliases_by_slot_id,
                 source_relation=source_relation,
+                source_model=source_model,
+                bundle=bundle,
             )
 
         # Assemble the WITH chain (§5.6). Dependencies are DECLARED, not
@@ -4680,6 +4682,47 @@ class SQLGenerator:
         # may re-enable it.
         return combined_statement.sql(dialect=self.dialect, pretty=True)
 
+    def _guard_target_grain_time_shift(
+        self, *, planned_query, slots_by_id, slot_id_by_key,
+    ) -> None:
+        """Raise the narrowed 7b.15e guard for a ``time_shift`` over a
+        target-grain cross-model aggregate — re-aggregating it host-rooted in the
+        shifted CTE would multiply target rows through the 1:N join (DEV-1750).
+
+        Target-grain is read from plan ownership: the inner aggregate's
+        ``CrossModelAggregatePlan.cte_root_model is None`` (host-rooted isolation
+        sets it to the host name). A local inner (no plan) or host-rooted inner
+        renders; ``consecutive_periods`` never re-aggregates and is exempt.
+        """
+        from slayer.core.keys import TransformKey
+
+        target_rooted_agg_slot_ids = {
+            p.aggregate_slot_id
+            for p in planned_query.cross_model_aggregate_plans
+            if p.cte_root_model is None
+        }
+        if not target_rooted_agg_slot_ids:
+            return
+        for layer in planned_query.transform_layers:
+            if layer.op != "time_shift":
+                continue
+            for sid in layer.slot_ids:
+                slot = slots_by_id.get(sid)
+                if slot is None or not isinstance(slot.key, TransformKey):
+                    continue
+                inner_sid = slot_id_by_key.get(slot.key.input)
+                if inner_sid in target_rooted_agg_slot_ids:
+                    raise NotImplementedError(
+                        "DEV-1450 stage 7b.15e: time_shift over a TARGET-GRAIN "
+                        "cross-model aggregate (its inner aggregate is grouped "
+                        "at a joined target's grain, not the host's) is not yet "
+                        "rendered — the shifted CTE would re-aggregate it "
+                        "host-rooted and multiply target rows through the 1:N "
+                        "join. Local and host-grain inner aggregates DO render. "
+                        "Factor the temporal transform into an earlier stage, or "
+                        "drop the cross-grain part.",
+                    )
+
     def _render_cross_model_transform_chain(  # NOSONAR(S3776) — pre-existing complexity in the window-layer chain; this PR only threaded the CTE-name allocator through it, which re-attributed the function as new code. The chain is rebuilt as sqlglot AST in the scope-assembly PR, where the layering is what gets simplified.
         self,
         *,
@@ -4689,28 +4732,26 @@ class SQLGenerator:
         slots_by_id: Dict[str, Any],
         combined_aliases_by_slot_id: Dict[str, List[str]],
         source_relation: str,
+        source_model,
+        bundle,
     ) -> str:
-        """Render window-transform layers over a cross-model combined result.
+        """Render transform layers over a cross-model combined result.
 
         DEV-1450 stage 7b.15e (C2). The combined cross-model SELECT becomes the
-        ``base`` CTE; window step CTEs (``cumsum`` / ``lag`` / ``lead`` /
-        ``rank`` …) are layered above it exactly like the local transform path
-        in ``generate_from_planned``, then an outer wrap projects the public
-        slots in user order and applies ORDER BY / LIMIT / OFFSET.
+        ``base`` CTE; step CTEs are layered above it exactly like the local
+        transform path in ``generate_from_planned``, then an outer wrap projects
+        the public slots in user order and applies ORDER BY / LIMIT / OFFSET.
 
-        ``time_shift`` / ``consecutive_periods`` over a cross-model aggregate
-        re-aggregate the *source* and are out of slice scope — they raise.
+        DEV-1750: window (``cumsum`` / ``lag`` / ``lead`` / ``rank``),
+        ``time_shift`` and ``consecutive_periods`` layers all render here — the
+        Kahn loop dispatches each op to the SAME per-op emitter the local chain
+        uses, so the shifted-CTE join discovery (Part 1) serves both chains.
+        Only one shape stays guarded: a ``time_shift`` whose inner aggregate is a
+        TARGET-GRAIN cross-model aggregate (``cte_root_model is None``) —
+        re-aggregating it host-rooted in the shifted CTE would multiply target
+        rows through the 1:N join. ``consecutive_periods`` reads a materialised
+        alias and never re-aggregates, so it has no such failure mode.
         """
-        for layer in planned_query.transform_layers:
-            if layer.op in ("time_shift", "consecutive_periods"):
-                raise NotImplementedError(
-                    f"DEV-1450 stage 7b.15e: self-join transform op "
-                    f"{layer.op!r} is not yet rendered in a query that also has "
-                    f"a cross-model aggregate (window transforms such as cumsum "
-                    f"/ lag / lead / rank are). Factor the temporal transform "
-                    f"(or change / change_pct, which desugar to time_shift) "
-                    f"into an earlier stage.",
-                )
 
         ctes: List[CteEntry] = [
             CteEntry(name=name, query=query) for name, query in prelude_ctes
@@ -4740,32 +4781,107 @@ class SQLGenerator:
             sid: a[0] for sid, a in aliases_by_slot_id.items() if a
         }
 
-        # Window-transform Kahn batches (one step CTE per ready batch).
+        # DEV-1750 narrowed 7b.15e guard — runs before the emitter loop so a
+        # guarded shape never reaches the shifted CTE.
+        self._guard_target_grain_time_shift(
+            planned_query=planned_query,
+            slots_by_id=slots_by_id,
+            slot_id_by_key=slot_id_by_key,
+        )
+
+        # 7b.11 — WHERE-able row-phase filters for the shifted CTE (source minus
+        # BetweenKey date_range bounds), built once like the local chain. Only a
+        # time_shift layer consumes them, so skip the work (and its filter-parse
+        # failure surface) for a window-only / cp-only chain.
+        if any(
+            layer.op == "time_shift" for layer in planned_query.transform_layers
+        ):
+            shifted_where_parts, shifted_where_join_paths = (
+                self._build_shifted_cte_where_parts(
+                    planned_query=planned_query,
+                    source_relation=source_relation,
+                    source_model=source_model,
+                    bundle=bundle,
+                )
+            )
+        else:
+            shifted_where_parts, shifted_where_join_paths = [], []
+
+        # Transform Kahn batches (one step CTE per ready batch). Ready layers are
+        # split by op so each dispatches to the SAME per-op emitter the local
+        # chain uses (DEV-1750): window layers to the batch step below, temporal
+        # ops to their shifted / cp CTE emitters.
         pending_layers = list(planned_query.transform_layers)
         step_num = 0
         # Explicit chain tail (see the host transform chain above): the CTE the
         # next step reads from, tracked directly instead of as ``ctes[-1]``.
         chain_tail = ctes[-1].name
         while pending_layers:
-            ready: list = []
+            ready_window: list = []
+            ready_time_shift: list = []
+            ready_cp: list = []
             not_ready: list = []
             for layer in pending_layers:
-                if self._transform_layer_deps_ready(
+                if not self._transform_layer_deps_ready(
                     layer=layer,
                     slots_by_id=slots_by_id,
                     slot_id_by_key=slot_id_by_key,
                     available_alias_by_slot_id=available_alias_by_slot_id,
                 ):
-                    ready.append(layer)
-                else:
                     not_ready.append(layer)
-            if not ready:
+                elif layer.op == "time_shift":
+                    ready_time_shift.append(layer)
+                elif layer.op == "consecutive_periods":
+                    ready_cp.append(layer)
+                else:
+                    ready_window.append(layer)
+            if not (ready_window or ready_time_shift or ready_cp):
                 pending_ops = [layer.op for layer in pending_layers]
                 raise RuntimeError(
                     f"DEV-1450 stage 7b.15e: cross-model transform layer "
                     f"dependencies could not be resolved; pending ops: "
                     f"{pending_ops!r}.",
                 )
+            # --- time_shift layers (each gets a shifted_ + sjoin_ pair) -------
+            for layer in ready_time_shift:
+                for slot_id in layer.slot_ids:
+                    slot = slots_by_id[slot_id]
+                    chain_tail = self._emit_time_shift_ctes_for_planned(
+                        slot=slot,
+                        ctes=ctes,
+                        chain_tail=chain_tail,
+                        cte_allocator=cte_allocator,
+                        slots_by_id=slots_by_id,
+                        slot_id_by_key=slot_id_by_key,
+                        available_alias_by_slot_id=available_alias_by_slot_id,
+                        aliases_by_slot_id=aliases_by_slot_id,
+                        source_model=source_model,
+                        source_relation=source_relation,
+                        shifted_where_parts=shifted_where_parts,
+                        shifted_where_join_paths=shifted_where_join_paths,
+                        planned_query=planned_query,
+                        bundle=bundle,
+                    )
+            # --- consecutive_periods layers (cp_reset_ + cp_value_ pair) ------
+            for layer in ready_cp:
+                for slot_id in layer.slot_ids:
+                    slot = slots_by_id[slot_id]
+                    chain_tail = self._emit_consecutive_periods_ctes_for_planned(
+                        slot=slot,
+                        ctes=ctes,
+                        cte_allocator=cte_allocator,
+                        slots_by_id=slots_by_id,
+                        slot_id_by_key=slot_id_by_key,
+                        available_alias_by_slot_id=available_alias_by_slot_id,
+                        aliases_by_slot_id=aliases_by_slot_id,
+                        planned_query=planned_query,
+                        source_relation=source_relation,
+                        chain_tail=chain_tail,
+                    )
+            if not ready_window:
+                pending_layers = not_ready
+                continue
+            ready = ready_window
             step_num += 1
             step_name = cte_allocator.allocate_cte(f"step{step_num}")
             prev_cte = chain_tail
@@ -6774,17 +6890,32 @@ class SQLGenerator:
         for pk in sorted(key.partition_keys, key=lambda k: repr(k)):
             _add_partition(pk, where="partition_key")
 
-        # DEV-1711 defensive completeness: a LOCAL aggregate whose source /
-        # column-filter / kwargs cross a join is isolated upstream (Stage 5) and
-        # would have raised 7b.15e before reaching a time_shift CTE, so these
-        # registrations are provably no-ops today — but routing them through the
-        # scope keeps Law 1 total (no render path skips join discovery).
+        # DEV-1750: the shifted CTE re-aggregates the inner aggregate host-rooted,
+        # so every crossing input registers into ``shifted_scope`` exactly as the
+        # base SELECT (``_resolve_agg_inputs_via_scope``) and the ``_cm_`` CTE do
+        # — otherwise a crossing default param (``w='customers__regions.weight'``)
+        # re-aggregates with no join to regions, which no database binds.
         if isinstance(inner_key, AggregateKey):
-            if isinstance(inner_key.source, ColumnSqlKey):
+            # source: derived (crosses inside Column.sql) or path-bearing.
+            if isinstance(inner_key.source, ColumnSqlKey) or getattr(
+                inner_key.source, "path", (),
+            ):
                 shifted_scope.resolve(inner_key.source)
+            # positional args (first/last time arg); skip the DEV-1526
+            # path-bearing ColumnSqlKey residual (bogus join if anchored here).
+            for _arg in inner_key.args:
+                if isinstance(_arg, ColumnSqlKey) and _arg.path:
+                    continue
+                if isinstance(_arg, (ColumnKey, ColumnSqlKey)):
+                    shifted_scope.resolve(_arg)
             for _kname, _kval in inner_key.kwargs:
                 if isinstance(_kval, (ColumnKey, ColumnSqlKey)):
                     shifted_scope.resolve(_kval)
+            # template fragments + non-overridden default AggregationParam.sql —
+            # the one door shared with the host + ``_cm_`` paths (DEV-1745 W2).
+            self._register_fragment_kwarg_joins(
+                key=inner_key, scope=shifted_scope, model=source_model,
+            )
             if (
                 inner_key.column_filter_key is not None
                 and inner_key.column_filter_key.canonical_sql
@@ -6844,6 +6975,17 @@ class SQLGenerator:
         # Aggregate: re-emit the AggregateKey using the same synth /
         # _build_agg dance the base CTE uses.
         if isinstance(inner_key, AggregateKey):
+            # DEV-1750: a first/last inner ranks via a ROW_NUMBER subquery, not
+            # the flat ``_build_agg`` re-aggregation the shifted CTE performs —
+            # fail loudly rather than let ``_build_agg`` hit a null node_class.
+            if inner_key.agg in ("first", "last"):
+                raise NotImplementedError(
+                    f"DEV-1450 stage 7b.15e: time_shift over a ranked "
+                    f"{inner_key.agg!r} aggregate is not yet rendered — the "
+                    f"shifted CTE re-aggregates flatly and cannot reproduce the "
+                    f"ROW_NUMBER ranking. Factor the temporal transform into an "
+                    f"earlier stage. (slot id={slot.id!r})",
+                )
             # Build a synth ``AggRenderSpec`` for _build_agg.
             #
             # The renderer needs a slot-like input with declared_name +
