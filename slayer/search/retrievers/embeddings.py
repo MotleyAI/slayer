@@ -232,10 +232,9 @@ class EmbeddingRetriever(Retriever):
             ])
 
         # Inline imports: ``numpy`` and ``slayer.embeddings.ranker``
-        # require the optional ``advanced_search`` extra. When the extra
-        # is not installed, we fall through to a soft warning instead of
-        # raising at module import time so the rest of slayer keeps
-        # working without the extra.
+        # require the optional ``advanced_search`` extra. Importing here
+        # rather than at module scope keeps the rest of slayer working
+        # without the extra.
         try:
             import numpy as np
             from slayer.embeddings.ranker import (
@@ -244,10 +243,13 @@ class EmbeddingRetriever(Retriever):
                 top_k_cosine,
             )
         except ImportError:
-            return RetrievalResult(warnings=[
+            # Same packaging gap as the is_available() check above, reached by
+            # a different route: an operator concern, not a caller's.
+            _log.warning(
                 "embedding channel skipped: numpy not installed "
-                "(reinstall with the `advanced_search` extra).",
-            ])
+                "(reinstall with the `advanced_search` extra)."
+            )
+            return RetrievalResult()
 
         query_vec = await self.embed_question(question or "")
         if query_vec is None:
