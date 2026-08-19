@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+import sqlalchemy as sa
 
 from slayer.core.enums import DataType
 from slayer.core.errors import SchemaDriftError
@@ -26,7 +27,12 @@ from slayer.core.models import (
 )
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.schema_drift import WholeModelDelete
+from slayer.engine.schema_drift import (
+    IntrospectionUnavailable,
+    WholeModelDelete,
+    _collect_sql_table_diffs,
+    _live_schema_for_datasource,
+)
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -240,8 +246,6 @@ class TestIntrospectionUnavailable:
     'everything was dropped' — otherwise ``--force-clean`` deletes a tenant."""
 
     def _ds_with_one_table(self, tmpdir: str) -> DatasourceConfig:
-        import sqlalchemy as sa
-
         db_path = str(Path(tmpdir) / "live.db")
         engine = sa.create_engine(f"sqlite:///{db_path}")
         with engine.connect() as c:
@@ -250,11 +254,6 @@ class TestIntrospectionUnavailable:
         return DatasourceConfig(name="live", type="sqlite", database=db_path)
 
     def test_live_schema_raises_when_every_table_fails(self) -> None:
-        from slayer.engine.schema_drift import (
-            IntrospectionUnavailable,
-            _live_schema_for_datasource,
-        )
-
         with tempfile.TemporaryDirectory() as tmpdir:
             ds = self._ds_with_one_table(tmpdir)
             with patch(
@@ -264,8 +263,6 @@ class TestIntrospectionUnavailable:
                 _live_schema_for_datasource(datasource=ds)
 
     async def test_drift_verdict_skipped_when_introspection_unavailable(self) -> None:
-        from slayer.engine.schema_drift import _collect_sql_table_diffs
-
         with tempfile.TemporaryDirectory() as tmpdir:
             ds = self._ds_with_one_table(tmpdir)
             model = SlayerModel(

@@ -102,6 +102,23 @@ class TestGetColumnsFallback:
         params = args[1] if len(args) > 1 else kwargs
         assert params == {"table_name": "mart__kpis"}
 
+    def test_bigquery_dataset_is_quoted_and_escaped(self):
+        """A hostile dataset name cannot break out of the identifier."""
+        engine, conn = _setup_mock_engine([])
+        engine.dialect = SimpleNamespace(name="bigquery")
+        _get_columns_fallback(
+            sa_engine=engine,
+            table_name="orders",
+            schema="evil` UNION SELECT 1,2 FROM `x",
+        )
+
+        sql_str = str(conn.execute.call_args[0][0])
+        # The payload stays inside ONE quoted identifier, its backticks doubled.
+        assert (
+            "FROM `evil`` UNION SELECT 1,2 FROM ``x`.INFORMATION_SCHEMA.COLUMNS"
+            in sql_str
+        ), sql_str
+
     def test_no_fstring_interpolation(self):
         """Ensure table_name/schema values never appear literally in the SQL text."""
         engine, conn = _setup_mock_engine([])

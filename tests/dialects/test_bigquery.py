@@ -945,3 +945,20 @@ async def test_bigquery_computed_measure_with_order_by_resolves(tmp_path) -> Non
     sql = SQLGenerator(dialect="bigquery").generate(enriched=enriched, render_mode="outer")
     assert "``" not in sql, f"empty identifier emitted: {sql}"
     assert "ORDER BY\n  `orders___created_at` DESC" in sql, sql
+
+
+def test_bigquery_outer_wrap_order_by_prefers_projected_alias() -> None:
+    """A qualified source column whose projected alias differs must resolve to
+    the alias the ``_outer`` scope actually exposes."""
+    order = sqlglot.parse_one(
+        "SELECT 1 FROM t ORDER BY `_base`.`orders.created_at` DESC",
+        dialect="bigquery",
+    ).args["order"]
+    out = BigqueryDialect().emit_outer_wrap(
+        inner_sql="SELECT `_base`.`orders.created_at` AS `created_at` FROM _base",
+        public=["created_at"],
+        order=order,
+        limit=None,
+        offset_arg=None,
+    )
+    assert "ORDER BY\n  `created_at` DESC" in out, out

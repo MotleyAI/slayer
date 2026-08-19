@@ -498,11 +498,15 @@ class SqlDialect(BaseModel):
             return base
         out = base
         if order is not None:
-            for col in list(order.find_all(exp.Column)):
-                if len(col.parts) > 1:
-                    col.replace(
-                        self._outer_order_column(col=col, inner_sql=inner_sql)
+            order = order.transform(
+                lambda node: (
+                    self._outer_order_column(
+                        col=node, public=public, inner_sql=inner_sql,
                     )
+                    if isinstance(node, exp.Column) and len(node.parts) > 1
+                    else node
+                )
+            )
             out += "\n" + order.sql(dialect=self.sqlglot_name, pretty=True)
         if limit is not None:
             out += "\n" + limit.sql(dialect=self.sqlglot_name, pretty=True)
@@ -510,17 +514,25 @@ class SqlDialect(BaseModel):
             out += "\n" + offset_arg.sql(dialect=self.sqlglot_name, pretty=True)
         return out
 
-    def _outer_order_column(self, *, col: exp.Column, inner_sql: str) -> exp.Column:
+    def _outer_order_column(
+        self, *, col: exp.Column, public: Sequence[str], inner_sql: str,
+    ) -> exp.Column:
         """Re-resolve a qualified ORDER BY column against the ``_outer`` scope.
 
         BigQuery parses a quoted dotted alias (`` `orders.created_at` ``) into
         one part per segment, so clearing the ``table`` arg would both drop the
         model prefix and leave an empty qualifier; instead keep the longest
-        part-suffix the inner SELECT actually projects.
+        part-suffix that names a column of the outer scope. ``public`` is the
+        authoritative half of that scope; the ``inner_sql`` scan is the fallback
+        for an ORDER BY over a hidden hoist, which is projected but not public.
         """
-        names = [p.name for p in col.parts]
-        for i in range(len(names)):
-            candidate = ".".join(names[i:])
+        candidates = [
+            ".".join(p.name for p in col.parts[i:]) for i in range(len(col.parts))
+        ]
+        for candidate in candidates:
+            if candidate in public:
+                return exp.Column(this=exp.Identifier(this=candidate, quoted=True))
+        for candidate in candidates:
             if self.quote_identifier(candidate) in inner_sql:
                 return exp.Column(this=exp.Identifier(this=candidate, quoted=True))
         return exp.Column(this=col.parts[-1].copy())
