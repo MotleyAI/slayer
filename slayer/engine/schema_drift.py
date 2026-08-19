@@ -1657,6 +1657,11 @@ def compute_datasource_drops(
 # ===========================================================================
 
 
+class IntrospectionUnavailable(Exception):
+    """Every table in the datasource failed to introspect, so the live schema
+    is unknown — callers must not read that as "everything was dropped"."""
+
+
 def _live_schema_for_datasource(
     *,
     datasource: DatasourceConfig,
@@ -1699,6 +1704,11 @@ def _live_schema_for_datasource(
                     datasource.name,
                     exc,
                 )
+        if table_names and not out:
+            raise IntrospectionUnavailable(
+                f"failed to introspect every table in datasource "
+                f"{datasource.name!r} ({len(table_names)} table(s))"
+            )
         return out
     finally:
         # Same rationale as ``ingest_datasource``: this is a one-shot
@@ -2058,11 +2068,17 @@ async def _collect_sql_table_diffs(
     # Honour the datasource's configured schema_name so non-default-schema
     # datasources diff against the right table set; otherwise SQLAlchemy
     # introspects the default and produces false WholeModelDeletes.
-    live_tables = await asyncio.to_thread(
-        _live_schema_for_datasource,
-        datasource=datasource,
-        schema=datasource.schema_name or None,
-    )
+    try:
+        live_tables = await asyncio.to_thread(
+            _live_schema_for_datasource,
+            datasource=datasource,
+            schema=datasource.schema_name or None,
+        )
+    except IntrospectionUnavailable as exc:
+        # Unknown live schema — reporting every model for deletion here would
+        # hand ``--force-clean`` a whole tenant on a transient credential error.
+        logger.warning("validate_models: skipping drift verdict: %s", exc)
+        return {}
     probe_drifts_by_model = await _sqlite_probe_drifts_for_models(
         datasource=datasource,
         sql_table_models=sql_table_models,
