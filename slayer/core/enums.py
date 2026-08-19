@@ -158,6 +158,31 @@ class JoinType(StrEnum):
     INNER = "inner"
 
 
+class JoinCardinality(StrEnum):
+    """Arity of a join, read source->target ("many orders -> one customer").
+
+    Descriptive metadata, orthogonal to ``JoinType`` — it does not change the
+    emitted join.
+    """
+    ONE_TO_ONE = "one_to_one"
+    ONE_TO_MANY = "one_to_many"
+    MANY_TO_ONE = "many_to_one"
+    MANY_TO_MANY = "many_to_many"
+
+
+def invert_cardinality(
+    cardinality: "JoinCardinality | None",
+) -> "JoinCardinality | None":
+    """Cardinality of the reverse edge; one_to_one / many_to_many / None are
+    self-inverse.
+    """
+    if cardinality is JoinCardinality.MANY_TO_ONE:
+        return JoinCardinality.ONE_TO_MANY
+    if cardinality is JoinCardinality.ONE_TO_MANY:
+        return JoinCardinality.MANY_TO_ONE
+    return cardinality
+
+
 # The kind of database object a ``sql_table``-mode model points at. A plain
 # ``Literal`` (not ``StrEnum``) so the values persist as bare strings in
 # YAML/SQLite without an enum-serialisation round-trip.

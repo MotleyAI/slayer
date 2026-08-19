@@ -22,7 +22,7 @@ from typing import Any, Literal
 
 import sqlalchemy as sa
 
-from slayer.core.enums import DataType, JoinType
+from slayer.core.enums import DataType, JoinType, invert_cardinality
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.formula import parse_formula
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
@@ -218,6 +218,7 @@ class DbtToSlayerConverter:
                         target_model=model.name,
                         join_pairs=reverse_pairs,
                         join_type=JoinType.INNER,
+                        cardinality=invert_cardinality(join.cardinality),
                     ))
 
     def _prune_dangling_measures(self) -> None:

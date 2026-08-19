@@ -77,6 +77,7 @@ A column is the unit of structure on the model. The same column entry can serve 
 | `sql` | string | No | (bare column name) | SQL expression — defaults to the column's name |
 | `type` | string | No | `string` | `string`, `number`, `boolean`, `time`, `date` |
 | `primary_key` | bool | No | `false` | Restricts aggregation to `count` / `count_distinct` |
+| `unique` | bool | No | `false` | Single-column uniqueness (non-PK). `primary_key` implies unique. Auto-set from `UNIQUE` constraints / unique indexes; used to infer one-to-one joins |
 | `hidden` | bool | No | `false` | Hide from listings |
 | `format` | dict | No | — | `NumberFormat` used by response metadata |
 | `allowed_aggregations` | list[str] | No | — | Whitelist (must be a subset of the type-default eligibility set, or a custom aggregation defined on this model) |
@@ -300,6 +301,30 @@ joins:
 ```
 
 Joins enable **cross-model measures** — querying a measure from a joined model alongside the main model's data. See [Cross-Model Measures](queries.md#cross-model-measures). During [auto-ingestion](ingestion.md), joins are generated automatically from foreign-key relationships; multi-hop paths are resolved at query time by walking each intermediate model's own joins.
+
+### Join cardinality
+
+A join optionally records its **arity**, read source→target:
+
+```yaml
+joins:
+  - target_model: customers
+    join_pairs: [["customer_id", "id"]]
+    cardinality: many_to_one   # many orders → one customer
+```
+
+`cardinality` is one of `one_to_one`, `one_to_many`, `many_to_one`, `many_to_many` (omit it when undetermined). It is **descriptive metadata, orthogonal to the join type** — joins stay LEFT regardless — and is representational today (query results are unaffected).
+
+Auto-ingestion fills it structurally from key constraints: an FK join defaults to `many_to_one`, upgrading to `one_to_one` when the source key is itself unique. To infer it from the actual data instead, run:
+
+```bash
+slayer validate-models --datasource mydb --cardinality                        # report only
+slayer validate-models --datasource mydb --cardinality --persist-cardinality  # write it back
+```
+
+Detection full-scans each side of the join and reports the observed arity, a `verdict` (whether it confirms, refines, or hard-contradicts the stored value), and any column declared `unique` that the data shows has duplicates. It is a strong guess, not a guarantee — a duplicate disproves uniqueness with certainty, but the absence of duplicates only suggests it.
+
+A side with no non-null key rows reports `no_evidence` and detects nothing: an empty scan would trivially look unique, and that is not weak evidence — it is none. Re-run once the table has data. A join whose scan fails outright reports `scan_failed` and does not stop the rest of the report. Full verdict table: [CLI reference](../reference/cli.md#slayer-validate-models).
 
 ### Path-based table aliases
 

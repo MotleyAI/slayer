@@ -201,6 +201,51 @@ leave an internal out of the store entirely.
 An empty result prints the available schemas so a mistyped `--schema` is
 obvious rather than silent.
 
+
+### `slayer validate-models`
+
+Diff persisted models against the live database schemas (read-only) and, optionally, profile each join's arity from the data. See [Schema Drift](../concepts/schema-drift.md) and [Join cardinality](../concepts/models.md#join-cardinality).
+
+```bash
+slayer validate-models                                   # every datasource
+slayer validate-models --datasource jaffle_shop
+slayer validate-models --model orders --format json
+slayer validate-models --cardinality                     # + profile join arity
+slayer validate-models --cardinality --persist-cardinality
+slayer validate-models --datasource jaffle_shop --force-clean --yes
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--datasource X` | all | Limit to one datasource. Unknown names fail fast. |
+| `--model M` | all | Limit the whole report — and `--force-clean` — to one model. Resolves across every datasource that has a model of that name. |
+| `--cardinality` | off | Also profile each join's arity from the data. Full-scans both sides of every join, so it is opt-in. |
+| `--persist-cardinality` | off | Write the detected `cardinality` back onto each matching join (identified by target model + key pairs). Implies `--cardinality`. |
+| `--format` | `text` | `text`, or `json` for one `{"drift": [...], "cardinality": {...}}` document. Cannot be combined with `--force-clean`. |
+| `--force-clean` | off | After printing the diff, prompt to apply each delete. Destructive; opt-in only. |
+| `-y` / `--yes` | off | With `--force-clean`, skip the confirmation prompt. |
+
+Without a cardinality flag the output is the drift diff alone. With one, the report gains two labelled sections — `Schema drift` and `Join cardinality` — and any `--force-clean` apply happens *between* them, so profiling reads the repaired models.
+
+Exit code is `0` for any report about the data, including `contradicts_hard` — the command did its job and the answer is unwelcome. It is `1` when the command could not do its job: an unknown datasource or model, a datasource that failed validation (an unscoped run validates each one explicitly rather than silently skipping failures), a profiling failure, any `scan_failed` finding, or residual drift after `--force-clean`. Diagnostics go to stderr, so stdout stays parseable under `--format json`.
+
+#### Cardinality verdicts
+
+| Verdict | Meaning |
+|---------|---------|
+| `fills_none` | No cardinality was stored; the detected value fills the gap. |
+| `confirms` | Detected value matches what was stored. |
+| `refines` | Differs from the stored value, but the data does not disprove it — "no duplicates observed" only *suggests* uniqueness. |
+| `contradicts_hard` | The data **disproves** the stored value: a side it claimed unique has duplicates. |
+| `skipped_unsupported` | Not profilable — a non-`sql_table` model (sql-mode / query-backed) or an expression-valued join key. |
+| `no_evidence` | Profiled fine, but one side had no non-null key rows. An empty scan says nothing about arity, so nothing is detected or written. Worth re-running once data lands — unlike `skipped_unsupported`, which never becomes profilable. |
+| `scan_failed` | The scan itself raised; the message is in `note`. Contained per join, so one unreadable table costs one finding rather than the whole report — but the command still exits 1, since that join was not profiled. |
+
+Columns declared `unique` (or `primary_key`) that the data shows have duplicates are reported under `unique_contradictions`; detection never mutates `Column.unique`.
+
+Detection is a strong guess, not a guarantee: a duplicate disproves uniqueness with certainty, but its absence only suggests uniqueness.
+
+
 ### `slayer import-dbt`
 
 Import dbt Semantic Layer definitions into SLayer.

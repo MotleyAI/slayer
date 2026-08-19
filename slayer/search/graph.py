@@ -181,7 +181,7 @@ def _create_schema(conn: Any) -> None:
         "FROM Model TO Aggregation"
         ")"
     )
-    conn.execute("CREATE REL TABLE JOINS(FROM Model TO Model)")
+    conn.execute("CREATE REL TABLE JOINS(FROM Model TO Model, cardinality STRING)")
 
 
 def _insert_model_child_nodes(conn: Any, canonical_model: str, model: Any) -> None:
@@ -320,8 +320,12 @@ def _insert_joins_edges(conn: Any, visible_models: dict) -> None:
                 continue
             conn.execute(
                 "MATCH (src:Model {id: $src}), (tgt:Model {id: $tgt}) "
-                "CREATE (src)-[:JOINS]->(tgt)",
-                {"src": canonical_model, "tgt": target_canonical},
+                "CREATE (src)-[:JOINS {cardinality: $card}]->(tgt)",
+                {
+                    "src": canonical_model,
+                    "tgt": target_canonical,
+                    "card": str(join.cardinality) if join.cardinality else "",
+                },
             )
 
 
