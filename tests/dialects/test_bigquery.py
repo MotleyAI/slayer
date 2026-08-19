@@ -18,10 +18,11 @@ import tempfile
 from unittest.mock import patch
 
 import pytest
+import sqlglot
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery
+from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine, _sql_client_cache_key
 from slayer.sql.dialects import (
     BigqueryDialect,
@@ -1035,3 +1036,82 @@ def test_build_engine_oauth_validates_before_importing_optional_driver() -> None
         pytest.raises(ValueError, match="is not valid JSON"),
     ):
         dialect.build_engine(ds, connection_string="bigquery://p/d")
+
+
+# ---------------------------------------------------------------------------
+# Outer-wrap ORDER BY — BigQuery parses a quoted dotted alias into one part
+# per segment, so the qualifier strip must rebuild the whole alias.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "order_sql",
+    [
+        "SELECT 1 FROM t ORDER BY `orders.created_at` DESC",
+        "SELECT 1 FROM t ORDER BY `_base`.`orders.created_at` DESC",
+    ],
+)
+def test_bigquery_outer_wrap_order_by_keeps_full_alias(order_sql: str) -> None:
+    """No empty backtick qualifier, and the alias keeps its model prefix so it
+    resolves against the ``_outer`` scope."""
+    order = sqlglot.parse_one(order_sql, dialect="bigquery").args["order"]
+    out = BigqueryDialect().emit_outer_wrap(
+        inner_sql="SELECT `orders.created_at` AS `orders.created_at`, 1 AS x FROM t",
+        public=["orders.created_at"],
+        order=order,
+        limit=None,
+        offset_arg=None,
+    )
+    assert "``" not in out, f"empty identifier emitted: {out}"
+    assert "ORDER BY\n  `orders.created_at` DESC" in out, out
+
+
+async def test_bigquery_computed_measure_with_order_by_resolves() -> None:
+    """End-to-end: a computed measure ordered by a time dimension renders
+    through BigQuery's outer wrap with no empty backtick qualifier and a full
+    outer-scope ORDER BY alias (the outer-wrap fix, driven on the DEV-1450
+    engine pipeline rather than the deleted enrichment stack)."""
+    model = SlayerModel(
+        name="orders",
+        sql_table="orders",
+        data_source="bq",
+        default_time_dimension="created_at",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+            Column(name="quantity", sql="quantity", type=DataType.DOUBLE),
+        ],
+    )
+    query = SlayerQuery(
+        source_model="orders",
+        time_dimensions=[
+            TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)
+        ],
+        measures=[ModelMeasure(formula="revenue:sum / quantity:sum", name="aov")],
+        order=[OrderItem(column="created_at", direction="desc")],
+        limit=6,
+    )
+    sql = await _engine_generate(query=query, model=model, dialect="bigquery")
+    assert "``" not in sql, f"empty identifier emitted: {sql}"
+    # BigQuery bans dots in output aliases, so the dotted result key
+    # ``orders.created_at`` is mangled to ``orders___created_at`` and must
+    # match across SELECT / GROUP BY / ORDER BY.
+    assert "ORDER BY\n  `orders___created_at` DESC" in sql, sql
+
+
+def test_bigquery_outer_wrap_order_by_prefers_projected_alias() -> None:
+    """A qualified source column whose projected alias differs must resolve to
+    the alias the ``_outer`` scope actually exposes."""
+    order = sqlglot.parse_one(
+        "SELECT 1 FROM t ORDER BY `_base`.`orders.created_at` DESC",
+        dialect="bigquery",
+    ).args["order"]
+    out = BigqueryDialect().emit_outer_wrap(
+        inner_sql="SELECT `_base`.`orders.created_at` AS `created_at` FROM _base",
+        public=["created_at"],
+        order=order,
+        limit=None,
+        offset_arg=None,
+    )
+    assert "ORDER BY\n  `created_at` DESC" in out, out

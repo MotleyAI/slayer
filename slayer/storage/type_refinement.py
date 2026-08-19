@@ -319,9 +319,16 @@ def refine_dict_with_live_schema(d: dict, datasource: DatasourceConfig) -> bool:
         return False
 
     # Local import to avoid circular import at module load time.
-    from slayer.engine.schema_drift import _live_schema_for_datasource
+    from slayer.engine.schema_drift import (
+        IntrospectionUnavailable,
+        _live_schema_for_datasource,
+    )
 
-    live = _live_schema_for_datasource(datasource=datasource)
+    try:
+        live = _live_schema_for_datasource(datasource=datasource)
+    except IntrospectionUnavailable:
+        # Persisted types are the safe fallback when the live schema is unknown.
+        return False
     table = live.get(sql_table)
     if table is None:
         return False
