@@ -170,6 +170,20 @@ def _public_field_name(qfield: Any) -> str:
     )
 
 
+def _close_name_hint(name: str, model: Any) -> str:
+    """A ' Did you mean ...?' clause drawn from every name the model offers.
+
+    ``ModelMeasure.name`` is optional, so unnamed measures are dropped rather
+    than sorted against strings.
+    """
+    known = sorted(
+        {c.name for c in model.columns}
+        | {m.name for m in model.measures if m.name is not None}
+    )
+    suggestion = difflib.get_close_matches(word=name, possibilities=known, n=1)
+    return f" Did you mean '{suggestion[0]}'?" if suggestion else ""
+
+
 def _unknown_column_message(
     *, model: Any, measure_name: str, aggregation_name: str
 ) -> str:
@@ -185,12 +199,27 @@ def _unknown_column_message(
             f"column, so it takes no aggregation. Reference it as '{measure_name}' "
             f"instead of '{measure_name}:{aggregation_name}'."
         )
-    known = sorted(
-        {c.name for c in model.columns} | {m.name for m in model.measures}
-    )
-    suggestion = difflib.get_close_matches(word=measure_name, possibilities=known, n=1)
-    hint = f" Did you mean '{suggestion[0]}'?" if suggestion else ""
+    hint = _close_name_hint(measure_name, model)
     return f"Column '{measure_name}' not found in model '{model.name}'.{hint}"
+
+
+def _bare_name_in_expression_message(*, model: Any, name: str) -> str:
+    """Explain a bare name inside an arithmetic expression.
+
+    Saved measures are inlined before this point, so a name that survives is
+    either a column that forgot its aggregation or nothing at all.
+    """
+    if model.get_column(name) is not None:
+        return (
+            f"'{name}' is a column on model '{model.name}', so it needs an "
+            f"aggregation inside an expression — write '{name}:sum', or another "
+            f"aggregation."
+        )
+    hint = _close_name_hint(name, model)
+    return (
+        f"'{name}' is not a saved measure on model '{model.name}'.{hint} "
+        f"Aggregate a column with colon syntax (e.g., '{name}:sum')."
+    )
 
 
 async def enrich_query(
@@ -897,7 +926,9 @@ async def enrich_query(
                 agg_kwargs=ref.agg_kwargs,
             )
         else:
-            raise ValueError(f"Bare measure name '{mname}' in expression is not valid. Use colon syntax.")
+            raise ValueError(
+                _bare_name_in_expression_message(model=model, name=mname)
+            )
 
     async def _resolve_inner_alias(inner_spec, fallback_name: str) -> str:
         """Flatten a transform's inner spec to a measure alias.

@@ -204,6 +204,37 @@ class TestNamedMeasureSQL:
         ):
             await _generate(query, model)
 
+    async def test_bare_column_in_expression_asks_for_an_aggregation(self) -> None:
+        """The mixed-arithmetic path reaches its own error site."""
+        model = _orders_model()
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "round(revenue, 2)", "name": "result"}],
+        )
+
+        with pytest.raises(
+            ValueError, match="needs an aggregation inside an expression"
+        ):
+            await _generate(query, model)
+
+    async def test_unnamed_measure_does_not_break_the_suggestion(self) -> None:
+        """``ModelMeasure.name`` is optional; unnamed measures are skipped.
+
+        The model validator rejects unnamed measures at construction, so this
+        reaches the helper the way a post-construction mutation would.
+        """
+        model = _orders_model(
+            measures=[ModelMeasure(name="aov", formula="revenue:sum")]
+        )
+        model.measures.append(ModelMeasure(formula="revenue:avg"))
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "revenu:sum", "name": "result"}],
+        )
+
+        with pytest.raises(ValueError, match="Did you mean 'revenue'"):
+            await _generate(query, model)
+
     async def test_unknown_column_suggests_a_close_column(self) -> None:
         model = _orders_model()
         query = SlayerQuery(
