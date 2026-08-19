@@ -119,6 +119,64 @@ def test_render_runs_before_alias_map_mutation_per_slot() -> None:
     assert "B" not in observed[1]
 
 
+def test_multi_alias_slot_emits_one_column_per_public_alias() -> None:
+    # DEV-1798 (C13): a slot projected under two names surfaces both, rendered
+    # once and emitted per name; the FIRST name stays the canonical handle.
+    gen = _gen()
+    ctes = _base_ctes()
+    aliases: dict = {}
+    avail: dict = {}
+    calls: list = []
+
+    def render(slot_obj) -> exp.Expression:
+        calls.append(slot_obj)
+        return exp.column("v", quoted=True)
+
+    gen._emit_step_cte(
+        ctes=ctes,
+        chain_tail="base",
+        step_num=0,
+        cte_allocator=gen._new_allocator(),
+        aliases_by_slot_id=aliases,
+        available_alias_by_slot_id=avail,
+        source_relation="orders",
+        slot_entries=[(
+            "sid",
+            SimpleNamespace(
+                public_aliases=["a", "b"], declared_name="a", type=None,
+            ),
+        )],
+        render=render,
+    )
+    projection = [e.alias_or_name for e in ctes[-1].query.expressions]
+    assert projection == ["orders.a", "orders.b"]
+    assert aliases["sid"] == ["orders.a", "orders.b"]
+    assert avail["sid"] == "orders.a"
+    assert len(calls) == 1
+
+
+def test_no_public_aliases_falls_back_to_declared_name() -> None:
+    gen = _gen()
+    ctes = _base_ctes()
+    aliases: dict = {}
+    gen._emit_step_cte(
+        ctes=ctes,
+        chain_tail="base",
+        step_num=0,
+        cte_allocator=gen._new_allocator(),
+        aliases_by_slot_id=aliases,
+        available_alias_by_slot_id={},
+        source_relation="orders",
+        slot_entries=[(
+            "sid",
+            SimpleNamespace(public_aliases=[], declared_name="d", type=None),
+        )],
+        render=lambda s: exp.column("v", quoted=True),
+    )
+    assert 'AS "orders.d"' in ctes[-1].query.sql(dialect="postgres")
+    assert aliases["sid"] == ["orders.d"]
+
+
 def test_typed_slot_is_cast_wrapped() -> None:
     # _wrap_cast_for_type skips a bare exp.Column, so render a non-column
     # expression to exercise the type-enforcing CAST the helper applies.
