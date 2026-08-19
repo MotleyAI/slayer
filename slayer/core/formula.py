@@ -13,6 +13,7 @@ A formula can be:
 """
 
 import ast
+import difflib
 import io
 import re
 import tokenize
@@ -600,13 +601,38 @@ def parse_formula(
     except SyntaxError as e:
         raise ValueError(f"Invalid formula syntax: {formula!r} — {e}")
 
-    return _parse_node(tree.body, original=formula, agg_refs=agg_refs)
+    return _parse_node(
+        tree.body,
+        original=formula,
+        agg_refs=agg_refs,
+        known_measures=frozenset(named_measures or ()),
+    )
+
+
+def _bare_name_message(name: str, known_measures: frozenset[str]) -> str:
+    """Explain a bare name that expanded to no saved measure.
+
+    A bare name is only ever a saved measure, and by this point expansion has
+    already failed, so the name is either misspelled or a column. Suggesting a
+    real measure first stops the reader from adding a colon suffix that a
+    measure would reject anyway.
+    """
+    suggestion = difflib.get_close_matches(
+        word=name, possibilities=sorted(known_measures), n=1
+    )
+    hint = f" Did you mean '{suggestion[0]}'?" if suggestion else ""
+    return (
+        f"'{name}' is not a saved measure.{hint} Reference a saved measure by its "
+        f"bare name, or aggregate a column with colon syntax (e.g., '{name}:sum'). "
+        f"For COUNT(*), use '*:count'."
+    )
 
 
 def _parse_node(
     node: ast.AST,
     original: str,
     agg_refs: dict[str, AggregatedMeasureRef] | None = None,
+    known_measures: frozenset[str] = frozenset(),
 ) -> FieldSpec:
     """Recursively parse an AST node into a FieldSpec."""
     if agg_refs is None:
@@ -616,12 +642,7 @@ def _parse_node(
     if isinstance(node, ast.Name):
         if node.id in agg_refs:
             return agg_refs[node.id]
-        name = node.id
-        raise ValueError(
-            f"Bare measure name '{name}' is not valid. "
-            f"Use colon syntax (e.g., '{name}:sum', '{name}:avg'). "
-            f"For COUNT(*), use '*:count'."
-        )
+        raise ValueError(_bare_name_message(node.id, known_measures))
 
     # Dotted name → cross-model measure must include aggregation
     if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
@@ -643,7 +664,7 @@ def _parse_node(
             # _parse_mixed_arithmetic so inner aggregated refs and nested
             # transforms are registered/extracted.
             _validate_scalar_call(node, original)
-            return _parse_mixed_arithmetic(node, original, agg_refs)
+            return _parse_mixed_arithmetic(node, original, agg_refs, known_measures)
         if category != "transform":
             raise ValueError(
                 f"Unknown function '{func_name}' in formula {original!r}. "
@@ -656,7 +677,7 @@ def _parse_node(
             raise ValueError(f"Transform '{func_name}' requires at least one argument (the measure)")
 
         # First arg is the measure/expression being transformed
-        inner = _parse_node(node.args[0], original, agg_refs)
+        inner = _parse_node(node.args[0], original, agg_refs, known_measures)
 
         # Remaining positional args are transform parameters (offset, granularity, etc.)
         # The rank family is keyword-only after the measure; reject extra positionals
@@ -682,7 +703,7 @@ def _parse_node(
     # Binary/unary/comparison/boolean operation → check if it contains transform calls
     if isinstance(node, (ast.BinOp, ast.UnaryOp, ast.Compare, ast.BoolOp)):
         if _contains_call(node):
-            return _parse_mixed_arithmetic(node, original, agg_refs)
+            return _parse_mixed_arithmetic(node, original, agg_refs, known_measures)
         measure_names = _collect_names(node)
         # Reject bare measure names (not from colon syntax preprocessing)
         for mname in measure_names:
@@ -692,11 +713,7 @@ def _parse_node(
                         f"Cross-model measure '{mname}' must include an aggregation "
                         f"(e.g., '{mname}:sum')."
                     )
-                raise ValueError(
-                    f"Bare measure name '{mname}' is not valid. "
-                    f"Use colon syntax (e.g., '{mname}:sum', '{mname}:avg'). "
-                    f"For COUNT(*), use '*:count'."
-                )
+                raise ValueError(_bare_name_message(mname, known_measures))
         field_agg_refs = {n: agg_refs[n] for n in measure_names if n in agg_refs}
         return ArithmeticField(
             sql=ast.unparse(node),
@@ -728,12 +745,13 @@ def _replace_calls_in_arith(
     counter: list[int],
     agg_refs: dict[str, AggregatedMeasureRef],
     original: str,
+    known_measures: frozenset[str] = frozenset(),
 ) -> ast.AST:
     """Walk the AST, replacing transform Call nodes with Name placeholders."""
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ALL_TRANSFORMS:
         placeholder = f"_t{counter[0]}"
         counter[0] += 1
-        transform = _parse_node(node, original, agg_refs)
+        transform = _parse_node(node, original, agg_refs, known_measures)
         sub_transforms.append((placeholder, transform))
         return ast.Name(id=placeholder, ctx=ast.Load())
 
@@ -743,6 +761,7 @@ def _replace_calls_in_arith(
         "counter": counter,
         "agg_refs": agg_refs,
         "original": original,
+        "known_measures": known_measures,
     }
 
     if isinstance(node, ast.Name):
@@ -795,6 +814,7 @@ def _parse_mixed_arithmetic(
     node: ast.AST,
     original: str,
     agg_refs: dict[str, AggregatedMeasureRef] | None = None,
+    known_measures: frozenset[str] = frozenset(),
 ) -> MixedArithmeticField:
     """Parse arithmetic that contains transform calls.
 
@@ -815,6 +835,7 @@ def _parse_mixed_arithmetic(
         counter=counter,
         agg_refs=agg_refs,
         original=original,
+        known_measures=known_measures,
     )
     modified_sql = ast.unparse(modified)
 

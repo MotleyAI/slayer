@@ -173,7 +173,45 @@ class TestNamedMeasureSQL:
             measures=[{"formula": "nonexistent", "name": "result"}],
         )
 
-        with pytest.raises(ValueError, match="Bare measure name"):
+        with pytest.raises(ValueError, match="is not a saved measure"):
+            await _generate(query, model)
+
+    async def test_near_miss_bare_name_suggests_the_saved_measure(self) -> None:
+        """A misspelled saved measure names the real one."""
+        model = _orders_model(
+            measures=[ModelMeasure(name="aov_net", formula="revenue:sum")]
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "aov_nett", "name": "result"}],
+        )
+
+        with pytest.raises(ValueError, match="Did you mean 'aov_net'"):
+            await _generate(query, model)
+
+    async def test_aggregating_a_saved_measure_says_to_drop_the_suffix(self) -> None:
+        """``measure:agg`` used to report the measure as a missing column."""
+        model = _orders_model(
+            measures=[ModelMeasure(name="aov", formula="revenue:sum")]
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "aov:sum", "name": "result"}],
+        )
+
+        with pytest.raises(
+            ValueError, match="is a saved measure.*takes no aggregation"
+        ):
+            await _generate(query, model)
+
+    async def test_unknown_column_suggests_a_close_column(self) -> None:
+        model = _orders_model()
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "revenu:sum", "name": "result"}],
+        )
+
+        with pytest.raises(ValueError, match="Did you mean 'revenue'"):
             await _generate(query, model)
 
     async def test_duplicate_saved_measure_name_rejected_in_enrichment(self) -> None:

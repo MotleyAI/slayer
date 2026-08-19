@@ -192,10 +192,9 @@ class EmbeddingRetriever(Retriever):
         and entity rankings from a single ``fetch_corpus`` +
         ``embed_question`` + dim-check (Codex Finding 1).
 
-        Skipped (with a warning) when:
+        Skipped when ``question`` is blank or the ``advanced_search`` extra is
+        unavailable, and skipped with a warning when:
 
-        * ``question`` is blank,
-        * the ``advanced_search`` extra is not installed,
         * the active model has no embedding rows in storage,
         * the query embedding call fails,
         * dim mismatch between query vec and corpus.
@@ -203,11 +202,14 @@ class EmbeddingRetriever(Retriever):
         if corpus is None or not question or not question.strip():
             return RetrievalResult()
         if not embedding_client.is_available():
-            return RetrievalResult(warnings=[
+            # Deployment configuration, not something the caller can act on:
+            # log it for the operator rather than returning it as a warning.
+            _log.warning(
                 "embedding channel skipped: `advanced_search` extra not "
                 "installed or no API key configured for the active "
-                "embedding model.",
-            ])
+                "embedding model."
+            )
+            return RetrievalResult()
 
         rows = await self.fetch_corpus()
         if datasource is not None:

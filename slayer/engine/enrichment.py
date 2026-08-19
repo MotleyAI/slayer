@@ -170,6 +170,29 @@ def _public_field_name(qfield: Any) -> str:
     )
 
 
+def _unknown_column_message(
+    *, model: Any, measure_name: str, aggregation_name: str
+) -> str:
+    """Explain why ``measure_name:aggregation_name`` did not resolve.
+
+    Columns and saved measures share one namespace but take opposite syntax:
+    a column needs the colon suffix, a measure must not carry one. Naming the
+    kind that does exist turns a dead end into a one-step correction.
+    """
+    if model.get_measure(measure_name) is not None:
+        return (
+            f"'{measure_name}' is a saved measure on model '{model.name}', not a "
+            f"column, so it takes no aggregation. Reference it as '{measure_name}' "
+            f"instead of '{measure_name}:{aggregation_name}'."
+        )
+    known = sorted(
+        {c.name for c in model.columns} | {m.name for m in model.measures}
+    )
+    suggestion = difflib.get_close_matches(word=measure_name, possibilities=known, n=1)
+    hint = f" Did you mean '{suggestion[0]}'?" if suggestion else ""
+    return f"Column '{measure_name}' not found in model '{model.name}'.{hint}"
+
+
 async def enrich_query(
     query: SlayerQuery,
     model: SlayerModel,
@@ -461,7 +484,11 @@ async def enrich_query(
             measure_def = model.get_column(measure_name)
             if measure_def is None:
                 raise ValueError(
-                    f"Column '{measure_name}' not found in model '{model.name}'"
+                    _unknown_column_message(
+                        model=model,
+                        measure_name=measure_name,
+                        aggregation_name=aggregation_name,
+                    )
                 )
             # DEV-1576 §3: distinguish "unknown aggregation name" from "known
             # but not allowed for this column type". The name check runs BEFORE
