@@ -5,6 +5,7 @@ Run manually (tests/perf is CI-ignored):
 """
 
 import datetime as dt
+import math
 from decimal import Decimal
 
 import pandas as pd
@@ -586,7 +587,7 @@ def test_oracle_output_is_json_native(frames):
         for cell in row:
             assert cell is None or isinstance(cell, (str, int, float, bool))
             if isinstance(cell, float):
-                assert cell == cell  # not NaN
+                assert not math.isnan(cell)
 
 
 def test_oracle_frames_from_dataset_matches_seed():
