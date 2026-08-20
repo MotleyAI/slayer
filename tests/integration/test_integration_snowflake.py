@@ -142,6 +142,8 @@ def sf_transient_schema():
                 created_at TIMESTAMP_NTZ NOT NULL
             )
         """)
+        cur.execute("COMMENT ON TABLE orders IS 'All orders'")
+        cur.execute("COMMENT ON COLUMN orders.quantity IS 'Units ordered'")
         cur.executemany(
             "INSERT INTO regions VALUES (%s, %s)",
             [(1, "US"), (2, "EU"), (3, "APAC")],
@@ -620,6 +622,18 @@ def test_auto_ingest_discovers_joins(sf_datasource, sf_transient_schema) -> None
     }
     assert "regions" in customers_joins, f"customers→regions FK not discovered: {customers_joins}"
     assert customers_joins["regions"] == ("region_id", "id")
+
+
+def test_auto_ingest_imports_comments(sf_datasource, sf_transient_schema) -> None:
+    """Snowflake table/column comments must land on model/column descriptions."""
+    models = ingest_datasource(datasource=sf_datasource, schema=sf_transient_schema)
+    by_name = {m.name.lower(): m for m in models}
+    orders = by_name["orders"]
+    assert orders.description == "All orders"
+    cols = {c.name.lower(): c for c in orders.columns}
+    assert cols["quantity"].description == "Units ordered"
+    assert cols["status"].description is None
+    assert by_name["regions"].description is None
 
 
 # ---------------------------------------------------------------------------

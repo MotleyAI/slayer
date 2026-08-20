@@ -194,15 +194,51 @@ def _empty_ingest_message(*, schema_name: str, ds: DatasourceConfig) -> str:
     )
 
 
+def _addition_has_changes(a: Any) -> bool:
+    """True when a non-created addition carries any change worth rendering."""
+    return bool(
+        a.new_columns
+        or a.new_joins
+        or getattr(a, "widened_columns", None)
+        or getattr(a, "kind_change", None)
+        or getattr(a, "described_columns", None)
+        or getattr(a, "model_described", False)
+    )
+
+
 def _render_new_models_section(new_models: list[Any]) -> list[str]:
     if not new_models:
         return []
     lines = [f"Created {len(new_models)} new model(s):"]
     for a in new_models:
+        described = getattr(a, "described_columns", []) or []
+        suffix = f", {len(described)} described" if described else ""
         lines.append(
-            f"- {a.model_name} ({len(a.new_columns)} columns, {len(a.new_joins)} joins)"
+            f"- {a.model_name} ({len(a.new_columns)} columns, "
+            f"{len(a.new_joins)} joins{suffix})"
         )
     return lines
+
+
+def _addition_update_details(a: Any) -> list[str]:
+    """Detail fragments for one non-created addition, in CLI-renderer order."""
+    details = []
+    if a.new_columns:
+        details.append(f"+columns: {', '.join(a.new_columns)}")
+    if a.new_joins:
+        details.append(f"+joins: {', '.join(a.new_joins)}")
+    widened = getattr(a, "widened_columns", []) or []
+    if widened:
+        details.append(f"widened: {', '.join(widened)}")
+    kind_change = getattr(a, "kind_change", None)
+    if kind_change:
+        details.append(f"source_kind: {kind_change}")
+    described = getattr(a, "described_columns", []) or []
+    if described:
+        details.append(f"+descriptions: {', '.join(described)}")
+    if getattr(a, "model_described", False):
+        details.append("+model description")
+    return details
 
 
 def _render_updated_section(updated: list[Any]) -> list[str]:
@@ -210,12 +246,7 @@ def _render_updated_section(updated: list[Any]) -> list[str]:
         return []
     lines = [f"Updated {len(updated)} existing model(s):"]
     for a in updated:
-        details = []
-        if a.new_columns:
-            details.append(f"+columns: {', '.join(a.new_columns)}")
-        if a.new_joins:
-            details.append(f"+joins: {', '.join(a.new_joins)}")
-        lines.append(f"- {a.model_name} ({'; '.join(details)})")
+        lines.append(f"- {a.model_name} ({'; '.join(_addition_update_details(a))})")
     return lines
 
 
@@ -291,12 +322,14 @@ def _render_ingest_result(
     # may carry neither attribute.
     skipped = list(getattr(result, "skipped", None) or [])
     hidden_internals = list(getattr(result, "hidden_internals", None) or [])
+    datasource_described = bool(getattr(result, "datasource_described", False))
     if (
         not additions
         and not result.to_delete
         and not result.errors
         and not skipped
         and not hidden_internals
+        and not datasource_described
     ):
         # Two distinct cases produce an empty result:
         #   1. The schema actually has no tables (the agent should look
@@ -315,16 +348,17 @@ def _render_ingest_result(
         return "Datasource already in sync — no additive changes."
 
     new_models = [a for a in additions if a.created]
-    updated = [a for a in additions if not a.created and (a.new_columns or a.new_joins)]
+    updated = [a for a in additions if not a.created and _addition_has_changes(a)]
     unchanged = [
-        a for a in additions
-        if not a.created and not a.new_columns and not a.new_joins
+        a for a in additions if not a.created and not _addition_has_changes(a)
     ]
 
     lines: list[str] = []
     lines.extend(_render_new_models_section(new_models))
     lines.extend(_render_updated_section(updated))
     lines.extend(_render_unchanged_section(unchanged))
+    if datasource_described:
+        lines.append("Datasource description imported.")
     lines.extend(_render_drift_section(list(result.to_delete)))
     # Same order as the CLI renderer, so the two surfaces read alike.
     lines.extend(_render_skipped_section(skipped))
@@ -1461,7 +1495,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
         Example: create_datasource(name="mydb", type="postgres", host="localhost", port=5432, database="app", username="user", password="pass")
         """
-        from slayer.engine.ingestion import ingest_datasource as _ingest
+        from slayer.engine.ingestion import ingest_datasource_report as _ingest
 
         data = _build_dict(
             name=name,
@@ -1493,12 +1527,23 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
         # Auto-ingest models
         try:
-            models = _ingest(datasource=ds, schema=schema_name or None)
+            ingest_output = _ingest(datasource=ds, schema=schema_name or None)
         except Exception as e:
             if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
                 lines.append(f"Auto-ingestion failed: {_friendly_db_error(e)}")
                 return "\n".join(lines)
             raise
+        models = ingest_output.models
+
+        if ingest_output.schema_description and not ds.description:
+            try:
+                ds = ds.model_copy(
+                    update={"description": ingest_output.schema_description}
+                )
+                await storage.save_datasource(ds)
+                lines.append("Datasource description imported.")
+            except Exception as exc:  # noqa: BLE001 — best-effort
+                lines.append(f"Could not save datasource description: {exc}")
 
         save_errors: list[str] = []
         saved_models = []

@@ -860,6 +860,52 @@ class TestRegularModelConversion:
         assert result.models[0].name == "orders"
 
 
+class TestHiddenModelDescriptionPrecedence:
+    """Curated dbt descriptions win over DB comments; DB comments fill gaps."""
+
+    def _convert_with_db_comments(self, project) -> SlayerModel:
+        fake_model = _sample_slayer_model(name="raw_events")
+        fake_model.description = "db table comment"
+        for c in fake_model.columns:
+            if c.name == "event_id":
+                c.description = "db comment on event_id"
+        fake_model.columns.append(
+            Column(name="db_only", sql="db_only", type=DataType.TEXT,
+                   description="db comment only")
+        )
+        engine = MagicMock(spec=sa.Engine)
+        with patch.object(sa, "inspect", return_value=MagicMock()), \
+             patch.object(converter_module, "introspect_table_to_model", return_value=fake_model):
+            result = DbtToSlayerConverter(
+                project=project,
+                data_source="test_db",
+                include_hidden_models=True,
+                sa_engine=engine,
+            ).convert()
+        return next(m for m in result.models if m.hidden)
+
+    def test_curated_wins_and_db_comments_fill_gaps(self) -> None:
+        raw = self._convert_with_db_comments(_project_with_orphan())
+        assert raw.description == "Raw event log"
+        cols = {c.name: c for c in raw.columns}
+        assert cols["event_id"].description == "Unique event identifier"
+        assert cols["db_only"].description == "db comment only"
+
+    def test_db_comments_survive_without_curated_metadata(self) -> None:
+        project = DbtProject(
+            semantic_models=[],
+            metrics=[],
+            regular_models=[
+                DbtRegularModel(name="raw_events", schema_name="staging",
+                                alias="raw_events"),
+            ],
+        )
+        raw = self._convert_with_db_comments(project)
+        assert raw.description == "db table comment"
+        cols = {c.name: c for c in raw.columns}
+        assert cols["event_id"].description == "db comment on event_id"
+
+
 class TestForeignEntityJoinsAllPrimaries:
     """Foreign entities must produce joins to ALL matching primary models, not just the first."""
 

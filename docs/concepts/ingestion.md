@@ -42,6 +42,7 @@ Tables with no FK references use their plain table name with no joins.
 SLayer introspects each table's column types and generates a model:
 
 - **One `Column`** per non-joined column on the source table — name, `type` inferred from the database (`string` / `number` / `boolean` / `time` / `date`), `primary_key=True` for PKs. Whether each column is used as a group-by dimension or as an aggregation source is decided per query.
+- **Column and table comments** stored in the database become `Column.description` and `SlayerModel.description` (see [Comments and descriptions](#comments-and-descriptions) below).
 - **`unique=True`** for columns that alone form a `UNIQUE` constraint or unique index. PK columns are not stamped redundantly — `primary_key` already implies uniqueness. Composite uniqueness is evaluated per key-set during join-cardinality inference rather than being flattened onto individual columns.
 - **A column literally named `count`** is renamed to `count_col` to avoid clashing with the always-available `*:count`.
 - **No auto-generated `measures`** — `SlayerModel.measures` is the named-formula library and stays empty after ingestion. You can add named formulas later via the API/MCP if you want bare-name shortcuts (`{"formula": "aov"}`).
@@ -53,6 +54,36 @@ FK columns from referenced tables are excluded from the source model to avoid re
 All models use `sql_table` (the source table) plus `joins` (direct FK joins only, storing source/target column pairs). Multi-hop JOINs are resolved dynamically at query time by walking the join graph. A **composite** foreign key becomes a single join carrying all of its column pairs, not one join per column.
 
 Each FK join also gets a structural [`cardinality`](models.md#join-cardinality) guess from the key constraints alone (no data is read): `many_to_one` by default, upgrading to `one_to_one` when the source key is itself unique. A side counts as unique only when some PK/unique key-set is a subset of the join key — if `(a)` is unique then `(a, b)` is too, but a constraint on `(a, b)` does not make `(a)` unique. When the target key cannot be *verified* unique from its constraints, cardinality is left unset rather than guessed. To infer it from the data instead, run `slayer validate-models --cardinality`.
+
+### Comments and descriptions
+
+Textual metadata stored in the database is imported during ingestion, so
+agents see the same documentation the DBA wrote:
+
+- **Column comments** → `Column.description`
+- **Table comments** → `SlayerModel.description`
+- **BigQuery dataset description** → the datasource's `description`
+  (BigQuery only — no cross-database API exists for schema-level comments)
+
+The import is strictly **fill-if-empty**: a comment lands only where the
+existing `description` is empty. Hand-written descriptions are never
+overwritten, on first ingest or any re-ingest — consistent with the
+additive-only re-ingestion contract. To re-import a comment, clear the
+description and re-run `slayer ingest`. Imported descriptions feed the
+search corpus like any other description, so the next embedding refresh
+picks them up.
+
+Per-database support:
+
+| Database | Column comments | Table comments |
+|---|---|---|
+| BigQuery | ✓ (field descriptions) | ✓ (table description) |
+| Postgres, MySQL, SQL Server, Snowflake, ClickHouse | ✓ | ✓ |
+| DuckDB | ✓ (`COMMENT ON`) | ✓ |
+| SQLite | — (no such feature) | — |
+
+Comment fetching is best-effort: a database or driver that cannot surface
+comments simply yields models without descriptions, never a failed ingest.
 
 ### SQLite affinity probing
 
@@ -276,7 +307,7 @@ Ingest-on-startup: N/M datasources ingested (K failed: name1, name2)
 `slayer ingest` (and the equivalent MCP / REST entry points) is idempotent by default — re-runs are safe. For each in-scope live table:
 
 - **No persisted model with that name** → ingest from scratch via the path above.
-- **Existing `sql_table`-mode model** → append new columns and joins from the live schema. Existing user metadata is **never** overwritten — `description`, `label`, `format`, `meta`, and `allowed_aggregations` are preserved verbatim. The only in-place updates are strictly additive gap-fills: a join's `cardinality` is set only when it is currently unset (a value you chose is never replaced), and a column's `unique` is only ever turned on, never off. Filling either one is enough to trigger a save, so a re-ingest that adds no columns or joins still persists newly-discovered constraint metadata.
+- **Existing `sql_table`-mode model** → append new columns and joins from the live schema. Existing user metadata is **never** overwritten — `description`, `label`, `format`, `meta`, and `allowed_aggregations` are preserved verbatim. The only in-place updates are strictly additive gap-fills: a join's `cardinality` is set only when it is currently unset (a value you chose is never replaced), a column's `unique` is only ever turned on, never off, and an **empty** `description` (column and model level) is filled from the live DB comment. Filling any of these is enough to trigger a save, so a re-ingest that adds no columns or joins still persists newly-discovered metadata. Filled descriptions are reported per model (`ModelAddition.described_columns`, `model_described`; the CLI prints `+descriptions: …`).
 - **Existing `sql`-mode or query-backed model with the matching name** → skipped silently; those are user-authored.
 
 With the default YAML storage, two live tables whose quoted names differ only by letter case (`"Orders"` vs `orders`) cannot both be persisted — model names collide as filenames on macOS / Windows, so the save is rejected (`IdCollisionError`). The first table wins; the second surfaces as a per-model entry in `IdempotentIngestResult.errors` (or a per-model message on the CLI / MCP paths) without aborting the rest of the ingest. SQLite storage persists both.

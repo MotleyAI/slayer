@@ -2237,6 +2237,15 @@ def _run_datasources_create(args, storage):
         sys.exit(1)
 
     _persist_ingested_models(report.models, storage, assume_yes=args.yes)
+
+    if report.schema_description and not ds.description:
+        ds = ds.model_copy(update={"description": report.schema_description})
+        try:
+            run_sync(storage.save_datasource(ds))
+            print("Datasource description imported.")
+        except Exception as e:
+            print(f"Could not save datasource description: {e}")
+
     # After persistence, so the sections comment on what was just written. Exit
     # stays 0 — creating the datasource succeeded, whatever was skipped/hidden.
     _print_ingest_drift_and_errors(report, data_source=ds.name)

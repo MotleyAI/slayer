@@ -607,10 +607,10 @@ def mysql_ingest_env(mysql_container):
                 cur.execute("""
                     CREATE TABLE orders (
                         id INTEGER PRIMARY KEY,
-                        amount DECIMAL(10,2) NOT NULL,
+                        amount DECIMAL(10,2) NOT NULL COMMENT 'Order amount',
                         customer_id INTEGER,
                         FOREIGN KEY (customer_id) REFERENCES customers(id)
-                    ) ENGINE=InnoDB
+                    ) ENGINE=InnoDB COMMENT='All orders'
                 """)
                 cur.executemany("INSERT INTO regions VALUES (%s, %s)", [(1, "US"), (2, "EU")])
                 cur.executemany(
@@ -1330,3 +1330,19 @@ class TestMySQLModeAEscaping:
             variables={"v": "x\\' OR '1'='1"},
         ))
         assert int(resp.data[0]["esc._count"]) == 0
+
+
+@pytest.mark.integration
+class TestMySQLIngestComments:
+    def test_table_and_column_comments_imported(self, mysql_ingest_env) -> None:
+        models, _, _ = mysql_ingest_env
+        orders = next(m for m in models if m.name == "orders")
+        assert orders.description == "All orders"
+        by_name = {c.name: c for c in orders.columns}
+        assert by_name["amount"].description == "Order amount"
+        assert by_name["id"].description is None
+
+    def test_uncommented_table_has_no_description(self, mysql_ingest_env) -> None:
+        models, _, _ = mysql_ingest_env
+        regions = next(m for m in models if m.name == "regions")
+        assert regions.description is None

@@ -118,6 +118,33 @@ def test_model_and_semantic_model_ai_context(shop_engine):
     assert "osi_semantic_model" in orders.meta
 
 
+def test_db_comments_fill_gaps_curated_wins(shop_engine, monkeypatch):
+    """Introspected DB comments survive only where OSI has no curated text."""
+    import slayer.osi.converter as osi_converter_module
+
+    real = osi_converter_module.introspect_table_to_model
+
+    def _with_db_comments(**kwargs):
+        model = real(**kwargs)
+        model.description = "db table comment"
+        for c in model.columns:
+            if c.name in ("order_id", "customer_id"):
+                c.description = f"db comment {c.name}"
+        return model
+
+    monkeypatch.setattr(
+        osi_converter_module, "introspect_table_to_model", _with_db_comments
+    )
+    orders = _by_name(_shop_result(shop_engine))["orders"]
+    cols = {c.name: c for c in orders.columns}
+    # Curated OSI description wins over the DB comment.
+    assert "Order line items" in orders.description
+    assert "db table comment" not in orders.description
+    assert cols["order_id"].description == "Order id"
+    # No curated metadata on customer_id — the DB comment survives.
+    assert cols["customer_id"].description == "db comment customer_id"
+
+
 # ─────────────────────────── relationships -> joins ─────────────────────────
 
 def test_joins_from_relationships(shop_engine):
