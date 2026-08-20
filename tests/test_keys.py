@@ -100,8 +100,10 @@ class TestColumnSqlKey:
 
 class TestStarKey:
     def test_all_instances_equal(self):
-        assert StarKey() == StarKey()
-        assert hash(StarKey()) == hash(StarKey())
+        a = StarKey()
+        b = StarKey()
+        assert a == b
+        assert hash(a) == hash(b)
 
     def test_phase_is_row(self):
         assert StarKey().phase is Phase.ROW

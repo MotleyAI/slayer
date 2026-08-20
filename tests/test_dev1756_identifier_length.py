@@ -650,7 +650,9 @@ class TestCteNames:
         fits the SAME long alias to the SAME name — a CTE definition and its
         references cannot drift."""
         long_alias = LONG_EMAIL + ".lifetimeValue_sum"
-        assert self._cte("_cm_", long_alias) == self._cte("_cm_", long_alias)
+        first = self._cte("_cm_", long_alias)
+        second = self._cte("_cm_", long_alias)
+        assert first == second
 
     def test_cte_name_is_pure_and_bounded(self) -> None:
         got = self._cte("_cm_", LONG_EMAIL + ".lifetimeValue_sum")
