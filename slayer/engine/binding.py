@@ -33,6 +33,7 @@ consumer.
 
 from __future__ import annotations
 
+import difflib
 from typing import Dict, List, Optional, Tuple, Union
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -526,6 +527,20 @@ def _bind_in(
     )
 
 
+def _name_suggestion(*, name: str, model: "SlayerModel") -> str | None:
+    """A ``Did you mean 'X'?`` clause drawn from every name the model offers.
+
+    ``ModelMeasure.name`` is optional, so unnamed measures are dropped rather
+    than sorted against strings.
+    """
+    known = sorted(
+        {c.name for c in model.columns}
+        | {m.name for m in model.measures if m.name is not None}
+    )
+    match = difflib.get_close_matches(word=name, possibilities=known, n=1)
+    return f"Did you mean '{match[0]}'?" if match else None
+
+
 def _resolve_ref(
     name: str,
     *,
@@ -589,15 +604,18 @@ def _resolve_ref(
         # Try ModelMeasure as a fallback for bare measure refs.
         mm = next((m for m in model.measures if m.name == name), None)
         if mm is not None:
-            # ModelMeasure expansion lives in the planner; the binder
-            # raises here so callers know expansion is required.
+            # A bare saved measure reaches the binder only when it is used as
+            # the source of an explicit aggregation (``aov:sum``) — a plain
+            # ``aov`` is inlined by ModelMeasure expansion in the planner first.
+            # Aggregating a saved measure is the error; say so.
             raise UnknownReferenceError(
                 name=name,
                 scope_kind="ModelScope",
                 scope_summary=f"model {model.name!r}",
                 suggestion=(
-                    f"{name!r} is a saved measure on {model.name!r}; "
-                    f"expand via ModelMeasure expansion before binding."
+                    f"{name!r} is a saved measure on {model.name!r}, not a "
+                    f"column, so it takes no aggregation. Reference it by its "
+                    f"bare name {name!r} without a colon aggregation."
                 ),
             )
         raise UnknownReferenceError(
@@ -607,7 +625,7 @@ def _resolve_ref(
                 f"model {model.name!r} columns: "
                 f"{[c.name for c in model.columns]}"
             ),
-            suggestion=None,
+            suggestion=_name_suggestion(name=name, model=model),
         )
 
     if col.sql is not None and col.sql.strip() != name:
