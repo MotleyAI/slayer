@@ -106,3 +106,35 @@ def test_change_uses_full_previous_month():
     })
     by_month = {str(r["orders.created_at"])[:7]: r["orders.chg"] for r in resp.data}
     assert by_month["2024-02"] == pytest.approx(70.0 - 150.0)
+
+
+def test_aligned_shift_truncates_once():
+    # month-shift on month buckets: bucket-start + N months IS a bucket start,
+    # so the emitted shifted expression must not pay a second per-row trunc
+    engine = _make_engine([(1, 1.0, "2024-01-10 12:00:00")])
+    resp = engine.execute_sync(query={
+        "source_model": "orders",
+        "measures": ["cost:sum",
+                     {"formula": "time_shift(cost:sum, -1, 'month')", "name": "prev"}],
+        "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
+    }, dry_run=True)
+    shifted = [ln for ln in resp.sql.splitlines() if "months" in ln.lower()]
+    assert shifted, resp.sql
+    assert all(ln.count("STRFTIME") == 1 for ln in shifted), resp.sql
+
+
+def test_unaligned_shift_still_rebuckets():
+    # a day-offset on month buckets lands mid-month: the outer trunc must stay
+    engine = _make_engine([
+        (1, 100.0, "2024-01-31 12:00:00"),
+        (2, 70.0, "2024-02-10 09:00:00"),
+    ])
+    resp = engine.execute_sync(query={
+        "source_model": "orders",
+        "measures": ["cost:sum",
+                     {"formula": "time_shift(cost:sum, -1, 'day')", "name": "prev"}],
+        "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
+    }, dry_run=True)
+    shifted = [ln for ln in resp.sql.splitlines() if "days" in ln.lower()]
+    assert shifted, resp.sql
+    assert any(ln.count("STRFTIME") == 2 for ln in shifted), resp.sql

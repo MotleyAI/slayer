@@ -1841,9 +1841,13 @@ class TestFields:
         # Each shift keeps its own offset (legacy: ``{t.offset} == {-1, -2}``).
         # Both are backwards shifts, so the emitted interval is ``+ 1``/``+ 2``
         # months on the join side; the sign is captured too so a flipped
-        # direction can't pass.
+        # direction can't pass. The shift applies to the TRUNCATED period
+        # start (period-boundary fix, DEV-1811 audit).
         offsets = set(
-            _re.findall(r"orders\.created_at ([+-]) INTERVAL '(\d+) MONTH'", sql)
+            _re.findall(
+                r"DATE_TRUNC\('MONTH', orders\.created_at\) ([+-]) INTERVAL '(\d+) MONTH'",
+                sql,
+            )
         )
         assert offsets == {("+", "1"), ("+", "2")}, (
             f"expected -1 and -2 month shifts, got {sorted(offsets)} in:\n{sql}"
