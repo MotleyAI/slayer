@@ -23,7 +23,7 @@ Spec versions `1.0`, `0.1.0`, `0.1.1`, and `0.2.0.dev0` are all accepted (they a
 | field `expression` (derived, e.g. `UPPER(x)`) | a derived `Column` with `sql` set |
 | field `dimension.is_time` | column typed temporal; sets `default_time_dimension` |
 | dataset `primary_key` | `Column.primary_key = true` |
-| `relationships[]` (`from` → `to`) | a LEFT `ModelJoin` on the `from` model |
+| `relationships[]` (`from` → `to`) | a LEFT `ModelJoin` on the `from` model, [`cardinality`](../concepts/models.md#join-cardinality) `many_to_one` (OSI relationships are direction-implied: `from` = many, `to` = one) |
 | `metrics[]` (raw SQL aggregation) | a `ModelMeasure` formula |
 | `ai_context` (instructions + synonyms) | entity `description` + `meta["osi_ai_context"]` |
 | `unique_keys` / `custom_extensions` | model/column `meta` |

@@ -2,6 +2,7 @@
 
 import os
 import tempfile
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -86,6 +87,37 @@ class TestGetColumnsFallback:
 
         params = args[1] if len(args) > 1 else kwargs
         assert params == {"table_name": "orders", "schema": "public"}
+
+    def test_bigquery_uses_dataset_qualified_information_schema(self):
+        """A dataset-scoped BigQuery account cannot read the project-level view."""
+        engine, conn = _setup_mock_engine([("id", "INTEGER")])
+        engine.dialect = SimpleNamespace(name="bigquery")
+        _get_columns_fallback(
+            sa_engine=engine, table_name="core.mart__kpis", schema=None,
+        )
+
+        args, kwargs = conn.execute.call_args
+        sql_str = str(args[0])
+        assert "`core`.INFORMATION_SCHEMA.COLUMNS" in sql_str
+        params = args[1] if len(args) > 1 else kwargs
+        assert params == {"table_name": "mart__kpis"}
+
+    def test_bigquery_dataset_is_quoted_and_escaped(self):
+        """A hostile dataset name cannot break out of the identifier."""
+        engine, conn = _setup_mock_engine([])
+        engine.dialect = SimpleNamespace(name="bigquery")
+        _get_columns_fallback(
+            sa_engine=engine,
+            table_name="orders",
+            schema="evil` UNION SELECT 1,2 FROM `x",
+        )
+
+        sql_str = str(conn.execute.call_args[0][0])
+        # The payload stays inside ONE quoted identifier, its backticks doubled.
+        assert (
+            "FROM `evil`` UNION SELECT 1,2 FROM ``x`.INFORMATION_SCHEMA.COLUMNS"
+            in sql_str
+        ), sql_str
 
     def test_no_fstring_interpolation(self):
         """Ensure table_name/schema values never appear literally in the SQL text."""
@@ -208,12 +240,12 @@ class TestGenerateJoinsDedup:
     def test_multiple_fks_to_same_target_preserved(self):
         """Two distinct FKs to the same target table should both produce joins."""
         inspector = MagicMock(spec=sa.engine.Inspector)
-        fk_rels = [
-            ("buyer_id", "users", "id"),
-            ("seller_id", "users", "id"),
+        fk_groups = [
+            ("users", [("buyer_id", "id")]),
+            ("users", [("seller_id", "id")]),
         ]
         with patch(
-            "slayer.engine.ingestion._get_fk_relationships", return_value=fk_rels,
+            "slayer.engine.ingestion._get_fk_constraint_groups", return_value=fk_groups,
         ):
             joins = _generate_joins(
                 inspector=inspector,
@@ -230,12 +262,12 @@ class TestGenerateJoinsDedup:
     def test_exact_duplicate_fk_deduplicated(self):
         """Identical FK pair to the same target should be deduplicated."""
         inspector = MagicMock(spec=sa.engine.Inspector)
-        fk_rels = [
-            ("buyer_id", "users", "id"),
-            ("buyer_id", "users", "id"),
+        fk_groups = [
+            ("users", [("buyer_id", "id")]),
+            ("users", [("buyer_id", "id")]),
         ]
         with patch(
-            "slayer.engine.ingestion._get_fk_relationships", return_value=fk_rels,
+            "slayer.engine.ingestion._get_fk_constraint_groups", return_value=fk_groups,
         ):
             joins = _generate_joins(
                 inspector=inspector,
@@ -245,6 +277,126 @@ class TestGenerateJoinsDedup:
                 table_set={"orders", "users"},
             )
         assert len(joins) == 1
+
+
+class TestPkFallbackNeverSinksTheTable:
+    """A failing PK lookup must not take the table down with it.
+
+    BigQuery skipped every table: its inspector reports no primary keys, the
+    empty result was read as failure, and the unqualified INFORMATION_SCHEMA
+    fallback raised from both branches — the second time uncaught.
+    """
+
+    @staticmethod
+    def _inspector(pk):
+        inspector = MagicMock()
+        inspector.get_pk_constraint.return_value = pk
+        return inspector
+
+    @staticmethod
+    def _engine(dialect_name):
+        engine = MagicMock(spec=sa.Engine)
+        engine.dialect = MagicMock()
+        engine.dialect.name = dialect_name
+        return engine
+
+    def test_bigquery_skips_the_fallback_entirely(self):
+        """It can only fail there, and each attempt is a billed query."""
+        with patch(
+            "slayer.engine.ingestion._get_pk_constraint_fallback"
+        ) as fallback:
+            result = _safe_get_pk_constraint(
+                inspector=self._inspector({"constrained_columns": []}),
+                sa_engine=self._engine("bigquery"),
+                table_name="orders",
+                schema="core",
+            )
+        assert result == {"constrained_columns": []}
+        fallback.assert_not_called()
+
+    def test_failing_fallback_yields_no_pk_instead_of_raising(self):
+        with patch(
+            "slayer.engine.ingestion._get_pk_constraint_fallback",
+            side_effect=Exception("403 Access Denied: information_schema"),
+        ) as fallback:
+            result = _safe_get_pk_constraint(
+                inspector=self._inspector({"constrained_columns": []}),
+                sa_engine=self._engine("postgresql"),
+                table_name="orders",
+                schema="public",
+            )
+        assert result == {"constrained_columns": []}
+        # Once, not twice: the old except branch re-ran the failing call.
+        assert fallback.call_count == 1
+
+    def test_fallback_still_answers_when_the_inspector_is_empty(self):
+        """DuckDB's case — the reason the fallback exists."""
+        with patch(
+            "slayer.engine.ingestion._get_pk_constraint_fallback",
+            return_value={"constrained_columns": ["id"]},
+        ) as fallback:
+            result = _safe_get_pk_constraint(
+                inspector=self._inspector({"constrained_columns": []}),
+                sa_engine=self._engine("duckdb"),
+                table_name="orders",
+                schema=None,
+            )
+        assert result == {"constrained_columns": ["id"]}
+        assert fallback.call_count == 1
+
+    @pytest.mark.parametrize(
+        "malformed",
+        [
+            {"constrained_columns": None},
+            {"constrained_columns": "id"},
+            {"constrained_columns": [1, 2]},
+            {},
+            None,
+        ],
+        ids=["none", "bare-string", "non-str-items", "missing-key", "not-a-dict"],
+    )
+    def test_malformed_inspector_pk_normalizes(self, malformed):
+        """Callers feed the value to set(): None raises, a string splits to chars."""
+        with patch(
+            "slayer.engine.ingestion._get_pk_constraint_fallback",
+            return_value={"constrained_columns": []},
+        ):
+            result = _safe_get_pk_constraint(
+                inspector=self._inspector(malformed),
+                sa_engine=self._engine("bigquery"),
+                table_name="orders",
+                schema=None,
+            )
+        assert result == {"constrained_columns": []}
+        assert set(result.get("constrained_columns", [])) == set()
+
+    def test_malformed_pk_still_reaches_the_fallback(self):
+        """Unusable is not an answer — try INFORMATION_SCHEMA, as for empty."""
+        with patch(
+            "slayer.engine.ingestion._get_pk_constraint_fallback",
+            return_value={"constrained_columns": ["id"]},
+        ) as fallback:
+            result = _safe_get_pk_constraint(
+                inspector=self._inspector({"constrained_columns": "id"}),
+                sa_engine=self._engine("postgresql"),
+                table_name="orders",
+                schema=None,
+            )
+        assert result == {"constrained_columns": ["id"]}
+        assert fallback.call_count == 1
+
+    def test_inspector_pk_short_circuits_the_fallback(self):
+        with patch(
+            "slayer.engine.ingestion._get_pk_constraint_fallback"
+        ) as fallback:
+            result = _safe_get_pk_constraint(
+                inspector=self._inspector({"constrained_columns": ["id"]}),
+                sa_engine=self._engine("postgresql"),
+                table_name="orders",
+                schema=None,
+            )
+        assert result == {"constrained_columns": ["id"]}
+        fallback.assert_not_called()
 
 
 class TestSqliteSafeGetters:

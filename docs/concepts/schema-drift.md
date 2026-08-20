@@ -103,11 +103,17 @@ be no-ops once the model is gone).
 * **REST.** `POST /validate-models` — read-only. Query-time failures
   attributed to drift surface as **HTTP 422** with body
   `{error: "schema_drift", models, to_delete, original}`.
-* **CLI.** `slayer validate-models [--datasource X] [--force-clean]
-  [--yes]`. Without `--force-clean`, prints the diff and exits 0.
-  `--force-clean` prompts (or skips with `--yes`), applies via
-  `apply_drift_deletes`, and exits non-zero on per-entry errors or
-  non-empty residual drift.
+* **CLI.** `slayer validate-models [--datasource X] [--model M]
+  [--format text|json] [--force-clean] [--yes]`. Without `--force-clean`,
+  prints the diff and exits 0. `--force-clean` prompts (or skips with
+  `--yes`), applies via `apply_drift_deletes`, and exits non-zero on
+  per-entry errors or non-empty residual drift. `--model` scopes both the
+  report and the applied deletes. Unlike the engine method, an unscoped CLI
+  run validates each datasource explicitly and exits 1 if any of them fails,
+  rather than dropping it from the result. `--cardinality` adds an opt-in
+  [join-arity profiling](models.md#join-cardinality) pass, which runs after
+  any `--force-clean` apply. See the
+  [CLI reference](../reference/cli.md#slayer-validate-models).
 
 `--force-clean` is intentionally CLI-only — destructive auto-application
 must be opt-in at the human-typed layer.

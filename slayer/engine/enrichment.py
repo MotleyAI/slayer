@@ -37,6 +37,7 @@ from slayer.core.formula import (
     parse_filter,
     parse_formula,
 )
+from slayer.core.errors import UnresolvableDimensionJoinError
 from slayer.core.models import Column, SlayerModel
 from slayer.core.query import OrderItem, SlayerQuery, substitute_variables
 from slayer.core.refs import DOTTED_IDENT_REF_RE as _DOTTED_IDENT_REF_RE
@@ -169,6 +170,58 @@ def _public_field_name(qfield: Any) -> str:
     )
 
 
+def _close_name_hint(*, name: str, model: Any) -> str:
+    """A ' Did you mean ...?' clause drawn from every name the model offers.
+
+    ``ModelMeasure.name`` is optional, so unnamed measures are dropped rather
+    than sorted against strings.
+    """
+    known = sorted(
+        {c.name for c in model.columns}
+        | {m.name for m in model.measures if m.name is not None}
+    )
+    suggestion = difflib.get_close_matches(word=name, possibilities=known, n=1)
+    return f" Did you mean '{suggestion[0]}'?" if suggestion else ""
+
+
+def _unknown_column_message(
+    *, model: Any, measure_name: str, aggregation_name: str
+) -> str:
+    """Explain why ``measure_name:aggregation_name`` did not resolve.
+
+    Columns and saved measures share one namespace but take opposite syntax:
+    a column needs the colon suffix, a measure must not carry one. Naming the
+    kind that does exist turns a dead end into a one-step correction.
+    """
+    if model.get_measure(measure_name) is not None:
+        return (
+            f"'{measure_name}' is a saved measure on model '{model.name}', not a "
+            f"column, so it takes no aggregation. Reference it as '{measure_name}' "
+            f"instead of '{measure_name}:{aggregation_name}'."
+        )
+    hint = _close_name_hint(name=measure_name, model=model)
+    return f"Column '{measure_name}' not found in model '{model.name}'.{hint}"
+
+
+def _bare_name_in_expression_message(*, model: Any, name: str) -> str:
+    """Explain a bare name inside an arithmetic expression.
+
+    Saved measures are inlined before this point, so a name that survives is
+    either a column that forgot its aggregation or nothing at all.
+    """
+    if model.get_column(name) is not None:
+        return (
+            f"'{name}' is a column on model '{model.name}', so it needs an "
+            f"aggregation inside an expression — write '{name}:sum', or another "
+            f"aggregation."
+        )
+    hint = _close_name_hint(name=name, model=model)
+    return (
+        f"'{name}' is not a saved measure on model '{model.name}'.{hint} "
+        f"Aggregate a column with colon syntax (e.g., '{name}:sum')."
+    )
+
+
 async def enrich_query(
     query: SlayerQuery,
     model: SlayerModel,
@@ -180,6 +233,7 @@ async def enrich_query(
     resolve_model=None,
     dialect: str = "postgres",
     drop_unreachable_filters: bool = False,
+    enforce_join_binding: bool = True,
 ) -> EnrichedQuery:
     """Resolve a SlayerQuery against model definitions into an EnrichedQuery.
 
@@ -345,6 +399,35 @@ async def enrich_query(
                 return True
         return False
 
+    def _repoint_alias(prev_alias: str, new_alias: str) -> None:
+        """DEV-1779: repoint every reference to ``prev_alias`` onto ``new_alias``.
+
+        A formula/transform enriched before the sibling measure it references
+        freezes that sibling's canonical alias (``orders.id_count``) into its
+        expression SQL / transform input. When the sibling is later renamed to
+        its declared name (``orders.order_count``), follow the rename in every
+        carrier: the alias resolver, the provenance-merge index, and the
+        already-frozen ``EnrichedExpression.sql`` / ``EnrichedTransform``.
+        """
+        if prev_alias == new_alias:
+            return
+        for k, v in known_aliases.items():
+            if v == prev_alias:
+                known_aliases[k] = new_alias
+        for k, v in measure_canonical_key_to_alias.items():
+            if v == prev_alias:
+                measure_canonical_key_to_alias[k] = new_alias
+        # Aliases are emitted only as whole quoted identifiers, so matching the
+        # closing quote is exact: ``"orders.id_count"`` never matches the
+        # prefix of ``"orders.id_count_2"``.
+        quoted_prev, quoted_new = f'"{prev_alias}"', f'"{new_alias}"'
+        for e in enriched_expressions:
+            if quoted_prev in e.sql:
+                e.sql = e.sql.replace(quoted_prev, quoted_new)
+        for t in enriched_transforms:
+            if t.measure_alias == prev_alias:
+                t.measure_alias = new_alias
+
     async def _ensure_aggregated_measure(
         alias_key: str,
         measure_name: str,
@@ -430,7 +513,11 @@ async def enrich_query(
             measure_def = model.get_column(measure_name)
             if measure_def is None:
                 raise ValueError(
-                    f"Column '{measure_name}' not found in model '{model.name}'"
+                    _unknown_column_message(
+                        model=model,
+                        measure_name=measure_name,
+                        aggregation_name=aggregation_name,
+                    )
                 )
             # DEV-1576 §3: distinguish "unknown aggregation name" from "known
             # but not allowed for this column type". The name check runs BEFORE
@@ -839,7 +926,9 @@ async def enrich_query(
                 agg_kwargs=ref.agg_kwargs,
             )
         else:
-            raise ValueError(f"Bare measure name '{mname}' in expression is not valid. Use colon syntax.")
+            raise ValueError(
+                _bare_name_in_expression_message(model=model, name=mname)
+            )
 
     async def _resolve_inner_alias(inner_spec, fallback_name: str) -> str:
         """Flatten a transform's inner spec to a measure alias.
@@ -1490,12 +1579,11 @@ async def enrich_query(
                                 break
                         known_aliases[target_name] = target_alias
                         known_aliases[canonical_name] = target_alias
-                        # DEV-1444 provenance merge: any canonical key
-                        # currently pointing at the pre-rename alias must
-                        # follow the rename.
-                        for k, v in list(measure_canonical_key_to_alias.items()):
-                            if v == prev_alias:
-                                measure_canonical_key_to_alias[k] = target_alias
+                        # DEV-1444 provenance merge + DEV-1779 frozen-carrier
+                        # rewrite: repoint resolver / provenance entries AND
+                        # any expression/transform that already froze the
+                        # pre-rename intercept alias onto the new alias.
+                        _repoint_alias(prev_alias, target_alias)
                         # canonical_to_user_name only fires when the
                         # user explicitly renamed via qfield.name; the
                         # auto-rename to cross-model canonical doesn't
@@ -1655,12 +1743,12 @@ async def enrich_query(
                         break
                 known_aliases[qfield.name] = user_alias
                 known_aliases[canonical_name] = user_alias
-                # DEV-1444 provenance merge: any canonical key currently
-                # pointing at the pre-rename alias must follow the rename
-                # so later auto-extracted refs collapse onto the new alias.
-                for k, v in list(measure_canonical_key_to_alias.items()):
-                    if v == prev_alias:
-                        measure_canonical_key_to_alias[k] = user_alias
+                # DEV-1444 provenance merge + DEV-1779 frozen-carrier rewrite:
+                # any resolver / provenance entry pointing at the pre-rename
+                # alias must follow the rename, AND any expression/transform
+                # that already froze the pre-rename alias must be rewritten so
+                # a formula enriched before this measure doesn't dangle.
+                _repoint_alias(prev_alias, user_alias)
                 # DEV-1443: record the canonical → user-name mapping so
                 # query filters and ORDER BY items referencing the raw
                 # ``col:agg`` formula can be remapped to the user alias
@@ -1877,6 +1965,24 @@ async def enrich_query(
         extra_agg_names=custom_agg_names,
         dialect=dialect,
     )
+
+    # DEV-1780 safety net: never return a dim/time-dim whose join-path alias is
+    # absent from resolved_joins (it would render an unbound ``A__B`` reference).
+    # Skipped for virtual stages and the re-rooted CTE (enforce_join_binding=False).
+    if enforce_join_binding and model.source_model_origin is None:
+        _bound_aliases = {rj[1] for rj in resolved_joins}
+        _root_prefix = f"{model_name_str}."
+        for _bound_check in list(dimensions) + list(time_dimensions):
+            _mn = _bound_check.model_name
+            if _mn != model_name_str and _mn not in _bound_aliases:
+                _reference = _bound_check.alias
+                if _reference.startswith(_root_prefix):
+                    _reference = _reference[len(_root_prefix):]
+                raise UnresolvableDimensionJoinError(
+                    reference=_reference,
+                    root_model=model_name_str,
+                    available_joins=[j.target_model for j in model.joins],
+                )
 
     # Names that resolve at the query level (named measures, transforms,
     # expressions) — pass through as legitimate filter targets even though

@@ -3852,7 +3852,7 @@ async def test_round_over_bare_measure_raises(integration_env):
         source_model="orders",
         measures=[ModelMeasure(formula="round(amount, 2)", name="r")],
     )
-    with pytest.raises(ValueError, match="Bare measure name"):
+    with pytest.raises(ValueError, match="needs an aggregation inside an expression"):
         await engine.execute(query)
 
 
@@ -3863,5 +3863,5 @@ async def test_abs_over_bare_measure_raises(integration_env):
         source_model="orders",
         measures=[ModelMeasure(formula="abs(amount)", name="a")],
     )
-    with pytest.raises(ValueError, match="Bare measure name"):
+    with pytest.raises(ValueError, match="needs an aggregation inside an expression"):
         await engine.execute(query)

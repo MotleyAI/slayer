@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 
 import sqlalchemy as sa
+from sqlglot import exp
 
 from slayer.core.enums import DataType
 
@@ -154,29 +155,49 @@ def _parse_info_schema_is_float(data_type_str: str) -> bool:
     return True  # No precision/scale info, default to float
 
 
+def _info_schema_columns_query(
+    *,
+    sa_engine: sa.Engine,
+    table_name: str,
+    schema: Optional[str],
+) -> tuple[str, Dict]:
+    """Build the parameterized INFORMATION_SCHEMA.columns query for one table."""
+    source = "information_schema.columns"
+    if getattr(getattr(sa_engine, "dialect", None), "name", "") == "bigquery":
+        # BigQuery only exposes INFORMATION_SCHEMA per dataset; the bare name
+        # resolves to a project-level view a dataset-scoped account cannot read.
+        dataset = schema
+        if "." in table_name:
+            dataset, table_name = table_name.rsplit(".", 1)
+        if dataset:
+            # sqlglot quotes/escapes the dataset, which is config-supplied.
+            source = exp.Table(
+                this=exp.to_identifier("COLUMNS"),
+                db=exp.to_identifier("INFORMATION_SCHEMA"),
+                catalog=exp.to_identifier(dataset, quoted=True),
+            ).sql(dialect="bigquery")
+            schema = None
+    sql = (
+        "SELECT column_name, data_type "
+        f"FROM {source} "
+        "WHERE table_name = :table_name "
+    )
+    params = {"table_name": table_name}
+    if schema:
+        sql += "AND table_schema = :schema "
+        params["schema"] = schema
+    return sql + "ORDER BY ordinal_position", params
+
+
 def _get_columns_fallback(
     sa_engine: sa.Engine,
     table_name: str,
     schema: Optional[str],
 ) -> List[Dict]:
     """Get columns via INFORMATION_SCHEMA when Inspector.get_columns() fails."""
-    if schema:
-        sql = (
-            "SELECT column_name, data_type "
-            "FROM information_schema.columns "
-            "WHERE table_name = :table_name "
-            "AND table_schema = :schema "
-            "ORDER BY ordinal_position"
-        )
-        params = {"table_name": table_name, "schema": schema}
-    else:
-        sql = (
-            "SELECT column_name, data_type "
-            "FROM information_schema.columns "
-            "WHERE table_name = :table_name "
-            "ORDER BY ordinal_position"
-        )
-        params = {"table_name": table_name}
+    sql, params = _info_schema_columns_query(
+        sa_engine=sa_engine, table_name=table_name, schema=schema,
+    )
     with sa_engine.connect() as conn:
         rows = conn.execute(sa.text(sql), params).fetchall()
     result = []

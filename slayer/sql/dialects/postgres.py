@@ -45,6 +45,8 @@ class PostgresDialect(SqlDialect):
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
+    # NAMEDATALEN: 63 usable bytes; over-length names are SILENTLY truncated.
+    max_identifier_bytes: int | None = 63
 
     def rewrite_target_ast(self, tree: exp.Expression) -> exp.Expression:
         """DEV-1576: numeric-cast the first arg of every 2-arg ROUND so

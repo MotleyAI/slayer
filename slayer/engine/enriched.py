@@ -274,6 +274,23 @@ EnrichedQuery.model_rebuild()
 CrossModelMeasure.model_rebuild()
 
 
+def all_projection_aliases(enriched: EnrichedQuery) -> list[str]:
+    """Every alias ``enriched`` can put into an emitted SELECT, in bucket order.
+
+    Superset of :func:`public_projection_aliases` WITHOUT internal-prefix
+    filtering: hidden entries (``_inner_*``/``_ft*``/``_ts*`` hoists, ORDER-BY
+    aggregates) are still projected and must be length-fitted with the same map.
+    Deduplicated, first-seen order, so the derived rewrite map is deterministic.
+    """
+    out: list[str] = [d.alias for d in enriched.dimensions]
+    out.extend(td.alias for td in enriched.time_dimensions)
+    out.extend(m.alias for m in enriched.measures)
+    out.extend(e.alias for e in enriched.expressions)
+    out.extend(t.alias for t in enriched.transforms)
+    out.extend(cm.alias for cm in enriched.cross_model_measures)
+    return list(dict.fromkeys(out))
+
+
 def public_projection_aliases(enriched: EnrichedQuery) -> list[str]:
     """Return the ordered list of public-projection aliases for ``enriched``.
 

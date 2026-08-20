@@ -20,11 +20,11 @@ from slayer.engine.enrichment import _collect_needed_paths, extract_filter_trans
 
 class TestFormulaParser:
     def test_bare_measure_raises(self) -> None:
-        with pytest.raises(ValueError, match="Bare measure name"):
+        with pytest.raises(ValueError, match="is not a saved measure"):
             parse_formula("count")
 
     def test_bare_measure_in_arithmetic_raises(self) -> None:
-        with pytest.raises(ValueError, match="Bare measure name"):
+        with pytest.raises(ValueError, match="is not a saved measure"):
             parse_formula("revenue / count")
 
     def test_aggregated_measure(self) -> None:
@@ -350,7 +350,7 @@ class TestNamedMeasureExpansion:
         assert result.inner.measure_name == "revenue"
 
     def test_unknown_bare_name_still_raises(self) -> None:
-        with pytest.raises(ValueError, match="Bare measure name"):
+        with pytest.raises(ValueError, match="is not a saved measure"):
             parse_formula(
                 "unknown_thing", named_measures={"aov": "revenue:sum"}
             )
@@ -360,7 +360,7 @@ class TestNamedMeasureExpansion:
         existing bare-name rejection — no regression for callers that don't
         opt in.
         """
-        with pytest.raises(ValueError, match="Bare measure name"):
+        with pytest.raises(ValueError, match="is not a saved measure"):
             parse_formula("aov")
 
 
@@ -429,6 +429,45 @@ class TestExtractFilterTransforms:
         )
         assert len(transforms) == 1
         assert "price:weighted_avg(col1, weight=quantity)" in transforms[0][1]
+
+
+class TestParseFilterBooleanLiterals:
+    """SQL spells its boolean literals in lower case; Python's ``ast`` does not.
+
+    ``true`` / ``false`` arrive as names rather than constants, so without
+    special handling they are collected as column references and then rejected
+    as unknown names.
+    """
+
+    @pytest.mark.parametrize(
+        ("expression", "expected"),
+        [
+            ("is_active = true", "is_active = TRUE"),
+            ("is_active = false", "is_active = FALSE"),
+            ("is_active = TRUE", "is_active = TRUE"),
+            ("is_active <> false", "is_active != FALSE"),
+        ],
+    )
+    def test_boolean_literal_renders_as_sql(
+        self, expression: str, expected: str,
+    ) -> None:
+        parsed = parse_filter(expression)
+        assert parsed.sql == expected
+        # A literal is a value, not a reference — strict name resolution in
+        # enrichment rejects anything that lands in ``columns``.
+        assert parsed.columns == ["is_active"]
+
+    def test_python_cased_literals_keep_working(self) -> None:
+        """``True`` / ``False`` are ``ast`` constants, so they never reached
+        the name path. SQL keywords are case-insensitive, so both render fine."""
+        assert parse_filter("is_active = True").sql == "is_active = True"
+        assert parse_filter("is_active = False").sql == "is_active = False"
+
+    def test_bare_literal_is_not_a_column_reference(self) -> None:
+        """Documents the trade-off: ``true`` always wins over a same-named
+        column. Both spellings are SQL reserved words, so no dialect allows
+        them as unquoted column names anyway."""
+        assert parse_filter("true").columns == []
 
 
 class TestParseFilterInjection:

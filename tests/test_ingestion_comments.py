@@ -24,16 +24,16 @@ from slayer.cli import _run_datasources_create
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.engine.ingestion import (
-    DatasourceIngestOutput,
+    IngestionScanReport,
     IntrospectedColumn,
     _additive_merge_existing,
     _fetch_bigquery_dataset_description,
-    _ingest_datasource_full,
     _print_ingest_addition,
     _safe_get_table_comment,
     _sqlite_probe_integer_columns,
     ingest_datasource,
     ingest_datasource_idempotent,
+    ingest_datasource_report,
     introspect_table_to_model,
 )
 from slayer.engine.introspect_utils import (
@@ -569,13 +569,13 @@ class TestFetchBigQueryDatasetDescription:
         )
 
 
-class TestIngestDatasourceFull:
+class TestIngestDatasourceReport:
     def test_returns_models_and_no_description_for_duckdb(self, tmp_path: Path) -> None:
         db_path = tmp_path / "x.duckdb"
         _commented_duckdb(db_path)
         ds = DatasourceConfig(name="ds", type="duckdb", database=str(db_path))
-        out = _ingest_datasource_full(datasource=ds)
-        assert isinstance(out, DatasourceIngestOutput)
+        out = ingest_datasource_report(datasource=ds)
+        assert isinstance(out, IngestionScanReport)
         assert {m.name for m in out.models} == {"customers", "orders"}
         assert out.schema_description is None
 
@@ -599,7 +599,7 @@ class TestIngestDatasourceFull:
         ds = DatasourceConfig(
             name="ds", type="duckdb", database=str(db_path), description="already set"
         )
-        out = _ingest_datasource_full(datasource=ds)
+        out = ingest_datasource_report(datasource=ds)
         fetch.assert_not_called()
         assert out.schema_description is None
 
@@ -613,7 +613,7 @@ class TestIngestDatasourceFull:
         db_path = tmp_path / "x.duckdb"
         _commented_duckdb(db_path)
         ds = DatasourceConfig(name="ds", type="duckdb", database=str(db_path))
-        out = _ingest_datasource_full(datasource=ds)
+        out = ingest_datasource_report(datasource=ds)
         fetch.assert_called_once()
         assert out.schema_description == "dataset says hi"
 
@@ -633,15 +633,13 @@ def _sqlite_live_db(tmp_path: Path) -> str:
 
 
 def _patch_full_ingest(monkeypatch: pytest.MonkeyPatch, description: str | None):
-    real = ingestion_mod._ingest_datasource_full
+    real = ingestion_mod.ingest_datasource_report
 
     def _fake(*args, **kwargs):
         out = real(*args, **kwargs)
-        return DatasourceIngestOutput(
-            models=out.models, schema_description=description
-        )
+        return out.model_copy(update={"schema_description": description})
 
-    monkeypatch.setattr(ingestion_mod, "_ingest_datasource_full", _fake)
+    monkeypatch.setattr(ingestion_mod, "ingest_datasource_report", _fake)
 
 
 class TestIdempotentDatasourceDescription:

@@ -2959,15 +2959,13 @@ class TestDatasources:
         conn.commit()
         conn.close()
 
-        real = ingestion_mod._ingest_datasource_full
+        real = ingestion_mod.ingest_datasource_report
 
         def _fake(*args, **kwargs):
             out = real(*args, **kwargs)
-            return ingestion_mod.DatasourceIngestOutput(
-                models=out.models, schema_description="From the dataset"
-            )
+            return out.model_copy(update={"schema_description": "From the dataset"})
 
-        monkeypatch.setattr(ingestion_mod, "_ingest_datasource_full", _fake)
+        monkeypatch.setattr(ingestion_mod, "ingest_datasource_report", _fake)
         result = await _call(mcp_server, name="create_datasource", arguments={
             "name": "ds", "type": "sqlite", "database": db_path,
         })

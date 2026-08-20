@@ -11,7 +11,9 @@ from sqlalchemy.engine import URL as _SA_URL
 from slayer.core.enums import (
     BUILTIN_AGGREGATIONS,
     DataType,
+    JoinCardinality,
     JoinType,
+    ObjectKind,
     _coerce_legacy_datatype,
 )
 from slayer.core.format import NumberFormat
@@ -117,6 +119,19 @@ def _validate_model_name(name: str, context: str) -> str:
     return name
 
 
+_DUNDER_RUN_RE = re.compile(r"_{2,}")
+
+
+def sanitize_model_name(name: str) -> str:
+    """Collapse runs of 2+ underscores so ``name`` passes ``_NO_DUNDER``.
+
+    Regex, not ``replace("__", "_")``: ``str.replace`` is non-overlapping, so
+    ``"a___b"`` would become ``"a__b"`` and still fail. Dotted names aren't
+    handled here (ambiguous with schema qualification) — the caller skips them.
+    """
+    return _DUNDER_RUN_RE.sub("_", name)
+
+
 def _validate_column_name(name: str, context: str) -> str:
     """Reject dimension/measure names containing ``.`` or ``:``.
 
@@ -186,6 +201,7 @@ class Column(BaseModel):
         ),
     )
     primary_key: bool = False
+    unique: bool = False  # single-column uniqueness (non-PK); primary_key implies it
     description: str | None = None
     label: str | None = None
     hidden: bool = False
@@ -440,6 +456,8 @@ class ModelJoin(BaseModel):
     target_model: str                               # Name of the joined model
     join_pairs: list[list[str]] = Field(...)        # [["source_dim", "target_dim"], ...]
     join_type: JoinType = JoinType.LEFT             # LEFT (default) or INNER
+    # Join arity, read source->target; None = undetermined.
+    cardinality: JoinCardinality | None = None
     # DEV-1643: optional human/agent metadata (e.g. carrying OSI relationship
     # ai_context on import). Purely additive/optional — old data omits them and
     # validates unchanged, so no SlayerModel schema-version bump is needed.
@@ -460,9 +478,14 @@ class ModelJoin(BaseModel):
 
 
 class SlayerModel(BaseModel):
-    version: int = 7
+    version: int = 8
     name: str
     sql_table: str | None = None
+    # What kind of database object ``sql_table`` names; only auto-ingestion sets
+    # it. ``None`` = unknown (pre-v8, hand-authored, or sql/query-backed models
+    # with no live object to classify), and explains why a view-backed model has
+    # no primary key.
+    source_kind: Optional[ObjectKind] = None
     sql: str | None = None
     source_queries: Annotated[
         list | None, BeforeValidator(_coerce_source_queries)
@@ -792,6 +815,12 @@ class DatasourceConfig(BaseModel):
     # When unset, BigQuery falls back to Application Default Credentials
     # (``GOOGLE_APPLICATION_CREDENTIALS`` env var or attached compute identity).
     credentials_json: str | None = Field(default=None, repr=False)
+    # BigQuery-specific. A Google OAuth authorized-user grant as JSON, in the
+    # shape ``Credentials.from_authorized_user_info`` consumes — the per-end-user
+    # auth path, so queries run with that user's permissions. Mutually exclusive
+    # with ``credentials_json``, which cannot carry a grant: the driver feeds it
+    # to ``from_service_account_info``.
+    oauth_credentials_json: str | None = Field(default=None, repr=False)
 
     @model_validator(mode="before")
     @classmethod

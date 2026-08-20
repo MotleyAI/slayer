@@ -173,7 +173,76 @@ class TestNamedMeasureSQL:
             measures=[{"formula": "nonexistent", "name": "result"}],
         )
 
-        with pytest.raises(ValueError, match="Bare measure name"):
+        with pytest.raises(ValueError, match="is not a saved measure"):
+            await _generate(query, model)
+
+    async def test_near_miss_bare_name_suggests_the_saved_measure(self) -> None:
+        """A misspelled saved measure names the real one."""
+        model = _orders_model(
+            measures=[ModelMeasure(name="aov_net", formula="revenue:sum")]
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "aov_nett", "name": "result"}],
+        )
+
+        with pytest.raises(ValueError, match="Did you mean 'aov_net'"):
+            await _generate(query, model)
+
+    async def test_aggregating_a_saved_measure_says_to_drop_the_suffix(self) -> None:
+        """``measure:agg`` used to report the measure as a missing column."""
+        model = _orders_model(
+            measures=[ModelMeasure(name="aov", formula="revenue:sum")]
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "aov:sum", "name": "result"}],
+        )
+
+        with pytest.raises(
+            ValueError, match="is a saved measure.*takes no aggregation"
+        ):
+            await _generate(query, model)
+
+    async def test_bare_column_in_expression_asks_for_an_aggregation(self) -> None:
+        """The mixed-arithmetic path reaches its own error site."""
+        model = _orders_model()
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "round(revenue, 2)", "name": "result"}],
+        )
+
+        with pytest.raises(
+            ValueError, match="needs an aggregation inside an expression"
+        ):
+            await _generate(query, model)
+
+    async def test_unnamed_measure_does_not_break_the_suggestion(self) -> None:
+        """``ModelMeasure.name`` is optional; unnamed measures are skipped.
+
+        The model validator rejects unnamed measures at construction, so this
+        reaches the helper the way a post-construction mutation would.
+        """
+        model = _orders_model(
+            measures=[ModelMeasure(name="aov", formula="revenue:sum")]
+        )
+        model.measures.append(ModelMeasure(formula="revenue:avg"))
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "revenu:sum", "name": "result"}],
+        )
+
+        with pytest.raises(ValueError, match="Did you mean 'revenue'"):
+            await _generate(query, model)
+
+    async def test_unknown_column_suggests_a_close_column(self) -> None:
+        model = _orders_model()
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "revenu:sum", "name": "result"}],
+        )
+
+        with pytest.raises(ValueError, match="Did you mean 'revenue'"):
             await _generate(query, model)
 
     async def test_duplicate_saved_measure_name_rejected_in_enrichment(self) -> None:

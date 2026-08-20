@@ -23,9 +23,10 @@ A query then asks for `revenue:sum` (aggregate the `revenue` column), `aov` (the
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `name` | string | Yes | Unique model name. In the default YAML storage, names differing only by letter case (`Orders` vs `orders`) are rejected at save time (`IdCollisionError`) — they would collide as filenames on macOS / Windows |
-| `sql_table` | string | One of | A physical database table (e.g. `public.orders`) |
+| `sql_table` | string | One of | A physical database table or view (e.g. `public.orders`) |
 | `sql` | string | these | A SQL subquery to use as the source |
 | `source_queries` | list[SlayerQuery] | three | Saved query stages — makes the model **query-backed** |
+| `source_kind` | string | No | What kind of object `sql_table` names: `table`, `view`, or `materialized_view`. Set by auto-ingestion; `null` means unknown |
 | `data_source` | string | Yes | Datasource name |
 | `columns` | list[Column] | No | Column definitions. For query-backed models this is an engine-managed cache |
 | `measures` | list[ModelMeasure] | No | Named formula library — referenced by bare name in queries |
@@ -36,19 +37,31 @@ A query then asks for `revenue:sum` (aggregate the `revenue` column), `aov` (the
 | `query_variables` | dict | No | Defaults for `{var}` placeholders (query-backed models only) |
 | `backing_query_sql` | string | No | Engine-managed cache of the rendered backing query |
 | `description` | string | No | Helps agents and users understand the model |
-| `hidden` | bool | No | Hide from listings |
-| `meta` | dict | No | Arbitrary JSON metadata for caller bookkeeping |
-| `version` | int | No | Schema version stamp (currently `6`) |
+| `hidden` | bool | No | Hide from listings (still queryable by name and joinable). Set automatically at ingest for recognised ELT/migration internals — see [Recognised internals](../reference/cli.md#recognised-internals) |
+| `meta` | dict | No | Arbitrary JSON metadata for caller bookkeeping. Ingestion writes `internal_table: <tool>` on auto-hidden internals |
+| `version` | int | No | Schema version stamp (currently `8`) |
 
 ## Source modes
 
 A model has exactly one source — set by one of three mutually exclusive fields:
 
-- **`sql_table`** — a physical database table.
+- **`sql_table`** — a physical database table or view.
 - **`sql`** — an explicit SQL subquery (a `SELECT` statement). Useful when the model's underlying shape requires cleaning or joining beyond what SLayer expresses natively.
 - **`source_queries`** — one or more saved `SlayerQuery` stages. Makes the model **query-backed**: see [Query-backed models](#query-backed-models).
 
 Validators reject empty `source_queries=[]`, multiple sources, or missing names on non-final stages.
+
+`sql_table` may name a **view** as well as a table — auto-ingestion creates
+models for views by default and records which it was in `source_kind`. Views
+expose no primary key and no foreign keys, so a view-backed model has no
+primary-key column and no auto-generated joins; `source_kind` is what tells you
+that re-ingesting will never produce them. A re-ingest refreshes the field, so a
+view later rebuilt as a table (dbt's `+materialized: table`) is picked up.
+
+Model names may not contain `__`, which is reserved for join-path aliases in
+generated SQL, but `sql_table` has no such restriction. Auto-ingestion uses
+this: an object named `reports__patient__drug` becomes a model named
+`reports_patient_drug` whose `sql_table` is still `reports__patient__drug`.
 
 ## Columns
 
@@ -64,6 +77,7 @@ A column is the unit of structure on the model. The same column entry can serve 
 | `sql` | string | No | (bare column name) | SQL expression — defaults to the column's name |
 | `type` | string | No | `string` | `string`, `number`, `boolean`, `time`, `date` |
 | `primary_key` | bool | No | `false` | Restricts aggregation to `count` / `count_distinct` |
+| `unique` | bool | No | `false` | Single-column uniqueness (non-PK). `primary_key` implies unique. Auto-set from `UNIQUE` constraints / unique indexes; used to infer one-to-one joins |
 | `hidden` | bool | No | `false` | Hide from listings |
 | `format` | dict | No | — | `NumberFormat` used by response metadata |
 | `allowed_aggregations` | list[str] | No | — | Whitelist (must be a subset of the type-default eligibility set, or a custom aggregation defined on this model) |
@@ -287,6 +301,30 @@ joins:
 ```
 
 Joins enable **cross-model measures** — querying a measure from a joined model alongside the main model's data. See [Cross-Model Measures](queries.md#cross-model-measures). During [auto-ingestion](ingestion.md), joins are generated automatically from foreign-key relationships; multi-hop paths are resolved at query time by walking each intermediate model's own joins.
+
+### Join cardinality
+
+A join optionally records its **arity**, read source→target:
+
+```yaml
+joins:
+  - target_model: customers
+    join_pairs: [["customer_id", "id"]]
+    cardinality: many_to_one   # many orders → one customer
+```
+
+`cardinality` is one of `one_to_one`, `one_to_many`, `many_to_one`, `many_to_many` (omit it when undetermined). It is **descriptive metadata, orthogonal to the join type** — joins stay LEFT regardless — and is representational today (query results are unaffected).
+
+Auto-ingestion fills it structurally from key constraints: an FK join defaults to `many_to_one`, upgrading to `one_to_one` when the source key is itself unique. To infer it from the actual data instead, run:
+
+```bash
+slayer validate-models --datasource mydb --cardinality                        # report only
+slayer validate-models --datasource mydb --cardinality --persist-cardinality  # write it back
+```
+
+Detection full-scans each side of the join and reports the observed arity, a `verdict` (whether it confirms, refines, or hard-contradicts the stored value), and any column declared `unique` that the data shows has duplicates. It is a strong guess, not a guarantee — a duplicate disproves uniqueness with certainty, but the absence of duplicates only suggests it.
+
+A side with no non-null key rows reports `no_evidence` and detects nothing: an empty scan would trivially look unique, and that is not weak evidence — it is none. Re-run once the table has data. A join whose scan fails outright reports `scan_failed` and does not stop the rest of the report. Full verdict table: [CLI reference](../reference/cli.md#slayer-validate-models).
 
 ### Path-based table aliases
 

@@ -935,6 +935,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
                 "name": c.name,
                 "type": _render_column_type(c),
                 "primary_key": "yes" if c.primary_key else "",
+                "unique": "yes" if c.unique else "",
                 "sql": c.sql if c.sql else c.name,
                 "allowed_aggregations": aggs,
                 "filter": c.filter,
@@ -944,7 +945,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
                 "sampled": sampled_cell,
             })
         col_columns = [
-            "name", "type", "primary_key", "sql", "allowed_aggregations",
+            "name", "type", "primary_key", "unique", "sql", "allowed_aggregations",
             "filter", "label", "description", "meta", "sampled",
         ]
         if not show_sql:
@@ -1031,12 +1032,13 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
             join_rows.append({
                 "target_model": j.target_model,
                 "join_pairs": pairs,
+                "cardinality": str(j.cardinality) if j.cardinality else "",
             })
         out_sections.append(
             f"## Joins ({len(join_rows)})\n\n"
             + _markdown_table(
                 rows=join_rows,
-                columns=["target_model", "join_pairs"],
+                columns=["target_model", "join_pairs", "cardinality"],
             )
         )
     elif model.joins:
@@ -1218,6 +1220,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
                         if c.type.is_opaque else {}
                     ),
                     "primary_key": c.primary_key,
+                    "unique": c.unique,
                     **({"sql": c.sql} if show_sql else {}),
                     "allowed_aggregations": c.allowed_aggregations,
                     **({"filter": c.filter} if show_sql else {}),
@@ -1280,6 +1283,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
                 {
                     "target_model": j.target_model,
                     "join_pairs": j.join_pairs,
+                    "cardinality": j.cardinality,
                 }
                 for j in model.joins
             ]

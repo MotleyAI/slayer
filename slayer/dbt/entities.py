@@ -7,7 +7,7 @@ then generates SLayer ModelJoin objects for foreign entity references.
 
 import logging
 
-from slayer.core.enums import JoinType
+from slayer.core.enums import JoinCardinality, JoinType
 from slayer.core.models import ModelJoin
 from slayer.dbt.models import DbtSemanticModel
 
@@ -110,6 +110,8 @@ class EntityRegistry:
                     target_model=target_model_name,
                     join_pairs=[[foreign_expr, primary_expr]],
                     join_type=JoinType.INNER,
+                    # foreign -> primary: many source rows, one target row.
+                    cardinality=JoinCardinality.MANY_TO_ONE,
                 ))
 
         # Peer joins: models sharing the same primary/unique entity are joinable
@@ -130,6 +132,8 @@ class EntityRegistry:
                     target_model=peer_model_name,
                     join_pairs=[[local_expr, peer_expr]],
                     join_type=JoinType.INNER,
+                    # Both sides are a primary/unique entity: one-to-one.
+                    cardinality=JoinCardinality.ONE_TO_ONE,
                 ))
 
         return joins
