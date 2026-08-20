@@ -184,6 +184,18 @@ class Verdict(BaseModel):
     error_match_failed: list[str] = Field(default_factory=list)
 
 
+PROBLEM_STATUSES = frozenset({
+    "VALUE_MISMATCH", "SHAPE_MISMATCH", "ORDER_MISMATCH", "NAME_DRIFT",
+    "PYPI_ONLY_ERROR", "BRANCH_ONLY_ERROR", "BOTH_ERROR_UNEXPECTED",
+})
+
+
+def is_problem(verdict: "Verdict") -> bool:
+    """Anything a human must look at — including expected-error entries whose
+    error text failed the entry's expect_error_match contract."""
+    return verdict.status in PROBLEM_STATUSES or bool(verdict.error_match_failed)
+
+
 def _error_match_failures(entry: dict, pypi: dict, branch: dict) -> list[str]:
     needle = entry.get("expect_error_match")
     if not needle:
@@ -317,7 +329,15 @@ def flag_perf(
     entry_id: str, metric: str, *, pypi_times: list, branch_times: list,
     ratio_threshold: float = PERF_RATIO_THRESHOLD,
     floor_seconds: float = PERF_FLOOR_SECONDS,
+    expected_samples: Optional[int] = None,
 ) -> PerfFlag:
+    if expected_samples is not None:
+        for label, times in (("pypi_times", pypi_times), ("branch_times", branch_times)):
+            if len(times) != expected_samples:
+                raise ValueError(
+                    f"{label} for {entry_id}/{metric}: expected {expected_samples} "
+                    f"samples (complete ABBA pooling), got {len(times)}"
+                )
     pypi_median = _validated_median(pypi_times, "pypi_times")
     branch_median = _validated_median(branch_times, "branch_times")
     delta = branch_median - pypi_median

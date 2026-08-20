@@ -28,6 +28,10 @@ MODELS = [
             {"name": "total_cost", "sql": "cost", "type": "DOUBLE"},
             {"name": "latest_cost", "sql": "cost", "type": "DOUBLE"},
         ],
+        "measures": [
+            {"name": "order_count", "formula": "*:count"},
+            {"name": "revenue", "formula": "total_cost:sum"},
+        ],
         "joins": [
             {"target_model": "customers", "join_pairs": [["customer_id", "id"]]},
             {"target_model": "shops", "join_pairs": [["shop_id", "id"]]},
@@ -308,10 +312,9 @@ ENTRIES = [
               order=[{"column": "customers.segment", "direction": "asc"}]),
            ordered=True),
     _entry("join_measure_on_joined_col", "joins",
-           _q(measures=["shops.size:sum"], dimensions=["category"]),
-           oracle={"fn": "agg", "args": {
-               "joins": [{"table": "shops", "left_on": "shop_id", "right_on": "id"}],
-               "groupby": ["category"], "aggs": [{"col": "shops.size", "op": "sum"}]}}),
+           # no oracle: SLayer aggregates cross-model measures over the TARGET
+           # model's rows (fan-out protection), not the joined fact rowset
+           _q(measures=["shops.size:sum"], dimensions=["category"])),
     _entry("join_cardinality_base", "joins",
            _q(measures=["*:count"], dimensions=["customers.segment"]),
            oracle={"fn": "agg", "args": {
@@ -420,10 +423,19 @@ ENTRIES = [
            subset_100k=True),
     _entry("formula_spread", "formulas",
            _q(measures=[{"formula": "total_cost:max - total_cost:min", "name": "spread"}])),
-    _entry("formula_sibling_ref", "formulas",
+    _entry("formula_saved_measure_ref", "formulas",
+           # DEV-1779 shape: a formula referencing model-saved measures
+           _q(measures=[{"formula": "revenue / order_count", "name": "aov_saved"}],
+              dimensions=["category"])),
+    _entry("formula_saved_measure_direct", "formulas",
+           _q(measures=[{"formula": "revenue", "name": "rev"}], dimensions=["category"]),
+           oracle={"fn": "agg", "args": {"groupby": ["category"], "aggs": [SUM_COST]}}),
+    _entry("formula_adhoc_sibling_ref", "formulas",
+           # ad-hoc query measures cannot reference each other by name (both sides reject)
            _q(measures=[{"formula": "total_cost:sum", "name": "rev"},
                         {"formula": "rev / 100", "name": "rev_dollars"}],
-              dimensions=["category"])),
+              dimensions=["category"]),
+           expect_error=True),
     _entry("formula_label", "formulas",
            _q(measures=[{"formula": "total_cost:sum / *:count", "name": "aov",
                          "label": "Average Order Value"}],
@@ -634,9 +646,8 @@ ENTRIES = [
            _q(dimensions=["category"]),
            oracle={"fn": "agg", "args": {"groupby": ["category"], "aggs": []}}),
     _entry("behavior_distinct_false", "behavior",
-           _q(dimensions=["category"], distinct_dimension_values=False, limit=200),
-           oracle={"fn": "agg", "args": {"groupby": ["category"], "aggs": [],
-                                         "distinct": False, "limit": 200}}),
+           # no oracle: LIMIT without a total order returns an arbitrary subset
+           _q(dimensions=["category"], distinct_dimension_values=False, limit=200)),
     _entry("behavior_empty_result", "behavior",
            _q(measures=["total_cost:sum"], dimensions=["category"],
               filters=["total_cost > 99999999"]),

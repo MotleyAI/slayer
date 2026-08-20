@@ -58,17 +58,23 @@ def frames_from_dataset(dataset: Any) -> dict[str, pd.DataFrame]:
 # The one aggregation evaluator
 # ---------------------------------------------------------------------------
 
-_BUCKET_FORMATS = {"month": "%Y-%m", "year": "%Y"}
+# full-date form: comparable to engine-truncated timestamps via ISO coercion
+_BUCKET_FORMATS = {"month": "%Y-%m-01", "year": "%Y-01-01"}
 
 
 def _apply_joins(df: pd.DataFrame, joins: list[dict], frames: dict) -> pd.DataFrame:
     for join in joins:
         right = frames[join["table"]].copy()
         right.columns = [f"{join['table']}.{c}" for c in right.columns]
-        df = df.merge(
-            right, how="left",
-            left_on=join["left_on"], right_on=f"{join['table']}.{join['right_on']}",
+        right_key = f"{join['table']}.{join['right_on']}"
+        # SQL semantics: NULL keys never match (pandas merge would pair NaNs)
+        right = right[right[right_key].notna()]
+        left_key = df[join["left_on"]]
+        matched = df[left_key.notna()].merge(
+            right, how="left", left_on=join["left_on"], right_on=right_key,
         )
+        unmatched = df[left_key.isna()].reindex(columns=matched.columns)
+        df = pd.concat([matched, unmatched], ignore_index=True)
     return df
 
 
@@ -127,7 +133,11 @@ def _agg_fn(frames: dict, args: dict) -> list[list]:
 
     groupby = args.get("groupby", [])
     aggs = args.get("aggs", [])
-    if groupby:
+    if not aggs:
+        result = df[groupby].copy()
+        if args.get("distinct", True):
+            result = result.drop_duplicates()
+    elif groupby:
         grouped = df.groupby(groupby, dropna=False, sort=False)
         pieces = {_agg_name(a): _compute_agg(df, grouped, a) for a in aggs}
         result = pd.DataFrame(pieces).reset_index()
@@ -145,7 +155,22 @@ def _agg_fn(frames: dict, args: dict) -> list[list]:
         if post["op"] == "cumsum":
             result[f"{post['on']}_cumsum"] = source.cumsum()
         elif post["op"] == "change":
-            result[f"{post['on']}_change"] = source.diff()
+            # period-aware, matching the engine: current minus the PREVIOUS
+            # CALENDAR period's value — None across gap periods, not row-diff
+            if not bucket:
+                raise ValueError("oracle change post-op requires a time_bucket")
+            period_col = f"{bucket['col']}_{bucket['gran']}"
+            offset = (pd.DateOffset(months=1) if bucket["gran"] == "month"
+                      else pd.DateOffset(years=1))
+            prev_keys = (pd.to_datetime(result[period_col]) - offset).dt.strftime(
+                _BUCKET_FORMATS[bucket["gran"]])
+            by_period = dict(zip(result[period_col], source))
+            result[f"{post['on']}_change"] = [
+                cur - by_period[prev]
+                if prev in by_period and pd.notna(cur) and pd.notna(by_period[prev])
+                else None
+                for prev, cur in zip(prev_keys, source)
+            ]
         else:
             raise ValueError(f"unsupported oracle post op: {post['op']}")
 

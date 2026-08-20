@@ -34,11 +34,16 @@ _TESTS_DIR = Path(__file__).parent
 _SELF = Path(__file__).name
 
 
+_ARTIFACT_DIR = _TESTS_DIR / "perf" / "compare" / "out"  # gitignored audit artifacts incl. a venv
+
+
 def test_only_approved_module_level_skip_guards() -> None:
     found: set[str] = set()
     for path in _TESTS_DIR.rglob("*.py"):
         if path.name == _SELF:
             continue  # this file names the marker in prose; don't match itself
+        if path.is_relative_to(_ARTIFACT_DIR):
+            continue
         if "allow_module_level=True" in path.read_text():
             rel = path.relative_to(_TESTS_DIR.parent).as_posix()
             found.add(rel)
