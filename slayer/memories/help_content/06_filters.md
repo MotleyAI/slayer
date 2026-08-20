@@ -47,6 +47,13 @@ Multiple entries in the `filters` list are AND-ed:
 
 Inner and outer filters can mix in one query — {{product}} splits them.
 
+**A HAVING filter depends on the group grain.** `revenue:sum < 0` compares
+the sum *per group*, so the same filter can keep or drop a row set as the
+`dimensions` change. Two queries with the same filter but different
+dimensions can return different cohorts — that is correct SQL, not a bug.
+To define a cohort, prefer the predicate the model documents (for example
+a filtered column — see below) over a proxy filter on an aggregate.
+
 ## Filtering on computed measures
 
 Reference a named measure from `measures` by its `name`:
