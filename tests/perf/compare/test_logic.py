@@ -1,0 +1,598 @@
+"""Unit tests for the engine-comparison tooling (classify, oracle, corpus sanity).
+
+Run manually (tests/perf is CI-ignored):
+    poetry run pytest tests/perf/compare/test_logic.py -o addopts=""
+"""
+
+import datetime as dt
+from decimal import Decimal
+
+import pandas as pd
+import pytest
+
+import classify
+import corpus
+import oracle
+from classify import (
+    PerfFlag,
+    Verdict,
+    canonical_rows,
+    cells_equal,
+    classify_entry,
+    decode_cell,
+    encode_cell,
+    flag_perf,
+    row_sort_key,
+)
+
+# ---------------------------------------------------------------------------
+# Cell encode/decode (typed-tagged JSON representation)
+# ---------------------------------------------------------------------------
+
+ROUNDTRIP_VALUES = [
+    None,
+    True,
+    False,
+    0,
+    -17,
+    3.5,
+    "text",
+    "2024-01-01",  # a string that looks like a date stays a string
+    Decimal("123.456"),
+    Decimal("-0.0000000001"),
+    dt.datetime(2024, 6, 1, 12, 30, 45),
+    dt.date(2024, 6, 1),
+]
+
+
+@pytest.mark.parametrize("value", ROUNDTRIP_VALUES, ids=repr)
+def test_cell_roundtrip(value):
+    encoded = encode_cell(value)
+    decoded = decode_cell(encoded)
+    assert decoded == value
+    assert type(decoded) is type(value)
+
+
+def test_encode_cell_floats_stay_numbers():
+    assert encode_cell(3.5) == 3.5
+    assert encode_cell(7) == 7
+
+
+def test_encode_cell_tags_are_json_safe():
+    import json
+
+    for value in ROUNDTRIP_VALUES:
+        json.dumps(encode_cell(value))
+
+
+def test_decode_cell_passthrough_untagged():
+    assert decode_cell("plain") == "plain"
+    assert decode_cell(1.25) == 1.25
+    assert decode_cell(None) is None
+
+
+# ---------------------------------------------------------------------------
+# cells_equal: tolerance + cross-type coercion with drift note
+# ---------------------------------------------------------------------------
+
+def test_cells_equal_exact_and_none():
+    assert cells_equal(None, None) == (True, None)
+    assert cells_equal("a", "a") == (True, None)
+    assert cells_equal(5, 5) == (True, None)
+    assert cells_equal(None, 0)[0] is False
+    assert cells_equal("a", "b")[0] is False
+
+
+def test_cells_equal_float_tolerance():
+    equal, drift = cells_equal(1.0, 1.0 + 1e-12)
+    assert equal and drift is None
+    assert cells_equal(1.0, 1.0 + 1e-6)[0] is False
+    # absolute floor near zero
+    assert cells_equal(0.0, 1e-13)[0] is True
+    assert cells_equal(0.0, 1e-9)[0] is False
+
+
+def test_cells_equal_decimal_vs_float():
+    equal, drift = cells_equal(Decimal("2.5"), 2.5)
+    assert equal is True
+
+
+def test_cells_equal_bool_as_number():
+    assert cells_equal(True, 1)[0] is True
+    assert cells_equal(False, 0)[0] is True
+    assert cells_equal(True, 0)[0] is False
+
+
+def test_cells_equal_datetime_string_coercion_notes_drift():
+    equal, drift = cells_equal("2024-06-01T00:00:00", dt.datetime(2024, 6, 1))
+    assert equal is True
+    assert drift is not None
+    equal, drift = cells_equal(dt.date(2024, 6, 1), "2024-06-01")
+    assert equal is True
+    assert drift is not None
+
+
+def test_cells_equal_numeric_string_coercion_notes_drift():
+    equal, drift = cells_equal("42", 42)
+    assert equal is True
+    assert drift is not None
+    assert cells_equal("42x", 42)[0] is False
+
+
+# ---------------------------------------------------------------------------
+# Sorting / canonicalization
+# ---------------------------------------------------------------------------
+
+def test_row_sort_key_heterogeneous_types():
+    rows = [
+        ["b", 2],
+        [None, 1],
+        ["a", 3],
+        [1.5, 0],
+        [dt.datetime(2024, 1, 1), 9],
+    ]
+    ordered = sorted(rows, key=row_sort_key)
+    # deterministic: None first, then numbers, then strings, then datetimes
+    assert ordered[0][0] is None
+    assert ordered[1][0] == 1.5
+    assert [r[0] for r in ordered[2:4]] == ["a", "b"]
+    assert isinstance(ordered[4][0], dt.datetime)
+
+
+def test_canonical_rows_unordered_sorts_and_keeps_duplicates():
+    rows = [["b", 1], ["a", 2], ["a", 2]]
+    result = canonical_rows(rows, ordered=False)
+    assert result == [["a", 2], ["a", 2], ["b", 1]]
+
+
+def test_canonical_rows_ordered_preserves_order():
+    rows = [["b", 1], ["a", 2]]
+    assert canonical_rows(rows, ordered=True) == rows
+
+
+# ---------------------------------------------------------------------------
+# classify_entry: full taxonomy
+# ---------------------------------------------------------------------------
+
+def _ok(columns, rows):
+    return {"status": "ok", "error_type": None, "error_msg": None,
+            "columns": columns, "rows": rows}
+
+
+def _err(error_type="QueryError", msg="boom"):
+    return {"status": "error", "error_type": error_type, "error_msg": msg,
+            "columns": [], "rows": []}
+
+
+ENTRY = {"id": "q1", "family": "aggs", "query": {}, "expect_error": False, "ordered": False}
+ENTRY_ORDERED = {**ENTRY, "ordered": True}
+ENTRY_ERR = {**ENTRY, "expect_error": True}
+
+
+def test_classify_match_exact():
+    a = _ok(["orders.x"], [[1], [2]])
+    b = _ok(["orders.x"], [[2], [1]])  # unordered: sorted before compare
+    verdict = classify_entry(ENTRY, a, b)
+    assert verdict.status == "MATCH"
+
+
+def test_classify_match_within_tolerance():
+    a = _ok(["c"], [[1.0]])
+    b = _ok(["c"], [[1.0 + 1e-12]])
+    assert classify_entry(ENTRY, a, b).status == "MATCH"
+
+
+def test_classify_name_drift():
+    a = _ok(["orders.total_cost_sum"], [[10.0], [20.0]])
+    b = _ok(["orders.cost_sum"], [[10.0], [20.0]])
+    verdict = classify_entry(ENTRY, a, b)
+    assert verdict.status == "NAME_DRIFT"
+    assert "total_cost_sum" in verdict.detail
+
+
+def test_classify_value_mismatch_cell():
+    a = _ok(["c"], [[10.0]])
+    b = _ok(["c"], [[11.0]])
+    assert classify_entry(ENTRY, a, b).status == "VALUE_MISMATCH"
+
+
+def test_classify_value_mismatch_row_count():
+    a = _ok(["c"], [[1], [2]])
+    b = _ok(["c"], [[1]])
+    verdict = classify_entry(ENTRY, a, b)
+    assert verdict.status == "VALUE_MISMATCH"
+    assert "row count" in verdict.detail.lower()
+
+
+def test_classify_order_mismatch_only_when_ordered():
+    a = _ok(["c"], [[1], [2]])
+    b = _ok(["c"], [[2], [1]])
+    assert classify_entry(ENTRY_ORDERED, a, b).status == "ORDER_MISMATCH"
+    assert classify_entry(ENTRY, a, b).status == "MATCH"
+
+
+def test_classify_ordered_value_mismatch_beats_order():
+    a = _ok(["c"], [[1], [2]])
+    b = _ok(["c"], [[3], [1]])
+    assert classify_entry(ENTRY_ORDERED, a, b).status == "VALUE_MISMATCH"
+
+
+def test_classify_shape_mismatch():
+    a = _ok(["c1", "c2"], [[1, 2]])
+    b = _ok(["c1"], [[1]])
+    assert classify_entry(ENTRY, a, b).status == "SHAPE_MISMATCH"
+
+
+def test_classify_pypi_only_error():
+    verdict = classify_entry(ENTRY, _err(), _ok(["c"], [[1]]))
+    assert verdict.status == "PYPI_ONLY_ERROR"
+    assert verdict.expected_error is False
+
+
+def test_classify_branch_only_error():
+    verdict = classify_entry(ENTRY, _ok(["c"], [[1]]), _err())
+    assert verdict.status == "BRANCH_ONLY_ERROR"
+
+
+def test_classify_one_side_error_on_expected_error_entry():
+    verdict = classify_entry(ENTRY_ERR, _err(), _ok(["c"], [[1]]))
+    assert verdict.status == "PYPI_ONLY_ERROR"
+    assert verdict.expected_error is True
+
+
+def test_classify_both_error_expected():
+    verdict = classify_entry(ENTRY_ERR, _err("ValidationError"), _err("ValidationError"))
+    assert verdict.status == "BOTH_ERROR"
+    assert verdict.error_type_drift is False
+
+
+def test_classify_both_error_type_drift():
+    verdict = classify_entry(ENTRY_ERR, _err("ValidationError"), _err("QueryError"))
+    assert verdict.status == "BOTH_ERROR"
+    assert verdict.error_type_drift is True
+
+
+def test_classify_both_error_unexpected():
+    verdict = classify_entry(ENTRY, _err(), _err())
+    assert verdict.status == "BOTH_ERROR_UNEXPECTED"
+
+
+def test_classify_match_with_type_drift_flag():
+    a = _ok(["d"], [["2024-06-01T00:00:00"]])
+    b = _ok(["d"], [[encode_cell(dt.datetime(2024, 6, 1))]])
+    verdict = classify_entry(ENTRY, a, b)
+    assert verdict.status == "MATCH"
+    assert verdict.type_drift is True
+
+
+def test_classify_decodes_tagged_cells():
+    a = _ok(["c"], [[encode_cell(Decimal("2.5"))]])
+    b = _ok(["c"], [[2.5]])
+    assert classify_entry(ENTRY, a, b).status == "MATCH"
+
+
+# ---------------------------------------------------------------------------
+# Perf flagging
+# ---------------------------------------------------------------------------
+
+def test_flag_perf_requires_ratio_and_floor():
+    # 2x slower and > 20ms absolute: flagged
+    flag = flag_perf("q1", "exec", pypi_times=[0.100] * 7, branch_times=[0.200] * 7)
+    assert isinstance(flag, PerfFlag) and flag.flagged is True
+    # 2x slower but sub-millisecond: not flagged
+    flag = flag_perf("q1", "exec", pypi_times=[0.0001] * 7, branch_times=[0.0002] * 7)
+    assert flag.flagged is False
+    # large absolute delta but below ratio: not flagged
+    flag = flag_perf("q1", "exec", pypi_times=[1.000] * 7, branch_times=[1.100] * 7)
+    assert flag.flagged is False
+
+
+def test_flag_perf_uses_median():
+    # one slow outlier must not flag
+    times = [0.010] * 6 + [10.0]
+    flag = flag_perf("q1", "exec", pypi_times=[0.010] * 7, branch_times=times)
+    assert flag.flagged is False
+    assert flag.branch_median == pytest.approx(0.010)
+
+
+def test_flag_perf_branch_faster_never_flagged():
+    flag = flag_perf("q1", "gen", pypi_times=[0.200] * 7, branch_times=[0.050] * 7)
+    assert flag.flagged is False
+    assert flag.ratio < 1
+
+
+# ---------------------------------------------------------------------------
+# Oracle: hand-computed micro-fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def frames():
+    tables = {
+        "orders": [
+            # id, customer_id, category, created_at, cost
+            {"id": 1, "customer_id": 1, "shop_id": 1, "category": "food",
+             "created_at": "2024-01-10", "cost": 10.0},
+            {"id": 2, "customer_id": 1, "shop_id": 1, "category": "food",
+             "created_at": "2024-01-20", "cost": 30.0},
+            {"id": 3, "customer_id": 2, "shop_id": 2, "category": "toys",
+             "created_at": "2024-02-05", "cost": 100.0},
+            {"id": 4, "customer_id": 2, "shop_id": 2, "category": "toys",
+             "created_at": "2024-04-01", "cost": None},  # gap month March; null cost
+            {"id": 5, "customer_id": 3, "shop_id": 1, "category": "food",
+             "created_at": "2024-04-15", "cost": 60.0},
+        ],
+        "customers": [
+            {"id": 1, "name": "Ann", "segment": "retail"},
+            {"id": 2, "name": "Bob", "segment": "corp"},
+            {"id": 3, "name": "Cid", "segment": "retail"},
+        ],
+    }
+    return oracle.frames_from_tables(tables)
+
+
+def test_oracle_group_agg(frames):
+    spec = {"fn": "agg", "args": {
+        "table": "orders",
+        "groupby": ["category"],
+        "aggs": [{"col": "cost", "op": "sum"}, {"op": "count_star"}],
+    }}
+    rows = oracle.expected(spec, frames)
+    assert canonical_rows(rows, ordered=False) == [["food", 100.0, 3], ["toys", 100.0, 2]]
+
+
+def test_oracle_ungrouped_agg_and_count_distinct(frames):
+    spec = {"fn": "agg", "args": {
+        "table": "orders",
+        "aggs": [{"col": "customer_id", "op": "count_distinct"},
+                 {"col": "cost", "op": "avg"}],
+    }}
+    rows = oracle.expected(spec, frames)
+    # AVG ignores the NULL cost: (10+30+100+60)/4
+    assert rows == [[3, 50.0]]
+
+
+def test_oracle_filter_before_agg(frames):
+    spec = {"fn": "agg", "args": {
+        "table": "orders",
+        "filter": "cost > 20",
+        "aggs": [{"col": "cost", "op": "sum"}],
+    }}
+    assert oracle.expected(spec, frames) == [[190.0]]
+
+
+def test_oracle_all_null_group_sums_to_none(frames):
+    spec = {"fn": "agg", "args": {
+        "table": "orders",
+        "filter": "category == 'toys' and id == 4",
+        "aggs": [{"col": "cost", "op": "sum"}],
+    }}
+    assert oracle.expected(spec, frames) == [[None]]
+
+
+def test_oracle_join_group(frames):
+    spec = {"fn": "agg", "args": {
+        "table": "orders",
+        "joins": [{"table": "customers", "left_on": "customer_id", "right_on": "id"}],
+        "groupby": ["customers.segment"],
+        "aggs": [{"col": "cost", "op": "sum"}],
+    }}
+    rows = oracle.expected(spec, frames)
+    assert canonical_rows(rows, ordered=False) == [["corp", 100.0], ["retail", 100.0]]
+
+
+def test_oracle_month_bucket_no_fill(frames):
+    spec = {"fn": "agg", "args": {
+        "table": "orders",
+        "time_bucket": {"col": "created_at", "gran": "month"},
+        "groupby": ["created_at_month"],
+        "aggs": [{"col": "cost", "op": "sum"}],
+        "order_by": [["created_at_month", "asc"]],
+    }}
+    rows = oracle.expected(spec, frames)
+    # March absent (gap month, no fill); April sums non-null only
+    assert [r[0] for r in rows] == ["2024-01", "2024-02", "2024-04"]
+    assert [r[1] for r in rows] == [40.0, 100.0, 60.0]
+
+
+def test_oracle_cumsum_post_op(frames):
+    spec = {"fn": "agg", "args": {
+        "table": "orders",
+        "time_bucket": {"col": "created_at", "gran": "month"},
+        "groupby": ["created_at_month"],
+        "aggs": [{"col": "cost", "op": "sum"}],
+        "order_by": [["created_at_month", "asc"]],
+        "post": [{"op": "cumsum", "on": "cost_sum"}],
+    }}
+    rows = oracle.expected(spec, frames)
+    assert [r[-1] for r in rows] == [40.0, 140.0, 200.0]
+
+
+def test_oracle_change_post_op(frames):
+    spec = {"fn": "agg", "args": {
+        "table": "orders",
+        "time_bucket": {"col": "created_at", "gran": "month"},
+        "groupby": ["created_at_month"],
+        "aggs": [{"col": "cost", "op": "sum"}],
+        "order_by": [["created_at_month", "asc"]],
+        "post": [{"op": "change", "on": "cost_sum"}],
+    }}
+    rows = oracle.expected(spec, frames)
+    assert [r[-1] for r in rows] == [None, 60.0, -40.0]
+
+
+def test_oracle_having(frames):
+    spec = {"fn": "agg", "args": {
+        "table": "orders",
+        "groupby": ["category"],
+        "aggs": [{"op": "count_star"}],
+        "having": "_count > 2",
+    }}
+    assert oracle.expected(spec, frames) == [["food", 3]]
+
+
+def test_oracle_order_limit_offset(frames):
+    spec = {"fn": "agg", "args": {
+        "table": "orders",
+        "groupby": ["id"],
+        "aggs": [{"col": "cost", "op": "sum"}],
+        "order_by": [["id", "desc"]],
+        "limit": 2,
+        "offset": 1,
+    }}
+    rows = oracle.expected(spec, frames)
+    assert [r[0] for r in rows] == [4, 3]
+
+
+def test_oracle_output_is_json_native(frames):
+    # no numpy scalars / NaT / NaN may leak into oracle output
+    spec = {"fn": "agg", "args": {
+        "table": "orders",
+        "groupby": ["category"],
+        "aggs": [{"col": "cost", "op": "sum"}],
+    }}
+    for row in oracle.expected(spec, frames):
+        for cell in row:
+            assert cell is None or isinstance(cell, (str, int, float, bool))
+            if isinstance(cell, float):
+                assert cell == cell  # not NaN
+
+
+def test_oracle_frames_from_dataset_matches_seed():
+    seed_mod = oracle.load_seed_module()  # importlib-by-path: tests/perf is a package
+
+    dataset = seed_mod.generate_dataset(order_count=200, start_date="2024-01-01",
+                                        end_date="2024-03-31", seed=7)
+    frames = oracle.frames_from_dataset(dataset)
+    assert set(frames) >= {"orders", "customers", "shops", "regions"}
+    assert len(frames["orders"]) == 200
+    assert isinstance(frames["orders"], pd.DataFrame)
+
+
+def test_oracle_unknown_fn_raises():
+    with pytest.raises(KeyError):
+        oracle.expected({"fn": "nope", "args": {}}, {})
+
+
+# ---------------------------------------------------------------------------
+# Corpus sanity
+# ---------------------------------------------------------------------------
+
+KNOWN_FAMILIES = {
+    "bench", "aggs", "joins", "filters", "formulas", "time",
+    "order_limit", "multi", "multi_stage", "behavior", "errors",
+}
+
+
+def test_corpus_size_and_unique_ids():
+    ids = [e["id"] for e in corpus.ENTRIES]
+    assert len(ids) == len(set(ids))
+    assert len(ids) >= 90
+
+
+def test_corpus_entry_shapes():
+    for entry in corpus.ENTRIES:
+        assert entry["family"] in KNOWN_FAMILIES, entry["id"]
+        assert isinstance(entry["expect_error"], bool), entry["id"]
+        assert isinstance(entry["ordered"], bool), entry["id"]
+        assert isinstance(entry["query"], (dict, list)), entry["id"]
+        if isinstance(entry["query"], list):
+            assert all(isinstance(q, dict) for q in entry["query"]), entry["id"]
+
+
+def test_corpus_family_coverage():
+    families = {e["family"] for e in corpus.ENTRIES}
+    assert families == KNOWN_FAMILIES
+    multi_stage = [e for e in corpus.ENTRIES if e["family"] == "multi_stage"]
+    assert len(multi_stage) >= 6
+    assert all(isinstance(e["query"], list) for e in multi_stage)
+
+
+def test_corpus_oracle_specs_valid():
+    with_oracle = 0
+    for entry in corpus.ENTRIES:
+        spec = entry.get("oracle")
+        if spec is None:
+            continue
+        with_oracle += 1
+        assert spec["fn"] in oracle.ORACLE_FNS, entry["id"]
+        assert isinstance(spec.get("args"), dict), entry["id"]
+    assert with_oracle >= 30  # substantial arbitration coverage
+
+
+def test_corpus_error_entries_have_no_oracle():
+    for entry in corpus.ENTRIES:
+        if entry["expect_error"]:
+            assert entry.get("oracle") is None, entry["id"]
+
+
+def test_corpus_subset_100k_marked_and_valid():
+    subset = [e for e in corpus.ENTRIES if e.get("subset_100k")]
+    assert 10 <= len(subset) <= 25
+    assert all(not e["expect_error"] for e in subset)
+
+
+def test_corpus_models_and_datasource():
+    models = {m["name"]: m for m in corpus.MODELS}
+    assert set(models) == {"orders", "customers", "shops", "regions"}
+    join_targets = {j["target_model"] for j in models["orders"]["joins"]}
+    assert {"customers", "shops"} <= join_targets
+    shops_targets = {j["target_model"] for j in models["shops"]["joins"]}
+    assert "regions" in shops_targets
+
+
+def test_corpus_no_slayer_imports():
+    import ast
+    from pathlib import Path
+
+    tree = ast.parse(Path(str(corpus.__file__)).read_text())
+    for node in ast.walk(tree):
+        names = []
+        if isinstance(node, ast.Import):
+            names = [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            names = [node.module or ""]
+        assert not any(n.split(".")[0] == "slayer" for n in names)
+
+
+def test_corpus_adversarial_tables():
+    tables = corpus.ADVERSARIAL_TABLES
+    assert set(tables) == {"orders", "customers", "shops", "regions"}
+    orders = tables["orders"]
+    assert len(orders) >= 20
+    # required pathologies: null join key, null measure, duplicate-key rows
+    assert any(r["customer_id"] is None for r in orders)
+    assert any(r["cost"] is None for r in orders)
+    customer_ids = [r["customer_id"] for r in orders if r["customer_id"] is not None]
+    assert len(customer_ids) != len(set(customer_ids))
+
+
+def test_corpus_variables_entries():
+    with_vars = [e for e in corpus.ENTRIES if e.get("variables")]
+    assert len(with_vars) >= 3
+    assert any(isinstance(v, list) for e in with_vars for v in e["variables"].values())
+    assert any(v == [] for e in with_vars for v in e["variables"].values())
+
+
+# ---------------------------------------------------------------------------
+# Verdict model basics
+# ---------------------------------------------------------------------------
+
+def test_verdict_is_pydantic_model():
+    from pydantic import BaseModel
+
+    assert issubclass(Verdict, BaseModel)
+    assert issubclass(PerfFlag, BaseModel)
+
+
+def test_classify_module_is_slayer_free():
+    import ast
+    from pathlib import Path
+
+    tree = ast.parse(Path(str(classify.__file__)).read_text())
+    for node in ast.walk(tree):
+        names = []
+        if isinstance(node, ast.Import):
+            names = [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            names = [node.module or ""]
+        assert not any(n.split(".")[0] in {"slayer", "pandas"} for n in names)
