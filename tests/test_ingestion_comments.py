@@ -285,6 +285,21 @@ class TestColumnCommentsFallback:
         sql_str = str(conn.execute.call_args[0][0]).lower()
         assert "currentdatabase()" in sql_str
 
+    @pytest.mark.parametrize(
+        ("dialect", "default_marker"),
+        [
+            ("mysql", "database()"),
+            ("snowflake", "current_schema()"),
+            ("duckdb", "current_schema()"),
+            ("postgresql", "pg_table_is_visible"),
+        ],
+    )
+    def test_no_schema_scopes_to_default(self, dialect: str, default_marker: str) -> None:
+        engine, conn = _mock_conn_engine(dialect, [("id", "c")])
+        _get_column_comments_fallback(sa_engine=engine, table_name="t", schema=None)
+        sql_str = str(conn.execute.call_args[0][0]).lower()
+        assert default_marker in sql_str
+
     def test_no_literal_interpolation(self) -> None:
         engine, conn = _mock_conn_engine("mysql", [])
         _get_column_comments_fallback(
@@ -467,24 +482,26 @@ class TestAdditiveMergeDescriptions:
         )
 
     def test_fills_empty_descriptions(self) -> None:
-        merged, new_cols, new_joins, widened, described, model_described = (
-            _additive_merge_existing(persisted=self._persisted(), fresh=self._fresh())
+        outcome = _additive_merge_existing(
+            persisted=self._persisted(), fresh=self._fresh()
         )
-        assert described == ["a"]
-        assert model_described is True
-        assert merged.description == "fresh model desc"
-        assert _col(merged, "a").description == "fresh col desc"
-        assert new_cols == [] and new_joins == [] and widened == []
+        assert outcome.described_columns == ["a"]
+        assert outcome.model_described is True
+        assert outcome.merged.description == "fresh model desc"
+        assert _col(outcome.merged, "a").description == "fresh col desc"
+        assert outcome.new_columns == []
+        assert outcome.new_joins == []
+        assert outcome.widened_columns == []
 
     def test_existing_descriptions_untouched(self) -> None:
-        merged, _, _, _, described, model_described = _additive_merge_existing(
+        outcome = _additive_merge_existing(
             persisted=self._persisted(description="mine", col_description="my col"),
             fresh=self._fresh(),
         )
-        assert described == []
-        assert model_described is False
-        assert merged.description == "mine"
-        assert _col(merged, "a").description == "my col"
+        assert outcome.described_columns == []
+        assert outcome.model_described is False
+        assert outcome.merged.description == "mine"
+        assert _col(outcome.merged, "a").description == "my col"
 
 
 # ---------------------------------------------------------------------------
