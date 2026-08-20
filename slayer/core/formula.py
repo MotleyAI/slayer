@@ -1277,7 +1277,18 @@ def _attribute_to_sql(node: ast.Attribute, columns: list[str]) -> str:
     return dotted
 
 
+#: SQL spells its boolean literals in lower case, but Python's ``ast`` only
+#: recognises ``True`` / ``False`` as constants — every other casing arrives
+#: here as a name and would otherwise be resolved as a column.
+_SQL_BOOLEAN_LITERALS = {"true": "TRUE", "false": "FALSE"}
+
+
 def _name_to_sql(node: ast.Name, columns: list[str]) -> str:
+    literal = _SQL_BOOLEAN_LITERALS.get(node.id.lower())
+    if literal is not None:
+        # Deliberately not appended to ``columns``: it is a value, not a
+        # reference, so strict name resolution must not see it.
+        return literal
     if node.id != "None":
         columns.append(node.id)
     return node.id
