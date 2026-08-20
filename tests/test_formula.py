@@ -20,11 +20,11 @@ from slayer.engine.enrichment import _collect_needed_paths, extract_filter_trans
 
 class TestFormulaParser:
     def test_bare_measure_raises(self) -> None:
-        with pytest.raises(ValueError, match="Bare measure name"):
+        with pytest.raises(ValueError, match="is not a saved measure"):
             parse_formula("count")
 
     def test_bare_measure_in_arithmetic_raises(self) -> None:
-        with pytest.raises(ValueError, match="Bare measure name"):
+        with pytest.raises(ValueError, match="is not a saved measure"):
             parse_formula("revenue / count")
 
     def test_aggregated_measure(self) -> None:
@@ -350,7 +350,7 @@ class TestNamedMeasureExpansion:
         assert result.inner.measure_name == "revenue"
 
     def test_unknown_bare_name_still_raises(self) -> None:
-        with pytest.raises(ValueError, match="Bare measure name"):
+        with pytest.raises(ValueError, match="is not a saved measure"):
             parse_formula(
                 "unknown_thing", named_measures={"aov": "revenue:sum"}
             )
@@ -360,7 +360,7 @@ class TestNamedMeasureExpansion:
         existing bare-name rejection — no regression for callers that don't
         opt in.
         """
-        with pytest.raises(ValueError, match="Bare measure name"):
+        with pytest.raises(ValueError, match="is not a saved measure"):
             parse_formula("aov")
 
 
