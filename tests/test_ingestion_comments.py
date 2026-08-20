@@ -252,7 +252,7 @@ class TestColumnCommentsFallback:
         ],
     )
     def test_dialect_query_shape(self, dialect: str, source_marker: str) -> None:
-        engine, conn = _mock_conn_engine(dialect, [("id", "row id"), ("x", None)])
+        engine, conn = _mock_conn_engine(dialect_name=dialect, execute_side_effect=[("id", "row id"), ("x", None)])
         result = _get_column_comments_fallback(
             sa_engine=engine, table_name="orders", schema=None
         )
@@ -268,7 +268,7 @@ class TestColumnCommentsFallback:
         "dialect", ["mysql", "snowflake", "clickhouse", "duckdb", "postgresql"]
     )
     def test_schema_is_bound_not_interpolated(self, dialect: str) -> None:
-        engine, conn = _mock_conn_engine(dialect, [("id", "row id")])
+        engine, conn = _mock_conn_engine(dialect_name=dialect, execute_side_effect=[("id", "row id")])
         result = _get_column_comments_fallback(
             sa_engine=engine, table_name="orders", schema="s1"
         )
@@ -280,7 +280,7 @@ class TestColumnCommentsFallback:
         assert "s1" not in sql_str
 
     def test_clickhouse_defaults_to_current_database(self) -> None:
-        engine, conn = _mock_conn_engine("clickhouse", [("id", "c")])
+        engine, conn = _mock_conn_engine(dialect_name="clickhouse", execute_side_effect=[("id", "c")])
         _get_column_comments_fallback(sa_engine=engine, table_name="t", schema=None)
         sql_str = str(conn.execute.call_args[0][0]).lower()
         assert "currentdatabase()" in sql_str
@@ -295,13 +295,13 @@ class TestColumnCommentsFallback:
         ],
     )
     def test_no_schema_scopes_to_default(self, dialect: str, default_marker: str) -> None:
-        engine, conn = _mock_conn_engine(dialect, [("id", "c")])
+        engine, conn = _mock_conn_engine(dialect_name=dialect, execute_side_effect=[("id", "c")])
         _get_column_comments_fallback(sa_engine=engine, table_name="t", schema=None)
         sql_str = str(conn.execute.call_args[0][0]).lower()
         assert default_marker in sql_str
 
     def test_no_literal_interpolation(self) -> None:
-        engine, conn = _mock_conn_engine("mysql", [])
+        engine, conn = _mock_conn_engine(dialect_name="mysql", execute_side_effect=[])
         _get_column_comments_fallback(
             sa_engine=engine,
             table_name="'; DROP TABLE users;--",
@@ -311,7 +311,7 @@ class TestColumnCommentsFallback:
         assert "DROP TABLE" not in str(args[0])
 
     def test_unknown_dialect_returns_empty(self) -> None:
-        engine, conn = _mock_conn_engine("mssql", [("id", "x")])
+        engine, conn = _mock_conn_engine(dialect_name="mssql", execute_side_effect=[("id", "x")])
         assert _get_column_comments_fallback(
             sa_engine=engine, table_name="t", schema=None
         ) == {}
@@ -321,13 +321,13 @@ class TestColumnCommentsFallback:
         def _boom(*args, **kwargs):
             raise RuntimeError("no such view")
 
-        engine, _ = _mock_conn_engine("duckdb", _boom)
+        engine, _ = _mock_conn_engine(dialect_name="duckdb", execute_side_effect=_boom)
         assert _get_column_comments_fallback(
             sa_engine=engine, table_name="t", schema=None
         ) == {}
 
     def test_blank_comments_filtered(self) -> None:
-        engine, _ = _mock_conn_engine("mysql", [("a", ""), ("b", "  "), ("c", "ok")])
+        engine, _ = _mock_conn_engine(dialect_name="mysql", execute_side_effect=[("a", ""), ("b", "  "), ("c", "ok")])
         assert _get_column_comments_fallback(
             sa_engine=engine, table_name="t", schema=None
         ) == {"c": "ok"}
@@ -341,7 +341,7 @@ class TestColumnCommentsFallback:
                 res.fetchall.return_value = [("id", "INTEGER"), ("x", "VARCHAR")]
             return res
 
-        engine, _ = _mock_conn_engine("duckdb", _dispatch)
+        engine, _ = _mock_conn_engine(dialect_name="duckdb", execute_side_effect=_dispatch)
         cols = _get_columns_fallback(sa_engine=engine, table_name="t", schema=None)
         by_name = {c["name"]: c for c in cols}
         assert by_name["id"]["comment"] == "row id"
@@ -354,7 +354,7 @@ class TestColumnCommentsFallback:
 
 
 class TestDuckDBEndToEnd:
-    @pytest.fixture()
+    @pytest.fixture
     def duckdb_models(self, tmp_path: Path) -> list[SlayerModel]:
         db_path = tmp_path / "commented.duckdb"
         _commented_duckdb(db_path)
@@ -399,7 +399,8 @@ class TestIdempotentDescriptionFill:
         storage, ds = await _duckdb_idempotent_setup(tmp_path)
         result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
         addition = _addition_for("orders", result.additions)
-        assert addition is not None and addition.created
+        assert addition is not None
+        assert addition.created
         assert "amount" in addition.described_columns
         assert addition.model_described is True
         loaded = await storage.get_model("orders", data_source="ds")
@@ -420,7 +421,8 @@ class TestIdempotentDescriptionFill:
 
         result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
         addition = _addition_for("orders", result.additions)
-        assert addition is not None and not addition.created
+        assert addition is not None
+        assert not addition.created
         assert addition.described_columns == ["amount"]
         assert addition.model_described is True
         assert addition.new_columns == []

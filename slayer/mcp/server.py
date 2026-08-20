@@ -194,13 +194,28 @@ def _empty_ingest_message(*, schema_name: str, ds: DatasourceConfig) -> str:
     )
 
 
+def _addition_has_changes(a: Any) -> bool:
+    """True when a non-created addition carries any change worth rendering."""
+    return bool(
+        a.new_columns
+        or a.new_joins
+        or getattr(a, "widened_columns", None)
+        or getattr(a, "kind_change", None)
+        or getattr(a, "described_columns", None)
+        or getattr(a, "model_described", False)
+    )
+
+
 def _render_new_models_section(new_models: list[Any]) -> list[str]:
     if not new_models:
         return []
     lines = [f"Created {len(new_models)} new model(s):"]
     for a in new_models:
+        described = getattr(a, "described_columns", []) or []
+        suffix = f", {len(described)} described" if described else ""
         lines.append(
-            f"- {a.model_name} ({len(a.new_columns)} columns, {len(a.new_joins)} joins)"
+            f"- {a.model_name} ({len(a.new_columns)} columns, "
+            f"{len(a.new_joins)} joins{suffix})"
         )
     return lines
 
@@ -215,6 +230,17 @@ def _render_updated_section(updated: list[Any]) -> list[str]:
             details.append(f"+columns: {', '.join(a.new_columns)}")
         if a.new_joins:
             details.append(f"+joins: {', '.join(a.new_joins)}")
+        widened = getattr(a, "widened_columns", []) or []
+        if widened:
+            details.append(f"widened: {', '.join(widened)}")
+        kind_change = getattr(a, "kind_change", None)
+        if kind_change:
+            details.append(f"source_kind: {kind_change}")
+        described = getattr(a, "described_columns", []) or []
+        if described:
+            details.append(f"+descriptions: {', '.join(described)}")
+        if getattr(a, "model_described", False):
+            details.append("+model description")
         lines.append(f"- {a.model_name} ({'; '.join(details)})")
     return lines
 
@@ -315,16 +341,17 @@ def _render_ingest_result(
         return "Datasource already in sync — no additive changes."
 
     new_models = [a for a in additions if a.created]
-    updated = [a for a in additions if not a.created and (a.new_columns or a.new_joins)]
+    updated = [a for a in additions if not a.created and _addition_has_changes(a)]
     unchanged = [
-        a for a in additions
-        if not a.created and not a.new_columns and not a.new_joins
+        a for a in additions if not a.created and not _addition_has_changes(a)
     ]
 
     lines: list[str] = []
     lines.extend(_render_new_models_section(new_models))
     lines.extend(_render_updated_section(updated))
     lines.extend(_render_unchanged_section(unchanged))
+    if getattr(result, "datasource_described", False):
+        lines.append("Datasource description imported.")
     lines.extend(_render_drift_section(list(result.to_delete)))
     # Same order as the CLI renderer, so the two surfaces read alike.
     lines.extend(_render_skipped_section(skipped))

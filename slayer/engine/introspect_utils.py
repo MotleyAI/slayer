@@ -223,7 +223,9 @@ def _get_columns_fallback(
         elif sa_type is None and ("CHAR" in base_type or "TEXT" in base_type):
             sa_type = DataType.TEXT
         result.append({"name": col_name, "type": sa_type or DataType.TEXT, "is_float": is_float})
-    comments = _get_column_comments_fallback(sa_engine, table_name, schema)
+    comments = _get_column_comments_fallback(
+        sa_engine=sa_engine, table_name=table_name, schema=schema,
+    )
     for col in result:
         col["comment"] = comments.get(col["name"])
     return result

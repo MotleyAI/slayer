@@ -57,6 +57,9 @@ def bq_dataset():
             f"Service account cannot create datasets in {_PROJECT} "
             f"(grant roles/bigquery.user or dataEditor): {exc}"
         )
+    except Exception:
+        client.close()
+        raise
     try:
         orders = bigquery.Table(
             f"{_PROJECT}.{dataset_id}.orders",

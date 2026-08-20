@@ -1761,6 +1761,42 @@ class AdditiveMergeResult(BaseModel):
     model_described: bool = False
 
 
+def _merge_one_column(
+    *,
+    persisted_col: Column,
+    fresh_col: Column | None,
+    model_name: str,
+    sqlite_widen_enabled: bool,
+) -> tuple[Column, bool, bool, bool]:
+    """Merge one persisted column against its fresh counterpart.
+
+    Returns ``(merged, did_widen, unique_filled, described)`` — the probe
+    widening plus the two additive gap-fills (`unique` on, empty description
+    filled from the DB comment).
+    """
+    merged_col, did_widen = _merge_persisted_column_with_probe(
+        persisted_col=persisted_col,
+        fresh_col=fresh_col,
+        model_name=model_name,
+        sqlite_widen_enabled=sqlite_widen_enabled,
+    )
+    unique_filled = False
+    described = False
+    if fresh_col is not None:
+        # Set `unique` additively — never downgrade a user-set flag.
+        if fresh_col.unique and not merged_col.unique:
+            merged_col = merged_col.model_copy(update={"unique": True})
+            unique_filled = True
+        # Fill an EMPTY description from the DB comment; existing
+        # descriptions are never overwritten.
+        if fresh_col.description and not merged_col.description:
+            merged_col = merged_col.model_copy(
+                update={"description": fresh_col.description}
+            )
+            described = True
+    return merged_col, did_widen, unique_filled, described
+
+
 def _additive_merge_existing(
     *,
     persisted: SlayerModel,
@@ -1795,27 +1831,14 @@ def _additive_merge_existing(
     merged_columns: list[Column] = []
     metadata_changed = False
     for persisted_col in persisted.columns:
-        merged_col, did_widen = _merge_persisted_column_with_probe(
+        merged_col, did_widen, unique_filled, described = _merge_one_column(
             persisted_col=persisted_col,
             fresh_col=fresh_by_name.get(persisted_col.name),
             model_name=persisted.name,
             sqlite_widen_enabled=sqlite_widen_enabled,
         )
-        # Set `unique` additively — never downgrade a user-set flag.
-        fresh_col = fresh_by_name.get(persisted_col.name)
-        if fresh_col is not None and fresh_col.unique and not merged_col.unique:
-            merged_col = merged_col.model_copy(update={"unique": True})
-            metadata_changed = True
-        # DEV-1809: fill an EMPTY description from the DB comment; existing
-        # descriptions are never overwritten.
-        if (
-            fresh_col is not None
-            and fresh_col.description
-            and not merged_col.description
-        ):
-            merged_col = merged_col.model_copy(
-                update={"description": fresh_col.description}
-            )
+        metadata_changed = metadata_changed or unique_filled
+        if described:
             described_column_names.append(persisted_col.name)
         merged_columns.append(merged_col)
         if did_widen:
