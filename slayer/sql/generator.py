@@ -2735,7 +2735,7 @@ class SQLGenerator:
                     # NotImplementedError.
                     bare = _first_bare_column_name(key) or full_alias
                     raise ValueError(
-                        f"Bare measure name '{bare}' is not valid. "
+                        f"'{bare}' needs an aggregation inside an expression. "
                         f"Use colon syntax (e.g., '{bare}:sum', '{bare}:avg'). "
                         f"For COUNT(*), use '*:count'."
                     )
