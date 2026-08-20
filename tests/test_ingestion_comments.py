@@ -42,6 +42,7 @@ from slayer.engine.introspect_utils import (
     _get_columns_fallback,
 )
 from slayer.engine.schema_drift import IdempotentIngestResult, ModelAddition
+from slayer.mcp.server import _render_ingest_result
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -784,8 +785,6 @@ class TestReportShape:
 
 class TestMcpIngestRender:
     def test_description_only_update_rendered(self) -> None:
-        from slayer.mcp.server import _render_ingest_result
-
         result = IdempotentIngestResult(
             additions=[ModelAddition(
                 model_name="orders", data_source="ds",
@@ -801,8 +800,6 @@ class TestMcpIngestRender:
         assert "+model description" in out
 
     def test_datasource_only_description_not_swallowed(self) -> None:
-        from slayer.mcp.server import _render_ingest_result
-
         result = IdempotentIngestResult(datasource_described=True)
         out = _render_ingest_result(
             result,
