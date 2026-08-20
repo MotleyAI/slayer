@@ -54,8 +54,9 @@ class TestShiftedCteFragmentDefaultParam:
         # The fragment rendered qualified at the host path (not a bare, unbound
         # ``regions.weight``), so it binds to the join the CTE now carries.
         assert "customers__regions.weight" in shifted, shifted
-        # And the re-aggregation actually multiplies by the fragment.
-        assert "orders.amount" in shifted and "customers__regions.weight" in shifted, shifted
+        # And the re-aggregation actually multiplies by the fragment: the host
+        # ``amount`` operand appears alongside the weight fragment pinned above.
+        assert "orders.amount" in shifted, shifted
 
     async def test_host_base_does_not_carry_the_shifted_reaggregation(self) -> None:
         """The shifted re-aggregation belongs to the shifted CTE, not the host

@@ -34,16 +34,18 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Awaitable, Callable, Dict, Iterable, Mapping, Optional
+from typing import Any, Awaitable, Callable, Coroutine, Dict, Iterable, Mapping, Optional
 
 import pytest
 
 __all__ = [
     "GoldenSuite",
+    "bind_golden_tests",
     "build_baseline",
     "expected_keys",
     "load_or_regenerate",
     "merge_regenerated",
+    "record_raise",
     "render_value",
 ]
 
@@ -244,3 +246,81 @@ class GoldenSuite:
             f"every allowed delta must say WHY the SQL is permitted to change: "
             f"{blank}"
         )
+
+
+#: A ``(query, dialect) -> SQL string`` (or recorded raise) generator, bound to
+#: one module's model fixtures. The query param is ``Any`` so a module's
+#: concretely-typed ``_generate_one(SlayerQuery, str)`` binds without variance
+#: friction; the return is a coroutine so ``asyncio.run`` accepts it.
+GenerateOne = Callable[[Any, str], Coroutine[Any, Any, object]]
+
+
+def bind_golden_tests(
+    *,
+    namespace: Dict,
+    golden_path: Path,
+    cases: Callable[[], Dict],
+    dialects: Iterable[str],
+    allowed: Mapping[str, str],
+    generate_one: GenerateOne,
+) -> None:
+    """Inject the standard golden ``baseline`` fixture and five shared test
+    functions into a module's ``namespace`` (pass ``globals()``).
+
+    Every golden module ran the SAME blessing-loop wiring — a module-scoped
+    ``baseline`` fixture, a parametrised match test, and the four
+    coverage/orphan/manifest guards — differing only in its case matrix, dialect
+    list, baseline path, and which model fixtures ``generate_one`` renders
+    against. This binds that wiring once; a caller keeps only what is genuinely
+    its own (the matrix, the path, and any invariant specific to what it pins,
+    which it defines normally alongside the injected names).
+    """
+    dialect_list = list(dialects)
+    case_ids = sorted(cases())
+
+    def _suite() -> GoldenSuite:
+        return GoldenSuite(
+            case_ids=sorted(cases()), dialects=dialect_list, allowed=allowed,
+        )
+
+    async def _render(case_id: str, dialect: str):
+        return await generate_one(cases()[case_id], dialect)
+
+    @pytest.fixture(scope="module")
+    def baseline() -> Dict:
+        return load_or_regenerate(
+            path=golden_path, case_ids=sorted(cases()), dialects=dialect_list,
+            render=_render, allowed=allowed,
+        )
+
+    @pytest.mark.parametrize("case_id", case_ids)
+    @pytest.mark.parametrize("dialect", dialect_list)
+    def test_emitted_sql_matches_golden(case_id: str, dialect: str, baseline) -> None:
+        _suite().assert_matches(
+            key=f"{case_id}::{dialect}",
+            actual=asyncio.run(generate_one(cases()[case_id], dialect)),
+            baseline=baseline,
+        )
+
+    def test_baseline_covers_every_case_and_dialect(baseline) -> None:
+        _suite().assert_covers_every_case(baseline)
+
+    def test_baseline_has_no_orphan_entries(baseline) -> None:
+        _suite().assert_no_orphans(baseline)
+
+    def test_allowed_deltas_name_real_keys() -> None:
+        _suite().assert_allowed_deltas_name_real_keys()
+
+    def test_allowed_deltas_carry_a_reason() -> None:
+        _suite().assert_allowed_deltas_carry_a_reason()
+
+    namespace.update(
+        baseline=baseline,
+        test_emitted_sql_matches_golden=test_emitted_sql_matches_golden,
+        test_baseline_covers_every_case_and_dialect=(
+            test_baseline_covers_every_case_and_dialect
+        ),
+        test_baseline_has_no_orphan_entries=test_baseline_has_no_orphan_entries,
+        test_allowed_deltas_name_real_keys=test_allowed_deltas_name_real_keys,
+        test_allowed_deltas_carry_a_reason=test_allowed_deltas_carry_a_reason,
+    )

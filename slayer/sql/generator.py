@@ -1641,122 +1641,282 @@ class SQLGenerator:
         # the list can never silently retarget where the chain continues.
         chain_tail = ctes[-1].name
         while pending_layers:
-            ready_window: list = []
-            ready_time_shift: list = []
-            ready_cp: list = []
-            not_ready: list = []
-            for layer in pending_layers:
-                if not self._transform_layer_deps_ready(
-                    layer=layer,
+            (ready_window, ready_time_shift, ready_cp, not_ready) = (
+                self._classify_ready_transform_layers(
+                    pending_layers=pending_layers,
                     slots_by_id=slots_by_id,
                     slot_id_by_key=slot_id_by_key,
                     available_alias_by_slot_id=available_alias_by_slot_id,
-                ):
-                    not_ready.append(layer)
-                elif layer.op == "time_shift":
-                    ready_time_shift.append(layer)
-                elif layer.op == "consecutive_periods":
-                    ready_cp.append(layer)
-                else:
-                    ready_window.append(layer)
+                )
+            )
             if not (ready_window or ready_time_shift or ready_cp):
                 pending_ops = [layer.op for layer in pending_layers]
                 raise RuntimeError(
                     f"DEV-1450 stage 7b.11: transform layer dependencies "
                     f"could not be resolved; pending ops: {pending_ops!r}.",
                 )
-            # --- Window batch (one step CTE per Kahn batch) ----------
+            # This chain dispatches window batch first, then the temporal ops
+            # (the cross-model chain reverses that order — DEV-1799 unifies it).
             if ready_window:
-                step_num += 1
-                step_name = cte_allocator.allocate_cte(f"step{step_num}")
-                prev_cte = chain_tail
-                carry_aliases = self._carry_aliases_in_plan_order(
-                    aliases_by_slot_id,
+                chain_tail, step_num = self._emit_window_batch_step(
+                    ready_window=ready_window,
+                    ctes=ctes,
+                    chain_tail=chain_tail,
+                    cte_allocator=cte_allocator,
+                    step_num=step_num,
+                    slots_by_id=slots_by_id,
+                    slot_id_by_key=slot_id_by_key,
+                    available_alias_by_slot_id=available_alias_by_slot_id,
+                    aliases_by_slot_id=aliases_by_slot_id,
+                    source_relation=source_relation,
+                    planned_query=planned_query,
                 )
-                step_parts = [
-                    exp.column(a, quoted=True) for a in carry_aliases
-                ]
-                for layer in ready_window:
-                    for slot_id in layer.slot_ids:
-                        slot = slots_by_id[slot_id]
-                        alias = (
-                            slot.public_aliases[0]
-                            if slot.public_aliases
-                            else slot.declared_name
-                        )
-                        full_alias = f"{source_relation}.{alias}"
-                        window_expr = self._render_window_transform_sql(
-                            slot=slot,
-                            slots_by_id=slots_by_id,
-                            slot_id_by_key=slot_id_by_key,
-                            available_alias_by_slot_id=available_alias_by_slot_id,
-                            planned_query=planned_query,
-                        )
-                        if slot.type is not None:
-                            window_expr = _wrap_cast_for_type(
-                                window_expr, slot.type,
-                            )
-                        step_parts.append(
-                            window_expr.as_(full_alias, quoted=True),
-                        )
-                        aliases_by_slot_id.setdefault(slot_id, []).append(
-                            full_alias,
-                        )
-                        available_alias_by_slot_id.setdefault(
-                            slot_id, full_alias,
-                        )
-                ctes.append(CteEntry(
-                    name=step_name,
-                    query=exp.Select().select(*step_parts).from_(prev_cte),
-                    depends_on=[prev_cte],
-                ))
-                chain_tail = step_name
-            # --- time_shift layers (each gets shifted_ + sjoin_ pair) -
-            for layer in ready_time_shift:
-                for slot_id in layer.slot_ids:
-                    slot = slots_by_id[slot_id]
-                    chain_tail = self._emit_time_shift_ctes_for_planned(
-                        slot=slot,
-                        ctes=ctes,
-                        chain_tail=chain_tail,
-                        cte_allocator=cte_allocator,
-                        slots_by_id=slots_by_id,
-                        slot_id_by_key=slot_id_by_key,
-                        available_alias_by_slot_id=available_alias_by_slot_id,
-                        aliases_by_slot_id=aliases_by_slot_id,
-                        source_model=source_model,
-                        source_relation=source_relation,
-                        shifted_where_parts=shifted_where_parts,
-                        shifted_where_join_paths=shifted_where_join_paths,
-                        planned_query=planned_query,
-                        bundle=bundle,
-                    )
-            # --- consecutive_periods layers (cp_reset_ + cp_value_ pair)
-            for layer in ready_cp:
-                for slot_id in layer.slot_ids:
-                    slot = slots_by_id[slot_id]
-                    chain_tail = self._emit_consecutive_periods_ctes_for_planned(
-                        slot=slot,
-                        ctes=ctes,
-                        chain_tail=chain_tail,
-                        cte_allocator=cte_allocator,
-                        slots_by_id=slots_by_id,
-                        slot_id_by_key=slot_id_by_key,
-                        available_alias_by_slot_id=available_alias_by_slot_id,
-                        aliases_by_slot_id=aliases_by_slot_id,
-                        planned_query=planned_query,
-                        source_relation=source_relation,
-                    )
+            chain_tail = self._emit_time_shift_layers(
+                ready_time_shift=ready_time_shift,
+                ctes=ctes,
+                chain_tail=chain_tail,
+                cte_allocator=cte_allocator,
+                slots_by_id=slots_by_id,
+                slot_id_by_key=slot_id_by_key,
+                available_alias_by_slot_id=available_alias_by_slot_id,
+                aliases_by_slot_id=aliases_by_slot_id,
+                source_model=source_model,
+                source_relation=source_relation,
+                shifted_where_parts=shifted_where_parts,
+                shifted_where_join_paths=shifted_where_join_paths,
+                planned_query=planned_query,
+                bundle=bundle,
+            )
+            chain_tail = self._emit_cp_layers(
+                ready_cp=ready_cp,
+                ctes=ctes,
+                chain_tail=chain_tail,
+                cte_allocator=cte_allocator,
+                slots_by_id=slots_by_id,
+                slot_id_by_key=slot_id_by_key,
+                available_alias_by_slot_id=available_alias_by_slot_id,
+                aliases_by_slot_id=aliases_by_slot_id,
+                planned_query=planned_query,
+                source_relation=source_relation,
+            )
             pending_layers = not_ready
 
-        # 7b.11 — materialise POST-phase ArithmeticKey / ScalarCallKey
-        # slots that the user projected but no transform layer rendered.
-        # ``change(amount:sum)`` lowers to ``amount:sum - time_shift(...)``;
-        # the time_shift slot is rendered as a self-join CTE pair, but
-        # the outer ArithmeticKey slot that subtracts them needs its
-        # own step CTE. Same shape covers ``change_pct`` (division of
-        # arithmetic operands) and any future POST-phase non-transform
-        # slot the planner emits.
+        # 7b.11 — materialise POST-phase ArithmeticKey / ScalarCallKey slots the
+        # user projected but no transform layer rendered (``change`` /
+        # ``change_pct`` desugarings), then assemble the chain and outer wrap.
+        chain_tail, step_num = self._emit_unmaterialised_post_phase_step(
+            ctes=ctes,
+            chain_tail=chain_tail,
+            cte_allocator=cte_allocator,
+            step_num=step_num,
+            slots_by_id=slots_by_id,
+            slot_id_by_key=slot_id_by_key,
+            available_alias_by_slot_id=available_alias_by_slot_id,
+            aliases_by_slot_id=aliases_by_slot_id,
+            source_relation=source_relation,
+            planned_query=planned_query,
+        )
+        return self._finalize_planned_transform_chain(
+            ctes=ctes,
+            chain_tail=chain_tail,
+            slots_by_id=slots_by_id,
+            slot_id_by_key=slot_id_by_key,
+            available_alias_by_slot_id=available_alias_by_slot_id,
+            aliases_by_slot_id=aliases_by_slot_id,
+            planned_query=planned_query,
+        )
+
+    # -----------------------------------------------------------------
+    # Shared transform-chain steps (DEV-1750)
+    #
+    # The local (``generate_from_planned``) and cross-model
+    # (``_render_cross_model_transform_chain``) chains layer the SAME step CTEs
+    # over their base: a Kahn batch split, a per-batch window step, per-op
+    # temporal emitters, a POST-phase materialisation step, and an identical
+    # finalise/outer-wrap tail. These helpers hold those step BODIES once; each
+    # chain keeps only its own loop skeleton (they differ solely in the order
+    # they dispatch window vs temporal within a batch — DEV-1799 unifies that,
+    # which moves cross-model CTE order and re-blesses golden). Extracting the
+    # bodies verbatim leaves emitted SQL byte-identical.
+    # -----------------------------------------------------------------
+
+    def _classify_ready_transform_layers(
+        self,
+        *,
+        pending_layers,
+        slots_by_id,
+        slot_id_by_key,
+        available_alias_by_slot_id,
+    ) -> tuple:
+        """Kahn split of ``pending_layers`` into
+        ``(ready_window, ready_time_shift, ready_cp, not_ready)`` by dependency
+        readiness then op. A dep-blocked layer is ``not_ready`` regardless of op.
+        """
+        ready_window: list = []
+        ready_time_shift: list = []
+        ready_cp: list = []
+        not_ready: list = []
+        for layer in pending_layers:
+            if not self._transform_layer_deps_ready(
+                layer=layer,
+                slots_by_id=slots_by_id,
+                slot_id_by_key=slot_id_by_key,
+                available_alias_by_slot_id=available_alias_by_slot_id,
+            ):
+                not_ready.append(layer)
+            elif layer.op == "time_shift":
+                ready_time_shift.append(layer)
+            elif layer.op == "consecutive_periods":
+                ready_cp.append(layer)
+            else:
+                ready_window.append(layer)
+        return ready_window, ready_time_shift, ready_cp, not_ready
+
+    def _emit_window_batch_step(
+        self,
+        *,
+        ready_window,
+        ctes,
+        chain_tail,
+        cte_allocator,
+        step_num,
+        slots_by_id,
+        slot_id_by_key,
+        available_alias_by_slot_id,
+        aliases_by_slot_id,
+        source_relation,
+        planned_query,
+    ) -> tuple:
+        """One ``step<n>`` CTE for a Kahn batch of window layers, carrying every
+        prior alias forward. Returns ``(new_chain_tail, new_step_num)``."""
+        step_num += 1
+        step_name = cte_allocator.allocate_cte(f"step{step_num}")
+        prev_cte = chain_tail
+        carry_aliases = self._carry_aliases_in_plan_order(aliases_by_slot_id)
+        step_parts = [exp.column(a, quoted=True) for a in carry_aliases]
+        for layer in ready_window:
+            for slot_id in layer.slot_ids:
+                slot = slots_by_id[slot_id]
+                alias = (
+                    slot.public_aliases[0]
+                    if slot.public_aliases
+                    else slot.declared_name
+                )
+                full_alias = f"{source_relation}.{alias}"
+                window_expr = self._render_window_transform_sql(
+                    slot=slot,
+                    slots_by_id=slots_by_id,
+                    slot_id_by_key=slot_id_by_key,
+                    available_alias_by_slot_id=available_alias_by_slot_id,
+                    planned_query=planned_query,
+                )
+                if slot.type is not None:
+                    window_expr = _wrap_cast_for_type(window_expr, slot.type)
+                step_parts.append(window_expr.as_(full_alias, quoted=True))
+                aliases_by_slot_id.setdefault(slot_id, []).append(full_alias)
+                available_alias_by_slot_id.setdefault(slot_id, full_alias)
+        ctes.append(CteEntry(
+            name=step_name,
+            query=exp.Select().select(*step_parts).from_(prev_cte),
+            depends_on=[prev_cte],
+        ))
+        return step_name, step_num
+
+    def _emit_time_shift_layers(
+        self,
+        *,
+        ready_time_shift,
+        ctes,
+        chain_tail,
+        cte_allocator,
+        slots_by_id,
+        slot_id_by_key,
+        available_alias_by_slot_id,
+        aliases_by_slot_id,
+        source_model,
+        source_relation,
+        shifted_where_parts,
+        shifted_where_join_paths,
+        planned_query,
+        bundle,
+    ):
+        """Emit the ``shifted_`` + ``sjoin_`` CTE pair for each ready
+        ``time_shift`` layer's slot. Returns the advanced ``chain_tail``."""
+        for layer in ready_time_shift:
+            for slot_id in layer.slot_ids:
+                slot = slots_by_id[slot_id]
+                chain_tail = self._emit_time_shift_ctes_for_planned(
+                    slot=slot,
+                    ctes=ctes,
+                    chain_tail=chain_tail,
+                    cte_allocator=cte_allocator,
+                    slots_by_id=slots_by_id,
+                    slot_id_by_key=slot_id_by_key,
+                    available_alias_by_slot_id=available_alias_by_slot_id,
+                    aliases_by_slot_id=aliases_by_slot_id,
+                    source_model=source_model,
+                    source_relation=source_relation,
+                    shifted_where_parts=shifted_where_parts,
+                    shifted_where_join_paths=shifted_where_join_paths,
+                    planned_query=planned_query,
+                    bundle=bundle,
+                )
+        return chain_tail
+
+    def _emit_cp_layers(
+        self,
+        *,
+        ready_cp,
+        ctes,
+        chain_tail,
+        cte_allocator,
+        slots_by_id,
+        slot_id_by_key,
+        available_alias_by_slot_id,
+        aliases_by_slot_id,
+        planned_query,
+        source_relation,
+    ):
+        """Emit the ``cp_reset_`` + ``cp_value_`` CTE pair for each ready
+        ``consecutive_periods`` layer's slot. Returns the advanced ``chain_tail``.
+        """
+        for layer in ready_cp:
+            for slot_id in layer.slot_ids:
+                slot = slots_by_id[slot_id]
+                chain_tail = self._emit_consecutive_periods_ctes_for_planned(
+                    slot=slot,
+                    ctes=ctes,
+                    chain_tail=chain_tail,
+                    cte_allocator=cte_allocator,
+                    slots_by_id=slots_by_id,
+                    slot_id_by_key=slot_id_by_key,
+                    available_alias_by_slot_id=available_alias_by_slot_id,
+                    aliases_by_slot_id=aliases_by_slot_id,
+                    planned_query=planned_query,
+                    source_relation=source_relation,
+                )
+        return chain_tail
+
+    def _emit_unmaterialised_post_phase_step(
+        self,
+        *,
+        ctes,
+        chain_tail,
+        cte_allocator,
+        step_num,
+        slots_by_id,
+        slot_id_by_key,
+        available_alias_by_slot_id,
+        aliases_by_slot_id,
+        source_relation,
+        planned_query,
+    ) -> tuple:
+        """Materialise projected POST-phase ``ArithmeticKey`` / ``ScalarCallKey``
+        slots no transform layer rendered (``change`` / ``change_pct`` desugar to
+        an outer subtraction/division over a ``time_shift`` slot; ``cumsum(x)+1``
+        is the window analogue). Transform-key slots are materialised by their
+        layers, so they are skipped. Returns ``(new_chain_tail, new_step_num)``.
+        """
         from slayer.core.keys import (
             ArithmeticKey as _ArithKey,
             ScalarCallKey as _ScalarKey,
@@ -1765,7 +1925,6 @@ class SQLGenerator:
         unmaterialised: list = []
         for cslot in planned_query.combined_expression_slots:
             if isinstance(cslot.key, _TKey):
-                # Transform-key slots are materialised by transform_layers.
                 continue
             if cslot.id in aliases_by_slot_id:
                 continue
@@ -1775,9 +1934,7 @@ class SQLGenerator:
             step_num += 1
             step_name = cte_allocator.allocate_cte(f"step{step_num}")
             prev_cte = chain_tail
-            carry_aliases = self._carry_aliases_in_plan_order(
-                aliases_by_slot_id,
-            )
+            carry_aliases = self._carry_aliases_in_plan_order(aliases_by_slot_id)
             step_parts = [exp.column(a, quoted=True) for a in carry_aliases]
             for cslot in unmaterialised:
                 alias = (
@@ -1799,35 +1956,39 @@ class SQLGenerator:
                 if cslot.type is not None:
                     rendered = _wrap_cast_for_type(rendered, cslot.type)
                 step_parts.append(rendered.as_(full_alias, quoted=True))
-                aliases_by_slot_id.setdefault(cslot.id, []).append(
-                    full_alias,
-                )
-                available_alias_by_slot_id.setdefault(
-                    cslot.id, full_alias,
-                )
+                aliases_by_slot_id.setdefault(cslot.id, []).append(full_alias)
+                available_alias_by_slot_id.setdefault(cslot.id, full_alias)
             ctes.append(CteEntry(
                 name=step_name,
                 query=exp.Select().select(*step_parts).from_(prev_cte),
                 depends_on=[prev_cte],
             ))
             chain_tail = step_name
+        return chain_tail, step_num
 
-        # Inner SELECT inside _outer wrap: ALL carried aliases sorted
-        # in PLAN order (B8 — this list used to be sorted alphabetically to
-        # match the legacy renderer byte-for-byte).
+    def _finalize_planned_transform_chain(
+        self,
+        *,
+        ctes,
+        chain_tail,
+        slots_by_id,
+        slot_id_by_key,
+        available_alias_by_slot_id,
+        aliases_by_slot_id,
+        planned_query,
+    ) -> str:
+        """Assemble the ``WITH`` chain, apply the POST-phase filter wrap, and emit
+        the outer projection wrap in user-projection order (per-slot index walks
+        C13 duplicate aliases). Returns the finished statement SQL."""
         final_cte = chain_tail
         inner_aliases = self._carry_aliases_in_plan_order(aliases_by_slot_id)
         inner_select = exp.Select().select(
             *(exp.column(a, quoted=True) for a in inner_aliases),
         ).from_(final_cte)
-
         chain_sql = assemble_with_chain(
             entries=ctes, final=inner_select,
         ).sql(dialect=self.dialect, pretty=True)
 
-        # POST-phase filter wrap (filters referencing transform / arith
-        # slots). Mirrors legacy _generate_with_computed:1627-1648 —
-        # ``SELECT * FROM (<chain>) AS _filtered WHERE <conditions>``.
         post_filter_conditions = self._render_post_phase_filter_conditions(
             planned_query=planned_query,
             slot_id_by_key=slot_id_by_key,
@@ -1839,9 +2000,6 @@ class SQLGenerator:
                 f"\nWHERE {_SQL_AND_JOINER.join(post_filter_conditions)}"
             )
 
-        # Outer SELECT in user-projection order (public slots only).
-        # Per-slot index walks each slot's public_aliases so duplicate
-        # interned names (DEV-1450 C13) both surface in the result.
         public_aliases_user_order: list[str] = []
         outer_alias_index: Dict[str, int] = {}
         for sid in planned_query.projection:
@@ -4817,24 +4975,14 @@ class SQLGenerator:
         # next step reads from, tracked directly instead of as ``ctes[-1]``.
         chain_tail = ctes[-1].name
         while pending_layers:
-            ready_window: list = []
-            ready_time_shift: list = []
-            ready_cp: list = []
-            not_ready: list = []
-            for layer in pending_layers:
-                if not self._transform_layer_deps_ready(
-                    layer=layer,
+            (ready_window, ready_time_shift, ready_cp, not_ready) = (
+                self._classify_ready_transform_layers(
+                    pending_layers=pending_layers,
                     slots_by_id=slots_by_id,
                     slot_id_by_key=slot_id_by_key,
                     available_alias_by_slot_id=available_alias_by_slot_id,
-                ):
-                    not_ready.append(layer)
-                elif layer.op == "time_shift":
-                    ready_time_shift.append(layer)
-                elif layer.op == "consecutive_periods":
-                    ready_cp.append(layer)
-                else:
-                    ready_window.append(layer)
+                )
+            )
             if not (ready_window or ready_time_shift or ready_cp):
                 pending_ops = [layer.op for layer in pending_layers]
                 raise RuntimeError(
@@ -4842,179 +4990,74 @@ class SQLGenerator:
                     f"dependencies could not be resolved; pending ops: "
                     f"{pending_ops!r}.",
                 )
-            # --- time_shift layers (each gets a shifted_ + sjoin_ pair) -------
-            for layer in ready_time_shift:
-                for slot_id in layer.slot_ids:
-                    slot = slots_by_id[slot_id]
-                    chain_tail = self._emit_time_shift_ctes_for_planned(
-                        slot=slot,
-                        ctes=ctes,
-                        chain_tail=chain_tail,
-                        cte_allocator=cte_allocator,
-                        slots_by_id=slots_by_id,
-                        slot_id_by_key=slot_id_by_key,
-                        available_alias_by_slot_id=available_alias_by_slot_id,
-                        aliases_by_slot_id=aliases_by_slot_id,
-                        source_model=source_model,
-                        source_relation=source_relation,
-                        shifted_where_parts=shifted_where_parts,
-                        shifted_where_join_paths=shifted_where_join_paths,
-                        planned_query=planned_query,
-                        bundle=bundle,
-                    )
-            # --- consecutive_periods layers (cp_reset_ + cp_value_ pair) ------
-            for layer in ready_cp:
-                for slot_id in layer.slot_ids:
-                    slot = slots_by_id[slot_id]
-                    chain_tail = self._emit_consecutive_periods_ctes_for_planned(
-                        slot=slot,
-                        ctes=ctes,
-                        cte_allocator=cte_allocator,
-                        slots_by_id=slots_by_id,
-                        slot_id_by_key=slot_id_by_key,
-                        available_alias_by_slot_id=available_alias_by_slot_id,
-                        aliases_by_slot_id=aliases_by_slot_id,
-                        planned_query=planned_query,
-                        source_relation=source_relation,
-                        chain_tail=chain_tail,
-                    )
-            if not ready_window:
-                pending_layers = not_ready
-                continue
-            ready = ready_window
-            step_num += 1
-            step_name = cte_allocator.allocate_cte(f"step{step_num}")
-            prev_cte = chain_tail
-            carry_aliases = self._carry_aliases_in_plan_order(
-                aliases_by_slot_id,
+            # This chain dispatches the temporal ops first, then the window batch
+            # (the local chain reverses that order — DEV-1799 unifies it).
+            chain_tail = self._emit_time_shift_layers(
+                ready_time_shift=ready_time_shift,
+                ctes=ctes,
+                chain_tail=chain_tail,
+                cte_allocator=cte_allocator,
+                slots_by_id=slots_by_id,
+                slot_id_by_key=slot_id_by_key,
+                available_alias_by_slot_id=available_alias_by_slot_id,
+                aliases_by_slot_id=aliases_by_slot_id,
+                source_model=source_model,
+                source_relation=source_relation,
+                shifted_where_parts=shifted_where_parts,
+                shifted_where_join_paths=shifted_where_join_paths,
+                planned_query=planned_query,
+                bundle=bundle,
             )
-            step_parts = [exp.column(a, quoted=True) for a in carry_aliases]
-            for layer in ready:
-                for slot_id in layer.slot_ids:
-                    slot = slots_by_id[slot_id]
-                    alias = (
-                        slot.public_aliases[0]
-                        if slot.public_aliases
-                        else slot.declared_name
-                    )
-                    full_alias = f"{source_relation}.{alias}"
-                    window_expr = self._render_window_transform_sql(
-                        slot=slot,
-                        slots_by_id=slots_by_id,
-                        slot_id_by_key=slot_id_by_key,
-                        available_alias_by_slot_id=available_alias_by_slot_id,
-                        planned_query=planned_query,
-                    )
-                    if slot.type is not None:
-                        window_expr = _wrap_cast_for_type(
-                            window_expr, slot.type,
-                        )
-                    step_parts.append(
-                        window_expr.as_(full_alias, quoted=True),
-                    )
-                    aliases_by_slot_id.setdefault(slot_id, []).append(full_alias)
-                    available_alias_by_slot_id.setdefault(slot_id, full_alias)
-            ctes.append(CteEntry(
-                name=step_name,
-                query=exp.Select().select(*step_parts).from_(prev_cte),
-                depends_on=[prev_cte],
-            ))
-            chain_tail = step_name
+            chain_tail = self._emit_cp_layers(
+                ready_cp=ready_cp,
+                ctes=ctes,
+                chain_tail=chain_tail,
+                cte_allocator=cte_allocator,
+                slots_by_id=slots_by_id,
+                slot_id_by_key=slot_id_by_key,
+                available_alias_by_slot_id=available_alias_by_slot_id,
+                aliases_by_slot_id=aliases_by_slot_id,
+                planned_query=planned_query,
+                source_relation=source_relation,
+            )
+            if ready_window:
+                chain_tail, step_num = self._emit_window_batch_step(
+                    ready_window=ready_window,
+                    ctes=ctes,
+                    chain_tail=chain_tail,
+                    cte_allocator=cte_allocator,
+                    step_num=step_num,
+                    slots_by_id=slots_by_id,
+                    slot_id_by_key=slot_id_by_key,
+                    available_alias_by_slot_id=available_alias_by_slot_id,
+                    aliases_by_slot_id=aliases_by_slot_id,
+                    source_relation=source_relation,
+                    planned_query=planned_query,
+                )
             pending_layers = not_ready
 
-        # Materialise any projected POST-phase ArithmeticKey / ScalarCallKey
-        # slot a window layer didn't render (``cumsum(x) + 1``-style combos).
-        from slayer.core.keys import (
-            ArithmeticKey as _ArithKey,
-            ScalarCallKey as _ScalarKey,
-            TransformKey as _TKey,
-        )
-        unmaterialised: list = []
-        for cslot in planned_query.combined_expression_slots:
-            if isinstance(cslot.key, _TKey):
-                continue
-            if cslot.id in aliases_by_slot_id:
-                continue
-            if isinstance(cslot.key, (_ArithKey, _ScalarKey)):
-                unmaterialised.append(cslot)
-        if unmaterialised:
-            step_num += 1
-            step_name = cte_allocator.allocate_cte(f"step{step_num}")
-            prev_cte = chain_tail
-            carry_aliases = self._carry_aliases_in_plan_order(
-                aliases_by_slot_id,
-            )
-            step_parts = [exp.column(a, quoted=True) for a in carry_aliases]
-            for cslot in unmaterialised:
-                alias = (
-                    cslot.public_aliases[0]
-                    if cslot.public_aliases
-                    else cslot.declared_name
-                )
-                full_alias = f"{source_relation}.{alias}"
-                rendered = render_value_key(
-                    key=cslot.key,
-                    ctx=RenderContext(
-                        dialect=self._dialect,
-                        aliases=AliasFacilities(
-                            slot_id_by_key=slot_id_by_key,
-                            available_alias_by_slot_id=available_alias_by_slot_id,
-                        ),
-                    ),
-                )
-                if cslot.type is not None:
-                    rendered = _wrap_cast_for_type(rendered, cslot.type)
-                step_parts.append(rendered.as_(full_alias, quoted=True))
-                aliases_by_slot_id.setdefault(cslot.id, []).append(full_alias)
-                available_alias_by_slot_id.setdefault(cslot.id, full_alias)
-            ctes.append(CteEntry(
-                name=step_name,
-                query=exp.Select().select(*step_parts).from_(prev_cte),
-                depends_on=[prev_cte],
-            ))
-            chain_tail = step_name
-
-        final_cte = chain_tail
-        inner_aliases = self._carry_aliases_in_plan_order(aliases_by_slot_id)
-        inner_select = exp.Select().select(
-            *(exp.column(a, quoted=True) for a in inner_aliases),
-        ).from_(final_cte)
-        chain_sql = assemble_with_chain(
-            entries=ctes, final=inner_select,
-        ).sql(dialect=self.dialect, pretty=True)
-
-        post_filter_conditions = self._render_post_phase_filter_conditions(
-            planned_query=planned_query,
+        # Materialise any projected POST-phase arith/scalar slot no window layer
+        # rendered (``cumsum(x) + 1``-style combos), then assemble and wrap.
+        chain_tail, step_num = self._emit_unmaterialised_post_phase_step(
+            ctes=ctes,
+            chain_tail=chain_tail,
+            cte_allocator=cte_allocator,
+            step_num=step_num,
+            slots_by_id=slots_by_id,
             slot_id_by_key=slot_id_by_key,
             available_alias_by_slot_id=available_alias_by_slot_id,
-        )
-        if post_filter_conditions:
-            chain_sql = (
-                f"SELECT *\nFROM (\n{chain_sql}\n) AS {FILTERED_ALIAS}"
-                f"\nWHERE {_SQL_AND_JOINER.join(post_filter_conditions)}"
-            )
-
-        public_aliases_user_order: list[str] = []
-        outer_alias_index: Dict[str, int] = {}
-        for sid in planned_query.projection:
-            slot = slots_by_id[sid]
-            if slot.hidden:
-                continue
-            all_aliases = aliases_by_slot_id.get(sid, [])
-            if not all_aliases:
-                continue
-            idx = outer_alias_index.setdefault(sid, 0)
-            alias = (
-                all_aliases[idx] if idx < len(all_aliases) else all_aliases[-1]
-            )
-            outer_alias_index[sid] = idx + 1
-            public_aliases_user_order.append(alias)
-        return self._emit_planned_outer_wrap(
-            chain_sql=chain_sql,
-            public_aliases=public_aliases_user_order,
+            aliases_by_slot_id=aliases_by_slot_id,
+            source_relation=source_relation,
             planned_query=planned_query,
+        )
+        return self._finalize_planned_transform_chain(
+            ctes=ctes,
+            chain_tail=chain_tail,
             slots_by_id=slots_by_id,
+            slot_id_by_key=slot_id_by_key,
             available_alias_by_slot_id=available_alias_by_slot_id,
+            aliases_by_slot_id=aliases_by_slot_id,
+            planned_query=planned_query,
         )
 
     def _canonical_cross_model_alias(

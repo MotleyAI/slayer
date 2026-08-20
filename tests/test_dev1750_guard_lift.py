@@ -117,10 +117,11 @@ class TestTargetGrainStaysGuarded:
         target-rooted. Host-rooted re-aggregation would multiply target rows, so
         it stays behind a guard whose message now NAMES the target-grain shape
         (not the blanket op-based text)."""
+        q = _q(measures=[
+            ModelMeasure(formula="time_shift(customers.spend:sum, -1)", name="prev"),
+        ])
         with pytest.raises(NotImplementedError) as ei:
-            await gen(_q(measures=[
-                ModelMeasure(formula="time_shift(customers.spend:sum, -1)", name="prev"),
-            ]))
+            await gen(q)
         msg = str(ei.value)
         assert _GUARD_TAG in msg, msg
         assert _NARROWED_MARKER in msg, msg
@@ -140,15 +141,14 @@ class TestTargetGrainStaysGuarded:
             calls.append(kwargs.get("slot"))
             return real(self, **kwargs)
 
+        q = _q(measures=[
+            ModelMeasure(formula="time_shift(customers.spend:sum, -1)", name="prev"),
+        ])
         with patch.object(
             SQLGenerator, "_emit_time_shift_ctes_for_planned", _spy,
         ):
             with pytest.raises(NotImplementedError):
-                await gen(_q(measures=[
-                    ModelMeasure(
-                        formula="time_shift(customers.spend:sum, -1)", name="prev",
-                    ),
-                ]))
+                await gen(q)
         assert calls == [], (
             "the target-grain guard let the shifted emitter run before raising"
         )
@@ -182,7 +182,11 @@ class TestWindowOpsUnaffected:
         sql = await gen(_q(measures=[
             ModelMeasure(formula="cumsum(customers.spend:sum)", name="run"),
         ]))
-        assert "step1" in sql or "cumsum" in sql.lower() or "SUM(" in sql, sql
+        # A cumsum renders as a windowed running sum in the transform-chain step
+        # CTE — pin the actual window shape, not a vacuous SUM( that any aggregate
+        # SQL contains.
+        assert "step1" in sql, sql
+        assert "OVER (" in sql, sql
 
 
 # --------------------------------------------------------------------------- #
@@ -193,11 +197,12 @@ class TestPreExistingGuardsSurvive:
         """A composite-input transform (``time_shift`` over an arithmetic of two
         aggregates) is deferred by 7b.11 and must keep raising that — the lift
         touches only the 7b.15e guard."""
+        q = _q(measures=[
+            ModelMeasure(formula="customers.spend:sum", name="cm"),
+            ModelMeasure(
+                formula="time_shift(amount:sum + amount:sum, -1)", name="prev",
+            ),
+        ])
         with pytest.raises(NotImplementedError) as ei:
-            await gen(_q(measures=[
-                ModelMeasure(formula="customers.spend:sum", name="cm"),
-                ModelMeasure(
-                    formula="time_shift(amount:sum + amount:sum, -1)", name="prev",
-                ),
-            ]))
+            await gen(q)
         assert "7b.11" in str(ei.value), str(ei.value)

@@ -154,16 +154,18 @@ class TestChangeOverCrossModelInnerIsOutOfScope:
     (bad-SQL binding error, silent wrong number) from passing as 'expected'."""
 
     async def test_change_of_wscaled_raises_render_context(self, exec_engine) -> None:
+        q = _q(measures=[
+            ModelMeasure(formula="change(amount:wscaled_sum)", name="delta"),
+        ])
         with pytest.raises(RenderContextMissingFacilityError):
-            await exec_engine.execute(_q(measures=[
-                ModelMeasure(formula="change(amount:wscaled_sum)", name="delta"),
-            ]))
+            await exec_engine.execute(q)
 
     async def test_change_pct_of_wscaled_raises_render_context(self, exec_engine) -> None:
+        q = _q(measures=[
+            ModelMeasure(formula="change_pct(amount:wscaled_sum)", name="delta"),
+        ])
         with pytest.raises(RenderContextMissingFacilityError):
-            await exec_engine.execute(_q(measures=[
-                ModelMeasure(formula="change_pct(amount:wscaled_sum)", name="delta"),
-            ]))
+            await exec_engine.execute(q)
 
 
 class TestSiblingProtectionUnderFanOut:
