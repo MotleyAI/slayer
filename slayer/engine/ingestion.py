@@ -1844,12 +1844,9 @@ def _additive_merge_existing(
         if did_widen:
             widened_column_names.append(persisted_col.name)
 
-    new_column_names: list[str] = []
-    for fresh_col in fresh.columns:
-        if fresh_col.name in existing_by_name:
-            continue
-        merged_columns.append(fresh_col)
-        new_column_names.append(fresh_col.name)
+    new_cols = [c for c in fresh.columns if c.name not in existing_by_name]
+    merged_columns.extend(new_cols)
+    new_column_names = [c.name for c in new_cols]
 
     new_joins, new_join_targets, joins_metadata_changed = _merge_joins_strict(
         persisted, fresh

@@ -220,28 +220,33 @@ def _render_new_models_section(new_models: list[Any]) -> list[str]:
     return lines
 
 
+def _addition_update_details(a: Any) -> list[str]:
+    """Detail fragments for one non-created addition, in CLI-renderer order."""
+    details = []
+    if a.new_columns:
+        details.append(f"+columns: {', '.join(a.new_columns)}")
+    if a.new_joins:
+        details.append(f"+joins: {', '.join(a.new_joins)}")
+    widened = getattr(a, "widened_columns", []) or []
+    if widened:
+        details.append(f"widened: {', '.join(widened)}")
+    kind_change = getattr(a, "kind_change", None)
+    if kind_change:
+        details.append(f"source_kind: {kind_change}")
+    described = getattr(a, "described_columns", []) or []
+    if described:
+        details.append(f"+descriptions: {', '.join(described)}")
+    if getattr(a, "model_described", False):
+        details.append("+model description")
+    return details
+
+
 def _render_updated_section(updated: list[Any]) -> list[str]:
     if not updated:
         return []
     lines = [f"Updated {len(updated)} existing model(s):"]
     for a in updated:
-        details = []
-        if a.new_columns:
-            details.append(f"+columns: {', '.join(a.new_columns)}")
-        if a.new_joins:
-            details.append(f"+joins: {', '.join(a.new_joins)}")
-        widened = getattr(a, "widened_columns", []) or []
-        if widened:
-            details.append(f"widened: {', '.join(widened)}")
-        kind_change = getattr(a, "kind_change", None)
-        if kind_change:
-            details.append(f"source_kind: {kind_change}")
-        described = getattr(a, "described_columns", []) or []
-        if described:
-            details.append(f"+descriptions: {', '.join(described)}")
-        if getattr(a, "model_described", False):
-            details.append("+model description")
-        lines.append(f"- {a.model_name} ({'; '.join(details)})")
+        lines.append(f"- {a.model_name} ({'; '.join(_addition_update_details(a))})")
     return lines
 
 
@@ -317,12 +322,14 @@ def _render_ingest_result(
     # may carry neither attribute.
     skipped = list(getattr(result, "skipped", None) or [])
     hidden_internals = list(getattr(result, "hidden_internals", None) or [])
+    datasource_described = bool(getattr(result, "datasource_described", False))
     if (
         not additions
         and not result.to_delete
         and not result.errors
         and not skipped
         and not hidden_internals
+        and not datasource_described
     ):
         # Two distinct cases produce an empty result:
         #   1. The schema actually has no tables (the agent should look
@@ -350,7 +357,7 @@ def _render_ingest_result(
     lines.extend(_render_new_models_section(new_models))
     lines.extend(_render_updated_section(updated))
     lines.extend(_render_unchanged_section(unchanged))
-    if getattr(result, "datasource_described", False):
+    if datasource_described:
         lines.append("Datasource description imported.")
     lines.extend(_render_drift_section(list(result.to_delete)))
     # Same order as the CLI renderer, so the two surfaces read alike.

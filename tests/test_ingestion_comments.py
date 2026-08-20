@@ -782,6 +782,37 @@ class TestReportShape:
         assert "Updated: orders" in buf.getvalue()
 
 
+class TestMcpIngestRender:
+    def test_description_only_update_rendered(self) -> None:
+        from slayer.mcp.server import _render_ingest_result
+
+        result = IdempotentIngestResult(
+            additions=[ModelAddition(
+                model_name="orders", data_source="ds",
+                described_columns=["amount"], model_described=True,
+            )],
+        )
+        out = _render_ingest_result(
+            result,
+            schema_name="",
+            ds=DatasourceConfig(name="ds", type="sqlite", database=":memory:"),
+        )
+        assert "+descriptions: amount" in out
+        assert "+model description" in out
+
+    def test_datasource_only_description_not_swallowed(self) -> None:
+        from slayer.mcp.server import _render_ingest_result
+
+        result = IdempotentIngestResult(datasource_described=True)
+        out = _render_ingest_result(
+            result,
+            schema_name="",
+            ds=DatasourceConfig(name="ds", type="sqlite", database=":memory:"),
+        )
+        assert "Datasource description imported." in out
+        assert "already in sync" not in out
+
+
 # ---------------------------------------------------------------------------
 # CLI `datasources create --ingest` wiring
 # ---------------------------------------------------------------------------
