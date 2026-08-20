@@ -1328,7 +1328,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
         Example: create_datasource(name="mydb", type="postgres", host="localhost", port=5432, database="app", username="user", password="pass")
         """
-        from slayer.engine.ingestion import ingest_datasource as _ingest
+        from slayer.engine.ingestion import _ingest_datasource_full as _ingest
 
         data = _build_dict(
             name=name,
@@ -1360,12 +1360,23 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
         # Auto-ingest models
         try:
-            models = _ingest(datasource=ds, schema=schema_name or None)
+            ingest_output = _ingest(datasource=ds, schema=schema_name or None)
         except Exception as e:
             if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
                 lines.append(f"Auto-ingestion failed: {_friendly_db_error(e)}")
                 return "\n".join(lines)
             raise
+        models = ingest_output.models
+
+        if ingest_output.schema_description and not ds.description:
+            try:
+                ds = ds.model_copy(
+                    update={"description": ingest_output.schema_description}
+                )
+                await storage.save_datasource(ds)
+                lines.append("Datasource description imported.")
+            except Exception as exc:  # noqa: BLE001 — best-effort
+                lines.append(f"Could not save datasource description: {exc}")
 
         save_errors: list[str] = []
         saved_models = []

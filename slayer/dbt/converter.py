@@ -322,11 +322,14 @@ class DbtToSlayerConverter:
         if rm.description:
             model.description = rm.description
 
+        # Curated dbt descriptions win over freshly introspected DB comments;
+        # DB comments fill only the gaps (DEV-1809 — creation-time overlay,
+        # no persisted user edits exist yet).
         col_descriptions = {c.name: c.description for c in rm.columns if c.description}
         if col_descriptions:
             for c in model.columns:
                 desc = col_descriptions.get(c.name)
-                if desc and not c.description:
+                if desc:
                     c.description = desc
 
         return model

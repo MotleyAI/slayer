@@ -141,6 +141,13 @@ jobs:
         timeout-minutes: 5
         run: poetry run python examples/bigquery/verify.py
 
+      - name: Run BigQuery integration tests
+        if: steps.gate.outputs.skip != 'true'
+        timeout-minutes: 10
+        env:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+        run: poetry run pytest tests/integration/test_integration_bigquery.py -m integration -v
+
       - name: Dump server logs on failure
         if: failure() && steps.gate.outputs.skip != 'true'
         run: cat /tmp/slayer-bq.log

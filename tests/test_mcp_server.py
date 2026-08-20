@@ -3,12 +3,14 @@
 import json
 import os
 import shutil
+import sqlite3
 import tempfile
 from typing import Any
 from collections.abc import Generator
 
 import pytest
 
+import slayer.engine.ingestion as ingestion_mod
 from slayer.core.enums import DataType
 from slayer.core.models import (
     Aggregation,
@@ -2947,6 +2949,32 @@ class TestDatasources:
         await storage.save_datasource(DatasourceConfig(name="ds", type="sqlite", database=":memory:"))
         result = await _call(mcp_server, name="create_datasource", arguments={"name": "ds", "type": "sqlite", "database": ":memory:"})
         assert "replaced" in result
+
+    async def test_create_auto_ingest_imports_dataset_description(
+        self, mcp_server, storage: YAMLStorage, tmp_path, monkeypatch
+    ) -> None:
+        db_path = str(tmp_path / "live.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+        conn.commit()
+        conn.close()
+
+        real = ingestion_mod._ingest_datasource_full
+
+        def _fake(*args, **kwargs):
+            out = real(*args, **kwargs)
+            return ingestion_mod.DatasourceIngestOutput(
+                models=out.models, schema_description="From the dataset"
+            )
+
+        monkeypatch.setattr(ingestion_mod, "_ingest_datasource_full", _fake)
+        result = await _call(mcp_server, name="create_datasource", arguments={
+            "name": "ds", "type": "sqlite", "database": db_path,
+        })
+        assert "ds" in result
+        loaded = await storage.get_datasource("ds")
+        assert loaded.description == "From the dataset"
+        assert await storage.get_model("t", data_source="ds") is not None
 
     async def test_list_with_malformed_datasource(self, mcp_server, storage: YAMLStorage) -> None:
         # A valid datasource alongside a malformed one

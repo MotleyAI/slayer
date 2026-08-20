@@ -694,7 +694,10 @@ class TestSqliteIngestionProbe:
         the target model's own probe pass, not the source table's."""
         from unittest.mock import patch
 
-        from slayer.engine.ingestion import _sqlite_probe_integer_columns
+        from slayer.engine.ingestion import (
+            IntrospectedColumn,
+            _sqlite_probe_integer_columns,
+        )
 
         # Build a dummy SA engine just so the helper's dialect check passes.
         sa_engine = sa.create_engine("sqlite:///:memory:")
@@ -714,8 +717,8 @@ class TestSqliteIngestionProbe:
         ):
             # Mixed bag: one base column (no '.') and one dotted alias.
             columns = [
-                ("qty", DataType.INT, False, False, None),
-                ("customers.region_id", DataType.INT, False, False, None),
+                IntrospectedColumn(name="qty", type=DataType.INT),
+                IntrospectedColumn(name="customers.region_id", type=DataType.INT),
             ]
             _sqlite_probe_integer_columns(
                 sa_engine=sa_engine,

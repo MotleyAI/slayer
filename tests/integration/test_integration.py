@@ -1884,6 +1884,14 @@ async def test_diamond_joins_both_paths(diamond_env):
     assert "warehouses__regions" in result.sql
 
 
+async def test_sqlite_ingest_has_no_descriptions(diamond_env):
+    """SQLite has no table/column comments — ingested descriptions stay None."""
+    _, storage = diamond_env
+    shipments = await storage.get_model("shipments")
+    assert shipments.description is None
+    assert all(c.description is None for c in shipments.columns)
+
+
 async def test_query_filter_on_joined_dimension(diamond_env):
     """Query-level filter on a joined dimension resolves through the model."""
     engine, _ = diamond_env

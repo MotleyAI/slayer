@@ -23,6 +23,7 @@ from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.engine.introspect_utils import (  # noqa: F401  (re-exported for back-compat)
     _FLOAT_LIKE_INFO_SCHEMA_TYPES,
     _INFO_SCHEMA_TYPE_MAP,
+    _clean_comment,
     _get_columns_fallback,
     _parse_info_schema_is_float,
     _safe_get_columns,
@@ -43,6 +44,27 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+class IntrospectedColumn(BaseModel):
+    """One column as read from the live database during introspection."""
+
+    name: str
+    type: DataType
+    primary_key: bool = False
+    is_float: bool = False
+    db_type: str | None = None
+    comment: str | None = None
+
+
+class DatasourceIngestOutput(BaseModel):
+    """Full result of one synchronous ingestion pass."""
+
+    models: list[SlayerModel]
+    # BigQuery only: the dataset description (None elsewhere, or when the
+    # datasource already carries a description).
+    schema_description: str | None = None
+
 
 # Module-level dedup set for unrecognized SA type warnings (see
 # _sa_type_to_data_type). Keyed by upper-cased class name.
@@ -493,6 +515,20 @@ def _safe_get_pk_constraint(
         return _get_pk_constraint_fallback(sa_engine, table_name, schema)
 
 
+def _safe_get_table_comment(
+    inspector: sa.engine.Inspector,
+    table_name: str,
+    schema: str | None,
+) -> str | None:
+    """Table comment via Inspector; None when unsupported or failing."""
+    try:
+        return _clean_comment(
+            inspector.get_table_comment(table_name, schema=schema).get("text")
+        )
+    except Exception:
+        return None
+
+
 def _introspect_query_columns_via_inspector(
     sa_engine: sa.Engine,
     inspector: sa.engine.Inspector,
@@ -502,14 +538,15 @@ def _introspect_query_columns_via_inspector(
     referenced_tables: set[str],
     fk_columns_by_table: dict[str, set[str]],
     joins: list[ModelJoin] | None = None,
-) -> list[tuple]:
+) -> list[IntrospectedColumn]:
     """Introspect columns from a rollup query or plain table.
 
-    Returns list of ``(column_name, DataType, is_primary_key, is_float,
-    db_type)`` tuples. ``db_type`` is the raw database type string and is only
-    populated when ``DataType`` came out opaque (``UNKNOWN``) — for mapped
-    types the declared ``DataType`` already carries everything, so leaving it
-    ``None`` keeps stored models and golden tests clean.
+    Returns a list of :class:`IntrospectedColumn`. ``db_type`` is the raw
+    database type string and is only populated when ``DataType`` came out
+    opaque (``UNKNOWN``) — for mapped types the declared ``DataType`` already
+    carries everything, so leaving it ``None`` keeps stored models and golden
+    tests clean. ``comment`` is the column's DB comment when the driver
+    surfaces one.
 
     For rollup queries, uses per-table inspector data since LIMIT 0
     type inference can be unreliable across databases.
@@ -533,8 +570,14 @@ def _introspect_query_columns_via_inspector(
             is_float = _sa_type_is_float(col_type)
             if data_type.is_opaque:
                 db_type = _raw_db_type_str(col_type)
-        is_pk = col_name in pk_columns
-        results.append((col_name, data_type, is_pk, is_float, db_type))
+        results.append(IntrospectedColumn(
+            name=col_name,
+            type=data_type,
+            primary_key=col_name in pk_columns,
+            is_float=is_float,
+            db_type=db_type,
+            comment=_clean_comment(col.get("comment")),
+        ))
 
     # Build list of (ref_table, dotted_path) from joins — supports diamond joins
     # where the same table appears via multiple paths
@@ -573,8 +616,14 @@ def _introspect_query_columns_via_inspector(
                 is_float = _sa_type_is_float(col_type)
                 if data_type.is_opaque:
                     ref_db_type = _raw_db_type_str(col_type)
-            is_pk = col["name"] in ref_pk_cols
-            results.append((alias, data_type, is_pk, is_float, ref_db_type))
+            results.append(IntrospectedColumn(
+                name=alias,
+                type=data_type,
+                primary_key=col["name"] in ref_pk_cols,
+                is_float=is_float,
+                db_type=ref_db_type,
+                comment=_clean_comment(col.get("comment")),
+            ))
 
     return results
 
@@ -586,37 +635,38 @@ def _introspect_query_columns_via_inspector(
 
 def _columns_to_model(
     name: str,
-    columns: list[tuple],
+    columns: list[IntrospectedColumn],
     data_source: str,
     sql_table: str | None = None,
     joins: list[ModelJoin] | None = None,
+    description: str | None = None,
 ) -> SlayerModel:
-    """Generate a SlayerModel from introspected ``(column_name, DataType,
-    is_pk, is_float, db_type)`` tuples.
+    """Generate a SlayerModel from :class:`IntrospectedColumn` entries.
 
     In v2 every Column is potentially both a dimension and a measure — what it's
     used as is decided per query. This function emits one Column per non-joined
-    column, with format inferred from the column's data type. ``db_type`` is
-    carried through verbatim (set only for opaque ``UNKNOWN`` columns).
+    column, with format inferred from the column's data type. ``db_type`` and
+    ``comment`` are carried through verbatim; ``description`` is the table
+    comment, when the database has one.
     """
     cols: list[Column] = []
 
     _INT_FORMAT = NumberFormat(type=NumberFormatType.INTEGER)
     _FLOAT_FORMAT = NumberFormat(type=NumberFormatType.FLOAT)
 
-    for col_name, data_type, is_pk, is_float, db_type in columns:
+    for col in columns:
         # Skip joined columns — they live on the target model and are
         # resolved via the join graph at query time.
-        if "." in col_name:
+        if "." in col.name:
             continue
 
         # Avoid name collision with the magic "*:count" / "_count" alias used
         # for COUNT(*) by renaming a literal "_count" column.
-        column_name = "count_col" if col_name == "_count" else col_name
+        column_name = "count_col" if col.name == "_count" else col.name
 
-        if is_float:
+        if col.is_float:
             fmt = _FLOAT_FORMAT
-        elif data_type in _NUMERIC_TYPES:
+        elif col.type in _NUMERIC_TYPES:
             fmt = _INT_FORMAT
         else:
             fmt = None
@@ -624,11 +674,12 @@ def _columns_to_model(
         cols.append(
             Column(
                 name=column_name,
-                sql=col_name,
-                type=data_type,
-                db_type=db_type,
-                primary_key=is_pk,
+                sql=col.name,
+                type=col.type,
+                db_type=col.db_type,
+                primary_key=col.primary_key,
                 format=fmt,
+                description=col.comment,
             )
         )
 
@@ -638,6 +689,7 @@ def _columns_to_model(
         data_source=data_source,
         columns=cols,
         joins=joins or [],
+        description=description,
     )
 
 
@@ -645,16 +697,16 @@ def _sqlite_probe_integer_columns(
     *,
     sa_engine: sa.Engine,
     sql_table: str,
-    columns: list[tuple],
-) -> list[tuple]:
+    columns: list[IntrospectedColumn],
+) -> list[IntrospectedColumn]:
     """DEV-1538: per-column SQLite affinity probe.
 
-    Walks the tuples ``(col_name, DataType, is_pk, is_float, db_type)`` produced by
+    Walks the :class:`IntrospectedColumn` entries produced by
     :func:`_introspect_query_columns_via_inspector` and, for every base
     column (alias without ``.``) that the SA inspector reported as
     :class:`DataType.INT`, runs
     :func:`slayer.sql.sqlite_introspect.probe_sqlite_integer_column` against
-    the actual storage classes. Mutates the tuple to the widened
+    the actual storage classes. Rewrites the entry to the widened
     :class:`DataType` whenever the probe disagrees with the declared
     affinity.
 
@@ -673,17 +725,17 @@ def _sqlite_probe_integer_columns(
     from slayer.sql.sqlite_introspect import probe_sqlite_integer_column
 
     schema, table = _parse_qualified_sql_table(sql_table)
-    out: list[tuple] = []
+    out: list[IntrospectedColumn] = []
     with sa_engine.connect() as conn:
-        for col_name, data_type, is_pk, is_float, db_type in columns:
-            if data_type is not DataType.INT or "." in col_name:
-                out.append((col_name, data_type, is_pk, is_float, db_type))
+        for col in columns:
+            if col.type is not DataType.INT or "." in col.name:
+                out.append(col)
                 continue
             try:
                 verdict = probe_sqlite_integer_column(
                     conn=conn,
                     table=table,
-                    column=col_name,
+                    column=col.name,
                     schema=schema,
                 )
             except Exception as exc:
@@ -694,15 +746,17 @@ def _sqlite_probe_integer_columns(
                 logger.warning(
                     "probe call raised for %s.%s; keeping declared INT: %s",
                     sql_table,
-                    col_name,
+                    col.name,
                     exc,
                 )
                 verdict = None
             if verdict is None or verdict is DataType.INT:
-                out.append((col_name, data_type, is_pk, is_float, db_type))
+                out.append(col)
                 continue
-            new_is_float = verdict is DataType.DOUBLE
-            out.append((col_name, verdict, is_pk, new_is_float, db_type))
+            out.append(col.model_copy(update={
+                "type": verdict,
+                "is_float": verdict is DataType.DOUBLE,
+            }))
     return out
 
 
@@ -753,6 +807,7 @@ def introspect_table_to_model(
         columns=columns,
         data_source=data_source,
         sql_table=sql_table,
+        description=_safe_get_table_comment(inspector, table_name, schema),
     )
 
 
@@ -761,12 +816,58 @@ def introspect_table_to_model(
 # ---------------------------------------------------------------------------
 
 
+def _fetch_bigquery_dataset_description(
+    *,
+    sa_engine: sa.Engine,
+    datasource: DatasourceConfig,
+    schema: str | None,
+) -> str | None:
+    """BigQuery only: the dataset description, or None.
+
+    Dataset resolution: explicit ``schema`` arg → the dialect's configured
+    default dataset → ``datasource.schema_name``. No generic Inspector API
+    exists for schema-level comments, so other dialects return None.
+    """
+    try:
+        if getattr(sa_engine.dialect, "name", None) != "bigquery":
+            return None
+        dataset = (
+            schema
+            or getattr(sa_engine.dialect, "dataset_id", None)
+            or datasource.schema_name
+        )
+        if not dataset:
+            return None
+        with sa_engine.connect() as conn:
+            # The same private client handle sqlalchemy-bigquery itself uses
+            # for table metadata; there is no documented accessor.
+            client = conn.connection._client
+            return _clean_comment(client.get_dataset(dataset).description)
+    except Exception:
+        return None
+
+
 def ingest_datasource(
     datasource: DatasourceConfig,
     include_tables: list[str] | None = None,
     exclude_tables: list[str] | None = None,
     schema: str | None = None,
 ) -> list[SlayerModel]:
+    """Back-compat wrapper around :func:`_ingest_datasource_full`."""
+    return _ingest_datasource_full(
+        datasource=datasource,
+        include_tables=include_tables,
+        exclude_tables=exclude_tables,
+        schema=schema,
+    ).models
+
+
+def _ingest_datasource_full(
+    datasource: DatasourceConfig,
+    include_tables: list[str] | None = None,
+    exclude_tables: list[str] | None = None,
+    schema: str | None = None,
+) -> DatasourceIngestOutput:
     from slayer.sql import engine_factory
     sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
     inspector = sa.inspect(sa_engine)
@@ -831,6 +932,7 @@ def ingest_datasource(
                 data_source=datasource.name,
                 sql_table=sql_table,
                 joins=model_joins,
+                description=_safe_get_table_comment(inspector, table_name, schema),
             )
         else:
             # Simple table — introspect directly
@@ -853,9 +955,18 @@ def ingest_datasource(
                 columns=columns,
                 data_source=datasource.name,
                 sql_table=sql_table,
+                description=_safe_get_table_comment(inspector, table_name, schema),
             )
 
         models.append(model)
+
+    # Fetch the dataset description while the engine is still alive; skipped
+    # entirely when the datasource already carries a description.
+    schema_description = None
+    if not datasource.description:
+        schema_description = _fetch_bigquery_dataset_description(
+            sa_engine=sa_engine, datasource=datasource, schema=schema,
+        )
 
     # ingest_datasource is a one-shot admin operation, not a hot query
     # path. Disposing here releases the underlying connection so other
@@ -864,7 +975,7 @@ def ingest_datasource(
     # call; the cost is one extra ``sa.create_engine`` per ingest, which
     # is negligible compared to the actual schema-introspection work.
     sa_engine.dispose()
-    return models
+    return DatasourceIngestOutput(models=models, schema_description=schema_description)
 
 
 # ---------------------------------------------------------------------------
@@ -973,14 +1084,18 @@ def _additive_merge_existing(
     persisted: SlayerModel,
     fresh: SlayerModel,
     sqlite_widen_enabled: bool = False,
-) -> tuple[SlayerModel, list[str], list[str], list[str]]:
+) -> tuple[SlayerModel, list[str], list[str], list[str], list[str], bool]:
     """Merge a freshly-ingested ``fresh`` model into ``persisted`` additively.
 
     Returns ``(merged, new_column_names, new_join_target_names,
-    widened_column_names)``.
+    widened_column_names, described_column_names, model_described)``.
 
     * Existing columns are preserved verbatim (description / label / format /
-      meta / allowed_aggregations / filter never overwritten).
+      meta / allowed_aggregations / filter never overwritten) — except that an
+      EMPTY description is filled from the fresh model's DB comment
+      (DEV-1809); those column names are reported in
+      ``described_column_names``, and the same fill-if-empty rule applies to
+      the model-level description (``model_described``).
     * DEV-1538 carve-out (SQLite only — ``sqlite_widen_enabled=True``): a
       fresh column whose type widened from the persisted ``DataType.INT``
       (i.e. fresh type is ``DOUBLE`` or ``TEXT``) replaces ONLY the persisted
@@ -991,21 +1106,29 @@ def _additive_merge_existing(
       additive contract stays strict — schema drift surfaces via
       ``slayer validate-models``, not via silent re-ingest overwrites.
     * Live columns whose names are absent from ``persisted.columns`` are
-      appended from ``fresh.columns``.
+      appended from ``fresh.columns`` (carrying their DB-comment
+      descriptions; not double-counted in ``described_column_names``).
     * Joins with new ``(target_model, join_pairs)`` signatures are appended.
     """
     existing_by_name: dict[str, Column] = {c.name: c for c in persisted.columns}
     fresh_by_name: dict[str, Column] = {c.name: c for c in fresh.columns}
 
     widened_column_names: list[str] = []
+    described_column_names: list[str] = []
     merged_columns: list[Column] = []
     for persisted_col in persisted.columns:
+        fresh_col = fresh_by_name.get(persisted_col.name)
         merged_col, did_widen = _merge_persisted_column_with_probe(
             persisted_col=persisted_col,
-            fresh_col=fresh_by_name.get(persisted_col.name),
+            fresh_col=fresh_col,
             model_name=persisted.name,
             sqlite_widen_enabled=sqlite_widen_enabled,
         )
+        if fresh_col is not None and fresh_col.description and not merged_col.description:
+            merged_col = merged_col.model_copy(
+                update={"description": fresh_col.description}
+            )
+            described_column_names.append(persisted_col.name)
         merged_columns.append(merged_col)
         if did_widen:
             widened_column_names.append(persisted_col.name)
@@ -1019,13 +1142,22 @@ def _additive_merge_existing(
 
     new_joins, new_join_targets = _merge_joins_strict(persisted, fresh)
 
-    if not new_column_names and not new_join_targets and not widened_column_names:
-        return persisted, [], [], []
+    model_described = bool(fresh.description) and not persisted.description
 
-    merged = persisted.model_copy(
-        update={"columns": merged_columns, "joins": new_joins}
+    if not (
+        new_column_names or new_join_targets or widened_column_names
+        or described_column_names or model_described
+    ):
+        return persisted, [], [], [], [], False
+
+    update: dict[str, Any] = {"columns": merged_columns, "joins": new_joins}
+    if model_described:
+        update["description"] = fresh.description
+    merged = persisted.model_copy(update=update)
+    return (
+        merged, new_column_names, new_join_targets, widened_column_names,
+        described_column_names, model_described,
     )
-    return merged, new_column_names, new_join_targets, widened_column_names
 
 
 async def _process_one_table(
@@ -1050,17 +1182,21 @@ async def _process_one_table(
             created=True,
             new_columns=[c.name for c in fresh.columns],
             new_joins=[j.target_model for j in fresh.joins],
+            described_columns=[c.name for c in fresh.columns if c.description],
+            model_described=bool(fresh.description),
         )
     if persisted.sql or persisted.source_queries:
         # User-authored sql / query-backed model with the matching name —
         # leave it alone.
         return None
-    merged, new_cols, new_joins, widened_cols = _additive_merge_existing(
-        persisted=persisted,
-        fresh=fresh,
-        sqlite_widen_enabled=(datasource.type or "").lower() == "sqlite",
+    merged, new_cols, new_joins, widened_cols, described_cols, model_described = (
+        _additive_merge_existing(
+            persisted=persisted,
+            fresh=fresh,
+            sqlite_widen_enabled=(datasource.type or "").lower() == "sqlite",
+        )
     )
-    if new_cols or new_joins or widened_cols:
+    if new_cols or new_joins or widened_cols or described_cols or model_described:
         await storage.save_model(merged)
     return ModelAddition(
         model_name=table_name,
@@ -1069,6 +1205,8 @@ async def _process_one_table(
         new_columns=new_cols,
         new_joins=new_joins,
         widened_columns=widened_cols,
+        described_columns=described_cols,
+        model_described=model_described,
     )
 
 
@@ -1138,17 +1276,17 @@ async def ingest_datasource_idempotent(
     additions: list[ModelAddition] = []
     errors: list[IngestionError] = []
 
-    # ``ingest_datasource`` is sync (it drives SQLAlchemy ``Inspector``).
+    # ``_ingest_datasource_full`` is sync (it drives SQLAlchemy ``Inspector``).
     # Offload to a thread so a slow / large datasource doesn't block the
     # event loop while server-facing requests are in flight.
-    fresh_models = await asyncio.to_thread(
-        ingest_datasource,
+    full = await asyncio.to_thread(
+        _ingest_datasource_full,
         datasource=datasource,
         include_tables=include_tables,
         exclude_tables=exclude_tables,
         schema=schema,
     )
-    fresh_by_name = {m.name: m for m in fresh_models}
+    fresh_by_name = {m.name: m for m in full.models}
     in_scope_table_names: set[str] = set(fresh_by_name.keys())
 
     for table_name, fresh in fresh_by_name.items():
@@ -1169,6 +1307,24 @@ async def ingest_datasource_idempotent(
                     error=str(exc),
                 )
             )
+
+    # Fill-if-empty for the datasource description (BigQuery dataset
+    # description). Best-effort: a save failure must not abort the pass —
+    # model additions above are already persisted. ``model_name=""`` is the
+    # established datasource-level tag (cf. embedding-refresh errors).
+    datasource_described = False
+    if full.schema_description and not datasource.description:
+        try:
+            await storage.save_datasource(
+                datasource.model_copy(update={"description": full.schema_description})
+            )
+            datasource_described = True
+        except Exception as exc:  # noqa: BLE001 — best-effort isolation
+            errors.append(IngestionError(
+                model_name="",
+                data_source=datasource.name,
+                error=f"datasource description save: {exc}",
+            ))
 
     scoped_models = await _scoped_models_for_validation(
         storage=storage,
@@ -1213,6 +1369,7 @@ async def ingest_datasource_idempotent(
         additions=additions,
         to_delete=list(to_delete),
         errors=errors,
+        datasource_described=datasource_described,
     )
 
 
@@ -1258,14 +1415,19 @@ def _print_ingest_addition(
     addition, *, file: TextIO | None = None
 ) -> None:
     out = file if file is not None else sys.stdout
+    described = getattr(addition, "described_columns", []) or []
+    model_described = getattr(addition, "model_described", False)
     if addition.created:
+        suffix = f", {len(described)} described" if described else ""
         print(
-            f"Created: {addition.model_name} ({len(addition.new_columns)} columns)",
+            f"Created: {addition.model_name} "
+            f"({len(addition.new_columns)} columns{suffix})",
             file=out,
         )
         return
     widened = getattr(addition, "widened_columns", []) or []
-    if not (addition.new_columns or addition.new_joins or widened):
+    if not (addition.new_columns or addition.new_joins or widened
+            or described or model_described):
         return
     details = []
     if addition.new_columns:
@@ -1274,6 +1436,10 @@ def _print_ingest_addition(
         details.append(f"+joins: {', '.join(addition.new_joins)}")
     if widened:
         details.append(f"widened: {', '.join(widened)}")
+    if described:
+        details.append(f"+descriptions: {', '.join(described)}")
+    if model_described:
+        details.append("+model description")
     print(f"Updated: {addition.model_name} ({'; '.join(details)})", file=out)
 
 
@@ -1281,6 +1447,8 @@ def _print_ingest_drift_and_errors(
     result, *, file: TextIO | None = None
 ) -> None:
     out = file if file is not None else sys.stdout
+    if getattr(result, "datasource_described", False):
+        print("Datasource description imported.", file=out)
     if result.to_delete:
         print("\nPending drift (run `slayer validate-models` to inspect):", file=out)
         for entry in result.to_delete:

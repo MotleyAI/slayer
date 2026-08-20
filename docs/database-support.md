@@ -19,14 +19,17 @@ against the live service in CI when they are.
 | **ClickHouse** | `tests/integration/test_integration_clickhouse.py` (`testcontainers[clickhouse]`) | `examples/clickhouse/` |
 | **SQL Server** | `tests/integration/test_integration_sqlserver.py` (`testcontainers`, `msodbcsql18` + `unixodbc-dev` on the runner) | `examples/sqlserver/` |
 | **Snowflake** | `tests/integration/test_integration_snowflake.py` (skips without `~/.snowflake/connections.toml`; profile name overridable via `$SLAYER_SNOWFLAKE_CONNECTION`) | `examples/snowflake/` (no Docker) |
-| **BigQuery** | `examples/bigquery/verify.py` driven by CI against `bigquery-public-data.thelook_ecommerce` (gated on `GCP_PROJECT_ID` / `GCP_SA_KEY_B64` repo secrets) | `examples/bigquery/` (no Docker — managed service) |
+| **BigQuery** | `tests/integration/test_integration_bigquery.py` (live ingestion against a temp dataset in the billing project; skips without `GCP_PROJECT_ID` + ADC) plus `examples/bigquery/verify.py` driven by CI against `bigquery-public-data.thelook_ecommerce` (gated on `GCP_PROJECT_ID` / `GCP_SA_KEY_B64` repo secrets) | `examples/bigquery/` (no Docker — managed service) |
 
-BigQuery does not yet have a pytest-style integration suite; its CI coverage
-runs the example's `verify.py` directly via `.github/workflows/ci.yml`. That
-exercises auto-ingestion, basic projection, joins, time-grain dimensions, and
-the cardinality / sum-of-grouped-equals-total invariants — enough to catch
-emitted-SQL regressions, but the verify-script tier is shallower than the
-testcontainers suites.
+BigQuery CI coverage has two layers, both in the `bigquery-example` job of
+`.github/workflows/ci.yml`: the example's `verify.py` exercises query
+execution against the public dataset (basic projection, joins, time-grain
+dimensions, and the cardinality / sum-of-grouped-equals-total invariants),
+and `test_integration_bigquery.py` exercises live schema ingestion — creating
+a temporary dataset with table/column/dataset descriptions in the billing
+project, asserting comment import and idempotent re-ingest semantics, then
+deleting it. The service account therefore needs dataset create/delete rights
+in the billing project (e.g. `roles/bigquery.user`), not just `jobUser`.
 
 ## Tier 2 — code-covered
 
@@ -76,6 +79,10 @@ mapping lives in `SqlDialect.build_approx_count_distinct`.
 | Postgres / SQLite / MySQL | `COUNT(DISTINCT x)` (exact fallback) |
 
 ### SQLite caveats
+
+SQLite has no table or column comments, so ingestion imports no descriptions
+there (every other Tier 1 database's comments are imported — see
+[Ingestion — Comments and descriptions](concepts/ingestion.md#comments-and-descriptions)).
 
 SQLite has a much smaller built-in math/stat catalog than the other supported
 engines. SLayer registers Python aggregate and scalar UDFs on every new SQLite
@@ -215,6 +222,11 @@ plus `$GCP_PROJECT_ID` for billing). The `bigquery://` driver requires the
 - **No FK introspection.** BigQuery exposes no foreign-key metadata via
   `INFORMATION_SCHEMA`, so auto-ingestion cannot discover joins. Hand-declare
   `ModelJoin`s on the model.
+- **Descriptions ARE imported.** Auto-ingestion maps BigQuery column
+  descriptions → `Column.description`, table descriptions →
+  `SlayerModel.description`, and the dataset description → the datasource's
+  `description` (fill-if-empty; see
+  [Ingestion — Comments and descriptions](concepts/ingestion.md#comments-and-descriptions)).
 - **Dotted alias mangling.** BigQuery rejects column names containing `.`
   (output schema names must match `[A-Za-z_][A-Za-z0-9_]*`), so SLayer
   rewrites `<model>.<column>` aliases (`orders._count`,

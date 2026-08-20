@@ -110,6 +110,10 @@ class ModelAddition(BaseModel):
     # DEV-1538: persisted INT columns whose type widened (to DOUBLE or TEXT)
     # because the SQLite affinity probe disagreed with the declared type.
     widened_columns: list[str] = Field(default_factory=list)
+    # DEV-1809: columns whose empty description was filled from a DB comment
+    # (on created models: all columns that arrived with a description).
+    described_columns: list[str] = Field(default_factory=list)
+    model_described: bool = False
 
 
 class IngestionError(BaseModel):
@@ -126,6 +130,9 @@ class IdempotentIngestResult(BaseModel):
     additions: list[ModelAddition] = Field(default_factory=list)
     to_delete: list[ToDeleteEntry] = Field(default_factory=list)
     errors: list[IngestionError] = Field(default_factory=list)
+    # DEV-1809: True when the datasource description was filled from the
+    # BigQuery dataset description during this pass.
+    datasource_described: bool = False
 
 
 class AppliedEntry(BaseModel):

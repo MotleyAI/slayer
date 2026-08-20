@@ -366,6 +366,8 @@ def duckdb_ingest_env(tmp_path_factory):
             customer_id INTEGER REFERENCES customers(id)
         )
     """)
+    conn.execute("COMMENT ON TABLE orders IS 'All orders'")
+    conn.execute("COMMENT ON COLUMN orders.amount IS 'Order amount'")
     conn.executemany("INSERT INTO regions VALUES (?, ?)", [(1, "US"), (2, "EU")])
     conn.executemany(
         "INSERT INTO customers VALUES (?, ?, ?)",
@@ -802,3 +804,19 @@ async def test_integration_duckdb_cross_model_derived_columnsql(
     assert response.row_count == 2
     assert float(response.data[0]["a_tbl.ratio_using_derived"]) == pytest.approx(2.0)
     assert float(response.data[1]["a_tbl.ratio_using_derived"]) == pytest.approx(2.0)
+
+
+@pytest.mark.integration
+class TestDuckDBIngestComments:
+    def test_table_and_column_comments_imported(self, duckdb_ingest_env) -> None:
+        models, _ = duckdb_ingest_env
+        orders = next(m for m in models if m.name == "orders")
+        assert orders.description == "All orders"
+        by_name = {c.name: c for c in orders.columns}
+        assert by_name["amount"].description == "Order amount"
+        assert by_name["id"].description is None
+
+    def test_uncommented_table_has_no_description(self, duckdb_ingest_env) -> None:
+        models, _ = duckdb_ingest_env
+        regions = next(m for m in models if m.name == "regions")
+        assert regions.description is None

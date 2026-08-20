@@ -1943,13 +1943,13 @@ def _run_datasources_create(args, storage):
     if not args.ingest:
         return
 
-    from slayer.engine.ingestion import ingest_datasource
+    from slayer.engine.ingestion import _ingest_datasource_full
 
     include = [t for t in (s.strip() for s in args.include.split(",")) if t] if args.include else None
     exclude = [t for t in (s.strip() for s in args.exclude.split(",")) if t] if args.exclude else None
 
     try:
-        models = ingest_datasource(
+        ingest_output = _ingest_datasource_full(
             datasource=ds,
             schema=args.schema,
             include_tables=include,
@@ -1959,7 +1959,15 @@ def _run_datasources_create(args, storage):
         print(f"Ingestion failed: {e}")
         sys.exit(1)
 
-    _persist_ingested_models(models, storage, assume_yes=args.yes)
+    _persist_ingested_models(ingest_output.models, storage, assume_yes=args.yes)
+
+    if ingest_output.schema_description and not ds.description:
+        ds = ds.model_copy(update={"description": ingest_output.schema_description})
+        try:
+            run_sync(storage.save_datasource(ds))
+            print("Datasource description imported.")
+        except Exception as e:
+            print(f"Could not save datasource description: {e}")
 
 
 def _run_datasources_create_demo(args, storage):  # NOSONAR S3776 — linear demo-bootstrap flow (build → confirm → save → optional ingest); branches are sequential UX guards, not nested logic
