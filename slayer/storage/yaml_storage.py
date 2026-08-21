@@ -23,6 +23,8 @@ to ``counters.yaml.legacy`` if present. Both renames are idempotent: if a
 
 import contextlib
 import os
+import stat
+import tempfile
 from typing import Any
 from collections.abc import Iterator
 
@@ -99,15 +101,31 @@ def _md_to_memory(memory_id: str, text: str) -> Memory:
 
 def _atomic_write_text(path: str, text: str) -> None:
     """Crash-safe write: temp file + ``os.replace`` (atomic on POSIX)."""
-    tmp = f"{path}.tmp.{os.getpid()}"
-    with open(tmp, "w", encoding="utf-8") as f:  # NOSONAR(S7493) — sync I/O in async by design
-        f.write(text)
-    os.replace(tmp, path)
+    try:
+        mode = stat.S_IMODE(os.stat(path).st_mode)
+    except FileNotFoundError:
+        mode = 0o600
+    fd, tmp = tempfile.mkstemp(
+        dir=os.path.dirname(path) or ".",
+        prefix=f".{os.path.basename(path)}.tmp.",
+        text=True,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            fd = -1
+            f.write(text)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(tmp)
 
 
 def _atomic_write_yaml(path: str, data: Any) -> None:
     """Serialize completely before atomically replacing the YAML file."""
-    _atomic_write_text(path, yaml.dump(data, sort_keys=False))
+    _atomic_write_text(path=path, text=yaml.dump(data, sort_keys=False))
 
 
 def _exact_entry_exists(dir_path: str, entry_name: str) -> bool:
@@ -226,7 +244,8 @@ def migrate_memories_layout(base_dir: str) -> None:
     for r in normalized:
         mem = Memory.model_validate(r)
         _atomic_write_text(
-            os.path.join(mem_dir, f"{mem.id}.md"), _memory_to_md(mem),
+            path=os.path.join(mem_dir, f"{mem.id}.md"),
+            text=_memory_to_md(mem),
         )
     # Guard the removal against a concurrent migrator (two workers opening the
     # same fresh base_dir both run this once): the .md writes are atomic and
@@ -323,7 +342,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         os.makedirs(target_dir, exist_ok=True)
         path = os.path.join(target_dir, f"{model.name}.yaml")
         data = model.model_dump(mode="json", exclude_none=True)
-        _atomic_write_yaml(path, data)
+        _atomic_write_yaml(path=path, data=data)
 
     async def _list_all_model_identities(self) -> list[tuple[str, str]]:
         result: list[tuple[str, str]] = []
@@ -406,7 +425,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
                 f"update_column_sampled: column {column_name!r} not found "
                 f"on model {model_name!r} in datasource {data_source!r}."
             )
-        _atomic_write_yaml(path, data)
+        _atomic_write_yaml(path=path, data=data)
 
     # ---- datasource CRUD ---------------------------------------------------
 
@@ -414,7 +433,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         await self.check_datasource_id_collision(datasource.name)
         path = os.path.join(self.datasources_dir, f"{datasource.name}.yaml")
         data = datasource.model_dump(mode="json", exclude_none=True)
-        _atomic_write_yaml(path, data)
+        _atomic_write_yaml(path=path, data=data)
 
     async def get_datasource(self, name: str) -> DatasourceConfig | None:
         # DEV-1405: sanitize before composing the filesystem path.
@@ -466,7 +485,10 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         return [str(p) for p in priority]
 
     async def _set_datasource_priority_raw(self, priority: list[str]) -> None:
-        _atomic_write_yaml(self._priority_path, {"priority": list(priority)})
+        _atomic_write_yaml(
+            path=self._priority_path,
+            data={"priority": list(priority)},
+        )
 
     # ---- memories (DEV-1357 v2) -------------------------------------------
 
@@ -571,7 +593,8 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         with self._memories_file_lock():
             os.makedirs(self._memories_dir, exist_ok=True)
             _atomic_write_text(
-                self._memory_md_path(memory.id), _memory_to_md(memory),
+                path=self._memory_md_path(memory.id),
+                text=_memory_to_md(memory),
             )
 
     async def _get_memory_row(self, memory_id: str) -> Memory | None:

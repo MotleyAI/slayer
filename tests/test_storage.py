@@ -1,12 +1,14 @@
 """Tests for YAML storage."""
 
 import os
+import stat
 import tempfile
 
 import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.storage import yaml_storage as yaml_storage_module
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -47,6 +49,50 @@ def _fail_after_partial_write(data, stream=None, **kwargs):
     if stream is not None:
         stream.write("name: [")
     raise OSError("simulated disk full")
+
+
+def test_atomic_write_preserves_permissions(tmp_path) -> None:
+    existing = tmp_path / "existing.yaml"
+    existing.write_text("old")
+    existing.chmod(0o640)
+    yaml_storage_module._atomic_write_text(path=str(existing), text="new")
+    assert stat.S_IMODE(existing.stat().st_mode) == 0o640
+
+    created = tmp_path / "created.yaml"
+    old_umask = os.umask(0)
+    try:
+        yaml_storage_module._atomic_write_text(path=str(created), text="new")
+    finally:
+        os.umask(old_umask)
+    assert stat.S_IMODE(created.stat().st_mode) == 0o600
+
+
+def test_atomic_write_failure_preserves_target_and_cleans_temp(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "model.yaml"
+    path.write_text("old")
+    real_fdopen = os.fdopen
+
+    class PartialWriter:
+        def __init__(self, fd, *args, **kwargs):
+            self.file = real_fdopen(fd, *args, **kwargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            self.file.close()
+
+        def write(self, text):
+            self.file.write(text[:1])
+            self.file.flush()
+            raise OSError("simulated temp-file write failure")
+
+    monkeypatch.setattr(yaml_storage_module.os, "fdopen", PartialWriter)
+    with pytest.raises(OSError, match="simulated temp-file write failure"):
+        yaml_storage_module._atomic_write_text(path=str(path), text="new")
+
+    assert path.read_text() == "old"
+    assert list(tmp_path.iterdir()) == [path]
 
 
 class TestModelStorage:
@@ -97,6 +143,30 @@ class TestModelStorage:
 
         assert open(path).read() == original  # NOSONAR(S7493) — sync fixture I/O is intentional
         assert (await storage.get_model("test_model")).description is None
+
+    async def test_failed_sample_update_preserves_model(
+        self,
+        storage: YAMLStorage,
+        sample_model: SlayerModel,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        await storage.save_model(sample_model)
+        path = os.path.join(storage.models_dir, "test_ds", "test_model.yaml")
+        original = open(path).read()  # NOSONAR(S7493) — sync fixture I/O is intentional
+
+        monkeypatch.setattr("slayer.storage.yaml_storage.yaml.dump", _fail_after_partial_write)
+        with pytest.raises(OSError, match="simulated disk full"):
+            await storage.update_column_sampled(
+                data_source="test_ds",
+                model_name="test_model",
+                column_name="name",
+                sampled="2026-08-21T00:00:00Z",
+                sampled_values=["alice"],
+                distinct_count=1,
+            )
+
+        assert open(path).read() == original  # NOSONAR(S7493) — sync fixture I/O is intentional
+        assert (await storage.get_model("test_model")).columns[1].sampled is None
 
     async def test_empty_model_file_raises_clear_error(
         self, storage: YAMLStorage, sample_model: SlayerModel
@@ -164,6 +234,23 @@ class TestDatasourceStorage:
 
         assert open(path).read() == original  # NOSONAR(S7493) — sync fixture I/O is intentional
         assert (await storage.get_datasource("test_ds")).database == "testdb"
+
+    async def test_failed_priority_update_preserves_priority(
+        self,
+        storage: YAMLStorage,
+        sample_datasource: DatasourceConfig,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        await storage.save_datasource(sample_datasource)
+        await storage.set_datasource_priority(["test_ds"])
+        original = open(storage._priority_path).read()  # NOSONAR(S7493) — sync fixture I/O is intentional
+
+        monkeypatch.setattr("slayer.storage.yaml_storage.yaml.dump", _fail_after_partial_write)
+        with pytest.raises(OSError, match="simulated disk full"):
+            await storage.set_datasource_priority([])
+
+        assert open(storage._priority_path).read() == original  # NOSONAR(S7493) — sync fixture I/O is intentional
+        assert await storage.get_datasource_priority() == ["test_ds"]
 
     async def test_env_var_resolution(self, storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("TEST_DB_HOST", "resolved-host")
