@@ -13,8 +13,9 @@ fields use class-level defaults (``sqlglot_name: str = "postgres"``).
 from __future__ import annotations
 
 import hashlib
+import re
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, Literal, Optional
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Optional
 from collections.abc import Callable, Sequence
 
 from pydantic import BaseModel, ConfigDict
@@ -24,6 +25,7 @@ from sqlglot.dialects.dialect import Dialect as _SqlglotDialect
 from slayer.core.enums import TimeGranularity
 from slayer.core.errors import IdentifierCollisionError
 from slayer.sql.dialects._identifier_fit import fit_identifier, substitute_quoted
+from slayer.sql.naming import decode_alias, encode_alias
 
 if TYPE_CHECKING:
     import sqlalchemy as sa
@@ -911,3 +913,56 @@ class SqlDialect(BaseModel):
         codes' mapping.
         """
         return None
+
+
+class DottedAliasManglingMixin:
+    """DEV-1571: shared ``.``-to-``___`` alias mangling for BigQuery / T-SQL.
+
+    ``fit_alias`` / ``emit_alias`` / ``decode_result_keys`` are identical on both;
+    only ``rewrite_emitted_sql``'s identifier-quote anchor differs, supplied via
+    the three class attributes. Mixed in before ``SqlDialect`` so the base LENGTH
+    pass runs first (``super().rewrite_emitted_sql``) and the dot-mangle composes
+    on its still-dotted output.
+    """
+
+    dotted_alias_re: ClassVar[re.Pattern[str]]
+    alias_quote_open: ClassVar[str]
+    alias_quote_close: ClassVar[str]
+
+    def fit_alias(self, name: str) -> str:
+        """Size the budget against the post-mangle form (``.`` -> ``___`` adds 2
+        bytes per dot); the return value stays dotted for the regex."""
+        return fit_identifier(
+            name=name, limit=self.max_identifier_bytes, expand=encode_alias,
+        )
+
+    def emit_alias(self, alias: str) -> str:
+        """The final identifier: length-fitted, then dot-mangled."""
+        return encode_alias(self.fit_alias(alias))
+
+    def rewrite_emitted_sql(
+        self, sql: str, *, aliases: Sequence[str] = (),
+    ) -> str:
+        """Base LENGTH pass, then ``.`` -> ``___`` inside quoted identifiers."""
+        sql = super().rewrite_emitted_sql(sql=sql, aliases=aliases)
+        return self.dotted_alias_re.sub(
+            lambda m: (
+                f"{self.alias_quote_open}{encode_alias(m.group(1))}"
+                f"{self.alias_quote_close}"
+            ),
+            sql,
+        )
+
+    def decode_result_keys(
+        self,
+        rows: list[dict[str, Any]],
+        *,
+        aliases: Sequence[str] = (),
+    ) -> list[dict[str, Any]]:
+        """Reverse the mangling on result-row keys: consult the emitted->canonical
+        map, falling back to the ``___`` -> ``.`` bijection for fitted keys."""
+        mapping = self.decode_alias_map(aliases)
+        return [
+            self._rekey_row(row=row, mapping=mapping, fallback=decode_alias)
+            for row in rows
+        ]

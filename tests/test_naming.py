@@ -305,15 +305,14 @@ class TestManglingRelocatedToNaming:
 
     def test_dialects_import_bijection_from_naming(self) -> None:
         """BigQuery and T-SQL dialects consume the bijection from the naming
-        module (the single owner), not a private dialect-package copy."""
-        import slayer.sql.dialects.bigquery as bq
-        import slayer.sql.dialects.tsql as tsql
+        module (the single owner), not a private dialect-package copy. DEV-1817
+        moved the shared mangling into ``DottedAliasManglingMixin`` (base), so
+        the bijection is consumed there rather than in each dialect module."""
+        import slayer.sql.dialects.base as base
         from slayer.sql.naming import decode_alias, encode_alias
 
-        assert bq.encode_alias is encode_alias
-        assert bq.decode_alias is decode_alias
-        assert tsql.encode_alias is encode_alias
-        assert tsql.decode_alias is decode_alias
+        assert base.encode_alias is encode_alias
+        assert base.decode_alias is decode_alias
 
     def test_distinct_aliases_stay_distinct_after_encode(self) -> None:
         """Codex F8: reversibility is not enough — distinct logical aliases
