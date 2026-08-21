@@ -105,6 +105,11 @@ def _atomic_write_text(path: str, text: str) -> None:
     os.replace(tmp, path)
 
 
+def _atomic_write_yaml(path: str, data: Any) -> None:
+    """Serialize completely before atomically replacing the YAML file."""
+    _atomic_write_text(path, yaml.dump(data, sort_keys=False))
+
+
 def _exact_entry_exists(dir_path: str, entry_name: str) -> bool:
     """True iff ``dir_path`` contains an entry named exactly
     ``entry_name`` — unlike ``os.path.exists``, which matches any case
@@ -318,8 +323,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         os.makedirs(target_dir, exist_ok=True)
         path = os.path.join(target_dir, f"{model.name}.yaml")
         data = model.model_dump(mode="json", exclude_none=True)
-        with open(path, "w") as f:
-            yaml.dump(data, f, sort_keys=False)
+        _atomic_write_yaml(path, data)
 
     async def _list_all_model_identities(self) -> list[tuple[str, str]]:
         result: list[tuple[str, str]] = []
@@ -402,8 +406,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
                 f"update_column_sampled: column {column_name!r} not found "
                 f"on model {model_name!r} in datasource {data_source!r}."
             )
-        with open(path, "w") as f:  # NOSONAR(S7493)
-            yaml.dump(data, f, sort_keys=False)
+        _atomic_write_yaml(path, data)
 
     # ---- datasource CRUD ---------------------------------------------------
 
@@ -411,8 +414,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         await self.check_datasource_id_collision(datasource.name)
         path = os.path.join(self.datasources_dir, f"{datasource.name}.yaml")
         data = datasource.model_dump(mode="json", exclude_none=True)
-        with open(path, "w") as f:
-            yaml.dump(data, f, sort_keys=False)
+        _atomic_write_yaml(path, data)
 
     async def get_datasource(self, name: str) -> DatasourceConfig | None:
         # DEV-1405: sanitize before composing the filesystem path.
@@ -464,8 +466,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         return [str(p) for p in priority]
 
     async def _set_datasource_priority_raw(self, priority: list[str]) -> None:
-        with open(self._priority_path, "w") as f:  # NOSONAR(S7493) — YAMLStorage uses sync I/O inside async by design (CLAUDE.md, Async Architecture)
-            yaml.dump({"priority": list(priority)}, f, sort_keys=False)
+        _atomic_write_yaml(self._priority_path, {"priority": list(priority)})
 
     # ---- memories (DEV-1357 v2) -------------------------------------------
 
