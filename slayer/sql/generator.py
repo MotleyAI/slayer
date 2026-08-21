@@ -669,6 +669,30 @@ class SQLGenerator:
             allocator=allocator,
         )
 
+    def _alias_render_ctx(self, *, slot_id_by_key, available_alias_by_slot_id):
+        """RenderContext carrying only the plain slot-alias facilities."""
+        return RenderContext(
+            dialect=self._dialect,
+            aliases=AliasFacilities(
+                slot_id_by_key=slot_id_by_key,
+                available_alias_by_slot_id=available_alias_by_slot_id,
+            ),
+        )
+
+    def _outer_wrapper_render_ctx(
+        self, *, slot_by_key, cross_model_agg_slot_to_cm, aliases_by_slot_id,
+    ):
+        """RenderContext for the outer-wrapper composite/filter render pass."""
+        return RenderContext(
+            dialect=self._dialect,
+            aliases=self._outer_wrapper_alias_facilities(
+                slot_by_key=slot_by_key,
+                cross_model_agg_slot_to_cm=cross_model_agg_slot_to_cm,
+                aliases_by_slot_id=aliases_by_slot_id,
+            ),
+            filters=FilterFacilities(paren_comparison_operands=True),
+        )
+
     @staticmethod
     def _reserve_model_column_names(allocator: AliasAllocator, model) -> None:
         """Reserve every name a ``<relation>.*`` projection of ``model`` can
@@ -1915,12 +1939,9 @@ class SQLGenerator:
                 slot_entries=[(cslot.id, cslot) for cslot in unmaterialised],
                 render=lambda cslot: render_value_key(
                     key=cslot.key,
-                    ctx=RenderContext(
-                        dialect=self._dialect,
-                        aliases=AliasFacilities(
-                            slot_id_by_key=slot_id_by_key,
-                            available_alias_by_slot_id=available_alias_by_slot_id,
-                        ),
+                    ctx=self._alias_render_ctx(
+                        slot_id_by_key=slot_id_by_key,
+                        available_alias_by_slot_id=available_alias_by_slot_id,
                     ),
                 ),
             )
@@ -4183,14 +4204,10 @@ class SQLGenerator:
             def _render_outer_composite(cslot) -> exp.Expression:
                 rendered = render_value_key(
                     key=cslot.key,
-                    ctx=RenderContext(
-                        dialect=self._dialect,
-                        aliases=self._outer_wrapper_alias_facilities(
-                            slot_by_key=slot_by_key,
-                            cross_model_agg_slot_to_cm=outer_composite_cm_map,
-                            aliases_by_slot_id=aliases_by_slot_id,
-                        ),
-                        filters=FilterFacilities(paren_comparison_operands=True),
+                    ctx=self._outer_wrapper_render_ctx(
+                        slot_by_key=slot_by_key,
+                        cross_model_agg_slot_to_cm=outer_composite_cm_map,
+                        aliases_by_slot_id=aliases_by_slot_id,
                     ),
                 )
                 if cslot.type is not None:
@@ -4494,14 +4511,10 @@ class SQLGenerator:
             for fp in outer_where_filters:
                 rendered = render_value_key(
                     key=fp.expression.value_key,
-                    ctx=RenderContext(
-                        dialect=self._dialect,
-                        aliases=self._outer_wrapper_alias_facilities(
-                            slot_by_key=slot_by_key,
-                            cross_model_agg_slot_to_cm=cross_model_agg_slot_to_cm,
-                            aliases_by_slot_id=aliases_by_slot_id,
-                        ),
-                        filters=FilterFacilities(paren_comparison_operands=True),
+                    ctx=self._outer_wrapper_render_ctx(
+                        slot_by_key=slot_by_key,
+                        cross_model_agg_slot_to_cm=cross_model_agg_slot_to_cm,
+                        aliases_by_slot_id=aliases_by_slot_id,
                     ),
                 )
                 if isinstance(rendered, (exp.And, exp.Or)):
@@ -4530,14 +4543,10 @@ class SQLGenerator:
                     continue
                 rendered = render_value_key(
                     key=fp.expression.value_key,
-                    ctx=RenderContext(
-                        dialect=self._dialect,
-                        aliases=self._outer_wrapper_alias_facilities(
-                            slot_by_key=slot_by_key,
-                            cross_model_agg_slot_to_cm=wm_slot_to_cte,
-                            aliases_by_slot_id=aliases_by_slot_id,
-                        ),
-                        filters=FilterFacilities(paren_comparison_operands=True),
+                    ctx=self._outer_wrapper_render_ctx(
+                        slot_by_key=slot_by_key,
+                        cross_model_agg_slot_to_cm=wm_slot_to_cte,
+                        aliases_by_slot_id=aliases_by_slot_id,
                     ),
                 )
                 if isinstance(rendered, (exp.And, exp.Or)):
@@ -5981,12 +5990,9 @@ class SQLGenerator:
         if isinstance(key.input, (_ArithKey, _ScalarKey)):
             measure = render_value_key(
                 key=key.input,
-                ctx=RenderContext(
-                    dialect=self._dialect,
-                    aliases=AliasFacilities(
-                        slot_id_by_key=slot_id_by_key,
-                        available_alias_by_slot_id=available_alias_by_slot_id,
-                    ),
+                ctx=self._alias_render_ctx(
+                    slot_id_by_key=slot_id_by_key,
+                    available_alias_by_slot_id=available_alias_by_slot_id,
                 ),
             )
         else:
@@ -6205,12 +6211,9 @@ class SQLGenerator:
                 )
             rendered = render_value_key(
                 key=fp.expression.value_key,
-                ctx=RenderContext(
-                    dialect=self._dialect,
-                    aliases=AliasFacilities(
-                        slot_id_by_key=slot_id_by_key,
-                        available_alias_by_slot_id=available_alias_by_slot_id,
-                    ),
+                ctx=self._alias_render_ctx(
+                    slot_id_by_key=slot_id_by_key,
+                    available_alias_by_slot_id=available_alias_by_slot_id,
                 ),
             )
             out.append(rendered.sql(dialect=self.dialect))
@@ -6970,12 +6973,9 @@ class SQLGenerator:
                 )
             predicate = render_value_key(
                 key=inner_key,
-                ctx=RenderContext(
-                    dialect=self._dialect,
-                    aliases=AliasFacilities(
-                        slot_id_by_key=slot_id_by_key,
-                        available_alias_by_slot_id=available_alias_by_slot_id,
-                    ),
+                ctx=self._alias_render_ctx(
+                    slot_id_by_key=slot_id_by_key,
+                    available_alias_by_slot_id=available_alias_by_slot_id,
                 ),
             )
             predicate_is_boolean = True
