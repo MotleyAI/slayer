@@ -99,6 +99,41 @@ async def test_external_edit_invalidates(storage: YAMLStorage) -> None:
     assert (await storage.get_model("m", data_source="ds")).sql_table == "public.b"
 
 
+async def test_same_mtime_size_rewrite_invalidated_by_ctime(storage: YAMLStorage) -> None:
+    await storage.save_model(_model(sql_table="public.a"))
+    await storage.get_model("m", data_source="ds")  # populate
+    path = storage._model_path("ds", "m")
+    st = os.stat(path)
+    with open(path, "w") as f:
+        _yaml.dump(_model(sql_table="public.b").model_dump(mode="json", exclude_none=True), f)
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))  # restore the original mtime
+    after = os.stat(path)
+    assert after.st_mtime_ns == st.st_mtime_ns  # mtime preserved
+    assert after.st_size == st.st_size  # same size
+    # ctime advanced (write + utime bumped it), so the key differs -> new content.
+    assert (await storage.get_model("m", data_source="ds")).sql_table == "public.b"
+
+
+async def test_external_delete_evicts_model_cache(storage: YAMLStorage) -> None:
+    await storage.save_model(_model())
+    await storage.get_model("m", data_source="ds")  # populate
+    path = storage._model_path("ds", "m")
+    assert path in storage._model_cache
+    os.remove(path)  # external delete
+    assert await storage.get_model("m", data_source="ds") is None
+    assert path not in storage._model_cache
+
+
+async def test_external_delete_evicts_datasource_cache(storage: YAMLStorage) -> None:
+    await storage.save_datasource(DatasourceConfig(name="pg", database="a"))
+    await storage.get_datasource("pg")  # populate
+    path = os.path.join(storage.datasources_dir, "pg.yaml")
+    assert path in storage._datasource_cache
+    os.remove(path)  # external delete
+    assert await storage.get_datasource("pg") is None
+    assert path not in storage._datasource_cache
+
+
 async def test_update_column_sampled_evicts(storage: YAMLStorage) -> None:
     await storage.save_model(_model())
     await storage.get_model("m", data_source="ds")  # populate
@@ -239,8 +274,7 @@ async def test_migration_writeback_not_cached_then_coherent(storage: YAMLStorage
     assert path not in storage._model_cache
     # Second load reads the now-current file and caches it coherently.
     await storage.get_model("m", data_source="ds")
-    st = os.stat(path)
-    assert storage._model_cache[path][:2] == (st.st_mtime_ns, st.st_size)
+    assert storage._model_cache[path][0] == _yaml_storage._stat_key(path)
     # Third load is a hit — no parse.
     loads = _install_counter(monkeypatch, _yaml_storage.yaml, "safe_load")
     await storage.get_model("m", data_source="ds")
