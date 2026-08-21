@@ -528,10 +528,9 @@ def _bind_in(
 
 
 def _name_suggestion(*, name: str, model: "SlayerModel") -> str | None:
-    """A ``Did you mean 'X'?`` clause drawn from every name the model offers.
+    """A ``Did you mean 'X'?`` clause over the model's columns + named measures.
 
-    ``ModelMeasure.name`` is optional, so unnamed measures are dropped rather
-    than sorted against strings.
+    Unnamed measures are skipped — ``None`` can't sort against strings.
     """
     known = sorted(
         {c.name for c in model.columns}
@@ -604,10 +603,8 @@ def _resolve_ref(
         # Try ModelMeasure as a fallback for bare measure refs.
         mm = next((m for m in model.measures if m.name == name), None)
         if mm is not None:
-            # A bare saved measure reaches the binder only when it is used as
-            # the source of an explicit aggregation (``aov:sum``) — a plain
-            # ``aov`` is inlined by ModelMeasure expansion in the planner first.
-            # Aggregating a saved measure is the error; say so.
+            # A bare saved measure reaches the binder only as the source of an
+            # explicit aggregation — a plain ``aov`` is inlined by expansion first.
             raise UnknownReferenceError(
                 name=name,
                 scope_kind="ModelScope",
