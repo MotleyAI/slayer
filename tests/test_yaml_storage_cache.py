@@ -134,6 +134,41 @@ async def test_external_delete_evicts_datasource_cache(storage: YAMLStorage) -> 
     assert path not in storage._datasource_cache
 
 
+def _stat_key_raises_once(monkeypatch):
+    """Make the next _stat_key call raise FileNotFoundError (file deleted between
+    the existence check and the stat), then behave normally."""
+    orig = _yaml_storage._stat_key
+    state = {"fired": False}
+
+    def flaky(path):
+        if not state["fired"]:
+            state["fired"] = True
+            raise FileNotFoundError(path)
+        return orig(path)
+
+    monkeypatch.setattr(_yaml_storage, "_stat_key", flaky)
+
+
+async def test_model_delete_race_at_stat_returns_none_and_evicts(storage: YAMLStorage, monkeypatch) -> None:
+    await storage.save_model(_model())
+    await storage.get_model("m", data_source="ds")  # populate
+    path = storage._model_path("ds", "m")
+    assert path in storage._model_cache
+    _stat_key_raises_once(monkeypatch)
+    assert await storage.get_model("m", data_source="ds") is None
+    assert path not in storage._model_cache
+
+
+async def test_datasource_delete_race_at_stat_returns_none_and_evicts(storage: YAMLStorage, monkeypatch) -> None:
+    await storage.save_datasource(DatasourceConfig(name="pg", database="a"))
+    await storage.get_datasource("pg")  # populate
+    path = os.path.join(storage.datasources_dir, "pg.yaml")
+    assert path in storage._datasource_cache
+    _stat_key_raises_once(monkeypatch)
+    assert await storage.get_datasource("pg") is None
+    assert path not in storage._datasource_cache
+
+
 async def test_update_column_sampled_evicts(storage: YAMLStorage) -> None:
     await storage.save_model(_model())
     await storage.get_model("m", data_source="ds")  # populate

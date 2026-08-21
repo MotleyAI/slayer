@@ -382,7 +382,11 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         if not self._model_entry_exists(data_source=data_source, name=name):
             self._model_cache.pop(path, None)  # DEV-1816: evict on external delete
             return None
-        key_before = _stat_key(path)
+        try:
+            key_before = _stat_key(path)
+        except FileNotFoundError:  # deleted between the existence check and the stat
+            self._model_cache.pop(path, None)
+            return None
         cached = self._model_cache.get(path)
         if cached is not None and cached[0] == key_before:
             return cached[1].model_copy(deep=True)
@@ -473,7 +477,11 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         ):
             self._datasource_cache.pop(path, None)  # DEV-1816: evict on external delete
             return None
-        key = _stat_key(path)
+        try:
+            key = _stat_key(path)
+        except FileNotFoundError:  # deleted between the existence check and the stat
+            self._datasource_cache.pop(path, None)
+            return None
         cached = self._datasource_cache.get(path)
         try:
             # DEV-1816: cache the UNRESOLVED config so env vars stay live and each
