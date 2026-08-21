@@ -36,6 +36,7 @@ except ImportError:  # pragma: no cover — Windows
 
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.memories.models import Memory, _validate_memory_id_charset
+from slayer.storage import migrations as _mig
 from slayer.storage.base import (
     StorageBackend,
     _validate_path_component,
@@ -95,6 +96,12 @@ def _md_to_memory(memory_id: str, text: str) -> Memory:
             return Memory.model_validate(data)
     # No frontmatter fence: whole text is the learning body.
     return Memory.model_validate({"id": memory_id, "learning": text})
+
+
+def _stat_key(path: str) -> tuple[int, int]:
+    """(st_mtime_ns, st_size) — the DEV-1816 load-cache key for ``path``."""
+    st = os.stat(path)
+    return (st.st_mtime_ns, st.st_size)
 
 
 def _atomic_write_text(path: str, text: str) -> None:
@@ -251,6 +258,13 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         self._memories_lock_path = os.path.join(base_dir, "memories.lock")
         self._mem_lock_fh: Any = None
         self._mem_lock_depth = 0
+        # DEV-1816: opportunistic per-instance load caches keyed by path ->
+        # (st_mtime_ns, st_size, pristine_object). Best-effort — an external
+        # edit is caught by the os.stat check on the next read; a stale entry is
+        # never served because it is evicted on every write to that file and the
+        # miss path verifies the file did not change under it (stable-read).
+        self._model_cache: dict[str, tuple[int, int, SlayerModel]] = {}
+        self._datasource_cache: dict[str, tuple[int, int, DatasourceConfig]] = {}
         os.makedirs(self.models_dir, exist_ok=True)
         os.makedirs(self.datasources_dir, exist_ok=True)
         os.makedirs(self._memories_dir, exist_ok=True)
@@ -318,6 +332,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         os.makedirs(target_dir, exist_ok=True)
         path = os.path.join(target_dir, f"{model.name}.yaml")
         data = model.model_dump(mode="json", exclude_none=True)
+        self._model_cache.pop(path, None)  # DEV-1816: evict before the write
         with open(path, "w") as f:
             yaml.dump(data, f, sort_keys=False)
 
@@ -346,6 +361,10 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         path = self._model_path(data_source, name)  # NOSONAR(S6549) — name/data_source were sanitized by _resolve_target_or_none above (rejects '..', path separators, NULs); SlayerModel Pydantic validators sanitize the save path
         if not self._model_entry_exists(data_source=data_source, name=name):
             return None
+        key_before = _stat_key(path)
+        cached = self._model_cache.get(path)
+        if cached is not None and cached[:2] == key_before:
+            return cached[2].model_copy(deep=True)
         try:
             with open(path) as f:
                 data = yaml.safe_load(f)
@@ -356,13 +375,41 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
                 f"{path} — {exc}. Delete the file and re-run `slayer ingest` to "
                 f"recreate it."
             ) from exc
-        return await self._migrate_and_refine_on_load(
+        wrote_back = (
+            isinstance(data, dict)
+            and int(data.get("version", 1)) < _mig.CURRENT_VERSIONS["SlayerModel"]
+        )
+        model = await self._migrate_and_refine_on_load(
             name=name, data=data, data_source=data_source,
         )
+        self._cache_model(
+            path=path, model=model, key_before=key_before, wrote_back=wrote_back,
+        )
+        return model.model_copy(deep=True)
+
+    def _cache_model(
+        self,
+        *,
+        path: str,
+        model: SlayerModel,
+        key_before: tuple[int, int],
+        wrote_back: bool,
+    ) -> None:
+        """Store a pristine model under its post-load stat key.
+
+        Re-stat because a legacy write-back rewrote the file. Trust that
+        self-write (``wrote_back``); otherwise cache only if the file was
+        unchanged during the read, so a mid-read external edit can't pin stale
+        bytes under fresh metadata.
+        """
+        key_after = _stat_key(path)
+        if wrote_back or key_after == key_before:
+            self._model_cache[path] = (key_after[0], key_after[1], model)
 
     async def _delete_model_row(
         self, *, data_source: str, name: str,
     ) -> bool:
+        self._model_cache.pop(self._model_path(data_source, name), None)  # DEV-1816
         # Exact match — os.remove would otherwise hit a case-variant sibling.
         if not self._model_entry_exists(data_source=data_source, name=name):
             return False
@@ -380,6 +427,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         distinct_count: int | None,
     ) -> None:
         path = self._model_path(data_source, model_name)
+        self._model_cache.pop(path, None)  # DEV-1816: evict before the write
         if not self._model_entry_exists(data_source=data_source, name=model_name):
             raise ValueError(
                 f"update_column_sampled: model {model_name!r} in datasource "
@@ -411,6 +459,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         await self.check_datasource_id_collision(datasource.name)
         path = os.path.join(self.datasources_dir, f"{datasource.name}.yaml")
         data = datasource.model_dump(mode="json", exclude_none=True)
+        self._datasource_cache.pop(path, None)  # DEV-1816: evict before the write
         with open(path, "w") as f:
             yaml.dump(data, f, sort_keys=False)
 
@@ -422,10 +471,19 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             dir_path=self.datasources_dir, entry_name=f"{name}.yaml",
         ):
             return None
+        key = _stat_key(path)
+        cached = self._datasource_cache.get(path)
         try:
-            with open(path) as f:
-                data = yaml.safe_load(f)
-            ds = DatasourceConfig.model_validate(data)
+            # DEV-1816: cache the UNRESOLVED config so env vars stay live and each
+            # handout is a fresh object; resolve_env_vars() stays inside this try
+            # so a ValidationError from its reconstruction is still wrapped.
+            if cached is not None and cached[:2] == key:
+                ds = cached[2]
+            else:
+                with open(path) as f:
+                    data = yaml.safe_load(f)
+                ds = DatasourceConfig.model_validate(data)
+                self._datasource_cache[path] = (key[0], key[1], ds)
             return ds.resolve_env_vars()
         except yaml.YAMLError as exc:
             raise ValueError(
@@ -444,11 +502,13 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         return result
 
     async def _delete_datasource_row(self, name: str) -> bool:
+        path = os.path.join(self.datasources_dir, f"{name}.yaml")
+        self._datasource_cache.pop(path, None)  # DEV-1816: evict before the delete
         if not _exact_entry_exists(
             dir_path=self.datasources_dir, entry_name=f"{name}.yaml",
         ):
             return False
-        os.remove(os.path.join(self.datasources_dir, f"{name}.yaml"))
+        os.remove(path)
         return True
 
     # ---- datasource priority -----------------------------------------------
