@@ -560,6 +560,40 @@ _TRAILING_LIMIT_RE = re.compile(r"(?is)\s*LIMIT\s+\d+\s*\Z")
 _BARE_IDENT_RE = re.compile(r"[A-Za-z_]\w*")
 
 
+class RenderState(BaseModel):
+    """Frozen per-render constants threaded through the transform-chain emitters
+    (DEV-1817). ``planned_query`` / ``bundle`` never change within one
+    ``generate_from_planned`` call. Held by reference (``Any`` fields, no copy)."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
+
+    planned_query: Any
+    bundle: Any
+
+
+class ChainState(BaseModel):
+    """Per-chain-layer accumulators + the layer's source root (DEV-1817).
+
+    Frozen with ``Any`` fields so the contained collections keep their identity:
+    ``ctes`` (append), the alias maps (``setdefault``) and ``cte_allocator``
+    (``allocate_cte``) are mutated IN PLACE and the driver reads the results
+    back. A fresh ``ChainState`` is built at each chain-layer boundary; the
+    allocator is INJECTED (plain and cross-model chains use different ones).
+    ``source_model`` / ``source_relation`` are the layer root — NOT a per-query
+    constant (isolated-plan CTEs re-root to their target)."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
+
+    ctes: Any
+    cte_allocator: Any
+    slots_by_id: Any
+    slot_id_by_key: Any
+    available_alias_by_slot_id: Any
+    aliases_by_slot_id: Any
+    source_model: Any
+    source_relation: Any
+
+
 class SQLGenerator:
     """Generates SQL from a typed ``PlannedQuery`` (from ``stage_planner``)."""
 
@@ -1596,6 +1630,17 @@ class SQLGenerator:
             for sid, aliases in aliases_by_slot_id.items()
             if aliases
         }
+        chain_state = ChainState(
+            ctes=ctes,
+            cte_allocator=cte_allocator,
+            slots_by_id=slots_by_id,
+            slot_id_by_key=slot_id_by_key,
+            available_alias_by_slot_id=available_alias_by_slot_id,
+            aliases_by_slot_id=aliases_by_slot_id,
+            source_model=source_model,
+            source_relation=source_relation,
+        )
+        render_state = RenderState(planned_query=planned_query, bundle=bundle)
 
         pending_layers = list(planned_query.transform_layers)
         step_num = 0
@@ -1671,19 +1716,11 @@ class SQLGenerator:
                     slot = slots_by_id[slot_id]
                     chain_tail = self._emit_time_shift_ctes_for_planned(
                         slot=slot,
-                        ctes=ctes,
-                        chain_tail=chain_tail,
-                        cte_allocator=cte_allocator,
-                        slots_by_id=slots_by_id,
-                        slot_id_by_key=slot_id_by_key,
-                        available_alias_by_slot_id=available_alias_by_slot_id,
-                        aliases_by_slot_id=aliases_by_slot_id,
-                        source_model=source_model,
-                        source_relation=source_relation,
+                        chain=chain_state,
+                        render=render_state,
                         shifted_where_parts=shifted_where_parts,
                         shifted_where_join_paths=shifted_where_join_paths,
-                        planned_query=planned_query,
-                        bundle=bundle,
+                        chain_tail=chain_tail,
                     )
             # --- consecutive_periods layers (cp_reset_ + cp_value_ pair)
             for layer in ready_cp:
@@ -1691,15 +1728,9 @@ class SQLGenerator:
                     slot = slots_by_id[slot_id]
                     chain_tail = self._emit_consecutive_periods_ctes_for_planned(
                         slot=slot,
-                        ctes=ctes,
+                        chain=chain_state,
+                        render=render_state,
                         chain_tail=chain_tail,
-                        cte_allocator=cte_allocator,
-                        slots_by_id=slots_by_id,
-                        slot_id_by_key=slot_id_by_key,
-                        available_alias_by_slot_id=available_alias_by_slot_id,
-                        aliases_by_slot_id=aliases_by_slot_id,
-                        planned_query=planned_query,
-                        source_relation=source_relation,
                     )
             pending_layers = not_ready
 
@@ -6396,21 +6427,13 @@ class SQLGenerator:
         return None
 
     def _emit_time_shift_ctes_for_planned(  # NOSONAR(S3776) — single conceptual unit for one time_shift slot: partition/time resolution through the shifted ScopeFrame + shifted-CTE body assembly + collision-safe CTE naming (cte_allocator) + sjoin grain join-back, all sharing tightly-coupled per-slot state (time_alias / input_alias / partition_specs / shifted_cte_name / carry aliases). Splitting forces that cross-cutting state through many-argument helpers without simplifying anything — same shape as the sibling _render_cross_model_cte's suppression.
-        self,  # NOSONAR(S107) — chain_tail (DEV-1784) is the 14th of these cohesive per-slot params; see the S3776 note above.
+        self,
         *,
         slot,
-        ctes: list,
-        cte_allocator: AliasAllocator,
-        slots_by_id: Dict[str, Any],
-        slot_id_by_key: Dict[Any, str],
-        available_alias_by_slot_id: Dict[str, str],
-        aliases_by_slot_id: Dict[str, List[str]],
-        source_model,
-        source_relation: str,
+        chain: ChainState,
+        render: RenderState,
         shifted_where_parts: List[str],
         shifted_where_join_paths: List[Tuple[str, ...]],
-        planned_query,
-        bundle,
         chain_tail: str,
     ) -> str:
         """Emit a ``shifted_<alias>`` + ``sjoin_<alias>`` CTE pair for
@@ -6447,6 +6470,16 @@ class SQLGenerator:
         null-safe (Codex F2) so NULL dim / NULL time-bucket groups keep their
         shifted value instead of silently dropping.
         """
+        ctes = chain.ctes
+        cte_allocator = chain.cte_allocator
+        slots_by_id = chain.slots_by_id
+        slot_id_by_key = chain.slot_id_by_key
+        available_alias_by_slot_id = chain.available_alias_by_slot_id
+        aliases_by_slot_id = chain.aliases_by_slot_id
+        source_model = chain.source_model
+        source_relation = chain.source_relation
+        planned_query = render.planned_query
+        bundle = render.bundle
         from slayer.core.enums import TimeGranularity
         from slayer.core.keys import (
             AggregateKey,
@@ -6846,14 +6879,8 @@ class SQLGenerator:
         self,
         *,
         slot,
-        ctes: list,
-        cte_allocator: AliasAllocator,
-        slots_by_id: Dict[str, Any],
-        slot_id_by_key: Dict[Any, str],
-        available_alias_by_slot_id: Dict[str, str],
-        aliases_by_slot_id: Dict[str, List[str]],
-        planned_query,
-        source_relation: str,
+        chain: ChainState,
+        render: RenderState,
         chain_tail: str,
     ) -> str:
         """Emit ``cp_reset_<alias>`` + ``cp_value_<alias>`` CTEs for one
@@ -6875,6 +6902,14 @@ class SQLGenerator:
           the predicate text references that base alias directly — no
           legacy ``_inner_<name>`` step CTE needed.
         """
+        ctes = chain.ctes
+        cte_allocator = chain.cte_allocator
+        slots_by_id = chain.slots_by_id
+        slot_id_by_key = chain.slot_id_by_key
+        available_alias_by_slot_id = chain.available_alias_by_slot_id
+        aliases_by_slot_id = chain.aliases_by_slot_id
+        source_relation = chain.source_relation
+        planned_query = render.planned_query
         from slayer.core.keys import (
             AggregateKey,
             ArithmeticKey,
