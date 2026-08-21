@@ -568,6 +568,30 @@ def _apply_joins(select, joins):
     return select
 
 
+def _cycle_public_aliases_in_projection_order(
+    *, planned_query, slots_by_id, aliases_by_slot_id,
+):
+    """Public projection aliases in query order, cycling each slot's alias list
+    (a slot materialised under several aliases is consumed in order; the last
+    repeats once exhausted). Hidden and alias-less slots are skipped."""
+    public_aliases: list[str] = []
+    outer_alias_index: Dict[str, int] = {}
+    for sid in planned_query.projection:
+        slot = slots_by_id[sid]
+        if slot.hidden:
+            continue
+        all_aliases = aliases_by_slot_id.get(sid, [])
+        if not all_aliases:
+            continue
+        idx = outer_alias_index.setdefault(sid, 0)
+        alias = (
+            all_aliases[idx] if idx < len(all_aliases) else all_aliases[-1]
+        )
+        outer_alias_index[sid] = idx + 1
+        public_aliases.append(alias)
+    return public_aliases
+
+
 class RenderState(BaseModel):
     """Frozen per-render constants threaded through the transform-chain emitters
     (DEV-1817). ``planned_query`` / ``bundle`` never change within one
@@ -1925,21 +1949,11 @@ class SQLGenerator:
         # Outer SELECT in user-projection order (public slots only). Per-slot
         # index walks each slot's public_aliases so duplicate interned names
         # (DEV-1450 C13) both surface in the result.
-        public_aliases_user_order: list[str] = []
-        outer_alias_index: Dict[str, int] = {}
-        for sid in planned_query.projection:
-            slot = slots_by_id[sid]
-            if slot.hidden:
-                continue
-            all_aliases = aliases_by_slot_id.get(sid, [])
-            if not all_aliases:
-                continue
-            idx = outer_alias_index.setdefault(sid, 0)
-            alias = (
-                all_aliases[idx] if idx < len(all_aliases) else all_aliases[-1]
-            )
-            outer_alias_index[sid] = idx + 1
-            public_aliases_user_order.append(alias)
+        public_aliases_user_order = _cycle_public_aliases_in_projection_order(
+            planned_query=planned_query,
+            slots_by_id=slots_by_id,
+            aliases_by_slot_id=aliases_by_slot_id,
+        )
         return self._emit_planned_outer_wrap(
             chain_sql=chain_sql,
             public_aliases=public_aliases_user_order,
@@ -8267,21 +8281,11 @@ class SQLGenerator:
         ``"…"``; MySQL uses backticks). String-built quoted identifiers
         would silently degrade to string literals on MySQL.
         """
-        public_aliases: list[str] = []
-        outer_alias_index: Dict[str, int] = {}
-        for sid in planned_query.projection:
-            slot = slots_by_id[sid]
-            if slot.hidden:
-                continue
-            all_aliases = aliases_by_slot_id.get(sid, [])
-            if not all_aliases:
-                continue
-            idx = outer_alias_index.setdefault(sid, 0)
-            alias = (
-                all_aliases[idx] if idx < len(all_aliases) else all_aliases[-1]
-            )
-            outer_alias_index[sid] = idx + 1
-            public_aliases.append(alias)
+        public_aliases = _cycle_public_aliases_in_projection_order(
+            planned_query=planned_query,
+            slots_by_id=slots_by_id,
+            aliases_by_slot_id=aliases_by_slot_id,
+        )
 
         outer_select = exp.Select()
         for alias in public_aliases:
