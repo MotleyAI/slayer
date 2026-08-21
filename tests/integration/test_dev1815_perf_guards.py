@@ -11,8 +11,12 @@ import shutil
 
 import pytest
 
+import slayer.demo.jaffle_shop as jaffle
 from slayer.async_utils import run_sync
-from slayer.demo.jaffle_shop import DEMO_NAME, TABLE_NAMES
+from slayer.demo.jaffle_shop import DEMO_NAME, TABLE_NAMES, ensure_demo_datasource
+from slayer.storage.yaml_storage import YAMLStorage
+
+from tests.integration import _demo_build
 
 pytestmark = pytest.mark.integration
 
@@ -25,9 +29,6 @@ def test_prepare_demo_from_prebuilt_skips_jafgen_and_localizes_path(
     jaffle_demo_duckdb: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Copying the session DuckDB must skip jafgen yet keep an in-dir datasource path."""
-    import slayer.demo.jaffle_shop as jaffle
-    from tests.integration import _demo_build
-
     monkeypatch.setattr(jaffle, "generate_data", _forbid_jafgen)
 
     args, storage = _demo_build.prepare_demo_storage(prebuilt_duckdb=jaffle_demo_duckdb)
@@ -39,7 +40,8 @@ def test_prepare_demo_from_prebuilt_skips_jafgen_and_localizes_path(
 
     # Codex #8: the ingested datasource must point at the copy, not the template.
     ds = run_sync(storage.get_datasource(DEMO_NAME))
-    assert ds is not None and ds.database is not None
+    assert ds is not None
+    assert ds.database is not None
     assert os.path.abspath(ds.database) == os.path.abspath(local_db)
 
 
@@ -51,9 +53,6 @@ def test_warm_demo_models_skip_reingest(
     jaffle_demo_duckdb: str, tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The notebook harness relies on warm models skipping re-ingestion (DEV-1815 W2)."""
-    from slayer.demo.jaffle_shop import ensure_demo_datasource
-    from slayer.storage.yaml_storage import YAMLStorage
-
     base = tmp_path / "warm"
     (base / "demo").mkdir(parents=True)
     shutil.copy2(jaffle_demo_duckdb, base / "demo" / "jaffle_shop.duckdb")

@@ -32,6 +32,7 @@ def start_pg_demo_server(
     storage_sink: list | None = None,
     bind_host: str = "127.0.0.1",
     prebuilt_duckdb: str | None = None,
+    base_dir: str | None = None,
 ) -> tuple[asyncio.AbstractEventLoop, threading.Thread, str, int]:
     """Boot a Postgres-facade server backed by the Jaffle Shop demo.
 
@@ -66,7 +67,9 @@ def start_pg_demo_server(
     """
     validate_bind_address(host=bind_host, token=token)
     try:
-        _args, storage = prepare_demo_storage(prebuilt_duckdb=prebuilt_duckdb)
+        _args, storage = prepare_demo_storage(
+            prebuilt_duckdb=prebuilt_duckdb, base_dir=base_dir
+        )
     except Exception as exc:  # pragma: no cover - demo deps missing
         pytest.skip(f"Jaffle Shop demo unavailable: {exc}")
     engine = SlayerQueryEngine(storage=storage)

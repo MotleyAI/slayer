@@ -22,6 +22,8 @@ from collections.abc import Callable, Iterator
 
 import pytest
 
+from tests.integration._demo_build import prepare_demo_storage
+
 # Import the metabase fixture conditionally: ``conftest_metabase`` top-imports
 # ``requests``, which is in the ``all`` poetry extra but not in narrower dev
 # installs (e.g. ``-E postgres`` only). Failing to import here would break
@@ -171,7 +173,9 @@ def jaydebeapi_connect(jdbc_jar: Path) -> Callable[..., Any]:
     return _connect
 
 
-def _start_flight_demo_server(*, token: str | None, prebuilt_duckdb: str | None = None):
+def _start_flight_demo_server(
+    *, token: str | None, prebuilt_duckdb: str | None = None, base_dir: str | None = None
+):
     """Boot a Flight SQL server backed by the bundled Jaffle Shop demo.
 
     Returns ``(server, host, port)``. The caller is responsible for
@@ -182,9 +186,7 @@ def _start_flight_demo_server(*, token: str | None, prebuilt_duckdb: str | None 
     from slayer.flight.handlers import FlightHandlers
     from slayer.flight.server import build_server
 
-    from tests.integration._demo_build import prepare_demo_storage
-
-    _args, storage = prepare_demo_storage(prebuilt_duckdb=prebuilt_duckdb)
+    _args, storage = prepare_demo_storage(prebuilt_duckdb=prebuilt_duckdb, base_dir=base_dir)
     engine = SlayerQueryEngine(storage=storage)
     handlers = FlightHandlers(engine=engine, storage=storage)
     server = build_server(
@@ -211,27 +213,35 @@ def jaffle_demo_duckdb(tmp_path_factory: pytest.TempPathFactory) -> str:
 
 
 @pytest.fixture(scope="module")
-def flight_demo_server(jaffle_demo_duckdb: str) -> Iterator[tuple[str, int]]:
+def flight_demo_server(
+    jaffle_demo_duckdb: str, tmp_path_factory: pytest.TempPathFactory
+) -> Iterator[tuple[str, int]]:
     """Yield ``(host, port)`` of a no-auth Flight SQL server backed by the Jaffle Shop demo."""
+    base = str(tmp_path_factory.mktemp("flight-demo"))
     server, host, port = _start_flight_demo_server(
-        token=None, prebuilt_duckdb=jaffle_demo_duckdb
+        token=None, prebuilt_duckdb=jaffle_demo_duckdb, base_dir=base
     )
     try:
         yield host, port
     finally:
         server.shutdown()
         server.wait()
+        shutil.rmtree(base, ignore_errors=True)
 
 
 @pytest.fixture(scope="module")
-def flight_demo_server_with_token(jaffle_demo_duckdb: str) -> Iterator[tuple[str, int, str]]:
+def flight_demo_server_with_token(
+    jaffle_demo_duckdb: str, tmp_path_factory: pytest.TempPathFactory
+) -> Iterator[tuple[str, int, str]]:
     """Same as ``flight_demo_server`` but with a bearer token enforced."""
     token = "s3cret"
+    base = str(tmp_path_factory.mktemp("flight-demo-tok"))
     server, host, port = _start_flight_demo_server(
-        token=token, prebuilt_duckdb=jaffle_demo_duckdb
+        token=token, prebuilt_duckdb=jaffle_demo_duckdb, base_dir=base
     )
     try:
         yield host, port, token
     finally:
         server.shutdown()
         server.wait()
+        shutil.rmtree(base, ignore_errors=True)

@@ -18,6 +18,8 @@ from contextlib import redirect_stderr, redirect_stdout
 
 from pydantic import BaseModel
 
+from slayer.cli import main
+
 
 class CliResult(BaseModel):
     returncode: int
@@ -33,9 +35,11 @@ def run_cli_in_process(
     ``sys.argv`` becomes ``["slayer", *args]``; ``sys.stdin`` is fed ``stdin``.
     A normal return maps to exit code 0; ``SystemExit`` maps to its code
     (``None`` → 0, non-int → 1). argv/stdin/stdout/stderr/environ are restored.
-    """
-    from slayer.cli import main
 
+    ``env`` replaces ``os.environ`` for the call (runtime-read vars only); it does
+    not affect import-time constants like ``slayer.cli._STORAGE_DEFAULT`` — pass
+    ``--storage`` in ``args`` to control storage.
+    """
     old_argv, old_stdin = sys.argv, sys.stdin
     old_environ = dict(os.environ)
     out, err = io.StringIO(), io.StringIO()

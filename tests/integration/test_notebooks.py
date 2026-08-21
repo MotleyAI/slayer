@@ -18,6 +18,15 @@ import pytest
 nbclient = pytest.importorskip("nbclient")
 nbformat = pytest.importorskip("nbformat")
 
+from slayer.async_utils import run_sync
+from slayer.demo.jaffle_shop import (
+    DEMO_NAME,
+    TABLE_NAMES,
+    build_jaffle_shop,
+    ensure_demo_datasource,
+)
+from slayer.storage.yaml_storage import YAMLStorage
+
 pytestmark = pytest.mark.integration
 
 EXAMPLES_DIR = Path(__file__).resolve().parent.parent.parent / "docs" / "examples"
@@ -37,8 +46,6 @@ def _ensure_jaffle_db():
     """Generate the Jaffle Shop DuckDB once for the entire test session."""
     if JAFFLE_DB_PATH.exists():
         return  # Reuse existing DB
-
-    from slayer.demo.jaffle_shop import build_jaffle_shop
 
     JAFFLE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -65,10 +72,6 @@ def _jaffle_models_template(_ensure_jaffle_db, tmp_path_factory) -> Path:
     every demo table before snapshotting, so consumer notebooks can restore it and
     hit ``ensure_demo_datasource``'s reuse fast-path instead of re-ingesting.
     """
-    from slayer.async_utils import run_sync
-    from slayer.demo.jaffle_shop import DEMO_NAME, TABLE_NAMES, ensure_demo_datasource
-    from slayer.storage.yaml_storage import YAMLStorage
-
     if JAFFLE_MODELS_DIR.exists():
         shutil.rmtree(JAFFLE_MODELS_DIR)
     storage = YAMLStorage(base_dir=str(JAFFLE_MODELS_DIR))

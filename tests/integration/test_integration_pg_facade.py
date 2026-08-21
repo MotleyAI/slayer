@@ -9,6 +9,7 @@ the extended/binary protocol, transactions, and concurrency end-to-end.
 from __future__ import annotations
 
 import asyncio
+import shutil
 from collections.abc import Iterator
 
 import pytest
@@ -21,28 +22,36 @@ asyncpg = pytest.importorskip("asyncpg")
 
 
 @pytest.fixture(scope="module")
-def pg_demo_server(jaffle_demo_duckdb: str) -> Iterator[tuple[str, int]]:
+def pg_demo_server(
+    jaffle_demo_duckdb: str, tmp_path_factory: pytest.TempPathFactory
+) -> Iterator[tuple[str, int]]:
+    base = str(tmp_path_factory.mktemp("pg-demo"))
     loop, thread, host, port = start_pg_demo_server(
-        token=None, prebuilt_duckdb=jaffle_demo_duckdb
+        token=None, prebuilt_duckdb=jaffle_demo_duckdb, base_dir=base
     )
     try:
         yield host, port
     finally:
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=5)
+        shutil.rmtree(base, ignore_errors=True)
 
 
 @pytest.fixture(scope="module")
-def pg_demo_server_with_token(jaffle_demo_duckdb: str) -> Iterator[tuple[str, int, str]]:
+def pg_demo_server_with_token(
+    jaffle_demo_duckdb: str, tmp_path_factory: pytest.TempPathFactory
+) -> Iterator[tuple[str, int, str]]:
     token = "s3cret"
+    base = str(tmp_path_factory.mktemp("pg-demo-tok"))
     loop, thread, host, port = start_pg_demo_server(
-        token=token, prebuilt_duckdb=jaffle_demo_duckdb
+        token=token, prebuilt_duckdb=jaffle_demo_duckdb, base_dir=base
     )
     try:
         yield host, port, token
     finally:
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=5)
+        shutil.rmtree(base, ignore_errors=True)
 
 
 async def _connect(host: str, port: int, *, database: str = DEMO_DATASOURCE, password: str = "x"):  # NOSONAR(S2068) — test credential

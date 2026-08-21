@@ -26,14 +26,17 @@ def build_shared_demo_duckdb(dest_dir: str, *, years: int = DEMO_YEARS) -> str:
     return db_path
 
 
-def prepare_demo_storage(*, prebuilt_duckdb: str | None = None):
-    """Return ``(args, storage)`` for a fresh demo storage dir.
+def prepare_demo_storage(
+    *, prebuilt_duckdb: str | None = None, base_dir: str | None = None
+):
+    """Return ``(args, storage)`` for a demo storage dir.
 
-    With ``prebuilt_duckdb`` the file is copied into the fresh dir first, so the
-    demo build reuse-path skips jafgen; ingest still runs per dir with the
-    correct in-dir database path.
+    ``base_dir`` (e.g. a pytest ``tmp_path``) is used when given so the caller
+    owns cleanup; otherwise a ``mkdtemp`` dir is created. With ``prebuilt_duckdb``
+    the file is copied in first, so the demo build reuse-path skips jafgen; ingest
+    still runs per dir with the correct in-dir database path.
     """
-    base = tempfile.mkdtemp(prefix="slayer-it-demo-")
+    base = base_dir or tempfile.mkdtemp(prefix="slayer-it-demo-")
     args = argparse.Namespace(
         storage=base, models_dir=None, datasource=None, force=False
     )
