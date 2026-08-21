@@ -24,8 +24,8 @@ from sqlglot.dialects.dialect import Dialect as _SqlglotDialect
 
 from slayer.core.enums import TimeGranularity
 from slayer.core.errors import IdentifierCollisionError
-from slayer.sql.dialects._identifier_fit import fit_identifier, substitute_quoted
-from slayer.sql.naming import decode_alias, encode_alias
+from slayer.sql._identifier_fit import fit_identifier, substitute_quoted
+from slayer.sql.naming_bijection import decode_alias, encode_alias
 
 if TYPE_CHECKING:
     import sqlalchemy as sa

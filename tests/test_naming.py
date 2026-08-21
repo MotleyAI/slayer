@@ -13,9 +13,25 @@ intended "feature missing" red state (Step 4, tests-first).
 
 from __future__ import annotations
 
+import subprocess
+import sys
+
 import pytest
 
 from slayer.sql.naming import AliasAllocator
+
+
+def test_naming_imports_cold_without_dialects_cycle() -> None:
+    """DEV-1817 regression: importing ``slayer.sql.naming`` FIRST (before
+    ``slayer.sql.dialects``) must not fail on a naming <-> dialects.base import
+    cycle. Runs in a fresh interpreter so the import order is genuinely cold —
+    the in-process suite imports dialects early and would mask the cycle."""
+    result = subprocess.run(
+        [sys.executable, "-c", "import slayer.sql.naming"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 class TestAllocateCollisionWalk:

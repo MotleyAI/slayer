@@ -18,7 +18,7 @@ import pytest
 from slayer.core.errors import IdentifierCollisionError
 from slayer.sql.dialects import _ALL_DIALECTS, get_dialect
 from slayer.sql.naming import encode_alias
-from slayer.sql.dialects._identifier_fit import (
+from slayer.sql._identifier_fit import (
     HASH_LEN,
     MIN_LIMIT,
     fit_identifier,
@@ -99,7 +99,7 @@ class TestFitIdentifierCore:
         out = subprocess.run(
             [
                 sys.executable, "-c",
-                "from slayer.sql.dialects._identifier_fit import fit_identifier;"
+                "from slayer.sql._identifier_fit import fit_identifier;"
                 f"print(fit_identifier({LONG_EMAIL!r}, limit=63))",
             ],
             capture_output=True, text=True, check=True, env=env,
@@ -376,7 +376,7 @@ class TestAliasRewriteMap:
 
     def test_digest_collision_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A constant digest forces two mid-differing over-limit aliases onto one emitted name."""
-        import slayer.sql.dialects._identifier_fit as fitmod
+        import slayer.sql._identifier_fit as fitmod
 
         monkeypatch.setattr(fitmod, "_digest", lambda name: "deadbeef")
         pg = get_dialect("postgres")
@@ -394,7 +394,7 @@ class TestAliasRewriteMap:
             pg.alias_rewrite_map([LONG_EMAIL, collider])
 
     def test_error_names_the_dialect_and_limit(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import slayer.sql.dialects._identifier_fit as fitmod
+        import slayer.sql._identifier_fit as fitmod
 
         monkeypatch.setattr(fitmod, "_digest", lambda name: "deadbeef")
         pg = get_dialect("postgres")
