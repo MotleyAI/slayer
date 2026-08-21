@@ -12,9 +12,7 @@ shadow it via parameter binding in every test).
 
 from __future__ import annotations
 
-import argparse
 import shutil
-import tempfile
 import threading
 import time
 import urllib.request
@@ -173,25 +171,20 @@ def jaydebeapi_connect(jdbc_jar: Path) -> Callable[..., Any]:
     return _connect
 
 
-def _start_flight_demo_server(*, token: str | None):
+def _start_flight_demo_server(*, token: str | None, prebuilt_duckdb: str | None = None):
     """Boot a Flight SQL server backed by the bundled Jaffle Shop demo.
 
     Returns ``(server, host, port)``. The caller is responsible for
-    ``server.shutdown()`` + ``.wait()``.
+    ``server.shutdown()`` + ``.wait()``. When ``prebuilt_duckdb`` is given, the
+    demo build reuses that file instead of running jafgen (DEV-1815).
     """
-    from slayer.cli import _prepare_demo, _resolve_storage
     from slayer.engine.query_engine import SlayerQueryEngine
     from slayer.flight.handlers import FlightHandlers
     from slayer.flight.server import build_server
 
-    args = argparse.Namespace(
-        storage=tempfile.mkdtemp(prefix="slayer-flight-it-"),
-        models_dir=None,
-        datasource=None,
-        force=False,
-    )
-    storage = _resolve_storage(args)
-    _prepare_demo(args, storage)
+    from tests.integration._demo_build import prepare_demo_storage
+
+    _args, storage = prepare_demo_storage(prebuilt_duckdb=prebuilt_duckdb)
     engine = SlayerQueryEngine(storage=storage)
     handlers = FlightHandlers(engine=engine, storage=storage)
     server = build_server(
@@ -204,10 +197,25 @@ def _start_flight_demo_server(*, token: str | None):
     return server, "127.0.0.1", server.port
 
 
+@pytest.fixture(scope="session")
+def jaffle_demo_duckdb(tmp_path_factory: pytest.TempPathFactory) -> str:
+    """Build the Jaffle Shop demo DuckDB once per session (DEV-1815).
+
+    Server fixtures copy this file into their own dir so the expensive jafgen
+    build runs once rather than per fixture.
+    """
+    from tests.integration._demo_build import build_shared_demo_duckdb
+
+    dest = tmp_path_factory.mktemp("jaffle-demo-shared")
+    return build_shared_demo_duckdb(str(dest))
+
+
 @pytest.fixture(scope="module")
-def flight_demo_server() -> Iterator[tuple[str, int]]:
+def flight_demo_server(jaffle_demo_duckdb: str) -> Iterator[tuple[str, int]]:
     """Yield ``(host, port)`` of a no-auth Flight SQL server backed by the Jaffle Shop demo."""
-    server, host, port = _start_flight_demo_server(token=None)
+    server, host, port = _start_flight_demo_server(
+        token=None, prebuilt_duckdb=jaffle_demo_duckdb
+    )
     try:
         yield host, port
     finally:
@@ -216,10 +224,12 @@ def flight_demo_server() -> Iterator[tuple[str, int]]:
 
 
 @pytest.fixture(scope="module")
-def flight_demo_server_with_token() -> Iterator[tuple[str, int, str]]:
+def flight_demo_server_with_token(jaffle_demo_duckdb: str) -> Iterator[tuple[str, int, str]]:
     """Same as ``flight_demo_server`` but with a bearer token enforced."""
     token = "s3cret"
-    server, host, port = _start_flight_demo_server(token=token)
+    server, host, port = _start_flight_demo_server(
+        token=token, prebuilt_duckdb=jaffle_demo_duckdb
+    )
     try:
         yield host, port, token
     finally:

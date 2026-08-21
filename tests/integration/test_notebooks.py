@@ -47,6 +47,48 @@ def _ensure_jaffle_db():
         pytest.skip(f"Jaffle shop prerequisite missing: {e}")
 
 
+# Notebooks whose POINT is to demonstrate initial ingestion — they must run on a
+# CLEAN models dir so they exercise the full auto-ingest path. DEV-1815 removed
+# the dedicated test_jaffle_shop_notebook.py, so this harness now carries that
+# cold-ingest coverage. Every other notebook gets the prebuilt base models
+# restored (below) so it skips re-ingestion.
+_INGEST_DEMO_NOTEBOOKS = {
+    "03_auto_ingest/auto_ingest_nb.ipynb",
+}
+
+
+@pytest.fixture(scope="session")
+def _jaffle_models_template(_ensure_jaffle_db, tmp_path_factory) -> Path:
+    """Ingest the base Jaffle models once and snapshot ``slayer_models/`` (DEV-1815).
+
+    Built fresh (not from a possibly-stale checkout dir) and validated to contain
+    every demo table before snapshotting, so consumer notebooks can restore it and
+    hit ``ensure_demo_datasource``'s reuse fast-path instead of re-ingesting.
+    """
+    from slayer.async_utils import run_sync
+    from slayer.demo.jaffle_shop import DEMO_NAME, TABLE_NAMES, ensure_demo_datasource
+    from slayer.storage.yaml_storage import YAMLStorage
+
+    if JAFFLE_MODELS_DIR.exists():
+        shutil.rmtree(JAFFLE_MODELS_DIR)
+    storage = YAMLStorage(base_dir=str(JAFFLE_MODELS_DIR))
+    ensure_demo_datasource(
+        storage,
+        storage_path=str(JAFFLE_DATA_DIR),
+        years=3,
+        ingest_models=True,
+        assume_yes=True,
+    )
+    present = set(run_sync(storage.list_models(data_source=DEMO_NAME)))
+    missing = [t for t in TABLE_NAMES if t not in present]
+    if missing:
+        pytest.skip(f"Jaffle models template incomplete: missing {missing}")
+
+    snapshot = tmp_path_factory.mktemp("jaffle-models-template")
+    shutil.copytree(JAFFLE_MODELS_DIR, snapshot, dirs_exist_ok=True)
+    return snapshot
+
+
 # Notebooks expected to fail under the current typed-pipeline gaps.
 # Map: notebook path relative to EXAMPLES_DIR → Linear issue + reason.
 # Re-enable a notebook by removing its entry once the cited issue lands.
@@ -75,11 +117,16 @@ _KNOWN_FAILING_NOTEBOOKS = {
 
 
 @pytest.fixture(params=_NOTEBOOKS, ids=[str(p.relative_to(EXAMPLES_DIR)) for p in _NOTEBOOKS])
-def notebook_path(request):
-    # Clean models before each notebook so custom models from one
-    # notebook don't leak into another (e.g., order_items_custom).
+def notebook_path(request, _jaffle_models_template):
+    # Wipe models before each notebook so custom models from one notebook don't
+    # leak into another (e.g., order_items_custom). For everything but the
+    # ingest-demo notebooks, restore the prebuilt base models so the notebook's
+    # ensure_jaffle_shop() call reuses them instead of re-ingesting (DEV-1815).
     if JAFFLE_MODELS_DIR.exists():
         shutil.rmtree(JAFFLE_MODELS_DIR)
+    rel = str(request.param.relative_to(EXAMPLES_DIR))
+    if rel not in _INGEST_DEMO_NOTEBOOKS:
+        shutil.copytree(_jaffle_models_template, JAFFLE_MODELS_DIR)
     return request.param
 
 

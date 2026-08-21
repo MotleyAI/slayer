@@ -22,6 +22,7 @@ from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.base import StorageBackend
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._cli_inprocess import run_cli_in_process
 
 
 # ---------------------------------------------------------------------------
@@ -211,37 +212,23 @@ def test_cli_memory_save_accepts_description_flag(
     assert any(m.description == "cli cents" for m in memories)
 
 
-def test_cli_argparse_subprocess_accepts_description_flag(
+def test_cli_argparse_accepts_description_flag(
     yaml_storage: YAMLStorage,
 ) -> None:
-    """End-to-end smoke (subprocess): the argparse spec accepts
-    ``--description`` and the saved memory carries the field. The
-    project CLI puts ``--storage`` on each subparser, so it appears
-    after the subcommand.
-
-    The subprocess inherits an env where litellm's logger is forced to
-    ``ERROR`` — its default WARNING-level chatter (the model-cost-map
-    fetch and SOCKS-proxy fallback paths fired during the embedding
-    refresh) writes large stderr bursts that race pytest's fd-level
-    output capture and can starve the subprocess pipe until the
-    ``subprocess.run`` timeout kicks in. Silencing the logger removes
-    the bursts and the test is deterministic at ~5s.
+    """End-to-end smoke: the argparse spec accepts ``--description`` and the
+    saved memory carries the field. The project CLI puts ``--storage`` on each
+    subparser, so it appears after the subcommand. Runs in-process; the autouse
+    embedding-off fixture avoids the litellm chatter the subprocess had to
+    silence.
     """
-    import os
-    import subprocess
-    import sys
-
-    env = {**os.environ, "LITELLM_LOG": "ERROR"}
-    cmd = [
-        sys.executable, "-m", "slayer",
+    result = run_cli_in_process([
         "memory",
         "--storage", yaml_storage.base_dir,
         "save",
         "--learning", "x",
         "--entities", "mydb.orders.amount",
         "--description", "subproc cents",
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env)
+    ])
     assert result.returncode == 0, result.stderr
     memories = asyncio.run(yaml_storage.list_memories(entities=None))
     assert any(m.description == "subproc cents" for m in memories)

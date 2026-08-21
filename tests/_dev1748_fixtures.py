@@ -48,10 +48,11 @@ import sqlite3
 from typing import List
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.source_bundle import ResolvedSourceBundle
-from slayer.storage.yaml_storage import YAMLStorage
+
+from tests._engine_helpers import make_seeded_sqlite_engine
 
 # --------------------------------------------------------------------------- #
 # The corpus — expectations named, so a test asserts against a name not a digit
@@ -333,13 +334,9 @@ def dev1748_bundle() -> "ResolvedSourceBundle":
 
 async def make_sqlite_engine(base_dir: str, db_path: str) -> SlayerQueryEngine:
     """Storage + engine bound to the seeded SQLite file at ``db_path``."""
-    storage = YAMLStorage(base_dir=base_dir)
-    await storage.save_datasource(
-        DatasourceConfig(name="test", type="sqlite", database=db_path),
+    return await make_seeded_sqlite_engine(
+        base_dir=base_dir, db_path=db_path, models=dev1748_models()
     )
-    for model in dev1748_models():
-        await storage.save_model(model)
-    return SlayerQueryEngine(storage=storage)
 
 
 # --------------------------------------------------------------------------- #

@@ -31,6 +31,24 @@ from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
+
+async def make_seeded_sqlite_engine(
+    *, base_dir: str, db_path: str, models: list[SlayerModel], datasource: str = "test"
+) -> SlayerQueryEngine:
+    """Storage + engine bound to a seeded SQLite file (DEV-1815).
+
+    Consolidates the byte-identical ``make_sqlite_engine`` helpers previously
+    duplicated across the per-DEV fixture modules; they now delegate here.
+    """
+    storage = YAMLStorage(base_dir=base_dir)
+    await storage.save_datasource(
+        DatasourceConfig(name=datasource, type="sqlite", database=db_path),
+    )
+    for model in models:
+        await storage.save_model(model)
+    return SlayerQueryEngine(storage=storage)
+
+
 def _assert_valid_sql(sql: str, dialect: str = "postgres") -> None:
     """Assert generated SQL is structurally valid (parses, no nested WITH).
 
