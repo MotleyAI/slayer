@@ -630,6 +630,54 @@ def _resolve_ref(
     return ColumnKey(path=(), leaf=col.name)
 
 
+def _walk_join_chain(
+    *,
+    hop_path: Tuple[str, ...],
+    host,
+    bundle: ResolvedSourceBundle,
+    parts: Tuple[str, ...],
+):
+    """Walk ``hop_path`` join hops from ``host``, validating each hop against the
+    current model's joins and rejecting a hop that revisits a model (circular
+    join). Returns the terminal model. ``parts`` is the full dotted ref, used
+    only for error messages."""
+    current = host
+    visited_models = {host.name}
+    for hop in hop_path:
+        join = next(
+            (j for j in current.joins if j.target_model == hop), None,
+        )
+        if join is None:
+            raise UnknownReferenceError(
+                name=".".join(parts),
+                scope_kind="ModelScope",
+                scope_summary=(
+                    f"model {current.name!r} joins: "
+                    f"{[j.target_model for j in current.joins]}"
+                ),
+                suggestion=f"model {current.name!r} has no join to {hop!r}.",
+            )
+        nxt = bundle.get_referenced_model(hop)
+        if nxt is None:
+            raise UnknownReferenceError(
+                name=".".join(parts),
+                scope_kind="ModelScope",
+                scope_summary=f"target {hop!r} not in source bundle",
+                suggestion=None,
+            )
+        # A path that walks back to an already-visited model is a circular join
+        # (``a -> b -> a``): the leaf can never resolve, so reject it here rather
+        # than fail confusingly on the leaf. Legacy-compatible ValueError.
+        if nxt.name in visited_models:
+            raise ValueError(
+                f"Circular join detected resolving {'.'.join(parts)!r}: "
+                f"revisits model {nxt.name!r}."
+            )
+        visited_models.add(nxt.name)
+        current = nxt
+    return current
+
+
 def _resolve_dotted(
     parts: Tuple[str, ...],
     *,
@@ -678,41 +726,9 @@ def _resolve_dotted(
     # Walk join chain. parts[:-1] are join targets; parts[-1] is the leaf column.
     hop_path = parts[:-1]
     leaf = parts[-1]
-    current = host
-    visited_models = {host.name}
-    for hop in hop_path:
-        join = next(
-            (j for j in current.joins if j.target_model == hop), None,
-        )
-        if join is None:
-            raise UnknownReferenceError(
-                name=".".join(parts),
-                scope_kind="ModelScope",
-                scope_summary=(
-                    f"model {current.name!r} joins: "
-                    f"{[j.target_model for j in current.joins]}"
-                ),
-                suggestion=f"model {current.name!r} has no join to {hop!r}.",
-            )
-        nxt = bundle.get_referenced_model(hop)
-        if nxt is None:
-            raise UnknownReferenceError(
-                name=".".join(parts),
-                scope_kind="ModelScope",
-                scope_summary=f"target {hop!r} not in source bundle",
-                suggestion=None,
-            )
-        # A dotted path that walks back to an already-visited model is a
-        # circular join (e.g. ``a -> b -> a``); the leaf can never resolve
-        # and an unguarded walk would otherwise just fail confusingly on the
-        # leaf. Raise the legacy-compatible ``Circular join`` ValueError.
-        if nxt.name in visited_models:
-            raise ValueError(
-                f"Circular join detected resolving {'.'.join(parts)!r}: "
-                f"revisits model {nxt.name!r}."
-            )
-        visited_models.add(nxt.name)
-        current = nxt
+    current = _walk_join_chain(
+        hop_path=hop_path, host=host, bundle=bundle, parts=parts,
+    )
 
     # `current` is the terminal model; `leaf` is the column on it.
     col = next((c for c in current.columns if c.name == leaf), None)
@@ -772,38 +788,9 @@ def _resolve_dotted_star(
     # C14: strip same-model self-prefix (``orders.*`` on ``orders``).
     if hop_path and hop_path[0] == host.name:
         hop_path = hop_path[1:]
-    current = host
-    visited_models = {host.name}
-    for hop in hop_path:
-        join = next((j for j in current.joins if j.target_model == hop), None)
-        if join is None:
-            raise UnknownReferenceError(
-                name=".".join(parts),
-                scope_kind="ModelScope",
-                scope_summary=(
-                    f"model {current.name!r} joins: "
-                    f"{[j.target_model for j in current.joins]}"
-                ),
-                suggestion=f"no join from {current.name!r} to {hop!r}.",
-            )
-        nxt = bundle.get_referenced_model(hop)
-        if nxt is None:
-            raise UnknownReferenceError(
-                name=".".join(parts),
-                scope_kind="ModelScope",
-                scope_summary=f"target {hop!r} not in source bundle",
-                suggestion=None,
-            )
-        # A dotted star that revisits a model is a circular join (``a.b.a.*``)
-        # — reject it the same way ``_resolve_dotted`` rejects ``a.b.a.col``
-        # so the two stay consistent (CR).
-        if nxt.name in visited_models:
-            raise ValueError(
-                f"Circular join detected resolving {'.'.join(parts)!r}: "
-                f"revisits model {nxt.name!r}."
-            )
-        visited_models.add(nxt.name)
-        current = nxt
+    # Validate the hop chain (raises on a missing / circular join) — the leaf is
+    # ``*`` so the terminal model is not needed, only the validated hop path.
+    _walk_join_chain(hop_path=hop_path, host=host, bundle=bundle, parts=parts)
     return StarKey(path=tuple(hop_path))
 
 
