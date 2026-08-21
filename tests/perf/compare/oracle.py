@@ -82,11 +82,11 @@ def _series_for(df: pd.DataFrame, grouped, col: str):
     return grouped[col] if grouped is not None else df[col]
 
 
-def _compute_agg(df: pd.DataFrame, grouped, agg: dict):
+def _compute_agg(df: pd.DataFrame, grouped, agg: dict, col: str | None = None):
     op = agg["op"]
     if op == "count_star":
         return grouped.size() if grouped is not None else len(df)
-    series = _series_for(df, grouped, agg["col"])
+    series = _series_for(df, grouped, col or agg["col"])
     if op == "sum":
         return series.sum(min_count=1)
     if op == "avg":
@@ -133,16 +133,33 @@ def _agg_fn(frames: dict, args: dict) -> list[list]:
 
     groupby = args.get("groupby", [])
     aggs = args.get("aggs", [])
+    # Per-aggregate `where`: a filtered measure (Column.filter / CASE-WHEN), scoped
+    # to that one aggregate — NOT a query-level filter. Mask the input to NaN where
+    # the predicate is false but keep every group, so an all-non-matching group
+    # aggregates to NULL (matching the engine's LEFT-JOIN-back on an isolated CTE)
+    # instead of vanishing the way a WHERE-then-GROUP would.
+    masked: dict[int, str] = {}
+    for idx, agg in enumerate(aggs):
+        where = agg.get("where")
+        if not where:
+            continue
+        if agg["op"] == "count_star":
+            raise ValueError("oracle: `where` on count_star is unsupported")
+        tmp = f"__where_{idx}"
+        df[tmp] = df[agg["col"]].where(df.eval(where, engine="python"))
+        masked[idx] = tmp
     if not aggs:
         result = df[groupby].copy()
         if args.get("distinct", True):
             result = result.drop_duplicates()
     elif groupby:
         grouped = df.groupby(groupby, dropna=False, sort=False)
-        pieces = {_agg_name(a): _compute_agg(df, grouped, a) for a in aggs}
+        pieces = {_agg_name(a): _compute_agg(df, grouped, a, masked.get(i))
+                  for i, a in enumerate(aggs)}
         result = pd.DataFrame(pieces).reset_index()
     else:
-        result = pd.DataFrame([{_agg_name(a): _compute_agg(df, None, a) for a in aggs}])
+        result = pd.DataFrame([{_agg_name(a): _compute_agg(df, None, a, masked.get(i))
+                                for i, a in enumerate(aggs)}])
 
     if args.get("having"):
         result = result.query(args["having"], engine="python")

@@ -398,6 +398,16 @@ def test_flag_perf_degenerate_inputs():
     assert flag.flagged is False
 
 
+def test_resolve_scales_explicit_and_profile_all():
+    import compare
+
+    assert compare.resolve_scales(False, "10k,40k") == {"10k": 10_000, "40k": 40_000}
+    assert compare.resolve_scales(False, "") == {}
+    all_scales = compare.resolve_scales(True, "10k")  # scales_arg ignored under profile-all
+    assert set(all_scales) == set(compare.ALL_SCALES)
+    assert {"10k", "40k", "100k", "1m", "10m"} <= set(all_scales)
+
+
 def test_pool_abba_concatenates_per_query():
     run1 = {"q1": {"exec": [0.1, 0.2], "gen": [0.01]}}
     run2 = {"q1": {"exec": [0.3], "gen": [0.02]}, "q2": {"exec": [0.5], "gen": [0.05]}}
@@ -561,6 +571,39 @@ def test_oracle_having(frames):
         "having": "_count > 2",
     }}
     assert oracle.expected(spec, frames) == [["food", 3]]
+
+
+def test_oracle_per_agg_where_keeps_all_groups(frames):
+    # a filtered measure (Column.filter / CASE-WHEN) is scoped to its aggregate,
+    # not the whole query: every group survives, non-matching ones aggregate to
+    # NULL — unlike a query-level filter, which would drop empty groups
+    spec = {"fn": "agg", "args": {
+        "table": "orders",
+        "joins": [{"table": "customers", "left_on": "customer_id", "right_on": "id"}],
+        "groupby": ["category"],
+        "aggs": [{"col": "cost", "op": "sum", "where": "`customers.segment` == 'retail'"}],
+    }}
+    rows = canonical_rows(oracle.expected(spec, frames), ordered=False)
+    # food keeps its retail orders (10+30+60); toys is all-corp → NULL, not dropped
+    assert rows == [["food", 100.0], ["toys", None]]
+
+
+def test_oracle_per_agg_where_ungrouped(frames):
+    spec = {"fn": "agg", "args": {
+        "table": "orders",
+        "aggs": [{"col": "cost", "op": "sum", "where": "category == 'food'"},
+                 {"op": "count_star"}],
+    }}
+    # masked sum (food only: 10+30+60) beside an unmasked count over all 5 rows
+    assert oracle.expected(spec, frames) == [[100.0, 5]]
+
+
+def test_oracle_per_agg_where_rejects_count_star(frames):
+    spec = {"fn": "agg", "args": {
+        "aggs": [{"op": "count_star", "where": "cost > 0"}],
+    }}
+    with pytest.raises(ValueError, match="count_star"):
+        oracle.expected(spec, frames)
 
 
 def test_oracle_order_limit_offset(frames):

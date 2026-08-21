@@ -16,6 +16,18 @@ poetry run python tests/perf/compare/compare.py --db-url postgresql://u:p@host/s
 
 `--db-url` reseeds destructively; the URL must contain `bench`.
 
+### Profile the whole corpus at every scale (overnight)
+
+```bash
+poetry run python tests/perf/compare/compare.py --profile-all --subprocess-timeout 21600
+```
+
+`--profile-all` times the **entire** corpus (not just the `subset_100k` entries) at
+every scale — 10k, 40k, 100k, 1m, 10m — on both backends, and drops the subset pass.
+Correctness still runs once at 10k + adversarial. Raise `--subprocess-timeout` for the
+big scales, and pass `--retime` to redo timing artifacts that already exist. Seeded DBs
+and the baseline venv in `out/` are reused across runs, so a re-profile needs no reseed.
+
 Everything lands in `out/` (gitignored): `report.md`, `correctness.json`,
 `perf-flags.json`, `timings.csv`, `run-manifest.json`, per-run JSON artifacts,
 seeded DB files, and the reusable baseline venv (`out/pypi-venv`).

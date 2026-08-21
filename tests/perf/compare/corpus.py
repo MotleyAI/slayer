@@ -27,6 +27,10 @@ MODELS = [
             {"name": "cancelled_at", "sql": "cancelled_at", "type": "TIMESTAMP"},
             {"name": "total_cost", "sql": "cost", "type": "DOUBLE"},
             {"name": "latest_cost", "sql": "cost", "type": "DOUBLE"},
+            # measure whose Column.filter crosses the customers join → forces
+            # host-rooted filtered-local isolation (DEV-1503/1709 _cm_ CTE)
+            {"name": "whale_cost", "sql": "cost", "type": "DOUBLE",
+             "filter": "customers.segment = 'whale'"},
         ],
         "measures": [
             {"name": "order_count", "formula": "*:count"},
@@ -340,6 +344,47 @@ ENTRIES = [
            _q(measures=["total_cost:sum"], dimensions=["customers.segment"],
               time_dimensions=MONTH_TD, order=ASC_TIME)),
 
+    # ---- deep multi-CTE: cross-model measures & filtered-local isolation -----
+    # These stack a `_cm_`/`_rk_` CTE on top of the host base — the tallest SQL
+    # the engine emits — and are the paths the pre-existing corpus barely touched.
+    # (forward-path cross-model agg grouped by a host dim is join_measure_on_joined_col)
+    _entry("join_cross_model_rerooted_dim", "joins",
+           # re-rooted cross-model agg: grouped by a dim reachable through the
+           # TARGET's own join graph (shops -> regions). Exercises Strategy 2.
+           _q(measures=["shops.size:sum"], dimensions=["shops.regions.name"])),
+    _entry("join_cross_model_by_time", "joins",
+           _q(measures=["shops.size:sum"], time_dimensions=MONTH_TD, order=ASC_TIME),
+           ordered=True),
+    _entry("join_cross_model_plus_local", "joins",
+           # local `*:count` in the host base + cross-model `shops.size:sum` in a
+           # joined-back `_cm_` CTE, side by side.
+           _q(measures=["*:count", "shops.size:sum"], dimensions=["customers.segment"]),
+           subset_100k=True),
+    _entry("join_transform_rank_over_join", "joins",
+           # transform layer (rank) stacked on an aggregate grouped by a JOINED
+           # dim. Unordered: poor/whale tie on the adversarial sums.
+           _q(measures=["total_cost:sum", {"formula": "rank(total_cost:sum)", "name": "rnk"}],
+              dimensions=["customers.segment"],
+              order=[{"column": "total_cost_sum", "direction": "desc"}]),
+           subset_100k=True),
+    _entry("join_ranked_last_over_join", "joins",
+           # ranked `_rk_` aggregate grouped by a joined dim. 0.9.12 emits invalid
+           # SQL here (bare `segment`); the branch fixes it.
+           _q(measures=["latest_cost:last"], dimensions=["customers.segment"]),
+           subset_100k=True),
+    _entry("join_filtered_local_isolation", "joins",
+           # DEV-1503 host-rooted isolation: whale_cost's Column.filter crosses the
+           # customers join. The measure filter is scoped to that aggregate (every
+           # category is kept; non-whale categories are NULL), which the per-agg
+           # `where` oracle reproduces exactly. 0.9.12 drops the filter entirely.
+           _q(measures=["whale_cost:sum"], dimensions=["category"]),
+           oracle={"fn": "agg", "args": {
+               "joins": [{"table": "customers", "left_on": "customer_id", "right_on": "id"}],
+               "groupby": ["category"],
+               "aggs": [{"col": "cost", "op": "sum",
+                         "where": "`customers.segment` == 'whale'"}]}},
+           subset_100k=True),
+
     # ---- filters ------------------------------------------------------------
     _entry("filter_numeric_gt", "filters",
            _q(measures=["*:count"], filters=["total_cost > 5000"]),
@@ -633,6 +678,26 @@ ENTRIES = [
                {"source_model": "filtered", "measures": ["*:count"]},
            ],
            variables={"cat": "food"}),
+    _entry("ms_stage_join_then_agg", "multi_stage",
+           # stage 1 is itself a join+group CTE (revenue by customer segment);
+           # stage 2 aggregates over it — a stage CTE stacked on a joined CTE.
+           [
+               {"name": "seg_rev", "source_model": "orders",
+                "dimensions": ["customers.segment"],
+                "measures": [{"formula": "total_cost:sum", "name": "rev"}]},
+               {"source_model": "seg_rev", "measures": ["rev:avg", "*:count"]},
+           ]),
+    _entry("ms_stage_transform_then_agg", "multi_stage",
+           # stage 1 carries a transform (cumsum → base+step CTEs); stage 2 wraps
+           # it — a transform CTE nested inside a stage CTE (the tallest chain).
+           [
+               {"name": "monthly", "source_model": "orders",
+                "measures": ["total_cost:sum",
+                             {"formula": "cumsum(total_cost:sum)", "name": "run"}],
+                "time_dimensions": MONTH_TD},
+               {"source_model": "monthly", "measures": ["run:max", "*:count"]},
+           ],
+           subset_100k=True),
     _entry("ms_cycle_error", "multi_stage",
            [
                {"name": "stage_a", "source_model": "stage_b", "measures": ["*:count"]},

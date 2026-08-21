@@ -41,6 +41,14 @@ RUNNER = _DIR / "runner.py"
 SUBPROCESS_TIMEOUT = 3600
 
 
+def resolve_scales(profile_all: bool, scales_arg: str) -> dict:
+    """The timing scales for this run. ``--profile-all`` times the whole corpus
+    at every known scale (10k…10m); otherwise honour ``--scales``."""
+    if profile_all:
+        return dict(ALL_SCALES)
+    return {name: ALL_SCALES[name] for name in scales_arg.split(",") if name}
+
+
 def _parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out-dir", default=str(_DIR / "out"))
@@ -49,6 +57,11 @@ def _parse_args():
     parser.add_argument("--pypi-pin", default=PYPI_PIN)
     parser.add_argument("--repeats", type=int, default=REPEATS)
     parser.add_argument("--entries", default=None, help="comma-separated entry id filter")
+    parser.add_argument("--profile-all", action="store_true",
+                        help="time the FULL corpus at every scale (10k..10m), no "
+                             "subset gating — the overnight 'profile everything' switch")
+    parser.add_argument("--subprocess-timeout", type=int, default=SUBPROCESS_TIMEOUT,
+                        help="per runner-invocation timeout in seconds (raise for big scales)")
     parser.add_argument("--skip-timing", action="store_true")
     parser.add_argument("--skip-correctness", action="store_true",
                         help="reuse out/correctness.json from a previous run")
@@ -567,7 +580,7 @@ def _run_external_db(args, out_dir: Path, pypi_python: Path, seed_mod) -> None:
 
     flags: list[dict] = []
     if not args.skip_timing:
-        scales = {name: ALL_SCALES[name] for name in args.scales.split(",") if name}
+        scales = resolve_scales(args.profile_all, args.scales)
         for scale_name, count in scales.items():
             _seed_external(args, seed_mod, count)
             print(f"[timing] external {args.db_type} {scale_name} (ABBA x{args.repeats}) ...")
@@ -583,7 +596,9 @@ def _run_external_db(args, out_dir: Path, pypi_python: Path, seed_mod) -> None:
 
 
 def main() -> None:
+    global SUBPROCESS_TIMEOUT
     args = _parse_args()
+    SUBPROCESS_TIMEOUT = args.subprocess_timeout
     if args.db_url:
         from urllib.parse import urlsplit
 
@@ -601,7 +616,9 @@ def main() -> None:
         _run_external_db(args, out_dir, pypi_python, seed_mod)
         return
     backends = args.backends.split(",")
-    scales = {name: ALL_SCALES[name] for name in args.scales.split(",") if name}
+    scales = resolve_scales(args.profile_all, args.scales)
+    if args.profile_all:
+        args.skip_subset = True
 
     manifest = build_manifest(args)
     (out_dir / "run-manifest.json").write_text(json.dumps(manifest, indent=2))
