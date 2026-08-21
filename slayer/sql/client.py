@@ -528,12 +528,58 @@ class SlayerSQLClient:
         self._sync_engine = engine_factory.get_engine(self.datasource)
         return self._sync_engine
 
+    def _discard_sync_engine_on_auth_failure(self, exc: BaseException) -> bool:
+        """Drop the sync engine on a credential rejection; returns whether
+        ``exc`` was one.
+
+        An engine's credentials are fixed at construction, so a revoked grant
+        poisons it permanently — every later call through the cache fails the
+        same way. Evicting lets the next one rebuild from whatever the
+        datasource now carries. Best-effort: cleanup must not displace the
+        original error.
+        """
+        if not _is_auth_failure(exc):
+            return False
+        from slayer.sql import engine_factory  # noqa: PLC0415
+        self._sync_engine = None
+        try:
+            engine_factory.invalidate_engine(self.datasource)
+        except Exception:
+            logger.warning(
+                "Failed to invalidate engine for datasource %r after an "
+                "authentication failure.", self.datasource.name, exc_info=True,
+            )
+        return True
+
+    async def _discard_engines_on_auth_failure(self, exc: BaseException) -> None:
+        """Async-path cleanup: the sync engine plus this client's async one.
+
+        Native-async dialects hold a second pool ``invalidate_engine`` knows
+        nothing about, and disposing it needs a loop — hence the split from the
+        sync variant used by ``execute_sync``.
+        """
+        if not self._discard_sync_engine_on_auth_failure(exc):
+            return
+        await self.aclose()
+
     async def execute(
         self,
         sql: str,
         timeout_seconds: int = 120,
     ) -> list[dict[str, Any]]:
         """Execute SQL asynchronously."""
+        try:
+            return await self._execute(sql=sql, timeout_seconds=timeout_seconds)
+        except Exception as exc:
+            await self._discard_engines_on_auth_failure(exc)
+            raise
+
+    async def _execute(
+        self,
+        *,
+        sql: str,
+        timeout_seconds: int,
+    ) -> list[dict[str, Any]]:
         async_engine = self._get_async_engine()
         db_type = self.datasource.type
         if async_engine is not None:
@@ -565,6 +611,13 @@ class SlayerSQLClient:
         Returns {column_name: type_category} where type_category is
         "number", "string", "time", or "boolean".
         """
+        try:
+            return await self._get_column_types(sql=sql)
+        except Exception as exc:
+            await self._discard_engines_on_auth_failure(exc)
+            raise
+
+    async def _get_column_types(self, *, sql: str) -> dict[str, str]:
         async_engine = self._get_async_engine()
         if async_engine is not None:
             return await _get_column_types_async(
@@ -589,14 +642,22 @@ class SlayerSQLClient:
         sql: str,
         timeout_seconds: int = 120,
     ) -> list[dict[str, Any]]:
-        """Execute SQL synchronously (for CLI, notebooks, tests)."""
-        return _execute_with_retry_sync(
-            sql=sql,
-            connection_string=self.datasource.get_connection_string(),
-            db_type=self.datasource.type,
-            timeout_seconds=timeout_seconds,
-            engine=self._get_sync_engine_for_client(),
-        )
+        """Execute SQL synchronously (for CLI, notebooks, tests).
+
+        Discards only the sync engine on a credential rejection — no loop here
+        to dispose an async pool on; ``execute`` / ``get_column_types`` cover that.
+        """
+        try:
+            return _execute_with_retry_sync(
+                sql=sql,
+                connection_string=self.datasource.get_connection_string(),
+                db_type=self.datasource.type,
+                timeout_seconds=timeout_seconds,
+                engine=self._get_sync_engine_for_client(),
+            )
+        except Exception as exc:
+            self._discard_sync_engine_on_auth_failure(exc)
+            raise
 
 
 # ---------------------------------------------------------------------------
@@ -645,6 +706,62 @@ def _is_transient_db_error(exc: BaseException) -> bool:
         return True
     msg = str(getattr(exc, "orig", exc)).lower()
     return any(sig in msg for sig in _TRANSIENT_DB_ERROR_SIGNALS)
+
+
+# Credential rejection, deliberately distinct from _TRANSIENT_DB_ERROR_SIGNALS:
+# retrying is pointless (the credentials are baked into the engine), so the
+# response is to throw the engine away rather than sleep. Kept narrow —
+# Postgres' table-level "permission denied for table" is absent on purpose,
+# since the credentials worked and evicting over it is pure pool churn.
+_AUTH_ERROR_SIGNALS = (
+    "invalid_grant",                      # OAuth refresh token revoked / expired
+    "invalid_client",
+    "unauthorized_client",
+    "token has been expired or revoked",
+    "could not refresh access token",
+    "reauthentication is needed",
+    "authentication failed",
+    "password authentication failed",     # libpq
+    "invalid credentials",
+    "invalid username or password",
+)
+
+# Matched by class name to stay dependency-free: google-auth ships only with
+# the optional 'bigquery' extra.
+_AUTH_ERROR_TYPE_NAMES = frozenset({
+    "RefreshError",             # google.auth.exceptions
+    "DefaultCredentialsError",  # google.auth.exceptions
+    "Unauthorized",             # google.api_core.exceptions — HTTP 401
+})
+
+
+def _is_auth_failure(exc: BaseException) -> bool:
+    """True when the server rejected the *credentials* themselves.
+
+    Walks the cause/context chain plus SQLAlchemy's ``orig`` — the signal
+    surfaces wrapped a layer or two deep.
+    """
+    seen: set[int] = set()
+    pending: list[BaseException] = [exc]
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        if type(current).__name__ in _AUTH_ERROR_TYPE_NAMES:
+            return True
+        text = str(current).lower()
+        if any(signal in text for signal in _AUTH_ERROR_SIGNALS):
+            return True
+        pending.extend(
+            nested for nested in (
+                getattr(current, "orig", None),
+                current.__cause__,
+                current.__context__,
+            )
+            if isinstance(nested, BaseException)
+        )
+    return False
 
 
 async def _retry_with_backoff(

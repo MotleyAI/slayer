@@ -34,6 +34,7 @@ class RedshiftDialect(SqlDialect):
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = False
+    max_identifier_bytes: int | None = 127
 
     def build_null_safe_eq(
         self, left: exp.Expression, right: exp.Expression,
@@ -59,6 +60,7 @@ class TrinoDialect(SqlDialect):
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
+    max_identifier_bytes: int | None = None  # unbounded
 
     def build_approx_count_distinct(
         self,
@@ -78,6 +80,7 @@ class PrestoDialect(SqlDialect):
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
+    max_identifier_bytes: int | None = None  # unbounded
 
     def build_approx_count_distinct(
         self,
@@ -96,6 +99,7 @@ class DatabricksDialect(SqlDialect):
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
+    max_identifier_bytes: int | None = None  # unbounded
 
     def build_approx_count_distinct(
         self,
@@ -114,6 +118,7 @@ class SparkDialect(SqlDialect):
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
+    max_identifier_bytes: int | None = None  # unbounded
 
     def build_approx_count_distinct(
         self,
@@ -134,6 +139,7 @@ class OracleDialect(SqlDialect):
     # the canonical 2-arg LOG(base, x) form.
     log10_native: bool = False
     log2_native: bool = False
+    max_identifier_bytes: int | None = 128  # 12.2+; pre-12.2 (30) not modelled
 
     def build_null_safe_eq(
         self, left: exp.Expression, right: exp.Expression,

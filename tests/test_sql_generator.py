@@ -7317,7 +7317,8 @@ class TestDev1501HiddenFirstLastRender:
     ) -> None:
         """DEV-1501 (Codex round 8): a DERIVED first/last time arg whose
         ``Column.sql`` references a joined column must pull that join into
-        the base FROM. ``_resolve_explicit_time_col`` expands
+        the base FROM. Join discovery (``_resolve_agg_inputs_via_scope`` via
+        ``_explicit_time_arg_of``) registers it, and the ranked plan expands
         ``net_signed_at.sql = "customers.signed_up_at"`` so the ranked
         subquery's ``ORDER BY`` emits ``customers.signed_up_at``; without
         a corresponding ``LEFT JOIN customers`` the SQL is broken.
@@ -10131,6 +10132,9 @@ class TestGetColumnTypesSql:
             mock_ds = MagicMock()
             mock_ds.get_connection_string.return_value = "sqlite://"
             mock_ds.type = "sqlite"
+            # Real attribute, not an auto-Mock: it feeds the cache key's
+            # credential digest, which hashes it.
+            mock_ds.credentials_json = None
             with patch.object(engine, "_resolve_datasource", new_callable=AsyncMock, return_value=mock_ds):
                 captured_sql = []
 
@@ -10140,7 +10144,7 @@ class TestGetColumnTypesSql:
 
                 mock_client = MagicMock()
                 mock_client.get_column_types = capture_sql
-                engine._sql_clients[("sqlite://", "")] = mock_client
+                engine._sql_clients[("sqlite://", "", "")] = mock_client
 
                 await engine.get_column_types("orders")
 
@@ -10187,13 +10191,16 @@ class TestGetColumnTypesSql:
         mock_ds.get_connection_string.return_value = "sqlite://"
         mock_ds.type = "sqlite"
 
+        # Real attribute, not an auto-Mock: it feeds the cache key's
+        # credential digest (DEV-1755), which hashes it.
+        mock_ds.credentials_json = None
         with patch.object(engine, "_resolve_datasource", new_callable=AsyncMock, return_value=mock_ds):
             async def capture_types(sql):
                 return {"orders.revenue_max": "number", "orders.customer_score_max": "number"}
 
             mock_client = MagicMock()
             mock_client.get_column_types = capture_types
-            engine._sql_clients[("sqlite://", "")] = mock_client
+            engine._sql_clients[("sqlite://", "", "")] = mock_client
 
             result = await engine.get_column_types("orders")
 

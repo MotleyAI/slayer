@@ -12,16 +12,18 @@ generator dispatch) live in ``tests/test_sql_generator.py``.
 
 from __future__ import annotations
 
+import json
 import re
 import tempfile
 from unittest.mock import patch
 
 import pytest
+import sqlglot
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery
-from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.engine.query_engine import SlayerQueryEngine, _sql_client_cache_key
 from slayer.sql.dialects import (
     BigqueryDialect,
     PostgresDialect,
@@ -427,7 +429,7 @@ async def test_generator_dispatches_through_rewrite_emitted_sql_hook() -> None:
         PostgresDialect,
         "rewrite_emitted_sql",
         autospec=True,
-        side_effect=lambda self, sql: sql,
+        side_effect=lambda self, sql, **kw: sql,
     ) as spy:
         await _engine_generate(
             query=query, model=_minimal_orders_model(), dialect="postgres",
@@ -464,14 +466,14 @@ async def test_engine_dispatches_through_decode_result_keys_hook() -> None:
         )
         await storage.save_model(model)
         engine = SlayerQueryEngine(storage=storage)
-        engine._sql_clients[(ds.get_connection_string(), "")] = _FakeBigQueryClient(
+        engine._sql_clients[_sql_client_cache_key(ds)] = _FakeBigQueryClient(
             rows=[{"orders.status": "paid"}]
         )
         with patch.object(
             PostgresDialect,
             "decode_result_keys",
             autospec=True,
-            side_effect=lambda self, rows: rows,
+            side_effect=lambda self, rows, **kw: rows,
         ) as spy:
             await engine.execute(SlayerQuery(
                 source_model="orders",
@@ -530,7 +532,7 @@ async def _build_bigquery_engine(rows: list[dict]) -> tuple[SlayerQueryEngine, t
     )
     await storage.save_model(model)
     engine = SlayerQueryEngine(storage=storage)
-    engine._sql_clients[(ds.get_connection_string(), "")] = _FakeBigQueryClient(rows)
+    engine._sql_clients[_sql_client_cache_key(ds)] = _FakeBigQueryClient(rows)
     return engine, tmp, ds
 
 
@@ -684,7 +686,7 @@ async def _build_labeled_bigquery_engine(
     )
     await storage.save_model(model)
     engine = SlayerQueryEngine(storage=storage)
-    engine._sql_clients[(ds.get_connection_string(), "")] = _FakeBigQueryClient(rows)
+    engine._sql_clients[_sql_client_cache_key(ds)] = _FakeBigQueryClient(rows)
     return engine, tmp, ds
 
 
@@ -745,7 +747,7 @@ async def test_get_column_types_decodes_bigquery_mangled_probe_keys() -> None:
         )
         await storage.save_model(model)
         engine = SlayerQueryEngine(storage=storage)
-        engine._sql_clients[(ds.get_connection_string(), "")] = _EchoTypesClient()
+        engine._sql_clients[_sql_client_cache_key(ds)] = _EchoTypesClient()
         types = await engine.get_column_types("orders")
         # Without the decode fix, the mangled probe keys never match the dotted
         # ``full`` lookups and this is empty for BigQuery.
@@ -812,7 +814,7 @@ async def test_bigquery_dry_run_does_not_decode_data_rows() -> None:
         query = SlayerQuery(source_model="orders", dimensions=["status"])
         with patch.object(
             BigqueryDialect, "decode_result_keys", autospec=True,
-            side_effect=lambda self, rows: rows,
+            side_effect=lambda self, rows, **kw: rows,
         ) as spy:
             await engine.execute(query, dry_run=True)
         decoded_args = [call.args[-1] for call in spy.call_args_list]
@@ -821,3 +823,295 @@ async def test_bigquery_dry_run_does_not_decode_data_rows() -> None:
         )
     finally:
         tmp.cleanup()
+# build_engine — per-end-user OAuth grant. Every credentials kwarg the driver
+# has routes to service_account.Credentials, so grants go through its
+# user_supplied_client escape hatch; these pin that wiring.
+# ---------------------------------------------------------------------------
+
+
+def _oauth_info(**overrides) -> dict:
+    info = {  # NOSONAR(S2068) — test fixture; placeholder grant, not real credentials
+        "type": "authorized_user",
+        "client_id": "cid.apps.googleusercontent.com",
+        "client_secret": "csecret",
+        "refresh_token": "rtok-alice",
+        "token": "access-token-1",
+        "token_uri": "https://oauth2.googleapis.com/token",
+    }
+    info.update(overrides)
+    return info
+
+
+def _oauth_ds(name: str = "bq", **overrides) -> DatasourceConfig:
+    return DatasourceConfig(
+        name=name,
+        type="bigquery",
+        oauth_credentials_json=json.dumps(_oauth_info(**overrides)),
+    )
+
+
+def test_build_engine_oauth_uses_user_supplied_client() -> None:
+    """Needs both the ``user_supplied_client`` flag and the client in
+    ``connect_args``; without the flag the driver builds an ADC client first."""
+    dialect = BigqueryDialect()
+    captured: dict = {}
+
+    def fake_create_engine(url, **kwargs):
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        return object()
+
+    fake_client = object()
+    with (
+        patch("slayer.sql.dialects.bigquery.sa.create_engine", side_effect=fake_create_engine),
+        patch("google.cloud.bigquery.Client", return_value=fake_client) as mk_client,
+        patch("google.oauth2.credentials.Credentials.from_authorized_user_info") as mk_creds,
+    ):
+        engine = dialect.build_engine(
+            _oauth_ds(), connection_string="bigquery://my-project/my_dataset",
+        )
+
+    assert engine is not None
+    assert captured["url"].query["user_supplied_client"] == "true"
+    assert captured["kwargs"]["connect_args"] == {"client": fake_client}
+    assert captured["kwargs"]["pool_pre_ping"] is True
+    # No ``credentials_info`` — that kwarg would send us back through
+    # ``service_account.Credentials`` and defeat the whole path.
+    assert "credentials_info" not in captured["kwargs"]
+    assert mk_client.call_args.kwargs["project"] == "my-project"
+    assert mk_client.call_args.kwargs["credentials"] is mk_creds.return_value
+    assert mk_creds.call_args.args[0] == _oauth_info()
+
+
+def test_build_engine_oauth_without_project_raises() -> None:
+    """A grant carries no project, so omitting it is a config error rather than
+    a confusing downstream 404."""
+    dialect = BigqueryDialect()
+    ds = _oauth_ds()
+    with pytest.raises(ValueError, match="must be given in the connection string"):
+        dialect.build_engine(ds, connection_string="bigquery://")
+
+
+def test_build_engine_oauth_falls_back_to_quota_project() -> None:
+    """``quota_project_id`` supplies the project when the URL doesn't."""
+    dialect = BigqueryDialect()
+    with (
+        patch("slayer.sql.dialects.bigquery.sa.create_engine", return_value=object()),
+        patch("google.cloud.bigquery.Client", return_value=object()) as mk_client,
+        patch("google.oauth2.credentials.Credentials.from_authorized_user_info"),
+    ):
+        dialect.build_engine(
+            _oauth_ds(quota_project_id="quota-proj"), connection_string="bigquery://",
+        )
+    assert mk_client.call_args.kwargs["project"] == "quota-proj"
+
+
+def test_build_engine_rejects_both_credential_kinds() -> None:
+    """Guessing between the two is how a per-user query quietly runs as the
+    shared service account."""
+    ds = DatasourceConfig(
+        name="bq",
+        type="bigquery",
+        credentials_json=json.dumps({"type": "service_account"}),
+        oauth_credentials_json=json.dumps(_oauth_info()),
+    )
+    dialect = BigqueryDialect()
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        dialect.build_engine(ds, connection_string="bigquery://p/d")
+
+
+def test_build_engine_rejects_oauth_grant_in_credentials_json() -> None:
+    """The driver hands ``credentials_json`` to ``from_service_account_info``,
+    so a grant there cannot work. Say so up front."""
+    ds = DatasourceConfig(
+        name="bq", type="bigquery", credentials_json=json.dumps(_oauth_info()),
+    )
+    dialect = BigqueryDialect()
+    with pytest.raises(ValueError, match="Put OAuth grants in oauth_credentials_json"):
+        dialect.build_engine(ds, connection_string="bigquery://p/d")
+
+
+@pytest.mark.parametrize(
+    argnames="payload,message",
+    argvalues=[
+        ("not json at all", "oauth_credentials_json is not valid JSON"),
+        ("[]", "oauth_credentials_json must be a JSON object"),
+    ],
+)
+def test_build_engine_oauth_malformed_raises(payload: str, message: str) -> None:
+    ds = DatasourceConfig(name="bq", type="bigquery", oauth_credentials_json=payload)
+    dialect = BigqueryDialect()
+    with pytest.raises(ValueError, match=message):
+        dialect.build_engine(ds, connection_string="bigquery://p/d")
+
+
+# ---------------------------------------------------------------------------
+# credential_fingerprint — cached engines must not cross identities
+# ---------------------------------------------------------------------------
+
+
+def test_credential_fingerprint_empty_without_credentials() -> None:
+    """ADC datasources keep the empty fingerprint."""
+    ds = DatasourceConfig(name="bq", type="bigquery", database="p")
+    assert BigqueryDialect().credential_fingerprint(ds) == ""
+
+
+def test_credential_fingerprint_differs_between_oauth_users() -> None:
+    """Two end users on the same project must never share a cached engine."""
+    dialect = BigqueryDialect()
+    alice = dialect.credential_fingerprint(_oauth_ds(refresh_token="rtok-alice"))
+    bob = dialect.credential_fingerprint(_oauth_ds(refresh_token="rtok-bob"))
+    assert alice != bob
+    # Neither may collapse to the empty "no credentials" fingerprint, which
+    # would drop both users into the Application-Default-Credentials bucket.
+    assert alice != ""
+    assert bob != ""
+
+
+def test_credential_fingerprint_differs_between_oauth_and_service_account() -> None:
+    dialect = BigqueryDialect()
+    oauth = dialect.credential_fingerprint(_oauth_ds())
+    svc = dialect.credential_fingerprint(DatasourceConfig(
+        name="bq", type="bigquery",
+        credentials_json=json.dumps({"type": "service_account", "project_id": "p"}),
+    ))
+    assert oauth != svc
+
+
+def test_credential_fingerprint_stable_across_token_refresh() -> None:
+    """Same user. Keying on the token would leak a fresh engine per refresh."""
+    dialect = BigqueryDialect()
+    before = dialect.credential_fingerprint(_oauth_ds(token="access-1", expiry="2026-01-01"))
+    after = dialect.credential_fingerprint(_oauth_ds(token="access-2", expiry="2026-01-02"))
+    assert before == after
+
+
+def test_credential_fingerprint_keeps_token_when_no_refresh_token() -> None:
+    """With no refresh token the access token is the whole identity, so it must
+    stay in the digest or two users collide."""
+    dialect = BigqueryDialect()
+    info = _oauth_info()
+    info.pop("refresh_token")
+    def ds_for(token: str) -> DatasourceConfig:
+        return DatasourceConfig(
+            name="bq", type="bigquery",
+            oauth_credentials_json=json.dumps({**info, "token": token}),
+        )
+    assert dialect.credential_fingerprint(ds_for("tok-alice")) != dialect.credential_fingerprint(ds_for("tok-bob"))
+
+
+def test_credential_fingerprint_leaks_no_secret_material() -> None:
+    """It lands in cache keys and logs, so it must not be reversible."""
+    fp = BigqueryDialect().credential_fingerprint(_oauth_ds())
+    for secret in ("rtok-alice", "csecret", "access-token-1"):
+        assert secret not in fp
+
+
+def test_credential_fingerprint_tolerates_malformed_oauth_json() -> None:
+    """Runs on every cache-key lookup, so an unparseable grant must yield a
+    digest rather than raise — ``build_engine`` is where it earns its error."""
+    ds = DatasourceConfig(
+        name="bq", type="bigquery", oauth_credentials_json="not json at all",
+    )
+    assert BigqueryDialect().credential_fingerprint(ds)
+
+
+def test_credential_fingerprint_distinguishes_malformed_payloads() -> None:
+    """Two unparseable grants are still two different identities."""
+    dialect = BigqueryDialect()
+
+    def ds_for(payload: str) -> DatasourceConfig:
+        return DatasourceConfig(name="bq", type="bigquery", oauth_credentials_json=payload)
+
+    assert dialect.credential_fingerprint(ds_for("garbage-alice")) != dialect.credential_fingerprint(ds_for("garbage-bob"))
+
+
+def test_build_engine_oauth_validates_before_importing_optional_driver() -> None:
+    """Config errors must surface as themselves even without the optional
+    'bigquery' extra, so validation precedes the google.* imports."""
+    ds = DatasourceConfig(name="bq", type="bigquery", oauth_credentials_json="not json")
+    dialect = BigqueryDialect()
+    with (
+        patch.dict("sys.modules", {"google.cloud": None, "google.oauth2.credentials": None}),
+        pytest.raises(ValueError, match="is not valid JSON"),
+    ):
+        dialect.build_engine(ds, connection_string="bigquery://p/d")
+
+
+# ---------------------------------------------------------------------------
+# Outer-wrap ORDER BY — BigQuery parses a quoted dotted alias into one part
+# per segment, so the qualifier strip must rebuild the whole alias.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "order_sql",
+    [
+        "SELECT 1 FROM t ORDER BY `orders.created_at` DESC",
+        "SELECT 1 FROM t ORDER BY `_base`.`orders.created_at` DESC",
+    ],
+)
+def test_bigquery_outer_wrap_order_by_keeps_full_alias(order_sql: str) -> None:
+    """No empty backtick qualifier, and the alias keeps its model prefix so it
+    resolves against the ``_outer`` scope."""
+    order = sqlglot.parse_one(order_sql, dialect="bigquery").args["order"]
+    out = BigqueryDialect().emit_outer_wrap(
+        inner_sql="SELECT `orders.created_at` AS `orders.created_at`, 1 AS x FROM t",
+        public=["orders.created_at"],
+        order=order,
+        limit=None,
+        offset_arg=None,
+    )
+    assert "``" not in out, f"empty identifier emitted: {out}"
+    assert "ORDER BY\n  `orders.created_at` DESC" in out, out
+
+
+async def test_bigquery_computed_measure_with_order_by_resolves() -> None:
+    """End-to-end: a computed measure ordered by a time dimension renders
+    through BigQuery's outer wrap with no empty backtick qualifier and a full
+    outer-scope ORDER BY alias (the outer-wrap fix, driven on the DEV-1450
+    engine pipeline rather than the deleted enrichment stack)."""
+    model = SlayerModel(
+        name="orders",
+        sql_table="orders",
+        data_source="bq",
+        default_time_dimension="created_at",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+            Column(name="quantity", sql="quantity", type=DataType.DOUBLE),
+        ],
+    )
+    query = SlayerQuery(
+        source_model="orders",
+        time_dimensions=[
+            TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)
+        ],
+        measures=[ModelMeasure(formula="revenue:sum / quantity:sum", name="aov")],
+        order=[OrderItem(column="created_at", direction="desc")],
+        limit=6,
+    )
+    sql = await _engine_generate(query=query, model=model, dialect="bigquery")
+    assert "``" not in sql, f"empty identifier emitted: {sql}"
+    # BigQuery bans dots in output aliases, so the dotted result key
+    # ``orders.created_at`` is mangled to ``orders___created_at`` and must
+    # match across SELECT / GROUP BY / ORDER BY.
+    assert "ORDER BY\n  `orders___created_at` DESC" in sql, sql
+
+
+def test_bigquery_outer_wrap_order_by_prefers_projected_alias() -> None:
+    """A qualified source column whose projected alias differs must resolve to
+    the alias the ``_outer`` scope actually exposes."""
+    order = sqlglot.parse_one(
+        "SELECT 1 FROM t ORDER BY `_base`.`orders.created_at` DESC",
+        dialect="bigquery",
+    ).args["order"]
+    out = BigqueryDialect().emit_outer_wrap(
+        inner_sql="SELECT `_base`.`orders.created_at` AS `created_at` FROM _base",
+        public=["created_at"],
+        order=order,
+        limit=None,
+        offset_arg=None,
+    )
+    assert "ORDER BY\n  `created_at` DESC" in out, out

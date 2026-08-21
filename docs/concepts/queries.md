@@ -189,6 +189,14 @@ local ones. Fields used only for ordering are computed but not returned.
 }
 ```
 
+Result keys are always this canonical dotted form, on every backend. Where a
+database's own rules force a different spelling in the emitted SQL — BigQuery
+and SQL Server reject dotted column aliases, and most engines cap identifier
+length — the alias is rewritten on the way out and restored on the way back, so
+`data` and `columns` do not vary by dialect. Only `sql` shows the rewritten
+form, since that is what actually ran. See
+[Database support](../database-support.md#identifier-length-limits).
+
 ---
 
 ## Filters
@@ -238,8 +246,9 @@ Multiple entries in the `filters` list are combined with AND.
 Filters in `SlayerQuery.filters` accept the closed Mode-B scalar
 allowlist: string hygiene (`lower`, `upper`, `trim`, `ltrim`,
 `rtrim`, `replace`, `substr`, `substring`, `instr`, `length`, `concat`),
-null handling (`coalesce`, `nullif`, `ifnull`), and math (`round`, `abs`,
-`ceil`, `floor`, `sign`, `log10`, …). The SQL `||` concat operator is
+null handling (`coalesce`, `nullif`, `ifnull`), math (`round`, `abs`,
+`ceil`, `floor`, `sign`, `trunc`, `mod`, `log10`, …), and scalar min/max
+(`greatest`, `least`). The SQL `||` concat operator is
 rewritten to `concat(...)` automatically. See
 [references](references.md#scalar-functions-and-dialect-semantics) for the
 full list and per-dialect semantics.

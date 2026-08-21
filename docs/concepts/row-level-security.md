@@ -92,8 +92,9 @@ SessionPolicy(ruleset=ColumnFilterRuleset(
     column="organization_uuid", value="7ef3...", on_unapplicable="pass"))
 ```
 
-A table whose column presence **cannot be confirmed** (an introspection error)
-always fails closed — the query is blocked regardless of `on_unapplicable`.
+A table whose column presence **cannot be confirmed** (an introspection error,
+or a probe that resolves no columns for the table) always fails closed — the
+query is blocked regardless of `on_unapplicable`.
 This is a deliberate security control: SLayer never emits an unscoped query on
 a table it could not verify.
 
@@ -170,6 +171,10 @@ JoinFilterRule(target_table="orders", join_path=["orders.customer_id = customers
 JoinFilterRule(target_table="orders", join_path=["customers.id = orders.customer_id"])
 ```
 
+A multi-hop path must **chain**: each hop starts on the table the previous one
+ended on (`line_items -> orders`, then `orders -> customers` above). The anchor
+may appear only as the far endpoint, never as an intermediate hop.
+
 `value` selects the operator exactly like a column ruleset (scalar → `=`,
 non-empty list → `IN`). A target schema-qualified as `public.orders` matches
 only the same-schema table; a bare `orders` matches the table in any schema
@@ -177,9 +182,10 @@ only the same-schema table; a bare `orders` matches the table in any schema
 
 ### Trust model
 
-The policy author is trusted; the agent is not. SLayer emits the anchor
-`column`, the join-path table/column names, and the `whitelist` entries
-**verbatim** — it does not introspect them. So:
+The policy author is trusted; the agent is not. SLayer takes the anchor
+`column`, the join-path table/column names, and the `whitelist` entries **on
+trust** — it emits them as written and never introspects or validates them
+against the database. So:
 
 - A **bare** table name matches the table in **any** schema. When your tenant
   data spans more than one schema, schema-qualify the anchor `table`, every
@@ -220,9 +226,10 @@ LEFT JOIN (SELECT * FROM customers WHERE organization_uuid = '7ef3...') AS c
 ```
 
 Wrapping the table (rather than appending to the outer `WHERE`) preserves
-`LEFT JOIN` semantics. Filter values are always emitted as bound literals, so
-the rewrite is injection-safe. Previewing a query with `dry_run=True` returns
-exactly the SQL that would execute, including the wraps.
+`LEFT JOIN` semantics. Filter values are always emitted as compiler-built
+literals and identifiers are assembled structurally — never string-interpolated
+— so the rewrite is injection-safe. Previewing a query with `dry_run=True`
+returns exactly the SQL that would execute, including the wraps.
 
 ## Scope and limits
 
@@ -245,6 +252,7 @@ exactly the SQL that would execute, including the wraps.
 - Cross-catalog (three-part `catalog.schema.table`) references — e.g. a
   BigQuery query spanning two projects — cannot be confirmed by a
   `ColumnFilterRuleset`'s schema-only column probe, so under that ruleset they
-  **fail closed** (the query is blocked). Single-catalog usage (the table's
-  catalog matches the connection's own) is unaffected. Catalog-aware
-  introspection is a future addition.
+  **fail closed** (the query is blocked). Single-catalog usage is unaffected:
+  the reference names no catalog, or it names the one the datasource itself
+  declares. A datasource that declares no catalog cannot confirm any three-part
+  reference. Catalog-aware introspection is a future addition.

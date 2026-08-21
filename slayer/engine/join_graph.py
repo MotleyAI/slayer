@@ -61,6 +61,61 @@ class JoinGraph:
                     frontier.append(nbr)
         return seen
 
+    def _reverse_reachable_to(self, target: str) -> set[str]:
+        """Nodes that can reach ``target`` via directed edges (incl. ``target``).
+        Used to prune ``count_simple_paths`` to the relevant subgraph."""
+        reverse: dict[str, set[str]] = {}
+        for src, nbrs in self._adj.items():
+            for nbr in nbrs:
+                reverse.setdefault(nbr, set()).add(src)
+        seen: set[str] = {target}
+        frontier: deque[str] = deque([target])
+        while frontier:
+            node = frontier.popleft()
+            for pred in reverse.get(node, ()):  # noqa: SIM118 — .get default
+                if pred not in seen:
+                    seen.add(pred)
+                    frontier.append(pred)
+        return seen
+
+    def count_simple_paths(self, root: str, target: str, *, cap: int = 2) -> int:
+        """Number of distinct simple (acyclic) directed paths ``root → target``,
+        capped at ``cap`` with early-stop.
+
+        ``0`` = unreachable, ``1`` = unique route, ``>= cap`` = ambiguous. Counts
+        ALL simple paths, not just shortest ones: a 2-hop plus a 3-hop route to
+        the same target is genuinely ambiguous (auto-picking the shorter would
+        silently change join semantics). The DFS is confined to nodes that can
+        still reach ``target`` (reverse-reachability prune) and iterates
+        adjacency in sorted order; the visited set keeps it finite on cyclic
+        (symmetric INNER) graphs. ``root == target`` returns ``1`` (trivial
+        empty route)."""
+        if root == target:
+            return 1
+        relevant = self._reverse_reachable_to(target)
+        if root not in relevant:
+            return 0
+
+        count = 0
+        visited: set[str] = {root}
+
+        def dfs(node: str) -> None:
+            nonlocal count
+            for nbr in sorted(self._adj.get(node, ())):  # noqa: SIM118 — .get default
+                if count >= cap:
+                    return
+                if nbr == target:
+                    count += 1
+                    continue
+                if nbr in visited or nbr not in relevant:
+                    continue
+                visited.add(nbr)
+                dfs(nbr)
+                visited.discard(nbr)
+
+        dfs(root)
+        return min(count, cap)
+
     def shortest_path(self, root: str, target: str) -> list[str] | None:
         """Return the hop-name sequence from ``root`` to ``target``
         (excluding ``root``), or ``None`` if unreachable.

@@ -108,6 +108,9 @@ class IngestRequest(BaseModel):
     include_tables: list[str] | None = None
     exclude_tables: list[str] | None = None
     schema_name: str | None = None
+    # Ingest recognised ELT/migration internals visible rather than hidden.
+    # Governs models this call creates; unhide an existing one via edit_model.
+    surface_internals: bool = False
 
 
 class ValidateModelsRequest(BaseModel):
@@ -657,6 +660,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 include_tables=request.include_tables,
                 exclude_tables=request.exclude_tables,
                 schema=request.schema_name,
+                surface_internals=request.surface_internals,
             )
         except SQLAlchemyError as exc:
             # OperationalError / DatabaseError both derive from SQLAlchemyError
@@ -683,6 +687,11 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             # Partial failure — at least one model failed to persist.
             # Mirror the CLI's exit-1 behaviour by surfacing 422 with the
             # full IdempotentIngestResult body (additions/to_delete/errors).
+            #
+            # ``result.skipped`` deliberately does not trigger 422 (though it
+            # does make `slayer ingest` exit 1): a REST client can't act on the
+            # `--exclude` remedy, so a permanently unmodellable object would
+            # else 422 forever. Skips travel in the 200 body instead.
             raise HTTPException(
                 status_code=422, detail=result.model_dump(mode="json")
             )

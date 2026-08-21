@@ -315,7 +315,7 @@ class TestInspectModelEndToEnd:
 
         # No leaked error artefacts from the old implementation
         assert "sample_data_error" not in result
-        assert "Bare measure name" not in result
+        assert "is not a saved measure" not in result
 
     async def test_no_longer_json(self, env) -> None:
         server = create_mcp_server(storage=env["storage"])

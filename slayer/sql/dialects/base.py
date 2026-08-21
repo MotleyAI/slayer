@@ -12,15 +12,18 @@ fields use class-level defaults (``sqlglot_name: str = "postgres"``).
 
 from __future__ import annotations
 
+import hashlib
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Literal, Optional
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 from pydantic import BaseModel, ConfigDict
 from sqlglot import exp
 from sqlglot.dialects.dialect import Dialect as _SqlglotDialect
 
 from slayer.core.enums import TimeGranularity
+from slayer.core.errors import IdentifierCollisionError
+from slayer.sql.dialects._identifier_fit import fit_identifier, substitute_quoted
 
 if TYPE_CHECKING:
     import sqlalchemy as sa
@@ -167,6 +170,14 @@ def _sqlglot_backslash_escapes(sqlglot_name: str) -> bool:
     return "\\" in escapes
 
 
+def _digest(secret: str | None) -> str:
+    """Non-reversible id for secret material in cache keys. 16 hex chars keeps
+    it log-readable; collisions are negligible at this scale."""
+    if not secret:
+        return ""
+    return hashlib.sha256(secret.encode("utf-8")).hexdigest()[:16]
+
+
 class SqlDialect(BaseModel):
     """Strategy class encapsulating one database's SQL-generation quirks.
 
@@ -183,6 +194,11 @@ class SqlDialect(BaseModel):
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
+
+    # Conservative universal identifier budget in BYTES; ``None`` = unbounded
+    # (fitting hooks become no-ops). Default is the tightest Tier-1 value
+    # (Postgres), so a new dialect over-shortens rather than silently truncating.
+    max_identifier_bytes: int | None = 63
 
     @property
     def backslash_escapes_strings(self) -> bool:
@@ -613,9 +629,15 @@ class SqlDialect(BaseModel):
             return base
         out = base
         if order is not None:
-            for col in order.find_all(exp.Column):
-                if col.args.get("table") is not None:
-                    col.set("table", None)
+            order = order.transform(
+                lambda node: (
+                    self._outer_order_column(
+                        col=node, public=public, inner_sql=inner_sql,
+                    )
+                    if isinstance(node, exp.Column) and len(node.parts) > 1
+                    else node
+                )
+            )
             out += "\n" + order.sql(dialect=self.sqlglot_name, pretty=True)
         if limit is not None:
             out += "\n" + limit.sql(dialect=self.sqlglot_name, pretty=True)
@@ -623,41 +645,150 @@ class SqlDialect(BaseModel):
             out += "\n" + offset_arg.sql(dialect=self.sqlglot_name, pretty=True)
         return out
 
-    def rewrite_emitted_sql(self, sql: str) -> str:
-        """Default: identity. Post-pass string-level rewrite of the final
-        generator output.
+    def _outer_order_column(
+        self, *, col: exp.Column, public: Sequence[str], inner_sql: str,
+    ) -> exp.Column:
+        """Re-resolve a qualified ORDER BY column against the ``_outer`` scope.
 
-        Symmetric companion to ``rewrite_parsed_ast`` (the input-side
-        hook): write-side, applied at the end of the generator's terminal
-        SQL emit (``generate_planned_stages``).
-
-        Contract: preserve query semantics. Suitable for alias renames,
-        identifier mangling/escape, dialect-quoting fixes. Do NOT change
-        query shape — use the typed ``build_*`` methods on this class for
-        that.
-
-        Overrides today: ``BigqueryDialect`` mangles dotted aliases that
-        would otherwise be rejected by BigQuery's output column-name
-        grammar.
+        BigQuery parses a quoted dotted alias (`` `orders.created_at` ``) into
+        one part per segment, so clearing the ``table`` arg would both drop the
+        model prefix and leave an empty qualifier; instead keep the longest
+        part-suffix that names a column of the outer scope. ``public`` is the
+        authoritative half of that scope; the ``inner_sql`` scan is the fallback
+        for an ORDER BY over a hidden hoist, which is projected but not public.
         """
-        return sql
+        candidates = [
+            ".".join(p.name for p in col.parts[i:]) for i in range(len(col.parts))
+        ]
+        for candidate in candidates:
+            if candidate in public:
+                return exp.Column(this=exp.Identifier(this=candidate, quoted=True))
+        for candidate in candidates:
+            if self.quote_identifier(candidate) in inner_sql:
+                return exp.Column(this=exp.Identifier(this=candidate, quoted=True))
+        return exp.Column(this=col.parts[-1].copy())
+
+    # DEV-1756 identifier-length fitting. Aliases stay canonical inside SLayer,
+    # fitted only on emission and restored on the result keys.
+
+    def quote_identifier(self, name: str) -> str:
+        """``name`` wrapped in this dialect's identifier quotes."""
+        return exp.Identifier(this=name, quoted=True).sql(dialect=self.sqlglot_name)
+
+    def fit_alias(self, name: str) -> str:
+        """Length-only fitting; identity when ``name`` already fits.
+
+        Drives the write pass (not ``emit_alias``), so an under-limit alias
+        produces byte-identical SQL even on dialects that mangle dots.
+        """
+        return fit_identifier(name=name, limit=self.max_identifier_bytes)
+
+    def emit_alias(self, alias: str) -> str:
+        """The final identifier a canonical alias reaches the SQL as.
+
+        Equals ``fit_alias`` here; BigQuery/T-SQL compose dot-mangling on top.
+        Used to build the read-side map, so must match the emitted token exactly.
+        """
+        return self.fit_alias(alias)
+
+    def alias_rewrite_map(self, aliases: Sequence[str]) -> dict[str, str]:
+        """``{canonical: fitted}`` for the write pass, only where they differ.
+
+        The collision check covers every alias including identities: a short
+        alias equal to another's fitted form is just as much a duplicate.
+        """
+        if self.max_identifier_bytes is None:
+            return {}
+        allocation: dict[str, str] = {}
+        owner: dict[str, str] = {}
+        for alias in aliases:
+            if alias in allocation:
+                continue
+            fitted = self.fit_alias(alias)
+            prior = owner.get(fitted)
+            if prior is not None and prior != alias:
+                raise IdentifierCollisionError(
+                    first=prior, second=alias, emitted=fitted,
+                    dialect=self.sqlglot_name, limit=self.max_identifier_bytes,
+                    namespace="projection alias",
+                )
+            owner[fitted] = alias
+            allocation[alias] = fitted
+        return {k: v for k, v in allocation.items() if k != v}
+
+    def decode_alias_map(self, aliases: Sequence[str]) -> dict[str, str]:
+        """``{emitted: canonical}`` — read-side inverse, rebuilt by re-running
+        the pure fitting rather than threading a map through generation."""
+        out: dict[str, str] = {}
+        for alias in aliases:
+            emitted = self.emit_alias(alias)
+            if emitted != alias:
+                out[emitted] = alias
+        return out
+
+    def _rekey_row(
+        self,
+        row: dict[str, Any],
+        mapping: dict[str, str],
+        *,
+        fallback: Callable[[str], str] | None = None,
+    ) -> dict[str, Any]:
+        """Apply ``mapping`` to a row's keys, erroring if two keys collapse onto
+        one (silent column loss).
+
+        ``fallback`` decodes keys absent from ``mapping`` (BigQuery/T-SQL
+        ``___`` -> ``.``). Applied here, not upstream, so the collapse check
+        sees every key.
+        """
+        out: dict[str, Any] = {}
+        for key, value in row.items():
+            if key in mapping:
+                decoded = mapping[key]
+            elif fallback is not None:
+                decoded = fallback(key)
+            else:
+                decoded = key
+            if decoded in out:
+                raise IdentifierCollisionError(
+                    first=key, second=decoded, emitted=decoded,
+                    dialect=self.sqlglot_name, limit=self.max_identifier_bytes,
+                    namespace="result key",
+                )
+            out[decoded] = value
+        return out
+
+    def rewrite_emitted_sql(
+        self, sql: str, *, aliases: Sequence[str] = (),
+    ) -> str:
+        """Post-pass string rewrite of the final SQL; write-side companion to
+        ``rewrite_parsed_ast``, applied at the end of ``generate()``.
+
+        Base impl fits over-limit aliases (DEV-1756), replacing each canonical
+        token everywhere it occurs. Driven by the query's own alias set, not a
+        length regex, which bounds what it can touch (see :func:`substitute_quoted`).
+        Empty ``aliases`` is a no-op. Must preserve query semantics, not shape.
+        BigQuery/T-SQL compose dot-mangling after this pass.
+        """
+        mapping = self.alias_rewrite_map(aliases)
+        if not mapping:
+            return sql
+        return substitute_quoted(sql=sql, mapping=mapping, quote=self.quote_identifier)
 
     def decode_result_keys(
         self,
         rows: list[dict[str, Any]],
+        *,
+        aliases: Sequence[str] = (),
     ) -> list[dict[str, Any]]:
-        """Default: identity. Reverse-pass on result-row keys to undo any
-        write-side mangling applied by ``rewrite_emitted_sql``.
+        """Reverse the write-side rewrite on result-row keys, so consumers always
+        see SLayer's canonical alias shape regardless of dialect or shortening.
 
-        Called at the end of ``SlayerQueryEngine.execute()`` so consumers
-        always see SLayer's universal alias shape (``orders._count``,
-        ``orders.products.category``) regardless of which dialect a
-        query ran on.
-
-        Overrides today: ``BigqueryDialect`` decodes the ``___`` mangling
-        back to dots.
+        BigQuery/T-SQL additionally decode the ``___`` mangling back to dots.
         """
-        return rows
+        mapping = self.decode_alias_map(aliases)
+        if not mapping:
+            return rows
+        return [self._rekey_row(row=row, mapping=mapping) for row in rows]
 
     def register_udfs(self, dbapi_connection) -> None:
         """Default: no-op. SQLite overrides to register Python aggregate
@@ -723,6 +854,20 @@ class SqlDialect(BaseModel):
         ``snowflake.connector.connect(connection_name=...)``.
         """
         return None
+
+    # ------------------------------------------------------------------
+    # Credential identity (engine-cache safety)
+    # ------------------------------------------------------------------
+
+    def credential_fingerprint(self, datasource: "DatasourceConfig") -> str:
+        """Opaque identity of the credentials this datasource authenticates with.
+
+        Part of the engine cache key: a dialect whose secret is *not* in the
+        connection string MUST override this, or callers with different
+        credentials share one engine. Return a digest, never raw secret —
+        keys reach logs.
+        """
+        return _digest(datasource.credentials_json)
 
     def apply_session_overrides(
         self,

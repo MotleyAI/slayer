@@ -18,7 +18,7 @@ import sqlalchemy as sa
 import sqlglot
 import sqlglot.expressions as exp
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.formula import parse_formula
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.refs import IDENTIFIER_RE as _IDENTIFIER_RE
@@ -525,6 +525,8 @@ class OsiToSlayerConverter:
         self._models[src].joins.append(ModelJoin(
             target_model=rel.to,
             join_pairs=pairs,
+            # OSI relationships are direction-implied: from = many, to = one.
+            cardinality=JoinCardinality.MANY_TO_ONE,
             description=_render_description(explicit=None, ctx=rel.ai_context),
             meta=_build_meta(ctx=rel.ai_context, custom_extensions=rel.custom_extensions),
         ))

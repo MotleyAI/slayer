@@ -11,7 +11,20 @@ Entry points: ``generate_from_planned`` (one stage) and
 
 import logging
 import re
-from typing import AbstractSet, Any, Dict, List, Literal, Optional, Set, Tuple, Union
+from collections.abc import Sequence
+from typing import (
+    AbstractSet,
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Literal,
+    Optional,
+    Set,
+    Tuple,
+    Union,
+)
 
 import sqlglot
 from sqlglot import exp
@@ -893,14 +906,6 @@ class SQLGenerator:
             expr=expr, intervals=intervals, sign=sign,
         )
 
-
-
-
-
-
-
-
-
     def _build_date_trunc(self, col_expr: exp.Expression, granularity: TimeGranularity) -> exp.Expression:
         """Build a DATE_TRUNC expression. Dispatches to the dialect strategy
         (DEV-1716).
@@ -1772,6 +1777,89 @@ class SQLGenerator:
                 ready_window.append(layer)
         return ready_window, ready_time_shift, ready_cp, not_ready
 
+    def _emit_step_cte(
+        self,
+        *,
+        ctes: List["CteEntry"],
+        chain_tail: str,
+        step_num: int,
+        cte_allocator,
+        aliases_by_slot_id: Dict[str, List[str]],
+        available_alias_by_slot_id: Dict[str, str],
+        source_relation: str,
+        slot_entries: Iterable[Tuple[str, Any]],
+        render: Callable[[Any], exp.Expression],
+    ) -> Tuple[str, int]:
+        """Emit one transform-chain step CTE and advance the chain.
+
+        ``render`` is invoked once per ``slot_entries`` element, in order, and
+        each element's alias-map updates happen AFTER its render — so a window
+        render sees earlier same-step aliases. ``render`` must not mutate the
+        alias maps. Appends the CTE to ``ctes``, updates both alias maps in
+        place, and returns ``(new_chain_tail, step_num)``.
+        """
+        step_num += 1
+        step_name = cte_allocator.allocate_cte(f"step{step_num}")
+        prev_cte = chain_tail
+        carry_aliases = self._carry_aliases_in_plan_order(aliases_by_slot_id)
+        step_parts = [exp.column(a, quoted=True) for a in carry_aliases]
+        for map_key, slot in slot_entries:
+            names = list(slot.public_aliases) or [slot.declared_name]
+            rendered = render(slot)
+            if slot.type is not None:
+                rendered = _wrap_cast_for_type(expr=rendered, dt=slot.type)
+            # One column per declared name (C13, DEV-1798); the first stays
+            # the canonical handle. ``as_`` copies its child, so the rendered
+            # node is safely reused.
+            for alias in names:
+                full_alias = f"{source_relation}.{alias}"
+                step_parts.append(rendered.as_(full_alias, quoted=True))
+                aliases_by_slot_id.setdefault(map_key, []).append(full_alias)
+                available_alias_by_slot_id.setdefault(map_key, full_alias)
+        ctes.append(CteEntry(
+            name=step_name,
+            query=exp.Select().select(*step_parts).from_(prev_cte),
+            depends_on=[prev_cte],
+        ))
+        return step_name, step_num
+
+    @staticmethod
+    def _unmaterialised_post_slots(
+        planned_query, aliases_by_slot_id: Dict[str, List[str]],
+    ) -> List[Any]:
+        """Projected POST-phase Arithmetic / ScalarCall slots no transform
+        layer rendered.
+
+        ``change(amount:sum)`` lowers to ``amount:sum - time_shift(...)``: the
+        time_shift slot is a self-join CTE pair, but the outer ArithmeticKey
+        that subtracts them needs its own step CTE. Same shape covers
+        ``change_pct`` and any future POST-phase non-transform slot.
+        """
+        from slayer.core.keys import (
+            ArithmeticKey as _ArithKey,
+            ScalarCallKey as _ScalarKey,
+            TransformKey as _TKey,
+        )
+        unmaterialised: List[Any] = []
+        for cslot in planned_query.combined_expression_slots:
+            if isinstance(cslot.key, _TKey):
+                continue
+            if cslot.id in aliases_by_slot_id:
+                continue
+            if isinstance(cslot.key, (_ArithKey, _ScalarKey)):
+                unmaterialised.append(cslot)
+        return unmaterialised
+
+    def _inner_select_from_final_cte(
+        self, *, chain_tail: str, aliases_by_slot_id: Dict[str, List[str]],
+    ) -> exp.Select:
+        """Inner SELECT over the final chain CTE: all carried aliases in PLAN
+        order (B8)."""
+        inner_aliases = self._carry_aliases_in_plan_order(aliases_by_slot_id)
+        return exp.Select().select(
+            *(exp.column(a, quoted=True) for a in inner_aliases),
+        ).from_(chain_tail)
+
     def _emit_window_batch_step(
         self,
         *,
@@ -1788,39 +1876,30 @@ class SQLGenerator:
         planned_query,
     ) -> tuple:
         """One ``step<n>`` CTE for a Kahn batch of window layers, carrying every
-        prior alias forward. Returns ``(new_chain_tail, new_step_num)``."""
-        step_num += 1
-        step_name = cte_allocator.allocate_cte(f"step{step_num}")
-        prev_cte = chain_tail
-        carry_aliases = self._carry_aliases_in_plan_order(aliases_by_slot_id)
-        step_parts = [exp.column(a, quoted=True) for a in carry_aliases]
-        for layer in ready_window:
-            for slot_id in layer.slot_ids:
-                slot = slots_by_id[slot_id]
-                alias = (
-                    slot.public_aliases[0]
-                    if slot.public_aliases
-                    else slot.declared_name
-                )
-                full_alias = f"{source_relation}.{alias}"
-                window_expr = self._render_window_transform_sql(
-                    slot=slot,
-                    slots_by_id=slots_by_id,
-                    slot_id_by_key=slot_id_by_key,
-                    available_alias_by_slot_id=available_alias_by_slot_id,
-                    planned_query=planned_query,
-                )
-                if slot.type is not None:
-                    window_expr = _wrap_cast_for_type(window_expr, slot.type)
-                step_parts.append(window_expr.as_(full_alias, quoted=True))
-                aliases_by_slot_id.setdefault(slot_id, []).append(full_alias)
-                available_alias_by_slot_id.setdefault(slot_id, full_alias)
-        ctes.append(CteEntry(
-            name=step_name,
-            query=exp.Select().select(*step_parts).from_(prev_cte),
-            depends_on=[prev_cte],
-        ))
-        return step_name, step_num
+        prior alias forward. Delegates to the shared ``_emit_step_cte`` shell.
+        Returns ``(new_chain_tail, new_step_num)``."""
+        window_entries = [
+            (slot_id, slots_by_id[slot_id])
+            for layer in ready_window
+            for slot_id in layer.slot_ids
+        ]
+        return self._emit_step_cte(
+            ctes=ctes,
+            chain_tail=chain_tail,
+            step_num=step_num,
+            cte_allocator=cte_allocator,
+            aliases_by_slot_id=aliases_by_slot_id,
+            available_alias_by_slot_id=available_alias_by_slot_id,
+            source_relation=source_relation,
+            slot_entries=window_entries,
+            render=lambda slot: self._render_window_transform_sql(
+                slot=slot,
+                slots_by_id=slots_by_id,
+                slot_id_by_key=slot_id_by_key,
+                available_alias_by_slot_id=available_alias_by_slot_id,
+                planned_query=planned_query,
+            ),
+        )
 
     def _emit_time_shift_layers(
         self,
@@ -1915,56 +1994,34 @@ class SQLGenerator:
         slots no transform layer rendered (``change`` / ``change_pct`` desugar to
         an outer subtraction/division over a ``time_shift`` slot; ``cumsum(x)+1``
         is the window analogue). Transform-key slots are materialised by their
-        layers, so they are skipped. Returns ``(new_chain_tail, new_step_num)``.
+        layers, so they are skipped. Delegates to the shared ``_emit_step_cte``
+        shell. Returns ``(new_chain_tail, new_step_num)``.
         """
-        from slayer.core.keys import (
-            ArithmeticKey as _ArithKey,
-            ScalarCallKey as _ScalarKey,
-            TransformKey as _TKey,
+        unmaterialised = self._unmaterialised_post_slots(
+            planned_query, aliases_by_slot_id,
         )
-        unmaterialised: list = []
-        for cslot in planned_query.combined_expression_slots:
-            if isinstance(cslot.key, _TKey):
-                continue
-            if cslot.id in aliases_by_slot_id:
-                continue
-            if isinstance(cslot.key, (_ArithKey, _ScalarKey)):
-                unmaterialised.append(cslot)
-        if unmaterialised:
-            step_num += 1
-            step_name = cte_allocator.allocate_cte(f"step{step_num}")
-            prev_cte = chain_tail
-            carry_aliases = self._carry_aliases_in_plan_order(aliases_by_slot_id)
-            step_parts = [exp.column(a, quoted=True) for a in carry_aliases]
-            for cslot in unmaterialised:
-                alias = (
-                    cslot.public_aliases[0]
-                    if cslot.public_aliases
-                    else cslot.declared_name
-                )
-                full_alias = f"{source_relation}.{alias}"
-                rendered = render_value_key(
-                    key=cslot.key,
-                    ctx=RenderContext(
-                        dialect=self._dialect,
-                        aliases=AliasFacilities(
-                            slot_id_by_key=slot_id_by_key,
-                            available_alias_by_slot_id=available_alias_by_slot_id,
-                        ),
+        if not unmaterialised:
+            return chain_tail, step_num
+        return self._emit_step_cte(
+            ctes=ctes,
+            chain_tail=chain_tail,
+            step_num=step_num,
+            cte_allocator=cte_allocator,
+            aliases_by_slot_id=aliases_by_slot_id,
+            available_alias_by_slot_id=available_alias_by_slot_id,
+            source_relation=source_relation,
+            slot_entries=[(cslot.id, cslot) for cslot in unmaterialised],
+            render=lambda cslot: render_value_key(
+                key=cslot.key,
+                ctx=RenderContext(
+                    dialect=self._dialect,
+                    aliases=AliasFacilities(
+                        slot_id_by_key=slot_id_by_key,
+                        available_alias_by_slot_id=available_alias_by_slot_id,
                     ),
-                )
-                if cslot.type is not None:
-                    rendered = _wrap_cast_for_type(rendered, cslot.type)
-                step_parts.append(rendered.as_(full_alias, quoted=True))
-                aliases_by_slot_id.setdefault(cslot.id, []).append(full_alias)
-                available_alias_by_slot_id.setdefault(cslot.id, full_alias)
-            ctes.append(CteEntry(
-                name=step_name,
-                query=exp.Select().select(*step_parts).from_(prev_cte),
-                depends_on=[prev_cte],
-            ))
-            chain_tail = step_name
-        return chain_tail, step_num
+                ),
+            ),
+        )
 
     def _finalize_planned_transform_chain(
         self,
@@ -1980,11 +2037,9 @@ class SQLGenerator:
         """Assemble the ``WITH`` chain, apply the POST-phase filter wrap, and emit
         the outer projection wrap in user-projection order (per-slot index walks
         C13 duplicate aliases). Returns the finished statement SQL."""
-        final_cte = chain_tail
-        inner_aliases = self._carry_aliases_in_plan_order(aliases_by_slot_id)
-        inner_select = exp.Select().select(
-            *(exp.column(a, quoted=True) for a in inner_aliases),
-        ).from_(final_cte)
+        inner_select = self._inner_select_from_final_cte(
+            chain_tail=chain_tail, aliases_by_slot_id=aliases_by_slot_id,
+        )
         chain_sql = assemble_with_chain(
             entries=ctes, final=inner_select,
         ).sql(dialect=self.dialect, pretty=True)
@@ -2471,9 +2526,10 @@ class SQLGenerator:
            so its joins must be in the FROM.
         4. **first/last explicit TIME ARGS** (``amount:last(customers.signup_at)``
            — DEV-1710). Discovery only; the ranked subquery's ORDER BY re-renders
-           the arg via ``_resolve_explicit_time_col``. Replaces the legacy
-           ``_collect_joined_paths_for_base`` AGGREGATE arm. A path-bearing
-           derived (``ColumnSqlKey``) arg — the DEV-1526 residual — is skipped.
+           the arg from the plan (``RankedAggregatePlan.ranking_time_key``).
+           Replaces the legacy ``_collect_joined_paths_for_base`` AGGREGATE arm.
+           A path-bearing derived (``ColumnSqlKey``) arg — the DEV-1526 residual
+           — is skipped.
 
         Cross-model aggregates (non-empty ``source.path``) are skipped in every
         sub-pass: their inputs are owned by the per-plan ``_cm_*`` CTE
@@ -2566,8 +2622,8 @@ class SQLGenerator:
             # a source / kwarg does; resolving it through the scope registers
             # that join (Law 1), so the ranked subquery's ORDER BY ref is in the
             # base FROM. Replaces the legacy ``_collect_joined_paths_for_base``
-            # AGGREGATE arm. Register-only: the render spec re-resolves via
-            # ``_resolve_explicit_time_col``.
+            # AGGREGATE arm. Register-only: the ranked plan carries the resolved
+            # ranking time column (``RankedAggregatePlan.ranking_time_key``).
             arg = self._explicit_time_arg_of(key)
             if arg is None:
                 return
@@ -2584,6 +2640,22 @@ class SQLGenerator:
         _for_each_local_agg(_resolve_fragment_kwargs)
         _for_each_local_agg(_resolve_first_last_time_arg)
         return resolved
+
+    def _throwaway_frame(self, *, model, relation: str, bundle) -> ScopeFrame:
+        """A target-rooted ``ScopeFrame`` built purely to reproduce an anchored
+        expression. Its ``join_paths`` are inert — join discovery is owned by a
+        separate pass — so every caller discards them; only the re-anchored SQL
+        is used. A fresh allocator per frame keeps its scope id generation-local.
+        """
+        allocator = self._new_allocator()
+        return ScopeFrame(
+            scope_id=allocator.next_scope_id(relation),
+            root_model=model,
+            root_relation=relation,
+            bundle=bundle,
+            dialect=self._dialect,
+            allocator=allocator,
+        )
 
     def _resolve_agg_kwargs_for_key(
         self, *, key, source_model, source_relation: str, bundle,
@@ -2605,14 +2677,8 @@ class SQLGenerator:
         kwargs = getattr(key, "kwargs", None)
         if bundle is None or not kwargs:
             return None
-        allocator = self._new_allocator()
-        scope = ScopeFrame(
-            scope_id=allocator.next_scope_id(source_relation),
-            root_model=source_model,
-            root_relation=source_relation,
-            bundle=bundle,
-            dialect=self._dialect,
-            allocator=allocator,
+        scope = self._throwaway_frame(
+            model=source_model, relation=source_relation, bundle=bundle,
         )
         resolved = {
             kname: ResolvedAggKwarg(kind="expr", value=scope.resolve(kval))
@@ -2821,7 +2887,7 @@ class SQLGenerator:
                     # NotImplementedError.
                     bare = _first_bare_column_name(key) or full_alias
                     raise ValueError(
-                        f"Bare measure name '{bare}' is not valid. "
+                        f"'{bare}' needs an aggregation inside an expression. "
                         f"Use colon syntax (e.g., '{bare}:sum', '{bare}:avg'). "
                         f"For COUNT(*), use '*:count'."
                     )
@@ -2924,14 +2990,14 @@ class SQLGenerator:
         """The explicit positional ranking-time arg of a ``first`` / ``last``
         aggregate, or ``None``.
 
-        The SINGLE arg-selection contract shared by the three sites that must
+        The SINGLE arg-selection contract shared by the two sites that must
         never disagree on WHICH positional arg is the time column (DEV-1710 /
-        Codex F1): the ranked-plan builder in ``slayer/engine/ranked_planner.py``,
-        the join-discovery pass in ``_resolve_agg_inputs_via_scope``, and the
-        render seam ``_resolve_explicit_time_col``. Returns the FIRST positional arg
-        iff it is a ``ColumnKey`` / ``ColumnSqlKey``; ``None`` for a
-        non-first/last agg, empty args, or a first positional arg of any other
-        type (first/last never takes a leading non-column positional).
+        Codex F1): the ranked-plan builder in ``slayer/engine/ranked_planner.py``
+        and the join-discovery pass in ``_resolve_agg_inputs_via_scope``. Returns
+        the FIRST positional arg iff it is a ``ColumnKey`` / ``ColumnSqlKey``;
+        ``None`` for a non-first/last agg, empty args, or a first positional arg
+        of any other type (first/last never takes a leading non-column
+        positional).
         """
         from slayer.core.keys import ColumnKey, ColumnSqlKey
 
@@ -2940,97 +3006,6 @@ class SQLGenerator:
         for a in key.args:
             return a if isinstance(a, (ColumnKey, ColumnSqlKey)) else None
         return None
-
-    def _resolve_explicit_time_col(
-        self,
-        *,
-        key,
-        source_model,
-        source_relation: str,
-        bundle=None,
-    ) -> Optional[str]:
-        """Resolve the explicit positional time arg on a ``first`` / ``last``
-        aggregate into a SQL string suitable for ``ORDER BY`` inside the
-        ranked subquery.
-
-        Handles both bare-column refs (``ColumnKey`` —
-        ``amount:last(created_at)``) and derived-column refs (``ColumnSqlKey``
-        — ``amount:last(net_amount_date)`` where ``net_amount_date`` has a
-        non-trivial ``Column.sql``). DEV-1710 Stage 6: when a ``bundle`` is
-        available the arg is anchored through a ``ScopeFrame`` (Law 1) — the
-        same resolver the host base / kwargs passes use — so a bare joined ref
-        qualifies to its ``__``-path alias, a derived expression's inner bare
-        refs qualify to ``source_relation`` (never ambiguous against a
-        same-named joined column), and reserved-word relations are quoted
-        (DEV-1686). Without a ``bundle`` (the render-spec unit path) it falls
-        back to bare-ident qualification / verbatim emit.
-
-        Returns ``None`` for non-first/last aggs and when ``key.args`` is empty
-        or its first element is neither a ``ColumnKey`` nor a ``ColumnSqlKey``
-        (see ``_explicit_time_arg_of``). A derived time arg (``ColumnSqlKey``)
-        whose ``path`` is non-empty AFTER the DEV-1707 cross-model reroot — a
-        column a hop PAST the target — raises ``NotImplementedError`` rather
-        than silently emitting against a relation the isolated CTE does not
-        join; that residual-hop case is tracked as DEV-1526 (Stage 4). The
-        analogous residual ``ColumnKey`` arg is caught loudly by the
-        scope-closure validator (``SLAYER_VALIDATE_SCOPES``) instead.
-        """
-        from slayer.core.keys import ColumnKey, ColumnSqlKey
-
-        arg = self._explicit_time_arg_of(key)
-        if arg is None:
-            return None
-        if isinstance(arg, ColumnSqlKey) and arg.path:
-            raise NotImplementedError(
-                f"Derived time column with a residual join path "
-                f"(path={arg.path!r}, column={arg.column_name!r}) on a "
-                f"first/last positional arg is not yet supported by "
-                f"the ranked-subquery builder: the isolated CTE does "
-                f"not pull the residual join. Post-DEV-1707 the "
-                f"cross-model reroot strips the target prefix, so this "
-                f"fires only for a time arg a hop PAST the target; "
-                f"tracked as DEV-1526 (Stage 4)."
-            )
-        # Validate a derived arg's existence up front so the not-found case is a
-        # clear error rather than the resolver silently anchoring the bare name.
-        col = None
-        if isinstance(arg, ColumnSqlKey):
-            col = next(
-                (c for c in source_model.columns if c.name == arg.column_name),
-                None,
-            )
-            if col is None:
-                raise ValueError(
-                    f"Derived time column {arg.column_name!r} (positional "
-                    f"arg of {key.agg!r}) not found on model "
-                    f"{source_model.name!r}."
-                )
-        if bundle is not None:
-            # Law 1 — anchor the arg through a throwaway host-rooted scope. Its
-            # ``join_paths`` are discarded (discovery is owned by the base
-            # aggregate-input pass, which registers the same join); this call is
-            # purely to reproduce the SAME anchored SQL the ORDER BY needs. Same
-            # throwaway-frame pattern as ``_resolve_agg_kwargs_for_key``.
-            allocator = self._new_allocator()
-            scope = ScopeFrame(
-                scope_id=allocator.next_scope_id(source_relation),
-                root_model=source_model,
-                root_relation=source_relation,
-                bundle=bundle,
-                dialect=self._dialect,
-                allocator=allocator,
-            )
-            return scope.resolve(arg).sql(dialect=self.dialect)
-        # No bundle (defensive; the render-spec unit path): bare ColumnKey
-        # qualifies to its ``__``-path alias / source relation, a derived
-        # bare-ident qualifies to the source relation, else emit verbatim.
-        if isinstance(arg, ColumnKey):
-            relation = "__".join(arg.path) if arg.path else source_relation
-            return f"{relation}.{arg.leaf}"
-        col_sql = col.sql if col.sql else col.name
-        if col_sql.isidentifier():
-            return f"{source_relation}.{col_sql}"
-        return self._parse(col_sql).sql(dialect=self.dialect)
 
     def _composite_agg_builder(
         self, *, slot, source_model, source_relation: str, bundle,
@@ -4143,6 +4118,7 @@ class SQLGenerator:
                 continue
             cte_name = cte_name_from_alias(
                 prefix="_cm_", alias=canonical_alias, allocator=cm_allocator,
+                dialect=self.dialect, limit=self._dialect.max_identifier_bytes,
             )
             cm_cte_name_by_identity[identity] = cte_name
             cm_cte_name_for_plan[plan.aggregate_slot_id] = cte_name
@@ -4207,6 +4183,7 @@ class SQLGenerator:
             )
             cte_name = cte_name_from_alias(
                 prefix="_wm_", alias=full_agg_alias, allocator=wm_allocator,
+                dialect=self.dialect, limit=self._dialect.max_identifier_bytes,
             )
             cte_query, grain_aliases = self._render_window_measure_cte_from_planned(
                 plan=plan, agg_slot=agg_slot, source_model=source_model,
@@ -4243,6 +4220,7 @@ class SQLGenerator:
             )
             cte_name = cte_name_from_alias(
                 prefix=RANKED_CTE_PREFIX, alias=full_agg_alias, allocator=rk_allocator,
+                dialect=self.dialect, limit=self._dialect.max_identifier_bytes,
             )
             cte_query, grain_aliases = self._render_ranked_cte_from_planned(
                 plan=plan, agg_slot=agg_slot, bundle=bundle,
@@ -5415,9 +5393,9 @@ class SQLGenerator:
         # the host-rooted derived key renders against the wrong alias inside
         # the CTE — and the DEV-1476(c) explicit time arg
         # ``customers.amount:last(customers.signup_at)``, whose positional arg
-        # must strip the host prefix in lockstep with the source so
-        # ``_resolve_explicit_time_col`` qualifies the time column under the
-        # target relation. ``column_filter_key`` rides through unchanged
+        # must strip the host prefix in lockstep with the source so the ranked
+        # plan qualifies the time column under the target relation.
+        # ``column_filter_key`` rides through unchanged
         # (owner-anchored, invariant under reroot).
         cross_model_path = getattr(agg_slot.key.source, "path", ())
         local_agg_key = reroot_aggregate_key(
@@ -5879,14 +5857,8 @@ class SQLGenerator:
             return None
         wanted = set(filter_ids)
 
-        allocator = self._new_allocator()
-        scope = ScopeFrame(
-            scope_id=allocator.next_scope_id(target_relation),
-            root_model=target_model,
-            root_relation=target_relation,
-            bundle=bundle,
-            dialect=self._dialect,
-            allocator=allocator,
+        scope = self._throwaway_frame(
+            model=target_model, relation=target_relation, bundle=bundle,
         )
         ctx = RenderContext(
             scope=scope,
@@ -7118,9 +7090,19 @@ class SQLGenerator:
         else:
             slot_aliases = [cte_allocator.allocate_cte(slot.declared_name)]
         cte_name_alias = slot_aliases[0]
-        # DEV-1692: allocate collision-free CTE names too.
-        shifted_cte_name = cte_allocator.allocate_cte(f"shifted_{cte_name_alias}")
-        sjoin_cte_name = cte_allocator.allocate_cte(f"sjoin_{cte_name_alias}")
+        # DEV-1692: allocate collision-free CTE names too. DEV-1756: length-fit
+        # them so a long transform name can't push ``shifted_``/``sjoin_`` past
+        # the dialect's identifier limit and silently truncate.
+        _fit_kw = dict(
+            allocator=cte_allocator, dialect=self.dialect,
+            limit=self._dialect.max_identifier_bytes,
+        )
+        shifted_cte_name = cte_name_from_alias(
+            prefix="shifted_", alias=cte_name_alias, **_fit_kw,
+        )
+        sjoin_cte_name = cte_name_from_alias(
+            prefix="sjoin_", alias=cte_name_alias, **_fit_kw,
+        )
 
         # The shifted CTE reads the SOURCE table, not the chain, so it declares
         # no dependency; the assembler keeps it in declaration order.
@@ -7394,18 +7376,25 @@ class SQLGenerator:
             default=exp.Literal.number(0),
         )
         cp_value_cte_name = cte_allocator.allocate_cte(f"cp_value_{slot_alias}")
+        # One value column per declared name (C13, DEV-1798); the first stays
+        # canonical. The internal cp_reset alias stays single (not user-facing).
+        output_aliases = [
+            f"{source_relation}.{a}" for a in slot.public_aliases
+        ] or [full_slot_alias]
         ctes.append(CteEntry(
             name=cp_value_cte_name,
             query=exp.Select().select(
                 *(c.copy() for c in carry_cols),
-                value_outer_case.as_(full_slot_alias, quoted=True),
+                *(value_outer_case.copy().as_(oa, quoted=True)
+                  for oa in output_aliases),
             ).from_(cp_reset_cte_name),
             depends_on=[cp_reset_cte_name],
         ))
 
-        # Record the slot's alias for downstream lookups.
-        aliases_by_slot_id.setdefault(slot.id, []).append(full_slot_alias)
-        available_alias_by_slot_id.setdefault(slot.id, full_slot_alias)
+        # Record the slot's aliases for downstream lookups.
+        for oa in output_aliases:
+            aliases_by_slot_id.setdefault(slot.id, []).append(oa)
+            available_alias_by_slot_id.setdefault(slot.id, oa)
         return cp_value_cte_name
 
     @staticmethod
@@ -8200,20 +8189,9 @@ class SQLGenerator:
                 if isinstance(source, ColumnKey)
                 else source.column_name
             )
-            # ``first`` / ``last`` aggregations rank rows via a ROW_NUMBER
-            # ranked CTE (planned in ``slayer/engine/ranked_planner.py``,
-            # rendered by ``_render_ranked_cte_from_planned``) and pick
-            # ``rn = 1`` through ``MAX(CASE WHEN _rn = 1 THEN col END)``.
-            # An explicit positional arg (``latest_amount:last(created_at)``
-            # or ``…:last(derived_time_col)``) overrides the query's default
-            # ranking time column; the helper handles both bare-column
-            # (``ColumnKey``) and derived-column (``ColumnSqlKey``) args.
-            explicit_time_col = self._resolve_explicit_time_col(
-                key=key,
-                source_model=source_model,
-                source_relation=source_relation,
-                bundle=bundle,
-            )
+            # ``first`` / ``last`` render through RankedAggregatePlan (see
+            # ``_ranked_value_expr``), never through this spec builder, so no
+            # explicit ranking time column is resolved here.
             agg_def = self._resolve_aggregation_def(
                 key=key, source_model=source_model, src_leaf=src_leaf,
             )
@@ -8291,7 +8269,7 @@ class SQLGenerator:
                 filter_sql=filter_sql,
                 agg_kwargs=agg_kwargs_str,
                 aggregation_def=agg_def,
-                time_column=explicit_time_col,
+                time_column=None,
             )
         raise NotImplementedError(
             f"AggregateKey source {type(source).__name__} not supported.",
@@ -8469,19 +8447,12 @@ class SQLGenerator:
         slot_by_key=None, aliases_by_slot_id=None,
     ) -> RenderContext:
         """A ``RenderContext`` for the WHERE/HAVING filter family, over a
-        render-scoped host ``ScopeFrame`` (the crossed joins are pulled into the
-        FROM by a separate pass, so this scope's ``join_paths`` are inert — the
-        same throwaway pattern as ``_resolve_agg_kwargs_for_key``; PR 6
-        consolidates them). Carries the filter-side CAST policy and the DEV-1539
-        comparison grouping."""
-        allocator = self._new_allocator()
-        scope = ScopeFrame(
-            scope_id=allocator.next_scope_id(source_relation),
-            root_model=source_model,
-            root_relation=source_relation,
-            bundle=bundle,
-            dialect=self._dialect,
-            allocator=allocator,
+        render-scoped host ``ScopeFrame`` from ``_throwaway_frame`` (the crossed
+        joins are pulled into the FROM by a separate pass, so this scope's
+        ``join_paths`` are inert). Carries the filter-side CAST policy and the
+        DEV-1539 comparison grouping."""
+        scope = self._throwaway_frame(
+            model=source_model, relation=source_relation, bundle=bundle,
         )
         return RenderContext(
             scope=scope,
@@ -8924,6 +8895,7 @@ def generate_planned_stages(
     *,
     bundle,
     dialect: str = "postgres",
+    projection_aliases: "Sequence[str]" = (),
 ) -> str:
     """Render a multi-stage DAG (``plan_stages`` output) to one SQL string.
 
@@ -8946,7 +8918,11 @@ def generate_planned_stages(
         sql = generate_from_planned(
             planned_queries[0], bundle=bundle, dialect=dialect,
         )
-        sql = get_dialect(dialect).rewrite_emitted_sql(sql)
+        # DEV-1756: length-fit over-limit projection aliases. ``projection_
+        # aliases`` are the plan-derived canonical result keys (same source the
+        # read side decodes against), passed in rather than parsed off the
+        # pre-mangle SQL — BigQuery can't parse a backticked dotted alias.
+        sql = get_dialect(dialect).rewrite_emitted_sql(sql, aliases=projection_aliases)
         # DEV-1705: validate the final POST-mangle, pre-RLS statement (env-gated).
         maybe_validate_scopes(sql, dialect=dialect)
         return sql
@@ -9005,8 +8981,10 @@ def generate_planned_stages(
     # otherwise). The re-parse/with_ grafting above can surface dotted aliases
     # the per-stage emits already mangled, so mangle once more here
     # (idempotent) to catch the root's own projection.
+    # DEV-1756: length-fit over-limit projection aliases (plan-derived, passed
+    # in — see the single-stage branch above).
     sql = root_ast.sql(dialect=dialect, pretty=True)
-    sql = get_dialect(dialect).rewrite_emitted_sql(sql)
+    sql = get_dialect(dialect).rewrite_emitted_sql(sql, aliases=projection_aliases)
     # DEV-1705: validate the final POST-mangle, pre-RLS multi-stage root
     # (env-gated). One validation per final terminal (single- vs multi-stage).
     maybe_validate_scopes(sql, dialect=dialect)

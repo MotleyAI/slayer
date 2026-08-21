@@ -56,6 +56,7 @@ __all__ = [
     "PreboundQuery",
     "StrictQueryCarrier",
     "aggregated_type",
+    "partition_declared_measures",
     "dimension_key_metadata",
     "measure_key_format_description",
     "measure_key_type",
@@ -66,6 +67,23 @@ __all__ = [
 # ---------------------------------------------------------------------------
 # The seam types
 # ---------------------------------------------------------------------------
+
+
+def partition_declared_measures(
+    *,
+    declared_measures: List[DeclaredMeasure],
+    n_dims: int,
+    n_time_dimensions: int,
+) -> Tuple[List[DeclaredMeasure], List[DeclaredMeasure], List[DeclaredMeasure]]:
+    """Split ``declared_measures`` into its (dims, time_dims, aggregates) prefix
+    partition — the slice arithmetic the planners used to inline. ``n_dims`` /
+    ``n_time_dimensions`` are the grain prefix lengths (see ``PreboundQuery``)."""
+    grain = n_dims + n_time_dimensions
+    return (
+        declared_measures[:n_dims],
+        declared_measures[n_dims:grain],
+        declared_measures[grain:],
+    )
 
 
 class PreboundQuery(BaseModel):
@@ -135,6 +153,16 @@ class PreboundQuery(BaseModel):
                 f"declared measures for them to be a prefix of.",
             )
         return self
+
+    @property
+    def grain_declared_measures(self) -> List[DeclaredMeasure]:
+        """The dimension + time-dimension grain prefix of ``declared_measures``."""
+        dims, time_dims, _ = partition_declared_measures(
+            declared_measures=self.declared_measures,
+            n_dims=self.n_dims,
+            n_time_dimensions=self.n_time_dimensions,
+        )
+        return dims + time_dims
 
 
 class StrictQueryCarrier(BaseModel):

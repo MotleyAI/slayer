@@ -13,7 +13,7 @@ v4 (DEV-1330): join targets are resolved within the parent model's
 """
 
 
-from slayer.core.enums import JoinType
+from slayer.core.enums import JoinType, invert_cardinality
 from slayer.core.models import DatasourceConfig, ModelJoin, SlayerModel
 from slayer.embeddings.models import Embedding
 from slayer.memories.models import Memory
@@ -38,20 +38,24 @@ async def _mirror_inner_joins(model: SlayerModel, storage: StorageBackend) -> No
         if target is None:
             continue
         reverse_pairs = [[tgt, src] for src, tgt in join.join_pairs]
+        reverse_cardinality = invert_cardinality(join.cardinality)
         existing = next(
             (j for j in target.joins
              if j.target_model == model.name and j.join_type == JoinType.INNER),
             None,
         )
         if existing is not None:
-            if existing.join_pairs != reverse_pairs:
+            if (existing.join_pairs != reverse_pairs
+                    or existing.cardinality != reverse_cardinality):
                 existing.join_pairs = reverse_pairs
+                existing.cardinality = reverse_cardinality
                 await storage.save_model(target)
         else:
             target.joins.append(ModelJoin(
                 target_model=model.name,
                 join_pairs=reverse_pairs,
                 join_type=JoinType.INNER,
+                cardinality=reverse_cardinality,
             ))
             await storage.save_model(target)
 

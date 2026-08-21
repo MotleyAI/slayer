@@ -1,6 +1,7 @@
 """CLI entry point for SLayer."""
 
 import argparse
+import asyncio
 import copy
 import json
 import os
@@ -17,6 +18,7 @@ from slayer.core.errors import (
     SlayerError,
 )
 from slayer.core.models import SlayerModel
+from slayer.engine.cardinality import CardinalityVerdict
 from slayer.engine.ingestion import (
     _print_ingest_addition,
     _print_ingest_drift_and_errors,
@@ -278,6 +280,27 @@ examples:
         default=None,
         help="Comma-separated list of tables to exclude",
     )
+    ingest_parser.add_argument(
+        "--no-views",
+        dest="include_views",
+        action="store_false",
+        default=True,
+        help=(
+            "Skip database views and materialized views (they are ingested "
+            "by default)"
+        ),
+    )
+    ingest_parser.add_argument(
+        "--surface-internals",
+        action="store_true",
+        default=False,
+        help=(
+            "Ingest recognised ELT/migration housekeeping tables (_dlt_*, "
+            "_airbyte_*, alembic_version, flyway_schema_history, …) visible "
+            "instead of hidden. Affects models this run CREATES; to unhide "
+            "one an earlier run already created, use edit_model(hidden=false)."
+        ),
+    )
     _add_storage_arg(ingest_parser)
 
     # ── validate-models ───────────────────────────────────────────────
@@ -288,6 +311,9 @@ examples:
 examples:
   slayer validate-models                      # check every datasource
   slayer validate-models --datasource my_pg
+  slayer validate-models --cardinality        # + profile join arity (full scans)
+  slayer validate-models --cardinality --persist-cardinality
+  slayer validate-models --model orders --format json
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -295,6 +321,33 @@ examples:
         "--datasource",
         default=None,
         help="Datasource name. If omitted, every datasource is validated.",
+    )
+    validate_parser.add_argument(
+        "--model",
+        default=None,
+        help="Limit the whole report (and --force-clean) to a single model.",
+    )
+    validate_parser.add_argument(
+        "--cardinality",
+        action="store_true",
+        help=(
+            "Also profile each join's arity from the data. Full-scans both "
+            "sides of every join, so it is off by default."
+        ),
+    )
+    validate_parser.add_argument(
+        "--persist-cardinality",
+        action="store_true",
+        help=(
+            "Write the detected cardinality back onto each matching join. "
+            "Implies --cardinality."
+        ),
+    )
+    validate_parser.add_argument(
+        "--format",
+        default="text",
+        choices=["text", "json"],
+        help="Output format. json emits one {drift, cardinality} document.",
     )
     validate_parser.add_argument(
         "--force-clean",
@@ -522,6 +575,25 @@ examples:
         "--exclude",
         default=None,
         help="(with --ingest) Comma-separated list of tables to exclude",
+    )
+    datasources_create_parser.add_argument(
+        "--no-views",
+        dest="include_views",
+        action="store_false",
+        default=True,
+        help=(
+            "(with --ingest) Skip database views and materialized views "
+            "(they are ingested by default)"
+        ),
+    )
+    datasources_create_parser.add_argument(
+        "--surface-internals",
+        action="store_true",
+        default=False,
+        help=(
+            "(with --ingest) Ingest recognised ELT/migration housekeeping "
+            "tables visible instead of hidden"
+        ),
     )
     datasources_create_parser.add_argument(
         "--years",
@@ -837,6 +909,11 @@ examples:
     elif args.command == "ingest":
         _run_ingest(args)
     elif args.command == "validate-models":
+        if args.format == "json" and args.force_clean:
+            parser.error(
+                "--format json cannot be combined with --force-clean "
+                "(the apply flow is interactive and prints progress)"
+            )
         _run_validate_models(args)
     elif args.command == "recommend-root-model":
         _run_recommend_root_model(args)
@@ -1387,12 +1464,40 @@ def _run_ingest(args):
             schema=args.schema,
             include_tables=_parse_csv_arg(args.include),
             exclude_tables=_parse_csv_arg(args.exclude),
+            include_views=getattr(args, "include_views", True),
+            surface_internals=getattr(args, "surface_internals", False),
         )
     )
+
+    # Gate on ``objects``, not ``additions``: a schema whose objects are all
+    # already in sync must stay quiet, but a truly empty schema must not print
+    # nothing and exit 0 (which reads as "empty" to a user with only views).
+    if not (
+        result.additions
+        or result.to_delete
+        or result.errors
+        or result.skipped
+        or result.objects
+    ):
+        from slayer.engine.ingestion import _empty_ingest_message
+
+        print(
+            _empty_ingest_message(
+                schema_name=args.schema or "",
+                ds=ds,
+                retry_hint=(
+                    "Try re-running with --schema set to one of these."
+                ),
+            )
+        )
+        sys.exit(1)
+
     for addition in result.additions:
         _print_ingest_addition(addition)
-    _print_ingest_drift_and_errors(result)
-    if result.errors:
+    _print_ingest_drift_and_errors(result, data_source=args.datasource)
+    # A skip means we declined to ingest a perfectly valid object, so it fails
+    # the command — `--exclude <name>` is the documented way to make it green.
+    if result.errors or result.skipped:
         sys.exit(1)
 
 
@@ -1432,34 +1537,153 @@ def _format_validate_models_output(entries) -> str:
     return "\n".join(lines)
 
 
-def _run_validate_models(args):
-    from slayer.engine.query_engine import SlayerQueryEngine
+def _format_cardinality_report_text(report, *, indent: str = "") -> str:
+    if not report.findings:
+        return f"{indent}No joins found."
+    lines: list[str] = []
+    for f in report.findings:
+        detected = f.detected.value if f.detected else "-"
+        stored = f.stored.value if f.stored else "-"
+        lines.append(
+            f"{indent}{f.model} -> {f.target_model}: detected={detected} "
+            f"stored={stored} verdict={f.verdict.value}"
+        )
+        for c in f.unique_contradictions:
+            lines.append(f"{indent}    ! {c}")
+        if f.note:
+            lines.append(f"{indent}    ({f.note})")
+    return "\n".join(lines)
 
-    storage = _resolve_storage(args)
+
+def _indent_block(text: str, *, indent: str = "  ") -> str:
+    return "\n".join(f"{indent}{line}" if line else line
+                     for line in text.split("\n"))
+
+
+def _resolve_validate_scope(args, storage) -> None:
+    """Fail fast on a typoed --datasource / --model.
+
+    Either would otherwise yield an empty report, indistinguishable from
+    "no drift" — and exit 0.
+    """
+    storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
     if args.datasource:
-        # Fail fast on a typoed name. Without this check, ``validate_models``
-        # returns ``[]`` for an unknown datasource (no models match), which
-        # is indistinguishable from "no drift" and silently exits 0.
-        ds = run_sync(storage.get_datasource(args.datasource))
-        if ds is None:
-            storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
-            print(f"Datasource '{args.datasource}' not found in {storage_path}")
+        if run_sync(storage.get_datasource(args.datasource)) is None:
+            print(
+                f"Datasource '{args.datasource}' not found in {storage_path}",
+                file=sys.stderr,
+            )
             sys.exit(1)
-    engine = SlayerQueryEngine(storage=storage)
-    try:
-        entries = run_sync(engine.validate_models(data_source=args.datasource))
-    except Exception as exc:  # noqa: BLE001 — surface DB/auth/introspection failures cleanly
-        print(f"validate-models failed: {exc}")
+    model = getattr(args, "model", None)
+    if not model:
+        return
+    identities = run_sync(storage._list_all_model_identities())
+    # Models are keyed by (data_source, name), so an unscoped run matches the
+    # name in every datasource that has one.
+    if not any(
+        name == model and (not args.datasource or ds == args.datasource)
+        for ds, name in identities
+    ):
+        where = f"datasource '{args.datasource}'" if args.datasource else storage_path
+        print(f"Model '{model}' not found in {where}", file=sys.stderr)
         sys.exit(1)
-    print(_format_validate_models_output(entries))
 
-    force_clean = bool(getattr(args, "force_clean", False))
-    if not force_clean:
+
+async def _validate_each_datasource(engine, ds_names: list[str]) -> list[tuple]:
+    """Validate every datasource concurrently, pairing each result with its name."""
+    results = await asyncio.gather(
+        *(engine.validate_models(data_source=name) for name in ds_names),
+        return_exceptions=True,
+    )
+    return list(zip(ds_names, results))
+
+
+def _collect_drift(args, engine, storage) -> tuple[list, list]:
+    """``(entries, failures)`` for the requested scope, filtered by ``--model``.
+
+    Datasources are validated concurrently but attributed one by one:
+    ``validate_models(None)`` swallows a per-datasource failure, and a
+    validation command must not report a clean bill for a datasource it never
+    reached.
+    """
+    if args.datasource:
+        ds_names = [args.datasource]
+    else:
+        ds_names = run_sync(storage.list_datasources())
+
+    entries: list = []
+    failures: list[tuple[str, BaseException]] = []
+    for ds_name, result in run_sync(_validate_each_datasource(engine, ds_names)):
+        # gather() reports a cancelled child as a CancelledError value; that is
+        # cancellation, not a datasource that failed validation.
+        if isinstance(result, asyncio.CancelledError):
+            raise result
+        if isinstance(result, BaseException):
+            failures.append((ds_name, result))
+        else:
+            entries.extend(result)
+    return _filter_entries_by_model(entries, getattr(args, "model", None)), failures
+
+
+def _filter_entries_by_model(entries: list, model: str | None) -> list:
+    if not model:
+        return entries
+    return [e for e in entries if e.model_name == model]
+
+
+def _collect_cardinality_report(args, engine):
+    """Profile join arity, or ``None`` when neither cardinality flag is set."""
+    persist = bool(getattr(args, "persist_cardinality", False))
+    if not (persist or getattr(args, "cardinality", False)):
+        return None
+    try:
+        return run_sync(engine.detect_join_cardinality(
+            data_source=args.datasource,
+            model=getattr(args, "model", None),
+            persist=persist,
+        ))
+    except Exception as exc:  # noqa: BLE001 — surface DB/introspection failures cleanly
+        print(f"validate-models: cardinality profiling failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _exit_on_scan_failures(report) -> None:
+    """A contained scan failure is still work the command did not do."""
+    if report is None:
         return
+    failed = [
+        f for f in report.findings if f.verdict is CardinalityVerdict.SCAN_FAILED
+    ]
+    if failed:
+        print(
+            f"{len(failed)} join(s) could not be profiled; see scan_failed above.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
-    if not entries:
-        return
 
+def _print_validate_json(*, entries, report) -> None:
+    import json as _json
+
+    print(_json.dumps({
+        "drift": [e.model_dump(mode="json") for e in entries],
+        "cardinality": report.model_dump(mode="json") if report else None,
+    }, indent=2))
+
+
+def _print_drift_section(entries, *, headed: bool) -> None:
+    """Headers only appear when a cardinality section follows."""
+    body = _format_validate_models_output(entries)
+    print("Schema drift\n" + _indent_block(body) if headed else body)
+
+
+def _print_cardinality_section(report) -> None:
+    print("\nJoin cardinality")
+    print(_format_cardinality_report_text(report, indent="  "))
+
+
+def _apply_force_clean(args, engine, entries) -> None:
+    """Prompt for and apply the drift deletes; exits 1 on residual/errors."""
     if not _confirm(
         f"\nApply {len(entries)} delete(s) to storage?",
         assume_yes=bool(getattr(args, "yes", False)),
@@ -1473,13 +1697,59 @@ def _run_validate_models(args):
         print(f"Errors ({len(result.errors)}):")
         for err in result.errors:
             print(f"  - {err.tool} {err.model_name}: {err.error}")
-    if result.residual:
+    # apply_drift_deletes re-validates whole datasources, so scope the residual
+    # the same way the report was scoped — out-of-scope drift is not ours.
+    residual = _filter_entries_by_model(
+        result.residual, getattr(args, "model", None)
+    )
+    if residual:
         print("\nResidual drift after apply:")
-        print(_format_validate_models_output(result.residual))
+        print(_format_validate_models_output(residual))
         sys.exit(1)
     if result.errors:
         sys.exit(1)
     print("\n✓ no remaining drift")
+
+
+def _run_validate_models(args):
+    from slayer.engine.query_engine import SlayerQueryEngine
+
+    storage = _resolve_storage(args)
+    _resolve_validate_scope(args, storage)
+    engine = SlayerQueryEngine(storage=storage)
+
+    entries, failures = _collect_drift(args, engine, storage)
+    as_json = getattr(args, "format", "text") == "json"
+    wants_cardinality = bool(
+        getattr(args, "cardinality", False)
+        or getattr(args, "persist_cardinality", False)
+    )
+
+    if failures:
+        # Report what we did reach, on stdout in the requested format, then
+        # fail — profiling a set we could not fully validate would mislead.
+        if as_json:
+            _print_validate_json(entries=entries, report=None)
+        else:
+            _print_drift_section(entries, headed=False)
+        for ds_name, exc in failures:
+            print(f"Datasource '{ds_name}' failed validation: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    if as_json:
+        report = _collect_cardinality_report(args, engine)
+        _print_validate_json(entries=entries, report=report)
+        _exit_on_scan_failures(report)
+        return
+
+    _print_drift_section(entries, headed=wants_cardinality)
+    # Clean first: profiling a model we are about to repair is wasted work.
+    if bool(getattr(args, "force_clean", False)) and entries:
+        _apply_force_clean(args, engine, entries)
+    report = _collect_cardinality_report(args, engine)
+    if report is not None:
+        _print_cardinality_section(report)
+    _exit_on_scan_failures(report)
 
 
 def _run_recommend_root_model(args):
@@ -1956,23 +2226,33 @@ def _run_datasources_create(args, storage):
     if not args.ingest:
         return
 
-    from slayer.engine.ingestion import ingest_datasource
+    from slayer.engine.ingestion import (
+        _print_ingest_drift_and_errors,
+        ingest_datasource_report,
+    )
 
     include = [t for t in (s.strip() for s in args.include.split(",")) if t] if args.include else None
     exclude = [t for t in (s.strip() for s in args.exclude.split(",")) if t] if args.exclude else None
 
     try:
-        models = ingest_datasource(
+        # Report form, not models-only ``ingest_datasource``: otherwise this
+        # path hides recognised internals and skips with no output at all.
+        report = ingest_datasource_report(
             datasource=ds,
             schema=args.schema,
             include_tables=include,
             exclude_tables=exclude,
+            include_views=getattr(args, "include_views", True),
+            surface_internals=getattr(args, "surface_internals", False),
         )
     except Exception as e:
         print(f"Ingestion failed: {e}")
         sys.exit(1)
 
-    _persist_ingested_models(models, storage, assume_yes=args.yes)
+    _persist_ingested_models(report.models, storage, assume_yes=args.yes)
+    # After persistence, so the sections comment on what was just written. Exit
+    # stays 0 — creating the datasource succeeded, whatever was skipped/hidden.
+    _print_ingest_drift_and_errors(report, data_source=ds.name)
 
 
 def _run_datasources_create_demo(args, storage):  # NOSONAR S3776 — linear demo-bootstrap flow (build → confirm → save → optional ingest); branches are sequential UX guards, not nested logic

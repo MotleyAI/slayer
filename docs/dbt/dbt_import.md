@@ -48,7 +48,10 @@ The converter builds an entity registry by scanning all models, then resolves fo
 joins:
   - target_model: customers
     join_pairs: [["customer_id", "id"]]
+    cardinality: many_to_one
 ```
+
+Each generated join carries a [`cardinality`](../concepts/models.md#join-cardinality) read source→target: a foreign→primary entity reference is `many_to_one`, while a **peer** join (two models sharing the same primary/unique entity) is `one_to_one`. The reverse INNER edge the converter mirrors onto the target model carries the inverted arity.
 
 ### Measures — Column + ModelMeasure Split
 
