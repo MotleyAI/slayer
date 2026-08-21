@@ -164,8 +164,13 @@ def _agg_fn(frames: dict, args: dict) -> list[list]:
     if args.get("having"):
         result = result.query(args["having"], engine="python")
 
-    for order_col, direction in args.get("order_by", []):
-        result = result.sort_values(order_col, ascending=direction == "asc", kind="stable")
+    order_by = args.get("order_by", [])
+    if order_by:  # one stable multi-key sort keeps the FIRST key primary (SQL order)
+        result = result.sort_values(
+            [col for col, _ in order_by],
+            ascending=[direction == "asc" for _, direction in order_by],
+            kind="stable",
+        )
 
     for post in args.get("post", []):
         source = result[post["on"]]

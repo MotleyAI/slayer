@@ -880,8 +880,9 @@ class SQLGenerator:
                                 granularity: str) -> exp.Expression:
         """Apply a time offset to a column expression (dialect-aware).
 
-        Used to shift raw timestamps before DATE_TRUNC in shifted CTEs so that
-        aggregated time buckets align with the base query's buckets.
+        In shifted CTEs the caller truncates first, then calls this to offset the
+        already-truncated bucket-start by whole calendar units (DEV-1811), and
+        re-truncates only when the shift unit may not preserve bucket alignment.
         """
         return self._dialect.build_time_offset_expr(
             col_expr=col_expr, offset=offset, granularity=granularity,

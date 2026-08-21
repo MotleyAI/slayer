@@ -450,8 +450,8 @@ def write_report(out_dir: Path, manifest: dict, correctness: list[dict],
 def write_timings_csv(out_dir: Path, flags: list[dict]) -> None:
     rows = ["backend,scale,entry,metric,pypi_median_s,branch_median_s,ratio,delta_s,flagged"]
     for f in flags:
-        if f.get("metric") == "n/a":
-            continue
+        if f.get("metric") == "n/a" or f.get("error"):
+            continue  # error/one-sided rows carry no median fields
         rows.append(f"{f['backend']},{f['scale']},{f['entry']},{f['metric']},"
                     f"{f['pypi_median']:.6f},{f['branch_median']:.6f},"
                     f"{f['ratio']:.4f},{f['delta']:.6f},{f['flagged']}")
@@ -626,6 +626,8 @@ def main() -> None:
     ext = {"sqlite": "db", "duckdb": "duckdb"}
     db_paths: dict[tuple[str, str], Path] = {}
     all_scales = dict(scales)
+    if not args.skip_correctness:
+        all_scales[CORRECTNESS_SCALE] = SCALES[CORRECTNESS_SCALE]  # correctness reads this scale
     if not args.skip_timing and not args.skip_subset:
         all_scales[SUBSET_SCALE[0]] = SUBSET_SCALE[1]
     for backend in backends:

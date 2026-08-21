@@ -114,7 +114,8 @@ def test_cells_equal_exact_and_none():
 
 def test_cells_equal_float_tolerance():
     equal, drift = cells_equal(1.0, 1.0 + 1e-12)
-    assert equal and drift is None
+    assert equal
+    assert drift is None
     assert cells_equal(1.0, 1.0 + 1e-6)[0] is False
     # absolute floor near zero
     assert cells_equal(0.0, 1e-13)[0] is True
@@ -127,9 +128,11 @@ def test_cells_equal_decimal_vs_float():
 
 def test_cells_equal_bool_as_number_notes_drift():
     equal, drift = cells_equal(True, 1)
-    assert equal is True and drift is not None
+    assert equal is True
+    assert drift is not None
     equal, drift = cells_equal(False, 0)
-    assert equal is True and drift is not None
+    assert equal is True
+    assert drift is not None
     assert cells_equal(True, 0)[0] is False
     assert cells_equal(True, True) == (True, None)
 
@@ -351,7 +354,8 @@ def test_classify_decodes_tagged_cells():
 def test_flag_perf_requires_ratio_and_floor():
     # 2x slower and > 20ms absolute: flagged
     flag = flag_perf("q1", "exec", pypi_times=[0.100] * 7, branch_times=[0.200] * 7)
-    assert isinstance(flag, PerfFlag) and flag.flagged is True
+    assert isinstance(flag, PerfFlag)
+    assert flag.flagged is True
     # 2x slower but sub-millisecond: not flagged
     flag = flag_perf("q1", "exec", pypi_times=[0.0001] * 7, branch_times=[0.0002] * 7)
     assert flag.flagged is False
@@ -445,7 +449,7 @@ def test_warning_drift_reports_kind_and_multiplicity():
 # Oracle: hand-computed micro-fixtures
 # ---------------------------------------------------------------------------
 
-@pytest.fixture()
+@pytest.fixture
 def frames():
     tables = {
         "orders": [
@@ -649,7 +653,7 @@ def test_oracle_unknown_fn_raises():
         oracle.expected({"fn": "nope", "args": {}}, {})
 
 
-@pytest.fixture()
+@pytest.fixture
 def frames_edge():
     tables = {
         "orders": [
@@ -966,3 +970,40 @@ def test_oracle_left_join_null_keys_never_match():
     rows = canonical_rows(oracle.expected(spec, frames), ordered=False)
     # null-key order lands in the NULL segment group, NOT in 'ghost'
     assert rows == [[None, 1], ["real", 1]]
+
+
+# ---------------------------------------------------------------------------
+# Post-review hardening (round 2: CodeRabbit + Codex + Sonar)
+# ---------------------------------------------------------------------------
+
+def test_write_timings_csv_skips_error_rows(tmp_path):
+    import compare
+
+    flags = [
+        {"backend": "sqlite", "scale": "10m", "entry": "q1", "metric": "exec",
+         "pypi_median": 0.1, "branch_median": 0.2, "ratio": 2.0, "delta": 0.1, "flagged": False},
+        {"backend": "sqlite", "scale": "10m", "entry": "q2", "metric": "exec",
+         "flagged": False, "error": "flag_perf raised"},        # error row: no median fields
+        {"backend": "sqlite", "scale": "10m", "entry": "q3", "metric": "n/a",
+         "flagged": False, "error": "timed on only one side"},
+    ]
+    compare.write_timings_csv(tmp_path, flags)  # must not KeyError on the error rows
+    lines = (tmp_path / "timings.csv").read_text().strip().splitlines()
+    assert len(lines) == 2  # header + the one valid row; both error rows skipped
+    assert lines[1].startswith("sqlite,10m,q1,exec")
+
+
+def test_oracle_multi_key_order_by_keeps_first_key_primary(frames):
+    # category asc, then cost_sum desc: a naive sequential sort would let the LAST
+    # key (cost_sum) become primary and interleave categories
+    spec = {"fn": "agg", "args": {
+        "table": "orders",
+        "groupby": ["category", "id"],
+        "aggs": [{"col": "cost", "op": "sum"}],
+        "order_by": [["category", "asc"], ["cost_sum", "desc"]],
+    }}
+    rows = oracle.expected(spec, frames)
+    cats = [r[0] for r in rows]
+    assert cats == sorted(cats)  # category (primary key) stays non-decreasing
+    food = [r[-1] for r in rows if r[0] == "food"]
+    assert food == sorted(food, reverse=True)  # cost_sum (secondary) desc within a category

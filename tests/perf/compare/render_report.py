@@ -26,7 +26,19 @@ GRID, AXIS = "#e1e0d9", "#c3c2b7"
 SERIES = {"sqlite": "#2a78d6", "duckdb": "#eb6834", "postgres": "#1baf7a"}
 FONT = 'font-family="system-ui,-apple-system,Segoe UI,sans-serif"'
 
-_CUTOFF = os.path.getmtime(OUT / "correctness.json") - 60  # this-run files only
+def _cutoff() -> float:
+    """Boundary that keeps this audit's timing files and drops stale prior-run ones.
+    Prefer correctness.json (the sqlite/duckdb pass, written first, so its mtime also
+    predates the later postgres timing files); fall back to correctness-external.json
+    for an external-only run. 0.0 (keep everything) if neither exists."""
+    for name in ("correctness.json", "correctness-external.json"):
+        p = OUT / name
+        if p.exists():
+            return os.path.getmtime(p) - 60
+    return 0.0
+
+
+_CUTOFF = _cutoff()
 
 
 def _fresh(p: Path) -> bool:
@@ -51,7 +63,7 @@ def _pairs(backend: str, scale: str):
     """(entry, pypi_median_s, branch_median_s) for entries timed on both sides."""
     pp, pb = _timings("pypi", backend, scale), _timings("branch", backend, scale)
     rows = []
-    for e in set(pp) & set(pb):
+    for e in sorted(set(pp) & set(pb)):  # sorted → deterministic SVG output across runs
         if "exec" in pp[e] and "exec" in pb[e]:
             rows.append((e, statistics.median(pp[e]["exec"]), statistics.median(pb[e]["exec"])))
     return rows
@@ -109,7 +121,10 @@ def chart_ratio_by_scale(ratios):
                        extra='font-variant-numeric="tabular-nums"'))
     for backend in BACKENDS:
         col = SERIES[backend]
-        pts = [(xs[i], yp(ratios[backend][sc])) for i, sc in enumerate(SCALES)]
+        pts = [(xs[i], yp(ratios[backend][sc])) for i, sc in enumerate(SCALES)
+               if math.isfinite(ratios[backend].get(sc, float("nan")))]
+        if not pts:
+            continue  # backend absent from this run's artifacts
         b.append(f'<polyline fill="none" stroke="{col}" stroke-width="2.5" '
                  f'points="{" ".join(f"{x:.1f},{y:.1f}" for x, y in pts)}"/>')
         for x, y in pts:
@@ -164,11 +179,14 @@ def chart_scatter_1m(points):
 # ---------------------------------------------------------------------------
 
 def chart_timeshift_bars(deltas, ratios):
+    scales = [s for s in SCALES if s in deltas]
+    if not scales:
+        return None  # no bench_time_shift_date_range sqlite data in this run
     W, H = 720, 380
     L, R, T, B = 68, 24, 62, 48
     pw, ph = W - L - R, H - T - B
-    vmax = max(deltas.values()) * 1.15
-    bw = pw / len(SCALES) * 0.52
+    vmax = max(deltas[s] for s in scales) * 1.15
+    bw = pw / len(scales) * 0.52
     col = SERIES["sqlite"]
     b = [_text(L, 30, "Cost of the time_shift boundary-fix at scale (SQLite)", size=17, weight="600"),
          _text(L, 48, "added latency of bench_time_shift_date_range: branch − 0.9.12", size=12.5, fill=MUTED)]
@@ -177,8 +195,8 @@ def chart_timeshift_bars(deltas, ratios):
         b.append(f'<line x1="{L}" y1="{gy:.1f}" x2="{L+pw}" y2="{gy:.1f}" stroke="{GRID}"/>')
         b.append(_text(L - 8, gy + 4, f"{frac*vmax/1000:.1f}s", size=11, fill=MUTED, anchor="end",
                        extra='font-variant-numeric="tabular-nums"'))
-    for i, sc in enumerate(SCALES):
-        cx = L + pw * (i + 0.5) / len(SCALES)
+    for i, sc in enumerate(scales):
+        cx = L + pw * (i + 0.5) / len(scales)
         d = deltas[sc]
         bh = ph * d / vmax
         y = T + ph - bh
@@ -200,7 +218,8 @@ def main():
     for backend in BACKENDS:
         for sc in SCALES:
             rs = [bm / pm for _, pm, bm in _pairs(backend, sc) if pm > 0]
-            ratios[backend][sc] = statistics.median(rs) if rs else float("nan")
+            if rs:  # leave scale absent (not NaN) when this run has no data for it
+                ratios[backend][sc] = statistics.median(rs)
     points = {b: _pairs(b, "1m") for b in BACKENDS}
     TS = "bench_time_shift_date_range"
     deltas, ts_ratio = {}, {}
@@ -213,15 +232,20 @@ def main():
 
     (ASSETS / "ratio_by_scale.svg").write_text(chart_ratio_by_scale(ratios))
     (ASSETS / "scatter_1m.svg").write_text(chart_scatter_1m(points))
-    (ASSETS / "timeshift_sqlite.svg").write_text(chart_timeshift_bars(deltas, ts_ratio))
+    ts_svg = chart_timeshift_bars(deltas=deltas, ratios=ts_ratio)
+    if ts_svg:
+        (ASSETS / "timeshift_sqlite.svg").write_text(ts_svg)
+    else:
+        print("skipped timeshift chart: no bench_time_shift_date_range sqlite data")
 
     print("charts written to", ASSETS)
     print("\nmedian ratios (branch/pypi exec):")
     for b in BACKENDS:
-        print(" ", b, {s: round(ratios[b][s], 2) for s in SCALES})
+        print(" ", b, {s: round(ratios[b][s], 2) for s in SCALES if s in ratios[b]})
     print("\ntime_shift_date_range sqlite added latency:")
     for s in SCALES:
-        print(f"  {s}: +{deltas[s]:.0f}ms ({ts_ratio[s]:.2f}x)")
+        if s in deltas:
+            print(f"  {s}: +{deltas[s]:.0f}ms ({ts_ratio[s]:.2f}x)")
 
 
 if __name__ == "__main__":
