@@ -200,6 +200,12 @@ class SqlDialect(BaseModel):
     # (Postgres), so a new dialect over-shortens rather than silently truncating.
     max_identifier_bytes: int | None = 63
 
+    # DEV-1595 approximate-distinct emission. Template dialects set the first
+    # ({col} substituted with the column SQL); Oracle/T-SQL set the second so
+    # sqlglot does not re-emit a parsed APPROX_COUNT_DISTINCT as APPROX_DISTINCT.
+    approx_count_distinct_template: str = "COUNT(DISTINCT {col})"
+    approx_count_distinct_anonymous_name: str | None = None
+
     @property
     def backslash_escapes_strings(self) -> bool:
         """Whether this dialect's string literals treat a backslash as an escape
@@ -460,16 +466,18 @@ class SqlDialect(BaseModel):
         *,
         parse: Callable[[str], exp.Expression],
     ) -> exp.Expression:
-        """Default: exact ``COUNT(DISTINCT col)`` fallback (DEV-1595).
+        """Approximate-distinct aggregate, driven by the two config fields.
 
-        Backends with no native approximate-distinct function (Postgres /
-        SQLite / MySQL) fall back to the exact count, which is *more*
-        accurate than an approximation — consistent with the "no
-        approximate SQL" rule. Native-supporting dialects override this to
-        emit their own approximate-distinct function (DuckDB
-        ``approx_count_distinct``, ClickHouse ``uniq``, …).
+        Base default is the exact ``COUNT(DISTINCT col)`` fallback (Postgres /
+        SQLite / MySQL) — more accurate than an approximation, per the "no
+        approximate SQL" rule.
         """
-        return parse(f"COUNT(DISTINCT {col_sql})")
+        if self.approx_count_distinct_anonymous_name is not None:
+            return exp.Anonymous(
+                this=self.approx_count_distinct_anonymous_name,
+                expressions=[parse(col_sql)],
+            )
+        return parse(self.approx_count_distinct_template.replace("{col}", col_sql))
 
     def build_stat_agg_1arg(
         self,

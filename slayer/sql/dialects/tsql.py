@@ -86,6 +86,9 @@ class TsqlDialect(SqlDialect):
     log10_native: bool = True
     log2_native: bool = False
     max_identifier_bytes: int | None = 128  # sysname is nvarchar(128)
+    # Anonymous: sqlglot re-emits a parsed APPROX_COUNT_DISTINCT as its
+    # Presto-family APPROX_DISTINCT canonical, which is not a T-SQL function.
+    approx_count_distinct_anonymous_name: str | None = "APPROX_COUNT_DISTINCT"
 
     def build_null_safe_eq(
         self, left: exp.Expression, right: exp.Expression,
@@ -121,20 +124,6 @@ class TsqlDialect(SqlDialect):
         return super().build_ordered(
             order_col, descending=descending, nulls=nulls,
         )
-
-    def build_approx_count_distinct(
-        self,
-        col_sql: str,
-        *,
-        parse: Callable[[str], exp.Expression],
-    ) -> exp.Expression:
-        """T-SQL: native ``APPROX_COUNT_DISTINCT(x)`` (SQL Server 2019+).
-
-        Built as an ``exp.Anonymous`` because sqlglot's T-SQL dialect re-emits
-        a parsed ``APPROX_COUNT_DISTINCT`` as ``APPROX_DISTINCT`` (its
-        Presto-family canonical form), which is not a T-SQL function.
-        """
-        return exp.Anonymous(this="APPROX_COUNT_DISTINCT", expressions=[parse(col_sql)])
 
     def build_date_trunc(
         self,

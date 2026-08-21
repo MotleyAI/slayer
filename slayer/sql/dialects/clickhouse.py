@@ -22,6 +22,7 @@ class ClickhouseDialect(SqlDialect):
     log10_native: bool = True
     log2_native: bool = True
     max_identifier_bytes: int | None = None  # unbounded
+    approx_count_distinct_template: str = "uniq({col})"
 
     def build_median(
         self,
@@ -42,12 +43,3 @@ class ClickhouseDialect(SqlDialect):
     ) -> exp.Expression:
         """ClickHouse: parametric ``quantile(p)(x)`` syntax."""
         return parse(f"quantile({p_str})({col_sql})")
-
-    def build_approx_count_distinct(
-        self,
-        col_sql: str,
-        *,
-        parse: Callable[[str], exp.Expression],
-    ) -> exp.Expression:
-        """ClickHouse: native ``uniq(x)`` approximate-distinct aggregate."""
-        return parse(f"uniq({col_sql})")
