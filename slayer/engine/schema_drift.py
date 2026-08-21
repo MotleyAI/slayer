@@ -124,6 +124,10 @@ class ModelAddition(BaseModel):
     # Human-readable transition (e.g. "view → table") when a re-ingest found
     # the live object changed kind; None when nothing changed.
     kind_change: str | None = None
+    # DEV-1809: columns whose empty description was filled from a DB comment
+    # (on created models: all columns that arrived with a description).
+    described_columns: list[str] = Field(default_factory=list)
+    model_described: bool = False
 
 
 class IngestionError(BaseModel):
@@ -152,6 +156,9 @@ class IdempotentIngestResult(BaseModel):
     # post-merge state, not the scan's verdict (the merge preserves a persisted
     # ``hidden``). ``Any`` avoids a circular import; entries are ``InternalTable``.
     hidden_internals: list[Any] = Field(default_factory=list)
+    # DEV-1809: True when the datasource description was filled from the
+    # BigQuery dataset description during this pass.
+    datasource_described: bool = False
 
 
 class AppliedEntry(BaseModel):
