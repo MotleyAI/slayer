@@ -36,7 +36,6 @@ except ImportError:  # pragma: no cover — Windows
 
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.memories.models import Memory, _validate_memory_id_charset
-from slayer.storage import migrations as _mig
 from slayer.storage.base import (
     StorageBackend,
     _validate_path_component,
@@ -100,8 +99,21 @@ def _md_to_memory(memory_id: str, text: str) -> Memory:
 
 def _stat_key(path: str) -> tuple[int, int]:
     """(st_mtime_ns, st_size) — the DEV-1816 load-cache key for ``path``."""
-    st = os.stat(path)
+    st = os.stat(path)  # NOSONAR(S6549) — path pre-sanitized by callers (get_model via _resolve_target_or_none; get_datasource via _validate_path_component)
     return (st.st_mtime_ns, st.st_size)
+
+
+def _cache_admit(path: str, key_before: tuple[int, int]) -> tuple[int, int] | None:
+    """Stable-read admission: return the post-read stat key iff the file was
+    unchanged during the read, else ``None`` (a mid-read external edit — or a
+    legacy migration write-back, which rewrites the file — must not pin the
+    just-parsed object under a key that no longer matches its bytes). A file
+    removed mid-read (OSError) also yields ``None``."""
+    try:
+        key_after = _stat_key(path)
+    except OSError:
+        return None
+    return key_after if key_after == key_before else None
 
 
 def _atomic_write_text(path: str, text: str) -> None:
@@ -375,36 +387,16 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
                 f"{path} — {exc}. Delete the file and re-run `slayer ingest` to "
                 f"recreate it."
             ) from exc
-        wrote_back = (
-            isinstance(data, dict)
-            and int(data.get("version", 1)) < _mig.CURRENT_VERSIONS["SlayerModel"]
-        )
         model = await self._migrate_and_refine_on_load(
             name=name, data=data, data_source=data_source,
         )
-        self._cache_model(
-            path=path, model=model, key_before=key_before, wrote_back=wrote_back,
-        )
+        # Admit only a stable read. A legacy migration write-back rewrites the
+        # file, so its first load is (correctly) not cached — the next load
+        # reads the now-current file and caches it normally.
+        admit = _cache_admit(path, key_before)
+        if admit is not None:
+            self._model_cache[path] = (admit[0], admit[1], model)
         return model.model_copy(deep=True)
-
-    def _cache_model(
-        self,
-        *,
-        path: str,
-        model: SlayerModel,
-        key_before: tuple[int, int],
-        wrote_back: bool,
-    ) -> None:
-        """Store a pristine model under its post-load stat key.
-
-        Re-stat because a legacy write-back rewrote the file. Trust that
-        self-write (``wrote_back``); otherwise cache only if the file was
-        unchanged during the read, so a mid-read external edit can't pin stale
-        bytes under fresh metadata.
-        """
-        key_after = _stat_key(path)
-        if wrote_back or key_after == key_before:
-            self._model_cache[path] = (key_after[0], key_after[1], model)
 
     async def _delete_model_row(
         self, *, data_source: str, name: str,
@@ -483,7 +475,9 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
                 with open(path) as f:
                     data = yaml.safe_load(f)
                 ds = DatasourceConfig.model_validate(data)
-                self._datasource_cache[path] = (key[0], key[1], ds)
+                admit = _cache_admit(path, key)  # skip if the file changed under us mid-read
+                if admit is not None:
+                    self._datasource_cache[path] = (admit[0], admit[1], ds)
             return ds.resolve_env_vars()
         except yaml.YAMLError as exc:
             raise ValueError(

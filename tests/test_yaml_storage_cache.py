@@ -6,6 +6,7 @@ import tempfile
 import pytest
 import yaml as _yaml
 
+from slayer.core import models as _core_models
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.storage import migrations as _mig
@@ -58,15 +59,18 @@ async def test_hit_skips_parse(storage: YAMLStorage, monkeypatch) -> None:
 
 
 async def test_hit_skips_validate_and_migrate(storage: YAMLStorage, monkeypatch) -> None:
-    _write_legacy_model(storage)  # version 1 -> explicit migrations.migrate fires on load
-    migrates = _install_counter(monkeypatch, _mig, "migrate")
+    # A parse runs SlayerModel.model_validate, whose before-validator invokes the
+    # migrations pass (_migrate_schema). A cache hit skips both.
+    await storage.save_model(_model())
     validates = _install_counter(monkeypatch, SlayerModel, "model_validate")
+    migrates = _install_counter(monkeypatch, _core_models, "_migrate_schema")
     await storage.get_model("m", data_source="ds")  # miss
-    m0, v0 = migrates["n"], validates["n"]
-    assert m0 >= 1 and v0 >= 1
+    v0, m0 = validates["n"], migrates["n"]
+    assert v0 >= 1
+    assert m0 >= 1
     await storage.get_model("m", data_source="ds")  # hit
-    assert migrates["n"] == m0
     assert validates["n"] == v0
+    assert migrates["n"] == m0
 
 
 # ---- models: invalidation --------------------------------------------------
@@ -129,9 +133,10 @@ async def test_failed_save_evicts_before_write(storage: YAMLStorage, monkeypatch
     def boom(*args, **kwargs):
         raise RuntimeError("write failed")
 
+    replacement = _model(sql_table="public.b")
     monkeypatch.setattr(_yaml_storage.yaml, "dump", boom)
     with pytest.raises(RuntimeError):
-        await storage.save_model(_model(sql_table="public.b"))
+        await storage.save_model(replacement)
     assert path not in storage._model_cache  # evicted before the failed write
 
 
@@ -169,9 +174,10 @@ async def test_failed_save_datasource_evicts(storage: YAMLStorage, monkeypatch) 
     await storage.get_datasource("pg")  # populate
     path = os.path.join(storage.datasources_dir, "pg.yaml")
     assert path in storage._datasource_cache
+    replacement = DatasourceConfig(name="pg", database="b")
     monkeypatch.setattr(_yaml_storage.yaml, "dump", _raise)
     with pytest.raises(RuntimeError):
-        await storage.save_datasource(DatasourceConfig(name="pg", database="b"))
+        await storage.save_datasource(replacement)
     assert path not in storage._datasource_cache
 
 
@@ -225,13 +231,19 @@ async def test_migration_applied_on_first_load(storage: YAMLStorage) -> None:
     assert on_disk["version"] == _mig.CURRENT_VERSIONS["SlayerModel"]  # write-back upgraded
 
 
-async def test_migration_writeback_cache_key_coherent(storage: YAMLStorage, monkeypatch) -> None:
+async def test_migration_writeback_not_cached_then_coherent(storage: YAMLStorage, monkeypatch) -> None:
     path = _write_legacy_model(storage)
-    await storage.get_model("m", data_source="ds")  # migrate + write-back + cache
+    # First load migrates + writes the file back (new mtime), so the stable-read
+    # guard does NOT cache it — the just-parsed bytes no longer match the file.
+    await storage.get_model("m", data_source="ds")
+    assert path not in storage._model_cache
+    # Second load reads the now-current file and caches it coherently.
+    await storage.get_model("m", data_source="ds")
     st = os.stat(path)
     assert storage._model_cache[path][:2] == (st.st_mtime_ns, st.st_size)
+    # Third load is a hit — no parse.
     loads = _install_counter(monkeypatch, _yaml_storage.yaml, "safe_load")
-    await storage.get_model("m", data_source="ds")  # must be a hit
+    await storage.get_model("m", data_source="ds")
     assert loads["n"] == 0
 
 
@@ -298,6 +310,27 @@ async def test_datasource_external_edit_invalidates(storage: YAMLStorage) -> Non
     with open(path, "w") as f:
         _yaml.dump({"name": "pg", "database": "b"}, f)
     _bump_mtime(path)
+    assert (await storage.get_datasource("pg")).database == "b"
+
+
+async def test_datasource_mid_read_external_edit_not_cached(storage: YAMLStorage, monkeypatch) -> None:
+    await storage.save_datasource(DatasourceConfig(name="pg", database="a"))
+    path = os.path.join(storage.datasources_dir, "pg.yaml")
+    orig = _yaml_storage.yaml.safe_load
+    state = {"fired": False}
+
+    def racing_load(stream):
+        data = orig(stream)
+        if not state["fired"]:
+            state["fired"] = True
+            with open(path, "w") as f:
+                _yaml.dump({"name": "pg", "database": "b"}, f)
+            _bump_mtime(path)
+        return data
+
+    monkeypatch.setattr(_yaml_storage.yaml, "safe_load", racing_load)
+    assert (await storage.get_datasource("pg")).database == "a"
+    assert path not in storage._datasource_cache  # stable-read guard skipped caching
     assert (await storage.get_datasource("pg")).database == "b"
 
 
