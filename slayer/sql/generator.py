@@ -560,6 +560,14 @@ _TRAILING_LIMIT_RE = re.compile(r"(?is)\s*LIMIT\s+\d+\s*\Z")
 _BARE_IDENT_RE = re.compile(r"[A-Za-z_]\w*")
 
 
+def _apply_joins(select, joins):
+    """Apply ``(join_expr, on_expr, join_type)`` triples to ``select`` in order,
+    returning the joined ``exp.Select``."""
+    for join_expr, on_expr, join_type in joins:
+        select = select.join(join_expr, on=on_expr, join_type=join_type)
+    return select
+
+
 class RenderState(BaseModel):
     """Frozen per-render constants threaded through the transform-chain emitters
     (DEV-1817). ``planned_query`` / ``bundle`` never change within one
@@ -624,6 +632,18 @@ class SQLGenerator:
         site in this module — pinned by test_dev1726_cte_case_folding — so a
         new allocation path cannot silently lose dialect awareness."""
         return AliasAllocator(folds_case=dialect_folds_case(self.dialect))
+
+    def _scope_frame(self, *, model, relation, bundle, allocator):
+        """Build a ``ScopeFrame`` rooted at ``model`` / ``relation`` on the
+        injected ``allocator`` (its ``next_scope_id`` mints the scope id)."""
+        return ScopeFrame(
+            scope_id=allocator.next_scope_id(relation),
+            root_model=model,
+            root_relation=relation,
+            bundle=bundle,
+            dialect=self._dialect,
+            allocator=allocator,
+        )
 
     @staticmethod
     def _reserve_model_column_names(allocator: AliasAllocator, model) -> None:
@@ -2601,13 +2621,9 @@ class SQLGenerator:
         # DEV-1708 (D-E): share the generation-wide allocator so host-base and
         # per-plan ``_cm_*`` CTE ``_val_<n>`` names are globally unique.
         host_allocator = self._gen_allocator or self._new_allocator()
-        host_scope = ScopeFrame(
-            scope_id=host_allocator.next_scope_id(source_relation),
-            root_model=source_model,
-            root_relation=source_relation,
-            bundle=bundle,
-            dialect=self._dialect,
-            allocator=host_allocator,
+        host_scope = self._scope_frame(
+            model=source_model, relation=source_relation,
+            bundle=bundle, allocator=host_allocator,
         )
         # Pre-expand derived (ColumnSqlKey) ROW + TIME dimensions: inline
         # sibling/joined derived refs (DEV-1333 / DEV-1410) and register any
@@ -2827,10 +2843,7 @@ class SQLGenerator:
         for col in select_columns:
             base_select = base_select.select(col)
         base_select = base_select.from_(from_clause)
-        for join_expr, on_expr, join_type in base_joins:
-            base_select = base_select.join(
-                join_expr, on=on_expr, join_type=join_type,
-            )
+        base_select = _apply_joins(base_select, base_joins)
         return (
             base_select, aliases_by_slot_id, has_aggregation, group_by_keys,
         )
@@ -2917,13 +2930,9 @@ class SQLGenerator:
         assert isinstance(key, AggregateKey)
 
         allocator = self._gen_allocator or self._new_allocator()
-        src_scope = ScopeFrame(
-            scope_id=allocator.next_scope_id(source_relation),
-            root_model=source_model,
-            root_relation=source_relation,
-            bundle=bundle,
-            dialect=self._dialect,
-            allocator=allocator,
+        src_scope = self._scope_frame(
+            model=source_model, relation=source_relation,
+            bundle=bundle, allocator=allocator,
         )
 
         def _base_col(alias: str) -> exp.Column:
@@ -3032,10 +3041,7 @@ class SQLGenerator:
             joined_paths=src_scope.join_paths.as_list(), bundle=bundle,
         )
         src_select = exp.Select().select(*src_cols).from_(from_expr)
-        for join_expr, on_expr, join_type in src_joins:
-            src_select = src_select.join(
-                join_expr, on=on_expr, join_type=join_type,
-            )
+        src_select = _apply_joins(src_select, src_joins)
         if src_where is not None:
             src_select = src_select.where(src_where)
         src_subq = exp.Subquery(
@@ -3273,13 +3279,9 @@ class SQLGenerator:
         self._reserve_model_column_names(allocator, root_model)
 
         def _frame() -> ScopeFrame:
-            return ScopeFrame(
-                scope_id=allocator.next_scope_id(root_relation),
-                root_model=root_model,
-                root_relation=root_relation,
-                bundle=bundle,
-                dialect=self._dialect,
-                allocator=allocator,
+            return self._scope_frame(
+                model=root_model, relation=root_relation,
+                bundle=bundle, allocator=allocator,
             )
 
         # Law 2's producer/consumer pair. The inner scope PRODUCES every value
@@ -3362,8 +3364,7 @@ class SQLGenerator:
             ),
         ))
         inner = inner.from_(from_expr)
-        for join_expr, on_expr, join_type in joins:
-            inner = inner.join(join_expr, on=on_expr, join_type=join_type)
+        inner = _apply_joins(inner, joins)
         if where_parts:
             inner = inner.where(
                 exp.and_(*where_parts) if len(where_parts) > 1 else where_parts[0],
@@ -3779,13 +3780,9 @@ class SQLGenerator:
                 # that must be in scope; without the join, the WHERE
                 # references an undefined alias.
                 placeholder_allocator = self._gen_allocator or self._new_allocator()
-                placeholder_scope = ScopeFrame(
-                    scope_id=placeholder_allocator.next_scope_id(source_relation),
-                    root_model=source_model,
-                    root_relation=source_relation,
-                    bundle=bundle,
-                    dialect=self._dialect,
-                    allocator=placeholder_allocator,
+                placeholder_scope = self._scope_frame(
+                    model=source_model, relation=source_relation,
+                    bundle=bundle, allocator=placeholder_allocator,
                 )
                 self._resolve_where_filter_joins_via_scope(
                     planned_query=planned_query,
@@ -3804,10 +3801,7 @@ class SQLGenerator:
                         alias=exp.to_identifier("_placeholder"),
                     ),
                 ).from_(placeholder_from)
-                for join_expr, on_expr, join_type in placeholder_joins:
-                    base_select = base_select.join(
-                        join_expr, on=on_expr, join_type=join_type,
-                    )
+                base_select = _apply_joins(base_select, placeholder_joins)
                 base_where, _base_having = self._build_where_having_from_planned(
                     planned_query=planned_query,
                     source_relation=source_relation,
@@ -5013,13 +5007,9 @@ class SQLGenerator:
         self._reserve_model_column_names(cte_allocator, target_model)
         # The CTE's own scope, created before the grain loop so shared-grain
         # refs resolve (and any crossing value materialises) through it.
-        cte_scope = ScopeFrame(
-            scope_id=cte_allocator.next_scope_id(target_relation),
-            root_model=target_model,
-            root_relation=target_relation,
-            bundle=bundle,
-            dialect=self._dialect,
-            allocator=cte_allocator,
+        cte_scope = self._scope_frame(
+            model=target_model, relation=target_relation,
+            bundle=bundle, allocator=cte_allocator,
         )
         for sid in plan.shared_grain_slots:
             if sid not in base_projection_ids:
@@ -5329,10 +5319,7 @@ class SQLGenerator:
         for col in cte_select_columns:
             cte_select = cte_select.select(col)
         cte_select = cte_select.from_(target_from)
-        for join_expr, on_expr, join_type in cte_base_joins:
-            cte_select = cte_select.join(
-                join_expr, on=on_expr, join_type=join_type,
-            )
+        cte_select = _apply_joins(cte_select, cte_base_joins)
         if combined_where is not None:
             cte_select = cte_select.where(combined_where)
 
@@ -6567,13 +6554,9 @@ class SQLGenerator:
         # generation-wide allocator so any ``_val_<n>`` names stay unique
         # across the base and every CTE.
         shifted_allocator = self._gen_allocator or self._new_allocator()
-        shifted_scope = ScopeFrame(
-            scope_id=shifted_allocator.next_scope_id(source_relation),
-            root_model=source_model,
-            root_relation=source_relation,
-            bundle=bundle,
-            dialect=self._dialect,
-            allocator=shifted_allocator,
+        shifted_scope = self._scope_frame(
+            model=source_model, relation=source_relation,
+            bundle=bundle, allocator=shifted_allocator,
         )
 
         # 3. partition_keys (DEV-1450 C6) + auto-include query dimensions.
@@ -6769,10 +6752,7 @@ class SQLGenerator:
         shifted_select = exp.Select().select(*shifted_select_parts).from_(
             from_clause,
         )
-        for join_expr, on_expr, join_type in shifted_joins:
-            shifted_select = shifted_select.join(
-                join_expr, on=on_expr, join_type=join_type,
-            )
+        shifted_select = _apply_joins(shifted_select, shifted_joins)
         # ``shifted_where_parts`` is the one text input left on this path: the
         # WHERE builder renders Mode-A predicates to SQL. Parsed once here
         # rather than concatenated into a body string, so the surrounding CTE
