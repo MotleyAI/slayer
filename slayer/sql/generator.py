@@ -227,21 +227,6 @@ class AggRenderSpec(BaseModel):
     aggregate."""
 
 
-def _render_scalar_literal(v: Any) -> exp.Expression:
-    """Render a Python scalar (None / bool / int / float / Decimal / str)
-    as a bare sqlglot literal node. Used by the POST-phase filter renderer
-    for ``LiteralKey.value`` AND any non-key arg inside ``ScalarCallKey``.
-    """
-    from decimal import Decimal
-    if v is None:
-        return exp.Null()
-    if isinstance(v, bool):
-        return exp.true() if v else exp.false()
-    if isinstance(v, (int, float, Decimal)):
-        return exp.Literal.number(str(v))
-    return exp.Literal.string(str(v))
-
-
 def _strip_declared_cast(expr: exp.Expression) -> exp.Expression:
     """Unwrap one declared-type ``CAST`` a derived-column expansion added.
 
@@ -709,20 +694,6 @@ class SQLGenerator:
         # arg of a 2-arg ROUND in a numeric CAST — DEV-1576). Keyed to the
         # generator's target dialect, not the parse dialect.
         return self._dialect.rewrite_target_ast(tree)
-
-    def _finalize_scalar_call(self, expr: exp.Expression) -> exp.Expression:
-        """Apply the target-dialect AST rewrite to a scalar-call expression
-        (DEV-1576 / DEV-1717).
-
-        Scalar calls (``round``/``abs``/``coalesce``/…) in formulas are
-        assembled directly as ``exp.func(...)`` AST, never string-parsed, so
-        the ``rewrite_target_ast`` applied inside ``_parse`` never sees them.
-        Routing them through the same dialect hook here keeps the 2-arg
-        Postgres ``ROUND`` numeric-cast (and any future target rewrite)
-        consistent between parsed and AST-built expressions. Identity for
-        dialects whose ``rewrite_target_ast`` is a no-op.
-        """
-        return self._dialect.rewrite_target_ast(expr)
 
     def _parse_predicate(self, sql: str, *, dialect: Optional[str] = None) -> exp.Expression:
         """Parse a bare WHERE/HAVING predicate expression (DEV-1378).
@@ -5636,23 +5607,6 @@ class SQLGenerator:
             return None
         return exp.and_(*parts) if len(parts) > 1 else parts[0]
 
-    def _literal_key_to_exp(self, value) -> exp.Expression:
-        """Convert a scalar / LiteralKey value to a sqlglot literal."""
-        from slayer.core.keys import LiteralKey
-        from decimal import Decimal
-
-        if isinstance(value, LiteralKey):
-            inner = value.value
-        else:
-            inner = value
-        if isinstance(inner, bool):
-            return exp.Boolean(this=inner)
-        if isinstance(inner, (int, float, Decimal)):
-            return exp.Literal.number(str(inner))
-        if inner is None:
-            return exp.Null()
-        return exp.Literal.string(str(inner))
-
     def _full_alias_for_slot(
         self,
         *,
@@ -8271,33 +8225,6 @@ class SQLGenerator:
 
         _walk(key)
         return out
-
-    @staticmethod
-    def _scalar_to_sqlglot(v) -> exp.Expression:
-        from decimal import Decimal
-
-        if v is None:
-            return exp.Null()
-        if isinstance(v, bool):
-            return exp.Boolean(this=v)
-        if isinstance(v, Decimal):
-            return exp.Literal.number(str(v))
-        if isinstance(v, str):
-            return exp.Literal.string(v)
-        raise NotImplementedError(
-            f"Unsupported scalar in filter: type={type(v).__name__} "
-            f"value={v!r}",
-        )
-
-    @staticmethod
-    def _paren_if_binary(node: exp.Expression) -> exp.Expression:
-        """DEV-1539: wrap a multi-term operand in ``(...)`` when it is a
-        ``Binary`` (arithmetic ``a + b``, or an ``AND``/``OR`` connector) so a
-        surrounding comparator's precedence is explicit by inspection, not only
-        by SQL operator-precedence rules — ``(a + b) > 7``, not ``a + b > 7``.
-        Bare columns, literals, function calls, and already-enclosed forms
-        (``CAST(...)`` / ``Paren``) are not ``Binary`` and pass through."""
-        return exp.Paren(this=node) if isinstance(node, exp.Binary) else node
 
     def _build_outer_trim_wrap_sql(
         self,
