@@ -1,4 +1,4 @@
-version: 7
+version: 8
 name: supplies
 sql_table: supplies
 query_variables: {}
@@ -8,12 +8,14 @@ columns:
   sql: id
   type: TEXT
   primary_key: true
+  unique: false
   label: Supply ID
   hidden: false
 - name: name
   sql: name
   type: TEXT
   primary_key: false
+  unique: false
   description: Supply name.
   label: Supply
   hidden: false
@@ -21,6 +23,7 @@ columns:
   sql: cost
   type: DOUBLE
   primary_key: false
+  unique: false
   description: Cost per unit, in dollars.
   label: Unit Cost
   hidden: false
@@ -32,6 +35,7 @@ columns:
   sql: perishable
   type: TEXT
   primary_key: false
+  unique: false
   description: Whether the supply is perishable.
   label: Perishable
   hidden: false
@@ -39,6 +43,7 @@ columns:
   sql: sku
   type: TEXT
   primary_key: true
+  unique: false
   description: Product this supply is used for.
   label: Product
   hidden: false
