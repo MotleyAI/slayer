@@ -22,7 +22,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelMeasure, SlayerModel
-from slayer.engine.measure_expansion import expand_model_measures
+from slayer.engine.measure_expansion import _ExpandCtx, expand_model_measures
 from slayer.engine.syntax import AggCall, DottedRef, Ref, parse_expr
 
 
@@ -69,3 +69,17 @@ def test_measure_name_cannot_shadow_transform() -> None:
     """
     with pytest.raises(ValueError, match="reserved transform name"):
         ModelMeasure(name="cumsum", formula="*:count")
+
+
+def test_expand_ctx_descend_shares_parse_cache() -> None:
+    """DEV-1817 _ExpandCtx carrier: ``descend`` forks only ``chain`` and keeps
+    the same ``parse_cache`` object, so a cached parse is visible on every
+    recursion branch (identity, not just equality)."""
+    ctx = _ExpandCtx(measures={}, depth_limit=32, parse_cache={})
+    child = ctx.descend("a")
+    grandchild = child.descend("b")
+    assert ctx.parse_cache is child.parse_cache is grandchild.parse_cache
+    ctx.parse_cache["seen"] = parse_expr("*:count")
+    assert "seen" in grandchild.parse_cache
+    assert child.chain == ("a",)
+    assert grandchild.chain == ("a", "b")

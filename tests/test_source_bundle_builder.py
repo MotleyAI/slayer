@@ -404,3 +404,49 @@ class TestMultiStage:
             await build_resolved_source_bundle(
                 query=root, storage=storage, named_queries={"a": a, "b": b}
             )
+
+
+# ---------------------------------------------------------------------------
+# Storage-read economy — bundle assembly must not re-read the same model.
+# ---------------------------------------------------------------------------
+
+
+class _CountingStorage:
+    """Delegates to a real storage, counting get_model calls per key."""
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.reads: dict[tuple, int] = {}
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    async def get_model(self, name, data_source=None):
+        key = (name, data_source)
+        self.reads[key] = self.reads.get(key, 0) + 1
+        return await self._inner.get_model(name, data_source=data_source)
+
+
+class TestStorageReadEconomy:
+    async def test_multi_stage_bundle_reads_each_model_once(self, tmp_path):
+        # DEV-1811 audit: bundle assembly re-read the same model YAML up to
+        # 8x per execute (~4ms per parse) across root / sibling / join-walk
+        # resolution.
+        storage = _CountingStorage(
+            await _storage(tmp_path, _orders(), _customers(), _regions(), _warehouses())
+        )
+        stage_a = SlayerQuery(name="stage_a", source_model="orders",
+                              measures=[{"formula": "*:count"}])
+        stage_b = SlayerQuery(name="stage_b", source_model="orders",
+                              measures=[{"formula": "amount:sum"}])
+        root = SlayerQuery(source_model="stage_a",
+                           measures=[{"formula": "*:count"}])
+        await build_resolved_source_bundle(
+            query=root, storage=storage,
+            named_queries={"stage_a": stage_a, "stage_b": stage_b},
+        )
+        over_read = {k: n for k, n in storage.reads.items() if n > 1}
+        assert not over_read, f"models read more than once: {over_read}"
+        # the hint-less root read must also satisfy the concrete-ds walk read
+        orders_reads = sum(n for (name, _), n in storage.reads.items() if name == "orders")
+        assert orders_reads == 1, f"orders read {orders_reads}x across ds keys"

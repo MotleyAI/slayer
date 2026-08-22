@@ -9,20 +9,17 @@ Memory retrieval is part of ``slayer search`` (covered in
 ``test_search_surfaces.py``). Tests invoke the dispatcher
 (`_run_memory`) directly with a populated ``argparse.Namespace`` — same
 pattern as ``test_cli.py`` already uses for ``_run_query``. End-to-end
-argparse plumbing is covered by a single-shot subprocess test at the
-bottom.
+argparse plumbing is covered by in-process ``main()`` calls at the bottom.
 """
 
 import json
-import os
-import subprocess
-import sys
 import tempfile
 from types import SimpleNamespace
 
 import pytest
 
 from slayer.cli import _run_memory
+from tests._cli_inprocess import run_cli_in_process
 from slayer.core.enums import DataType
 from slayer.core.models import (
     Column,
@@ -195,20 +192,13 @@ class TestMemoryForgetSubcommand:
 
 
 class TestMemoryArgparsePlumbing:
-    """Single subprocess smoke test that the ``memory`` subcommand and
-    its two subsubcommands are wired into the top-level argparser
+    """In-process check that the ``memory`` subcommand and its two
+    subsubcommands are wired into the top-level argparser
     (`slayer memory --help` must exit 0 and list save+forget but no
     longer mention the removed ``recall`` subcommand)."""
 
     def test_top_level_help_lists_memory(self):
-        env = dict(os.environ)
-        result = subprocess.run(
-            [sys.executable, "-m", "slayer.cli", "memory", "--help"],
-            capture_output=True,
-            text=True,
-            env=env,
-            check=False,
-        )
+        result = run_cli_in_process(["memory", "--help"])
         assert result.returncode == 0, result.stderr
         out = result.stdout.lower()
         assert "save" in out
@@ -216,12 +206,5 @@ class TestMemoryArgparsePlumbing:
         assert "recall" not in out
 
     def test_memory_recall_subcommand_rejected(self):
-        env = dict(os.environ)
-        result = subprocess.run(
-            [sys.executable, "-m", "slayer.cli", "memory", "recall"],
-            capture_output=True,
-            text=True,
-            env=env,
-            check=False,
-        )
+        result = run_cli_in_process(["memory", "recall"])
         assert result.returncode != 0

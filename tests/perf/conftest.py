@@ -3,7 +3,9 @@
 Provides seeded databases at various scales with SLayer models configured.
 """
 
+import asyncio
 import tempfile
+import threading
 
 import pytest
 import sqlalchemy as sa
@@ -151,14 +153,35 @@ async def _create_env(order_count: int) -> BenchEnv:
 
 
 # ---------------------------------------------------------------------------
+# Persistent event loop: benchmarked calls must await on ONE loop so the
+# engine's async pools stay bound to a live loop and per-call timings measure
+# query execution, not loop setup.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="session")
+def bench_loop():
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    yield loop
+    loop.call_soon_threadsafe(loop.stop)
+    thread.join(timeout=5)
+    if not thread.is_alive():  # closing a still-running loop would race
+        loop.close()
+
+
+# ---------------------------------------------------------------------------
 # Dynamically generate session-scoped fixtures from SCALES
 # ---------------------------------------------------------------------------
 
 for _name, _count in SCALES.items():
-    def _make_fixture(n: int, fixture_name: str) -> BenchEnv:
+    def _make_fixture(n: int, fixture_name: str):
         @pytest.fixture(scope="session", name=fixture_name)
-        def _fixture() -> BenchEnv:
-            from slayer.async_utils import run_sync
-            return run_sync(_create_env(n))
+        def _fixture(bench_loop):
+            env = asyncio.run_coroutine_threadsafe(_create_env(n), bench_loop).result()
+            yield env
+            # dispose async pools on their own loop, before bench_loop stops
+            engine, _ = env
+            asyncio.run_coroutine_threadsafe(engine.aclose(), bench_loop).result(timeout=30)
         return _fixture
     globals()[f"env_{_name}"] = _make_fixture(_count, f"env_{_name}")

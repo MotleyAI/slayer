@@ -434,16 +434,18 @@ async def test_byte_equivalence_time_shift_postgres(orders_model: SlayerModel) -
 
 async def test_byte_equivalence_time_shift_sqlite(orders_model: SlayerModel) -> None:
     sql = await _gen("sqlite", _TIME_SHIFT_QUERY, orders_model)
-    # SQLite uses DATE(col, 'N months') — no INTERVAL keyword
-    assert "DATE(orders.created_at, '1 months')" in sql
+    # SQLite uses DATE(col, 'N months') — no INTERVAL keyword. The offset
+    # applies to the TRUNCATED bucket start (DEV-1811 period-boundary fix).
+    assert "DATE(STRFTIME('%Y-%m-01', orders.created_at), '1 months')" in sql
     assert "INTERVAL" not in sql
     assert "STRFTIME('%Y-%m-01'" in sql
 
 
 async def test_byte_equivalence_time_shift_tsql(orders_model: SlayerModel) -> None:
     sql = await _gen("tsql", _TIME_SHIFT_QUERY, orders_model)
-    # T-SQL uses DATEADD(unit, val, col) — no INTERVAL
-    assert "DATEADD(MONTH, 1, orders.created_at)" in sql
+    # T-SQL uses DATEADD(unit, val, col) — no INTERVAL. The offset applies to
+    # the TRUNCATED bucket start (DEV-1811 period-boundary fix).
+    assert "DATEADD(MONTH, 1, DATETRUNC(MONTH, orders.created_at))" in sql
     assert "INTERVAL" not in sql
     # DEV-1571 Bug 1: T-SQL accepts WITH only as a statement prefix, so the
     # CTE chain must be hoisted onto the outer statement rather than left

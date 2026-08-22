@@ -40,7 +40,14 @@ from sqlglot import exp
 from slayer.core.errors import IdentifierCollisionError
 from slayer.core.keys import StarKey
 from slayer.core.refs import agg_kwarg_canonical_str, canonical_agg_name
-from slayer.sql.dialects._identifier_fit import fit_identifier
+from slayer.sql._identifier_fit import fit_identifier
+# DEV-1571 dotted-alias bijection, moved to a pure-string leaf module (DEV-1817)
+# to break a naming <-> dialects.base cycle; re-exported for existing consumers.
+from slayer.sql.naming_bijection import (  # noqa: F401
+    _ALIAS_SEP,
+    decode_alias,
+    encode_alias,
+)
 
 if TYPE_CHECKING:  # pragma: no cover — typing only, keeps the import leaf clean
     from slayer.core.keys import AggregateKey
@@ -427,54 +434,6 @@ def canonical_aggregate_alias(  # NOSONAR(S3776) — sequential dispatch over th
     )
 
 
-# ---------------------------------------------------------------------------
-# BigQuery / T-SQL dotted-alias mangling bijection (DEV-1571).
-#
-# Relocated from ``slayer/sql/dialects/_alias_mangle.py`` (DEV-1713 D-a) so the
-# naming module owns the result-key <-> wire-identifier bijection. Used by
-# ``BigqueryDialect`` (backtick-anchored regex) and ``TsqlDialect`` (bracket-
-# anchored regex): both need IDENTICAL encode/decode logic — BigQuery rejects
-# dotted output-column names; T-SQL's ORDER BY parser does not resolve bracketed
-# dotted identifiers as SELECT aliases. The fix is the same: mangle ``.`` to
-# ``___`` on emit, decode on result-row keys.
-#
-# The bijection's only domain constraint is that ``decode_alias`` inverts
-# ``encode_alias`` ONLY on the latter's image. A key like ``my___metric`` (no
-# dot in the original) is OUTSIDE the image — decoding it would corrupt the
-# value to ``my.metric``. This never bites because SLayer projection aliases are
-# always model-qualified (``<model>.<column>``), so they always contain a dot
-# and always pass through ``encode_alias``.
-# ---------------------------------------------------------------------------
-
-_ALIAS_SEP = "___"
-
-
-def encode_alias(alias: str) -> str:
-    """Forward encode: escape any pre-existing ``___`` to ``______``, then
-    map ``.`` to ``___``. Inverse is :func:`decode_alias`."""
-    return alias.replace(_ALIAS_SEP, _ALIAS_SEP * 2).replace(".", _ALIAS_SEP)
-
-
-def decode_alias(key: str) -> str:
-    """Reverse of :func:`encode_alias`. Walks ``key`` left-to-right, consuming
-    the escape-doubled ``______`` BEFORE the plain ``___`` so the two encodings
-    stay unambiguous. Inverse of ``encode_alias`` only on its image (see the
-    module-level bijection note)."""
-    out: list[str] = []
-    i = 0
-    n = len(key)
-    esc = _ALIAS_SEP * 2
-    while i < n:
-        if key.startswith(esc, i):
-            out.append(_ALIAS_SEP)
-            i += len(esc)
-        elif key.startswith(_ALIAS_SEP, i):
-            out.append(".")
-            i += len(_ALIAS_SEP)
-        else:
-            out.append(key[i])
-            i += 1
-    return "".join(out)
 
 
 # ---------------------------------------------------------------------------
