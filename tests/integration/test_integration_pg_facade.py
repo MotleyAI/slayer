@@ -9,7 +9,6 @@ the extended/binary protocol, transactions, and concurrency end-to-end.
 from __future__ import annotations
 
 import asyncio
-import shutil
 from collections.abc import Iterator
 
 import pytest
@@ -34,7 +33,6 @@ def pg_demo_server(
     finally:
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=5)
-        shutil.rmtree(base, ignore_errors=True)
 
 
 @pytest.fixture(scope="module")
@@ -51,7 +49,6 @@ def pg_demo_server_with_token(
     finally:
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=5)
-        shutil.rmtree(base, ignore_errors=True)
 
 
 async def _connect(host: str, port: int, *, database: str = DEMO_DATASOURCE, password: str = "x"):  # NOSONAR(S2068) — test credential

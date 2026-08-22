@@ -26,12 +26,14 @@ def _forbid_jafgen(*_args, **_kwargs):
 
 
 def test_prepare_demo_from_prebuilt_skips_jafgen_and_localizes_path(
-    jaffle_demo_duckdb: str, monkeypatch: pytest.MonkeyPatch
+    jaffle_demo_duckdb: str, tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Copying the session DuckDB must skip jafgen yet keep an in-dir datasource path."""
     monkeypatch.setattr(jaffle, "generate_data", _forbid_jafgen)
 
-    args, storage = _demo_build.prepare_demo_storage(prebuilt_duckdb=jaffle_demo_duckdb)
+    args, storage = _demo_build.prepare_demo_storage(
+        base_dir=str(tmp_path / "prep"), prebuilt_duckdb=jaffle_demo_duckdb
+    )
 
     # The DuckDB lives inside THIS dir (a copy), not the shared template.
     local_db = os.path.join(args.storage, "demo", "jaffle_shop.duckdb")

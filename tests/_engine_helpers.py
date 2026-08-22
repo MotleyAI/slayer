@@ -40,16 +40,17 @@ async def make_seeded_sqlite_engine(
     Consolidates the byte-identical ``make_sqlite_engine`` helpers previously
     duplicated across the per-DEV fixture modules; they now delegate here.
     """
-    storage = YAMLStorage(base_dir=base_dir)
-    await storage.save_datasource(
-        DatasourceConfig(name=datasource, type="sqlite", database=db_path),
-    )
     for model in models:
         if model.data_source != datasource:
             raise ValueError(
                 f"Model {model.name!r} uses datasource {model.data_source!r}, "
                 f"expected {datasource!r}"
             )
+    storage = YAMLStorage(base_dir=base_dir)
+    await storage.save_datasource(
+        DatasourceConfig(name=datasource, type="sqlite", database=db_path),
+    )
+    for model in models:
         await storage.save_model(model)
     return SlayerQueryEngine(storage=storage)
 

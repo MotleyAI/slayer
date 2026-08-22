@@ -174,7 +174,7 @@ def jaydebeapi_connect(jdbc_jar: Path) -> Callable[..., Any]:
 
 
 def _start_flight_demo_server(
-    *, token: str | None, prebuilt_duckdb: str | None = None, base_dir: str | None = None
+    *, token: str | None, base_dir: str, prebuilt_duckdb: str | None = None
 ):
     """Boot a Flight SQL server backed by the bundled Jaffle Shop demo.
 
@@ -217,6 +217,8 @@ def flight_demo_server(
     jaffle_demo_duckdb: str, tmp_path_factory: pytest.TempPathFactory
 ) -> Iterator[tuple[str, int]]:
     """Yield ``(host, port)`` of a no-auth Flight SQL server backed by the Jaffle Shop demo."""
+    # tmp_path_factory dirs are cleaned by pytest — no manual rmtree in teardown,
+    # which (while the demo engine still held the DuckDB open) errored on CI.
     base = str(tmp_path_factory.mktemp("flight-demo"))
     server, host, port = _start_flight_demo_server(
         token=None, prebuilt_duckdb=jaffle_demo_duckdb, base_dir=base
@@ -226,7 +228,6 @@ def flight_demo_server(
     finally:
         server.shutdown()
         server.wait()
-        shutil.rmtree(base, ignore_errors=True)
 
 
 @pytest.fixture(scope="module")
@@ -244,4 +245,3 @@ def flight_demo_server_with_token(
     finally:
         server.shutdown()
         server.wait()
-        shutil.rmtree(base, ignore_errors=True)

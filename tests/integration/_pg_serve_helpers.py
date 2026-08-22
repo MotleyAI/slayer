@@ -32,7 +32,7 @@ def start_pg_demo_server(
     storage_sink: list | None = None,
     bind_host: str = "127.0.0.1",
     prebuilt_duckdb: str | None = None,
-    base_dir: str | None = None,
+    base_dir: str,
 ) -> tuple[asyncio.AbstractEventLoop, threading.Thread, str, int]:
     """Boot a Postgres-facade server backed by the Jaffle Shop demo.
 
