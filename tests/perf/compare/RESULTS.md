@@ -143,6 +143,7 @@ defensible branch behavior, not oracle-arbitrable.
 
 1. **DuckDB per-query ~20 ms overhead** — systematic, DuckDB-only (SQLite & Postgres are
    clean), small absolute but real. Profile the branch's DuckDB `execute` path.
+   **Root-caused and fixed — see the [addendum](#addendum-2026-08-22-duckdb-overhead-root-caused-and-fixed).**
 2. **`time_shift_date_range` nesting** — the boundary-fix's extra truncation is +2.6 s at
    10M rows on SQLite. Correctness-critical, so keep the fix; consider whether the outer
    re-truncation can be elided when the shift is whole-period.
@@ -163,3 +164,26 @@ poetry run python tests/perf/compare/compare.py \
 # regenerate this report's charts from out/
 poetry run python tests/perf/compare/render_report.py
 ```
+
+---
+
+## Addendum (2026-08-22): DuckDB overhead root-caused and fixed
+
+Follow-up #1 is closed (DEV-1820). The ~20 ms was **not** in the execute path — the
+recorded `gen` (dry-run) timings carry the whole delta (DuckDB median gen +6.3 ms at
+every scale; median exec−gen ≈ 0; on flagged entries gen alone is +13–16 ms).
+
+Root cause: the branch's locked **sqlglot 30.11.0** ships mypyc-compiled generators in
+which `DuckDBGenerator`'s SQL templates (`ZIPF_TEMPLATE`, `NORMAL_TEMPLATE`,
+`SEEDED_RANDOM_TEMPLATE`, `MAPCAT_TEMPLATE`, …) are annotated class attributes without
+`ClassVar`. Under mypyc those become **per-instance** attributes whose
+`exp.maybe_parse(...)` defaults re-run on every `Generator` construction (~19 parses,
+~2 ms per construction; SQLite/Postgres generators have no such templates → ~0.002 ms).
+SLayer constructs ~24 generators per query, hence the fixed DuckDB-only offset. The
+0.9.12 baseline venv had freshly resolved **sqlglot 30.17.0**, where the templates are
+class-level again (construction ~0.001 ms) — so only the branch paid it: the gap was a
+dependency-lock artifact, not the typed pipeline.
+
+Fix: sqlglot floor raised `>=30.0` → `>=30.17` (lock at 30.17.0). Branch DuckDB dry-run
+on the flagged entries: **20.5 ms → 2.7 ms**, parity with SQLite (2.7 ms); full unit
+suite green (12,820 passed).
