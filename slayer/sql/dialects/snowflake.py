@@ -23,12 +23,10 @@ from __future__ import annotations
 
 import re as _re
 from typing import TYPE_CHECKING, Any
-from collections.abc import Callable
 from urllib.parse import quote
 
 import sqlalchemy as sa
 import sqlalchemy.engine.url as _sa_url
-from sqlglot import exp
 
 from slayer.sql.dialects.base import SqlDialect
 
@@ -194,15 +192,7 @@ class SnowflakeDialect(SqlDialect):
     # No native LOG2 — falls through to canonical ``LOG(2, x)`` form.
     log2_native: bool = False
     max_identifier_bytes: int | None = 255
-
-    def build_approx_count_distinct(
-        self,
-        col_sql: str,
-        *,
-        parse: Callable[[str], exp.Expression],
-    ) -> exp.Expression:
-        """Snowflake: native ``APPROX_COUNT_DISTINCT(x)`` aggregate."""
-        return parse(f"APPROX_COUNT_DISTINCT({col_sql})")
+    approx_count_distinct_template: str = "APPROX_COUNT_DISTINCT({col})"
 
     # ------------------------------------------------------------------
     # Connection URL / engine

@@ -13,9 +13,24 @@ intended "feature missing" red state (Step 4, tests-first).
 
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 
 from slayer.sql.naming import AliasAllocator
+
+
+def test_naming_imports_cold_without_dialects_cycle() -> None:
+    """DEV-1817 regression: importing ``slayer.sql.naming`` FIRST (before
+    ``slayer.sql.dialects``) must not fail on a naming <-> dialects.base import
+    cycle. Runs in a fresh interpreter so the import order is genuinely cold —
+    the in-process suite imports dialects early and would mask the cycle."""
+    result = subprocess.run(
+        ["poetry", "run", "python", "-c", "import slayer.sql.naming"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 class TestAllocateCollisionWalk:
@@ -305,15 +320,14 @@ class TestManglingRelocatedToNaming:
 
     def test_dialects_import_bijection_from_naming(self) -> None:
         """BigQuery and T-SQL dialects consume the bijection from the naming
-        module (the single owner), not a private dialect-package copy."""
-        import slayer.sql.dialects.bigquery as bq
-        import slayer.sql.dialects.tsql as tsql
+        module (the single owner), not a private dialect-package copy. DEV-1817
+        moved the shared mangling into ``DottedAliasManglingMixin`` (base), so
+        the bijection is consumed there rather than in each dialect module."""
+        import slayer.sql.dialects.base as base
         from slayer.sql.naming import decode_alias, encode_alias
 
-        assert bq.encode_alias is encode_alias
-        assert bq.decode_alias is decode_alias
-        assert tsql.encode_alias is encode_alias
-        assert tsql.decode_alias is decode_alias
+        assert base.encode_alias is encode_alias
+        assert base.decode_alias is decode_alias
 
     def test_distinct_aliases_stay_distinct_after_encode(self) -> None:
         """Codex F8: reversibility is not enough — distinct logical aliases

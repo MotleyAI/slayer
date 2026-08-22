@@ -7,10 +7,6 @@ log10 / log2.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-
-from sqlglot import exp
-
 from slayer.sql.dialects.base import SqlDialect
 
 
@@ -22,12 +18,4 @@ class DuckdbDialect(SqlDialect):
     log10_native: bool = True
     log2_native: bool = True
     max_identifier_bytes: int | None = 256  # safe documented ceiling
-
-    def build_approx_count_distinct(
-        self,
-        col_sql: str,
-        *,
-        parse: Callable[[str], exp.Expression],
-    ) -> exp.Expression:
-        """DuckDB: native ``approx_count_distinct(x)`` aggregate."""
-        return parse(f"approx_count_distinct({col_sql})")
+    approx_count_distinct_template: str = "approx_count_distinct({col})"

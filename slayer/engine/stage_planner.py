@@ -25,7 +25,17 @@ Dormant in 7a — no engine wiring. Stage 7b's engine cutover flips
 
 from __future__ import annotations
 
-from typing import AbstractSet, Dict, FrozenSet, List, Optional, Set, Tuple, Union
+from typing import (
+    AbstractSet,
+    Callable,
+    Dict,
+    FrozenSet,
+    List,
+    Optional,
+    Set,
+    Tuple,
+    Union,
+)
 
 from slayer.core.enums import DataType
 from slayer.core.formula import TIME_TRANSFORMS
@@ -665,6 +675,49 @@ def _resolve_scope(
     return ModelScope(source_model=bundle.source_model)
 
 
+def _map_bound_keys(
+    key_fn: Callable[[ValueKey], ValueKey],
+    *,
+    declared_measures: List[DeclaredMeasure],
+    bound_filters: List[BoundFilter],
+    order_specs: List[OrderSpec],
+) -> Tuple[List[DeclaredMeasure], List[BoundFilter], List[OrderSpec]]:
+    """Apply ``key_fn`` to every declared-measure / filter / order value_key,
+    rebuilding each carrier with all other fields preserved and recomputing each
+    filter's ``referenced_keys`` from its rewritten key."""
+    new_measures = [
+        DeclaredMeasure(
+            bound=BinderBoundExpr(value_key=key_fn(dm.bound.value_key)),
+            declared_name=dm.declared_name,
+            public_name=dm.public_name,
+            label=dm.label,
+            canonical_alias=dm.canonical_alias,
+            type=dm.type,
+            format=dm.format,
+            description=dm.description,
+        )
+        for dm in declared_measures
+    ]
+    new_filters = []
+    for bf in bound_filters:
+        new_vk = key_fn(bf.value_key)
+        new_filters.append(
+            BoundFilter(
+                value_key=new_vk,
+                phase=bf.phase,
+                referenced_keys=tuple(walk_value_keys(new_vk)),
+            )
+        )
+    new_specs = [
+        OrderSpec(
+            bound=BinderBoundExpr(value_key=key_fn(spec.bound.value_key)),
+            direction=spec.direction,
+        )
+        for spec in order_specs
+    ]
+    return new_measures, new_filters, new_specs
+
+
 def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages are strictly sequential and share the growing `declared_measures` / `bound_filters` / `order_specs` triple: parse+bind, time-key attachment, sugar lowering, rank-partition validation. Splitting them would thread the same three lists through four signatures without removing a branch.
     *,
     query: SlayerQuery,
@@ -918,50 +971,12 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
             active_td_key = atd_key
 
     if active_td_key is not None:
-        declared_measures = [
-            DeclaredMeasure(
-                bound=BinderBoundExpr(
-                    value_key=_attach_time_keys(
-                        dm.bound.value_key, td_key=active_td_key,
-                    ),
-                ),
-                declared_name=dm.declared_name,
-                public_name=dm.public_name,
-                label=dm.label,
-                canonical_alias=dm.canonical_alias,
-                type=dm.type,
-                format=dm.format,
-                description=dm.description,
-            )
-            for dm in declared_measures
-        ]
-        bound_filters = [
-            BoundFilter(
-                value_key=_attach_time_keys(
-                    bf.value_key, td_key=active_td_key,
-                ),
-                phase=bf.phase,
-                referenced_keys=tuple(
-                    walk_value_keys(
-                        _attach_time_keys(
-                            bf.value_key, td_key=active_td_key,
-                        ),
-                    ),
-                ),
-            )
-            for bf in bound_filters
-        ]
-        order_specs = [
-            OrderSpec(
-                bound=BinderBoundExpr(
-                    value_key=_attach_time_keys(
-                        spec.bound.value_key, td_key=active_td_key,
-                    ),
-                ),
-                direction=spec.direction,
-            )
-            for spec in order_specs
-        ]
+        declared_measures, bound_filters, order_specs = _map_bound_keys(
+            lambda vk: _attach_time_keys(vk, td_key=active_td_key),
+            declared_measures=declared_measures,
+            bound_filters=bound_filters,
+            order_specs=order_specs,
+        )
 
     # Validation: any time-needing transform that still has
     # ``time_key=None`` after patching means there was no resolvable TD.
@@ -984,40 +999,12 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     # patching pass so the desugared ``time_shift`` inherits the patched
     # ``time_key`` (DEV-1446 identity preservation still holds — the
     # inner AggregateKey instance is not rebuilt by lowering).
-    declared_measures = [
-        DeclaredMeasure(
-            bound=BinderBoundExpr(
-                value_key=lower_sugar_transforms(dm.bound.value_key),
-            ),
-            declared_name=dm.declared_name,
-            public_name=dm.public_name,
-            label=dm.label,
-            canonical_alias=dm.canonical_alias,
-            type=dm.type,
-            format=dm.format,
-            description=dm.description,
-        )
-        for dm in declared_measures
-    ]
-    bound_filters = [
-        BoundFilter(
-            value_key=lower_sugar_transforms(bf.value_key),
-            phase=bf.phase,
-            referenced_keys=tuple(
-                walk_value_keys(lower_sugar_transforms(bf.value_key)),
-            ),
-        )
-        for bf in bound_filters
-    ]
-    order_specs = [
-        OrderSpec(
-            bound=BinderBoundExpr(
-                value_key=lower_sugar_transforms(spec.bound.value_key),
-            ),
-            direction=spec.direction,
-        )
-        for spec in order_specs
-    ]
+    declared_measures, bound_filters, order_specs = _map_bound_keys(
+        lower_sugar_transforms,
+        declared_measures=declared_measures,
+        bound_filters=bound_filters,
+        order_specs=order_specs,
+    )
 
     # DEV-1497: validate that every rank-family ``partition_by`` column resolves
     # to a query dimension / time-dimension, and rewrite a time-dimension source
@@ -1074,35 +1061,12 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     def _rw(vk: ValueKey) -> ValueKey:
         return rewrite_rank_partition_keys(vk, rewrite_fn=_validate_partition_keys)
 
-    declared_measures = [
-        DeclaredMeasure(
-            bound=BinderBoundExpr(value_key=_rw(dm.bound.value_key)),
-            declared_name=dm.declared_name,
-            public_name=dm.public_name,
-            label=dm.label,
-            canonical_alias=dm.canonical_alias,
-            type=dm.type,
-            format=dm.format,
-            description=dm.description,
-        )
-        for dm in declared_measures
-    ]
-    _rewritten_filters = []
-    for bf in bound_filters:
-        bf_vk = _rw(bf.value_key)
-        _rewritten_filters.append(BoundFilter(
-            value_key=bf_vk,
-            phase=bf.phase,
-            referenced_keys=tuple(walk_value_keys(bf_vk)),
-        ))
-    bound_filters = _rewritten_filters
-    order_specs = [
-        OrderSpec(
-            bound=BinderBoundExpr(value_key=_rw(spec.bound.value_key)),
-            direction=spec.direction,
-        )
-        for spec in order_specs
-    ]
+    declared_measures, bound_filters, order_specs = _map_bound_keys(
+        _rw,
+        declared_measures=declared_measures,
+        bound_filters=bound_filters,
+        order_specs=order_specs,
+    )
 
     return PreboundQuery(
         declared_measures=declared_measures,

@@ -227,21 +227,6 @@ class AggRenderSpec(BaseModel):
     aggregate."""
 
 
-def _render_scalar_literal(v: Any) -> exp.Expression:
-    """Render a Python scalar (None / bool / int / float / Decimal / str)
-    as a bare sqlglot literal node. Used by the POST-phase filter renderer
-    for ``LiteralKey.value`` AND any non-key arg inside ``ScalarCallKey``.
-    """
-    from decimal import Decimal
-    if v is None:
-        return exp.Null()
-    if isinstance(v, bool):
-        return exp.true() if v else exp.false()
-    if isinstance(v, (int, float, Decimal)):
-        return exp.Literal.number(str(v))
-    return exp.Literal.string(str(v))
-
-
 def _strip_declared_cast(expr: exp.Expression) -> exp.Expression:
     """Unwrap one declared-type ``CAST`` a derived-column expansion added.
 
@@ -597,6 +582,72 @@ _TRAILING_LIMIT_RE = re.compile(r"(?is)\s*LIMIT\s+\d+\s*\Z")
 _BARE_IDENT_RE = re.compile(r"[A-Za-z_]\w*")
 
 
+def _apply_joins(*, select, joins):
+    """Apply ``(join_expr, on_expr, join_type)`` triples to ``select`` in order,
+    returning the joined ``exp.Select``."""
+    for join_expr, on_expr, join_type in joins:
+        select = select.join(join_expr, on=on_expr, join_type=join_type)
+    return select
+
+
+def _cycle_public_aliases_in_projection_order(
+    *, planned_query, slots_by_id, aliases_by_slot_id,
+):
+    """Public projection aliases in query order, cycling each slot's alias list
+    (a slot materialised under several aliases is consumed in order; the last
+    repeats once exhausted). Hidden and alias-less slots are skipped."""
+    public_aliases: list[str] = []
+    outer_alias_index: Dict[str, int] = {}
+    for sid in planned_query.projection:
+        slot = slots_by_id[sid]
+        if slot.hidden:
+            continue
+        all_aliases = aliases_by_slot_id.get(sid, [])
+        if not all_aliases:
+            continue
+        idx = outer_alias_index.setdefault(sid, 0)
+        alias = (
+            all_aliases[idx] if idx < len(all_aliases) else all_aliases[-1]
+        )
+        outer_alias_index[sid] = idx + 1
+        public_aliases.append(alias)
+    return public_aliases
+
+
+class RenderState(BaseModel):
+    """Frozen per-render constants threaded through the transform-chain emitters
+    (DEV-1817). ``planned_query`` / ``bundle`` never change within one
+    ``generate_from_planned`` call. Held by reference (``Any`` fields, no copy)."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
+
+    planned_query: Any
+    bundle: Any
+
+
+class ChainState(BaseModel):
+    """Per-chain-layer accumulators + the layer's source root (DEV-1817).
+
+    Frozen with ``Any`` fields so the contained collections keep their identity:
+    ``ctes`` (append), the alias maps (``setdefault``) and ``cte_allocator``
+    (``allocate_cte``) are mutated IN PLACE and the driver reads the results
+    back. A fresh ``ChainState`` is built at each chain-layer boundary; the
+    allocator is INJECTED (plain and cross-model chains use different ones).
+    ``source_model`` / ``source_relation`` are the layer root — NOT a per-query
+    constant (isolated-plan CTEs re-root to their target)."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
+
+    ctes: Any
+    cte_allocator: Any
+    slots_by_id: Any
+    slot_id_by_key: Any
+    available_alias_by_slot_id: Any
+    aliases_by_slot_id: Any
+    source_model: Any
+    source_relation: Any
+
+
 class SQLGenerator:
     """Generates SQL from a typed ``PlannedQuery`` (from ``stage_planner``)."""
 
@@ -627,6 +678,42 @@ class SQLGenerator:
         site in this module — pinned by test_dev1726_cte_case_folding — so a
         new allocation path cannot silently lose dialect awareness."""
         return AliasAllocator(folds_case=dialect_folds_case(self.dialect))
+
+    def _scope_frame(self, *, model, relation, bundle, allocator):
+        """Build a ``ScopeFrame`` rooted at ``model`` / ``relation`` on the
+        injected ``allocator`` (its ``next_scope_id`` mints the scope id)."""
+        return ScopeFrame(
+            scope_id=allocator.next_scope_id(relation),
+            root_model=model,
+            root_relation=relation,
+            bundle=bundle,
+            dialect=self._dialect,
+            allocator=allocator,
+        )
+
+    def _alias_render_ctx(self, *, slot_id_by_key, available_alias_by_slot_id):
+        """RenderContext carrying only the plain slot-alias facilities."""
+        return RenderContext(
+            dialect=self._dialect,
+            aliases=AliasFacilities(
+                slot_id_by_key=slot_id_by_key,
+                available_alias_by_slot_id=available_alias_by_slot_id,
+            ),
+        )
+
+    def _outer_wrapper_render_ctx(
+        self, *, slot_by_key, cross_model_agg_slot_to_cm, aliases_by_slot_id,
+    ):
+        """RenderContext for the outer-wrapper composite/filter render pass."""
+        return RenderContext(
+            dialect=self._dialect,
+            aliases=self._outer_wrapper_alias_facilities(
+                slot_by_key=slot_by_key,
+                cross_model_agg_slot_to_cm=cross_model_agg_slot_to_cm,
+                aliases_by_slot_id=aliases_by_slot_id,
+            ),
+            filters=FilterFacilities(paren_comparison_operands=True),
+        )
 
     @staticmethod
     def _reserve_model_column_names(allocator: AliasAllocator, model) -> None:
@@ -731,20 +818,6 @@ class SQLGenerator:
         # arg of a 2-arg ROUND in a numeric CAST — DEV-1576). Keyed to the
         # generator's target dialect, not the parse dialect.
         return self._dialect.rewrite_target_ast(tree)
-
-    def _finalize_scalar_call(self, expr: exp.Expression) -> exp.Expression:
-        """Apply the target-dialect AST rewrite to a scalar-call expression
-        (DEV-1576 / DEV-1717).
-
-        Scalar calls (``round``/``abs``/``coalesce``/…) in formulas are
-        assembled directly as ``exp.func(...)`` AST, never string-parsed, so
-        the ``rewrite_target_ast`` applied inside ``_parse`` never sees them.
-        Routing them through the same dialect hook here keeps the 2-arg
-        Postgres ``ROUND`` numeric-cast (and any future target rewrite)
-        consistent between parsed and AST-built expressions. Identity for
-        dialects whose ``rewrite_target_ast`` is a no-op.
-        """
-        return self._dialect.rewrite_target_ast(expr)
 
     def _parse_predicate(self, sql: str, *, dialect: Optional[str] = None) -> exp.Expression:
         """Parse a bare WHERE/HAVING predicate expression (DEV-1378).
@@ -1648,6 +1721,17 @@ class SQLGenerator:
             for sid, aliases in aliases_by_slot_id.items()
             if aliases
         }
+        chain_state = ChainState(
+            ctes=ctes,
+            cte_allocator=cte_allocator,
+            slots_by_id=slots_by_id,
+            slot_id_by_key=slot_id_by_key,
+            available_alias_by_slot_id=available_alias_by_slot_id,
+            aliases_by_slot_id=aliases_by_slot_id,
+            source_model=source_model,
+            source_relation=source_relation,
+        )
+        render_state = RenderState(planned_query=planned_query, bundle=bundle)
 
         pending_layers = list(planned_query.transform_layers)
         step_num = 0
@@ -1723,19 +1807,11 @@ class SQLGenerator:
                     slot = slots_by_id[slot_id]
                     chain_tail = self._emit_time_shift_ctes_for_planned(
                         slot=slot,
-                        ctes=ctes,
-                        chain_tail=chain_tail,
-                        cte_allocator=cte_allocator,
-                        slots_by_id=slots_by_id,
-                        slot_id_by_key=slot_id_by_key,
-                        available_alias_by_slot_id=available_alias_by_slot_id,
-                        aliases_by_slot_id=aliases_by_slot_id,
-                        source_model=source_model,
-                        source_relation=source_relation,
+                        chain=chain_state,
+                        render=render_state,
                         shifted_where_parts=shifted_where_parts,
                         shifted_where_join_paths=shifted_where_join_paths,
-                        planned_query=planned_query,
-                        bundle=bundle,
+                        chain_tail=chain_tail,
                     )
             # --- consecutive_periods layers (cp_reset_ + cp_value_ pair)
             for layer in ready_cp:
@@ -1743,15 +1819,9 @@ class SQLGenerator:
                     slot = slots_by_id[slot_id]
                     chain_tail = self._emit_consecutive_periods_ctes_for_planned(
                         slot=slot,
-                        ctes=ctes,
+                        chain=chain_state,
+                        render=render_state,
                         chain_tail=chain_tail,
-                        cte_allocator=cte_allocator,
-                        slots_by_id=slots_by_id,
-                        slot_id_by_key=slot_id_by_key,
-                        available_alias_by_slot_id=available_alias_by_slot_id,
-                        aliases_by_slot_id=aliases_by_slot_id,
-                        planned_query=planned_query,
-                        source_relation=source_relation,
                     )
             pending_layers = not_ready
 
@@ -1892,12 +1962,9 @@ class SQLGenerator:
                 slot_entries=[(cslot.id, cslot) for cslot in unmaterialised],
                 render=lambda cslot: render_value_key(
                     key=cslot.key,
-                    ctx=RenderContext(
-                        dialect=self._dialect,
-                        aliases=AliasFacilities(
-                            slot_id_by_key=slot_id_by_key,
-                            available_alias_by_slot_id=available_alias_by_slot_id,
-                        ),
+                    ctx=self._alias_render_ctx(
+                        slot_id_by_key=slot_id_by_key,
+                        available_alias_by_slot_id=available_alias_by_slot_id,
                     ),
                 ),
             )
@@ -1926,21 +1993,11 @@ class SQLGenerator:
         # Outer SELECT in user-projection order (public slots only). Per-slot
         # index walks each slot's public_aliases so duplicate interned names
         # (DEV-1450 C13) both surface in the result.
-        public_aliases_user_order: list[str] = []
-        outer_alias_index: Dict[str, int] = {}
-        for sid in planned_query.projection:
-            slot = slots_by_id[sid]
-            if slot.hidden:
-                continue
-            all_aliases = aliases_by_slot_id.get(sid, [])
-            if not all_aliases:
-                continue
-            idx = outer_alias_index.setdefault(sid, 0)
-            alias = (
-                all_aliases[idx] if idx < len(all_aliases) else all_aliases[-1]
-            )
-            outer_alias_index[sid] = idx + 1
-            public_aliases_user_order.append(alias)
+        public_aliases_user_order = _cycle_public_aliases_in_projection_order(
+            planned_query=planned_query,
+            slots_by_id=slots_by_id,
+            aliases_by_slot_id=aliases_by_slot_id,
+        )
         return self._emit_planned_outer_wrap(
             chain_sql=chain_sql,
             public_aliases=public_aliases_user_order,
@@ -2622,13 +2679,9 @@ class SQLGenerator:
         # DEV-1708 (D-E): share the generation-wide allocator so host-base and
         # per-plan ``_cm_*`` CTE ``_val_<n>`` names are globally unique.
         host_allocator = self._gen_allocator or self._new_allocator()
-        host_scope = ScopeFrame(
-            scope_id=host_allocator.next_scope_id(source_relation),
-            root_model=source_model,
-            root_relation=source_relation,
-            bundle=bundle,
-            dialect=self._dialect,
-            allocator=host_allocator,
+        host_scope = self._scope_frame(
+            model=source_model, relation=source_relation,
+            bundle=bundle, allocator=host_allocator,
         )
         # Pre-expand derived (ColumnSqlKey) ROW + TIME dimensions: inline
         # sibling/joined derived refs (DEV-1333 / DEV-1410) and register any
@@ -2848,10 +2901,7 @@ class SQLGenerator:
         for col in select_columns:
             base_select = base_select.select(col)
         base_select = base_select.from_(from_clause)
-        for join_expr, on_expr, join_type in base_joins:
-            base_select = base_select.join(
-                join_expr, on=on_expr, join_type=join_type,
-            )
+        base_select = _apply_joins(select=base_select, joins=base_joins)
         return (
             base_select, aliases_by_slot_id, has_aggregation, group_by_keys,
         )
@@ -2938,13 +2988,9 @@ class SQLGenerator:
         assert isinstance(key, AggregateKey)
 
         allocator = self._gen_allocator or self._new_allocator()
-        src_scope = ScopeFrame(
-            scope_id=allocator.next_scope_id(source_relation),
-            root_model=source_model,
-            root_relation=source_relation,
-            bundle=bundle,
-            dialect=self._dialect,
-            allocator=allocator,
+        src_scope = self._scope_frame(
+            model=source_model, relation=source_relation,
+            bundle=bundle, allocator=allocator,
         )
 
         def _base_col(alias: str) -> exp.Column:
@@ -3053,10 +3099,7 @@ class SQLGenerator:
             joined_paths=src_scope.join_paths.as_list(), bundle=bundle,
         )
         src_select = exp.Select().select(*src_cols).from_(from_expr)
-        for join_expr, on_expr, join_type in src_joins:
-            src_select = src_select.join(
-                join_expr, on=on_expr, join_type=join_type,
-            )
+        src_select = _apply_joins(select=src_select, joins=src_joins)
         if src_where is not None:
             src_select = src_select.where(src_where)
         src_subq = exp.Subquery(
@@ -3294,13 +3337,9 @@ class SQLGenerator:
         self._reserve_model_column_names(allocator, root_model)
 
         def _frame() -> ScopeFrame:
-            return ScopeFrame(
-                scope_id=allocator.next_scope_id(root_relation),
-                root_model=root_model,
-                root_relation=root_relation,
-                bundle=bundle,
-                dialect=self._dialect,
-                allocator=allocator,
+            return self._scope_frame(
+                model=root_model, relation=root_relation,
+                bundle=bundle, allocator=allocator,
             )
 
         # Law 2's producer/consumer pair. The inner scope PRODUCES every value
@@ -3383,8 +3422,7 @@ class SQLGenerator:
             ),
         ))
         inner = inner.from_(from_expr)
-        for join_expr, on_expr, join_type in joins:
-            inner = inner.join(join_expr, on=on_expr, join_type=join_type)
+        inner = _apply_joins(select=inner, joins=joins)
         if where_parts:
             inner = inner.where(
                 exp.and_(*where_parts) if len(where_parts) > 1 else where_parts[0],
@@ -3800,13 +3838,9 @@ class SQLGenerator:
                 # that must be in scope; without the join, the WHERE
                 # references an undefined alias.
                 placeholder_allocator = self._gen_allocator or self._new_allocator()
-                placeholder_scope = ScopeFrame(
-                    scope_id=placeholder_allocator.next_scope_id(source_relation),
-                    root_model=source_model,
-                    root_relation=source_relation,
-                    bundle=bundle,
-                    dialect=self._dialect,
-                    allocator=placeholder_allocator,
+                placeholder_scope = self._scope_frame(
+                    model=source_model, relation=source_relation,
+                    bundle=bundle, allocator=placeholder_allocator,
                 )
                 self._resolve_where_filter_joins_via_scope(
                     planned_query=planned_query,
@@ -3825,10 +3859,7 @@ class SQLGenerator:
                         alias=exp.to_identifier("_placeholder"),
                     ),
                 ).from_(placeholder_from)
-                for join_expr, on_expr, join_type in placeholder_joins:
-                    base_select = base_select.join(
-                        join_expr, on=on_expr, join_type=join_type,
-                    )
+                base_select = _apply_joins(select=base_select, joins=placeholder_joins)
                 base_where, _base_having = self._build_where_having_from_planned(
                     planned_query=planned_query,
                     source_relation=source_relation,
@@ -4196,14 +4227,10 @@ class SQLGenerator:
             def _render_outer_composite(cslot) -> exp.Expression:
                 rendered = render_value_key(
                     key=cslot.key,
-                    ctx=RenderContext(
-                        dialect=self._dialect,
-                        aliases=self._outer_wrapper_alias_facilities(
-                            slot_by_key=slot_by_key,
-                            cross_model_agg_slot_to_cm=outer_composite_cm_map,
-                            aliases_by_slot_id=aliases_by_slot_id,
-                        ),
-                        filters=FilterFacilities(paren_comparison_operands=True),
+                    ctx=self._outer_wrapper_render_ctx(
+                        slot_by_key=slot_by_key,
+                        cross_model_agg_slot_to_cm=outer_composite_cm_map,
+                        aliases_by_slot_id=aliases_by_slot_id,
                     ),
                 )
                 if cslot.type is not None:
@@ -4507,14 +4534,10 @@ class SQLGenerator:
             for fp in outer_where_filters:
                 rendered = render_value_key(
                     key=fp.expression.value_key,
-                    ctx=RenderContext(
-                        dialect=self._dialect,
-                        aliases=self._outer_wrapper_alias_facilities(
-                            slot_by_key=slot_by_key,
-                            cross_model_agg_slot_to_cm=cross_model_agg_slot_to_cm,
-                            aliases_by_slot_id=aliases_by_slot_id,
-                        ),
-                        filters=FilterFacilities(paren_comparison_operands=True),
+                    ctx=self._outer_wrapper_render_ctx(
+                        slot_by_key=slot_by_key,
+                        cross_model_agg_slot_to_cm=cross_model_agg_slot_to_cm,
+                        aliases_by_slot_id=aliases_by_slot_id,
                     ),
                 )
                 if isinstance(rendered, (exp.And, exp.Or)):
@@ -4543,14 +4566,10 @@ class SQLGenerator:
                     continue
                 rendered = render_value_key(
                     key=fp.expression.value_key,
-                    ctx=RenderContext(
-                        dialect=self._dialect,
-                        aliases=self._outer_wrapper_alias_facilities(
-                            slot_by_key=slot_by_key,
-                            cross_model_agg_slot_to_cm=wm_slot_to_cte,
-                            aliases_by_slot_id=aliases_by_slot_id,
-                        ),
-                        filters=FilterFacilities(paren_comparison_operands=True),
+                    ctx=self._outer_wrapper_render_ctx(
+                        slot_by_key=slot_by_key,
+                        cross_model_agg_slot_to_cm=wm_slot_to_cte,
+                        aliases_by_slot_id=aliases_by_slot_id,
                     ),
                 )
                 if isinstance(rendered, (exp.And, exp.Or)):
@@ -5034,13 +5053,9 @@ class SQLGenerator:
         self._reserve_model_column_names(cte_allocator, target_model)
         # The CTE's own scope, created before the grain loop so shared-grain
         # refs resolve (and any crossing value materialises) through it.
-        cte_scope = ScopeFrame(
-            scope_id=cte_allocator.next_scope_id(target_relation),
-            root_model=target_model,
-            root_relation=target_relation,
-            bundle=bundle,
-            dialect=self._dialect,
-            allocator=cte_allocator,
+        cte_scope = self._scope_frame(
+            model=target_model, relation=target_relation,
+            bundle=bundle, allocator=cte_allocator,
         )
         for sid in plan.shared_grain_slots:
             if sid not in base_projection_ids:
@@ -5350,10 +5365,7 @@ class SQLGenerator:
         for col in cte_select_columns:
             cte_select = cte_select.select(col)
         cte_select = cte_select.from_(target_from)
-        for join_expr, on_expr, join_type in cte_base_joins:
-            cte_select = cte_select.join(
-                join_expr, on=on_expr, join_type=join_type,
-            )
+        cte_select = _apply_joins(select=cte_select, joins=cte_base_joins)
         if combined_where is not None:
             cte_select = cte_select.where(combined_where)
 
@@ -5658,23 +5670,6 @@ class SQLGenerator:
         if not parts:
             return None
         return exp.and_(*parts) if len(parts) > 1 else parts[0]
-
-    def _literal_key_to_exp(self, value) -> exp.Expression:
-        """Convert a scalar / LiteralKey value to a sqlglot literal."""
-        from slayer.core.keys import LiteralKey
-        from decimal import Decimal
-
-        if isinstance(value, LiteralKey):
-            inner = value.value
-        else:
-            inner = value
-        if isinstance(inner, bool):
-            return exp.Boolean(this=inner)
-        if isinstance(inner, (int, float, Decimal)):
-            return exp.Literal.number(str(inner))
-        if inner is None:
-            return exp.Null()
-        return exp.Literal.string(str(inner))
 
     def _full_alias_for_slot(
         self,
@@ -6018,12 +6013,9 @@ class SQLGenerator:
         if isinstance(key.input, (_ArithKey, _ScalarKey)):
             measure = render_value_key(
                 key=key.input,
-                ctx=RenderContext(
-                    dialect=self._dialect,
-                    aliases=AliasFacilities(
-                        slot_id_by_key=slot_id_by_key,
-                        available_alias_by_slot_id=available_alias_by_slot_id,
-                    ),
+                ctx=self._alias_render_ctx(
+                    slot_id_by_key=slot_id_by_key,
+                    available_alias_by_slot_id=available_alias_by_slot_id,
                 ),
             )
         else:
@@ -6242,12 +6234,9 @@ class SQLGenerator:
                 )
             rendered = render_value_key(
                 key=fp.expression.value_key,
-                ctx=RenderContext(
-                    dialect=self._dialect,
-                    aliases=AliasFacilities(
-                        slot_id_by_key=slot_id_by_key,
-                        available_alias_by_slot_id=available_alias_by_slot_id,
-                    ),
+                ctx=self._alias_render_ctx(
+                    slot_id_by_key=slot_id_by_key,
+                    available_alias_by_slot_id=available_alias_by_slot_id,
                 ),
             )
             out.append(rendered.sql(dialect=self.dialect))
@@ -6465,21 +6454,13 @@ class SQLGenerator:
         return None
 
     def _emit_time_shift_ctes_for_planned(  # NOSONAR(S3776) — single conceptual unit for one time_shift slot: partition/time resolution through the shifted ScopeFrame + shifted-CTE body assembly + collision-safe CTE naming (cte_allocator) + sjoin grain join-back, all sharing tightly-coupled per-slot state (time_alias / input_alias / partition_specs / shifted_cte_name / carry aliases). Splitting forces that cross-cutting state through many-argument helpers without simplifying anything — same shape as the sibling _render_cross_model_cte's suppression.
-        self,  # NOSONAR(S107) — chain_tail (DEV-1784) is the 14th of these cohesive per-slot params; see the S3776 note above.
+        self,
         *,
         slot,
-        ctes: list,
-        cte_allocator: AliasAllocator,
-        slots_by_id: Dict[str, Any],
-        slot_id_by_key: Dict[Any, str],
-        available_alias_by_slot_id: Dict[str, str],
-        aliases_by_slot_id: Dict[str, List[str]],
-        source_model,
-        source_relation: str,
+        chain: ChainState,
+        render: RenderState,
         shifted_where_parts: List[str],
         shifted_where_join_paths: List[Tuple[str, ...]],
-        planned_query,
-        bundle,
         chain_tail: str,
     ) -> str:
         """Emit a ``shifted_<alias>`` + ``sjoin_<alias>`` CTE pair for
@@ -6516,6 +6497,16 @@ class SQLGenerator:
         null-safe (Codex F2) so NULL dim / NULL time-bucket groups keep their
         shifted value instead of silently dropping.
         """
+        ctes = chain.ctes
+        cte_allocator = chain.cte_allocator
+        slots_by_id = chain.slots_by_id
+        slot_id_by_key = chain.slot_id_by_key
+        available_alias_by_slot_id = chain.available_alias_by_slot_id
+        aliases_by_slot_id = chain.aliases_by_slot_id
+        source_model = chain.source_model
+        source_relation = chain.source_relation
+        planned_query = render.planned_query
+        bundle = render.bundle
         from slayer.core.enums import TimeGranularity
         from slayer.core.keys import (
             AggregateKey,
@@ -6603,13 +6594,9 @@ class SQLGenerator:
         # generation-wide allocator so any ``_val_<n>`` names stay unique
         # across the base and every CTE.
         shifted_allocator = self._gen_allocator or self._new_allocator()
-        shifted_scope = ScopeFrame(
-            scope_id=shifted_allocator.next_scope_id(source_relation),
-            root_model=source_model,
-            root_relation=source_relation,
-            bundle=bundle,
-            dialect=self._dialect,
-            allocator=shifted_allocator,
+        shifted_scope = self._scope_frame(
+            model=source_model, relation=source_relation,
+            bundle=bundle, allocator=shifted_allocator,
         )
 
         # 3. partition_keys (DEV-1450 C6) + auto-include query dimensions.
@@ -6822,10 +6809,7 @@ class SQLGenerator:
         shifted_select = exp.Select().select(*shifted_select_parts).from_(
             from_clause,
         )
-        for join_expr, on_expr, join_type in shifted_joins:
-            shifted_select = shifted_select.join(
-                join_expr, on=on_expr, join_type=join_type,
-            )
+        shifted_select = _apply_joins(select=shifted_select, joins=shifted_joins)
         # ``shifted_where_parts`` is the one text input left on this path: the
         # WHERE builder renders Mode-A predicates to SQL. Parsed once here
         # rather than concatenated into a body string, so the surrounding CTE
@@ -6932,14 +6916,8 @@ class SQLGenerator:
         self,
         *,
         slot,
-        ctes: list,
-        cte_allocator: AliasAllocator,
-        slots_by_id: Dict[str, Any],
-        slot_id_by_key: Dict[Any, str],
-        available_alias_by_slot_id: Dict[str, str],
-        aliases_by_slot_id: Dict[str, List[str]],
-        planned_query,
-        source_relation: str,
+        chain: ChainState,
+        render: RenderState,
         chain_tail: str,
     ) -> str:
         """Emit ``cp_reset_<alias>`` + ``cp_value_<alias>`` CTEs for one
@@ -6961,6 +6939,14 @@ class SQLGenerator:
           the predicate text references that base alias directly — no
           legacy ``_inner_<name>`` step CTE needed.
         """
+        ctes = chain.ctes
+        cte_allocator = chain.cte_allocator
+        slots_by_id = chain.slots_by_id
+        slot_id_by_key = chain.slot_id_by_key
+        available_alias_by_slot_id = chain.available_alias_by_slot_id
+        aliases_by_slot_id = chain.aliases_by_slot_id
+        source_relation = chain.source_relation
+        planned_query = render.planned_query
         from slayer.core.keys import (
             AggregateKey,
             ArithmeticKey,
@@ -7027,12 +7013,9 @@ class SQLGenerator:
                 )
             predicate = render_value_key(
                 key=inner_key,
-                ctx=RenderContext(
-                    dialect=self._dialect,
-                    aliases=AliasFacilities(
-                        slot_id_by_key=slot_id_by_key,
-                        available_alias_by_slot_id=available_alias_by_slot_id,
-                    ),
+                ctx=self._alias_render_ctx(
+                    slot_id_by_key=slot_id_by_key,
+                    available_alias_by_slot_id=available_alias_by_slot_id,
                 ),
             )
             predicate_is_boolean = True
@@ -8312,33 +8295,6 @@ class SQLGenerator:
         _walk(key)
         return out
 
-    @staticmethod
-    def _scalar_to_sqlglot(v) -> exp.Expression:
-        from decimal import Decimal
-
-        if v is None:
-            return exp.Null()
-        if isinstance(v, bool):
-            return exp.Boolean(this=v)
-        if isinstance(v, Decimal):
-            return exp.Literal.number(str(v))
-        if isinstance(v, str):
-            return exp.Literal.string(v)
-        raise NotImplementedError(
-            f"Unsupported scalar in filter: type={type(v).__name__} "
-            f"value={v!r}",
-        )
-
-    @staticmethod
-    def _paren_if_binary(node: exp.Expression) -> exp.Expression:
-        """DEV-1539: wrap a multi-term operand in ``(...)`` when it is a
-        ``Binary`` (arithmetic ``a + b``, or an ``AND``/``OR`` connector) so a
-        surrounding comparator's precedence is explicit by inspection, not only
-        by SQL operator-precedence rules — ``(a + b) > 7``, not ``a + b > 7``.
-        Bare columns, literals, function calls, and already-enclosed forms
-        (``CAST(...)`` / ``Paren``) are not ``Binary`` and pass through."""
-        return exp.Paren(this=node) if isinstance(node, exp.Binary) else node
-
     def _build_outer_trim_wrap_sql(
         self,
         *,
@@ -8365,21 +8321,11 @@ class SQLGenerator:
         ``"…"``; MySQL uses backticks). String-built quoted identifiers
         would silently degrade to string literals on MySQL.
         """
-        public_aliases: list[str] = []
-        outer_alias_index: Dict[str, int] = {}
-        for sid in planned_query.projection:
-            slot = slots_by_id[sid]
-            if slot.hidden:
-                continue
-            all_aliases = aliases_by_slot_id.get(sid, [])
-            if not all_aliases:
-                continue
-            idx = outer_alias_index.setdefault(sid, 0)
-            alias = (
-                all_aliases[idx] if idx < len(all_aliases) else all_aliases[-1]
-            )
-            outer_alias_index[sid] = idx + 1
-            public_aliases.append(alias)
+        public_aliases = _cycle_public_aliases_in_projection_order(
+            planned_query=planned_query,
+            slots_by_id=slots_by_id,
+            aliases_by_slot_id=aliases_by_slot_id,
+        )
 
         outer_select = exp.Select()
         for alias in public_aliases:

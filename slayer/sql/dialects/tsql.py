@@ -27,16 +27,19 @@ T-SQL is the most divergent Tier-1 dialect:
 from __future__ import annotations
 
 import re
-from typing import Any, Literal
-from collections.abc import Callable, Sequence
+from typing import ClassVar, Literal
+from collections.abc import Callable
 
 import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import TimeGranularity
-from slayer.sql.naming import OUTER_WRAP_ALIAS, decode_alias, encode_alias
-from slayer.sql.dialects._identifier_fit import fit_identifier
-from slayer.sql.dialects.base import SqlDialect, _build_covar_decomposition
+from slayer.sql.naming import OUTER_WRAP_ALIAS
+from slayer.sql.dialects.base import (
+    DottedAliasManglingMixin,
+    SqlDialect,
+    _build_covar_decomposition,
+)
 
 
 # sqlglot's tsql transpiler emits incorrect names (VAR_SAMP, VARIANCE_POP)
@@ -78,7 +81,7 @@ def _offset_ordering_fallback(
     ])
 
 
-class TsqlDialect(SqlDialect):
+class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     sqlglot_name: str = "tsql"
     ds_type_aliases: frozenset[str] = frozenset({"mssql", "sqlserver", "tsql"})
     explain_prefix: str | None = "SET SHOWPLAN_ALL ON;"
@@ -86,6 +89,13 @@ class TsqlDialect(SqlDialect):
     log10_native: bool = True
     log2_native: bool = False
     max_identifier_bytes: int | None = 128  # sysname is nvarchar(128)
+    # Anonymous: sqlglot re-emits a parsed APPROX_COUNT_DISTINCT as its
+    # Presto-family APPROX_DISTINCT canonical, which is not a T-SQL function.
+    approx_count_distinct_anonymous_name: str | None = "APPROX_COUNT_DISTINCT"
+    # DEV-1571 Bug 2: bracketed dotted-alias mangling (DottedAliasManglingMixin).
+    dotted_alias_re: ClassVar[re.Pattern[str]] = _TSQL_DOTTED_ALIAS_RE
+    alias_quote_open: ClassVar[str] = "["
+    alias_quote_close: ClassVar[str] = "]"
 
     def build_null_safe_eq(
         self, left: exp.Expression, right: exp.Expression,
@@ -121,20 +131,6 @@ class TsqlDialect(SqlDialect):
         return super().build_ordered(
             order_col, descending=descending, nulls=nulls,
         )
-
-    def build_approx_count_distinct(
-        self,
-        col_sql: str,
-        *,
-        parse: Callable[[str], exp.Expression],
-    ) -> exp.Expression:
-        """T-SQL: native ``APPROX_COUNT_DISTINCT(x)`` (SQL Server 2019+).
-
-        Built as an ``exp.Anonymous`` because sqlglot's T-SQL dialect re-emits
-        a parsed ``APPROX_COUNT_DISTINCT`` as ``APPROX_DISTINCT`` (its
-        Presto-family canonical form), which is not a T-SQL function.
-        """
-        return exp.Anonymous(this="APPROX_COUNT_DISTINCT", expressions=[parse(col_sql)])
 
     def build_date_trunc(
         self,
@@ -419,55 +415,3 @@ class TsqlDialect(SqlDialect):
         if offset_arg is not None:
             outer.set("offset", offset_arg)
         return outer.sql(dialect=self.sqlglot_name, pretty=True)
-
-    # ------------------------------------------------------------------
-    # DEV-1571 Bug 2: bracketed dotted-alias mangling
-    # ------------------------------------------------------------------
-
-    def fit_alias(self, name: str) -> str:
-        """Size the budget against the post-mangle form (``.`` -> ``___`` adds 2
-        bytes per dot); return value stays dotted for the regex below."""
-        return fit_identifier(
-            name=name, limit=self.max_identifier_bytes, expand=encode_alias,
-        )
-
-    def emit_alias(self, alias: str) -> str:
-        """The final identifier: length-fitted, then dot-mangled."""
-        return encode_alias(self.fit_alias(alias))
-
-    def rewrite_emitted_sql(
-        self, sql: str, *, aliases: Sequence[str] = (),
-    ) -> str:
-        """Replace ``.`` with ``___`` inside bracket-quoted identifiers.
-
-        T-SQL's ``ORDER BY`` resolver treats ``[a.b]`` as a column lookup, not a
-        SELECT alias, and fails; a dotless identifier resolves cleanly. Same
-        bijection as ``BigqueryDialect``, only the regex anchor differs.
-
-        Uses the same bijection as ``BigqueryDialect`` (shared encode in
-        ``slayer.sql.naming``); only the regex anchor differs. The base LENGTH
-        pass runs first: no-op on under-limit aliases, and over-limit ones
-        arrive still-dotted for this pass — no double-encoding.
-        """
-        sql = super().rewrite_emitted_sql(sql=sql, aliases=aliases)
-        return _TSQL_DOTTED_ALIAS_RE.sub(
-            lambda m: f"[{encode_alias(m.group(1))}]", sql
-        )
-
-    def decode_result_keys(
-        self,
-        rows: list[dict[str, Any]],
-        *,
-        aliases: Sequence[str] = (),
-    ) -> list[dict[str, Any]]:
-        """Reverse the T-SQL alias mangling on result-row keys so consumers see
-        SLayer's universal dotted shape whatever dialect ran the query.
-
-        Fitted keys aren't recoverable alone, so the ``emitted -> canonical``
-        map is consulted first, falling back to the ``___`` -> ``.`` bijection.
-        """
-        mapping = self.decode_alias_map(aliases)
-        return [
-            self._rekey_row(row=row, mapping=mapping, fallback=decode_alias)
-            for row in rows
-        ]
