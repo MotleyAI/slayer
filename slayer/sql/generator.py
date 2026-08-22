@@ -560,7 +560,7 @@ _TRAILING_LIMIT_RE = re.compile(r"(?is)\s*LIMIT\s+\d+\s*\Z")
 _BARE_IDENT_RE = re.compile(r"[A-Za-z_]\w*")
 
 
-def _apply_joins(select, joins):
+def _apply_joins(*, select, joins):
     """Apply ``(join_expr, on_expr, join_type)`` triples to ``select`` in order,
     returning the joined ``exp.Select``."""
     for join_expr, on_expr, join_type in joins:
@@ -2878,7 +2878,7 @@ class SQLGenerator:
         for col in select_columns:
             base_select = base_select.select(col)
         base_select = base_select.from_(from_clause)
-        base_select = _apply_joins(base_select, base_joins)
+        base_select = _apply_joins(select=base_select, joins=base_joins)
         return (
             base_select, aliases_by_slot_id, has_aggregation, group_by_keys,
         )
@@ -3076,7 +3076,7 @@ class SQLGenerator:
             joined_paths=src_scope.join_paths.as_list(), bundle=bundle,
         )
         src_select = exp.Select().select(*src_cols).from_(from_expr)
-        src_select = _apply_joins(src_select, src_joins)
+        src_select = _apply_joins(select=src_select, joins=src_joins)
         if src_where is not None:
             src_select = src_select.where(src_where)
         src_subq = exp.Subquery(
@@ -3399,7 +3399,7 @@ class SQLGenerator:
             ),
         ))
         inner = inner.from_(from_expr)
-        inner = _apply_joins(inner, joins)
+        inner = _apply_joins(select=inner, joins=joins)
         if where_parts:
             inner = inner.where(
                 exp.and_(*where_parts) if len(where_parts) > 1 else where_parts[0],
@@ -3836,7 +3836,7 @@ class SQLGenerator:
                         alias=exp.to_identifier("_placeholder"),
                     ),
                 ).from_(placeholder_from)
-                base_select = _apply_joins(base_select, placeholder_joins)
+                base_select = _apply_joins(select=base_select, joins=placeholder_joins)
                 base_where, _base_having = self._build_where_having_from_planned(
                     planned_query=planned_query,
                     source_relation=source_relation,
@@ -5342,7 +5342,7 @@ class SQLGenerator:
         for col in cte_select_columns:
             cte_select = cte_select.select(col)
         cte_select = cte_select.from_(target_from)
-        cte_select = _apply_joins(cte_select, cte_base_joins)
+        cte_select = _apply_joins(select=cte_select, joins=cte_base_joins)
         if combined_where is not None:
             cte_select = cte_select.where(combined_where)
 
@@ -6769,7 +6769,7 @@ class SQLGenerator:
         shifted_select = exp.Select().select(*shifted_select_parts).from_(
             from_clause,
         )
-        shifted_select = _apply_joins(shifted_select, shifted_joins)
+        shifted_select = _apply_joins(select=shifted_select, joins=shifted_joins)
         # ``shifted_where_parts`` is the one text input left on this path: the
         # WHERE builder renders Mode-A predicates to SQL. Parsed once here
         # rather than concatenated into a body string, so the surrounding CTE

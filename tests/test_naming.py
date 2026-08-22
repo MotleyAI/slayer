@@ -14,7 +14,6 @@ intended "feature missing" red state (Step 4, tests-first).
 from __future__ import annotations
 
 import subprocess
-import sys
 
 import pytest
 
@@ -27,7 +26,7 @@ def test_naming_imports_cold_without_dialects_cycle() -> None:
     cycle. Runs in a fresh interpreter so the import order is genuinely cold —
     the in-process suite imports dialects early and would mask the cycle."""
     result = subprocess.run(
-        [sys.executable, "-c", "import slayer.sql.naming"],
+        ["poetry", "run", "python", "-c", "import slayer.sql.naming"],
         capture_output=True,
         text=True,
     )
