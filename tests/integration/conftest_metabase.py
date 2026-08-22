@@ -454,7 +454,7 @@ def _bootstrap_metabase_session(
 
 
 @pytest.fixture(scope="session")
-def metabase_e2e_env() -> Iterator[MetabaseE2EEnv]:
+def metabase_e2e_env(tmp_path_factory: pytest.TempPathFactory) -> Iterator[MetabaseE2EEnv]:
     """Session-scoped Metabase + dual pg-serve bootstrap."""
     pytest.importorskip("asyncpg")
 
@@ -466,17 +466,22 @@ def metabase_e2e_env() -> Iterator[MetabaseE2EEnv]:
     loop_a = thread_a = None
     loop_b = thread_b = None
     container_id: str | None = None
+    base_a = base_b = None
 
     try:
+        base_a = str(tmp_path_factory.mktemp("mb-pg-a"))
+        base_b = str(tmp_path_factory.mktemp("mb-pg-b"))
         loop_a, thread_a, host_a, port_a = start_pg_demo_server(
             token=PRIMARY_TOKEN_VALUE,
             log_records=log_records,
             storage_sink=storage_sink,
             bind_host="0.0.0.0",  # NOSONAR(S104) — required so Metabase-in-container reaches pg-serve via host.docker.internal; token-protected per validate_bind_address
+            base_dir=base_a,
         )
         loop_b, thread_b, host_b, port_b = start_pg_demo_server(
             token=AUTH_TEST_TOKEN_VALUE,
             bind_host="0.0.0.0",  # NOSONAR(S104) — same; Metabase auth path test (A.5) drives it via host.docker.internal too
+            base_dir=base_b,
         )
 
         container_id, host_port = _run_metabase_container()
@@ -519,6 +524,7 @@ def metabase_e2e_env() -> Iterator[MetabaseE2EEnv]:
                 thread.join(timeout=5)
             except Exception:
                 pass
+        # base_a/base_b are tmp_path_factory dirs — pytest cleans them.
 
 
 # Used by tests that re-emit the env in a per-test mutation context.
