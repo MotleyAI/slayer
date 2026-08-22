@@ -159,3 +159,30 @@ class TestShiftedCtePositionalArgRegistration:
         shifted = shifted_cte_body(sql)
         assert "customers.signup_at" in shifted, shifted
         assert "JOIN customers" in shifted, shifted
+
+
+class TestCrossModelHiddenAliasReservation:
+    """DEV-1750: a hidden ``time_shift`` placeholder (``_time_shift_inner``)
+    minted inside the cross-model transform chain must never shadow a real user
+    measure of that name. The chain reuses the generation-wide ``_gen_allocator``
+    (already carrying every projected alias from the ``_cm_`` / combined-SELECT
+    build), so ``allocate_cte`` bumps the hidden one to ``_time_shift_inner_2`` —
+    the host chain gets the same guarantee via its own explicit reservation on a
+    fresh allocator (``test_dev1713_naming``)."""
+
+    async def test_hidden_alias_bumped_off_user_column(self) -> None:
+        # ``customers.spend:sum`` forces the cross-model transform chain; the
+        # arithmetic-wrapped ``time_shift`` mints a hidden ``_time_shift_inner``
+        # slot that would collide with the like-named user measure.
+        sql = await gen(_q(measures=[
+            ModelMeasure(formula="customers.spend:sum", name="cm"),
+            ModelMeasure(formula="amount:sum", name="_time_shift_inner"),
+            ModelMeasure(
+                formula="amount:sum - time_shift(amount:sum, -1)", name="growth",
+            ),
+        ]))
+        # The user measure keeps its own key (closing quote pins the exact
+        # name, not the ``_2`` suffix).
+        assert '"orders._time_shift_inner"' in sql, sql
+        # The hidden shift alias was bumped off the user's name, not collided.
+        assert '"orders._time_shift_inner_2"' in sql, sql
