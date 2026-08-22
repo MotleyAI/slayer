@@ -25,12 +25,8 @@ from slayer.core.formula import (
 
 
 class TestParseFilterBooleanLiterals:
-    """SQL spells its boolean literals in lower case; Python's ``ast`` does not.
-
-    ``true`` / ``false`` arrive as names rather than constants, so without
-    special handling they are collected as column references and then rejected
-    as unknown names.
-    """
+    """SQL's lowercase ``true`` / ``false`` arrive as ``ast`` names, not
+    constants, so without special handling they'd be read as column refs."""
 
     @pytest.mark.parametrize(
         ("expression", "expected"),
@@ -46,20 +42,16 @@ class TestParseFilterBooleanLiterals:
     ) -> None:
         parsed = parse_filter(expression)
         assert parsed.sql == expected
-        # A literal is a value, not a reference — strict name resolution
-        # rejects anything that lands in ``columns``.
+        # The literal is a value, not a reference — it must not land in columns.
         assert parsed.columns == ["is_active"]
 
     def test_python_cased_literals_keep_working(self) -> None:
-        """``True`` / ``False`` are ``ast`` constants, so they never reached
-        the name path. SQL keywords are case-insensitive, so both render fine."""
+        # ``True`` / ``False`` are ``ast`` constants, so they skip the name path.
         assert parse_filter("is_active = True").sql == "is_active = True"
         assert parse_filter("is_active = False").sql == "is_active = False"
 
     def test_bare_literal_is_not_a_column_reference(self) -> None:
-        """Documents the trade-off: ``true`` always wins over a same-named
-        column. Both spellings are SQL reserved words, so no dialect allows
-        them as unquoted column names anyway."""
+        # ``true`` wins over a same-named column — moot, it's a reserved word.
         assert parse_filter("true").columns == []
 
 

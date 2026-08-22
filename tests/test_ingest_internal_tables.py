@@ -672,11 +672,11 @@ class TestIdempotencyAndReporting:
 class TestColumnsToModelKwargs:
     def test_meta_is_propagated_verbatim(self) -> None:
         """`_columns_to_model` passes `meta` through untouched, since the caller merges the breadcrumb."""
-        from slayer.engine.ingestion import _columns_to_model
+        from slayer.engine.ingestion import IntrospectedColumn, _columns_to_model
 
         model = _columns_to_model(
             name="t",
-            columns=[("id", DataType.INT, True, False, None)],
+            columns=[IntrospectedColumn(name="id", type=DataType.INT, primary_key=True)],
             data_source="ds",
             sql_table="t",
             hidden=True,
@@ -687,11 +687,11 @@ class TestColumnsToModelKwargs:
 
     def test_defaults_leave_the_model_untouched(self) -> None:
         """The dbt hidden-import path calls this without the new kwargs."""
-        from slayer.engine.ingestion import _columns_to_model
+        from slayer.engine.ingestion import IntrospectedColumn, _columns_to_model
 
         model = _columns_to_model(
             name="t",
-            columns=[("id", DataType.INT, True, False, None)],
+            columns=[IntrospectedColumn(name="id", type=DataType.INT, primary_key=True)],
             data_source="ds",
             sql_table="t",
         )

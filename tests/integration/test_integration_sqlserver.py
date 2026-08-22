@@ -670,6 +670,14 @@ def sqlserver_ingest_env(sqlserver_container):
                     "INSERT INTO orders (id, amount, customer_id) VALUES "
                     "(1, 100, 1), (2, 200, 1), (3, 50, 2), (4, 150, 3)"
                 ))
+                conn.execute(sa.text(
+                    "EXEC sp_addextendedproperty 'MS_Description', 'All orders', "
+                    "'SCHEMA', 'dbo', 'TABLE', 'orders'"
+                ))
+                conn.execute(sa.text(
+                    "EXEC sp_addextendedproperty 'MS_Description', 'Order amount', "
+                    "'SCHEMA', 'dbo', 'TABLE', 'orders', 'COLUMN', 'amount'"
+                ))
         finally:
             engine.dispose()
 
@@ -678,6 +686,22 @@ def sqlserver_ingest_env(sqlserver_container):
         yield models, ds, None
     finally:
         _drop_module_db(sqlserver_container, db_name)
+
+
+@pytest.mark.integration
+class TestSQLServerIngestComments:
+    def test_table_and_column_comments_imported(self, sqlserver_ingest_env) -> None:
+        models, _, _ = sqlserver_ingest_env
+        orders = next(m for m in models if m.name == "orders")
+        assert orders.description == "All orders"
+        by_name = {c.name: c for c in orders.columns}
+        assert by_name["amount"].description == "Order amount"
+        assert by_name["id"].description is None
+
+    def test_uncommented_table_has_no_description(self, sqlserver_ingest_env) -> None:
+        models, _, _ = sqlserver_ingest_env
+        regions = next(m for m in models if m.name == "regions")
+        assert regions.description is None
 
 
 @pytest.mark.integration

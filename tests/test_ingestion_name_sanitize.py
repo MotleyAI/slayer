@@ -544,7 +544,7 @@ class TestEmptyJoinListIsNotNoJoinList:
 
         sa_engine, inspector = self._fixture(workspace)
         return [
-            c[0]
+            c.name
             for c in _introspect_query_columns_via_inspector(
                 sa_engine=sa_engine,
                 inspector=inspector,

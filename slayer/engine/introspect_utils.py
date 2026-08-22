@@ -55,6 +55,93 @@ _INFO_SCHEMA_TYPE_MAP = {
 }
 
 
+def _clean_comment(value: Optional[str]) -> Optional[str]:
+    """Normalize a DB comment: strip whitespace, empty → None."""
+    if value is None:
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+# Per-dialect column-comment queries for the fallback path. INFORMATION_SCHEMA
+# has no standard comment column, so each dialect needs its own source
+# (DEV-1809). SQL Server / BigQuery are omitted: their Inspector paths already
+# surface comments, and their fallback equivalents are disproportionately
+# complex (sys.extended_properties / region-qualified INFORMATION_SCHEMA).
+_COMMENT_FALLBACK_SQL = {
+    "mysql": (
+        "SELECT column_name, column_comment FROM information_schema.columns "
+        "WHERE table_name = :table_name{schema_clause}",
+        " AND table_schema = :schema",
+        " AND table_schema = DATABASE()",
+    ),
+    "snowflake": (
+        "SELECT column_name, comment FROM information_schema.columns "
+        "WHERE table_name = :table_name{schema_clause}",
+        " AND table_schema = :schema",
+        " AND table_schema = CURRENT_SCHEMA()",
+    ),
+    "clickhouse": (
+        "SELECT name, comment FROM system.columns "
+        "WHERE table = :table_name AND database = {schema_clause}",
+        ":schema",
+        "currentDatabase()",
+    ),
+    "duckdb": (
+        "SELECT column_name, comment FROM duckdb_columns() "
+        "WHERE table_name = :table_name{schema_clause}",
+        " AND schema_name = :schema",
+        " AND schema_name = current_schema()",
+    ),
+    "postgresql": (
+        "SELECT a.attname, col_description(c.oid, a.attnum) "
+        "FROM pg_catalog.pg_class c "
+        "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+        "JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid "
+        "WHERE c.relname = :table_name AND a.attnum > 0 "
+        "AND NOT a.attisdropped{schema_clause}",
+        " AND n.nspname = :schema",
+        " AND pg_catalog.pg_table_is_visible(c.oid)",
+    ),
+}
+_COMMENT_FALLBACK_SQL["mariadb"] = _COMMENT_FALLBACK_SQL["mysql"]
+
+
+def _get_column_comments_fallback(
+    sa_engine: sa.Engine,
+    table_name: str,
+    schema: Optional[str],
+) -> Dict[str, str]:
+    """Column comments for the INFORMATION_SCHEMA fallback path.
+
+    Without an explicit ``schema`` the query is scoped to the connection's
+    default/current schema, so a same-named table in another schema can't
+    cross-assign its comments. Best-effort: unknown dialects and any query
+    failure return ``{}``.
+    """
+    try:
+        dialect_name = getattr(sa_engine.dialect, "name", None)
+        entry = _COMMENT_FALLBACK_SQL.get(dialect_name)
+        if entry is None:
+            return {}
+        template, schema_clause, default_clause = entry
+        clause = schema_clause if schema else default_clause
+        sql = template.format(schema_clause=clause)
+        params = {"table_name": table_name}
+        if schema:
+            params["schema"] = schema
+        with sa_engine.connect() as conn:
+            rows = conn.execute(sa.text(sql), params).fetchall()
+        out: Dict[str, str] = {}
+        for name, comment in rows:
+            cleaned = _clean_comment(comment)
+            if cleaned:
+                out[name] = cleaned
+        return out
+    except Exception:
+        return {}
+
+
 def _parse_info_schema_is_float(data_type_str: str) -> bool:
     """Determine if a NUMERIC/DECIMAL info-schema type string is float-like.
 
@@ -136,6 +223,11 @@ def _get_columns_fallback(
         elif sa_type is None and ("CHAR" in base_type or "TEXT" in base_type):
             sa_type = DataType.TEXT
         result.append({"name": col_name, "type": sa_type or DataType.TEXT, "is_float": is_float})
+    comments = _get_column_comments_fallback(
+        sa_engine=sa_engine, table_name=table_name, schema=schema,
+    )
+    for col in result:
+        col["comment"] = comments.get(col["name"])
     return result
 
 

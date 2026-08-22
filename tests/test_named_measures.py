@@ -171,7 +171,6 @@ class TestNamedMeasureSQL:
             await _generate(query, model)
 
     async def test_near_miss_bare_name_suggests_the_saved_measure(self) -> None:
-        """A misspelled saved measure names the real one."""
         model = _orders_model(
             measures=[ModelMeasure(name="aov_net", formula="revenue:sum")]
         )
@@ -184,7 +183,6 @@ class TestNamedMeasureSQL:
             await _generate(query, model)
 
     async def test_aggregating_a_saved_measure_says_to_drop_the_suffix(self) -> None:
-        """``measure:agg`` must not report the measure as a missing column."""
         model = _orders_model(
             measures=[ModelMeasure(name="aov", formula="revenue:sum")]
         )
@@ -199,7 +197,6 @@ class TestNamedMeasureSQL:
             await _generate(query, model)
 
     async def test_bare_column_in_expression_asks_for_an_aggregation(self) -> None:
-        """A bare column inside arithmetic must ask for an aggregation."""
         model = _orders_model()
         query = SlayerQuery(
             source_model="orders",
@@ -212,13 +209,8 @@ class TestNamedMeasureSQL:
             await _generate(query, model)
 
     def test_name_suggestion_skips_unnamed_measures(self) -> None:
-        """``ModelMeasure.name`` is optional, so the suggestion helper drops
-        unnamed measures instead of sorting them against ``None``.
-
-        In the full pipeline an unnamed measure is rejected by model
-        re-validation before resolution, so this exercises the helper directly
-        the way a post-construction mutation reaches it.
-        """
+        # Tested directly: the full pipeline rejects unnamed measures at model
+        # re-validation, so they only reach the helper via a raw mutation.
         model = _orders_model(
             measures=[ModelMeasure(name="aov", formula="revenue:sum")]
         )
