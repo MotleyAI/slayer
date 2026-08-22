@@ -66,8 +66,8 @@ def _atomic_write_text(path: str, text: str) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as f:  # NOSONAR(S7493) — sync I/O in async by design
             f.write(text)
             f.flush()
+            os.chmod(tmp, mode)  # before fsync so the mode is durable too
             os.fsync(f.fileno())
-        os.chmod(tmp, mode)
         os.replace(tmp, path)
     except BaseException:
         with contextlib.suppress(OSError):
