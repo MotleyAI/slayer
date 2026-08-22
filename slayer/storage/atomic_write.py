@@ -36,7 +36,9 @@ def _temp_prefix(dir_path: str, basename: str) -> str:
 
 
 def _fsync_dir(dir_path: str) -> None:
-    """Best-effort directory fsync so the rename itself is durable."""
+    """Best-effort directory fsync so the rename is durable. Never raises: it
+    runs after ``os.replace``, so a sync failure must not turn an
+    already-installed write into a reported failure."""
     try:
         dir_fd = os.open(dir_path, os.O_RDONLY)
     except OSError:  # pragma: no cover — e.g. Windows can't open a dir fd
@@ -46,14 +48,17 @@ def _fsync_dir(dir_path: str) -> None:
     except OSError:  # pragma: no cover — filesystem without dir fsync
         pass
     finally:
-        os.close(dir_fd)
+        with contextlib.suppress(OSError):  # pragma: no cover — close rarely fails
+            os.close(dir_fd)
 
 
 def _atomic_write_text(path: str, text: str) -> None:
     """Durably replace ``path``: serialize to a same-dir temp file, fsync it,
     then ``os.replace`` (atomic on POSIX). An existing file's permission mode
-    is preserved; new files are created ``0o600``. On any failure the
-    destination is left untouched and the temp file removed.
+    is preserved; new files are created ``0o600``. Any raised error leaves the
+    old file in place and removes the temp file — the post-replace directory
+    sync is best-effort and never raises, so an exception here always means the
+    replace did not happen.
 
     Durability covers the file and its containing directory; a directory the
     caller freshly created (e.g. a new datasource dir) is not parent-fsynced,

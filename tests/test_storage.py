@@ -101,6 +101,22 @@ def test_atomic_write_long_multibyte_basename(tmp_path) -> None:
     assert list(tmp_path.iterdir()) == [path]
 
 
+def test_atomic_write_dir_sync_failure_does_not_fail_write(tmp_path, monkeypatch) -> None:
+    # The post-replace directory sync is best-effort: a failure there (here the
+    # dir-fd close) must not turn an already-installed write into a raised error.
+    path = tmp_path / "model.yaml"
+    path.write_text("old")
+    real_close = os.close
+
+    def _close_raises(fd):
+        real_close(fd)
+        raise OSError("simulated dir-fd close failure")
+
+    monkeypatch.setattr(atomic_write_module.os, "close", _close_raises)
+    atomic_write_module._atomic_write_text(path=str(path), text="new")  # must not raise
+    assert path.read_text() == "new"
+
+
 def test_atomic_write_cleanup_error_does_not_mask_original(tmp_path, monkeypatch) -> None:
     path = tmp_path / "model.yaml"
     path.write_text("old")
