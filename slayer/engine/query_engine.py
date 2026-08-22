@@ -2634,7 +2634,7 @@ class SlayerQueryEngine:
         NULL key rows are excluded from BOTH counts, so the two are computed
         over the same population.
         """
-        tbl = exp.to_table(table)
+        tbl = exp.to_table(table, dialect=sqlglot_name)
         cols = [exp.column(c, quoted=True) for c in key_cols]
         predicate = None
         for col in cols:

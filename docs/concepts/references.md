@@ -138,10 +138,11 @@ Five consequences worth knowing:
 
 * **`greatest` / `least` NULL handling is backend-specific.** They pass through
   to each backend's native form, and those forms disagree on `NULL`: Postgres,
-  DuckDB, SQL Server and Snowflake *ignore* `NULL` arguments (returning `NULL`
-  only when every argument is `NULL`), while SQLite (scalar `MAX`/`MIN`), MySQL,
-  ClickHouse and BigQuery *propagate* `NULL` (any `NULL` argument makes the
-  result `NULL`). SLayer does not normalise this — wrap arguments in
+  DuckDB and SQL Server *ignore* `NULL` arguments (returning `NULL` only when
+  every argument is `NULL`), while SQLite (scalar `MAX`/`MIN`), MySQL,
+  ClickHouse, BigQuery and Snowflake *propagate* `NULL` (any `NULL` argument
+  makes the result `NULL`; Snowflake's `GREATEST`/`LEAST` need
+  `GREATEST_IGNORE_NULLS`/`LEAST_IGNORE_NULLS` to skip them). SLayer does not normalise this — wrap arguments in
   `ifnull(...)` / `coalesce(...)` if you need one behaviour on every backend.
   On SQL Server, `GREATEST` / `LEAST` require SQL Server 2022 or newer; earlier
   versions reject the generated SQL.
