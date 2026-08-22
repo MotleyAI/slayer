@@ -12,6 +12,7 @@ import pandas as pd
 import pytest
 
 import classify
+import compare
 import corpus
 import oracle
 from classify import (
@@ -403,8 +404,6 @@ def test_flag_perf_degenerate_inputs():
 
 
 def test_resolve_scales_explicit_and_profile_all():
-    import compare
-
     assert compare.resolve_scales(False, "10k,40k") == {"10k": 10_000, "40k": 40_000}
     assert compare.resolve_scales(False, "") == {}
     all_scales = compare.resolve_scales(True, "10k")  # scales_arg ignored under profile-all
@@ -977,8 +976,6 @@ def test_oracle_left_join_null_keys_never_match():
 # ---------------------------------------------------------------------------
 
 def test_write_timings_csv_skips_error_rows(tmp_path):
-    import compare
-
     flags = [
         {"backend": "sqlite", "scale": "10m", "entry": "q1", "metric": "exec",
          "pypi_median": 0.1, "branch_median": 0.2, "ratio": 2.0, "delta": 0.1, "flagged": False},

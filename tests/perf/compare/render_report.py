@@ -185,7 +185,7 @@ def chart_timeshift_bars(deltas, ratios):
     W, H = 720, 380
     L, R, T, B = 68, 24, 62, 48
     pw, ph = W - L - R, H - T - B
-    vmax = max(deltas[s] for s in scales) * 1.15
+    vmax = max(max(deltas[s] for s in scales) * 1.15, 1.0)  # positive floor: all-equal deltas → vmax>0
     bw = pw / len(scales) * 0.52
     col = SERIES["sqlite"]
     b = [_text(L, 30, "Cost of the time_shift boundary-fix at scale (SQLite)", size=17, weight="600"),
@@ -236,6 +236,7 @@ def main():
     if ts_svg:
         (ASSETS / "timeshift_sqlite.svg").write_text(ts_svg)
     else:
+        (ASSETS / "timeshift_sqlite.svg").unlink(missing_ok=True)  # drop stale prior-run asset
         print("skipped timeshift chart: no bench_time_shift_date_range sqlite data")
 
     print("charts written to", ASSETS)

@@ -59,7 +59,7 @@ and list-variable fixes; the time-shift period-boundary fix), plus the two bugs 
 
 | Bug (query) | 0.9.12 | Branch | Verdict |
 |---|---|---|---|
-| **Ranked `:last`/`:first` grouped by a joined dimension** (`join_ranked_last_over_join`) | Emits invalid SQL — `ROW_NUMBER() OVER (PARTITION BY customers.segment …)` but projects a bare `segment` → `no such column: segment` | Correct SQL | `PYPI_ONLY_ERROR` on sqlite, duckdb **and** postgres |
+| **Ranked `:last`/`:first` grouped by a joined dimension** (`join_ranked_last_over_join`) | Emits invalid SQL — `ROW_NUMBER() OVER (PARTITION BY customers.segment …)` but projects a bare `segment` → `no such column: segment` | Correct SQL | `PYPI_ONLY_ERROR` on SQLite, DuckDB **and** PostgreSQL |
 | **Measure `Column.filter` that crosses a join** (`join_filtered_local_isolation`) | **Silently drops the filter** → returns unfiltered category totals | Host-rooted isolation applies the filter correctly | `VALUE_MISMATCH`, **oracle says branch ✓ / pypi ✗** on all three engines |
 
 The second is the important one: the filtered measure `whale_cost:sum` (a `cost` column
@@ -84,12 +84,13 @@ misleading on its own: it comes from a *fixed additive* overhead, not a multipli
 ![Per-query pypi vs branch at 1M rows](report_assets/scatter_1m.svg)
 
 Each dot is one query at 1M rows; the dashed line is parity (above it = branch slower).
-SQLite and Postgres points hug the diagonal. **DuckDB's cluster sits *parallel* to and
-above the diagonal by a near-constant ~20 ms** — the same offset on unrelated queries
-(`filter_range_and` +20 ms, `ms_stage_variable` +20 ms, `formula_arith_time_shift` +20 ms…).
-Because DuckDB queries are tiny (≈10–20 ms), a flat +20 ms doubles the ratio; at 10M rows,
-where queries take longer, the same overhead is only 1.22×. Median additive delta:
-**SQLite ~0 ms, DuckDB +6–9 ms, Postgres ~0 ms.**
+SQLite and Postgres points hug the diagonal. **DuckDB's cluster sits *parallel* to and above
+the diagonal** by a near-constant offset. On the **flagged 1M-row queries** that offset is
+~20 ms (`filter_range_and` +20 ms, `ms_stage_variable` +20 ms, `formula_arith_time_shift`
++20 ms…); across the **whole 100-query corpus** the pooled **median** additive delta is
+smaller — DuckDB +6–9 ms, versus SQLite ~0 ms and Postgres ~0 ms. Because DuckDB queries are
+tiny (≈10–20 ms), even the median offset lifts the ratio to 1.2–1.5×; at 10M rows, where
+queries take longer, the same overhead is only 1.22×.
 
 That the overhead is **absent on Postgres** (whose connections are the *heaviest*) rules out
 generic connection cost — it points at something **DuckDB-execution-specific** in the
