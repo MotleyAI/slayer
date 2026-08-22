@@ -636,7 +636,7 @@ class TestCteNames:
         """Two distinct over-limit aliases that fit to the same string must not
         silently share one unquoted CTE name: the allocator's ``_2`` suffix
         pushes the second back over the limit and the guard raises."""
-        import slayer.sql.dialects._identifier_fit as fitmod
+        import slayer.sql._identifier_fit as fitmod
 
         monkeypatch.setattr(fitmod, "_digest", lambda name: "deadbeef")
         alloc = AliasAllocator()

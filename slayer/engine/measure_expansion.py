@@ -45,6 +45,8 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, Optional, Sequence, Tuple, get_args
 
+from pydantic import BaseModel, ConfigDict
+
 from slayer.core.errors import MeasureCycleError, MeasureRecursionLimitError
 from slayer.core.models import ModelMeasure, SlayerModel
 from slayer.engine.syntax import (
@@ -72,6 +74,23 @@ _DEPTH_ENV_VAR = "SLAYER_MEASURE_EXPANSION_DEPTH"
 _PARSED_EXPR_TYPES: Tuple[type, ...] = get_args(ParsedExpr)
 
 
+class _ExpandCtx(BaseModel):
+    """Per-expansion carrier: the loop-invariant ``measures`` map, ``depth_limit``,
+    and shared ``parse_cache``, plus the per-branch cycle ``chain``. ``descend``
+    forks only ``chain``; the shallow ``model_copy`` keeps the same ``parse_cache``
+    object so cached parses are shared across every recursion branch."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
+
+    measures: Dict[str, ModelMeasure]
+    depth_limit: int
+    parse_cache: Dict[str, ParsedExpr]
+    chain: Tuple[str, ...] = ()
+
+    def descend(self, name: str) -> "_ExpandCtx":
+        return self.model_copy(update={"chain": self.chain + (name,)})
+
+
 def expand_model_measures(
     *,
     expr: ParsedExpr,
@@ -90,14 +109,8 @@ def expand_model_measures(
         )
     measures = _collect_named_measures(model=model, extras=extra_measures)
     limit = depth_limit if depth_limit is not None else _env_depth_limit()
-    parse_cache: Dict[str, ParsedExpr] = {}
-    return _walk(
-        expr,
-        measures=measures,
-        depth_limit=limit,
-        chain=(),
-        parse_cache=parse_cache,
-    )
+    ctx = _ExpandCtx(measures=measures, depth_limit=limit, parse_cache={})
+    return _walk(expr, ctx=ctx)
 
 
 def _collect_named_measures(
@@ -129,102 +142,31 @@ def _env_depth_limit() -> int:
         return _DEFAULT_DEPTH
 
 
-def _walk(
-    node: ParsedExpr,
-    *,
-    measures: Dict[str, ModelMeasure],
-    depth_limit: int,
-    chain: Tuple[str, ...],
-    parse_cache: Dict[str, ParsedExpr],
-) -> ParsedExpr:
+def _walk(node: ParsedExpr, *, ctx: _ExpandCtx) -> ParsedExpr:
     if isinstance(node, Ref):
-        return _expand_ref(
-            node=node,
-            measures=measures,
-            depth_limit=depth_limit,
-            chain=chain,
-            parse_cache=parse_cache,
-        )
+        return _expand_ref(node=node, ctx=ctx)
     if isinstance(node, (DottedRef, StarSource, Literal, AggCall)):
         return node
     if isinstance(node, TransformCall):
-        return _walk_transform_call(
-            node=node,
-            measures=measures,
-            depth_limit=depth_limit,
-            chain=chain,
-            parse_cache=parse_cache,
-        )
+        return _walk_transform_call(node=node, ctx=ctx)
     if isinstance(node, ScalarCall):
-        return _walk_scalar_call(
-            node=node,
-            measures=measures,
-            depth_limit=depth_limit,
-            chain=chain,
-            parse_cache=parse_cache,
-        )
-    if isinstance(node, Arith):
+        return _walk_scalar_call(node=node, ctx=ctx)
+    if isinstance(node, (Arith, Cmp)):
         return node.model_copy(
             update={
-                "left": _maybe_walk(
-                    node.left,
-                    measures=measures,
-                    depth_limit=depth_limit,
-                    chain=chain,
-                    parse_cache=parse_cache,
-                ),
-                "right": _maybe_walk(
-                    node.right,
-                    measures=measures,
-                    depth_limit=depth_limit,
-                    chain=chain,
-                    parse_cache=parse_cache,
-                ),
+                "left": _maybe_walk(node.left, ctx=ctx),
+                "right": _maybe_walk(node.right, ctx=ctx),
             }
         )
     if isinstance(node, UnaryOp):
         return node.model_copy(
-            update={
-                "operand": _maybe_walk(
-                    node.operand,
-                    measures=measures,
-                    depth_limit=depth_limit,
-                    chain=chain,
-                    parse_cache=parse_cache,
-                ),
-            }
-        )
-    if isinstance(node, Cmp):
-        return node.model_copy(
-            update={
-                "left": _maybe_walk(
-                    node.left,
-                    measures=measures,
-                    depth_limit=depth_limit,
-                    chain=chain,
-                    parse_cache=parse_cache,
-                ),
-                "right": _maybe_walk(
-                    node.right,
-                    measures=measures,
-                    depth_limit=depth_limit,
-                    chain=chain,
-                    parse_cache=parse_cache,
-                ),
-            }
+            update={"operand": _maybe_walk(node.operand, ctx=ctx)}
         )
     if isinstance(node, BoolOp):
         return node.model_copy(
             update={
                 "operands": tuple(
-                    _maybe_walk(
-                        o,
-                        measures=measures,
-                        depth_limit=depth_limit,
-                        chain=chain,
-                        parse_cache=parse_cache,
-                    )
-                    for o in node.operands
+                    _maybe_walk(o, ctx=ctx) for o in node.operands
                 )
             }
         )
@@ -233,120 +175,46 @@ def _walk(
     return node
 
 
-def _expand_ref(
-    *,
-    node: Ref,
-    measures: Dict[str, ModelMeasure],
-    depth_limit: int,
-    chain: Tuple[str, ...],
-    parse_cache: Dict[str, ParsedExpr],
-) -> ParsedExpr:
-    if node.name not in measures:
+def _expand_ref(*, node: Ref, ctx: _ExpandCtx) -> ParsedExpr:
+    if node.name not in ctx.measures:
         return node
-    if node.name in chain:
-        raise MeasureCycleError(chain=list(chain) + [node.name])
-    new_chain = chain + (node.name,)
-    if len(new_chain) > depth_limit:
+    if node.name in ctx.chain:
+        raise MeasureCycleError(chain=list(ctx.chain) + [node.name])
+    child = ctx.descend(node.name)
+    if len(child.chain) > ctx.depth_limit:
         raise MeasureRecursionLimitError(
-            chain=list(new_chain), limit=depth_limit
+            chain=list(child.chain), limit=ctx.depth_limit
         )
-    cached = parse_cache.get(node.name)
+    cached = ctx.parse_cache.get(node.name)
     if cached is None:
-        cached = parse_expr(measures[node.name].formula)
-        parse_cache[node.name] = cached
-    return _walk(
-        cached,
-        measures=measures,
-        depth_limit=depth_limit,
-        chain=new_chain,
-        parse_cache=parse_cache,
-    )
+        cached = parse_expr(ctx.measures[node.name].formula)
+        ctx.parse_cache[node.name] = cached
+    return _walk(cached, ctx=child)
 
 
-def _walk_transform_call(
-    *,
-    node: TransformCall,
-    measures: Dict[str, ModelMeasure],
-    depth_limit: int,
-    chain: Tuple[str, ...],
-    parse_cache: Dict[str, ParsedExpr],
-) -> TransformCall:
-    new_input = _maybe_walk(
-        node.input,
-        measures=measures,
-        depth_limit=depth_limit,
-        chain=chain,
-        parse_cache=parse_cache,
-    )
-    new_args = tuple(
-        _maybe_walk(
-            a,
-            measures=measures,
-            depth_limit=depth_limit,
-            chain=chain,
-            parse_cache=parse_cache,
-        )
-        for a in node.args
-    )
+def _walk_transform_call(*, node: TransformCall, ctx: _ExpandCtx) -> TransformCall:
+    new_input = _maybe_walk(node.input, ctx=ctx)
+    new_args = tuple(_maybe_walk(a, ctx=ctx) for a in node.args)
     new_kwargs = tuple(
-        (
-            k,
-            _maybe_walk(
-                v,
-                measures=measures,
-                depth_limit=depth_limit,
-                chain=chain,
-                parse_cache=parse_cache,
-            ),
-        )
-        for k, v in node.kwargs
+        (k, _maybe_walk(v, ctx=ctx)) for k, v in node.kwargs
     )
     return node.model_copy(
         update={"input": new_input, "args": new_args, "kwargs": new_kwargs}
     )
 
 
-def _walk_scalar_call(
-    *,
-    node: ScalarCall,
-    measures: Dict[str, ModelMeasure],
-    depth_limit: int,
-    chain: Tuple[str, ...],
-    parse_cache: Dict[str, ParsedExpr],
-) -> ScalarCall:
-    new_args = tuple(
-        _maybe_walk(
-            a,
-            measures=measures,
-            depth_limit=depth_limit,
-            chain=chain,
-            parse_cache=parse_cache,
-        )
-        for a in node.args
-    )
+def _walk_scalar_call(*, node: ScalarCall, ctx: _ExpandCtx) -> ScalarCall:
+    new_args = tuple(_maybe_walk(a, ctx=ctx) for a in node.args)
     return node.model_copy(update={"args": new_args})
 
 
-def _maybe_walk(
-    v: Any,
-    *,
-    measures: Dict[str, ModelMeasure],
-    depth_limit: int,
-    chain: Tuple[str, ...],
-    parse_cache: Dict[str, ParsedExpr],
-) -> Any:
+def _maybe_walk(v: Any, *, ctx: _ExpandCtx) -> Any:
     """Walk ``v`` only if it is a ParsedExpr node; pass scalars through
     unchanged. AggCall args/kwargs and the like contain scalars
     (Decimal / str / bool) that should not be touched.
     """
     if isinstance(v, _PARSED_EXPR_TYPES):
-        return _walk(
-            v,
-            measures=measures,
-            depth_limit=depth_limit,
-            chain=chain,
-            parse_cache=parse_cache,
-        )
+        return _walk(v, ctx=ctx)
     return v
 
 

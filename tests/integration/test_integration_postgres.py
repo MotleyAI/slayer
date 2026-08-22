@@ -563,6 +563,8 @@ def pg_ingest_env(postgresql_proc):
                 customer_id INTEGER REFERENCES customers(id)
             )
         """)
+        cur.execute("COMMENT ON TABLE orders IS 'All orders'")
+        cur.execute("COMMENT ON COLUMN orders.amount IS 'Order amount'")
         cur.executemany("INSERT INTO regions VALUES (%s, %s)", [(1, "US"), (2, "EU")])
         cur.executemany(
             "INSERT INTO customers VALUES (%s, %s, %s)",
@@ -1589,3 +1591,19 @@ class TestPostgresReservedWordModel:
         # grant amounts 100 (usage 1) and 50 (usage 3) → bumped 101 and 51
         by_bumped = {float(r["usage.bumped"]): r["usage._count"] for r in result.data}
         assert by_bumped == {101.0: 2, 51.0: 1}
+
+
+@pytest.mark.integration
+class TestPostgresIngestComments:
+    def test_table_and_column_comments_imported(self, pg_ingest_env) -> None:
+        models, _, _ = pg_ingest_env
+        orders = next(m for m in models if m.name == "orders")
+        assert orders.description == "All orders"
+        by_name = {c.name: c for c in orders.columns}
+        assert by_name["amount"].description == "Order amount"
+        assert by_name["id"].description is None
+
+    def test_uncommented_table_has_no_description(self, pg_ingest_env) -> None:
+        models, _, _ = pg_ingest_env
+        regions = next(m for m in models if m.name == "regions")
+        assert regions.description is None

@@ -6837,60 +6837,60 @@ tests = ["packaging", "pytz"]
 
 [[package]]
 name = "sqlglot"
-version = "30.11.0"
+version = "30.17.0"
 description = "An easily customizable SQL parser and transpiler"
 optional = false
 python-versions = ">=3.9"
 groups = ["main"]
 files = [
-    {file = "sqlglot-30.11.0-py3-none-any.whl", hash = "sha256:cffdee57d1f2f5472dc9f13087e618cf795841172b7d5ef78b63a051a52d2710"},
-    {file = "sqlglot-30.11.0.tar.gz", hash = "sha256:1a23c6e2adb41da61fda46b1848d2fa26341d447fc0f0cd5ca21160362100991"},
+    {file = "sqlglot-30.17.0-py3-none-any.whl", hash = "sha256:84435ac283a60173da31b5fd7d11a725037a1c3fd6ed1e21fb065de74ddb579f"},
+    {file = "sqlglot-30.17.0.tar.gz", hash = "sha256:2d6b8def93304fa300f4d20f48e3909e7f436fda56ca1fafd8975f6c561ef62c"},
 ]
 
 [package.dependencies]
-sqlglotc = {version = "30.11.0", optional = true, markers = "python_version >= \"3.10\" and extra == \"c\""}
+sqlglotc = {version = "30.17.0", optional = true, markers = "python_version >= \"3.10\" and extra == \"c\""}
 
 [package.extras]
-c = ["sqlglotc (==30.11.0) ; python_version >= \"3.10\""]
-dev = ["duckdb (>=0.6)", "mypy ; python_version < \"3.10\"", "pandas", "pandas-stubs", "pdoc", "pre-commit", "pyperf", "python-dateutil", "pytz", "ruff (==0.15.6)", "setuptools_scm", "sqlglot-mypy (>=2.1.0.post2) ; python_version >= \"3.10\"", "types-python-dateutil", "types-pytz", "typing_extensions"]
-rs = ["sqlglotc (==30.11.0) ; python_version >= \"3.10\"", "sqlglotrs (==0.13.0)"]
+c = ["sqlglotc (==30.17.0) ; python_version >= \"3.10\""]
+dev = ["duckdb (>=0.6)", "mypy ; python_version < \"3.10\"", "pandas", "pandas-stubs", "pdoc", "pre-commit", "pyperf", "python-dateutil", "pytz", "ruff (==0.15.6)", "setuptools_scm", "sqlglot-mypy (>=2.3.0.post1) ; python_version >= \"3.10\"", "types-python-dateutil", "types-pytz", "typing_extensions"]
+rs = ["sqlglotc (==30.17.0) ; python_version >= \"3.10\"", "sqlglotrs (==0.13.0)"]
 
 [[package]]
 name = "sqlglotc"
-version = "30.11.0"
+version = "30.17.0"
 description = "mypyc-compiled extensions for sqlglot"
 optional = false
 python-versions = ">=3.10"
 groups = ["main"]
 files = [
-    {file = "sqlglotc-30.11.0-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:742c108c8089d39280c229eb7a57838fc907f3b01620de948502b2f3211cf301"},
-    {file = "sqlglotc-30.11.0-cp310-cp310-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:76734c1684663fa2899a990446562c635c7057cc431bc1c79920e26423727488"},
-    {file = "sqlglotc-30.11.0-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:44eb032a8ebd50bd7d835024f5f50363e1720fbbed1710bca8160f26ebeab59b"},
-    {file = "sqlglotc-30.11.0-cp310-cp310-win_amd64.whl", hash = "sha256:3fb6b4aa751485d5415539762ff16668978436eff946de51985d811c23aba1d4"},
-    {file = "sqlglotc-30.11.0-cp311-cp311-macosx_10_9_universal2.whl", hash = "sha256:349e6b1e79baefebeda9ea457bb06a8f348aaacf0fc39c2f4b6a54ddef19cbb4"},
-    {file = "sqlglotc-30.11.0-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:eedab4e58c2baa2bf6b9864505aaf7bdbde92c0370854dfdbce5a3cf72bc4be4"},
-    {file = "sqlglotc-30.11.0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:d5759b32f0492f5196f7611f9f5233ff636e91441d9b5cd2309c939cd532f11c"},
-    {file = "sqlglotc-30.11.0-cp311-cp311-win_amd64.whl", hash = "sha256:64f0a3d05a92aef5911a2aed058af3195ea08a11a68b3d7befe6dd04d3c2aa66"},
-    {file = "sqlglotc-30.11.0-cp312-cp312-macosx_10_13_universal2.whl", hash = "sha256:2f6741bff8c92777ecdd05f97d5dcd61614c05b1a01dbf7b10198dfd176060d6"},
-    {file = "sqlglotc-30.11.0-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:ff9d1917f5238e6d8261c79bc911726787220fa85805beca348a36d4aecc71f8"},
-    {file = "sqlglotc-30.11.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:ba3a0f215ba81c276759a4e6331f8af1948d803d38c3f5ed684119c5d6f1d82a"},
-    {file = "sqlglotc-30.11.0-cp312-cp312-win_amd64.whl", hash = "sha256:9c1cdfc5544cc4e23d31b966f007cc2be16e697cef86b97cba2ffd246f344256"},
-    {file = "sqlglotc-30.11.0-cp313-cp313-macosx_10_13_universal2.whl", hash = "sha256:5c36388963d82aacb4287c7859cc40a08c15fa0dfaf0ad055679b53ba602016b"},
-    {file = "sqlglotc-30.11.0-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:a357a6bf6321796c8506520340feb5052bf76c658a2455aabbbdd7d85c8fd5da"},
-    {file = "sqlglotc-30.11.0-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:ba16b178d2ad9ab1eac38fb1415434abecaf342d3a487c3128649fe8c0d1e500"},
-    {file = "sqlglotc-30.11.0-cp313-cp313-win_amd64.whl", hash = "sha256:20e662593a96c0086edc46b336bc772d213901fd09add99a3326661793ba7018"},
-    {file = "sqlglotc-30.11.0-cp314-cp314-macosx_10_15_universal2.whl", hash = "sha256:d49533b4a851f3603ecba9a724c32f227bca90cc0034b8a3ad66acdbde759a90"},
-    {file = "sqlglotc-30.11.0-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:a2cbeec4ec4591268585e5ad5f55fbee30ccd68227b5d2f77d483cdd63b65963"},
-    {file = "sqlglotc-30.11.0-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:2f4bcc7b76634171edccc13aabba9c1bea51f97caf2187daacbe433004058dc3"},
-    {file = "sqlglotc-30.11.0-cp314-cp314-win_amd64.whl", hash = "sha256:8c6ed84d557772880a082ef29d18b0c2cfee2d177e6528b30df2b7eaf6adb585"},
-    {file = "sqlglotc-30.11.0.tar.gz", hash = "sha256:6ce71f4d31459df966f3752848f397e254ff5d4e2772594e539e23cff0f2bbc8"},
+    {file = "sqlglotc-30.17.0-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:c2d62b78b846cd22eb213d6179851a679d67b4ccd75b3032059be1975802cfa6"},
+    {file = "sqlglotc-30.17.0-cp310-cp310-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:c7b6d21a763958288b4b75f0b9c170103563b0ffa458a1f52d8ddb1f4aa4d12c"},
+    {file = "sqlglotc-30.17.0-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:db57dda46789cc5e9017bdd6ea941dbc77ab495839d426fbb539baeffbcbfa42"},
+    {file = "sqlglotc-30.17.0-cp310-cp310-win_amd64.whl", hash = "sha256:f02839a2a3b95cca5adb1012980f7fd73fd24a4414e675bd20584babc617632c"},
+    {file = "sqlglotc-30.17.0-cp311-cp311-macosx_10_9_universal2.whl", hash = "sha256:08b052ba08d13cc888e7d911110f22752a4a8c44647417679d4cd6dc5f9d8573"},
+    {file = "sqlglotc-30.17.0-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:1f86a27ca12c4a931359aa0073b5ea1c4fe570da0aa9ed577855bec063556f5d"},
+    {file = "sqlglotc-30.17.0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:e2b740cf36af60c97b57e9941e877d55b4761832a032c5b31bd637afa375eff7"},
+    {file = "sqlglotc-30.17.0-cp311-cp311-win_amd64.whl", hash = "sha256:9f5396e8c81c59e1a18d5fa0a78e9c91754e893dcb50f7902f61c835db24121f"},
+    {file = "sqlglotc-30.17.0-cp312-cp312-macosx_10_13_universal2.whl", hash = "sha256:cc37a0d9b78e73e187a1caee7d01d966107a0fef77d35294acb4ae69f400342c"},
+    {file = "sqlglotc-30.17.0-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:5d02c86e516509ef971fe0d290140818f9ecd471a2d86b43de573f5c778f467b"},
+    {file = "sqlglotc-30.17.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:24c0df324d3b8cb1ab65b4139b52dc4de2291ba0e3ce4086ef7fcd0b96555ba3"},
+    {file = "sqlglotc-30.17.0-cp312-cp312-win_amd64.whl", hash = "sha256:98386f93556e1c3075f58aab85be6f919b5af3ade4cc0609996f7fb68cb85bab"},
+    {file = "sqlglotc-30.17.0-cp313-cp313-macosx_10_13_universal2.whl", hash = "sha256:486bb9652a11fd8d97005dbbd37aebe33a93fd74903c21c88f25b2e4cdc8d769"},
+    {file = "sqlglotc-30.17.0-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:1c34c1c99121dd510553a1cdaa3ea1c597fafc58a60d794a81bdb09a1d45eef2"},
+    {file = "sqlglotc-30.17.0-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:c397302b4739e134e0062d48809dbe841a85b704bf5d0291336f057d74784a35"},
+    {file = "sqlglotc-30.17.0-cp313-cp313-win_amd64.whl", hash = "sha256:a5a5cb708a9d96e08b5fa6d31a3817d94d615d7b536ade2cb1e88b6f1ec10917"},
+    {file = "sqlglotc-30.17.0-cp314-cp314-macosx_10_15_universal2.whl", hash = "sha256:a79ca1259d89194b1ae3d50509aebb2727e74de0190dc57568917d27b2f70baf"},
+    {file = "sqlglotc-30.17.0-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:86b84c58b563d9762724a503398604c25553a5e637501c48dc27cf9fef466332"},
+    {file = "sqlglotc-30.17.0-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:599ec9e4c7450175df0c4f844d95e7732c4890077a997352f62af25203633970"},
+    {file = "sqlglotc-30.17.0-cp314-cp314-win_amd64.whl", hash = "sha256:3396b2e596049cb185b9980b6b59453ff7b5d400b2c6c335cb854cf93458b0a8"},
+    {file = "sqlglotc-30.17.0.tar.gz", hash = "sha256:8f83229edbeebb5c02602257a59b596d0c26e63e9827c5dfe9976681e2fb51a7"},
 ]
 
 [package.dependencies]
-sqlglot = "30.11.0"
+sqlglot = "30.17.0"
 
 [package.extras]
-dev = ["setuptools (>=61.0)", "setuptools_scm", "sqlglot-mypy (>=2.1.0.post2)"]
+dev = ["setuptools (>=61.0)", "setuptools_scm", "sqlglot-mypy (>=2.3.0.post1)"]
 
 [[package]]
 name = "sqlparse"
@@ -7971,4 +7971,4 @@ sqlserver = ["pyodbc"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.11"
-content-hash = "41f5c7b53d5fa6a08838461b6ca964894fb18d982764ffc1621c8c026c37e043"
+content-hash = "ecbba1187b0057be0d0206c75f255361e8720aafb627272600d41b0dfe37c1a5"

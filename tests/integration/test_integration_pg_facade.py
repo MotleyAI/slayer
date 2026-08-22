@@ -21,8 +21,13 @@ asyncpg = pytest.importorskip("asyncpg")
 
 
 @pytest.fixture(scope="module")
-def pg_demo_server() -> Iterator[tuple[str, int]]:
-    loop, thread, host, port = start_pg_demo_server(token=None)
+def pg_demo_server(
+    jaffle_demo_duckdb: str, tmp_path_factory: pytest.TempPathFactory
+) -> Iterator[tuple[str, int]]:
+    base = str(tmp_path_factory.mktemp("pg-demo"))
+    loop, thread, host, port = start_pg_demo_server(
+        token=None, prebuilt_duckdb=jaffle_demo_duckdb, base_dir=base
+    )
     try:
         yield host, port
     finally:
@@ -31,9 +36,14 @@ def pg_demo_server() -> Iterator[tuple[str, int]]:
 
 
 @pytest.fixture(scope="module")
-def pg_demo_server_with_token() -> Iterator[tuple[str, int, str]]:
+def pg_demo_server_with_token(
+    jaffle_demo_duckdb: str, tmp_path_factory: pytest.TempPathFactory
+) -> Iterator[tuple[str, int, str]]:
     token = "s3cret"
-    loop, thread, host, port = start_pg_demo_server(token=token)
+    base = str(tmp_path_factory.mktemp("pg-demo-tok"))
+    loop, thread, host, port = start_pg_demo_server(
+        token=token, prebuilt_duckdb=jaffle_demo_duckdb, base_dir=base
+    )
     try:
         yield host, port, token
     finally:

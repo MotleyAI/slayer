@@ -1053,10 +1053,10 @@ def clickhouse_ingest_for_types_env(clickhouse_container):
                     id Int32,
                     customer_id Int32,
                     quantity Int32,
-                    amount Float64,
+                    amount Float64 COMMENT 'Order amount',
                     status String,
                     created_at DateTime
-                ) ENGINE = MergeTree() ORDER BY id
+                ) ENGINE = MergeTree() ORDER BY id COMMENT 'All orders'
             """))
             conn.execute(sa.text("""
                 INSERT INTO orders VALUES
@@ -1088,6 +1088,17 @@ def test_clickhouse_datetime_typed_correctly(clickhouse_ingest_for_types_env) ->
         f"ClickHouse DateTime must map to TIMESTAMP, got "
         f"{by_name['created_at'].type!r}"
     )
+
+
+@pytest.mark.integration
+def test_clickhouse_comments_imported(clickhouse_ingest_for_types_env) -> None:
+    ds = clickhouse_ingest_for_types_env
+    models = ingest_datasource(datasource=ds, schema=None)
+    orders = next(m for m in models if m.name == "orders")
+    assert orders.description == "All orders"
+    by_name = {c.name: c for c in orders.columns}
+    assert by_name["amount"].description == "Order amount"
+    assert by_name["status"].description is None
 
 
 # ---------------------------------------------------------------------------
