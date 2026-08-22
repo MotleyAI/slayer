@@ -8,6 +8,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.storage import atomic_write as atomic_write_module
 from slayer.storage import yaml_storage as yaml_storage_module
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -45,9 +46,9 @@ def sample_datasource() -> DatasourceConfig:
     )
 
 
-def _fail_after_partial_write(data, stream=None, **kwargs):
-    if stream is not None:
-        stream.write("name: [")
+def _yaml_dump_raises(data, **kwargs):
+    """Stand-in for ``yaml.dump`` that fails before any bytes are written,
+    exercising the serialize-first guarantee (destination stays untouched)."""
     raise OSError("simulated disk full")
 
 
@@ -65,6 +66,57 @@ def test_atomic_write_preserves_permissions(tmp_path) -> None:
     finally:
         os.umask(old_umask)
     assert stat.S_IMODE(created.stat().st_mode) == 0o600
+
+
+def test_atomic_write_success_leaves_no_temp(tmp_path) -> None:
+    path = tmp_path / "model.yaml"
+    yaml_storage_module._atomic_write_text(path=str(path), text="one")
+    yaml_storage_module._atomic_write_text(path=str(path), text="two")
+    assert path.read_text() == "two"
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_atomic_write_long_basename(tmp_path) -> None:
+    # A basename near NAME_MAX must still write: the temp prefix is truncated
+    # so mkstemp's random suffix can't overflow the directory's limit.
+    name_max = os.pathconf(str(tmp_path), "PC_NAME_MAX")
+    path = tmp_path / (("m" * (name_max - len(".yaml"))) + ".yaml")
+    yaml_storage_module._atomic_write_text(path=str(path), text="new")
+    assert path.read_text() == "new"
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_atomic_write_long_multibyte_basename(tmp_path) -> None:
+    # NAME_MAX is a BYTE limit: a valid multibyte destination whose char count
+    # stays under a char-based budget can still overflow it in bytes. The temp
+    # prefix must truncate on byte boundaries so mkstemp doesn't ENAMETOOLONG.
+    name_max = os.pathconf(str(tmp_path), "PC_NAME_MAX")
+    suffix = ".yaml"
+    body = "é" * ((name_max - len(suffix)) // len("é".encode()))  # 2-byte chars
+    basename = body + suffix
+    assert len(basename.encode()) <= name_max  # destination itself is valid
+    path = tmp_path / basename
+    yaml_storage_module._atomic_write_text(path=str(path), text="new")
+    assert path.read_text() == "new"
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_atomic_write_cleanup_error_does_not_mask_original(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "model.yaml"
+    path.write_text("old")
+
+    def failing_fsync(_fd):
+        raise OSError("simulated fsync failure")
+
+    def failing_remove(_target):
+        raise PermissionError("cleanup unlink blocked")
+
+    monkeypatch.setattr(atomic_write_module.os, "fsync", failing_fsync)
+    monkeypatch.setattr(atomic_write_module.os, "remove", failing_remove)
+    # The real failure (fsync) must surface, not the cleanup unlink error.
+    with pytest.raises(OSError, match="simulated fsync failure"):
+        yaml_storage_module._atomic_write_text(path=str(path), text="new")
+    assert path.read_text() == "old"
 
 
 def test_atomic_write_failure_preserves_target_and_cleans_temp(tmp_path, monkeypatch) -> None:
@@ -136,7 +188,7 @@ class TestModelStorage:
         path = os.path.join(storage.models_dir, "test_ds", "test_model.yaml")
         original = open(path).read()  # NOSONAR(S7493) — sync fixture I/O is intentional
 
-        monkeypatch.setattr("slayer.storage.yaml_storage.yaml.dump", _fail_after_partial_write)
+        monkeypatch.setattr("slayer.storage.atomic_write.yaml.dump", _yaml_dump_raises)
         replacement = sample_model.model_copy(update={"description": "lost update"})
         with pytest.raises(OSError, match="simulated disk full"):
             await storage.save_model(replacement)
@@ -154,7 +206,7 @@ class TestModelStorage:
         path = os.path.join(storage.models_dir, "test_ds", "test_model.yaml")
         original = open(path).read()  # NOSONAR(S7493) — sync fixture I/O is intentional
 
-        monkeypatch.setattr("slayer.storage.yaml_storage.yaml.dump", _fail_after_partial_write)
+        monkeypatch.setattr("slayer.storage.atomic_write.yaml.dump", _yaml_dump_raises)
         with pytest.raises(OSError, match="simulated disk full"):
             await storage.update_column_sampled(
                 data_source="test_ds",
@@ -227,7 +279,7 @@ class TestDatasourceStorage:
         path = os.path.join(storage.datasources_dir, "test_ds.yaml")
         original = open(path).read()  # NOSONAR(S7493) — sync fixture I/O is intentional
 
-        monkeypatch.setattr("slayer.storage.yaml_storage.yaml.dump", _fail_after_partial_write)
+        monkeypatch.setattr("slayer.storage.atomic_write.yaml.dump", _yaml_dump_raises)
         replacement = sample_datasource.model_copy(update={"database": "lost-update"})
         with pytest.raises(OSError, match="simulated disk full"):
             await storage.save_datasource(replacement)
@@ -245,7 +297,7 @@ class TestDatasourceStorage:
         await storage.set_datasource_priority(["test_ds"])
         original = open(storage._priority_path).read()  # NOSONAR(S7493) — sync fixture I/O is intentional
 
-        monkeypatch.setattr("slayer.storage.yaml_storage.yaml.dump", _fail_after_partial_write)
+        monkeypatch.setattr("slayer.storage.atomic_write.yaml.dump", _yaml_dump_raises)
         with pytest.raises(OSError, match="simulated disk full"):
             await storage.set_datasource_priority([])
 

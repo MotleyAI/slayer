@@ -23,8 +23,6 @@ to ``counters.yaml.legacy`` if present. Both renames are idempotent: if a
 
 import contextlib
 import os
-import stat
-import tempfile
 from typing import Any
 from collections.abc import Iterator
 
@@ -38,6 +36,7 @@ except ImportError:  # pragma: no cover — Windows
 
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.memories.models import Memory, _validate_memory_id_charset
+from slayer.storage.atomic_write import _atomic_write_text, _atomic_write_yaml
 from slayer.storage.base import (
     StorageBackend,
     _validate_path_component,
@@ -97,35 +96,6 @@ def _md_to_memory(memory_id: str, text: str) -> Memory:
             return Memory.model_validate(data)
     # No frontmatter fence: whole text is the learning body.
     return Memory.model_validate({"id": memory_id, "learning": text})
-
-
-def _atomic_write_text(path: str, text: str) -> None:
-    """Crash-safe write: temp file + ``os.replace`` (atomic on POSIX)."""
-    try:
-        mode = stat.S_IMODE(os.stat(path).st_mode)
-    except FileNotFoundError:
-        mode = 0o600
-    fd, tmp = tempfile.mkstemp(
-        dir=os.path.dirname(path) or ".",
-        prefix=f".{os.path.basename(path)}.tmp.",
-        text=True,
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            fd = -1
-            f.write(text)
-        os.chmod(tmp, mode)
-        os.replace(tmp, path)
-    finally:
-        if fd >= 0:
-            os.close(fd)
-        with contextlib.suppress(FileNotFoundError):
-            os.remove(tmp)
-
-
-def _atomic_write_yaml(path: str, data: Any) -> None:
-    """Serialize completely before atomically replacing the YAML file."""
-    _atomic_write_text(path=path, text=yaml.dump(data, sort_keys=False))
 
 
 def _exact_entry_exists(dir_path: str, entry_name: str) -> bool:
@@ -491,19 +461,6 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         )
 
     # ---- memories (DEV-1357 v2) -------------------------------------------
-
-    def _read_yaml_list(self, path: str) -> list[dict[str, Any]]:
-        if not os.path.exists(path):
-            return []
-        with open(path) as f:  # NOSONAR(S7493) — YAMLStorage uses sync I/O inside async by design (CLAUDE.md, Async Architecture)
-            data = yaml.safe_load(f) or []
-        if not isinstance(data, list):
-            return []
-        return [d for d in data if isinstance(d, dict)]
-
-    def _write_yaml_list(self, path: str, rows: list[dict[str, Any]]) -> None:
-        with open(path, "w") as f:  # NOSONAR(S7493) — YAMLStorage uses sync I/O inside async by design (CLAUDE.md, Async Architecture)
-            yaml.dump(rows, f, sort_keys=False)
 
     @staticmethod
     def _is_int_shaped_id(value: Any) -> bool:

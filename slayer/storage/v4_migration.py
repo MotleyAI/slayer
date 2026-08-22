@@ -31,6 +31,7 @@ import sqlite3
 
 import yaml
 
+from slayer.storage.atomic_write import _atomic_write_yaml
 from slayer.storage.migrations import register_migration
 
 
@@ -193,9 +194,10 @@ def migrate_yaml_layout(base_dir: str) -> None:
                 f"contents) before reopening storage."
             )
         # Re-dump rather than rename so the data_source field is persisted
-        # for any orphans we just auto-filled.
-        with open(target_path, "w") as f:
-            yaml.dump(data, f, sort_keys=False)
+        # for any orphans we just auto-filled. Atomic replace so a crash
+        # mid-dump can't leave a truncated target that the guard above then
+        # refuses to migrate past on the next open.
+        _atomic_write_yaml(path=target_path, data=data)
         os.remove(path)
 
 
