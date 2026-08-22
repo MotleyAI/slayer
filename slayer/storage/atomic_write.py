@@ -53,7 +53,12 @@ def _atomic_write_text(path: str, text: str) -> None:
     """Durably replace ``path``: serialize to a same-dir temp file, fsync it,
     then ``os.replace`` (atomic on POSIX). An existing file's permission mode
     is preserved; new files are created ``0o600``. On any failure the
-    destination is left untouched and the temp file removed."""
+    destination is left untouched and the temp file removed.
+
+    Durability covers the file and its containing directory; a directory the
+    caller freshly created (e.g. a new datasource dir) is not parent-fsynced,
+    so a power loss can still drop that new dir and its first file — only ever
+    a re-creatable brand-new record, never an existing one."""
     try:
         mode = stat.S_IMODE(os.stat(path).st_mode)
     except FileNotFoundError:

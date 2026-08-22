@@ -180,7 +180,9 @@ def test_yaml_migration_resumes_after_crash_before_source_removal(tmp_path, monk
     with pytest.raises(OSError, match="simulated crash before source removal"):
         migrate_yaml_layout(base)
     target = os.path.join(legacy_models_dir, "warehouse", "orders.yaml")
-    assert os.path.exists(target) and os.path.exists(flat_path)  # both present
+    # Interrupted state: both the target and the flat source are present.
+    assert os.path.exists(target)
+    assert os.path.exists(flat_path)
 
     # Second pass with removal restored: resumes cleanly, no ValueError.
     monkeypatch.undo()
