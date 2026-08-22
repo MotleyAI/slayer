@@ -169,6 +169,41 @@ async def test_datasource_delete_race_at_stat_returns_none_and_evicts(storage: Y
     assert path not in storage._datasource_cache
 
 
+def _open_raises_for(monkeypatch, target_path):
+    """Make open(target_path) raise FileNotFoundError (file deleted between the
+    stat and the open); other opens behave normally."""
+    real_open = open
+
+    def flaky(file, *args, **kwargs):
+        if file == target_path:
+            raise FileNotFoundError(file)
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(_yaml_storage, "open", flaky, raising=False)
+
+
+async def test_model_delete_race_at_open_returns_none_and_evicts(storage: YAMLStorage, monkeypatch) -> None:
+    await storage.save_model(_model())
+    await storage.get_model("m", data_source="ds")  # populate
+    path = storage._model_path("ds", "m")
+    # Stale the key so get_model misses and reaches the open(), which then races
+    # with a delete — the stale entry must be evicted.
+    storage._model_cache[path] = ((0, 0, 0), storage._model_cache[path][1])
+    _open_raises_for(monkeypatch, path)
+    assert await storage.get_model("m", data_source="ds") is None
+    assert path not in storage._model_cache
+
+
+async def test_datasource_delete_race_at_open_returns_none_and_evicts(storage: YAMLStorage, monkeypatch) -> None:
+    await storage.save_datasource(DatasourceConfig(name="pg", database="a"))
+    await storage.get_datasource("pg")  # populate
+    path = os.path.join(storage.datasources_dir, "pg.yaml")
+    storage._datasource_cache[path] = ((0, 0, 0), storage._datasource_cache[path][1])
+    _open_raises_for(monkeypatch, path)
+    assert await storage.get_datasource("pg") is None
+    assert path not in storage._datasource_cache
+
+
 async def test_update_column_sampled_evicts(storage: YAMLStorage) -> None:
     await storage.save_model(_model())
     await storage.get_model("m", data_source="ds")  # populate

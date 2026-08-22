@@ -393,6 +393,9 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         try:
             with open(path) as f:
                 data = yaml.safe_load(f)
+        except FileNotFoundError:  # deleted between the stat and the open
+            self._model_cache.pop(path, None)
+            return None
         except yaml.YAMLError as exc:
             # e.g. a file truncated mid-write by a full disk.
             raise ValueError(
@@ -497,6 +500,9 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
                 if admit is not None:
                     self._datasource_cache[path] = (admit, ds)
             return ds.resolve_env_vars()
+        except FileNotFoundError:  # deleted between the stat and the open
+            self._datasource_cache.pop(path, None)
+            return None
         except yaml.YAMLError as exc:
             raise ValueError(
                 f"Datasource '{name}': invalid YAML in {path} — {exc}"
