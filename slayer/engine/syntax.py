@@ -699,6 +699,11 @@ def _convert(node: ast.AST, *, agg_map: Dict, original: str) -> ParsedExpr:  # N
             idx = int(m.group(1))
             source, agg = agg_map[idx]
             return AggCall(source=source, agg=agg)
+        # SQL-cased boolean literals (PR #316): Python's ast only treats
+        # True/False as constants, so `true`/`FALSE`/... arrive as names.
+        # Both are reserved words in every target dialect, never columns.
+        if node.id.lower() in ("true", "false"):
+            return Literal(value=node.id.lower() == "true")
         return Ref(name=node.id)
 
     if isinstance(node, ast.Attribute):

@@ -24,7 +24,7 @@ anchor-less mode.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -191,6 +191,34 @@ def _follow_sibling_chain(
         spec = named_queries[sib].source_model
 
 
+class _ModelReadCache:
+    """Read-through ``get_model`` cache scoped to one bundle build.
+
+    Root, sibling, and join-walk resolution ask storage for the same models
+    repeatedly; YAML storage re-parses the file on every call (DEV-1811 audit:
+    ~4ms per parse, up to 8 reads per execute). Delegates everything else.
+    """
+
+    def __init__(self, inner: "StorageBackend") -> None:
+        self._inner = inner
+        self._models: Dict[tuple, Optional[SlayerModel]] = {}
+
+    def __getattr__(self, name: str):
+        return getattr(self._inner, name)
+
+    async def get_model(
+        self, name: str, data_source: Optional[str] = None
+    ) -> Optional[SlayerModel]:
+        key = (name, data_source)
+        if key not in self._models:
+            model = await self._inner.get_model(name, data_source=data_source)
+            self._models[key] = model
+            if model is not None:
+                # a hint-less read also answers the concrete-datasource key
+                self._models.setdefault((name, model.data_source), model)
+        return self._models[key]
+
+
 async def _resolve_source_spec(
     spec: SourceSpec,
     *,
@@ -249,6 +277,7 @@ async def build_resolved_source_bundle(
     """
     named_queries = named_queries or {}
     sibling_names = set(named_queries)
+    storage = cast("StorageBackend", _ModelReadCache(storage))
 
     # The bundle's source_model is the real base the root chain bottoms out
     # at — follow the sibling chain past any named-stage indirection. When the

@@ -362,6 +362,28 @@ _SAFE_AGG_PARAM_RE = re.compile(
 )
 
 
+# Per bucket granularity: the shift units whose whole-unit offsets map every
+# bucket START onto another bucket start, making the outer re-trunc of the
+# shifted expression a per-row no-op (DEV-1811 period-boundary fix follow-up).
+_BUCKET_ALIGNED_SHIFT_UNITS: dict[str, frozenset[str]] = {
+    "month": frozenset({"month", "quarter", "year"}),
+    "quarter": frozenset({"quarter", "year"}),
+    "year": frozenset({"year"}),
+    "week": frozenset({"week", "week_sunday"}),
+    "week_sunday": frozenset({"week", "week_sunday"}),
+    "day": frozenset({"day", "week", "week_sunday", "month", "quarter", "year"}),
+    "hour": frozenset({"hour", "day", "week", "week_sunday", "month", "quarter", "year"}),
+    "minute": frozenset({"minute", "hour", "day", "week", "week_sunday",
+                         "month", "quarter", "year"}),
+    "second": frozenset({"second", "minute", "hour", "day", "week", "week_sunday",
+                         "month", "quarter", "year"}),
+}
+
+
+def _shift_preserves_bucket_starts(bucket: "TimeGranularity", shift: str) -> bool:
+    return shift.lower() in _BUCKET_ALIGNED_SHIFT_UNITS.get(str(bucket), frozenset())
+
+
 def _wrap_filter(sql_str: str, filter_sql: Optional[str]) -> str:
     """Wrap ``sql_str`` in ``CASE WHEN filter_sql THEN ... END`` if a row-level
     filter is set; otherwise pass through unchanged. Used by the dialect-aware
@@ -931,8 +953,9 @@ class SQLGenerator:
                                 granularity: str) -> exp.Expression:
         """Apply a time offset to a column expression (dialect-aware).
 
-        Used to shift raw timestamps before DATE_TRUNC in shifted CTEs so that
-        aggregated time buckets align with the base query's buckets.
+        In shifted CTEs the caller truncates first, then calls this to offset the
+        already-truncated bucket-start by whole calendar units (DEV-1811), and
+        re-truncates only when the shift unit may not preserve bucket alignment.
         """
         return self._dialect.build_time_offset_expr(
             col_expr=col_expr, offset=offset, granularity=granularity,
@@ -6682,15 +6705,32 @@ class SQLGenerator:
         # opened_at``) registers its join so the shifted FROM binds it. The
         # calendar offset and DATE_TRUNC then apply over that expression.
         raw_time_col_expr = shifted_scope.resolve(time_key.column)
-        shifted_raw_expr = self._build_time_offset_expr(
+        # Truncate BEFORE shifting: offsetting a raw timestamp overflows on
+        # non-clamping dialects (SQLite: Jan 31 + 1 month = Mar 2), silently
+        # dropping period-tail rows from the shifted bucket (DEV-1811 audit).
+        # A period START never overflows. When shifting a bucket start by
+        # whole shift-units always lands on a bucket start, the outer
+        # re-trunc is a per-row no-op and is skipped; non-aligned offsets
+        # (e.g. a day shift over month buckets) keep it.
+        bucket_granularity = TimeGranularity(time_key.granularity)
+        bucketed_time_expr = self._build_date_trunc(
             col_expr=raw_time_col_expr,
+            granularity=bucket_granularity,
+        )
+        shifted_raw_expr = self._build_time_offset_expr(
+            col_expr=bucketed_time_expr,
             offset=-periods,
             granularity=shift_granularity,
         )
-        shifted_trunc_expr = self._build_date_trunc(
-            col_expr=shifted_raw_expr,
-            granularity=TimeGranularity(time_key.granularity),
-        )
+        if _shift_preserves_bucket_starts(
+            bucket=bucket_granularity, shift=shift_granularity,
+        ):
+            shifted_trunc_expr = shifted_raw_expr
+        else:
+            shifted_trunc_expr = self._build_date_trunc(
+                col_expr=shifted_raw_expr,
+                granularity=bucket_granularity,
+            )
 
         # Build the shifted CTE — as AST, so the dotted base aliases it
         # projects reach the assembler as single identifiers (D8).
