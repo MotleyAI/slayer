@@ -11,6 +11,7 @@ from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.storage import migrations as _mig
 from slayer.storage import yaml_storage as _yaml_storage
+from slayer.storage.atomic_write import _atomic_write_yaml
 from slayer.storage.base import resolve_storage
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -295,6 +296,55 @@ async def test_failed_delete_datasource_evicts(storage: YAMLStorage, monkeypatch
     with pytest.raises(RuntimeError):
         await storage.delete_datasource("pg")
     assert path not in storage._datasource_cache
+
+
+# ---- atomic-write interplay (#323) -----------------------------------------
+
+
+async def test_failed_save_after_warm_cache_serves_preserved_file(
+    storage: YAMLStorage, monkeypatch,
+) -> None:
+    """Failed atomic save = no file change: the evicted entry re-reads the
+    preserved old content and re-admits it."""
+    await storage.save_model(_model(sql_table="public.a"))
+    await storage.get_model("m", data_source="ds")  # populate
+    path = storage._model_path("ds", "m")
+    monkeypatch.setattr("slayer.storage.atomic_write.yaml.dump", _raise)
+    with pytest.raises(RuntimeError):
+        await storage.save_model(_model(sql_table="public.b"))
+    reloaded = await storage.get_model("m", data_source="ds")
+    assert reloaded.sql_table == "public.a"
+    assert path in storage._model_cache  # stable re-read was re-admitted
+
+
+async def test_failed_save_datasource_after_warm_cache_serves_preserved_file(
+    storage: YAMLStorage, monkeypatch,
+) -> None:
+    await storage.save_datasource(DatasourceConfig(name="pg", database="a"))
+    await storage.get_datasource("pg")  # populate
+    path = os.path.join(storage.datasources_dir, "pg.yaml")
+    monkeypatch.setattr("slayer.storage.atomic_write.yaml.dump", _raise)
+    with pytest.raises(RuntimeError):
+        await storage.save_datasource(DatasourceConfig(name="pg", database="b"))
+    assert (await storage.get_datasource("pg")).database == "a"
+    assert path in storage._datasource_cache
+
+
+async def test_external_atomic_replace_invalidates_cache(storage: YAMLStorage) -> None:
+    """Another process writing the same store now uses atomic replace; the
+    fresh inode's stat key must miss the cached entry with no eviction run."""
+    await storage.save_model(_model(sql_table="public.a"))
+    await storage.get_model("m", data_source="ds")  # populate
+    path = storage._model_path("ds", "m")
+    assert path in storage._model_cache
+    _atomic_write_yaml(
+        path=path,
+        data=_model(sql_table="public.bbbb").model_dump(
+            mode="json", exclude_none=True,
+        ),
+    )
+    reloaded = await storage.get_model("m", data_source="ds")
+    assert reloaded.sql_table == "public.bbbb"
 
 
 # ---- models: mutation safety (deep-copy handout) --------------------------
