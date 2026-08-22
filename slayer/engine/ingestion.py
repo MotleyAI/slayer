@@ -516,6 +516,12 @@ def _pk_key_sets(
     except Exception:
         return []
     cols = pk.get("constrained_columns")
+    # A conforming inspector returns a list of column names. Guard the
+    # bare-inspector path (the engine-backed path is normalized upstream): a
+    # bare string would split into characters via ``list()``, producing a bogus
+    # key-set that would flip inferred join cardinality and get persisted.
+    if not isinstance(cols, list):
+        return []
     return [list(cols)] if cols else []
 
 

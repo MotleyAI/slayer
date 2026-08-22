@@ -280,11 +280,16 @@ class TestMcpListing:
         from slayer.mcp.server import _fetch_tables
 
         _, ds = _db_with_view(workspace)
-        tables, err = _fetch_tables(ds=ds)
+        objects, err = _fetch_tables(ds=ds)
         assert err is None
-        assert tables is not None
-        assert "orders" in tables
-        assert "stg_orders" in tables
+        assert objects is not None
+        by_name = {o.name: o.kind for o in objects}
+        assert "orders" in by_name
+        assert "stg_orders" in by_name
+        # Each object keeps its kind so describe_datasource can label a view
+        # instead of presenting it as a bare table name.
+        assert by_name["orders"] == "table"
+        assert by_name["stg_orders"] == "view"
 
 
 # ---------------------------------------------------------------------------
