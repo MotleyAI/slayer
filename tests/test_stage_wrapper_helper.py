@@ -16,6 +16,7 @@ from __future__ import annotations
 import pytest
 import sqlglot
 
+from slayer.sql.dialects import get_dialect
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
 
 
@@ -129,3 +130,104 @@ def test_non_mangling_dialect_unaffected_by_decode() -> None:
     )
     parsed = sqlglot.parse_one(ast.sql(dialect="postgres"), dialect="postgres")
     assert sorted(parsed.named_selects) == ["_count", "status"]
+
+
+# DEV-1756 for query-backed models: with ``projection_aliases`` the wrapper
+# decodes length-fitted rendered names back to canonical for the schema match
+# and fits its own output aliases. Without the argument it is byte-identical.
+
+_LONGCOL = "a_very_long_column_name_that_certainly_exceeds_sixty_three_bytes_for_fit"
+
+_GOLDEN_NO_PARAM = (
+    'SELECT\n  _stage_inner."orders.status" AS "status",\n'
+    '  _stage_inner."orders._count" AS "_count"\nFROM (\n  SELECT\n'
+    '    status AS "orders.status",\n    COUNT(*) AS "orders._count"\n'
+    "  FROM orders_t AS orders\n  GROUP BY\n    status\n) AS _stage_inner"
+)
+
+
+def _fitted_stage_sql() -> tuple[str, str]:
+    """(stage_sql, fitted_inner_alias) with a length-fitted rendered alias."""
+    fitted_in = get_dialect("postgres").fit_alias(f"orders.{_LONGCOL}")
+    return (
+        f'SELECT orders.amount AS "{fitted_in}" FROM orders_t AS orders',
+        fitted_in,
+    )
+
+
+def test_projection_aliases_decode_fitted_input_and_fit_output() -> None:
+    stage_sql, fitted_in = _fitted_stage_sql()
+    ast = build_flat_rename_wrapper(
+        source_relation="orders",
+        stage_sql=stage_sql,
+        expected_columns=[_LONGCOL],
+        dialect="postgres",
+        projection_aliases=[f"orders.{_LONGCOL}"],
+    )
+    sql = ast.sql(dialect="postgres")
+    fitted_out = get_dialect("postgres").fit_alias(_LONGCOL)
+    parsed = sqlglot.parse_one(sql, dialect="postgres")
+    assert parsed.named_selects == [fitted_out]
+    assert fitted_in in sql  # inner reference is the ACTUAL rendered name
+    assert _LONGCOL not in sql
+
+
+def test_fitted_input_without_projection_aliases_still_raises() -> None:
+    """The naive fix (fit the render, no wrapper decode) must keep failing loudly."""
+    stage_sql, _ = _fitted_stage_sql()
+    with pytest.raises(ValueError, match="do not match"):
+        build_flat_rename_wrapper(
+            source_relation="orders",
+            stage_sql=stage_sql,
+            expected_columns=[_LONGCOL],
+            dialect="postgres",
+        )
+
+
+def test_no_param_output_is_byte_identical() -> None:
+    stage_sql = (
+        'SELECT status AS "orders.status", COUNT(*) AS "orders._count" '
+        "FROM orders_t AS orders GROUP BY status"
+    )
+    ast = build_flat_rename_wrapper(
+        source_relation="orders",
+        stage_sql=stage_sql,
+        expected_columns=["status", "_count"],
+        dialect="postgres",
+    )
+    assert ast.sql(dialect="postgres", pretty=True) == _GOLDEN_NO_PARAM
+
+
+def test_under_limit_projection_aliases_change_nothing() -> None:
+    stage_sql = (
+        'SELECT status AS "orders.status", COUNT(*) AS "orders._count" '
+        "FROM orders_t AS orders GROUP BY status"
+    )
+    ast = build_flat_rename_wrapper(
+        source_relation="orders",
+        stage_sql=stage_sql,
+        expected_columns=["status", "_count"],
+        dialect="postgres",
+        projection_aliases=["orders.status", "orders._count"],
+    )
+    assert ast.sql(dialect="postgres", pretty=True) == _GOLDEN_NO_PARAM
+
+
+def test_fitted_output_alias_collision_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two flats fitting to one identifier must raise, not silently collide."""
+    import slayer.sql._identifier_fit as fitmod
+
+    from slayer.core.errors import IdentifierCollisionError
+
+    monkeypatch.setattr(fitmod, "_digest", lambda name: "deadbeef")
+    twin_a = "SandboxAlpha__" * 3 + "111" + "__SandboxOmega" * 3
+    twin_b = "SandboxAlpha__" * 3 + "222" + "__SandboxOmega" * 3
+    stage_sql = f'SELECT a AS "{twin_a}", b AS "{twin_b}" FROM t'
+    with pytest.raises(IdentifierCollisionError):
+        build_flat_rename_wrapper(
+            source_relation="orders",
+            stage_sql=stage_sql,
+            expected_columns=[twin_a, twin_b],
+            dialect="postgres",
+            projection_aliases=[twin_a, twin_b],
+        )
