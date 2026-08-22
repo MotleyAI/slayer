@@ -33,9 +33,10 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.storage.yaml_storage import YAMLStorage
+
+from tests._engine_helpers import make_seeded_sqlite_engine
 
 # --------------------------------------------------------------------------- #
 # The corpus
@@ -246,13 +247,9 @@ def dev1747_bundle():
 
 async def make_sqlite_engine(base_dir: str, db_path: str) -> SlayerQueryEngine:
     """Storage + engine bound to the seeded SQLite file at ``db_path``."""
-    storage = YAMLStorage(base_dir=base_dir)
-    await storage.save_datasource(
-        DatasourceConfig(name="test", type="sqlite", database=db_path),
+    return await make_seeded_sqlite_engine(
+        base_dir=base_dir, db_path=db_path, models=dev1747_models()
     )
-    for model in dev1747_models():
-        await storage.save_model(model)
-    return SlayerQueryEngine(storage=storage)
 
 
 # --------------------------------------------------------------------------- #

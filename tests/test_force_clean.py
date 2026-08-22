@@ -30,6 +30,7 @@ from slayer.engine.schema_drift import (
     WholeModelDelete,
 )
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._cli_inprocess import run_cli_in_process
 
 
 @pytest.fixture
@@ -213,6 +214,9 @@ class TestApplyDriftDeletes:
 
 
 def _run_cli(args, *, input_text: str = "", workspace: Path) -> subprocess.CompletedProcess:
+    # DEV-1815: retained as the one end-to-end subprocess smoke (state-writing +
+    # interactive stdin); the non-interactive validate-models tests below run
+    # in-process. Keeps coverage of the console-script/process boundary.
     return subprocess.run(
         [sys.executable, "-m", "slayer.cli", *args, "--storage", str(workspace / "storage")],
         input=input_text,
@@ -243,8 +247,9 @@ class TestForceCleanCLI:
         conn.commit()
         conn.close()
 
-        result = _run_cli(
-            ["validate-models", "--datasource", "ds"], workspace=cli_workspace
+        storage_arg = str(cli_workspace / "storage")
+        result = run_cli_in_process(
+            ["validate-models", "--datasource", "ds", "--storage", storage_arg]
         )
         assert result.returncode == 0
         assert "region" in result.stdout
@@ -256,15 +261,15 @@ class TestForceCleanCLI:
         conn.commit()
         conn.close()
 
-        result = _run_cli(
-            ["validate-models", "--datasource", "ds", "--force-clean", "--yes"],
-            workspace=cli_workspace,
+        storage_arg = str(cli_workspace / "storage")
+        result = run_cli_in_process(
+            ["validate-models", "--datasource", "ds", "--force-clean", "--yes",
+             "--storage", storage_arg]
         )
         assert result.returncode == 0
         # After apply, the diff is empty — re-run validate-models and confirm.
-        follow_up = _run_cli(
-            ["validate-models", "--datasource", "ds"],
-            workspace=cli_workspace,
+        follow_up = run_cli_in_process(
+            ["validate-models", "--datasource", "ds", "--storage", storage_arg]
         )
         assert follow_up.returncode == 0
         assert "no drift detected" in follow_up.stdout.lower()
