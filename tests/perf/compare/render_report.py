@@ -185,7 +185,7 @@ def chart_timeshift_bars(deltas, ratios):
     W, H = 720, 380
     L, R, T, B = 68, 24, 62, 48
     pw, ph = W - L - R, H - T - B
-    vmax = max(max(deltas[s] for s in scales) * 1.15, 1.0)  # positive floor: all-equal deltas → vmax>0
+    vmax = max(deltas[s] for s in scales) * 1.15  # deltas holds only positive values (see main) → vmax>0
     bw = pw / len(scales) * 0.52
     col = SERIES["sqlite"]
     b = [_text(L, 30, "Cost of the time_shift boundary-fix at scale (SQLite)", size=17, weight="600"),
@@ -227,8 +227,10 @@ def main():
         row = next((r for r in _pairs("sqlite", sc) if r[0] == TS), None)
         if row:
             _, pm, bm = row
-            deltas[sc] = (bm - pm) * 1000
-            ts_ratio[sc] = bm / pm
+            d = (bm - pm) * 1000
+            if d > 0:  # "added latency" chart: only scales where the branch is actually slower
+                deltas[sc] = d
+                ts_ratio[sc] = bm / pm
 
     (ASSETS / "ratio_by_scale.svg").write_text(chart_ratio_by_scale(ratios))
     (ASSETS / "scatter_1m.svg").write_text(chart_scatter_1m(points))
