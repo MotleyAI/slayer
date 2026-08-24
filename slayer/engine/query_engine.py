@@ -84,6 +84,7 @@ from slayer.engine.stage_ordering import topologically_order_stages
 from slayer.engine.stage_planner import plan_stages
 from slayer.engine.variables import apply_variables_to_query
 from slayer.engine.introspect_utils import _safe_get_columns
+from slayer.engine.schema_scope import SchemaRef
 from slayer.engine.join_graph import JoinGraph, min_hops_root
 from slayer.memories.resolver import (
     _all_models_in_datasource,
@@ -781,8 +782,11 @@ class SlayerQueryEngine:
         try:
             sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
             inspector = sa.inspect(sa_engine)
+            # Carry the parsed catalog so the DuckDB fallback stays scoped to
+            # the current catalog and never unions a same-named attached twin.
+            ref = SchemaRef(catalog=scoped_table.catalog, name=schema)
             cols = _safe_get_columns(
-                inspector, sa_engine, scoped_table.name, schema
+                inspector, sa_engine, scoped_table.name, ref
             )
         except Exception as exc:  # introspection failed -> cannot confirm
             logger.warning(

@@ -41,6 +41,12 @@ from slayer.core.query import SlayerQuery
 from slayer.core.refs import IDENTIFIER_RE
 from slayer.sql.sql_predicate import parse_sql_predicate
 from slayer.engine.introspect_utils import _safe_get_columns
+from slayer.engine.schema_scope import (
+    SchemaRef,
+    resolve_ingest_scope,
+    schema_ref_from_token,
+    split_sql_table,
+)
 from slayer.engine.ingestion import (
     _safe_get_pk_constraint,
     _sa_type_is_float,
@@ -128,6 +134,9 @@ class ModelAddition(BaseModel):
     # (on created models: all columns that arrived with a description).
     described_columns: list[str] = Field(default_factory=list)
     model_described: bool = False
+    # DEV-1758: a self-heal that added a missing schema qualifier, rendered as
+    # "reports → openfda_rest.reports"; None when the qualifier was untouched.
+    sql_table_change: str | None = None
 
 
 class IngestionError(BaseModel):
@@ -159,6 +168,9 @@ class IdempotentIngestResult(BaseModel):
     # DEV-1809: True when the datasource description was filled from the
     # BigQuery dataset description during this pass.
     datasource_described: bool = False
+    # DEV-1758: a message naming schemas discovered but not ingested this pass,
+    # or None (all-schemas / multi-schema runs, or nothing new to offer).
+    schema_hint: str | None = None
 
 
 class AppliedEntry(BaseModel):
@@ -1726,33 +1738,64 @@ def _live_schema_for_datasource(
     sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
     try:
         inspector = sa.inspect(sa_engine)
-        table_names = [
-            o.name
-            for o in list_ingestable_objects(
-                inspector=inspector, schema=schema, include_views=True
-            )
-        ]
+        dialect = getattr(sa_engine.dialect, "name", None)
+        # DEV-1758: when no schema is pinned, cover every own-catalog schema so
+        # a model qualified to a non-default schema diffs against the right
+        # twin; an explicit ``schema`` scopes to just that schema. Keys are the
+        # persisted-``sql_table`` form (bare for the default, ``schema.table``
+        # otherwise), with the default schema also exposed bare so a legacy
+        # unqualified model resolves the way the database would.
+        if schema is not None:
+            refs = [
+                schema_ref_from_token(
+                    schema, dialect_name=dialect, requested=schema
+                )
+            ]
+        else:
+            refs = resolve_ingest_scope(
+                inspector=inspector,
+                sa_engine=sa_engine,
+                requested=None,
+                all_schemas=True,
+                datasource_schema=datasource.schema_name,
+            ).schemas
+        single = len(refs) == 1
+
         out: dict[str, LiveTable] = {}
-        for table_name in table_names:
+        object_count = 0
+        for ref in refs:
             try:
-                out[table_name] = _introspect_one_table(
-                    inspector=inspector,
-                    sa_engine=sa_engine,
-                    table_name=table_name,
-                    schema=schema,
+                objs = list_ingestable_objects(
+                    inspector=inspector, ref=ref, include_views=True
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 — one schema's listing failed
                 logger.warning(
-                    "validate_models: failed to introspect %r in datasource "
-                    "%r: %s",
-                    table_name,
-                    datasource.name,
-                    exc,
+                    "validate_models: failed to list schema %r in datasource "
+                    "%r: %s", ref.token, datasource.name, exc,
                 )
-        if table_names and not out:
+                continue
+            for obj in objs:
+                object_count += 1
+                try:
+                    live = _introspect_one_table(
+                        inspector=inspector,
+                        sa_engine=sa_engine,
+                        table_name=obj.name,
+                        ref=ref,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "validate_models: failed to introspect %r in datasource "
+                        "%r: %s", obj.name, datasource.name, exc,
+                    )
+                    continue
+                out[ref.qualify(obj.name)] = live
+                if ref.is_default or single:
+                    out.setdefault(obj.name, live)
+        if object_count and not out:
             raise IntrospectionUnavailable(
                 f"failed to introspect every table in datasource "
-                f"{datasource.name!r} ({len(table_names)} table(s))"
+                f"{datasource.name!r} ({object_count} table(s))"
             )
         return out
     finally:
@@ -1769,13 +1812,17 @@ def _introspect_one_table(
     inspector: sa.engine.Inspector,
     sa_engine: sa.Engine,
     table_name: str,
-    schema: str | None,
+    ref: SchemaRef | None,
 ) -> LiveTable:
     """Build a ``LiveTable`` for one table via the existing safe-introspection
     path used by ``slayer/engine/ingestion.py``.
+
+    ``ref`` carries the catalog-qualified schema identity so the column / PK
+    fallbacks stay catalog-scoped on DuckDB (never unioning an attached twin).
     """
-    cols_meta = _safe_get_columns(inspector, sa_engine, table_name, schema)
-    pk = _safe_get_pk_constraint(inspector, sa_engine, table_name, schema)
+    schema_token = ref.token if ref else None
+    cols_meta = _safe_get_columns(inspector, sa_engine, table_name, ref)
+    pk = _safe_get_pk_constraint(inspector, sa_engine, table_name, ref)
     pk_columns = set(pk.get("constrained_columns", []) or [])
 
     columns: dict[str, DataType] = {}
@@ -1791,7 +1838,7 @@ def _introspect_one_table(
 
     fks: list[tuple[str, str, str]] = []
     try:
-        for fk in inspector.get_foreign_keys(table_name, schema=schema):
+        for fk in inspector.get_foreign_keys(table_name, schema=schema_token):
             constrained = fk.get("constrained_columns") or []
             referred_table = fk.get("referred_table")
             referred = fk.get("referred_columns") or []
@@ -1872,19 +1919,23 @@ def _strip_ident_quotes(ident: str) -> str:
 def _resolve_live_table(
     *, sql_table: str, live_tables: dict[str, LiveTable]
 ) -> LiveTable | None:
-    """Look up a model's ``sql_table`` in the live introspection map,
-    falling back to the bare name when the persisted value is schema-
-    qualified (``schema.table``) and unquoting double-quoted identifiers
-    (e.g. ``prod."Company"`` for case-sensitive Postgres tables).
+    """Look up a model's ``sql_table`` in the live introspection map.
+
+    Walks progressively less-qualified candidates (DEV-1758): the full value,
+    then its last two dotted segments (``catalog.schema.table`` →
+    ``schema.table``), then the bare object (``… → table``). Double-quoted
+    identifiers are unquoted at each step (``prod."Company"`` → ``Company``), so
+    a case-sensitive Postgres table and a model written before its catalog was
+    known both still resolve.
     """
+    parts = sql_table.split(".")
     candidates = [sql_table]
-    if "." in sql_table:
-        candidates.append(sql_table.split(".", 1)[1])
-    # Materialise the snapshot before extending — a bare generator
-    # ``(_strip_ident_quotes(c) for c in candidates)`` would iterate the
-    # list lazily WHILE ``extend`` appends to it, so every appended item
-    # gets re-fed into the iterator and the loop never terminates.
-    candidates.extend([_strip_ident_quotes(c) for c in candidates])
+    if len(parts) >= 2:
+        candidates.append(".".join(parts[-2:]))
+    candidates.append(parts[-1])
+    # Materialise before extending — a lazy generator would re-feed each
+    # appended item back into the iterator and never terminate.
+    candidates.extend([_strip_ident_quotes(c) for c in list(candidates)])
     for name in candidates:
         live = live_tables.get(name)
         if live is not None:
@@ -1966,11 +2017,9 @@ def _sqlite_probe_int_drift_for_model(
     if model.sql_table is None:
         return []
 
-    if "." in model.sql_table:
-        schema_name, _, table_name = model.sql_table.partition(".")
-        schema_name = schema_name or None
-    else:
-        schema_name, table_name = default_schema or None, model.sql_table
+    schema_name, table_name = split_sql_table(model.sql_table)
+    if schema_name is None:
+        schema_name = default_schema or None
 
     drifts: list[tuple[str, DataType, DeleteReason]] = []
     with sa_engine.connect() as conn:

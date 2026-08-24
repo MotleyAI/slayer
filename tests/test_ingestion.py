@@ -27,6 +27,7 @@ from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
+from slayer.engine.schema_scope import SchemaRef
 from slayer.engine.ingestion import (
     ingest_datasource,
     _generate_joins,
@@ -54,7 +55,7 @@ class TestGetColumnsFallback:
 
     def test_without_schema(self):
         engine, conn = _setup_mock_engine([("id", "INTEGER"), ("name", "VARCHAR")])
-        result = _get_columns_fallback(sa_engine=engine, table_name="orders", schema=None)
+        result = _get_columns_fallback(sa_engine=engine, table_name="orders", ref=None)
 
         assert len(result) == 2
         assert result[0]["name"] == "id"
@@ -73,7 +74,7 @@ class TestGetColumnsFallback:
 
     def test_with_schema(self):
         engine, conn = _setup_mock_engine([("id", "INTEGER")])
-        result = _get_columns_fallback(sa_engine=engine, table_name="orders", schema="public")
+        result = _get_columns_fallback(sa_engine=engine, table_name="orders", ref=SchemaRef(name="public"))
 
         assert len(result) == 1
         assert result[0]["name"] == "id"
@@ -93,7 +94,7 @@ class TestGetColumnsFallback:
         engine, conn = _setup_mock_engine([("id", "INTEGER")])
         engine.dialect = SimpleNamespace(name="bigquery")
         _get_columns_fallback(
-            sa_engine=engine, table_name="core.mart__kpis", schema=None,
+            sa_engine=engine, table_name="core.mart__kpis", ref=None,
         )
 
         args, kwargs = conn.execute.call_args
@@ -109,7 +110,7 @@ class TestGetColumnsFallback:
         _get_columns_fallback(
             sa_engine=engine,
             table_name="orders",
-            schema="evil` UNION SELECT 1,2 FROM `x",
+            ref=SchemaRef(name="evil` UNION SELECT 1,2 FROM `x"),
         )
 
         sql_str = str(conn.execute.call_args[0][0])
@@ -122,7 +123,7 @@ class TestGetColumnsFallback:
     def test_no_fstring_interpolation(self):
         """Ensure table_name/schema values never appear literally in the SQL text."""
         engine, conn = _setup_mock_engine([])
-        _get_columns_fallback(sa_engine=engine, table_name="'; DROP TABLE users;--", schema="'; DROP TABLE users;--")
+        _get_columns_fallback(sa_engine=engine, table_name="'; DROP TABLE users;--", ref=SchemaRef(name="'; DROP TABLE users;--"))
 
         args, _ = conn.execute.call_args
         sql_str = str(args[0])
@@ -135,7 +136,7 @@ class TestGetPkConstraintFallback:
 
     def test_without_schema(self):
         engine, conn = _setup_mock_engine([("id",)])
-        result = _get_pk_constraint_fallback(sa_engine=engine, table_name="orders", schema=None)
+        result = _get_pk_constraint_fallback(sa_engine=engine, table_name="orders", ref=None)
 
         assert result == {"constrained_columns": ["id"]}
 
@@ -151,7 +152,7 @@ class TestGetPkConstraintFallback:
 
     def test_with_schema(self):
         engine, conn = _setup_mock_engine([("id",), ("tenant_id",)])
-        result = _get_pk_constraint_fallback(sa_engine=engine, table_name="orders", schema="public")
+        result = _get_pk_constraint_fallback(sa_engine=engine, table_name="orders", ref=SchemaRef(name="public"))
 
         assert result == {"constrained_columns": ["id", "tenant_id"]}
 
@@ -167,14 +168,14 @@ class TestGetPkConstraintFallback:
 
     def test_empty_result(self):
         engine, conn = _setup_mock_engine([])
-        result = _get_pk_constraint_fallback(sa_engine=engine, table_name="no_pk_table", schema=None)
+        result = _get_pk_constraint_fallback(sa_engine=engine, table_name="no_pk_table", ref=None)
         assert result.get("constrained_columns") == []
 
     def test_no_fstring_interpolation(self):
         """Ensure table_name/schema values never appear literally in the SQL text."""
         engine, conn = _setup_mock_engine([])
         _get_pk_constraint_fallback(
-            sa_engine=engine, table_name="'; DROP TABLE users;--", schema="'; DROP TABLE users;--"
+            sa_engine=engine, table_name="'; DROP TABLE users;--", ref=SchemaRef(name="'; DROP TABLE users;--")
         )
 
         args, _ = conn.execute.call_args
@@ -309,7 +310,7 @@ class TestPkFallbackNeverSinksTheTable:
                 inspector=self._inspector({"constrained_columns": []}),
                 sa_engine=self._engine("bigquery"),
                 table_name="orders",
-                schema="core",
+                ref=SchemaRef(name="core"),
             )
         assert result == {"constrained_columns": []}
         fallback.assert_not_called()
@@ -323,7 +324,7 @@ class TestPkFallbackNeverSinksTheTable:
                 inspector=self._inspector({"constrained_columns": []}),
                 sa_engine=self._engine("postgresql"),
                 table_name="orders",
-                schema="public",
+                ref=SchemaRef(name="public"),
             )
         assert result == {"constrained_columns": []}
         # Once, not twice: the old except branch re-ran the failing call.
@@ -339,7 +340,7 @@ class TestPkFallbackNeverSinksTheTable:
                 inspector=self._inspector({"constrained_columns": []}),
                 sa_engine=self._engine("duckdb"),
                 table_name="orders",
-                schema=None,
+                ref=None,
             )
         assert result == {"constrained_columns": ["id"]}
         assert fallback.call_count == 1
@@ -365,7 +366,7 @@ class TestPkFallbackNeverSinksTheTable:
                 inspector=self._inspector(malformed),
                 sa_engine=self._engine("bigquery"),
                 table_name="orders",
-                schema=None,
+                ref=None,
             )
         assert result == {"constrained_columns": []}
         assert set(result.get("constrained_columns", [])) == set()
@@ -380,7 +381,7 @@ class TestPkFallbackNeverSinksTheTable:
                 inspector=self._inspector({"constrained_columns": "id"}),
                 sa_engine=self._engine("postgresql"),
                 table_name="orders",
-                schema=None,
+                ref=None,
             )
         assert result == {"constrained_columns": ["id"]}
         assert fallback.call_count == 1
@@ -393,7 +394,7 @@ class TestPkFallbackNeverSinksTheTable:
                 inspector=self._inspector({"constrained_columns": ["id"]}),
                 sa_engine=self._engine("postgresql"),
                 table_name="orders",
-                schema=None,
+                ref=None,
             )
         assert result == {"constrained_columns": ["id"]}
         fallback.assert_not_called()
@@ -417,7 +418,7 @@ class TestSqliteSafeGetters:
             conn.commit()
         insp = sa.inspect(engine)
         result = _safe_get_pk_constraint(
-            inspector=insp, sa_engine=engine, table_name="t", schema=None
+            inspector=insp, sa_engine=engine, table_name="t", ref=None
         )
         assert result.get("constrained_columns") == []
 
@@ -435,7 +436,7 @@ class TestSqliteSafeGetters:
             conn.commit()
         insp = sa.inspect(engine)
         result = _safe_get_pk_constraint(
-            inspector=insp, sa_engine=engine, table_name="child", schema=None
+            inspector=insp, sa_engine=engine, table_name="child", ref=None
         )
         assert result.get("constrained_columns") == []
 
@@ -449,7 +450,7 @@ class TestSqliteSafeGetters:
             conn.commit()
         insp = sa.inspect(engine)
         result = _safe_get_pk_constraint(
-            inspector=insp, sa_engine=engine, table_name="u", schema=None
+            inspector=insp, sa_engine=engine, table_name="u", ref=None
         )
         assert result.get("constrained_columns") == ["id"]
 

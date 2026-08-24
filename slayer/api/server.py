@@ -5,7 +5,7 @@ from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from slayer.mcp.server import create_mcp_server
 from slayer.core.errors import (
@@ -107,10 +107,24 @@ class IngestRequest(BaseModel):
     datasource: str
     include_tables: list[str] | None = None
     exclude_tables: list[str] | None = None
+    # DEV-1758 scope: legacy single ``schema_name``, a plural ``schemas`` list,
+    # or ``all_schemas``. At most one may be set — the validator returns 422.
     schema_name: str | None = None
+    schemas: list[str] | None = None
+    all_schemas: bool = False
     # Ingest recognised ELT/migration internals visible rather than hidden.
     # Governs models this call creates; unhide an existing one via edit_model.
     surface_internals: bool = False
+
+    @model_validator(mode="after")
+    def _validate_scope(self) -> "IngestRequest":
+        from slayer.engine.schema_scope import validate_scope_args
+        validate_scope_args(
+            schema=self.schema_name,
+            schemas=self.schemas,
+            all_schemas=self.all_schemas,
+        )
+        return self
 
 
 class ValidateModelsRequest(BaseModel):
@@ -660,6 +674,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 include_tables=request.include_tables,
                 exclude_tables=request.exclude_tables,
                 schema=request.schema_name,
+                schemas=request.schemas,
+                all_schemas=request.all_schemas,
                 surface_internals=request.surface_internals,
             )
         except SQLAlchemyError as exc:

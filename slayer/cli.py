@@ -269,7 +269,15 @@ examples:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     ingest_parser.add_argument("--datasource", required=True, help="Name of the datasource to ingest from")
-    ingest_parser.add_argument("--schema", default=None, help="Database schema to introspect (e.g., public)")
+    ingest_scope = ingest_parser.add_mutually_exclusive_group()
+    ingest_scope.add_argument(
+        "--schema", default=None,
+        help="Schema(s) to introspect, comma-separated (e.g. public,analytics)",
+    )
+    ingest_scope.add_argument(
+        "--all-schemas", action="store_true", default=False,
+        help="Introspect every non-system schema (mutually exclusive with --schema)",
+    )
     ingest_parser.add_argument(
         "--include",
         default=None,
@@ -563,8 +571,14 @@ examples:
         action="store_true",
         help="Run auto-ingestion immediately after creating the datasource",
     )
-    datasources_create_parser.add_argument(
-        "--schema", default=None, help="(with --ingest) Schema to ingest from"
+    create_scope = datasources_create_parser.add_mutually_exclusive_group()
+    create_scope.add_argument(
+        "--schema", default=None,
+        help="(with --ingest) Schema(s) to ingest from, comma-separated",
+    )
+    create_scope.add_argument(
+        "--all-schemas", action="store_true", default=False,
+        help="(with --ingest) Ingest every non-system schema (mutually exclusive with --schema)",
     )
     datasources_create_parser.add_argument(
         "--include",
@@ -1461,7 +1475,8 @@ def _run_ingest(args):
         ingest_datasource_idempotent(
             datasource=ds,
             storage=storage,
-            schema=args.schema,
+            schemas=_parse_csv_arg(args.schema),
+            all_schemas=getattr(args, "all_schemas", False),
             include_tables=_parse_csv_arg(args.include),
             exclude_tables=_parse_csv_arg(args.exclude),
             include_views=getattr(args, "include_views", True),
@@ -2200,12 +2215,18 @@ def _run_datasources_create(args, storage):
         sys.exit(1)
 
     name = args.name or derived_name
+    schema_list = _parse_csv_arg(args.schema)
+    all_schemas = getattr(args, "all_schemas", False)
+    # Persist ``schema_name`` only for a single explicit schema — a multi-schema
+    # or --all-schemas request has no one default schema to record (D-7).
+    persisted_schema = schema_list[0] if (schema_list and len(schema_list) == 1) else None
     ds = DatasourceConfig.model_validate(
         {
             "name": name,
             "type": ds_type,
             "connection_string": args.connection_string,
             "description": args.description,
+            "schema_name": persisted_schema,
         }
     )
 
@@ -2239,7 +2260,8 @@ def _run_datasources_create(args, storage):
         # path hides recognised internals and skips with no output at all.
         report = ingest_datasource_report(
             datasource=ds,
-            schema=args.schema,
+            schemas=schema_list,
+            all_schemas=all_schemas,
             include_tables=include,
             exclude_tables=exclude,
             include_views=getattr(args, "include_views", True),
