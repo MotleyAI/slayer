@@ -25,6 +25,7 @@ Stage D.
 See ``.spec/DEV-1449.md`` for the full design.
 """
 
+import re
 import sqlite3
 import tempfile
 
@@ -1432,8 +1433,6 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
 def _dev1779_undeclared(sql: str) -> set[str]:
     """Dotted quoted aliases referenced but never declared with ``AS`` — a
     non-empty result means the SQL references a column no CTE projects."""
-    import re
-
     declared = set(re.findall(r'AS "([^"]+)"', sql))
     referenced = {ref for ref in re.findall(r'"([^"]+)"', sql) if "." in ref}
     return referenced - declared

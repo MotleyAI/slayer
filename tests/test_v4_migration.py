@@ -28,6 +28,7 @@ import yaml
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.storage import migrations as mig
 from slayer.storage.sqlite_storage import SQLiteStorage
+from slayer.storage.v4_migration import migrate_yaml_layout
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -124,6 +125,70 @@ async def test_yaml_legacy_flat_file_migrates_to_nested(tmp_path) -> None:
     # Old flat file is gone; new namespaced file exists.
     assert not os.path.exists(os.path.join(legacy_models_dir, "orders.yaml"))
     assert os.path.exists(os.path.join(legacy_models_dir, "warehouse", "orders.yaml"))
+
+
+def test_yaml_migration_write_failure_preserves_flat_source(tmp_path, monkeypatch) -> None:
+    """A crash mid-dump during layout migration leaves the flat source intact
+    and no truncated namespaced target behind — the write is atomic."""
+    base = str(tmp_path)
+    legacy_models_dir = os.path.join(base, "models")
+    os.makedirs(legacy_models_dir, exist_ok=True)
+    flat_path = os.path.join(legacy_models_dir, "orders.yaml")
+    with open(flat_path, "w") as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
+        yaml.dump({
+            "version": 3,
+            "name": "orders",
+            "sql_table": "orders",
+            "data_source": "warehouse",
+            "columns": [{"name": "id", "type": "number", "primary_key": True}],
+        }, f)
+    original = open(flat_path).read()  # NOSONAR(S7493) — test fixture
+
+    def _dump_raises(data, stream=None, **kwargs):
+        raise OSError("simulated disk full")
+
+    monkeypatch.setattr("slayer.storage.atomic_write.yaml.dump", _dump_raises)
+    with pytest.raises(OSError, match="simulated disk full"):
+        migrate_yaml_layout(base)
+
+    assert open(flat_path).read() == original  # NOSONAR(S7493) — test fixture
+    assert not os.path.exists(os.path.join(legacy_models_dir, "warehouse", "orders.yaml"))
+
+
+def test_yaml_migration_resumes_after_crash_before_source_removal(tmp_path, monkeypatch) -> None:
+    """A crash between the atomic target write and the flat-source removal must
+    not wedge storage: the next migration resumes when the target already holds
+    what we would write, instead of raising the duplicate-target error."""
+    base = str(tmp_path)
+    legacy_models_dir = os.path.join(base, "models")
+    os.makedirs(legacy_models_dir, exist_ok=True)
+    flat_path = os.path.join(legacy_models_dir, "orders.yaml")
+    with open(flat_path, "w") as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
+        yaml.dump({
+            "version": 3,
+            "name": "orders",
+            "sql_table": "orders",
+            "data_source": "warehouse",
+            "columns": [{"name": "id", "type": "number", "primary_key": True}],
+        }, f)
+
+    def _remove_crash(_target):
+        raise OSError("simulated crash before source removal")
+
+    # First pass: target is written, then the source removal "crashes".
+    monkeypatch.setattr("slayer.storage.v4_migration.os.remove", _remove_crash)
+    with pytest.raises(OSError, match="simulated crash before source removal"):
+        migrate_yaml_layout(base)
+    target = os.path.join(legacy_models_dir, "warehouse", "orders.yaml")
+    # Interrupted state: both the target and the flat source are present.
+    assert os.path.exists(target)
+    assert os.path.exists(flat_path)
+
+    # Second pass with removal restored: resumes cleanly, no ValueError.
+    monkeypatch.undo()
+    migrate_yaml_layout(base)
+    assert os.path.exists(target)
+    assert not os.path.exists(flat_path)
 
 
 async def test_yaml_orphan_with_single_datasource_auto_assigned(tmp_path) -> None:

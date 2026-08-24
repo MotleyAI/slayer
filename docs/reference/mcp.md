@@ -74,7 +74,7 @@ claude mcp list
 | `describe_datasource` | Show details, test connection, list available schemas, and (by default) list tables in the given or default schema. Params: `name`, `list_tables` (default `true`), `schema_name` (empty = dialect default). |
 | `edit_datasource` | Edit an existing datasource config. |
 | `delete_datasource` | Remove a datasource config. |
-| `ingest_datasource_models` | Auto-generate models from DB schema with rollup joins. Params: `datasource_name`, `include_tables`, `schema_name`. Reports `Skipped` objects and `Hidden` [recognised internals](cli.md#recognised-internals) alongside the models it created — including on a no-op re-ingest. Use `edit_model("<model>", data_source="<datasource>", hidden=false)` to surface a hidden one — internals collide across datasources, so the bare form can un-hide the wrong model. |
+| `ingest_datasource_models` | Auto-generate models from DB schema with rollup joins. Params: `datasource_name`, `include_tables`, `schema_name`. Reports `Skipped` objects and `Hidden` [recognised internals](cli.md#recognised-internals) alongside the models it created — including on a no-op re-ingest. Use `edit_model("<model>", data_source="<datasource>", hidden=False)` to surface a hidden one — internals collide across datasources, so the bare form can un-hide the wrong model. |
 
 ### Model Management
 

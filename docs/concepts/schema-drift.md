@@ -104,7 +104,7 @@ be no-ops once the model is gone).
   attributed to drift surface as **HTTP 422** with body
   `{error: "schema_drift", models, to_delete, original}`.
 * **CLI.** `slayer validate-models [--datasource X] [--model M]
-  [--format text|json] [--force-clean] [--yes]`. Without `--force-clean`,
+  [--format text|json] [--force-clean] [--yes] [--cardinality]`. Without `--force-clean`,
   prints the diff and exits 0. `--force-clean` prompts (or skips with
   `--yes`), applies via `apply_drift_deletes`, and exits non-zero on
   per-entry errors or non-empty residual drift. `--model` scopes both the

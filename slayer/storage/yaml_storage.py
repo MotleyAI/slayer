@@ -36,6 +36,7 @@ except ImportError:  # pragma: no cover — Windows
 
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.memories.models import Memory, _validate_memory_id_charset
+from slayer.storage.atomic_write import _atomic_write_text, _atomic_write_yaml
 from slayer.storage.base import (
     StorageBackend,
     _validate_path_component,
@@ -120,14 +121,6 @@ def _cache_admit(
     except OSError:
         return None
     return key_after if key_after == key_before else None
-
-
-def _atomic_write_text(path: str, text: str) -> None:
-    """Crash-safe write: temp file + ``os.replace`` (atomic on POSIX)."""
-    tmp = f"{path}.tmp.{os.getpid()}"
-    with open(tmp, "w", encoding="utf-8") as f:  # NOSONAR(S7493) — sync I/O in async by design
-        f.write(text)
-    os.replace(tmp, path)
 
 
 def _exact_entry_exists(dir_path: str, entry_name: str) -> bool:
@@ -246,7 +239,8 @@ def migrate_memories_layout(base_dir: str) -> None:
     for r in normalized:
         mem = Memory.model_validate(r)
         _atomic_write_text(
-            os.path.join(mem_dir, f"{mem.id}.md"), _memory_to_md(mem),
+            path=os.path.join(mem_dir, f"{mem.id}.md"),
+            text=_memory_to_md(mem),
         )
     # Guard the removal against a concurrent migrator (two workers opening the
     # same fresh base_dir both run this once): the .md writes are atomic and
@@ -353,8 +347,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         path = os.path.join(target_dir, f"{model.name}.yaml")
         data = model.model_dump(mode="json", exclude_none=True)
         self._model_cache.pop(path, None)  # DEV-1816: evict before the write
-        with open(path, "w") as f:
-            yaml.dump(data, f, sort_keys=False)
+        _atomic_write_yaml(path=path, data=data)
 
     async def _list_all_model_identities(self) -> list[tuple[str, str]]:
         result: list[tuple[str, str]] = []
@@ -458,8 +451,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
                 f"update_column_sampled: column {column_name!r} not found "
                 f"on model {model_name!r} in datasource {data_source!r}."
             )
-        with open(path, "w") as f:  # NOSONAR(S7493)
-            yaml.dump(data, f, sort_keys=False)
+        _atomic_write_yaml(path=path, data=data)
 
     # ---- datasource CRUD ---------------------------------------------------
 
@@ -468,8 +460,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         path = os.path.join(self.datasources_dir, f"{datasource.name}.yaml")
         data = datasource.model_dump(mode="json", exclude_none=True)
         self._datasource_cache.pop(path, None)  # DEV-1816: evict before the write
-        with open(path, "w") as f:
-            yaml.dump(data, f, sort_keys=False)
+        _atomic_write_yaml(path=path, data=data)
 
     async def get_datasource(self, name: str) -> DatasourceConfig | None:
         # DEV-1405: sanitize before composing the filesystem path.
@@ -542,23 +533,12 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         return [str(p) for p in priority]
 
     async def _set_datasource_priority_raw(self, priority: list[str]) -> None:
-        with open(self._priority_path, "w") as f:  # NOSONAR(S7493) — YAMLStorage uses sync I/O inside async by design (CLAUDE.md, Async Architecture)
-            yaml.dump({"priority": list(priority)}, f, sort_keys=False)
+        _atomic_write_yaml(
+            path=self._priority_path,
+            data={"priority": list(priority)},
+        )
 
     # ---- memories (DEV-1357 v2) -------------------------------------------
-
-    def _read_yaml_list(self, path: str) -> list[dict[str, Any]]:
-        if not os.path.exists(path):
-            return []
-        with open(path) as f:  # NOSONAR(S7493) — YAMLStorage uses sync I/O inside async by design (CLAUDE.md, Async Architecture)
-            data = yaml.safe_load(f) or []
-        if not isinstance(data, list):
-            return []
-        return [d for d in data if isinstance(d, dict)]
-
-    def _write_yaml_list(self, path: str, rows: list[dict[str, Any]]) -> None:
-        with open(path, "w") as f:  # NOSONAR(S7493) — YAMLStorage uses sync I/O inside async by design (CLAUDE.md, Async Architecture)
-            yaml.dump(rows, f, sort_keys=False)
 
     @staticmethod
     def _is_int_shaped_id(value: Any) -> bool:
@@ -648,7 +628,8 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         with self._memories_file_lock():
             os.makedirs(self._memories_dir, exist_ok=True)
             _atomic_write_text(
-                self._memory_md_path(memory.id), _memory_to_md(memory),
+                path=self._memory_md_path(memory.id),
+                text=_memory_to_md(memory),
             )
 
     async def _get_memory_row(self, memory_id: str) -> Memory | None:

@@ -19,16 +19,13 @@ here is a NEW change and goes through the same loop.
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
-
-import pytest
 
 from slayer.core.query import SlayerQuery
 
 from tests._dev1748_fixtures import BIG_AMOUNT_THRESHOLD, dev1748_models
 from tests._engine_helpers import _engine_generate
-from tests._golden_harness import GoldenSuite, load_or_regenerate, record_raise
+from tests._golden_harness import bind_golden_tests, record_raise
 
 
 GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1748_first_last_baseline.json"
@@ -241,48 +238,17 @@ async def _generate_one(query: SlayerQuery, dialect: str):
         return record_raise(exc)
 
 
-async def _render(case_id: str, dialect: str):
-    return await _generate_one(_cases()[case_id], dialect)
-
-
-def _suite() -> GoldenSuite:
-    return GoldenSuite(
-        case_ids=sorted(_cases()), dialects=DIALECTS, allowed=ALLOWED_DELTAS,
-    )
-
-
-@pytest.fixture(scope="module")
-def baseline() -> dict:
-    return load_or_regenerate(
-        path=GOLDEN_PATH, case_ids=sorted(_cases()), dialects=DIALECTS,
-        render=_render, allowed=ALLOWED_DELTAS,
-    )
-
-
-@pytest.mark.parametrize("case_id", sorted(_cases()))
-@pytest.mark.parametrize("dialect", DIALECTS)
-def test_emitted_sql_matches_golden(case_id: str, dialect: str, baseline) -> None:
-    _suite().assert_matches(
-        key=f"{case_id}::{dialect}",
-        actual=asyncio.run(_generate_one(_cases()[case_id], dialect)),
-        baseline=baseline,
-    )
-
-
-def test_baseline_covers_every_case_and_dialect(baseline) -> None:
-    _suite().assert_covers_every_case(baseline)
-
-
-def test_baseline_has_no_orphan_entries(baseline) -> None:
-    _suite().assert_no_orphans(baseline)
-
-
-def test_allowed_deltas_name_real_keys() -> None:
-    _suite().assert_allowed_deltas_name_real_keys()
-
-
-def test_allowed_deltas_carry_a_reason() -> None:
-    _suite().assert_allowed_deltas_carry_a_reason()
+# The blessing-loop wiring (baseline fixture + the five shared guards) is bound
+# once in the harness; this module keeps only its matrix, path, dialects, and the
+# vacuity guard below.
+bind_golden_tests(
+    namespace=globals(),
+    golden_path=GOLDEN_PATH,
+    cases=_cases,
+    dialects=DIALECTS,
+    allowed=ALLOWED_DELTAS,
+    generate_one=_generate_one,
+)
 
 
 def test_every_case_actually_ranks(baseline) -> None:

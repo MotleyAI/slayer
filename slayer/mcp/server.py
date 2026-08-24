@@ -32,6 +32,7 @@ from slayer.engine.ingestion import (
     _get_schemas,
     _hidden_internal_line,
     _unhide_hint,
+    IngestableObject,
     list_ingestable_objects,
 )
 from slayer.engine.profiling import handle_edit_refresh
@@ -160,11 +161,13 @@ def _test_connection(ds: DatasourceConfig) -> tuple[bool, str]:
 
 def _fetch_tables(
     ds: DatasourceConfig, schema_name: str | None = None,
-) -> tuple[list[str] | None, str | None]:
-    """Inspect a datasource's table AND view names.
+) -> tuple[list[IngestableObject] | None, str | None]:
+    """Inspect a datasource's table AND view objects (name + kind).
 
     Returns ``(objects, None)`` on success or ``(None, friendly_error_message)``
-    on failure. ``schema_name=None`` uses the dialect's default schema.
+    on failure. ``schema_name=None`` uses the dialect's default schema. Each
+    object keeps its ``kind`` so callers can label views / matviews rather than
+    presenting every object as a bare table name.
 
     Views are always included, independent of the ingest-side ``--no-views``
     flag: a views-only schema must not read as empty and misdirect the agent.
@@ -187,7 +190,7 @@ def _fetch_tables(
         objects = list_ingestable_objects(
             inspector=inspector, ref=ref, include_views=True
         )
-        return sorted(o.name for o in objects), None
+        return sorted(objects, key=lambda o: o.name), None
     except Exception as e:
         if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
             return None, _friendly_db_error(e)
@@ -1681,8 +1684,11 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 lines.append(f"\nTables{schema_label}: (error — {err})")
             elif tables:
                 lines.append(f"\nTables ({len(tables)}){schema_label}:")
-                for t in tables:
-                    lines.append(f"  - {t}")
+                for o in tables:
+                    # Label non-table objects so a view-backed model is not
+                    # presented as a plain table (source_kind visibility).
+                    suffix = "" if o.kind == "table" else f" ({o.kind})"
+                    lines.append(f"  - {o.name}{suffix}")
                 lines.append(
                     "\nUse ingest_datasource_models to create models from these tables."
                 )

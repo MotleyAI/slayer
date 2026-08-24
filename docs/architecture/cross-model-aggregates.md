@@ -323,9 +323,19 @@ null-safe form retains it.
 - A host-local filter on a **no-dimension** cross-model-agg query is applied
   nowhere (the empty `_base` placeholder doesn't filter; host-local filters are
   excluded from the re-rooted CTE). Semantically ambiguous; rare.
-- `time_shift` / `consecutive_periods` / `change` / `change_pct` over (or
-  alongside) a cross-model aggregate raise `NotImplementedError` — factor the
-  temporal transform into an earlier stage.
+- `time_shift` / `consecutive_periods` (and `change` / `change_pct`, which
+  desugar to `time_shift`) **render** over a **local** or **host-rooted** inner
+  aggregate that coexists with a cross-model aggregate (DEV-1750). The
+  cross-model transform chain gained the same shifted / cp CTE emitters the local
+  chain uses, so a crossing template fragment (`amount:wscaled_sum` with a
+  default `w='customers__regions.weight'`) pulls its join into the shifted CTE.
+  Two shapes stay guarded, loudly: a `time_shift` whose inner aggregate is
+  **target-grain** cross-model (`cte_root_model is None` — host-rooted
+  re-aggregation would multiply target rows through the 1:N join), and a
+  `time_shift` over a **ranked `first`/`last`** aggregate (the shifted CTE
+  re-aggregates flatly and cannot reproduce the ROW_NUMBER ranking).
+  `change` / `change_pct` over a **cross-model** inner aggregate hits a separate
+  combined-arithmetic-over-transform gap (DEV-1800), tracked independently.
 - Cross-model parametric-agg result keys diverge from legacy **by design**:
   `customers.revenue:percentile(p=0.5)` → `…revenue_percentile_p_0_5` where
   legacy dropped the kwarg suffix (`…revenue_percentile`). Legacy's drop was a

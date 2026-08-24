@@ -1210,9 +1210,10 @@ class TestMcpParity:
         """MCP ``datasources show``'s table listing routes through scope
         resolution, so DuckDB no longer sweeps every schema (§3.9)."""
         from slayer.mcp.server import _fetch_tables
-        tables, err = _fetch_tables(ds=_ds(basic_db), schema_name=None)
+        # DEV-1750: _fetch_tables returns IngestableObjects (name + kind).
+        objects, err = _fetch_tables(ds=_ds(basic_db), schema_name=None)
         assert err is None
-        assert tables == ["in_default"]                          # not [..., "reports"]
+        assert [o.name for o in objects] == ["in_default"]       # not [..., "reports"]
 
 
 class TestCliArgumentParsing:
