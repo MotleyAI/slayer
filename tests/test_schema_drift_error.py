@@ -248,9 +248,12 @@ class TestIntrospectionUnavailable:
     def _ds_with_one_table(self, tmpdir: str) -> DatasourceConfig:
         db_path = str(Path(tmpdir) / "live.db")
         engine = sa.create_engine(f"sqlite:///{db_path}")
-        with engine.connect() as c:
-            c.execute(sa.text("CREATE TABLE t (id INTEGER PRIMARY KEY)"))
-            c.commit()
+        try:
+            with engine.connect() as c:
+                c.execute(sa.text("CREATE TABLE t (id INTEGER PRIMARY KEY)"))
+                c.commit()
+        finally:
+            engine.dispose()
         return DatasourceConfig(name="live", type="sqlite", database=db_path)
 
     def test_live_schema_raises_when_every_table_fails(self) -> None:

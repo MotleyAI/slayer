@@ -2634,7 +2634,7 @@ class SlayerQueryEngine:
         NULL key rows are excluded from BOTH counts, so the two are computed
         over the same population.
         """
-        tbl = exp.to_table(table)
+        tbl = exp.to_table(table, dialect=sqlglot_name)
         cols = [exp.column(c, quoted=True) for c in key_cols]
         predicate = None
         for col in cols:
@@ -2910,8 +2910,12 @@ class SlayerQueryEngine:
         assert inner_source_model is not None
         datasource = await self._resolve_datasource(model=inner_source_model)
         dialect = self._dialect_for_type(datasource.type)
+        # DEV-1756: the backing SQL is emitted once and persisted on the
+        # virtual model, so its aliases must be length-fitted here too.
+        aliases = projection_result_keys(root_planned=root_planned)
         rendered = generate_planned_stages(
             planned_list, bundle=bundle, dialect=dialect,
+            projection_aliases=aliases,
         )
 
         # 6. Wrap with flat-renamed SELECT. Public StageColumn entries
@@ -2931,6 +2935,7 @@ class SlayerQueryEngine:
             stage_sql=rendered,
             expected_columns=expected,
             dialect=dialect,
+            projection_aliases=aliases,
         )
         wrapped_sql = wrapped_ast.sql(dialect=dialect, pretty=True)
 
@@ -2938,10 +2943,13 @@ class SlayerQueryEngine:
         # Slot types drive Column.type (decision #2) so ``*:count`` →
         # ``INT``, declared ``ModelMeasure.type`` is honored, and source
         # column types propagate through ``sum`` / ``min`` / ``max``.
+        # ``Column.sql`` carries the length-fitted alias the wrapper emits
+        # (identity when under-limit); ``Column.name`` stays canonical.
+        fit_map = get_dialect(dialect).alias_rewrite_map(expected)
         cols = [
             Column(
                 name=sc.name,
-                sql=sc.name,
+                sql=fit_map.get(sc.name, sc.name),
                 type=sc.type or DataType.DOUBLE,
                 label=sc.label,
                 description=sc.description,

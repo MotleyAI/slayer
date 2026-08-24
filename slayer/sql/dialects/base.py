@@ -728,10 +728,27 @@ class SqlDialect(BaseModel):
 
     def decode_alias_map(self, aliases: Sequence[str]) -> dict[str, str]:
         """``{emitted: canonical}`` — read-side inverse, rebuilt by re-running
-        the pure fitting rather than threading a map through generation."""
+        the pure fitting rather than threading a map through generation.
+
+        Raises on two canonical aliases fitting to one emitted form, for
+        symmetry with ``alias_rewrite_map`` — the read side can be handed a
+        different alias set than the write side, so its guard is independent.
+        Ownership is recorded for identity aliases too (only the output map
+        drops them), so a fitted alias colliding with an unchanged one is
+        caught just as ``alias_rewrite_map`` catches it.
+        """
         out: dict[str, str] = {}
+        owner: dict[str, str] = {}
         for alias in aliases:
             emitted = self.emit_alias(alias)
+            prior = owner.get(emitted)
+            if prior is not None and prior != alias:
+                raise IdentifierCollisionError(
+                    first=prior, second=alias, emitted=emitted,
+                    dialect=self.sqlglot_name, limit=self.max_identifier_bytes,
+                    namespace="result key",
+                )
+            owner[emitted] = alias
             if emitted != alias:
                 out[emitted] = alias
         return out

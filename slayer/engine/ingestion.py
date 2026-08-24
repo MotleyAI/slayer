@@ -516,6 +516,12 @@ def _pk_key_sets(
     except Exception:
         return []
     cols = pk.get("constrained_columns")
+    # A conforming inspector returns a list of column names. Guard the
+    # bare-inspector path (the engine-backed path is normalized upstream): a
+    # bare string would split into characters via ``list()``, producing a bogus
+    # key-set that would flip inferred join cardinality and get persisted.
+    if not isinstance(cols, list):
+        return []
     return [list(cols)] if cols else []
 
 
@@ -785,7 +791,9 @@ def _safe_get_pk_constraint(
         logger.debug("Inspector PK lookup failed for %r", table_name, exc_info=True)
     # DuckDB's inspector returns empty PK — try INFORMATION_SCHEMA.
     try:
-        return _get_pk_constraint_fallback(sa_engine, table_name, schema)
+        return _get_pk_constraint_fallback(
+            sa_engine=sa_engine, table_name=table_name, schema=schema
+        )
     except Exception:
         logger.debug("PK fallback failed for %r", table_name, exc_info=True)
         return {"constrained_columns": []}
@@ -1218,8 +1226,30 @@ def list_ingestable_objects(
 
     Order is deterministic (tables, views, matviews) because
     :func:`_assign_model_names` resolves collisions first-come. Deduped across
-    accessors — some dialects return views from ``get_table_names()``.
+    accessors — some dialects return views from ``get_table_names()`` — with
+    the most specific kind winning (matview > view > table), so a view listed
+    as a table is still stamped ``view``.
     """
+    view_list: list[str] = []
+    matview_list: list[str] = []
+    if include_views:
+        view_list = _safe_object_names(
+            accessor_name="get_view_names", inspector=inspector, schema=schema
+        )
+        matview_list = _safe_object_names(
+            accessor_name="get_materialized_view_names",
+            inspector=inspector,
+            schema=schema,
+        )
+    view_names, matview_names = set(view_list), set(matview_list)
+
+    def _resolve_kind(name: str, default: ObjectKind) -> ObjectKind:
+        if name in matview_names:
+            return "materialized_view"
+        if name in view_names:
+            return "view"
+        return default
+
     objects: list[IngestableObject] = []
     seen: set[str] = set()
 
@@ -1228,24 +1258,14 @@ def list_ingestable_objects(
             if name in seen:
                 continue
             seen.add(name)
-            objects.append(IngestableObject(name=name, kind=kind))
+            objects.append(
+                IngestableObject(name=name, kind=_resolve_kind(name, kind))
+            )
 
     _add(list(inspector.get_table_names(schema=schema) or []), "table")
     if include_views:
-        _add(
-            _safe_object_names(
-                accessor_name="get_view_names", inspector=inspector, schema=schema
-            ),
-            "view",
-        )
-        _add(
-            _safe_object_names(
-                accessor_name="get_materialized_view_names",
-                inspector=inspector,
-                schema=schema,
-            ),
-            "materialized_view",
-        )
+        _add(view_list, "view")
+        _add(matview_list, "materialized_view")
     return objects
 
 
@@ -1556,8 +1576,11 @@ def ingest_datasource_report(
             schema_description=schema_description,
         )
     finally:
-        # In a ``finally`` because discovery and the FK passes can raise a
-        # driver error, and an undisposed engine holds the connection open.
+        # Deliberate: ``get_engine`` returns a cached, shared engine, and this
+        # dispose churns its pool for concurrent holders — accepted so this
+        # one-shot admin path releases pooled file handles (an undisposed
+        # engine blocks a same-process external ``duckdb.connect(file)``).
+        # In a ``finally`` so a driver error can't leak them.
         _dispose_quietly(sa_engine)
 
 
@@ -1709,7 +1732,9 @@ def _merge_joins_strict(
     user-set one is never overwritten. The third return value flags a
     metadata-only fill, which still has to trigger a save.
     """
-    persisted, target_repaired = _repair_legacy_join_targets(persisted, fresh)
+    persisted, target_repaired = _repair_legacy_join_targets(
+        persisted=persisted, fresh=fresh
+    )
 
     existing_join_sigs = _existing_join_signatures(persisted)
     existing_join_targets = {j.target_model for j in persisted.joins}
@@ -1849,7 +1874,7 @@ def _additive_merge_existing(
     new_column_names = [c.name for c in new_cols]
 
     new_joins, new_join_targets, joins_metadata_changed = _merge_joins_strict(
-        persisted, fresh
+        persisted=persisted, fresh=fresh
     )
     metadata_changed = metadata_changed or joins_metadata_changed
 

@@ -14,7 +14,7 @@ same flatten contract:
 """
 from __future__ import annotations
 
-from typing import List
+from typing import List, Sequence
 
 import sqlglot
 from sqlglot import exp
@@ -29,6 +29,7 @@ def build_flat_rename_wrapper(
     stage_sql: str,
     expected_columns: List[str],
     dialect: str,
+    projection_aliases: Sequence[str] = (),
 ) -> exp.Expression:
     """Wrap ``stage_sql`` so its output columns are the flat downstream
     bind names a sibling stage (or the wrapped virtual model's outer
@@ -47,11 +48,16 @@ def build_flat_rename_wrapper(
        planner/generator divergence (hidden hoist leak, multi-alias
        over-projection, ...) raises ``ValueError`` immediately rather
        than masking the issue as a downstream bind miss.
+
+    ``projection_aliases`` (the render's canonical projection keys) marks
+    ``stage_sql`` as a length-fitted render (DEV-1756): rendered names are
+    decoded through it back to canonical for the schema match, and the
+    emitted flat aliases are length-fitted too. Empty (the internal
+    stage-CTE caller) keeps output canonical and behavior unchanged.
     """
     inner_alias = STAGE_INNER_ALIAS
     body = sqlglot.parse_one(stage_sql, dialect=dialect)
-    select = exp.Select()
-    produced: List[str] = []
+    dialect_obj = get_dialect(dialect)
     raw_names = body.named_selects
     # DEV-1716: on BigQuery / T-SQL the rendered stage SQL carries alias-mangled
     # output names (``orders___status``); decode to the canonical dotted form for
@@ -61,27 +67,34 @@ def build_flat_rename_wrapper(
     # no-op on already-dotted names (multi-stage internal use), so this is safe
     # for both the query-backed-model wrap and the internal stage-CTE wrap.
     canonical_names = (
-        list(get_dialect(dialect).decode_result_keys([dict.fromkeys(raw_names)])[0])
+        list(dialect_obj.decode_result_keys(
+            [dict.fromkeys(raw_names)], aliases=projection_aliases,
+        )[0])
         if raw_names
         else []
     )
-    for out_name, canonical in zip(raw_names, canonical_names):
-        # DEV-1713: strip the source-relation prefix + ``__``-flatten via the
-        # naming module's single owner.
-        flat = flat_name(canonical, strip_relation=source_relation)
-        produced.append(flat)
-        src = exp.Column(
-            this=exp.to_identifier(out_name, quoted=True),
-            table=exp.to_identifier(inner_alias),
-        )
-        select = select.select(
-            exp.alias_(src, exp.to_identifier(flat, quoted=True)),
-        )
+    # DEV-1713: strip the source-relation prefix + ``__``-flatten via the
+    # naming module's single owner.
+    produced = [
+        flat_name(canonical, strip_relation=source_relation)
+        for canonical in canonical_names
+    ]
     if sorted(produced) != sorted(expected_columns):
         raise ValueError(
             f"stage {source_relation!r}: rendered output columns "
             f"{produced!r} do not match the expected schema "
             f"{expected_columns!r}.",
+        )
+    # ``alias_rewrite_map`` fits over-limit flats and raises on collisions.
+    fit_map = dialect_obj.alias_rewrite_map(produced) if projection_aliases else {}
+    select = exp.Select()
+    for out_name, flat in zip(raw_names, produced):
+        src = exp.Column(
+            this=exp.to_identifier(out_name, quoted=True),
+            table=exp.to_identifier(inner_alias),
+        )
+        select = select.select(
+            exp.alias_(src, exp.to_identifier(fit_map.get(flat, flat), quoted=True)),
         )
     return select.from_(
         exp.Subquery(

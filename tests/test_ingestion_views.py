@@ -155,17 +155,33 @@ class TestDialectTolerance:
         assert _names(objects) == ["orders"]
 
     def test_name_returned_as_both_table_and_view_appears_once(self) -> None:
-        """A name from both table and view accessors: first-seen wins as a table."""
+        """A name from both table and view accessors: the view listing is authoritative."""
         insp = _mock_inspector(tables=["orders", "v_dup"], views=["v_dup"])
         objects = list_ingestable_objects(inspector=insp, schema=None)
         assert _names(objects) == ["orders", "v_dup"]
-        assert _kind_of(objects, "v_dup") == "table"
+        assert _kind_of(objects, "v_dup") == "view"
 
     def test_matview_also_listed_as_view_appears_once(self) -> None:
+        """Most-specific wins: a view+matview dup is a materialized view."""
         insp = _mock_inspector(tables=[], views=["mv"], matviews=["mv"])
         objects = list_ingestable_objects(inspector=insp, schema=None)
         assert _names(objects) == ["mv"]
-        assert _kind_of(objects, "mv") == "view"
+        assert _kind_of(objects, "mv") == "materialized_view"
+
+    def test_name_in_all_three_listings_is_a_materialized_view(self) -> None:
+        """Some dialects list a matview from every accessor; kind must not degrade."""
+        insp = _mock_inspector(tables=["mv"], views=["mv"], matviews=["mv"])
+        objects = list_ingestable_objects(inspector=insp, schema=None)
+        assert _names(objects) == ["mv"]
+        assert _kind_of(objects, "mv") == "materialized_view"
+
+    def test_include_views_false_keeps_table_kind_for_dup(self) -> None:
+        """Without view discovery there is nothing to reclassify against."""
+        insp = _mock_inspector(tables=["v_dup"], views=["v_dup"])
+        objects = list_ingestable_objects(
+            inspector=insp, schema=None, include_views=False
+        )
+        assert _kind_of(objects, "v_dup") == "table"
 
     def test_ordering_is_tables_then_views_then_matviews(self) -> None:
         """Deterministic order matters: name-collision reservation needs a stable scan order."""
@@ -280,11 +296,16 @@ class TestMcpListing:
         from slayer.mcp.server import _fetch_tables
 
         _, ds = _db_with_view(workspace)
-        tables, err = _fetch_tables(ds=ds)
+        objects, err = _fetch_tables(ds=ds)
         assert err is None
-        assert tables is not None
-        assert "orders" in tables
-        assert "stg_orders" in tables
+        assert objects is not None
+        by_name = {o.name: o.kind for o in objects}
+        assert "orders" in by_name
+        assert "stg_orders" in by_name
+        # Each object keeps its kind so describe_datasource can label a view
+        # instead of presenting it as a bare table name.
+        assert by_name["orders"] == "table"
+        assert by_name["stg_orders"] == "view"
 
 
 # ---------------------------------------------------------------------------

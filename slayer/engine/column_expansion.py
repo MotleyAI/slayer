@@ -81,12 +81,11 @@ def _root_scope_column_ids(*, parsed: exp.Expression) -> set[int]:
     if len(wrapper_cols) != len(parsed_cols):
         # Fail closed: if the positional pairing between the wrapper copy
         # and the original tree ever drifts, treat NO column as root-scope.
-        # That suppresses derived-column inlining entirely for this
-        # fragment, which is conservative (the compile-time guard still
-        # catches cycles, and a missed inline merely shows up as the
-        # historical bare-name auto-qualification — never as a silent
-        # cross-scope splice). This branch is unreachable today; the
-        # wrapper just wraps a deep copy and ``find_all`` walks in
+        # Since the root-scope gate now runs BEFORE qualification, an empty
+        # set leaves every bare column unqualified (not just un-inlined) —
+        # conservative: the compile-time guard still catches cycles, and no
+        # column is spliced across scopes. This branch is unreachable today;
+        # the wrapper just wraps a deep copy and ``find_all`` walks in
         # document order.
         return set()
     root_ids: set[int] = set()

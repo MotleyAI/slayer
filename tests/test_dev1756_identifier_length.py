@@ -13,6 +13,18 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
+from slayer.core.enums import DataType
+from slayer.core.errors import IdentifierCollisionError
+from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
+from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.sql.dialects import get_dialect
+from slayer.sql.generator import SQLGenerator  # noqa: F401 — used by the skipped TestVirtualModelShorts
+from slayer.sql.naming import AliasAllocator, cte_name_from_alias, dialect_folds_case, encode_alias
+from slayer.storage.yaml_storage import YAMLStorage
+
+from tests._engine_helpers import _engine_generate
+
 # Marker a length-fit leaves in an alias: ``_<8 hex digits>_``. Its ABSENCE is
 # how the "no churn for the common case" tests prove the write pass was identity.
 _FIT_MARKER_RE = re.compile(r"_[0-9a-f]{8}_")
@@ -29,18 +41,6 @@ _UNPORTED_SURFACE = (
     "DEV-1756 virtual-model-short fitting not ported to the DEV-1450 pipeline "
     "(no engine._query_as_model / _fit_short); tests exercise removed internals."
 )
-
-from slayer.core.enums import DataType
-from slayer.core.errors import IdentifierCollisionError
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
-from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
-from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.dialects import get_dialect
-from slayer.sql.generator import SQLGenerator  # noqa: F401 — used by the skipped TestVirtualModelShorts
-from slayer.sql.naming import AliasAllocator, cte_name_from_alias, dialect_folds_case, encode_alias
-from slayer.storage.yaml_storage import YAMLStorage
-
-from tests._engine_helpers import _engine_generate
 
 DS = "sandbox"
 DEEP = "SandboxSubscription.SandboxCustomer.SandboxConsumer"
@@ -484,6 +484,34 @@ class TestDecodeResultKeys:
         rows = [{pg.emit_alias(LONG_EMAIL): "a@b.io", "SandboxInvoiceV2.status": "paid"}]
         got = pg.decode_result_keys(rows, aliases=[LONG_EMAIL, "SandboxInvoiceV2.status"])
         assert got == [{LONG_EMAIL: "a@b.io", "SandboxInvoiceV2.status": "paid"}]
+
+    def test_two_aliases_fitting_to_one_emitted_form_raise(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Read-side symmetry with ``alias_rewrite_map``: a forced digest
+        collision on two over-limit aliases must raise, not silently drop one."""
+        import slayer.sql._identifier_fit as fitmod
+
+        monkeypatch.setattr(fitmod, "_digest", lambda name: "deadbeef")
+        pg = get_dialect("postgres")
+        assert pg.emit_alias(TWIN_A) == pg.emit_alias(TWIN_B)
+        with pytest.raises(IdentifierCollisionError, match="result key"):
+            pg.decode_result_keys([{}], aliases=[TWIN_A, TWIN_B])
+
+    def test_fitted_alias_colliding_with_an_identity_alias_raises(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A fitted alias landing on an under-limit alias that emits unchanged
+        must raise — identity aliases own their emitted form too."""
+        import slayer.sql._identifier_fit as fitmod
+
+        monkeypatch.setattr(fitmod, "_digest", lambda name: "deadbeef")
+        pg = get_dialect("postgres")
+        short = pg.fit_alias(LONG_EMAIL)  # under-limit → an identity alias
+        assert pg.emit_alias(short) == short
+        assert pg.emit_alias(LONG_EMAIL) == short
+        with pytest.raises(IdentifierCollisionError, match="result key"):
+            pg.decode_result_keys([{}], aliases=[short, LONG_EMAIL])
 
     def test_identity_when_nothing_shortened(self) -> None:
         rows = [{"orders.status": "paid"}]

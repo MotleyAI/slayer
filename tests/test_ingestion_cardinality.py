@@ -424,6 +424,9 @@ class TestSafePkConstraintContract:
         # sa_engine=None path goes straight to the inspector, un-normalized.
         assert _pk_key_sets(self._insp(None), "t", None, None) == []
         assert _pk_key_sets(self._insp({"constrained_columns": ["id"]}), "t", None, None) == [["id"]]
+        # A bare string must NOT split into characters (``list("id")`` ==
+        # ``["i", "d"]``) — that bogus key-set would corrupt join cardinality.
+        assert _pk_key_sets(self._insp({"constrained_columns": "id"}), "t", None, None) == []
 
 
 class TestPartialIndexPredicateIsNeverEvaluated:
