@@ -20,7 +20,7 @@ SLayer handles database connectivity (read-only), SQL translation, common data t
 
 SLayer can be used as a standalone tool or imported as a Python library, easily embeddable into any Python app. Use it for powering analytical MCP servers or APIs or simply to query databases semantically.
 
-### How SLayer is different
+## How SLayer is different
 
 Traditionally, semantic layers were a part of the BI stack, where every metric and its aggregation
 had to be predefined. Agents need more flexibility because users ask questions that involve metric combinations (like ratios), transforms (like time shifts), or different aggregations
