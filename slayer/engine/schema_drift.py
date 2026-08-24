@@ -1742,6 +1742,41 @@ def _live_schema_refs(
     ).schemas
 
 
+def _add_live_object(
+    out: dict[str, LiveTable],
+    *,
+    inspector: sa.engine.Inspector,
+    sa_engine: sa.Engine,
+    ref: SchemaRef,
+    obj_name: str,
+    single: bool,
+    datasource: DatasourceConfig,
+) -> None:
+    """Introspect one object and key it into ``out`` (best-effort).
+
+    The default schema (and a single-schema scope) is keyed BOTH bare and
+    qualified so a legacy unqualified model and an explicit ``main.orders``
+    model both resolve via a full match — since ``_resolve_live_table`` no
+    longer strips a qualifier down to bare (that would mask a dropped
+    non-default twin).
+    """
+    try:
+        live = _introspect_one_table(
+            inspector=inspector, sa_engine=sa_engine, table_name=obj_name, ref=ref,
+        )
+    except Exception as exc:  # noqa: BLE001 — one object's introspection failed
+        logger.warning(
+            "validate_models: failed to introspect %r in datasource %r: %s",
+            obj_name, datasource.name, exc,
+        )
+        return
+    out[ref.qualify(obj_name)] = live
+    if ref.is_default or single:
+        out.setdefault(obj_name, live)
+        if ref.name:
+            out.setdefault(f"{ref.name}.{obj_name}", live)
+
+
 def _collect_live_tables(
     refs: list[SchemaRef],
     *,
@@ -1773,27 +1808,10 @@ def _collect_live_tables(
             continue
         for obj in objs:
             object_count += 1
-            try:
-                live = _introspect_one_table(
-                    inspector=inspector, sa_engine=sa_engine,
-                    table_name=obj.name, ref=ref,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "validate_models: failed to introspect %r in datasource "
-                    "%r: %s", obj.name, datasource.name, exc,
-                )
-                continue
-            out[ref.qualify(obj.name)] = live
-            # The default schema (and a single-schema scope) is exposed BOTH
-            # bare and qualified so a legacy unqualified model and an explicit
-            # ``main.orders`` model both resolve via a full match — since
-            # ``_resolve_live_table`` no longer strips a qualifier down to bare
-            # (that would mask a dropped non-default twin).
-            if ref.is_default or single:
-                out.setdefault(obj.name, live)
-                if ref.name:
-                    out.setdefault(f"{ref.name}.{obj.name}", live)
+            _add_live_object(
+                out, inspector=inspector, sa_engine=sa_engine, ref=ref,
+                obj_name=obj.name, single=single, datasource=datasource,
+            )
     return out, object_count
 
 

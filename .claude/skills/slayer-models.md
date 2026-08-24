@@ -104,9 +104,11 @@ and `datasources create --ingest` print a `Hidden (N)` section,
 `hidden_internals` in the 200 body.
 
 Auto-ingestion covers only the connection's default schema unless told
-otherwise: `--schema a,b` / `schemas=[…]`, or `--all-schemas` (`schemas` and
-`all_schemas` on `ingest_datasource_models` / `POST /ingest`; `--schema` and
-`--all-schemas` are mutually exclusive → CLI error / 422 / MCP error string).
+otherwise: `--schema a,b` / `schemas=[…]`, or `--all-schemas`. On
+`ingest_datasource_models` / `POST /ingest` the fields are `schema_name` (a
+single schema), `schemas` (several), and `all_schemas`. `--schema` and
+`--all-schemas` (and their `schema_name`/`schemas`/`all_schemas` equivalents)
+are mutually exclusive → CLI error / 422 / MCP error string.
 A *single* requested schema is always emitted verbatim, even when it equals the
 connection default (`--schema public` → `sql_table: public.orders`). Only when
 *several* schemas are in scope (multiple `--schema` names or `--all-schemas`)
