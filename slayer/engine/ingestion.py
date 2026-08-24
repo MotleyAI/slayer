@@ -791,7 +791,9 @@ def _safe_get_pk_constraint(
         logger.debug("Inspector PK lookup failed for %r", table_name, exc_info=True)
     # DuckDB's inspector returns empty PK — try INFORMATION_SCHEMA.
     try:
-        return _get_pk_constraint_fallback(sa_engine, table_name, schema)
+        return _get_pk_constraint_fallback(
+            sa_engine=sa_engine, table_name=table_name, schema=schema
+        )
     except Exception:
         logger.debug("PK fallback failed for %r", table_name, exc_info=True)
         return {"constrained_columns": []}
@@ -1730,7 +1732,9 @@ def _merge_joins_strict(
     user-set one is never overwritten. The third return value flags a
     metadata-only fill, which still has to trigger a save.
     """
-    persisted, target_repaired = _repair_legacy_join_targets(persisted, fresh)
+    persisted, target_repaired = _repair_legacy_join_targets(
+        persisted=persisted, fresh=fresh
+    )
 
     existing_join_sigs = _existing_join_signatures(persisted)
     existing_join_targets = {j.target_model for j in persisted.joins}
@@ -1870,7 +1874,7 @@ def _additive_merge_existing(
     new_column_names = [c.name for c in new_cols]
 
     new_joins, new_join_targets, joins_metadata_changed = _merge_joins_strict(
-        persisted, fresh
+        persisted=persisted, fresh=fresh
     )
     metadata_changed = metadata_changed or joins_metadata_changed
 

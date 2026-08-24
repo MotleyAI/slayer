@@ -853,6 +853,8 @@ def _oauth_ds(name: str = "bq", **overrides) -> DatasourceConfig:
 def test_build_engine_oauth_uses_user_supplied_client() -> None:
     """Needs both the ``user_supplied_client`` flag and the client in
     ``connect_args``; without the flag the driver builds an ADC client first."""
+    pytest.importorskip("google.cloud.bigquery")
+    pytest.importorskip("google.oauth2.credentials")
     dialect = BigqueryDialect()
     captured: dict = {}
 

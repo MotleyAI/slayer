@@ -186,7 +186,9 @@ class TestCollisionPolicy:
         assert "collision" in entry.reason.lower()
         assert "a_b" in entry.reason
 
-    def test_collision_outcome_is_order_independent(self, workspace: Path) -> None:
+    def test_collision_outcome_is_order_independent(
+        self, workspace: Path, monkeypatch
+    ) -> None:
         """Reversing the scan order must not flip which object wins the name."""
         from slayer.engine import ingestion as ingestion_module
 
@@ -197,11 +199,8 @@ class TestCollisionPolicy:
             return list(reversed(real(**kwargs)))
 
         forward = ingest_datasource_report(datasource=ds)
-        ingestion_module.list_ingestable_objects = _reversed
-        try:
-            backward = ingest_datasource_report(datasource=ds)
-        finally:
-            ingestion_module.list_ingestable_objects = real
+        monkeypatch.setattr(ingestion_module, "list_ingestable_objects", _reversed)
+        backward = ingest_datasource_report(datasource=ds)
 
         def _mapping(report):
             return {m.name: m.sql_table for m in report.models}
@@ -230,7 +229,7 @@ class TestCollisionPolicy:
         assert len(report.skipped) == 1
 
     def test_sanitized_vs_sanitized_winner_is_order_independent(
-        self, workspace: Path
+        self, workspace: Path, monkeypatch
     ) -> None:
         """Two names collapsing to the same model must pick an order-independent winner."""
         from slayer.engine import ingestion as ingestion_module
@@ -242,11 +241,8 @@ class TestCollisionPolicy:
             return list(reversed(real(**kwargs)))
 
         forward = ingest_datasource_report(datasource=ds)
-        ingestion_module.list_ingestable_objects = _reversed
-        try:
-            backward = ingest_datasource_report(datasource=ds)
-        finally:
-            ingestion_module.list_ingestable_objects = real
+        monkeypatch.setattr(ingestion_module, "list_ingestable_objects", _reversed)
+        backward = ingest_datasource_report(datasource=ds)
 
         def _winner(report):
             return next(m.sql_table for m in report.models if m.name == "a_b")
