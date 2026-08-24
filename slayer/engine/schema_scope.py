@@ -160,7 +160,7 @@ def is_system_schema(token: str) -> bool:
         return True
     if last in _SYSTEM_LAST_SEGMENTS:
         return True
-    return last.startswith("pg_temp_") or last.startswith("pg_toast_temp_")
+    return last.startswith(("pg_temp_", "pg_toast_temp_"))
 
 
 def validate_scope_args(
@@ -303,6 +303,77 @@ def _hint_schemas(
     return out
 
 
+def _enumerate_own_schemas(
+    *,
+    inspector: sa.engine.Inspector,
+    dialect: Optional[str],
+    qualifies: bool,
+    current_catalog: Optional[str],
+) -> tuple[list[SchemaRef], list[SkippedSchema]]:
+    """Split the visible schemas into own-catalog non-system refs and skips.
+
+    A schema in an attached catalog other than the connection's own is dropped
+    to ``skipped`` (with an actionable reason), never silently ingested.
+    """
+    own_refs: list[SchemaRef] = []
+    skipped: list[SkippedSchema] = []
+    try:
+        tokens = list(inspector.get_schema_names() or [])
+    except Exception:  # noqa: BLE001 — no schema listing → default-only scope
+        tokens = []
+    for tok in tokens:
+        if is_system_schema(tok):
+            continue
+        ref = schema_ref_from_token(tok, dialect_name=dialect)
+        is_foreign = (
+            qualifies
+            and ref.catalog
+            and current_catalog
+            and ref.catalog != current_catalog
+        )
+        if is_foreign:
+            skipped.append(
+                SkippedSchema(
+                    token=tok,
+                    reason=(
+                        f"schema belongs to attached catalog {ref.catalog!r}; "
+                        f"point a separate datasource at {ref.catalog!r} to "
+                        f"ingest it"
+                    ),
+                )
+            )
+            continue
+        own_refs.append(ref)
+    return own_refs, skipped
+
+
+def _resolve_requested_name(
+    name: str,
+    *,
+    own_by_name: dict[Optional[str], SchemaRef],
+    default_schema: Optional[str],
+    dialect: Optional[str],
+    qualifies: bool,
+    current_catalog: Optional[str],
+    requested_spelling: Optional[str],
+) -> SchemaRef:
+    """Resolve one requested schema name to a ref, preferring the enumerated
+    entry (so its catalog is the connection's own) and stamping default/spelling.
+    """
+    is_def = name == default_schema
+    base = own_by_name.get(name)
+    if base is not None:
+        return base.model_copy(
+            update={"requested": requested_spelling, "is_default": is_def}
+        )
+    ref = schema_ref_from_token(
+        name, dialect_name=dialect, requested=requested_spelling, is_default=is_def
+    )
+    if qualifies and ref.catalog is None and current_catalog is not None:
+        ref = ref.model_copy(update={"catalog": current_catalog})
+    return ref
+
+
 def resolve_ingest_scope(
     *,
     inspector: sa.engine.Inspector,
@@ -327,65 +398,13 @@ def resolve_ingest_scope(
     current_catalog = _current_catalog(sa_engine) if qualifies else None
     default_schema = _default_schema_name(inspector, sa_engine)
 
-    own_refs: list[SchemaRef] = []
-    skipped: list[SkippedSchema] = []
-    try:
-        tokens = list(inspector.get_schema_names() or [])
-    except Exception:  # noqa: BLE001 — no schema listing → default-only scope
-        tokens = []
-    for tok in tokens:
-        if is_system_schema(tok):
-            continue
-        ref = schema_ref_from_token(tok, dialect_name=dialect)
-        if (
-            qualifies
-            and ref.catalog
-            and current_catalog
-            and ref.catalog != current_catalog
-        ):
-            skipped.append(
-                SkippedSchema(
-                    token=tok,
-                    reason=(
-                        f"schema belongs to attached catalog {ref.catalog!r}; "
-                        f"point a separate datasource at {ref.catalog!r} to "
-                        f"ingest it"
-                    ),
-                )
-            )
-            continue
-        own_refs.append(ref)
-
+    own_refs, skipped = _enumerate_own_schemas(
+        inspector=inspector, dialect=dialect, qualifies=qualifies,
+        current_catalog=current_catalog,
+    )
     own_by_name: dict[Optional[str], SchemaRef] = {}
     for ref in own_refs:
         own_by_name.setdefault(ref.name, ref)
-
-    def _resolve_name(name: str, *, requested_spelling: Optional[str]) -> SchemaRef:
-        is_def = name == default_schema
-        base = own_by_name.get(name)
-        if base is not None:
-            return base.model_copy(
-                update={"requested": requested_spelling, "is_default": is_def}
-            )
-        ref = schema_ref_from_token(
-            name,
-            dialect_name=dialect,
-            requested=requested_spelling,
-            is_default=is_def,
-        )
-        if qualifies and ref.catalog is None and current_catalog is not None:
-            ref = ref.model_copy(update={"catalog": current_catalog})
-        return ref
-
-    def _default_ref() -> SchemaRef:
-        base = own_by_name.get(default_schema)
-        if base is not None:
-            return base.model_copy(update={"is_default": True})
-        return SchemaRef(
-            catalog=current_catalog, name=default_schema, is_default=True
-        )
-
-    req = _dedup_requested(requested)
 
     if all_schemas:
         schemas = [
@@ -396,19 +415,28 @@ def resolve_ingest_scope(
         ]
         return IngestScope(schemas=schemas, other_schemas=[], skipped=skipped)
 
-    if req:
-        if len(req) == 1:
-            schemas = [_resolve_name(req[0], requested_spelling=req[0])]
-        else:
-            schemas = _dedup_refs(
-                [_resolve_name(name, requested_spelling=None) for name in req]
-            )
+    def _resolve(name: str, requested_spelling: Optional[str]) -> SchemaRef:
+        return _resolve_requested_name(
+            name, own_by_name=own_by_name, default_schema=default_schema,
+            dialect=dialect, qualifies=qualifies, current_catalog=current_catalog,
+            requested_spelling=requested_spelling,
+        )
+
+    req = _dedup_requested(requested)
+    if req and len(req) == 1:
+        schemas = [_resolve(req[0], req[0])]
+    elif req:
+        schemas = _dedup_refs([_resolve(name, None) for name in req])
     elif datasource_schema:
-        schemas = [
-            _resolve_name(datasource_schema, requested_spelling=datasource_schema)
-        ]
+        schemas = [_resolve(datasource_schema, datasource_schema)]
     else:
-        schemas = [_default_ref()]
+        base = own_by_name.get(default_schema)
+        schemas = [
+            base.model_copy(update={"is_default": True})
+            if base is not None
+            else SchemaRef(catalog=current_catalog, name=default_schema,
+                           is_default=True)
+        ]
 
     other = _hint_schemas(own_refs, schemas) if len(schemas) == 1 else []
     return IngestScope(schemas=schemas, other_schemas=other, skipped=skipped)

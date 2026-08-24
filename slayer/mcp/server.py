@@ -346,18 +346,21 @@ def _render_ingest_result(
         and not datasource_described
     ):
         # Two distinct cases produce an empty result:
-        #   1. The schema actually has no tables (the agent should look
+        #   1. The scanned scope actually has no tables (the agent should look
         #      elsewhere — show the "Try schema_name=..." hint).
-        #   2. The schema has tables but every persisted model is sql /
+        #   2. The scope has tables but every persisted model is sql /
         #      query-backed (silently skipped by the additive pass) — no
         #      additive work to do, but the existing models are healthy.
-        # Probe the live table count so we don't misdirect the agent.
+        # Use the scan's own discovered objects (DEV-1758) rather than
+        # re-probing ``_fetch_tables(schema_name)``, which only sees the default
+        # schema and so misreports a synchronized ``schemas`` / ``all_schemas``
+        # request as empty.
         #
         # The skipped/hidden checks are part of this guard: a steady-state
         # re-ingest produces no additions, so without them this branch would
         # answer "already in sync" and swallow both sections.
-        tables, _err = _fetch_tables(ds=ds, schema_name=schema_name or None)
-        if tables is None or not tables:
+        scanned_objects = getattr(result, "objects", None) or []
+        if not scanned_objects:
             return _empty_ingest_message(schema_name=schema_name, ds=ds)
         return "Datasource already in sync — no additive changes."
 

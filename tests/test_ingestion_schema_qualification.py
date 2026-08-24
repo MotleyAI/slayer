@@ -312,7 +312,8 @@ class TestAttachedCatalogs:
                 all_schemas=True, datasource_schema=None,
             )
             names = {r.name for r in scope.schemas}
-            assert "main" in names and "openfda_rest" in names
+            assert "main" in names
+            assert "openfda_rest" in names
             assert all(r.catalog == "att_main" for r in scope.schemas)
             # aaa is a foreign catalog → reported as skipped, never silent, with
             # an actionable reason that names the catalog and the fix.
@@ -537,8 +538,10 @@ class TestCollisions:
         _reversed_scan(monkeypatch)
         backward = ingest_datasource_report(datasource=_ds(same_name_db), schemas=["s2", "s3"])
         assert _sql_tables(forward)["reports"] == _sql_tables(backward)["reports"]
-        assert _skip_labels(forward) == sorted(_skip_labels(backward)) or \
-            set(_skip_labels(forward)) == set(_skip_labels(backward))
+        # Direct list comparison: the skip labels must be emitted in the same
+        # deterministic order regardless of discovery order (the property
+        # ``_collision_sort_key`` guarantees).
+        assert _skip_labels(forward) == _skip_labels(backward)
 
     def test_collision_winner_is_independent_of_requested_order(self, same_name_db) -> None:
         forward = ingest_datasource_report(datasource=_ds(same_name_db), schemas=["s2", "s3"])
@@ -562,11 +565,11 @@ class TestCollisions:
         assert _sql_tables(report) == {"reports": "reports"}
         assert report.skipped == []
 
-    def test_single_schema_skip_label_is_bare(self, tmp_path_factory) -> None:
+    def test_single_schema_skip_label_is_bare(self, tmp_path) -> None:
         """A collision within ONE schema keeps a BARE skip label — the
         >1-schema disambiguation must not fire when only one schema is scanned
         (byte-identical to today; see test_ingestion_name_sanitize.py)."""
-        path = str(tmp_path_factory.mktemp("one") / "one.duckdb")
+        path = str(tmp_path / "one.duckdb")
         _duck(path, [
             "CREATE TABLE a_b(real_col INTEGER)",     # default schema, exact name
             "CREATE TABLE a__b(x INTEGER)",           # sanitises to a_b → loses
@@ -576,12 +579,12 @@ class TestCollisions:
 
 
 class TestCollisionTieBreaks:
-    def test_lower_object_name_breaks_a_tie(self, tmp_path_factory) -> None:
+    def test_lower_object_name_breaks_a_tie(self, tmp_path) -> None:
         """Two objects in the SAME non-default schema sanitising to one model
         name tie on schema; the lexicographically lower object name wins
         (rule 4), order-independent and byte-identical to the pre-scope
         collision policy."""
-        path = str(tmp_path_factory.mktemp("tie") / "tie.duckdb")
+        path = str(tmp_path / "tie.duckdb")
         _duck(path, [
             "CREATE SCHEMA s2",
             "CREATE TABLE s2.a__b(x INTEGER)",
@@ -1101,14 +1104,16 @@ class TestEngineConflicts:
 
     @pytest.mark.parametrize("kwargs", _CONFLICTS)
     def test_report_rejects_conflicts(self, basic_db, kwargs) -> None:
+        ds = _ds(basic_db)
         with pytest.raises(ValueError):
-            ingest_datasource_report(datasource=_ds(basic_db), **kwargs)
+            ingest_datasource_report(datasource=ds, **kwargs)
 
     @pytest.mark.parametrize("kwargs", _CONFLICTS)
     def test_ingest_datasource_rejects_conflicts(self, basic_db, kwargs) -> None:
         from slayer.engine.ingestion import ingest_datasource
+        ds = _ds(basic_db)
         with pytest.raises(ValueError):
-            ingest_datasource(datasource=_ds(basic_db), **kwargs)
+            ingest_datasource(datasource=ds, **kwargs)
 
     @pytest.mark.parametrize("kwargs", _CONFLICTS)
     async def test_idempotent_rejects_conflicts(self, basic_db, tmp_path, kwargs) -> None:
@@ -1148,7 +1153,8 @@ class TestRestParity:
             })
             assert ok.status_code == 200, ok.text
             reports = await storage.get_model("reports", data_source="ds")
-            assert reports is not None and reports.sql_table == "openfda_rest.reports"
+            assert reports is not None
+            assert reports.sql_table == "openfda_rest.reports"
 
             bad = await client.post("/ingest", json={
                 "datasource": "ds", "schema_name": "a", "schemas": ["b"],
@@ -1172,7 +1178,8 @@ class TestMcpParity:
         await self._text(server, "ingest_datasource_models",
                          {"datasource_name": "ds", "schemas": "openfda_rest"})
         reports = await storage.get_model("reports", data_source="ds")
-        assert reports is not None and reports.sql_table == "openfda_rest.reports"
+        assert reports is not None
+        assert reports.sql_table == "openfda_rest.reports"
 
     async def test_ingest_tool_reports_conflicting_scope(self, basic_db, tmp_path) -> None:
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
@@ -1180,7 +1187,8 @@ class TestMcpParity:
         server = await self._server(storage)
         text = await self._text(server, "ingest_datasource_models",
                                 {"datasource_name": "ds", "schemas": "a", "all_schemas": True})
-        assert "all_schemas" in text and "schema" in text        # actionable error string
+        assert "all_schemas" in text                             # actionable error string
+        assert "schema" in text
 
     async def test_create_datasource_persists_and_ingests_schema(self, basic_db, tmp_path) -> None:
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
@@ -1192,7 +1200,8 @@ class TestMcpParity:
         stored = await storage.get_datasource("ds")
         assert stored.schema_name == "openfda_rest"
         reports = await storage.get_model("reports", data_source="ds")
-        assert reports is not None and reports.sql_table == "openfda_rest.reports"
+        assert reports is not None
+        assert reports.sql_table == "openfda_rest.reports"
 
     async def test_create_datasource_validates_before_persisting(self, basic_db, tmp_path) -> None:
         """A conflicting scope is rejected as an error string AND the datasource
@@ -1203,7 +1212,8 @@ class TestMcpParity:
             "name": "ds", "type": "duckdb", "database": basic_db,
             "schemas": "a", "all_schemas": True,
         })
-        assert "all_schemas" in text and "schema" in text
+        assert "all_schemas" in text
+        assert "schema" in text
         assert await storage.get_datasource("ds") is None        # nothing persisted
 
     async def test_show_tables_does_not_sweep_non_default_schemas(self, basic_db, tmp_path) -> None:

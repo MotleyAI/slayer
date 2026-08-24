@@ -1719,6 +1719,75 @@ class IntrospectionUnavailable(Exception):
     is unknown — callers must not read that as "everything was dropped"."""
 
 
+def _live_schema_refs(
+    *,
+    inspector: sa.engine.Inspector,
+    sa_engine: sa.Engine,
+    datasource: DatasourceConfig,
+    schema: str | None,
+) -> list[SchemaRef]:
+    """The schemas to introspect for a validate-models live map: an explicit
+    ``schema`` scopes to just that one; otherwise every own-catalog schema."""
+    if schema is not None:
+        dialect = getattr(sa_engine.dialect, "name", None)
+        return [schema_ref_from_token(schema, dialect_name=dialect, requested=schema)]
+    return resolve_ingest_scope(
+        inspector=inspector,
+        sa_engine=sa_engine,
+        requested=None,
+        all_schemas=True,
+        datasource_schema=datasource.schema_name,
+    ).schemas
+
+
+def _collect_live_tables(
+    refs: list[SchemaRef],
+    *,
+    inspector: sa.engine.Inspector,
+    sa_engine: sa.Engine,
+    datasource: DatasourceConfig,
+) -> tuple[dict[str, LiveTable], int]:
+    """Introspect every object across ``refs`` into a ``{key: LiveTable}`` map.
+
+    Keys are the persisted-``sql_table`` form (bare for the default, else
+    ``schema.table``); the default schema (and a single-schema scope) is also
+    exposed bare. Returns ``(map, object_count)`` — the count lets the caller
+    tell a genuinely empty datasource from a total introspection failure.
+    """
+    from slayer.engine.ingestion import list_ingestable_objects
+    single = len(refs) == 1
+    out: dict[str, LiveTable] = {}
+    object_count = 0
+    for ref in refs:
+        try:
+            objs = list_ingestable_objects(
+                inspector=inspector, ref=ref, include_views=True
+            )
+        except Exception as exc:  # noqa: BLE001 — one schema's listing failed
+            logger.warning(
+                "validate_models: failed to list schema %r in datasource "
+                "%r: %s", ref.token, datasource.name, exc,
+            )
+            continue
+        for obj in objs:
+            object_count += 1
+            try:
+                live = _introspect_one_table(
+                    inspector=inspector, sa_engine=sa_engine,
+                    table_name=obj.name, ref=ref,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "validate_models: failed to introspect %r in datasource "
+                    "%r: %s", obj.name, datasource.name, exc,
+                )
+                continue
+            out[ref.qualify(obj.name)] = live
+            if ref.is_default or single:
+                out.setdefault(obj.name, live)
+    return out, object_count
+
+
 def _live_schema_for_datasource(
     *,
     datasource: DatasourceConfig,
@@ -1733,65 +1802,24 @@ def _live_schema_for_datasource(
     and be reported as a ``WholeModelDelete`` that ``--force-clean`` acts on.
     Gating on ``--no-views`` would re-arm that data-loss bug.
     """
-    from slayer.engine.ingestion import _dispose_quietly, list_ingestable_objects
+    from slayer.engine.ingestion import _dispose_quietly
     from slayer.sql import engine_factory
     sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
     try:
         inspector = sa.inspect(sa_engine)
-        dialect = getattr(sa_engine.dialect, "name", None)
         # DEV-1758: when no schema is pinned, cover every own-catalog schema so
         # a model qualified to a non-default schema diffs against the right
         # twin; an explicit ``schema`` scopes to just that schema. Keys are the
         # persisted-``sql_table`` form (bare for the default, ``schema.table``
         # otherwise), with the default schema also exposed bare so a legacy
         # unqualified model resolves the way the database would.
-        if schema is not None:
-            refs = [
-                schema_ref_from_token(
-                    schema, dialect_name=dialect, requested=schema
-                )
-            ]
-        else:
-            refs = resolve_ingest_scope(
-                inspector=inspector,
-                sa_engine=sa_engine,
-                requested=None,
-                all_schemas=True,
-                datasource_schema=datasource.schema_name,
-            ).schemas
-        single = len(refs) == 1
-
-        out: dict[str, LiveTable] = {}
-        object_count = 0
-        for ref in refs:
-            try:
-                objs = list_ingestable_objects(
-                    inspector=inspector, ref=ref, include_views=True
-                )
-            except Exception as exc:  # noqa: BLE001 — one schema's listing failed
-                logger.warning(
-                    "validate_models: failed to list schema %r in datasource "
-                    "%r: %s", ref.token, datasource.name, exc,
-                )
-                continue
-            for obj in objs:
-                object_count += 1
-                try:
-                    live = _introspect_one_table(
-                        inspector=inspector,
-                        sa_engine=sa_engine,
-                        table_name=obj.name,
-                        ref=ref,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "validate_models: failed to introspect %r in datasource "
-                        "%r: %s", obj.name, datasource.name, exc,
-                    )
-                    continue
-                out[ref.qualify(obj.name)] = live
-                if ref.is_default or single:
-                    out.setdefault(obj.name, live)
+        refs = _live_schema_refs(
+            inspector=inspector, sa_engine=sa_engine,
+            datasource=datasource, schema=schema,
+        )
+        out, object_count = _collect_live_tables(
+            refs, inspector=inspector, sa_engine=sa_engine, datasource=datasource,
+        )
         if object_count and not out:
             raise IntrospectionUnavailable(
                 f"failed to introspect every table in datasource "
@@ -1933,9 +1961,10 @@ def _resolve_live_table(
     if len(parts) >= 2:
         candidates.append(".".join(parts[-2:]))
     candidates.append(parts[-1])
-    # Materialise before extending — a lazy generator would re-feed each
-    # appended item back into the iterator and never terminate.
-    candidates.extend([_strip_ident_quotes(c) for c in list(candidates)])
+    # The list comprehension is eager — it fully iterates ``candidates`` before
+    # ``extend`` appends, so no mutate-while-iterate (a generator here WOULD
+    # re-feed each appended item and never terminate).
+    candidates.extend([_strip_ident_quotes(c) for c in candidates])
     for name in candidates:
         live = live_tables.get(name)
         if live is not None:

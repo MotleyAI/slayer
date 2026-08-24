@@ -9,6 +9,7 @@ catalog-semantic and lives in ``test_ingestion_schema_qualification.py`` instead
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from slayer.engine.schema_scope import (
     IngestScope,
@@ -99,7 +100,7 @@ class TestSchemaRefDerived:
 
     def test_is_frozen(self) -> None:
         ref = SchemaRef(name="s")
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             ref.name = "other"  # type: ignore[misc]
 
 

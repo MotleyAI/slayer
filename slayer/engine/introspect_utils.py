@@ -245,6 +245,29 @@ def _info_schema_columns_query(
     return sql + "ORDER BY ordinal_position", params
 
 
+def _info_schema_type(data_type_str: str) -> tuple[DataType, bool]:
+    """Map an INFORMATION_SCHEMA type string to ``(DataType, is_float)``.
+
+    NUMERIC/DECIMAL resolve float-vs-integer by scale (DEV-1361); integer- and
+    char/text-shaped names not in the base map narrow to INT / TEXT rather than
+    the coarse DOUBLE fallback.
+    """
+    # Strip precision info (e.g. "DECIMAL(10,2)" → "DECIMAL").
+    base_type = data_type_str.split("(")[0].upper().strip()
+    sa_type = _INFO_SCHEMA_TYPE_MAP.get(base_type)
+    is_float = base_type in _FLOAT_LIKE_INFO_SCHEMA_TYPES
+    if base_type in ("NUMERIC", "DECIMAL") or (
+        sa_type is None and ("DECIMAL" in base_type or "NUMERIC" in base_type)
+    ):
+        sa_type = sa_type or DataType.DOUBLE
+        is_float = _parse_info_schema_is_float(data_type_str)
+    elif sa_type is None and "INT" in base_type:
+        sa_type = DataType.INT
+    elif sa_type is None and ("CHAR" in base_type or "TEXT" in base_type):
+        sa_type = DataType.TEXT
+    return sa_type or DataType.TEXT, is_float
+
+
 def _get_columns_fallback(
     sa_engine: sa.Engine,
     table_name: str,
@@ -267,24 +290,8 @@ def _get_columns_fallback(
         rows = conn.execute(sa.text(sql), params).fetchall()
     result = []
     for col_name, data_type_str in rows:
-        # Strip precision info (e.g. "DECIMAL(10,2)" → "DECIMAL")
-        base_type = data_type_str.split("(")[0].upper().strip()
-        sa_type = _INFO_SCHEMA_TYPE_MAP.get(base_type)
-        is_float = base_type in _FLOAT_LIKE_INFO_SCHEMA_TYPES
-        # NUMERIC/DECIMAL: check scale to decide float vs integer
-        if base_type in ("NUMERIC", "DECIMAL") or (
-            sa_type is None and ("DECIMAL" in base_type or "NUMERIC" in base_type)
-        ):
-            sa_type = sa_type or DataType.DOUBLE
-            is_float = _parse_info_schema_is_float(data_type_str)
-        elif sa_type is None and "INT" in base_type:
-            # DEV-1361: integer-shaped types should narrow to INT, not the
-            # coarse DOUBLE fallback (e.g. MEDIUMINT, TINYINT variants not
-            # otherwise mapped).
-            sa_type = DataType.INT
-        elif sa_type is None and ("CHAR" in base_type or "TEXT" in base_type):
-            sa_type = DataType.TEXT
-        result.append({"name": col_name, "type": sa_type or DataType.TEXT, "is_float": is_float})
+        sa_type, is_float = _info_schema_type(data_type_str)
+        result.append({"name": col_name, "type": sa_type, "is_float": is_float})
     comments = _get_column_comments_fallback(
         sa_engine=sa_engine, table_name=table_name, ref=ref,
     )

@@ -2182,7 +2182,17 @@ async def _process_one_table(
         if persisted_schema is not None:
             # Already qualified — never rewrite the qualifier; a differently
             # qualified twin is a different physical table, so leave it alone.
-            return ProcessTableOutcome()
+            # Report the skip so this "left alone" outcome is visible, matching
+            # the fail-closed branch below rather than returning silently.
+            return ProcessTableOutcome(
+                skipped=SkippedTable(
+                    table_name=persisted.sql_table,
+                    reason=(
+                        f"kept qualified {persisted.sql_table!r}: the fresh "
+                        f"{fresh.sql_table!r} is a different physical table"
+                    ),
+                )
+            )
         if not _qualifier_repair_allowed(
             bare_name=persisted_obj,
             fresh_schema=fresh_schema,
@@ -2333,6 +2343,59 @@ def _default_schema_membership(
         _dispose_quietly(sa_engine)
 
 
+def _schema_hint_message(other_schemas: list[str]) -> str | None:
+    """DEV-1758: offer schemas discovered but not covered this pass. Eligible
+    only when exactly one schema was in scope (``other_schemas`` is empty
+    otherwise), so ``--all-schemas`` / multi-schema runs stay quiet."""
+    if not other_schemas:
+        return None
+    return (
+        "Other schemas are available and were not ingested: "
+        + ", ".join(other_schemas)
+        + ". Re-run with --schema <name> or --all-schemas to include them."
+    )
+
+
+async def _run_additive_pass(
+    *,
+    fresh_by_name: dict[str, SlayerModel],
+    datasource: DatasourceConfig,
+    storage: StorageBackend,
+    default_schema_name: str | None,
+    default_objects: set[str] | None,
+):
+    """Save / merge every freshly-introspected model, isolating per-model
+    failures. Returns ``(additions, errors, merge_skipped)``."""
+    from slayer.engine.schema_drift import IngestionError, ModelAddition
+
+    additions: list[ModelAddition] = []
+    errors: list[IngestionError] = []
+    merge_skipped: list[SkippedTable] = []
+    for table_name, fresh in fresh_by_name.items():
+        try:
+            outcome = await _process_one_table(
+                table_name=table_name,
+                fresh=fresh,
+                datasource=datasource,
+                storage=storage,
+                default_schema_name=default_schema_name,
+                default_objects=default_objects,
+            )
+            if outcome.addition is not None:
+                additions.append(outcome.addition)
+            if outcome.skipped is not None:
+                merge_skipped.append(outcome.skipped)
+        except Exception as exc:  # noqa: BLE001 — best-effort per-model isolation
+            errors.append(
+                IngestionError(
+                    model_name=table_name,
+                    data_source=datasource.name,
+                    error=str(exc),
+                )
+            )
+    return additions, errors, merge_skipped
+
+
 async def ingest_datasource_idempotent(
     *,
     datasource: DatasourceConfig,
@@ -2368,13 +2431,8 @@ async def ingest_datasource_idempotent(
     from slayer.engine.schema_drift import (
         IdempotentIngestResult,
         IngestionError,
-        ModelAddition,
         validate_datasource,
     )
-
-    additions: list[ModelAddition] = []
-    errors: list[IngestionError] = []
-    merge_skipped: list[SkippedTable] = []
 
     # ``ingest_datasource_report`` is sync (it drives SQLAlchemy ``Inspector``).
     # Offload to a thread so a slow / large datasource doesn't block the
@@ -2405,28 +2463,13 @@ async def ingest_datasource_idempotent(
         _bare_table_name(m.sql_table) for m in fresh_models if m.sql_table
     }
 
-    for table_name, fresh in fresh_by_name.items():
-        try:
-            outcome = await _process_one_table(
-                table_name=table_name,
-                fresh=fresh,
-                datasource=datasource,
-                storage=storage,
-                default_schema_name=default_schema_name,
-                default_objects=default_objects,
-            )
-            if outcome.addition is not None:
-                additions.append(outcome.addition)
-            if outcome.skipped is not None:
-                merge_skipped.append(outcome.skipped)
-        except Exception as exc:  # noqa: BLE001 — best-effort per-model isolation
-            errors.append(
-                IngestionError(
-                    model_name=table_name,
-                    data_source=datasource.name,
-                    error=str(exc),
-                )
-            )
+    additions, errors, merge_skipped = await _run_additive_pass(
+        fresh_by_name=fresh_by_name,
+        datasource=datasource,
+        storage=storage,
+        default_schema_name=default_schema_name,
+        default_objects=default_objects,
+    )
 
     # DEV-1809 fill-if-empty for the datasource description (BigQuery dataset
     # description). The check runs against the freshly-loaded STORED config,
@@ -2496,17 +2539,6 @@ async def ingest_datasource_idempotent(
         storage=storage,
     )
 
-    # DEV-1758: offer schemas discovered but not covered this pass. Eligible
-    # only when exactly one schema was in scope (``other_schemas`` is empty
-    # otherwise), so ``--all-schemas`` and multi-schema runs stay quiet.
-    schema_hint = None
-    if scan.other_schemas:
-        schema_hint = (
-            "Other schemas are available and were not ingested: "
-            + ", ".join(scan.other_schemas)
-            + ". Re-run with --schema <name> or --all-schemas to include them."
-        )
-
     return IdempotentIngestResult(
         additions=additions,
         to_delete=list(to_delete),
@@ -2515,7 +2547,7 @@ async def ingest_datasource_idempotent(
         objects=scan.objects,
         hidden_internals=hidden_internals,
         datasource_described=datasource_described,
-        schema_hint=schema_hint,
+        schema_hint=_schema_hint_message(scan.other_schemas),
     )
 
 
@@ -2592,15 +2624,35 @@ def _empty_ingest_message(
 _KIND_LABELS = {"view": " [view]", "materialized_view": " [materialized view]"}
 
 
+def _updated_detail_lines(addition) -> list[str]:
+    """The ``Updated: <model> (...)`` detail fragments for a non-created
+    addition, in display order; empty when nothing changed."""
+    described = getattr(addition, "described_columns", []) or []
+    widened = getattr(addition, "widened_columns", []) or []
+    entries = [
+        f"sql_table: {addition.sql_table_change}"
+        if getattr(addition, "sql_table_change", None) else None,
+        f"+columns: {', '.join(addition.new_columns)}"
+        if addition.new_columns else None,
+        f"+joins: {', '.join(addition.new_joins)}"
+        if addition.new_joins else None,
+        f"widened: {', '.join(widened)}" if widened else None,
+        f"source_kind: {addition.kind_change}"
+        if getattr(addition, "kind_change", None) else None,
+        f"+descriptions: {', '.join(described)}" if described else None,
+        "+model description" if getattr(addition, "model_described", False) else None,
+    ]
+    return [e for e in entries if e]
+
+
 def _print_ingest_addition(
     addition, *, file: TextIO | None = None
 ) -> None:
     out = file if file is not None else sys.stdout
     # Label non-table objects — a view-backed model has no PK and no joins.
     label = _KIND_LABELS.get(getattr(addition, "source_kind", None) or "", "")
-    described = getattr(addition, "described_columns", []) or []
-    model_described = getattr(addition, "model_described", False)
     if addition.created:
+        described = getattr(addition, "described_columns", []) or []
         suffix = f", {len(described)} described" if described else ""
         print(
             f"Created: {addition.model_name} "
@@ -2608,28 +2660,9 @@ def _print_ingest_addition(
             file=out,
         )
         return
-    widened = getattr(addition, "widened_columns", []) or []
-    kind_change = getattr(addition, "kind_change", None)
-    sql_table_change = getattr(addition, "sql_table_change", None)
-    if not (addition.new_columns or addition.new_joins or widened or kind_change
-            or described or model_described or sql_table_change):
-        return
-    details = []
-    if sql_table_change:
-        details.append(f"sql_table: {sql_table_change}")
-    if addition.new_columns:
-        details.append(f"+columns: {', '.join(addition.new_columns)}")
-    if addition.new_joins:
-        details.append(f"+joins: {', '.join(addition.new_joins)}")
-    if widened:
-        details.append(f"widened: {', '.join(widened)}")
-    if kind_change:
-        details.append(f"source_kind: {kind_change}")
-    if described:
-        details.append(f"+descriptions: {', '.join(described)}")
-    if model_described:
-        details.append("+model description")
-    print(f"Updated: {addition.model_name} ({'; '.join(details)})", file=out)
+    details = _updated_detail_lines(addition)
+    if details:
+        print(f"Updated: {addition.model_name} ({'; '.join(details)})", file=out)
 
 
 def _print_report_section(
