@@ -44,7 +44,6 @@ from slayer.engine.introspect_utils import _safe_get_columns
 from slayer.engine.schema_scope import (
     SchemaRef,
     resolve_ingest_scope,
-    schema_ref_from_token,
     split_sql_table,
 )
 from slayer.engine.ingestion import (
@@ -1727,15 +1726,18 @@ def _live_schema_refs(
     schema: str | None,
 ) -> list[SchemaRef]:
     """The schemas to introspect for a validate-models live map: an explicit
-    ``schema`` scopes to just that one; otherwise every own-catalog schema."""
-    if schema is not None:
-        dialect = getattr(sa_engine.dialect, "name", None)
-        return [schema_ref_from_token(schema, dialect_name=dialect, requested=schema)]
+    ``schema`` scopes to just that one; otherwise every own-catalog schema.
+
+    Both go through ``resolve_ingest_scope`` so the connection's current catalog
+    is attached to the ``SchemaRef`` (DEV-1758, Codex review) — a bare
+    ``schema_ref_from_token('main')`` would hand the Inspector an unqualified
+    ``main`` and re-arm DuckDB's cross-catalog sweep in the validate path.
+    """
     return resolve_ingest_scope(
         inspector=inspector,
         sa_engine=sa_engine,
-        requested=None,
-        all_schemas=True,
+        requested=[schema] if schema is not None else None,
+        all_schemas=schema is None,
         datasource_schema=datasource.schema_name,
     ).schemas
 
@@ -1783,8 +1785,15 @@ def _collect_live_tables(
                 )
                 continue
             out[ref.qualify(obj.name)] = live
+            # The default schema (and a single-schema scope) is exposed BOTH
+            # bare and qualified so a legacy unqualified model and an explicit
+            # ``main.orders`` model both resolve via a full match — since
+            # ``_resolve_live_table`` no longer strips a qualifier down to bare
+            # (that would mask a dropped non-default twin).
             if ref.is_default or single:
                 out.setdefault(obj.name, live)
+                if ref.name:
+                    out.setdefault(f"{ref.name}.{obj.name}", live)
     return out, object_count
 
 
@@ -1949,22 +1958,24 @@ def _resolve_live_table(
 ) -> LiveTable | None:
     """Look up a model's ``sql_table`` in the live introspection map.
 
-    Walks progressively less-qualified candidates (DEV-1758): the full value,
-    then its last two dotted segments (``catalog.schema.table`` →
-    ``schema.table``), then the bare object (``… → table``). Double-quoted
-    identifiers are unquoted at each step (``prod."Company"`` → ``Company``), so
-    a case-sensitive Postgres table and a model written before its catalog was
-    known both still resolve.
+    Walks the full value and its last two dotted segments
+    (``catalog.schema.table`` → ``schema.table``), plus double-quote-unquoted
+    variants (``prod."Company"`` → ``prod.Company``). A qualified name is NEVER
+    stripped down to a *bare* same-named object: doing so would let a dropped
+    non-default table (``analytics.orders``) masquerade as its default-schema
+    twin (``orders``) and hide the deletion (DEV-1758, Codex review). The live
+    map instead keys the default schema BOTH bare and qualified
+    (``_collect_live_tables``), so a legitimate default / bare reference still
+    resolves via a full or last-two match.
     """
     parts = sql_table.split(".")
-    candidates = [sql_table]
+    # Unquote per segment (``prod."Company"`` → ``prod.Company``), NOT the whole
+    # string — only the object segment is typically quoted.
+    unq = [_strip_ident_quotes(p) for p in parts]
+    candidates = [sql_table, ".".join(unq)]
     if len(parts) >= 2:
         candidates.append(".".join(parts[-2:]))
-    candidates.append(parts[-1])
-    # The list comprehension is eager — it fully iterates ``candidates`` before
-    # ``extend`` appends, so no mutate-while-iterate (a generator here WOULD
-    # re-feed each appended item and never terminate).
-    candidates.extend([_strip_ident_quotes(c) for c in candidates])
+        candidates.append(".".join(unq[-2:]))
     for name in candidates:
         live = live_tables.get(name)
         if live is not None:

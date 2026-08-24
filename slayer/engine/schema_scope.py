@@ -374,6 +374,38 @@ def _resolve_requested_name(
     return ref
 
 
+def _drop_foreign_catalog_refs(
+    schemas: list[SchemaRef],
+    *,
+    qualifies: bool,
+    current_catalog: Optional[str],
+    skipped: list[SkippedSchema],
+) -> list[SchemaRef]:
+    """Move any ref naming an attached catalog other than the connection's own
+    into ``skipped`` (appended in place), returning the kept refs."""
+    kept: list[SchemaRef] = []
+    for ref in schemas:
+        if (
+            qualifies
+            and ref.catalog
+            and current_catalog
+            and ref.catalog != current_catalog
+        ):
+            skipped.append(
+                SkippedSchema(
+                    token=ref.token or "",
+                    reason=(
+                        f"requested schema belongs to attached catalog "
+                        f"{ref.catalog!r}; point a separate datasource at "
+                        f"{ref.catalog!r} to ingest it"
+                    ),
+                )
+            )
+        else:
+            kept.append(ref)
+    return kept
+
+
 def resolve_ingest_scope(
     *,
     inspector: sa.engine.Inspector,
@@ -437,6 +469,13 @@ def resolve_ingest_scope(
             else SchemaRef(catalog=current_catalog, name=default_schema,
                            is_default=True)
         ]
+
+    # Defence-in-depth (Codex review): a schema request that names a foreign
+    # attached catalog is dropped to ``skipped``, never ingested.
+    schemas = _drop_foreign_catalog_refs(
+        schemas, qualifies=qualifies, current_catalog=current_catalog,
+        skipped=skipped,
+    )
 
     other = _hint_schemas(own_refs, schemas) if len(schemas) == 1 else []
     return IngestScope(schemas=schemas, other_schemas=other, skipped=skipped)

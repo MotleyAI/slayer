@@ -1294,29 +1294,42 @@ class TestResolveLiveTable:
             sql_table="orders", live_tables={"orders": live}
         ) is live
 
-    def test_schema_qualified_falls_back_to_bare(self) -> None:
+    def test_schema_qualified_matches_the_qualified_key(self) -> None:
+        # DEV-1758 (Codex review): the live map is keyed by the qualified form
+        # (``_collect_live_tables``), and a qualified sql_table is NO LONGER
+        # stripped to a bare same-named object — that masked a dropped
+        # non-default table behind its default twin. It matches the qualified
+        # key directly.
+        live = self._live("orders")
+        assert _resolve_live_table(
+            sql_table="public.orders", live_tables={"public.orders": live}
+        ) is live
+
+    def test_schema_qualified_does_not_fall_back_to_a_bare_twin(self) -> None:
+        # The removed bug: public.orders must NOT resolve to a bare ``orders``
+        # key (a different, default-schema table).
         live = self._live("orders")
         assert _resolve_live_table(
             sql_table="public.orders", live_tables={"orders": live}
-        ) is live
+        ) is None
 
     def test_quoted_table_part_strips_quotes(self) -> None:
         live = self._live("Company")
-        # The bug's repro: prod."Company" with introspection keyed by bare name.
+        # prod."Company" resolves against the per-segment-unquoted qualified key.
         assert _resolve_live_table(
-            sql_table='prod."Company"', live_tables={"Company": live}
+            sql_table='prod."Company"', live_tables={"prod.Company": live}
         ) is live
 
     def test_both_parts_quoted(self) -> None:
         live = self._live("Company")
         assert _resolve_live_table(
-            sql_table='"prod"."Company"', live_tables={"Company": live}
+            sql_table='"prod"."Company"', live_tables={"prod.Company": live}
         ) is live
 
     def test_escaped_inner_quote_in_table(self) -> None:
         live = self._live('Comp"any')
         assert _resolve_live_table(
-            sql_table='prod."Comp""any"', live_tables={'Comp"any': live}
+            sql_table='prod."Comp""any"', live_tables={'prod.Comp"any': live}
         ) is live
 
     def test_missing_returns_none(self) -> None:

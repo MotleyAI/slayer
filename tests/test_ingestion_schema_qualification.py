@@ -443,6 +443,23 @@ class TestAttachedCatalogs:
         finally:
             engine.dispose()
 
+    def test_requested_foreign_catalog_is_skipped_not_ingested(self, attached_paths) -> None:
+        """Codex-review: explicitly requesting a foreign attached catalog
+        (``--schema aaa.main``) drops it to ``skipped`` and out of scope, like
+        the all_schemas enumeration filter — never ingesting a catalog this
+        datasource does not own."""
+        engine = _open_attached(attached_paths)
+        try:
+            insp = sa.inspect(engine)
+            scope = resolve_ingest_scope(
+                inspector=insp, sa_engine=engine, requested=["aaa.main"],
+                all_schemas=False, datasource_schema=None,
+            )
+            assert scope.schemas == []
+            assert any(s.token == "aaa.main" for s in scope.skipped)
+        finally:
+            engine.dispose()
+
 
 # ===========================================================================
 # Scope resolution — precedence, dedup, requested-discipline
@@ -853,6 +870,29 @@ class TestValidateModels:
         to_delete = await self._validate(ds, [model])
         assert not [e for e in to_delete if e.tool == "delete_model"]
 
+    async def test_missing_non_default_table_is_reported_deleted_not_masked(
+        self, tmp_path
+    ) -> None:
+        """Codex-review regression: a model qualified to a non-default table
+        that no longer exists must be reported for deletion even when a
+        same-named table exists in the DEFAULT schema. The pre-fix
+        ``_resolve_live_table`` last-one fallback silently diffed against the
+        default twin (``analytics.orders`` → ``orders``) and hid the drop."""
+        from slayer.core.models import Column
+        from slayer.core.enums import DataType
+        path = str(tmp_path / "drop.duckdb")
+        _duck(path, ["CREATE TABLE orders(id INTEGER)"])   # default only; no analytics
+        storage = YAMLStorage(base_dir=str(tmp_path / "store"))
+        ds = _ds(path)
+        await storage.save_datasource(ds)
+        model = SlayerModel(
+            name="orders", sql_table="analytics.orders", data_source="ds",
+            columns=[Column(name="id", sql="id", type=DataType.INT)],
+        )
+        await storage.save_model(model)
+        to_delete = await self._validate(ds, [model])
+        assert [e for e in to_delete if e.tool == "delete_model"]
+
     async def test_qualified_model_diffs_against_the_correct_twin(
         self, same_name_db, tmp_path
     ) -> None:
@@ -877,9 +917,10 @@ class TestValidateModels:
 
 
 class TestLiveTableResolution:
-    """``_resolve_live_table`` walks full → last-two → last-one → unquoted
-    (§3.7), so a model written before its catalog was known still resolves, and
-    an unqualified legacy model still finds its bare live table."""
+    """``_resolve_live_table`` walks full → last-two → unquoted (§3.7), so a
+    model written before its catalog was known still resolves — but it never
+    strips a qualifier down to a bare same-named object (Codex review), which
+    would let a dropped non-default table masquerade as its default twin."""
 
     def _live(self):
         from slayer.engine.schema_drift import LiveTable
@@ -892,22 +933,57 @@ class TestLiveTableResolution:
             sql_table="cat.schema.tbl", live_tables={"schema.tbl": live}
         ) is live
 
-    def test_three_part_resolves_down_to_the_bare_object(self) -> None:
-        """The genuinely new step: a 3-part sql_table must walk all the way to
-        the bare object key. (The old greedy 'everything after the first dot'
-        split stops at ``schema.tbl`` and never reaches ``tbl``.)"""
+    def test_bare_model_resolves_against_the_bare_key(self) -> None:
+        """A legacy unqualified model finds its default-schema live table (which
+        ``_collect_live_tables`` keys bare)."""
         from slayer.engine.schema_drift import _resolve_live_table
         live = self._live()
         assert _resolve_live_table(
-            sql_table="cat.schema.tbl", live_tables={"tbl": live}
+            sql_table="orders", live_tables={"orders": live}
         ) is live
+
+    def test_default_qualified_model_resolves_against_the_qualified_key(self) -> None:
+        """An explicit ``main.orders`` resolves because the default schema is
+        dual-keyed (bare AND qualified) in the live map."""
+        from slayer.engine.schema_drift import _resolve_live_table
+        live = self._live()
+        assert _resolve_live_table(
+            sql_table="main.orders", live_tables={"main.orders": live}
+        ) is live
+
+    def test_missing_qualified_table_does_not_fall_through_to_a_bare_twin(self) -> None:
+        """Codex-review regression: a qualified ``analytics.orders`` whose live
+        table is GONE must resolve to None (→ WholeModelDelete), never to a
+        same-named default ``orders`` twin — which would silently hide the drop.
+        The pre-fix ``full → last-two → last-one`` walk returned the bare twin."""
+        from slayer.engine.schema_drift import _resolve_live_table
+        live = self._live()
+        assert _resolve_live_table(
+            sql_table="analytics.orders", live_tables={"orders": live}
+        ) is None
 
     def test_quoted_identifier_is_unquoted(self) -> None:
         from slayer.engine.schema_drift import _resolve_live_table
         live = self._live()
         assert _resolve_live_table(
-            sql_table='prod."Company"', live_tables={"Company": live}
+            sql_table='prod."Company"', live_tables={"prod.Company": live}
         ) is live
+
+    def test_configured_schema_live_map_carries_the_catalog(self, basic_db) -> None:
+        """Codex-review: the validate-models live-schema path for a configured
+        schema must carry the current catalog on DuckDB, else the bare token
+        re-arms the cross-catalog sweep. Pre-fix the ref's catalog was None."""
+        from slayer.engine.schema_drift import _live_schema_refs
+        from slayer.sql import engine_factory
+        ds = _ds(basic_db)
+        engine = engine_factory.get_engine(ds.resolve_env_vars())
+        insp = sa.inspect(engine)
+        refs = _live_schema_refs(
+            inspector=insp, sa_engine=engine, datasource=ds, schema="openfda_rest",
+        )
+        assert len(refs) == 1
+        assert refs[0].catalog is not None
+        assert refs[0].token == f"{refs[0].catalog}.openfda_rest"
 
 
 # ===========================================================================
