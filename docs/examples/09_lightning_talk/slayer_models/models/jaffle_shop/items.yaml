@@ -1,4 +1,4 @@
-version: 7
+version: 8
 name: items
 sql_table: items
 query_variables: {}
@@ -8,12 +8,14 @@ columns:
   sql: id
   type: TEXT
   primary_key: true
+  unique: false
   label: Item ID
   hidden: false
 - name: order_id
   sql: order_id
   type: TEXT
   primary_key: false
+  unique: false
   description: Order this line belongs to.
   label: Order
   hidden: false
@@ -21,6 +23,7 @@ columns:
   sql: sku
   type: TEXT
   primary_key: false
+  unique: false
   description: Product sold on this line.
   label: Product
   hidden: false

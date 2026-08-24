@@ -31,6 +31,7 @@ import sqlite3
 
 import yaml
 
+from slayer.storage.atomic_write import _atomic_write_yaml
 from slayer.storage.migrations import register_migration
 
 
@@ -180,22 +181,26 @@ def migrate_yaml_layout(base_dir: str) -> None:
         target_dir = os.path.join(models_dir, ds)
         os.makedirs(target_dir, exist_ok=True)
         target_path = os.path.join(target_dir, filename)
-        # Refuse to silently clobber an existing v4 file at the target
-        # ``(data_source, name)`` key. Surfaces partial / interrupted
-        # migrations and manual mismatches with an actionable message,
-        # leaving the flat source file in place so the user can resolve
-        # by hand.
+        # Re-dump rather than rename so the data_source field is persisted
+        # for any orphans we just auto-filled. Atomic replace so a crash
+        # mid-dump can't leave a truncated target.
         if os.path.exists(target_path):
+            # A crash between the write and the source removal below leaves
+            # both files; if the target already holds exactly what we would
+            # write, resume that interrupted migration rather than wedging
+            # storage shut. A content mismatch is a real collision — refuse
+            # and leave the flat source for the user to resolve by hand.
+            with open(target_path) as f:  # NOSONAR(S7493) — sync I/O by design
+                if f.read() == yaml.dump(data, sort_keys=False):
+                    os.remove(path)
+                    continue
             raise ValueError(
                 f"Cannot migrate '{path}' to v4 layout: target "
                 f"'{target_path}' already exists. Resolve the duplicate "
                 f"manually (delete one of the files, or merge their "
                 f"contents) before reopening storage."
             )
-        # Re-dump rather than rename so the data_source field is persisted
-        # for any orphans we just auto-filled.
-        with open(target_path, "w") as f:
-            yaml.dump(data, f, sort_keys=False)
+        _atomic_write_yaml(path=target_path, data=data)
         os.remove(path)
 
 

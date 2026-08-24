@@ -1,4 +1,4 @@
-version: 7
+version: 8
 name: customers
 sql_table: customers
 query_variables: {}
@@ -8,12 +8,14 @@ columns:
   sql: id
   type: TEXT
   primary_key: true
+  unique: false
   label: Customer ID
   hidden: false
 - name: name
   sql: name
   type: TEXT
   primary_key: false
+  unique: false
   description: Customer name.
   label: Customer
   hidden: false
