@@ -261,6 +261,18 @@ def _info_schema_type(data_type_str: str) -> tuple[DataType, bool]:
     ):
         sa_type = sa_type or DataType.DOUBLE
         is_float = _parse_info_schema_is_float(data_type_str)
+    elif sa_type is None and (
+        "DOUBLE" in base_type or "FLOAT" in base_type or "REAL" in base_type
+    ):
+        # Multi-word float names like Postgres "DOUBLE PRECISION" (DEV-1758,
+        # CodeRabbit): map to DOUBLE, not the coarse TEXT fallback. Checked
+        # BEFORE the loose ``"INT" in base_type`` branch, since a float name can
+        # contain "INT" (e.g. "FLOATING POINT") and must not read as INT (Codex).
+        sa_type = DataType.DOUBLE
+        is_float = True
+    elif sa_type is None and "TIMESTAMP" in base_type:
+        # e.g. "TIMESTAMP WITHOUT TIME ZONE".
+        sa_type = DataType.TIMESTAMP
     elif sa_type is None and "INT" in base_type:
         sa_type = DataType.INT
     elif sa_type is None and ("CHAR" in base_type or "TEXT" in base_type):
@@ -315,4 +327,6 @@ def _safe_get_columns(
     try:
         return inspector.get_columns(table_name, schema=ref.token if ref else None)
     except Exception:
-        return _get_columns_fallback(sa_engine, table_name, ref)
+        return _get_columns_fallback(
+            sa_engine=sa_engine, table_name=table_name, ref=ref,
+        )

@@ -1795,6 +1795,7 @@ def _collect_live_tables(
     single = len(refs) == 1
     out: dict[str, LiveTable] = {}
     object_count = 0
+    failed: list[str] = []
     for ref in refs:
         try:
             objs = list_ingestable_objects(
@@ -1805,13 +1806,24 @@ def _collect_live_tables(
                 "validate_models: failed to list schema %r in datasource "
                 "%r: %s", ref.token, datasource.name, exc,
             )
+            failed.append(str(ref.token))
             continue
         for obj in objs:
             object_count += 1
             _add_live_object(
-                out, inspector=inspector, sa_engine=sa_engine, ref=ref,
+                out=out, inspector=inspector, sa_engine=sa_engine, ref=ref,
                 obj_name=obj.name, single=single, datasource=datasource,
             )
+    if failed:
+        # A schema in scope could not be listed, so its objects are absent from
+        # the map. Diffing against a PARTIAL map would report every model in
+        # that schema as a WholeModelDelete (a transient error → data loss under
+        # ``--force-clean``). Fail closed (CodeRabbit) — the caller catches this
+        # and skips the drift verdict entirely.
+        raise IntrospectionUnavailable(
+            f"validate_models: could not list schema(s) {failed} in datasource "
+            f"{datasource.name!r}; skipping drift verdict to avoid false deletions"
+        )
     return out, object_count
 
 

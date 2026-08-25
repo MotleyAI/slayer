@@ -47,7 +47,7 @@ def _duck(path: str, statements: list[str]) -> None:
 def basic_db(tmp_path_factory) -> str:
     """One default-schema table + one non-default-schema table (the repro)."""
     path = str(tmp_path_factory.mktemp("basic") / "fda.duckdb")
-    _duck(path, [
+    _duck(path=path, statements=[
         "CREATE TABLE in_default(x INTEGER)",
         "INSERT INTO in_default VALUES (1)",
         "CREATE SCHEMA openfda_rest",
@@ -61,7 +61,7 @@ def basic_db(tmp_path_factory) -> str:
 def same_name_db(tmp_path_factory) -> str:
     """``reports`` in three schemas with DIFFERENT columns — the D2 fixture."""
     path = str(tmp_path_factory.mktemp("same_name") / "sn.duckdb")
-    _duck(path, [
+    _duck(path=path, statements=[
         "CREATE TABLE reports(a INTEGER)",              # main (default)
         "CREATE SCHEMA s2",
         "CREATE TABLE s2.reports(b INTEGER, c INTEGER)",
@@ -75,7 +75,7 @@ def same_name_db(tmp_path_factory) -> str:
 def fk_db(tmp_path_factory) -> str:
     """Parent/child FK entirely inside a non-default schema."""
     path = str(tmp_path_factory.mktemp("fk") / "fk.duckdb")
-    _duck(path, [
+    _duck(path=path, statements=[
         "CREATE SCHEMA ofr",
         "CREATE TABLE ofr.parent(id INTEGER PRIMARY KEY)",
         "CREATE TABLE ofr.child(id INTEGER PRIMARY KEY, "
@@ -88,7 +88,7 @@ def fk_db(tmp_path_factory) -> str:
 def sanitize_collision_db(tmp_path_factory) -> str:
     """``s1.a__b`` sanitises to model ``a_b``; ``s2.a_b`` is the exact name."""
     path = str(tmp_path_factory.mktemp("sanit") / "sc.duckdb")
-    _duck(path, [
+    _duck(path=path, statements=[
         "CREATE SCHEMA s1",
         "CREATE TABLE s1.a__b(x INTEGER)",
         "CREATE SCHEMA s2",
@@ -106,7 +106,7 @@ def loser_fk_db(tmp_path_factory) -> str:
     it must never resolve cross-schema to ``main.x``.
     """
     path = str(tmp_path_factory.mktemp("loserfk") / "lf.duckdb")
-    _duck(path, [
+    _duck(path=path, statements=[
         "CREATE TABLE x(id INTEGER PRIMARY KEY)",         # main.x (winner)
         "CREATE SCHEMA s1",
         "CREATE TABLE s1.x(id INTEGER PRIMARY KEY)",      # loses model name 'x'
@@ -120,7 +120,7 @@ def loser_fk_db(tmp_path_factory) -> str:
 def legacy_db(tmp_path_factory) -> str:
     """``orders`` in the default schema AND a non-default one (validate-models)."""
     path = str(tmp_path_factory.mktemp("legacy") / "lg.duckdb")
-    _duck(path, [
+    _duck(path=path, statements=[
         "CREATE TABLE orders(id INTEGER)",                # main.orders
         "CREATE SCHEMA analytics",
         "CREATE TABLE analytics.orders(id INTEGER, note TEXT)",
@@ -132,7 +132,7 @@ def legacy_db(tmp_path_factory) -> str:
 def comment_db(tmp_path_factory) -> str:
     """Non-default table carrying a table comment and a column comment."""
     path = str(tmp_path_factory.mktemp("comment") / "cm.duckdb")
-    _duck(path, [
+    _duck(path=path, statements=[
         "CREATE SCHEMA ofr",
         "CREATE TABLE ofr.reports(id INTEGER, val INTEGER)",
         "COMMENT ON TABLE ofr.reports IS 'openfda report rows'",
@@ -167,7 +167,7 @@ def attached_paths(tmp_path_factory) -> tuple[str, str]:
     d = tmp_path_factory.mktemp("attached")
     main_path = str(d / "att_main.duckdb")
     aaa_path = str(d / "aaa.duckdb")
-    _duck(main_path, [
+    _duck(path=main_path, statements=[
         "CREATE TABLE in_default(x INTEGER)",
         "CREATE TABLE shared(m INTEGER)",
         "CREATE TABLE pktbl(id INTEGER PRIMARY KEY)",
@@ -176,7 +176,7 @@ def attached_paths(tmp_path_factory) -> tuple[str, str]:
         "CREATE SCHEMA openfda_rest",
         "CREATE TABLE openfda_rest.reports(id INTEGER PRIMARY KEY, val INTEGER)",
     ])
-    _duck(aaa_path, [
+    _duck(path=aaa_path, statements=[
         "CREATE TABLE only_in_other(y INTEGER)",
         "CREATE TABLE shared(o INTEGER)",
         "CREATE TABLE pktbl(id INTEGER PRIMARY KEY)",
@@ -587,7 +587,7 @@ class TestCollisions:
         >1-schema disambiguation must not fire when only one schema is scanned
         (byte-identical to today; see test_ingestion_name_sanitize.py)."""
         path = str(tmp_path / "one.duckdb")
-        _duck(path, [
+        _duck(path=path, statements=[
             "CREATE TABLE a_b(real_col INTEGER)",     # default schema, exact name
             "CREATE TABLE a__b(x INTEGER)",           # sanitises to a_b → loses
         ])
@@ -602,7 +602,7 @@ class TestCollisionTieBreaks:
         (rule 4), order-independent and byte-identical to the pre-scope
         collision policy."""
         path = str(tmp_path / "tie.duckdb")
-        _duck(path, [
+        _duck(path=path, statements=[
             "CREATE SCHEMA s2",
             "CREATE TABLE s2.a__b(x INTEGER)",
             "CREATE TABLE s2.a___b(y INTEGER)",   # both sanitise to a_b
@@ -881,7 +881,7 @@ class TestValidateModels:
         from slayer.core.models import Column
         from slayer.core.enums import DataType
         path = str(tmp_path / "drop.duckdb")
-        _duck(path, ["CREATE TABLE orders(id INTEGER)"])   # default only; no analytics
+        _duck(path=path, statements=["CREATE TABLE orders(id INTEGER)"])   # default only; no analytics
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         ds = _ds(path)
         await storage.save_datasource(ds)
@@ -892,6 +892,36 @@ class TestValidateModels:
         await storage.save_model(model)
         to_delete = await self._validate(ds, [model])
         assert [e for e in to_delete if e.tool == "delete_model"]
+
+    async def test_failed_schema_listing_does_not_mass_delete(
+        self, basic_db, tmp_path, monkeypatch
+    ) -> None:
+        """CodeRabbit: if one in-scope schema fails to list, validate must NOT
+        report that schema's models for deletion — a transient error would hand
+        ``--force-clean`` the whole schema. The partial live map is refused
+        (IntrospectionUnavailable), so no drift verdict is produced."""
+        from slayer.core.models import Column
+        from slayer.core.enums import DataType
+        from slayer.engine import ingestion as mod
+        storage = YAMLStorage(base_dir=str(tmp_path / "store"))
+        ds = _ds(basic_db)
+        await storage.save_datasource(ds)
+        model = SlayerModel(
+            name="reports", sql_table="openfda_rest.reports", data_source="ds",
+            columns=[Column(name="id", sql="id", type=DataType.INT)],
+        )
+        await storage.save_model(model)
+        real = mod.list_ingestable_objects
+
+        def _maybe_raise(**kwargs):
+            ref = kwargs.get("ref")
+            if ref is not None and getattr(ref, "name", None) == "openfda_rest":
+                raise sa.exc.OperationalError("boom", {}, Exception())
+            return real(**kwargs)
+
+        monkeypatch.setattr(mod, "list_ingestable_objects", _maybe_raise)
+        to_delete = await self._validate(ds, [model])
+        assert not [e for e in to_delete if e.tool == "delete_model"]
 
     async def test_qualified_model_diffs_against_the_correct_twin(
         self, same_name_db, tmp_path
@@ -974,16 +1004,18 @@ class TestLiveTableResolution:
         schema must carry the current catalog on DuckDB, else the bare token
         re-arms the cross-catalog sweep. Pre-fix the ref's catalog was None."""
         from slayer.engine.schema_drift import _live_schema_refs
-        from slayer.sql import engine_factory
-        ds = _ds(basic_db)
-        engine = engine_factory.get_engine(ds.resolve_env_vars())
-        insp = sa.inspect(engine)
-        refs = _live_schema_refs(
-            inspector=insp, sa_engine=engine, datasource=ds, schema="openfda_rest",
-        )
-        assert len(refs) == 1
-        assert refs[0].catalog is not None
-        assert refs[0].token == f"{refs[0].catalog}.openfda_rest"
+        engine = sa.create_engine(f"duckdb:///{basic_db}")
+        try:
+            insp = sa.inspect(engine)
+            refs = _live_schema_refs(
+                inspector=insp, sa_engine=engine, datasource=_ds(basic_db),
+                schema="openfda_rest",
+            )
+            assert len(refs) == 1
+            assert refs[0].catalog is not None
+            assert refs[0].token == f"{refs[0].catalog}.openfda_rest"
+        finally:
+            engine.dispose()
 
 
 # ===========================================================================

@@ -50,6 +50,33 @@ def _setup_mock_engine(rows):
     return engine, conn
 
 
+class TestInfoSchemaTypeMapping:
+    """DEV-1758 (CodeRabbit): the INFORMATION_SCHEMA fallback maps PostgreSQL
+    multi-word type names, not just single-word ones, before the TEXT fallback."""
+
+    @pytest.mark.parametrize(
+        ("data_type", "expected_type", "expected_float"),
+        [
+            ("DOUBLE PRECISION", DataType.DOUBLE, True),
+            ("double precision", DataType.DOUBLE, True),
+            ("TIMESTAMP WITHOUT TIME ZONE", DataType.TIMESTAMP, False),
+            ("timestamp with time zone", DataType.TIMESTAMP, False),
+            # A float name containing "INT" (POINT) must NOT read as INT (Codex).
+            ("FLOATING POINT", DataType.DOUBLE, True),
+            ("character varying", DataType.TEXT, False),
+            ("integer", DataType.INT, False),
+            ("bigint", DataType.INT, False),
+            ("numeric(10,2)", DataType.DOUBLE, True),
+            ("numeric(10,0)", DataType.DOUBLE, False),
+        ],
+    )
+    def test_multi_word_types(self, data_type, expected_type, expected_float):
+        from slayer.engine.introspect_utils import _info_schema_type
+        sa_type, is_float = _info_schema_type(data_type)
+        assert sa_type is expected_type
+        assert is_float is expected_float
+
+
 class TestGetColumnsFallback:
     """Tests for _get_columns_fallback parameterized queries."""
 
