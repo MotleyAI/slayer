@@ -45,6 +45,7 @@ from slayer.engine.schema_scope import (
     SchemaEnumerationError,
     SchemaRef,
     default_schema_ref,
+    engine_qualifies_tokens,
     is_system_schema,
     resolve_ingest_scope,
     split_sql_table,
@@ -173,6 +174,11 @@ class IdempotentIngestResult(BaseModel):
     # DEV-1758: a message naming schemas discovered but not ingested this pass,
     # or None (all-schemas / multi-schema runs, or nothing new to offer).
     schema_hint: str | None = None
+    # DEV-1758: requested schemas dropped from scope with a reason (foreign
+    # attached catalog or system schema), so an explicit request for one is
+    # reported rather than silently empty. ``Any`` avoids a circular import;
+    # entries are ``SkippedSchema``.
+    skipped_schemas: list[Any] = Field(default_factory=list)
 
 
 class AppliedEntry(BaseModel):
@@ -1780,7 +1786,8 @@ def _live_schema_refs(
     # catalog-qualified default doesn't leave it non-default and un-bare-keyed.
     default_ref = default_schema_ref(inspector, sa_engine)
     candidates = list(resolved)
-    if not is_system_schema(default_ref.token or default_ref.name or ""):
+    default_token = default_ref.token or default_ref.name or ""
+    if not is_system_schema(default_token, qualifies=engine_qualifies_tokens(sa_engine)):
         candidates.append(default_ref)  # skip a default that is itself a system schema (C2)
     by_token: dict[str | None, SchemaRef] = {}
     for ref in candidates:

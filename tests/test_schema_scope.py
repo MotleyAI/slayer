@@ -178,15 +178,29 @@ class TestSystemSchemaFilter:
             "sys_temp",
             "pg_temp_3",
             "pg_toast_temp_7",
-            "system.information_schema",   # bare last segment matches
-            "system.main",                 # first segment 'system'
-            "temp.main",                   # first segment 'temp'
             "INFORMATION_SCHEMA",          # case-insensitive
             "PG_Catalog",
         ],
     )
-    def test_system_tokens_are_filtered(self, token) -> None:
+    def test_bookkeeping_names_filtered_on_any_dialect(self, token) -> None:
         assert is_system_schema(token) is True
+        assert is_system_schema(token, qualifies=True) is True
+
+    @pytest.mark.parametrize(
+        "token",
+        [
+            "system.information_schema",   # bare last segment matches
+            "system.main",                 # first segment 'system'
+            "temp.main",                   # first segment 'temp'
+            "temp.analytics",              # DuckDB temp catalog, or a dotted PG name
+            "temp",                        # DuckDB temp catalog
+            "system",                      # DuckDB system catalog
+        ],
+    )
+    def test_duckdb_catalog_tokens_filtered_only_when_qualifying(self, token) -> None:
+        assert is_system_schema(token, qualifies=True) is True
+        # On non-catalog dialects these are ordinary user schemas (Codex review).
+        assert is_system_schema(token, qualifies=False) is False
 
     @pytest.mark.parametrize(
         "token",
@@ -198,12 +212,12 @@ class TestSystemSchemaFilter:
             "systems",        # not 'system'
             "temporary",      # not 'temp'
             "my_sys",         # last segment is 'my_sys', not 'sys'
-            "fda.main",       # first segment is a real catalog, last is 'main'
             "att_main.openfda_rest",
         ],
     )
     def test_user_schemas_survive(self, token) -> None:
         assert is_system_schema(token) is False
+        assert is_system_schema(token, qualifies=True) is False
 
 
 # ---------------------------------------------------------------------------

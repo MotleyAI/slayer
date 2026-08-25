@@ -294,6 +294,16 @@ def _render_skipped_section(skipped: list[Any]) -> list[str]:
     return out
 
 
+def _render_skipped_schemas_section(skipped_schemas: list[Any]) -> list[str]:
+    """Requested schemas dropped from scope (foreign catalog / system schema),
+    so an explicit request for one isn't reported as an empty success."""
+    if not skipped_schemas:
+        return []
+    out = ["", f"Skipped schemas ({len(skipped_schemas)}):"]
+    out.extend(f"- {entry.token}: {entry.reason}" for entry in skipped_schemas)
+    return out
+
+
 def _render_hidden_internals_section(
     hidden: list[Any], *, data_source: str | None = None
 ) -> list[str]:
@@ -335,6 +345,7 @@ def _render_ingest_result(
     # Read defensively — called with more than one result shape; an older one
     # may carry neither attribute.
     skipped = list(getattr(result, "skipped", None) or [])
+    skipped_schemas = list(getattr(result, "skipped_schemas", None) or [])
     hidden_internals = list(getattr(result, "hidden_internals", None) or [])
     datasource_described = bool(getattr(result, "datasource_described", False))
     if (
@@ -342,6 +353,7 @@ def _render_ingest_result(
         and not result.to_delete
         and not result.errors
         and not skipped
+        and not skipped_schemas
         and not hidden_internals
         and not datasource_described
     ):
@@ -379,6 +391,7 @@ def _render_ingest_result(
     lines.extend(_render_drift_section(list(result.to_delete)))
     # Same order as the CLI renderer, so the two surfaces read alike.
     lines.extend(_render_skipped_section(skipped))
+    lines.extend(_render_skipped_schemas_section(skipped_schemas))
     lines.extend(
         _render_hidden_internals_section(hidden_internals, data_source=ds.name)
     )

@@ -42,6 +42,7 @@ from slayer.engine.introspect_utils import (  # noqa: F401  (re-exported for bac
 )
 from slayer.engine.schema_scope import (
     SchemaRef,
+    SkippedSchema,
     default_schema_ref,
     resolve_ingest_scope,
     schema_ref_from_token,
@@ -1239,6 +1240,10 @@ class IngestionScanReport(BaseModel):
     # source of the idempotent path's "new schema available" hint. Populated
     # only when exactly one schema was in scope and ``all_schemas`` was off.
     other_schemas: list[str] = Field(default_factory=list)
+    # Requested schemas dropped from scope with a reason — a foreign attached
+    # catalog or a system/bookkeeping schema — so an explicit request for one is
+    # reported, not silently empty (DEV-1758, Codex review).
+    skipped_schemas: list[SkippedSchema] = Field(default_factory=list)
 
     @property
     def hidden_internals(self) -> list[InternalTable]:
@@ -1756,6 +1761,7 @@ def ingest_datasource_report(
             internal_tables=internal_tables,
             schema_description=schema_description,
             other_schemas=scope.other_schemas,
+            skipped_schemas=scope.skipped,
         )
     finally:
         # Deliberate: ``get_engine`` returns a cached, shared engine, and this
@@ -2550,6 +2556,7 @@ async def ingest_datasource_idempotent(
         hidden_internals=hidden_internals,
         datasource_described=datasource_described,
         schema_hint=_schema_hint_message(scan.other_schemas),
+        skipped_schemas=list(scan.skipped_schemas),
     )
 
 
@@ -2739,6 +2746,15 @@ def _print_ingest_drift_and_errors(
             f"re-run with --exclude to silence:"
         ),
         line=lambda e: f"{e.table_name}: {e.reason}",
+        out=out,
+    )
+    # Requested schemas dropped from scope (foreign catalog / system schema),
+    # so an explicit request for one isn't silently reported as empty.
+    skipped_schemas = getattr(result, "skipped_schemas", None) or []
+    _print_report_section(
+        entries=skipped_schemas,
+        header=f"\nSkipped schemas ({len(skipped_schemas)}):",
+        line=lambda e: f"{e.token}: {e.reason}",
         out=out,
     )
     # Hidden internals never affect the exit code: nothing was declined.

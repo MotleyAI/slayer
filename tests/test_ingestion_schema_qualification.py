@@ -614,6 +614,20 @@ class TestScopeResolution:
         assert scope.schemas[0].is_default is True
 
 
+class TestSkippedSchemasReported:
+    """DEV-1758 (Codex): a requested schema dropped from scope (system /
+    foreign catalog) is surfaced in the report, not a silent empty ingest."""
+
+    def test_report_surfaces_a_requested_system_schema(self, basic_db) -> None:
+        report = ingest_datasource_report(
+            datasource=_ds(basic_db), schemas=["information_schema"]
+        )
+        assert report.models == []
+        assert any(
+            "information_schema" in s.token for s in report.skipped_schemas
+        )
+
+
 # ===========================================================================
 # Collisions — one deterministic phase, winners-only structures
 # ===========================================================================

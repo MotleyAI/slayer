@@ -156,15 +156,24 @@ def schema_ref_from_token(
     )
 
 
-def is_system_schema(token: str) -> bool:
-    """True for catalog/bookkeeping schemas that are never ingested."""
+def is_system_schema(token: str, *, qualifies: bool = False) -> bool:
+    """True for catalog/bookkeeping schemas that are never ingested.
+
+    ``qualifies`` (catalog-qualifying dialects, i.e. DuckDB): the token may be
+    ``catalog.schema``, so it is split and the own-catalog names ``system`` /
+    ``temp`` are matched on the first segment. Elsewhere a dot is part of the
+    schema name (``CREATE SCHEMA "temp.x"``) so it is never split, and ``system``
+    / ``temp`` are ordinary user schemas — only the bookkeeping-name check applies.
+    """
     if not token:
         return False
-    parts = token.split(".")
-    first = parts[0].lower()
-    last = parts[-1].lower()
-    if first in _SYSTEM_FIRST_SEGMENTS:
-        return True
+    if qualifies:
+        parts = token.split(".")
+        if parts[0].lower() in _SYSTEM_FIRST_SEGMENTS:
+            return True
+        last = parts[-1].lower()
+    else:
+        last = token.lower()
     if last in _SYSTEM_LAST_SEGMENTS:
         return True
     return last.startswith(("pg_temp_", "pg_toast_temp_"))
@@ -268,6 +277,13 @@ def default_schema_ref_for_engine(sa_engine: sa.Engine) -> SchemaRef:
     return default_schema_ref(sa.inspect(sa_engine), sa_engine)
 
 
+def engine_qualifies_tokens(engine: Optional[sa.Engine]) -> bool:
+    """True when the engine's dialect emits catalog-qualified schema tokens
+    (DuckDB) — the same predicate scope resolution uses. Prefer this over
+    inferring from a ref's ``catalog`` (which is best-effort and may be None)."""
+    return _dialect_qualifies_tokens(_dialect_name(engine))
+
+
 # ---------------------------------------------------------------------------
 # Scope resolution
 # ---------------------------------------------------------------------------
@@ -333,7 +349,7 @@ def _enumerate_own_schemas(
         tokens = []
         enum_ok = False
     for tok in tokens:
-        if is_system_schema(tok):
+        if is_system_schema(tok, qualifies=qualifies):
             continue
         ref = schema_ref_from_token(tok, dialect_name=dialect)
         is_foreign = (
@@ -417,7 +433,7 @@ def _drop_out_of_scope_refs(
                 )
             )
             continue
-        if is_system_schema(ref.token or ref.name or ""):
+        if is_system_schema(ref.token or ref.name or "", qualifies=qualifies):
             skipped.append(
                 SkippedSchema(
                     token=ref.token or ref.name or "",

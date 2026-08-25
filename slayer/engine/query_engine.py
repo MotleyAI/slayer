@@ -786,7 +786,8 @@ class SlayerQueryEngine:
             # the current catalog and never unions a same-named attached twin.
             ref = SchemaRef(catalog=scoped_table.catalog, name=schema)
             cols = _safe_get_columns(
-                inspector, sa_engine, scoped_table.name, ref
+                inspector=inspector, sa_engine=sa_engine,
+                table_name=scoped_table.name, ref=ref,
             )
         except Exception as exc:  # introspection failed -> cannot confirm
             logger.warning(
@@ -2638,7 +2639,7 @@ class SlayerQueryEngine:
         NULL key rows are excluded from BOTH counts, so the two are computed
         over the same population.
         """
-        tbl = exp.to_table(table, dialect=sqlglot_name)
+        tbl = exp.to_table(sql_path=table, dialect=sqlglot_name)
         cols = [exp.column(c, quoted=True) for c in key_cols]
         predicate = None
         for col in cols:
@@ -2918,7 +2919,7 @@ class SlayerQueryEngine:
         # virtual model, so its aliases must be length-fitted here too.
         aliases = projection_result_keys(root_planned=root_planned)
         rendered = generate_planned_stages(
-            planned_list, bundle=bundle, dialect=dialect,
+            planned_queries=planned_list, bundle=bundle, dialect=dialect,
             projection_aliases=aliases,
         )
 
