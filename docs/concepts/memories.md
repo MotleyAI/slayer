@@ -56,7 +56,7 @@ record.
 
 ## The two write-side MCP tools
 
-Memory retrieval is part of [`search`](search.md) (one tool covers
+Memory retrieval is part of [search](search.md) (one tool covers
 both memories and canonical entity discovery). This page covers only
 the write side.
 
@@ -171,7 +171,7 @@ The memory write-side tools are also available outside MCP:
   (constructed with `storage=`) skips HTTP and goes through
   `MemoryService` directly.
 
-For retrieval, see [`search`](search.md) (MCP `search`, REST `POST
+For retrieval, see [search](search.md) (MCP `search`, REST `POST
 /search`, CLI `slayer search`, `SlayerClient.search`).
 
 ## Storage layout

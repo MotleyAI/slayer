@@ -66,10 +66,9 @@ esprima = ">=4.0"
 # concerns arise — the actively-maintained alternative is `bm25s`.
 rank-bm25 = ">=0.2.2"
 dbt-core = {version = ">=1.7", optional = true}
-# pyarrow is already a transitive dep of duckdb, but exposing it under the
-# `flight` extra makes the Flight SQL facade dependency explicit and lets
-# users who skip duckdb still get it via `pip install motley-slayer[flight]`.
+# The Flight SQL facade imports both pyarrow and the checked-in protobuf module.
 pyarrow = {version = ">=18.0", optional = true}
+protobuf = {version = ">=6.31.1", optional = true}
 tantivy = "^0.26"
 # Embedding-based semantic search (DEV-1386). Optional — search degrades
 # gracefully to tantivy + BM25 when this extra is not installed.
@@ -93,10 +92,10 @@ sqlserver = ["pyodbc"]
 snowflake = ["snowflake-connector-python", "snowflake-sqlalchemy"]
 bigquery = ["sqlalchemy-bigquery"]
 dbt = ["dbt-core"]
-flight = ["pyarrow"]
+flight = ["pyarrow", "protobuf"]
 advanced_search = ["litellm", "numpy", "ladybug"]
 embedding_search = ["litellm", "numpy"]  # legacy alias for advanced_search without graph support
-all = ["httpx", "pandas", "psycopg2-binary", "asyncpg", "pymysql", "aiomysql", "clickhouse-sqlalchemy", "pyodbc", "snowflake-connector-python", "snowflake-sqlalchemy", "sqlalchemy-bigquery", "dbt-core", "pyarrow", "litellm", "numpy", "ladybug"]
+all = ["httpx", "pandas", "psycopg2-binary", "asyncpg", "pymysql", "aiomysql", "clickhouse-sqlalchemy", "pyodbc", "snowflake-connector-python", "snowflake-sqlalchemy", "sqlalchemy-bigquery", "dbt-core", "pyarrow", "protobuf", "litellm", "numpy", "ladybug"]
 
 [project.scripts]
 slayer = "slayer.cli:main"

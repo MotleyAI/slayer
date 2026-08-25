@@ -4840,7 +4840,7 @@ description = ""
 optional = true
 python-versions = ">=3.9"
 groups = ["main"]
-markers = "(extra == \"dbt\" or extra == \"all\" or extra == \"bigquery\") and python_version < \"3.15\" or python_version == \"3.14\" and (extra == \"bigquery\" or extra == \"all\" or extra == \"dbt\") or extra == \"dbt\" or extra == \"all\""
+markers = "(extra == \"dbt\" or extra == \"all\" or extra == \"flight\" or extra == \"bigquery\") and python_version < \"3.15\" or python_version == \"3.14\" and (extra == \"bigquery\" or extra == \"all\" or extra == \"dbt\" or extra == \"flight\") or extra == \"dbt\" or extra == \"all\" or extra == \"flight\""
 files = [
     {file = "protobuf-6.33.6-cp310-abi3-win32.whl", hash = "sha256:7d29d9b65f8afef196f8334e80d6bc1d5d4adedb449971fefd3723824e6e77d3"},
     {file = "protobuf-6.33.6-cp310-abi3-win_amd64.whl", hash = "sha256:0cd27b587afca21b7cfa59a74dcbd48a50f0a6400cfb59391340ad729d91d326"},
@@ -7956,13 +7956,13 @@ files = [
 
 [extras]
 advanced-search = ["ladybug", "litellm", "numpy"]
-all = ["aiomysql", "asyncpg", "clickhouse-sqlalchemy", "dbt-core", "httpx", "ladybug", "litellm", "numpy", "pandas", "psycopg2-binary", "pyarrow", "pymysql", "pyodbc", "snowflake-connector-python", "snowflake-sqlalchemy", "sqlalchemy-bigquery"]
+all = ["aiomysql", "asyncpg", "clickhouse-sqlalchemy", "dbt-core", "httpx", "ladybug", "litellm", "numpy", "pandas", "protobuf", "psycopg2-binary", "pyarrow", "pymysql", "pyodbc", "snowflake-connector-python", "snowflake-sqlalchemy", "sqlalchemy-bigquery"]
 bigquery = ["sqlalchemy-bigquery"]
 clickhouse = ["clickhouse-sqlalchemy"]
 client = ["httpx", "pandas"]
 dbt = ["dbt-core"]
 embedding-search = ["litellm", "numpy"]
-flight = ["pyarrow"]
+flight = ["protobuf", "pyarrow"]
 mysql = ["aiomysql", "pymysql"]
 postgres = ["asyncpg", "psycopg2-binary"]
 snowflake = ["snowflake-connector-python", "snowflake-sqlalchemy"]
@@ -7971,4 +7971,4 @@ sqlserver = ["pyodbc"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.11"
-content-hash = "ecbba1187b0057be0d0206c75f255361e8720aafb627272600d41b0dfe37c1a5"
+content-hash = "2e46970e54d8a8239b9a7415b62f3dd51b80433c97e6ed970d3726caa58510a3"
