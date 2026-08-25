@@ -20,6 +20,7 @@ import re
 import struct
 import time
 from collections.abc import Awaitable, Callable, Iterable
+from typing import Iterator, List, Optional, Tuple
 
 import sqlglot
 import sqlglot.errors
@@ -71,6 +72,154 @@ logger = logging.getLogger(__name__)
 _BACKEND_PID = 1
 _BACKEND_SECRET = 0
 _PARAM_PLACEHOLDER = re.compile(r"\$(\d+)")
+
+
+def _skip_line_comment(sql: str, i: int) -> int:
+    """``-- … newline`` (or EOF)."""
+    nl = sql.find("\n", i + 2)
+    return len(sql) if nl < 0 else nl + 1
+
+
+def _skip_block_comment(sql: str, i: int) -> int:
+    """``/* … */``, Postgres-style nested."""
+    n = len(sql)
+    depth = 1
+    i += 2
+    while i < n and depth > 0:
+        if sql[i] == "/" and i + 1 < n and sql[i + 1] == "*":
+            depth += 1
+            i += 2
+        elif sql[i] == "*" and i + 1 < n and sql[i + 1] == "/":
+            depth -= 1
+            i += 2
+        else:
+            i += 1
+    return i
+
+
+def _skip_unquoted_identifier(sql: str, i: int) -> int:
+    """Postgres: letter|_ then alnum|_|$. Treats ``metric$1`` as one token."""
+    n = len(sql)
+    i += 1
+    while i < n and (sql[i].isalnum() or sql[i] in ("_", "$")):
+        i += 1
+    return i
+
+
+def _skip_e_string(sql: str, i: int) -> int:
+    """``E'…'`` / ``e'…'`` — backslash escapes AND ``''`` escape."""
+    n = len(sql)
+    i += 2  # skip prefix + opening quote
+    while i < n:
+        if sql[i] == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if sql[i] == "'":
+            if i + 1 < n and sql[i + 1] == "'":
+                i += 2
+                continue
+            return i + 1
+        i += 1
+    return i
+
+
+def _skip_single_quoted_string(sql: str, i: int) -> int:
+    """``'…'`` — only the ``''`` doubled-quote escape (no backslash)."""
+    n = len(sql)
+    i += 1
+    while i < n:
+        if sql[i] == "'":
+            if i + 1 < n and sql[i + 1] == "'":
+                i += 2
+                continue
+            return i + 1
+        i += 1
+    return i
+
+
+def _skip_double_quoted_identifier(sql: str, i: int) -> int:
+    """``"…"`` — only the ``""`` escape."""
+    n = len(sql)
+    i += 1
+    while i < n:
+        if sql[i] == '"':
+            if i + 1 < n and sql[i + 1] == '"':
+                i += 2
+                continue
+            return i + 1
+        i += 1
+    return i
+
+
+def _try_skip_dollar_quoted(sql: str, i: int) -> Optional[int]:
+    """If sql[i:] opens a ``$tag$ … $tag$`` literal, return the index just
+    past the closing tag; otherwise return None (so the caller can fall
+    through to ``$N`` placeholder matching). Requires a word boundary
+    before the opening ``$`` — otherwise ``ident$1`` would be misread."""
+    n = len(sql)
+    prev = sql[i - 1] if i > 0 else ""
+    if prev.isalnum() or prev == "_":
+        return None
+    j = i + 1
+    while j < n and (sql[j].isalnum() or sql[j] == "_"):
+        j += 1
+    if j >= n or sql[j] != "$":
+        return None
+    tag = sql[i : j + 1]
+    end = sql.find(tag, j + 1)
+    return n if end < 0 else end + len(tag)
+
+
+def _handle_dollar(
+    sql: str, i: int,
+) -> Tuple[int, Optional[Tuple[int, int, int]]]:
+    """Resolve a ``$`` at ``i`` to either a dollar-quoted-string skip or a
+    ``$N`` placeholder match (or a single-char advance if neither). Returns
+    ``(new_i, placeholder_or_None)`` so the main walker stays a flat
+    dispatch."""
+    dq_end = _try_skip_dollar_quoted(sql, i)
+    if dq_end is not None:
+        return dq_end, None
+    m = _PARAM_PLACEHOLDER.match(sql, i)
+    if m:
+        return m.end(), (int(m.group(1)), m.start(), m.end())
+    return i + 1, None
+
+
+def _iter_param_placeholders(sql: str) -> Iterator[Tuple[int, int, int]]:
+    """Yield ``(param_index, start, end)`` for every ``$N`` placeholder in
+    ``sql`` that is **not** inside a string literal, quoted identifier,
+    dollar-quoted string, or line/block comment.
+
+    Mirrors Postgres' tokenizer well enough for standard-shape SQL coming
+    from libpq / asyncpg / psql / JDBC clients. Closes the regex-only path
+    that rewrote ``$N`` tokens inside literals and comments (Codex review on
+    PR #153). Per-lexical-context skip helpers (``_skip_*`` / ``_handle_*``)
+    own the state-machine; the main loop is a flat ``c → helper`` dispatch.
+    """
+    i = 0
+    n = len(sql)
+    while i < n:
+        c = sql[i]
+        if c == "-" and i + 1 < n and sql[i + 1] == "-":
+            i = _skip_line_comment(sql, i)
+        elif c == "/" and i + 1 < n and sql[i + 1] == "*":
+            i = _skip_block_comment(sql, i)
+        elif c in ("E", "e") and i + 1 < n and sql[i + 1] == "'":
+            i = _skip_e_string(sql, i)
+        elif c.isalpha() or c == "_":
+            i = _skip_unquoted_identifier(sql, i)
+        elif c == "'":
+            i = _skip_single_quoted_string(sql, i)
+        elif c == '"':
+            i = _skip_double_quoted_identifier(sql, i)
+        elif c == "$":
+            i, ph = _handle_dollar(sql, i)
+            if ph is not None:
+                yield ph
+        else:
+            i += 1
+
 
 # Strips characteristics off a statement-initial ``BEGIN`` / ``START
 # TRANSACTION`` (``READ ONLY``, ``ISOLATION LEVEL …``, ``DEFERRABLE`` …) so the
@@ -682,13 +831,19 @@ class PgConnection:
             )
             literals.append(literal_for_substitution(value))
 
-        def repl(match: "re.Match[str]") -> str:
-            idx = int(match.group(1))
+        # Walk placeholders in lexical order, skipping ones inside string
+        # literals / quoted identifiers / dollar-quoted strings / comments.
+        parts: List[str] = []
+        last = 0
+        for idx, start, end in _iter_param_placeholders(stmt.sql):
+            parts.append(stmt.sql[last:start])
             if 1 <= idx <= len(literals):
-                return literals[idx - 1]
-            return match.group(0)
-
-        return _PARAM_PLACEHOLDER.sub(repl, stmt.sql)
+                parts.append(literals[idx - 1])
+            else:
+                parts.append(stmt.sql[start:end])
+            last = end
+        parts.append(stmt.sql[last:])
+        return "".join(parts)
 
     def _empty_string_null_params_for_bind(
         self, *, sql: str, raw_values, oids: list[int],
@@ -1482,7 +1637,7 @@ def _resolve_param_oids(stmt: _PreparedStatement) -> list[int]:
     """
     declared = stmt.parameter_oids
     max_idx = max(
-        (int(m.group(1)) for m in _PARAM_PLACEHOLDER.finditer(stmt.sql)),
+        (idx for idx, _, _ in _iter_param_placeholders(stmt.sql)),
         default=0,
     )
     count = max(len(declared), max_idx)

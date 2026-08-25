@@ -27,16 +27,19 @@ T-SQL is the most divergent Tier-1 dialect:
 from __future__ import annotations
 
 import re
-from typing import Any
-from collections.abc import Callable, Sequence
+from typing import ClassVar, Literal
+from collections.abc import Callable
 
 import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import TimeGranularity
-from slayer.sql.dialects._alias_mangle import decode_alias, encode_alias
-from slayer.sql.dialects._identifier_fit import fit_identifier
-from slayer.sql.dialects.base import SqlDialect, _build_covar_decomposition
+from slayer.sql.naming import OUTER_WRAP_ALIAS
+from slayer.sql.dialects.base import (
+    DottedAliasManglingMixin,
+    SqlDialect,
+    _build_covar_decomposition,
+)
 
 
 # sqlglot's tsql transpiler emits incorrect names (VAR_SAMP, VARIANCE_POP)
@@ -64,7 +67,21 @@ _TSQL_STAT_NAMES: dict[str, str] = {
 _TSQL_DOTTED_ALIAS_RE = re.compile(r"\[(\w+(?:\.\w+)+)\]", re.ASCII)
 
 
-class TsqlDialect(SqlDialect):
+def _offset_ordering_fallback(
+    order: "exp.Expression | None", offset_arg: "exp.Expression | None",
+) -> "exp.Expression | None":
+    """The ORDER BY an OFFSET-bearing outer wrap must carry: the caller's, or a
+    synthesized ``ORDER BY (SELECT NULL)`` no-op when there is none (SQL Server
+    rejects OFFSET without ORDER BY). Returns ``order`` unchanged otherwise, so
+    a user's ordering is never replaced (DEV-1783)."""
+    if order is not None or offset_arg is None:
+        return order
+    return exp.Order(expressions=[
+        exp.Ordered(this=exp.Subquery(this=exp.Select().select(exp.Null()))),
+    ])
+
+
+class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     sqlglot_name: str = "tsql"
     ds_type_aliases: frozenset[str] = frozenset({"mssql", "sqlserver", "tsql"})
     explain_prefix: str | None = "SET SHOWPLAN_ALL ON;"
@@ -72,20 +89,48 @@ class TsqlDialect(SqlDialect):
     log10_native: bool = True
     log2_native: bool = False
     max_identifier_bytes: int | None = 128  # sysname is nvarchar(128)
+    # Anonymous: sqlglot re-emits a parsed APPROX_COUNT_DISTINCT as its
+    # Presto-family APPROX_DISTINCT canonical, which is not a T-SQL function.
+    approx_count_distinct_anonymous_name: str | None = "APPROX_COUNT_DISTINCT"
+    # DEV-1571 Bug 2: bracketed dotted-alias mangling (DottedAliasManglingMixin).
+    dotted_alias_re: ClassVar[re.Pattern[str]] = _TSQL_DOTTED_ALIAS_RE
+    alias_quote_open: ClassVar[str] = "["
+    alias_quote_close: ClassVar[str] = "]"
 
-    def build_approx_count_distinct(
-        self,
-        col_sql: str,
-        *,
-        parse: Callable[[str], exp.Expression],
+    def build_null_safe_eq(
+        self, left: exp.Expression, right: exp.Expression,
     ) -> exp.Expression:
-        """T-SQL: native ``APPROX_COUNT_DISTINCT(x)`` (SQL Server 2019+).
+        """DEV-1708: T-SQL has no ``IS NOT DISTINCT FROM`` / ``<=>`` — emit the
+        portable expanded ``a = b OR (a IS NULL AND b IS NULL)``."""
+        return self._expanded_null_safe_eq(left, right)
 
-        Built as an ``exp.Anonymous`` because sqlglot's T-SQL dialect re-emits
-        a parsed ``APPROX_COUNT_DISTINCT`` as ``APPROX_DISTINCT`` (its
-        Presto-family canonical form), which is not a T-SQL function.
+    def build_ordered(
+        self,
+        order_col: exp.Expression,
+        *,
+        descending: bool,
+        nulls: Literal["default", "first", "last"] = "default",
+    ) -> exp.Ordered:
+        """DEV-1571 Bug 2 / DEV-1716 — pin ``nulls_first`` to T-SQL's native
+        default for the direction (FIRST on ASC, LAST on DESC).
+
+        Left unset, sqlglot emits ``CASE WHEN <alias> IS NULL THEN 1 ELSE 0
+        END, <alias>`` to emulate the nulls-last ordering every other dialect
+        gets; the bracketed alias INSIDE the CASE WHEN mis-resolves against the
+        FROM scope (``Invalid column name``). So T-SQL trades null-ordering
+        parity for a statement that runs — the one place SLayer's null ordering
+        is dialect-specific, and only because the portable form is unavailable.
+
+        An EXPLICIT ``first`` / ``last`` policy is honoured as asked — the pin
+        exists to avoid the emulation, not to override a stated intent.
         """
-        return exp.Anonymous(this="APPROX_COUNT_DISTINCT", expressions=[parse(col_sql)])
+        if nulls == "default":
+            return exp.Ordered(
+                this=order_col, desc=descending, nulls_first=not descending,
+            )
+        return super().build_ordered(
+            order_col, descending=descending, nulls=nulls,
+        )
 
     def build_date_trunc(
         self,
@@ -132,6 +177,10 @@ class TsqlDialect(SqlDialect):
         unit_map = {
             "year": "YEAR", "month": "MONTH", "day": "DAY",
             "quarter": "MONTH", "week": "WEEK",
+            # DEV-1572: a one-period shift of a Sunday-week is one week — same
+            # normalization the base ``_granularity_to_unit`` applies (without
+            # it, ``DATEADD(WEEK_SUNDAY, ...)`` is invalid T-SQL).
+            "week_sunday": "WEEK",
             "hour": "HOUR", "minute": "MINUTE", "second": "SECOND",
         }
         unit = unit_map.get(granularity, granularity.upper())
@@ -234,6 +283,37 @@ class TsqlDialect(SqlDialect):
     # DEV-1571 Bug 1: emit_outer_wrap hoists inner top-level CTEs
     # ------------------------------------------------------------------
 
+    def apply_pagination(
+        self,
+        select: exp.Select,
+        *,
+        limit: "int | None",
+        offset: "int | None",
+    ) -> exp.Select:
+        """T-SQL pagination, with the ``OFFSET`` ordering requirement made
+        explicit.
+
+        SQL Server rejects ``OFFSET`` without an ``ORDER BY``. When the query is
+        genuinely unordered we supply ``ORDER BY (SELECT NULL)`` — the
+        conventional no-op ordering, which adds no semantics because there were
+        none to preserve, and only makes the statement legal.
+
+        sqlglot happens to inject the same thing today, but that is its
+        behaviour and not our contract: doing it here means the rule survives a
+        sqlglot upgrade, and it puts the ordering in the AST where a caller (and
+        our tests) can see it rather than only in the generated string. A user's
+        own ORDER BY is never replaced.
+
+        ``TOP`` versus ``FETCH`` needs no special handling — sqlglot picks
+        ``TOP`` for a bare limit and ``OFFSET … FETCH`` once an offset is
+        present, which is the correct T-SQL in both cases.
+        """
+        if offset is not None and select.args.get("order") is None:
+            select = select.order_by(
+                exp.Subquery(this=exp.Select().select(exp.Null())),
+            )
+        return super().apply_pagination(select, limit=limit, offset=offset)
+
     def emit_outer_wrap(
         self,
         *,
@@ -279,6 +359,10 @@ class TsqlDialect(SqlDialect):
         to the base impl — T-SQL will still reject malformed SQL at the
         DB layer, but we don't make it worse.
         """
+        # SQL Server rejects OFFSET without ORDER BY. Resolve the effective
+        # ordering BEFORE branching, so BOTH the AST path AND the base-impl
+        # fallback (a non-Select inner, base.py also emits a bare OFFSET) get it.
+        order = _offset_ordering_fallback(order, offset_arg)
         parse_fn = parse if parse is not None else (
             lambda s: sqlglot.parse_one(s, dialect=self.sqlglot_name)
         )
@@ -316,7 +400,7 @@ class TsqlDialect(SqlDialect):
                     col.set("table", None)
         derived = exp.Subquery(
             this=parsed,
-            alias=exp.TableAlias(this=exp.to_identifier("_outer")),
+            alias=exp.TableAlias(this=exp.to_identifier(OUTER_WRAP_ALIAS)),
         )
         outer = exp.Select()
         for a in public:
@@ -331,53 +415,3 @@ class TsqlDialect(SqlDialect):
         if offset_arg is not None:
             outer.set("offset", offset_arg)
         return outer.sql(dialect=self.sqlglot_name, pretty=True)
-
-    # ------------------------------------------------------------------
-    # DEV-1571 Bug 2: bracketed dotted-alias mangling
-    # ------------------------------------------------------------------
-
-    def fit_alias(self, name: str) -> str:
-        """Size the budget against the post-mangle form (``.`` -> ``___`` adds 2
-        bytes per dot); return value stays dotted for the regex below."""
-        return fit_identifier(
-            name=name, limit=self.max_identifier_bytes, expand=encode_alias,
-        )
-
-    def emit_alias(self, alias: str) -> str:
-        """The final identifier: length-fitted, then dot-mangled."""
-        return encode_alias(self.fit_alias(alias))
-
-    def rewrite_emitted_sql(
-        self, sql: str, *, aliases: Sequence[str] = (),
-    ) -> str:
-        """Replace ``.`` with ``___`` inside bracket-quoted identifiers.
-
-        T-SQL's ``ORDER BY`` resolver treats ``[a.b]`` as a column lookup, not a
-        SELECT alias, and fails; a dotless identifier resolves cleanly. Same
-        bijection as ``BigqueryDialect``, only the regex anchor differs.
-
-        The base LENGTH pass runs first: no-op on under-limit aliases, and
-        over-limit ones arrive still-dotted for this pass — no double-encoding.
-        """
-        sql = super().rewrite_emitted_sql(sql=sql, aliases=aliases)
-        return _TSQL_DOTTED_ALIAS_RE.sub(
-            lambda m: f"[{encode_alias(m.group(1))}]", sql
-        )
-
-    def decode_result_keys(
-        self,
-        rows: list[dict[str, Any]],
-        *,
-        aliases: Sequence[str] = (),
-    ) -> list[dict[str, Any]]:
-        """Reverse the T-SQL alias mangling on result-row keys so consumers see
-        SLayer's universal dotted shape whatever dialect ran the query.
-
-        Fitted keys aren't recoverable alone, so the ``emitted -> canonical``
-        map is consulted first, falling back to the ``___`` -> ``.`` bijection.
-        """
-        mapping = self.decode_alias_map(aliases)
-        return [
-            self._rekey_row(row=row, mapping=mapping, fallback=decode_alias)
-            for row in rows
-        ]

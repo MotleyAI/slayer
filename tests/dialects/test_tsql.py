@@ -15,9 +15,9 @@ T-SQL has the most divergent shape of any Tier-1 dialect:
 
 from __future__ import annotations
 
-import asyncio
 import re
 import tempfile
+from unittest.mock import patch
 
 import sqlglot
 from sqlglot import exp
@@ -27,12 +27,11 @@ import pytest
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
-from slayer.engine.enrichment import enrich_query
-from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.query_engine import _sql_client_cache_key
-from slayer.sql.generator import SQLGenerator
+from slayer.engine.query_engine import SlayerQueryEngine, _sql_client_cache_key
 from slayer.sql.dialects.tsql import TsqlDialect
 from slayer.storage.yaml_storage import YAMLStorage
+
+from tests._engine_helpers import _engine_generate
 
 
 def _parse_tsql(sql: str) -> exp.Expression:
@@ -746,6 +745,76 @@ class TestEngineTsqlDecodeIntegration:
 
 
 # ---------------------------------------------------------------------------
+# DEV-1716 (Codex test-review High 2 / Med 3) — T-SQL also mangles+decodes,
+# so the metadata reconciliation and data-path-only decode scoping apply here
+# too, not just BigQuery.
+# ---------------------------------------------------------------------------
+
+
+async def _build_labeled_tsql_engine(
+    rows: list[dict],
+) -> tuple[SlayerQueryEngine, tempfile.TemporaryDirectory, DatasourceConfig]:
+    tmp = tempfile.TemporaryDirectory()
+    storage = YAMLStorage(base_dir=tmp.name)
+    ds = DatasourceConfig(name="mssql", type="mssql", database=":memory:")
+    await storage.save_datasource(ds)
+    model = SlayerModel(
+        name="orders",
+        sql_table="orders_t",
+        data_source="mssql",
+        columns=[
+            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+            Column(name="status", sql="status", type=DataType.TEXT, label="Order Status"),
+        ],
+    )
+    await storage.save_model(model)
+    engine = SlayerQueryEngine(storage=storage)
+    engine._sql_clients[_sql_client_cache_key(ds)] = _FakeTsqlClient(rows)
+    return engine, tmp, ds
+
+
+async def test_tsql_attributes_survive_alias_mangling() -> None:
+    """T-SQL brackets+mangles dotted aliases; the SQL-derived expected_columns
+    must be decoded back so the dimension label survives in ``resp.attributes``
+    (Codex High 2)."""
+    engine, tmp, _ = await _build_labeled_tsql_engine([{"orders___status": "paid"}])
+    try:
+        query = SlayerQuery(source_model="orders", dimensions=[ColumnRef(name="status")])
+        resp = await engine.execute(query)
+        assert "orders.status" in resp.attributes.dimensions, (
+            f"T-SQL attributes lost the dimension after mangling: "
+            f"{resp.attributes.dimensions!r}"
+        )
+        assert resp.attributes.dimensions["orders.status"].label == "Order Status"
+    finally:
+        tmp.cleanup()
+
+
+async def test_tsql_explain_does_not_decode_data_rows() -> None:
+    """The DATA-path row decode must NOT run on the explain path (Codex Med 3):
+    the EXPLAIN plan rows are returned verbatim. T-SQL is the mangling dialect
+    that DOES support EXPLAIN (BigQuery raises), so it exercises the explain
+    branch. (The metadata reconciliation legitimately decodes the synthetic
+    expected-columns row through the same hook — assert only that no decode
+    call received the fetched EXPLAIN rows.)"""
+    explain_rows = [{"plan": "..."}]
+    engine, tmp, _ = await _build_labeled_tsql_engine(explain_rows)
+    try:
+        query = SlayerQuery(source_model="orders", dimensions=[ColumnRef(name="status")])
+        with patch.object(
+            TsqlDialect, "decode_result_keys", autospec=True,
+            side_effect=lambda self, rows, **kw: rows,
+        ) as spy:
+            await engine.execute(query, explain=True)
+        decoded_args = [call.args[-1] for call in spy.call_args_list]
+        assert explain_rows not in decoded_args, (
+            "explain must not decode the fetched EXPLAIN plan rows."
+        )
+    finally:
+        tmp.cleanup()
+
+
+# ---------------------------------------------------------------------------
 # DEV-1571 Bug 3 follow-up — T-SQL inner CTEs get dialect-aware bracket
 # quoting AND Bug 2 mangling fires on those identifiers.
 #
@@ -757,22 +826,9 @@ class TestEngineTsqlDecodeIntegration:
 # ---------------------------------------------------------------------------
 
 
-async def _noop_resolver_tsql(**kw):  # noqa: ARG001  # NOSONAR(S7503) — resolver stub must remain async
-    return None
-
-
-def _tsql_generate(query: SlayerQuery, model: SlayerModel) -> str:
-    async def _run() -> str:
-        enriched = await enrich_query(
-            query=query, model=model,
-            resolve_dimension_via_joins=_noop_resolver_tsql,
-            resolve_cross_model_measure=_noop_resolver_tsql,
-            resolve_join_target=_noop_resolver_tsql,
-            dialect="tsql",
-        )
-        return SQLGenerator(dialect="tsql").generate(enriched=enriched)
-
-    return asyncio.run(_run())
+async def _tsql_generate(query: SlayerQuery, model: SlayerModel) -> str:
+    """Render ``query`` for T-SQL and return the full emitted SQL."""
+    return await _engine_generate(query=query, model=model, dialect="tsql")
 
 
 def _orders_model_tsql() -> SlayerModel:
@@ -788,7 +844,7 @@ def _orders_model_tsql() -> SlayerModel:
     )
 
 
-def test_tsql_time_shift_inner_cte_uses_mangled_brackets() -> None:
+async def test_tsql_time_shift_inner_cte_uses_mangled_brackets() -> None:
     """``change_pct(total:sum)`` builds shifted/self-join/step CTEs.
     After DEV-1571 Bug 3 follow-up, every identifier in those CTEs uses
     T-SQL brackets AND Bug 2 mangling converts the dotted aliases to
@@ -810,7 +866,7 @@ def test_tsql_time_shift_inner_cte_uses_mangled_brackets() -> None:
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    sql = _tsql_generate(q, _orders_model_tsql())
+    sql = await _tsql_generate(q, _orders_model_tsql())
     # No ANSI-quoted identifiers — they'd bypass Bug 2 mangling and the
     # literal-dot form would fail T-SQL's ORDER BY alias resolver.
     assert '"orders.' not in sql, (
@@ -822,20 +878,24 @@ def test_tsql_time_shift_inner_cte_uses_mangled_brackets() -> None:
         f"T-SQL emission must not contain literal-dot bracketed aliases "
         f"(Bug 2 mangling didn't fire):\n{sql}"
     )
-    # Self-join CTE references the mangled form on both sides.
+    # Self-join CTE references the mangled form on both sides. (The typed
+    # pipeline names the shifted CTE ``shifted__time_shift_inner``; the
+    # legacy stack spelled it ``shifted__ts_pct``. Same CTE, same assertion.)
     assert (
-        "base.[orders___created_at] = shifted__ts_pct.[orders___created_at]"
+        "base.[orders___created_at] = "
+        "shifted__time_shift_inner.[orders___created_at]"
         in sql
     ), f"Self-join ON clause must use mangled bracketed identifiers:\n{sql}"
     # Outer ORDER BY references the mangled alias.
     assert "[orders___created_at]" in sql
     # Computed expression's column references in step2 use mangled brackets.
-    assert "[orders____ts_pct]" in sql, (
-        f"Inner CASE expression's column refs must be mangled-bracket form:\n{sql}"
+    assert "[orders____time_shift_inner]" in sql, (
+        f"Inner computed expression's column refs must be mangled-bracket "
+        f"form:\n{sql}"
     )
 
 
-def test_tsql_order_by_does_not_wrap_alias_in_case_when_nulls_emulation() -> None:
+async def test_tsql_order_by_does_not_wrap_alias_in_case_when_nulls_emulation() -> None:
     """T-SQL ORDER BY must reference the SELECT alias as a top-level
     expression, not inside a CASE WHEN NULLS-emulation sub-expression.
 
@@ -856,7 +916,7 @@ def test_tsql_order_by_does_not_wrap_alias_in_case_when_nulls_emulation() -> Non
         dimensions=[ColumnRef(name="id"), ColumnRef(name="created_at")],
         order=[OrderItem(column=ColumnRef(name="id"), direction="asc")],
     )
-    sql = _tsql_generate(q, _orders_model_tsql())
+    sql = await _tsql_generate(q, _orders_model_tsql())
     assert "CASE WHEN" not in sql.upper() or "ORDER BY\n  CASE WHEN" not in sql, (
         f"T-SQL ORDER BY must not wrap the alias in a NULLS-emulation "
         f"CASE WHEN sub-expression — alias resolution fails inside it:\n{sql}"

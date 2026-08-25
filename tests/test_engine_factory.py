@@ -665,6 +665,34 @@ class TestConfigSnapshot:
         assert snapshot.oauth_credentials_json != "mutated"
         assert snapshot.warehouse != "mutated"
 
+    def test_invalidate_keys_off_a_snapshot_not_the_caller_object(self) -> None:
+        """``invalidate_engine`` must key off a detached snapshot like
+        ``get_engine`` does, so a rotation between its two reads can't desync
+        the key from the cached entry and leave the poisoned engine behind."""
+        engine_factory.reset_cache()
+        ds = self._oauth_ds("before")
+        with patch.object(
+            engine_factory, "_build_engine",
+            side_effect=lambda **_: MagicMock(spec=sa.Engine),
+        ):
+            engine_factory.get_engine(ds)
+
+        seen: dict = {}
+        real_cache_key = engine_factory._cache_key
+
+        def spy_cache_key(*, datasource, connection_string):
+            seen["is_caller"] = datasource is ds
+            return real_cache_key(
+                datasource=datasource, connection_string=connection_string
+            )
+
+        with patch.object(engine_factory, "_cache_key", side_effect=spy_cache_key):
+            evicted = engine_factory.invalidate_engine(ds)
+
+        assert evicted is True
+        assert seen["is_caller"] is False
+        engine_factory.reset_cache()
+
     def test_session_overrides_listener_is_insulated_from_later_mutation(self) -> None:
         """The listener fires on every checkout for the life of the engine. It
         must keep applying the fields this engine was cached under, not whatever

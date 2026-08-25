@@ -1,8 +1,9 @@
 """Core enums for SLayer."""
 
 import datetime  # noqa: F401  (kept for downstream imports of TimeGranularity)
+import difflib
 from enum import Enum
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 
 
 class StrEnum(str, Enum):
@@ -204,6 +205,62 @@ BUILTIN_AGGREGATIONS: frozenset[str] = frozenset({
     "corr", "covar_samp", "covar_pop",
 })
 
+# Aggregation value classification (DEV-1788). One classifier,
+# ``classify_aggregation``, buckets every aggregation by how its result relates
+# to the source column. Both ``aggregated_type`` (slot DataType) and
+# ``_infer_aggregated_format`` (display NumberFormat) read the bucket and map it
+# to their own output, so the type and format axes cannot drift apart. The four
+# builtin sets partition ``BUILTIN_AGGREGATIONS`` (pinned by a drift-guard test);
+# custom/model-defined aggregations hit the PRESERVING fallback.
+
+# Result is always an integer count, independent of the source column.
+INTEGER_AGGREGATIONS: frozenset[str] = frozenset({
+    "count", "count_distinct", "count_distinct_approx",
+})
+# Result is a float in the SAME units as the source (display format inherited).
+FLOAT_SOURCE_UNIT_AGGREGATIONS: frozenset[str] = frozenset({
+    "avg", "weighted_avg", "median", "percentile",
+    "stddev_samp", "stddev_pop",
+})
+# Result is a float in different units (dimensionless / squared / product), so it
+# carries a plain FLOAT format, not the source's units.
+FLOAT_PLAIN_AGGREGATIONS: frozenset[str] = frozenset({
+    "corr", "var_samp", "var_pop", "covar_samp", "covar_pop",
+})
+# Result preserves the source column's type AND format.
+PRESERVING_AGGREGATIONS: frozenset[str] = frozenset({
+    "sum", "min", "max", "first", "last",
+})
+
+
+class AggregationValueClass(StrEnum):
+    """How an aggregation's result relates to its source column, for slot-type
+    and display-format inference (DEV-1788)."""
+
+    COUNT = "count"                            # INT type, INTEGER format
+    PRESERVING = "preserving"                  # source type & format
+    FLOAT_SOURCE_UNITS = "float_source_units"  # DOUBLE type, source format (else FLOAT)
+    FLOAT_PLAIN = "float_plain"                # DOUBLE type, plain FLOAT format
+
+
+def classify_aggregation(
+    *, measure_name: Optional[str], aggregation: str
+) -> AggregationValueClass:
+    """Bucket an aggregation for slot-type / display-format inference.
+
+    ``measure_name == "*"`` (``*:count``) is COUNT; custom/unknown aggregations
+    fall through to PRESERVING (inherit source type & format).
+    """
+    if measure_name == "*":
+        return AggregationValueClass.COUNT
+    if aggregation in INTEGER_AGGREGATIONS:
+        return AggregationValueClass.COUNT
+    if aggregation in FLOAT_SOURCE_UNIT_AGGREGATIONS:
+        return AggregationValueClass.FLOAT_SOURCE_UNITS
+    if aggregation in FLOAT_PLAIN_AGGREGATIONS:
+        return AggregationValueClass.FLOAT_PLAIN
+    return AggregationValueClass.PRESERVING
+
 # DEV-1576: unambiguous aggregation-name aliases that LLM agents routinely
 # emit. ``normalize_aggregation_name`` lowercases the incoming token and maps
 # it through this table; the result is only adopted when it lands in
@@ -242,6 +299,21 @@ def normalize_aggregation_name(name: str) -> str:
     return candidate if candidate in BUILTIN_AGGREGATIONS else name
 
 
+def format_unknown_aggregation(name: str, known: "set[str] | frozenset[str]") -> str:
+    """DEV-1576: the shared 'Unknown aggregation' error message.
+
+    Used by both the binder's aggregation gate (``slayer/engine/binding.py``)
+    and the typed binding gate (``slayer/engine/binding.py``) so the wording
+    stays byte-identical: an unknown aggregation name is distinguished from a
+    known-but-disallowed one, with a close-match suggestion and the model-wide
+    known list. ``known`` = ``BUILTIN_AGGREGATIONS`` unioned with the owning
+    model's custom aggregation names.
+    """
+    suggestion = difflib.get_close_matches(word=name, possibilities=sorted(known), n=1)
+    hint = f" Did you mean '{suggestion[0]}'?" if suggestion else ""
+    return f"Unknown aggregation '{name}'.{hint} Known: {sorted(known)}."
+
+
 # Built-in aggregation SQL formulas (for aggregations that use a template).
 # {value} = measure's SQL expression; {param_name} = parameter values.
 # Note: percentile is dialect-dependent (no single template works on
@@ -261,7 +333,7 @@ BUILTIN_AGGREGATION_REQUIRED_PARAMS: dict[str, list[str]] = {
 
 # Aggregations that only make sense on numeric-valued measures. Applying them
 # to a non-numeric measure (e.g. AVG on a VARCHAR column) is always invalid
-# and is rejected during query enrichment rather than at SQL execution time.
+# and is rejected during query binding rather than at SQL execution time.
 # min, max, count, count_distinct, first, last work on any type and are NOT
 # in this set.
 NUMERIC_ONLY_AGGREGATIONS: frozenset[str] = frozenset({

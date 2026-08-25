@@ -29,11 +29,7 @@ import sqlglot
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import OrderItem, SlayerQuery, TimeDimension
-from slayer.engine.enrichment import enrich_query
-from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.dialects import _ALL_DIALECTS
-from slayer.sql.generator import SQLGenerator
-from slayer.storage.yaml_storage import YAMLStorage
 
 # The feature under test.
 from slayer.sql.reserved_keywords import (
@@ -41,6 +37,8 @@ from slayer.sql.reserved_keywords import (
     install_reserved_keywords,
     prequote_reserved_identifiers,
 )
+
+from tests._engine_helpers import _engine_generate
 
 
 # ---------------------------------------------------------------------------
@@ -51,29 +49,21 @@ def _norm(s: str) -> str:
     return " ".join(s.split())
 
 
-async def _noop_async(**kw):  # NOSONAR(S7503) — resolver-callback contract is async
-    return None
-
-
 async def _gen(
     query: SlayerQuery,
     model: SlayerModel,
     *,
-    storage: YAMLStorage | None = None,
+    extra_models: list[SlayerModel] | None = None,
     dialect: str = "postgres",
 ) -> str:
-    """Generate SQL for ``query``/``model``. With ``storage`` set, enrich through
-    a real engine so joins resolve from storage; otherwise use a noop resolver."""
-    if storage is not None:
-        enriched = await SlayerQueryEngine(storage=storage)._enrich(query=query, model=model)
-    else:
-        enriched = await enrich_query(
-            query=query, model=model,
-            resolve_dimension_via_joins=_noop_async,
-            resolve_cross_model_measure=_noop_async,
-            resolve_join_target=_noop_async,
-        )
-    return SQLGenerator(dialect=dialect).generate(enriched=enriched)
+    """Generate SQL for ``query``/``model`` through the typed engine pipeline.
+
+    ``extra_models`` registers the join targets ``model`` reaches, so join
+    resolution has the same storage-backed context the legacy
+    ``storage=``-flavoured helper used to provide."""
+    return await _engine_generate(
+        query=query, model=model, dialect=dialect, extra_models=extra_models,
+    )
 
 
 def _assert_parses(sql: str, dialect: str = "postgres") -> None:
@@ -262,79 +252,78 @@ class TestReservedAliasQuoting:
 
 
 # ---------------------------------------------------------------------------
-# 7-11. String-reparse paths on a reserved base model (engine+storage)
+# 7-11. String-reparse paths on a reserved base model (typed engine pipeline)
 # ---------------------------------------------------------------------------
 
 class TestReservedStringReparsePaths:
-    async def _storage(self, tmp_path, *, with_join=True):
-        storage = YAMLStorage(base_dir=str(tmp_path))
-        await storage.save_model(_merchant_model())
-        await storage.save_model(_grant_model(with_join=with_join))
-        return storage
-
-    async def test_join_from_reserved_model(self, tmp_path) -> None:
+    async def test_join_from_reserved_model(self) -> None:
         install_reserved_keywords()
-        storage = await self._storage(tmp_path)
         q = SlayerQuery(source_model="grant", dimensions=["merchant.name"], measures=["*:count"])
-        sql = _norm(await _gen(q, _grant_model(with_join=True), storage=storage))
+        sql = _norm(await _gen(
+            q, _grant_model(with_join=True), extra_models=[_merchant_model()],
+        ))
         assert 'ON "grant"."merchantId" = merchant.id' in sql, sql
         _assert_parses(sql)
 
-    async def test_first_last_measure_on_reserved_model(self, tmp_path) -> None:
+    async def test_first_last_measure_on_reserved_model(self) -> None:
+        """The ranked CTE's own scope quotes the reserved relation everywhere it
+        names it — the FROM, the ranked value, and the ranking column.
+
+        This used to assert ``"grant".*``: the ranked wrap re-exported the whole
+        source relation. It projects a NAMED list now (P-B), so the star is gone
+        and each reference is checked directly, which is the stronger claim —
+        a star hides whether the individual refs were quoted at all."""
         install_reserved_keywords()
-        storage = await self._storage(tmp_path, with_join=False)
         q = SlayerQuery(
             source_model="grant", dimensions=["namespace"],
             measures=[{"formula": "amount:last"}],
         )
-        sql = _norm(await _gen(q, _grant_model(), storage=storage))
-        assert '"grant".*' in sql, sql
+        sql = _norm(await _gen(q, _grant_model(), extra_models=[_merchant_model()]))
+        assert 'FROM "Grant" AS "grant"' in sql, sql
+        assert '"grant".amount' in sql, sql
+        assert 'ORDER BY "grant".created_at' in sql, sql
         _assert_parses(sql)
 
-    async def test_where_filter_on_reserved_model(self, tmp_path) -> None:
+    async def test_where_filter_on_reserved_model(self) -> None:
         install_reserved_keywords()
-        storage = await self._storage(tmp_path, with_join=False)
         q = SlayerQuery(
             source_model="grant", dimensions=["namespace"],
             measures=["*:count"], filters=["amount > 0"],
         )
-        sql = _norm(await _gen(q, _grant_model(), storage=storage))
+        sql = _norm(await _gen(q, _grant_model(), extra_models=[_merchant_model()]))
         assert '"grant".amount' in sql, sql
         _assert_parses(sql)
 
-    async def test_order_by_base_column_on_reserved_model(self, tmp_path) -> None:
+    async def test_order_by_base_column_on_reserved_model(self) -> None:
         install_reserved_keywords()
-        storage = await self._storage(tmp_path, with_join=False)
         q = SlayerQuery(
             source_model="grant", dimensions=["namespace"],
             measures=["*:count"], order=[OrderItem(column="namespace")],
         )
-        sql = await _gen(q, _grant_model(), storage=storage)
+        sql = await _gen(q, _grant_model(), extra_models=[_merchant_model()])
         _assert_parses(sql)
 
-    async def test_time_shift_with_filter_on_reserved_model(self, tmp_path) -> None:
+    async def test_time_shift_with_filter_on_reserved_model(self) -> None:
         install_reserved_keywords()
-        storage = await self._storage(tmp_path, with_join=False)
         q = SlayerQuery(
             source_model="grant",
             time_dimensions=[TimeDimension(dimension="created_at", granularity="month")],
             measures=[{"formula": "change(amount:sum)"}],
             filters=["amount > 0"],
         )
-        sql = await _gen(q, _grant_model(), storage=storage)
+        sql = await _gen(q, _grant_model(), extra_models=[_merchant_model()])
         _assert_parses(sql)
 
-    async def test_where_filter_byte_level(self, tmp_path) -> None:
+    async def test_where_filter_byte_level(self) -> None:
         install_reserved_keywords()
-        storage = await self._storage(tmp_path, with_join=False)
         q = SlayerQuery(
             source_model="grant", dimensions=["namespace"],
             measures=["*:count"], filters=["amount > 0"],
         )
-        sql = _norm(await _gen(q, _grant_model(), storage=storage))
+        sql = _norm(await _gen(q, _grant_model(), extra_models=[_merchant_model()]))
         assert '"grant".amount > 0' in sql, sql
 
-    async def test_column_level_filter_case_when(self, tmp_path) -> None:
+    async def test_column_level_filter_case_when(self) -> None:
         """A ``Column.filter`` measure emits ``SUM(CASE WHEN ... END)`` whose
         predicate is parsed via the ``measure.filter_sql`` sites — the reserved
         qualifier inside the CASE WHEN must be quoted."""
@@ -342,35 +331,31 @@ class TestReservedStringReparsePaths:
         model = _grant_model(
             extra_cols=(Column(name="big", sql="amount", type=DataType.DOUBLE, filter="amount > 100"),),
         )
-        storage = YAMLStorage(base_dir=str(tmp_path))
-        await storage.save_model(model)
         q = SlayerQuery(
             source_model="grant", dimensions=["namespace"],
             measures=[{"formula": "big:sum"}],
         )
-        sql = _norm(await _gen(q, model, storage=storage))
+        sql = _norm(await _gen(q, model))
         assert 'CASE WHEN "grant".amount > 100' in sql, sql
         _assert_parses(sql)
 
-    async def test_having_on_reserved_model(self, tmp_path) -> None:
+    async def test_having_on_reserved_model(self) -> None:
         install_reserved_keywords()
-        storage = await self._storage(tmp_path, with_join=False)
         q = SlayerQuery(
             source_model="grant", dimensions=["namespace"],
             measures=[{"formula": "amount:sum"}], filters=["amount:sum > 100"],
         )
-        sql = _norm(await _gen(q, _grant_model(), storage=storage))
+        sql = _norm(await _gen(q, _grant_model(), extra_models=[_merchant_model()]))
         assert 'HAVING SUM("grant".amount) > 100' in sql, sql
         _assert_parses(sql)
 
-    async def test_raw_row_distinct_dimension_values_false(self, tmp_path) -> None:
+    async def test_raw_row_distinct_dimension_values_false(self) -> None:
         install_reserved_keywords()
-        storage = await self._storage(tmp_path, with_join=False)
         q = SlayerQuery(
             source_model="grant", dimensions=["namespace"],
             distinct_dimension_values=False,
         )
-        sql = _norm(await _gen(q, _grant_model(), storage=storage))
+        sql = _norm(await _gen(q, _grant_model(), extra_models=[_merchant_model()]))
         assert 'FROM "Grant" AS "grant"' in sql, sql
         assert '"grant".namespace' in sql, sql
         _assert_parses(sql)
@@ -380,63 +365,63 @@ class TestReservedStringReparsePaths:
 # 13. Reserved JOINED model reached from a NON-reserved root
 # ---------------------------------------------------------------------------
 
-class TestReservedJoinedFromNonReservedRoot:
-    async def _storage(self, tmp_path):
-        storage = YAMLStorage(base_dir=str(tmp_path))
-        grant = SlayerModel(
-            name="grant", sql_table='"Grant"', data_source="api",
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-            ],
-            default_time_dimension="created_at",
-        )
-        orders = SlayerModel(
-            name="orders", sql_table="orders", data_source="api",
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                Column(name="grant_id", sql="grant_id", type=DataType.INT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-            ],
-            default_time_dimension="created_at",
-            joins=[ModelJoin(target_model="grant", join_pairs=[["grant_id", "id"]])],
-        )
-        await storage.save_model(grant)
-        await storage.save_model(orders)
-        return storage, orders
+def _orders_joined_to_grant() -> tuple[SlayerModel, SlayerModel]:
+    """`orders` (non-reserved root) joined to the reserved `grant` model.
+    Returns ``(orders, grant)`` — the root first, its join target second."""
+    grant = SlayerModel(
+        name="grant", sql_table='"Grant"', data_source="api",
+        columns=[
+            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+            Column(name="status", sql="status", type=DataType.TEXT),
+            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+        ],
+        default_time_dimension="created_at",
+    )
+    orders = SlayerModel(
+        name="orders", sql_table="orders", data_source="api",
+        columns=[
+            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+            Column(name="grant_id", sql="grant_id", type=DataType.INT),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+        ],
+        default_time_dimension="created_at",
+        joins=[ModelJoin(target_model="grant", join_pairs=[["grant_id", "id"]])],
+    )
+    return orders, grant
 
-    async def test_reserved_join_alias_in_projection_and_on(self, tmp_path) -> None:
+
+class TestReservedJoinedFromNonReservedRoot:
+    async def test_reserved_join_alias_in_projection_and_on(self) -> None:
         install_reserved_keywords()
-        storage, orders = await self._storage(tmp_path)
+        orders, grant = _orders_joined_to_grant()
         q = SlayerQuery(source_model="orders", dimensions=["grant.status"], measures=["*:count"])
-        sql = _norm(await _gen(q, orders, storage=storage))
+        sql = _norm(await _gen(q, orders, extra_models=[grant]))
         assert '"grant".status' in sql, sql
         _assert_parses(sql)
 
-    async def test_where_on_reserved_joined_qualifier(self, tmp_path) -> None:
+    async def test_where_on_reserved_joined_qualifier(self) -> None:
         install_reserved_keywords()
-        storage, orders = await self._storage(tmp_path)
+        orders, grant = _orders_joined_to_grant()
         q = SlayerQuery(
             source_model="orders", dimensions=["grant.status"],
             measures=["*:count"], filters=["grant.status == 'active'"],
         )
-        sql = _norm(await _gen(q, orders, storage=storage))
+        sql = _norm(await _gen(q, orders, extra_models=[grant]))
         # joined reserved qualifier quoted in BOTH the ON clause and the WHERE
         assert '"grant".status' in sql, sql
         assert "'active'" in sql, sql  # literal survived
         _assert_parses(sql)
 
-    async def test_first_last_referencing_reserved_joined(self, tmp_path) -> None:
+    async def test_first_last_referencing_reserved_joined(self) -> None:
         install_reserved_keywords()
-        storage, orders = await self._storage(tmp_path)
+        orders, grant = _orders_joined_to_grant()
         q = SlayerQuery(
             source_model="orders", dimensions=["grant.status"],
             measures=[{"formula": "amount:last"}],
         )
-        sql = _norm(await _gen(q, orders, storage=storage))
+        sql = _norm(await _gen(q, orders, extra_models=[grant]))
         # the reserved join alias appears quoted in the ranked subquery's join
         assert 'AS "grant"' in sql, sql
         _assert_parses(sql)
@@ -498,10 +483,9 @@ class TestPrequoteHelper:
 # 15/16. Query-backed reserved short + derived Column.sql referencing reserved join
 # ---------------------------------------------------------------------------
 
-async def _orders_derived_grant_storage(tmp_path):
+def _orders_derived_grant_models() -> tuple[SlayerModel, SlayerModel]:
     """`orders` (non-reserved root) with a derived column ``bumped = grant.amount
-    + 1`` joined to the reserved `grant` model. Returns (storage, orders)."""
-    storage = YAMLStorage(base_dir=str(tmp_path))
+    + 1`` joined to the reserved `grant` model. Returns ``(orders, grant)``."""
     grant = SlayerModel(
         name="grant", sql_table='"Grant"', data_source="api",
         columns=[
@@ -518,17 +502,15 @@ async def _orders_derived_grant_storage(tmp_path):
         ],
         joins=[ModelJoin(target_model="grant", join_pairs=[["grant_id", "id"]])],
     )
-    await storage.save_model(grant)
-    await storage.save_model(orders)
-    return storage, orders
+    return orders, grant
 
 
 class TestReservedInComputedPaths:
-    async def test_derived_column_referencing_reserved_joined_model(self, tmp_path) -> None:
+    async def test_derived_column_referencing_reserved_joined_model(self) -> None:
         install_reserved_keywords()
-        storage, orders = await _orders_derived_grant_storage(tmp_path)
+        orders, grant = _orders_derived_grant_models()
         q = SlayerQuery(source_model="orders", dimensions=["bumped"], measures=["*:count"])
-        sql = _norm(await _gen(q, orders, storage=storage))
+        sql = _norm(await _gen(q, orders, extra_models=[grant]))
         # The reserved joined model must be JOINED (not just referenced): a
         # quoted qualifier in the expanded derived-column SQL must still be
         # discovered by join-path resolution (DEV-1686 / Codex review).
@@ -539,15 +521,15 @@ class TestReservedInComputedPaths:
 
     @pytest.mark.parametrize("dialect", ["postgres", "mysql", "bigquery", "tsql", "sqlite", "duckdb"])
     async def test_derived_column_reserved_join_discovered_all_dialects(
-        self, tmp_path, dialect: str,
+        self, dialect: str,
     ) -> None:
         """The reserved qualifier is emitted with the dialect's quote char
         (`` `grant` `` on MySQL/BigQuery, ``[grant]`` on T-SQL); join-path
         discovery must still find it on every dialect (DEV-1686 / Codex review)."""
         install_reserved_keywords()
-        storage, orders = await _orders_derived_grant_storage(tmp_path)
+        orders, grant = _orders_derived_grant_models()
         q = SlayerQuery(source_model="orders", dimensions=["bumped"], measures=["*:count"])
-        sql = _norm(await _gen(q, orders, storage=storage, dialect=dialect))
+        sql = _norm(await _gen(q, orders, extra_models=[grant], dialect=dialect))
         assert "JOIN" in sql, f"[{dialect}] join dropped:\n{sql}"
         _assert_parses(sql, dialect)
 

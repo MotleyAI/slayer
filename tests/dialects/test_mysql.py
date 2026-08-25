@@ -9,8 +9,6 @@ because sqlglot mis-renames those to ``VARIANCE``.
 
 from __future__ import annotations
 
-import asyncio
-
 import sqlglot
 from sqlglot import exp
 
@@ -19,9 +17,9 @@ import pytest
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
-from slayer.engine.enrichment import enrich_query
 from slayer.sql.dialects.mysql import MysqlDialect
-from slayer.sql.generator import SQLGenerator
+
+from tests._engine_helpers import _engine_generate
 
 
 def _parse_mysql(sql: str) -> exp.Expression:
@@ -254,23 +252,9 @@ def test_mysql_emit_outer_wrap_preserves_inner_cte_in_derived_table() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _noop_resolver(**kw):  # noqa: ARG001  # NOSONAR(S7503) — resolver stub must remain async
-    return None
-
-
-def _mysql_generate(query: SlayerQuery, model: SlayerModel) -> str:
+async def _mysql_generate(query: SlayerQuery, model: SlayerModel) -> str:
     """Render ``query`` for MySQL and return the full emitted SQL."""
-    async def _run() -> str:
-        enriched = await enrich_query(
-            query=query, model=model,
-            resolve_dimension_via_joins=_noop_resolver,
-            resolve_cross_model_measure=_noop_resolver,
-            resolve_join_target=_noop_resolver,
-            dialect="mysql",
-        )
-        return SQLGenerator(dialect="mysql").generate(enriched=enriched)
-
-    return asyncio.run(_run())
+    return await _engine_generate(query=query, model=model, dialect="mysql")
 
 
 def _orders_model() -> SlayerModel:
@@ -286,7 +270,7 @@ def _orders_model() -> SlayerModel:
     )
 
 
-def test_mysql_time_shift_inner_cte_uses_backticks_not_ansi_quotes() -> None:
+async def test_mysql_time_shift_inner_cte_uses_backticks_not_ansi_quotes() -> None:
     """``change_pct(total:sum)`` builds shifted/self-join/step CTEs that
     used to embed hardcoded ANSI double-quoted identifier refs. On MySQL
     those parsed as string literals and the query failed with
@@ -309,27 +293,41 @@ def test_mysql_time_shift_inner_cte_uses_backticks_not_ansi_quotes() -> None:
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    sql = _mysql_generate(q, _orders_model())
+    sql = await _mysql_generate(q, _orders_model())
     # No ANSI-quoted identifiers ANYWHERE — those would be MySQL string
     # literals and either fail SQL parsing or silently corrupt results.
     assert '"orders.' not in sql, (
         f'MySQL emission must not contain ANSI-quoted identifiers '
         f'(MySQL would parse them as string literals):\n{sql}'
     )
-    # The CASE expression's column refs must be backticked.
-    assert "`orders._ts_pct`" in sql, (
-        f"Inner CASE expression should reference _ts_pct via backticks:\n{sql}"
+    # The computed change_pct expression's column refs must be backticked.
+    # (The typed pipeline names the shifted intermediate
+    # ``orders._time_shift_inner``; the legacy stack spelled it
+    # ``orders._ts_pct``. Same slot, same assertion.)
+    assert "`orders._time_shift_inner`" in sql, (
+        f"Inner computed expression should reference the time-shift "
+        f"intermediate via backticks:\n{sql}"
     )
     # The self-join CTE's ON clause must use backticks on both sides.
-    assert "base.`orders.created_at` = shifted__ts_pct.`orders.created_at`" in sql, (
+    assert (
+        "base.`orders.created_at` <=> "
+        "shifted__time_shift_inner.`orders.created_at`"
+    ) in sql, (
         f"Self-join ON clause must use backticked identifiers:\n{sql}"
     )
     # The outer ORDER BY must reference a backticked identifier, not a
     # single-quoted string literal (which is what sqlglot emits when it
     # re-parses an ANSI-quoted alias under MySQL dialect).
-    assert "ORDER BY\n  `orders.created_at`" in sql or "ORDER BY `orders.created_at`" in sql, (
+    #
+    # Asserted over the ORDER BY *clause* rather than the text immediately
+    # after the keyword: MySQL has no NULLS syntax, so the term is preceded by
+    # sqlglot's ``CASE WHEN <col> IS NULL …`` emulation of the nulls-last
+    # ordering every dialect gets. Which term comes first is not this test's
+    # subject — how the alias is quoted is.
+    order_clause = sql[sql.rindex("ORDER BY"):]
+    assert "`orders.created_at`" in order_clause, (
         f"ORDER BY must reference a backticked alias, not a string literal:\n{sql}"
     )
-    assert "ORDER BY\n  'orders.created_at'" not in sql, (
+    assert "'orders.created_at'" not in order_clause, (
         f"sqlglot re-parsed an ANSI-quoted identifier as a string literal:\n{sql}"
     )

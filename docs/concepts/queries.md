@@ -97,15 +97,67 @@ A time dimension with a required granularity and an optional date range. Support
 
 `week` is Monday-anchored (ISO-8601); `week_sunday` is Sunday-anchored (weeks start Sunday, end Saturday) for tools that use Sunday weeks. Both are model granularities you set on a `TimeDimension` — `week_sunday` is the SLayer value, not a wire keyword sent by a BI tool.
 
+`date_range` and an equivalent explicit filter (`"created_at >= '2024-01-01' and created_at <= '2024-12-31'"`) are interchangeable — including for trailing-window measures and `time_shift`, which still read rows from before the range so the earliest bucket isn't short-changed. See [Time bounds do not clip the window](formulas.md#time-bounds-do-not-clip-the-window) for exactly which predicates count as a time bound.
+
 ## OrderItem
 
-A sort specification: `column` is the short alias (`status`, `revenue_sum`, `*:count`), `direction` is `asc` or `desc`.
+A sort specification: `column` names a dimension (`status`), a declared measure's short alias (`revenue_sum`), or a formula (`*:count`); `direction` is `asc` or `desc`.
 
 ```json
 {"column": "*:count", "direction": "desc"}
 ```
 
 Via MCP: `{"column": "*:count", "direction": "desc"}`
+
+### Ordering by something you don't project
+
+`order` may reference a column or aggregate that is **not** declared as a dimension/measure — the classic "top-N by metric X, display only Y, Z" pattern:
+
+```json
+{"source_model": "orders", "dimensions": ["status"], "measures": [{"formula": "*:count"}],
+ "order": [{"column": "amount:sum", "direction": "desc"}], "limit": 10}
+```
+
+The `amount:sum` aggregate is computed as a hidden column, sorted on, and **stripped from the result** — the response projects only `status` and `_count`. This works for local aggregates, cross-model aggregates (`customers.revenue:sum`), and inner-stage columns re-aggregated in a later DAG stage (`customers__revenue_sum:max`).
+
+What each shape of an *undeclared* order target does:
+
+| Order target | Behavior |
+| --- | --- |
+| An aggregate (`amount:sum`, `customers.revenue:sum`) | Computed hidden, sorted on, stripped from the result. Always allowed. |
+| An inline **transform** (`rank(amount:sum)`, `cumsum(...)`, `change(...)`, `lag`/`lead`/`ntile`) | Computed hidden, sorted on, stripped. |
+| An inline **composite** (`revenue:sum / cnt:sum`, `abs(amount:sum)`, `change(amount:sum) / 2`) | Computed hidden, sorted on, stripped. |
+| A **windowed** aggregate (`amount:sum(window='90d')`), alone or inside a composite | Computed hidden in its own rolling-window CTE, sorted on, stripped. |
+| A raw row column, in a **raw-rows** query (`distinct_dimension_values: false`, no measures) | Sorted on directly (`ORDER BY orders.created_at`). Applies to a **joined** column (`customers.regions.name`) and to a derived column whose `sql` reaches through a join — the join is pulled in for the sort. |
+| A raw row column, in an **aggregated / dedup** query | Sorted on **per group**: ASC by each group's minimum, DESC by each group's maximum. The wrap is implicit — you do not write `created_at:min`. |
+| A **joined** row column (`customers.regions.name`) in an aggregated query | Same per-group wrap, computed in a CTE rooted at the source model with the join pulled inside, so each group gets its own extreme rather than one global value. |
+
+Ordering by an undeclared row column in a grouped query is **not** the same as
+ordering by the column itself — there is no single value per group to sort by.
+SLayer picks the extreme the direction puts first: `asc` sorts each group by its
+`min`, `desc` by its `max`. Write `{"column": "created_at:max", "direction": "asc"}`
+explicitly if you want the other one.
+
+NULLs sort **last** in both directions, on every database, so the same query
+returns the same row order regardless of backend. (SQL Server is the one
+exception: its native ordering is used because the portable emulation makes the
+statement fail there.)
+
+An order target that names nothing SLayer can resolve is an error, never a
+silently unsorted result.
+
+Transform and composite order targets accept the full formula syntax, so
+`{"column": "revenue:sum / cnt:sum"}` and `{"column": "change(revenue:sum)"}` both
+work without declaring a measure. One limit: the operands must be written as
+formulas, not as the *names* of measures you declared in the same query —
+`{"column": "rev / cnt"}` is rejected at validation, because referencing a
+declared measure by its alias inside an expression is not supported anywhere in
+SLayer. Write `{"column": "revenue:sum / cnt:sum"}` instead.
+
+A windowed measure inside a **declared** composite measure
+(`{"formula": "revenue:sum(window='90d') / cnt:sum"}`), and any combination of a
+windowed measure with a transform, are still rejected — see
+[formulas](formulas.md#windowed-sum-and-average).
 
 ## Response
 
@@ -114,10 +166,16 @@ Query results are returned as a `SlayerResponse`:
 | Field | Type | Description |
 |-------|------|-------------|
 | `data` | list[dict] | Rows as dictionaries |
-| `columns` | list[str] | Column names in `model_name.column_name` format (e.g., `"orders._count"`, `"orders.customers.regions.name"` for multi-hop) |
+| `columns` | list[str] | Column names in `model_name.column_name` format (e.g., `"orders._count"`, `"orders.customers.regions.name"` for multi-hop), **in the order you declared them** |
 | `row_count` | int | Number of rows |
 | `sql` | string | The generated SQL (useful for debugging) |
 | `attributes` | ResponseAttributes | Field metadata split by type: `attributes.dimensions` and `attributes.measures`, each a dict of column alias → FieldMetadata (label, format) |
+
+`columns` — and the key order of each row in `data` — follows the order you
+declared fields in the query: dimensions, then time dimensions, then measures,
+each in the order given. This holds regardless of how a measure is computed, so
+a measure on a joined model appears where you declared it rather than after the
+local ones. Fields used only for ordering are computed but not returned.
 
 ```json
 {
@@ -160,10 +218,15 @@ Filter formulas define conditions for the query. They go in the `filters` parame
 | `<` | `"amount < 1000"` |
 | `<=` | `"amount <= 1000"` |
 | `in` | `"status in ('active', 'pending')"` |
+| `not in` | `"status not in ('cancelled', 'expired')"` |
 | `IS NULL` | `"discount IS NULL"` |
 | `IS NOT NULL` | `"discount IS NOT NULL"` |
 | `like` | `"name like '%acme%'"` |
 | `not like` | `"name not like '%test%'"` |
+
+The right-hand side of `in` / `not in` must be a non-empty tuple of literal
+values (strings, numbers, or booleans) — references and expressions on the
+RHS are not supported. Both `(...)` and `[...]` syntax are accepted.
 
 ### Boolean Logic
 
@@ -178,13 +241,17 @@ Use `and`, `or`, `not` within a single filter string:
 
 Multiple entries in the `filters` list are combined with AND.
 
-### String-Hygiene Operators
+### Scalar Functions in Filters
 
-Filters in `SlayerQuery.filters` accept a small allowlist of lowercase
-SQL scalar functions for case-folding, trimming, substring extraction,
-and string concatenation: `lower`, `upper`, `trim`, `replace`, `substr`,
-`instr`, `length`, `concat`. The SQL `||` concat operator is rewritten
-to `concat(...)` automatically.
+Filters in `SlayerQuery.filters` accept the closed Mode-B scalar
+allowlist: string hygiene (`lower`, `upper`, `trim`, `ltrim`,
+`rtrim`, `replace`, `substr`, `substring`, `instr`, `length`, `concat`),
+null handling (`coalesce`, `nullif`, `ifnull`), math (`round`, `abs`,
+`ceil`, `floor`, `sign`, `trunc`, `mod`, `log10`, …), and scalar min/max
+(`greatest`, `least`). The SQL `||` concat operator is
+rewritten to `concat(...)` automatically. See
+[references](references.md#scalar-functions-and-dialect-semantics) for the
+full list and per-dialect semantics.
 
 ```json
 "filters": [
@@ -192,17 +259,17 @@ to `concat(...)` automatically.
   "trim(name) = 'Smith'",
   "replace(category, ',', '') = 'books'",
   "substr(s, 1, instr(s, ',') - 1) = 'first_token'",
-  "length(replace(x, ',', '')) > 0",
+  "coalesce(nickname, name) = 'Ada'",
   "first || ' ' || last = 'jane doe'"
 ]
 ```
 
-Names are lowercase only — `LOWER(...)` is rejected. sqlglot translates
-each call to the target dialect's preferred spelling at SQL-generation
+Names are matched case-insensitively — `LOWER(...)` and `lower(...)` both bind.
+sqlglot translates each call to the target dialect's preferred spelling at SQL-generation
 time (`instr` → `POSITION` / `LOCATE` / `STRPOS`, `substr` →
-`SUBSTRING`, `concat` → `||` on SQLite). Calls outside the allowlist
-(`json_extract`, `coalesce`, …) belong in `Column.sql` /
-`Column.filter` / `SlayerModel.filters` (Mode A SQL).
+`SUBSTRING`, `concat` → `||` on SQLite). Raw SQL functions outside the
+allowlist (`json_extract`, `date_trunc`, `CASE WHEN`, …) belong in
+`Column.sql` / `Column.filter` / `SlayerModel.filters` (Mode A SQL).
 
 ### Filtering on Computed Columns
 
@@ -482,6 +549,21 @@ When models have [joins](models.md#joins), you can reference measures from joine
 ```
 
 This generates a sub-query for the joined measure, scoped to shared dimensions, and LEFT JOINs it to the main query — avoiding aggregation errors from row multiplication.
+
+A cross-model **parametric** aggregate keeps its kwarg signature in the result key, so two variants on the same target column do not collide:
+
+```json
+{
+  "source_model": "orders",
+  "dimensions": ["customers.region"],
+  "measures": [
+    "customers.revenue:percentile(p=0.5)",
+    "customers.revenue:percentile(p=0.95)"
+  ]
+}
+```
+
+surfaces two distinct result keys — `orders.customers.revenue_percentile_p_0_5` and `orders.customers.revenue_percentile_p_0_95`. (A non-parametric `customers.revenue:sum` surfaces as `orders.customers.revenue_sum`.)
 
 ### Query lists
 

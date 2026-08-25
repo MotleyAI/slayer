@@ -102,12 +102,51 @@ Non-SQLite datasources (Postgres, MySQL, DuckDB, ClickHouse, SQL Server) skip th
 
 Already-persisted v7 SQLite models with the wrong `INT` type are **not** auto-repaired on `storage.get_model()` load (running a full table scan per column on every load would be too expensive). Re-ingest is the auto-heal path: `slayer ingest` or `slayer serve --ingest-on-startup`. The DEV-1361 DOUBLE → INT narrowing on legacy-dict migration is also gated on the probe on SQLite — it only fires when the probe positively certifies INT.
 
+## Schema scope
+
+By default `slayer ingest` covers only the connection's **default schema**, and
+that schema's tables stay unqualified (`sql_table: orders`). To reach other
+schemas, pass their names or ask for all of them:
+
+- `--schema a,b` (or `schemas=["a","b"]`) — ingest the named schemas. A single
+  name is emitted **verbatim** into `sql_table` (`--schema public` →
+  `public.orders`); across several schemas the default one stays bare and only
+  the non-default siblings are prefixed (`analytics.orders`).
+- `--all-schemas` — ingest every non-system schema in the datasource's own
+  catalog. The default schema stays bare; every other schema is qualified.
+- `--schema` and `--all-schemas` are mutually exclusive (the same conflict is
+  rejected by the REST `IngestRequest` as a 422 and by the MCP tools as an
+  error string).
+
+When the same table name exists in more than one scanned schema, exactly one
+wins the model name — an exact name beats a `__`-sanitized one, the default
+schema beats a non-default one, then the lower schema name, then the lower
+object name — and the losers are reported under `skipped` (labelled
+`schema.table` when more than one schema was scanned). Columns, primary keys,
+and comments are always read from the winning table's own schema, never unioned
+across same-named twins.
+
+`datasources create --schema X` persists `X` as the datasource's
+`schema_name`, so later bare `slayer ingest` runs keep using it; `--all-schemas`
+persists no default schema. A model that was ingested before qualification
+existed (stored bare) is **self-healed** to its qualified `sql_table` on the
+next re-ingest when that is unambiguous — but a bare model that names a real
+default-schema table is never repointed at a non-default twin.
+
 ## Usage
 
 ### CLI
 
 ```bash
-slayer ingest --datasource my_postgres --schema public --storage ./slayer_data
+# Default schema only (tables stay unqualified)
+slayer ingest --datasource my_postgres --storage ./slayer_data
+
+# A specific non-default schema (emitted verbatim: analytics.orders)
+slayer ingest --datasource my_postgres --schema analytics
+
+# Several schemas, or every non-system schema
+slayer ingest --datasource my_postgres --schema public,analytics
+slayer ingest --datasource my_postgres --all-schemas
 ```
 
 ### Python
@@ -137,6 +176,9 @@ asyncio.run(main())
 ```
 create_datasource(name="mydb", type="postgres", ...)
 ingest_datasource_models(datasource_name="mydb", schema_name="public")
+# or, across schemas:
+ingest_datasource_models(datasource_name="mydb", schemas="public,analytics")
+ingest_datasource_models(datasource_name="mydb", all_schemas=True)
 ```
 
 ### REST API
@@ -145,6 +187,8 @@ ingest_datasource_models(datasource_name="mydb", schema_name="public")
 curl -X POST http://localhost:5143/ingest \
   -H "Content-Type: application/json" \
   -d '{"datasource": "my_postgres", "schema_name": "public"}'
+# or: {"datasource": "my_postgres", "schemas": ["public", "analytics"]}
+# or: {"datasource": "my_postgres", "all_schemas": true}
 ```
 
 ## Querying Rolled-Up Models

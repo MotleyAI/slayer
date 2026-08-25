@@ -300,8 +300,11 @@ def invalidate_engine(datasource: DatasourceConfig) -> bool:
     thrown away; a transient blip, by contrast, wants the pool kept.
     ``get_engine`` then rebuilds from whatever the datasource now carries.
     """
-    connection_string = datasource.get_connection_string()
-    cache_key = _cache_key(datasource=datasource, connection_string=connection_string)
+    # Snapshot as ``get_engine`` does: a credential rotation between the two
+    # reads would compute a key matching no entry, leaving the poisoned engine.
+    snapshot = datasource.model_copy()
+    connection_string = snapshot.get_connection_string()
+    cache_key = _cache_key(datasource=snapshot, connection_string=connection_string)
     with _cache_lock:
         evicted = _engine_cache.pop(cache_key, None)
     if evicted is None:

@@ -24,6 +24,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import (
+    Aggregation,
     Column,
     DatasourceConfig,
     ModelJoin,
@@ -442,6 +443,51 @@ class TestCascadeRules:
         entry = _entry_for("orders", out)
         assert isinstance(entry, EditModelDelete)
         assert set(entry.remove.measures) >= {"total_amount", "aov"}
+
+    def test_rule_2_funcstyle_joined_custom_agg_cascades(self) -> None:
+        """DEV-1500: a ``ModelMeasure.formula`` using funcstyle over a custom
+        aggregation defined on a JOINED model (``rolling_avg(customers.score)``
+        where ``rolling_avg`` lives on ``customers``) must extract
+        ``customers.score`` as a ref, so dropping that column cascades the
+        measure away. The cascade now walks the reachable join graph for
+        custom aggregation names instead of using the model's own aggs only.
+        """
+        orders = _orders_model(
+            joins=[
+                ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
+            ],
+            measures=[
+                ModelMeasure(formula="rolling_avg(customers.score)", name="ravg"),
+            ],
+        )
+        customers = SlayerModel(
+            name="customers",
+            sql_table="customers",
+            data_source="ds",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="score", sql="score", type=DataType.DOUBLE),
+            ],
+            aggregations=[
+                Aggregation(name="rolling_avg", formula="AVG({value})"),
+            ],
+        )
+        # Live diff: ``customers.score`` was dropped.
+        customers_edit = EditModelDelete(
+            model_name="customers",
+            data_source="ds",
+            remove=RemoveSpec(columns=["score"]),
+        )
+        out = compute_datasource_drops(
+            models=[orders, customers],
+            sql_table_diffs={"customers": (customers_edit, {"score"})},
+            sql_diffs={},
+        )
+        # orders.ravg must cascade because its formula references the
+        # dropped customers.score.
+        orders_entry = _entry_for("orders", out)
+        assert isinstance(orders_entry, EditModelDelete), out
+        assert "ravg" in set(orders_entry.remove.measures), orders_entry
 
     def test_rule_3a_join_local_column_dropped(self) -> None:
         """A ``Join`` whose ``local_column`` (= join_pairs[i][0]) was dropped
@@ -1248,29 +1294,42 @@ class TestResolveLiveTable:
             sql_table="orders", live_tables={"orders": live}
         ) is live
 
-    def test_schema_qualified_falls_back_to_bare(self) -> None:
+    def test_schema_qualified_matches_the_qualified_key(self) -> None:
+        # DEV-1758 (Codex review): the live map is keyed by the qualified form
+        # (``_collect_live_tables``), and a qualified sql_table is NO LONGER
+        # stripped to a bare same-named object — that masked a dropped
+        # non-default table behind its default twin. It matches the qualified
+        # key directly.
+        live = self._live("orders")
+        assert _resolve_live_table(
+            sql_table="public.orders", live_tables={"public.orders": live}
+        ) is live
+
+    def test_schema_qualified_does_not_fall_back_to_a_bare_twin(self) -> None:
+        # The removed bug: public.orders must NOT resolve to a bare ``orders``
+        # key (a different, default-schema table).
         live = self._live("orders")
         assert _resolve_live_table(
             sql_table="public.orders", live_tables={"orders": live}
-        ) is live
+        ) is None
 
     def test_quoted_table_part_strips_quotes(self) -> None:
         live = self._live("Company")
-        # The bug's repro: prod."Company" with introspection keyed by bare name.
+        # prod."Company" resolves against the per-segment-unquoted qualified key.
         assert _resolve_live_table(
-            sql_table='prod."Company"', live_tables={"Company": live}
+            sql_table='prod."Company"', live_tables={"prod.Company": live}
         ) is live
 
     def test_both_parts_quoted(self) -> None:
         live = self._live("Company")
         assert _resolve_live_table(
-            sql_table='"prod"."Company"', live_tables={"Company": live}
+            sql_table='"prod"."Company"', live_tables={"prod.Company": live}
         ) is live
 
     def test_escaped_inner_quote_in_table(self) -> None:
         live = self._live('Comp"any')
         assert _resolve_live_table(
-            sql_table='prod."Comp""any"', live_tables={'Comp"any': live}
+            sql_table='prod."Comp""any"', live_tables={'prod.Comp"any': live}
         ) is live
 
     def test_missing_returns_none(self) -> None:

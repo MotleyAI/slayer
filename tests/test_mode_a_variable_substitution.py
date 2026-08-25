@@ -430,21 +430,17 @@ class TestEscapingEndToEnd:
         finally:
             tmp.cleanup()
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "PRE-EXISTING SQLite/parser limitation (NOT DEV-1625): a backslash "
-            "in a string value does not round-trip through SQLite. DEV-1625's "
-            "python escaping correctly recovers the value via ast.parse (proven "
-            "by the unit AST round-trip tests), but sqlglot's SQLite generator "
-            "then doubles the backslash, and SQLite never unescapes it, so the "
-            "literal mismatches the stored value. A literal, no-variable filter "
-            "`status = 'a\\b'` mismatches identically. If a future sqlglot/parser "
-            "change fixes this, the strict-xfail flips to a failure prompting "
-            "removal of this pin."
-        ),
-    )
-    async def test_backslash_value_sqlite_roundtrip_is_known_gap(self) -> None:
+    async def test_backslash_value_sqlite_roundtrip(self) -> None:
+        """A backslash in a string value round-trips through SQLite.
+
+        On the LEGACY engine this was a strict-xfail gap (DEV-1625): python
+        escaping recovered the value via ``ast.parse``, but the legacy
+        emission path then let sqlglot's SQLite generator double the
+        backslash, which SQLite never unescapes — so the literal mismatched
+        the stored value. The typed pipeline emits the predicate through the
+        resolver / dialect strategy and the value survives intact, so the pin
+        is promoted to a passing regression test (DEV-1703 Phase 0).
+        """
         model = SlayerModel(
             name="t",
             sql_table="t",
@@ -464,7 +460,7 @@ class TestEscapingEndToEnd:
                 variables={"v": "a\\b"},
             )
             resp = await engine.execute(q)
-            # The correct behavior would be to match only the a\b row (30.0).
+            # Matches only the a\b row (30.0).
             assert _sum(resp, "t.amount_sum") == 30.0
         finally:
             tmp.cleanup()
@@ -705,11 +701,20 @@ class TestCrossModelConsistency:
             tmp.cleanup()
 
     async def test_source_model_filter_var_applies_to_reroot_reachable(self) -> None:
-        # Reachable target: customers HAS a reverse join to orders, so the
-        # re-rooted cross-model CTE keeps the source's ``amount >= {floor}``
-        # filter. DEV-1625 must substitute {floor} consistently in BOTH the
-        # main CTE and the re-rooted CTE, else the re-rooted CTE errors on a
-        # stray ``{floor}``. amount >= 100 → orders 1 & 3 → 2 distinct customers.
+        # Reachable target: customers HAS a reverse join back to orders.
+        #
+        # DEV-1703 F4 DIVERGENCE FROM LEGACY (deliberate, user-approved):
+        # under the typed pipeline a filter constrains the scope whose root it
+        # references, and that ONE rule now covers Mode-A model filters as well
+        # as Mode-B query filters. The host's ``amount >= {floor}`` therefore
+        # stays host-local and does NOT reach into the customers-rooted
+        # cross-model CTE, so the scalar count is over all 3 customers.
+        # Legacy re-applied model filters (but never query filters) inside the
+        # re-rooted CTE via the reverse join and returned 2 — an asymmetry F4
+        # exists to end. What DEV-1625 still guarantees, and what this test
+        # pins, is that {floor} is SUBSTITUTED wherever it IS emitted (the
+        # ``amount:sum`` scope gets ``>= 100`` → 300.0) with no stray literal
+        # ``{floor}`` anywhere in the SQL.
         engine, tmp = await self._engine(bidirectional=True)
         try:
             q = SlayerQuery(
@@ -722,9 +727,10 @@ class TestCrossModelConsistency:
             )
             resp = await engine.execute(q)
             assert _sum(resp, "orders.amount_sum") == 300.0
-            assert _sum(resp, "orders.customers.id_count") == 2
-            # The substituted predicate reaches the re-rooted CTE (F12): the
-            # resolved bound is present and no placeholder token survives.
+            # F4: host model filter stays host-local — all 3 customers counted.
+            assert _sum(resp, "orders.customers.id_count") == 3
+            # The substituted predicate is emitted where the filter DOES apply,
+            # and no placeholder token survives anywhere.
             assert "amount >= 100" in resp.sql
             assert "{floor}" not in resp.sql
         finally:

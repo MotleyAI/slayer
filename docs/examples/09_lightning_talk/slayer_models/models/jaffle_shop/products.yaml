@@ -1,4 +1,4 @@
-version: 7
+version: 8
 name: products
 sql_table: products
 query_variables: {}
@@ -8,6 +8,7 @@ columns:
   sql: sku
   type: TEXT
   primary_key: true
+  unique: false
   description: Product identifier.
   label: SKU
   hidden: false
@@ -15,6 +16,7 @@ columns:
   sql: name
   type: TEXT
   primary_key: false
+  unique: false
   description: Product name.
   label: Product
   hidden: false
@@ -22,6 +24,7 @@ columns:
   sql: type
   type: TEXT
   primary_key: false
+  unique: false
   description: Product category (jaffle or beverage).
   label: Category
   hidden: false
@@ -29,6 +32,7 @@ columns:
   sql: price
   type: DOUBLE
   primary_key: false
+  unique: false
   description: List price, in dollars.
   label: Price
   hidden: false
@@ -40,6 +44,7 @@ columns:
   sql: description
   type: TEXT
   primary_key: false
+  unique: false
   description: Product description.
   label: Description
   hidden: false

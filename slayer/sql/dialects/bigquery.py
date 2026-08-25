@@ -18,25 +18,26 @@ Per DEV-1542's "every dialect quirk lives behind a hook on
 ``rewrite_emitted_sql`` / ``decode_result_keys`` hooks on the base class
 have identity defaults; only ``BigqueryDialect`` (and ``TsqlDialect``,
 DEV-1571) override them today. The shared encode/decode bijection lives
-in :mod:`slayer.sql.dialects._alias_mangle` and is reused by both
-dialects — only the regex anchor (backticks here, brackets in T-SQL)
-differs.
+in :mod:`slayer.sql.naming` (DEV-1713) and is reused by both dialects —
+only the regex anchor (backticks here, brackets in T-SQL) differs.
 """
 
 from __future__ import annotations
 
 import json
 import re
-from typing import TYPE_CHECKING, Any
-from collections.abc import Callable, Sequence
+from typing import TYPE_CHECKING, Any, ClassVar
+from collections.abc import Callable
 
 import sqlalchemy as sa
 from sqlglot import exp
 
 from slayer.core.enums import TimeGranularity
-from slayer.sql.dialects._alias_mangle import decode_alias, encode_alias
-from slayer.sql.dialects._identifier_fit import fit_identifier
-from slayer.sql.dialects.base import SqlDialect, _digest
+from slayer.sql.dialects.base import (
+    DottedAliasManglingMixin,
+    SqlDialect,
+    _digest,
+)
 
 if TYPE_CHECKING:
     from slayer.core.models import DatasourceConfig
@@ -125,7 +126,7 @@ def _durable_oauth_material(raw: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-class BigqueryDialect(SqlDialect):
+class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
     """BigQuery output-alias mangling + scalar config.
 
     Promoted out of ``_tier2.py`` because it has logic
@@ -142,15 +143,11 @@ class BigqueryDialect(SqlDialect):
     log10_native: bool = True
     log2_native: bool = True
     max_identifier_bytes: int | None = 300  # column-name limit
-
-    def build_approx_count_distinct(
-        self,
-        col_sql: str,
-        *,
-        parse: Callable[[str], exp.Expression],
-    ) -> exp.Expression:
-        """BigQuery: native ``APPROX_COUNT_DISTINCT(x)`` aggregate."""
-        return parse(f"APPROX_COUNT_DISTINCT({col_sql})")
+    approx_count_distinct_template: str = "APPROX_COUNT_DISTINCT({col})"
+    # DEV-1571 backtick-quoted dotted-alias mangling (DottedAliasManglingMixin).
+    dotted_alias_re: ClassVar[re.Pattern[str]] = _DOTTED_ALIAS_RE
+    alias_quote_open: ClassVar[str] = "`"
+    alias_quote_close: ClassVar[str] = "`"
 
     def build_date_trunc(
         self,
@@ -183,50 +180,6 @@ class BigqueryDialect(SqlDialect):
         return exp.Anonymous(
             this="DATE_TRUNC", expressions=[col_expr, week_sunday],
         )
-
-    def fit_alias(self, name: str) -> str:
-        """Size the budget against the post-mangle form (``.`` -> ``___`` adds 2
-        bytes per dot); return value stays dotted for the regex below."""
-        return fit_identifier(
-            name=name, limit=self.max_identifier_bytes, expand=encode_alias,
-        )
-
-    def emit_alias(self, alias: str) -> str:
-        """The final identifier: length-fitted, then dot-mangled."""
-        return encode_alias(self.fit_alias(alias))
-
-    def rewrite_emitted_sql(
-        self, sql: str, *, aliases: Sequence[str] = (),
-    ) -> str:
-        """Replace ``.`` with ``___`` inside backtick-quoted identifiers, so
-        emitted aliases and their references satisfy BigQuery's grammar.
-
-        The base LENGTH pass runs first: it no-ops on under-limit aliases (SQL
-        stays byte-identical) and rewrites over-limit ones to a still-dotted
-        form that this regex then mangles — no double-encoding.
-        """
-        sql = super().rewrite_emitted_sql(sql=sql, aliases=aliases)
-        return _DOTTED_ALIAS_RE.sub(
-            lambda m: f"`{encode_alias(m.group(1))}`", sql
-        )
-
-    def decode_result_keys(
-        self,
-        rows: list[dict[str, Any]],
-        *,
-        aliases: Sequence[str] = (),
-    ) -> list[dict[str, Any]]:
-        """Reverse the BigQuery alias mangling on result-row keys so consumers
-        see SLayer's universal dotted shape whatever dialect ran the query.
-
-        Fitted keys aren't recoverable alone, so the ``emitted -> canonical``
-        map is consulted first, falling back to the ``___`` -> ``.`` bijection.
-        """
-        mapping = self.decode_alias_map(aliases)
-        return [
-            self._rekey_row(row=row, mapping=mapping, fallback=decode_alias)
-            for row in rows
-        ]
 
     def build_engine(
         self,

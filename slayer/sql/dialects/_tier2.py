@@ -20,8 +20,6 @@ Two dialects were promoted out of this file to their own Tier 1 modules:
 
 from __future__ import annotations
 
-from collections.abc import Callable
-
 from sqlglot import exp
 
 from slayer.sql.dialects.base import SqlDialect
@@ -35,15 +33,14 @@ class RedshiftDialect(SqlDialect):
     log10_native: bool = True
     log2_native: bool = False
     max_identifier_bytes: int | None = 127
+    approx_count_distinct_template: str = "APPROXIMATE COUNT(DISTINCT {col})"
 
-    def build_approx_count_distinct(
-        self,
-        col_sql: str,
-        *,
-        parse: Callable[[str], exp.Expression],
+    def build_null_safe_eq(
+        self, left: exp.Expression, right: exp.Expression,
     ) -> exp.Expression:
-        """Redshift: ``APPROXIMATE COUNT(DISTINCT x)`` (keyword prefix)."""
-        return parse(f"APPROXIMATE COUNT(DISTINCT {col_sql})")
+        """DEV-1708: Redshift (Postgres 8.0.2 fork) has no ``IS NOT DISTINCT
+        FROM`` — emit the expanded ``a = b OR (a IS NULL AND b IS NULL)``."""
+        return self._expanded_null_safe_eq(left, right)
 
 
 class TrinoDialect(SqlDialect):
@@ -54,15 +51,7 @@ class TrinoDialect(SqlDialect):
     log10_native: bool = True
     log2_native: bool = True
     max_identifier_bytes: int | None = None  # unbounded
-
-    def build_approx_count_distinct(
-        self,
-        col_sql: str,
-        *,
-        parse: Callable[[str], exp.Expression],
-    ) -> exp.Expression:
-        """Trino: native ``approx_distinct(x)`` aggregate."""
-        return parse(f"approx_distinct({col_sql})")
+    approx_count_distinct_template: str = "approx_distinct({col})"
 
 
 class PrestoDialect(SqlDialect):
@@ -74,15 +63,7 @@ class PrestoDialect(SqlDialect):
     log10_native: bool = True
     log2_native: bool = True
     max_identifier_bytes: int | None = None  # unbounded
-
-    def build_approx_count_distinct(
-        self,
-        col_sql: str,
-        *,
-        parse: Callable[[str], exp.Expression],
-    ) -> exp.Expression:
-        """Presto: native ``approx_distinct(x)`` aggregate."""
-        return parse(f"approx_distinct({col_sql})")
+    approx_count_distinct_template: str = "approx_distinct({col})"
 
 
 class DatabricksDialect(SqlDialect):
@@ -93,15 +74,7 @@ class DatabricksDialect(SqlDialect):
     log10_native: bool = True
     log2_native: bool = True
     max_identifier_bytes: int | None = None  # unbounded
-
-    def build_approx_count_distinct(
-        self,
-        col_sql: str,
-        *,
-        parse: Callable[[str], exp.Expression],
-    ) -> exp.Expression:
-        """Databricks: native ``approx_count_distinct(x)`` aggregate."""
-        return parse(f"approx_count_distinct({col_sql})")
+    approx_count_distinct_template: str = "approx_count_distinct({col})"
 
 
 class SparkDialect(SqlDialect):
@@ -112,15 +85,7 @@ class SparkDialect(SqlDialect):
     log10_native: bool = True
     log2_native: bool = True
     max_identifier_bytes: int | None = None  # unbounded
-
-    def build_approx_count_distinct(
-        self,
-        col_sql: str,
-        *,
-        parse: Callable[[str], exp.Expression],
-    ) -> exp.Expression:
-        """Spark: native ``approx_count_distinct(x)`` aggregate."""
-        return parse(f"approx_count_distinct({col_sql})")
+    approx_count_distinct_template: str = "approx_count_distinct({col})"
 
 
 class OracleDialect(SqlDialect):
@@ -133,17 +98,13 @@ class OracleDialect(SqlDialect):
     log10_native: bool = False
     log2_native: bool = False
     max_identifier_bytes: int | None = 128  # 12.2+; pre-12.2 (30) not modelled
+    # Anonymous: sqlglot re-emits a parsed APPROX_COUNT_DISTINCT as its
+    # Presto-family APPROX_DISTINCT canonical, which is not an Oracle function.
+    approx_count_distinct_anonymous_name: str | None = "APPROX_COUNT_DISTINCT"
 
-    def build_approx_count_distinct(
-        self,
-        col_sql: str,
-        *,
-        parse: Callable[[str], exp.Expression],
+    def build_null_safe_eq(
+        self, left: exp.Expression, right: exp.Expression,
     ) -> exp.Expression:
-        """Oracle: native ``APPROX_COUNT_DISTINCT(x)`` aggregate.
-
-        Built as an ``exp.Anonymous`` because sqlglot's Oracle dialect
-        re-emits a parsed ``APPROX_COUNT_DISTINCT`` as ``APPROX_DISTINCT``
-        (its Presto-family canonical form), which is not an Oracle function.
-        """
-        return exp.Anonymous(this="APPROX_COUNT_DISTINCT", expressions=[parse(col_sql)])
+        """DEV-1708: Oracle has no ``IS NOT DISTINCT FROM`` — emit the expanded
+        ``a = b OR (a IS NULL AND b IS NULL)``."""
+        return self._expanded_null_safe_eq(left, right)

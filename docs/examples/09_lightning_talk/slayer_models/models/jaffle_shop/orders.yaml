@@ -1,4 +1,4 @@
-version: 7
+version: 8
 name: orders
 sql_table: orders
 query_variables: {}
@@ -8,12 +8,14 @@ columns:
   sql: id
   type: TEXT
   primary_key: true
+  unique: false
   label: Order ID
   hidden: false
 - name: customer_id
   sql: customer_id
   type: TEXT
   primary_key: false
+  unique: false
   description: Customer who placed the order.
   label: Customer ID
   hidden: false
@@ -21,6 +23,7 @@ columns:
   sql: ordered_at
   type: DATE
   primary_key: false
+  unique: false
   description: When the order was placed.
   label: Order Date
   hidden: false
@@ -28,6 +31,7 @@ columns:
   sql: store_id
   type: TEXT
   primary_key: false
+  unique: false
   description: Store where the order was placed.
   label: Store ID
   hidden: false
@@ -35,6 +39,7 @@ columns:
   sql: subtotal
   type: DOUBLE
   primary_key: false
+  unique: false
   description: Pre-tax order amount, in dollars.
   label: Net Sales
   hidden: false
@@ -46,6 +51,7 @@ columns:
   sql: tax_paid
   type: DOUBLE
   primary_key: false
+  unique: false
   description: Tax charged on the order, in dollars.
   label: Tax Paid
   hidden: false
@@ -57,6 +63,7 @@ columns:
   sql: order_total
   type: DOUBLE
   primary_key: false
+  unique: false
   description: Final order amount including tax, in dollars.
   label: Order Total
   hidden: false

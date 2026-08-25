@@ -23,8 +23,6 @@ import sqlglot
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
-from slayer.engine.enriched import EnrichedQuery
-from slayer.engine.enrichment import enrich_query
 from slayer.engine.query_engine import SlayerQueryEngine, _sql_client_cache_key
 from slayer.sql.dialects import (
     BigqueryDialect,
@@ -33,12 +31,9 @@ from slayer.sql.dialects import (
     dialect_for_ds_type,
     get_dialect,
 )
-from slayer.sql.generator import SQLGenerator
 from slayer.storage.yaml_storage import YAMLStorage
 
-
-async def _noop_async(**kw):  # NOSONAR(S7503) — must remain async for the resolver-callback contract
-    return None
+from tests._engine_helpers import _engine_generate
 
 
 # ---------------------------------------------------------------------------
@@ -401,9 +396,9 @@ def test_bigquery_emit_outer_wrap_uses_backticks_for_aliases() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _build_minimal_enriched_query() -> EnrichedQuery:
-    """Helper: produce an EnrichedQuery suitable for SQLGenerator.generate()."""
-    model = SlayerModel(
+def _minimal_orders_model() -> SlayerModel:
+    """Helper: the two-column model the generator-dispatch test renders."""
+    return SlayerModel(
         name="orders",
         sql_table="public.orders",
         data_source="test",
@@ -411,17 +406,6 @@ async def _build_minimal_enriched_query() -> EnrichedQuery:
             Column(name="id", sql="id", type=DataType.INT, primary_key=True),
             Column(name="status", sql="status", type=DataType.TEXT),
         ],
-    )
-    query = SlayerQuery(
-        source_model="orders",
-        dimensions=[ColumnRef(name="status")],
-    )
-    return await enrich_query(
-        query=query,
-        model=model,
-        resolve_dimension_via_joins=_noop_async,
-        resolve_cross_model_measure=_noop_async,
-        resolve_join_target=_noop_async,
     )
 
 
@@ -431,18 +415,25 @@ async def test_generator_dispatches_through_rewrite_emitted_sql_hook() -> None:
     branch. Pins the generic hook contract; a future regression that
     re-introduces a string-keyed dispatch in the generator would fail this.
 
-    Strategy: instantiate the generator with a non-BigQuery dialect
-    (Postgres) and assert the dialect's ``rewrite_emitted_sql`` is invoked.
+    Strategy: render a query on a non-BigQuery dialect (Postgres) and assert
+    that dialect class's ``rewrite_emitted_sql`` is invoked. ``SQLGenerator``
+    resolves ``self._dialect`` from the singleton registry, so patching
+    ``PostgresDialect`` patches exactly the object ``generate()`` dispatches
+    through.
     """
-    enriched = await _build_minimal_enriched_query()
-    gen = SQLGenerator(dialect="postgres")
+    query = SlayerQuery(
+        source_model="orders",
+        dimensions=[ColumnRef(name="status")],
+    )
     with patch.object(
-        type(gen._dialect),
+        PostgresDialect,
         "rewrite_emitted_sql",
         autospec=True,
         side_effect=lambda self, sql, **kw: sql,
     ) as spy:
-        gen.generate(enriched=enriched)
+        await _engine_generate(
+            query=query, model=_minimal_orders_model(), dialect="postgres",
+        )
     assert spy.called, (
         "SQLGenerator.generate() must dispatch through self._dialect."
         "rewrite_emitted_sql — a hard-coded `if dialect == ...:` would "
@@ -669,6 +660,169 @@ def test_build_engine_with_non_object_credentials_json_raises(payload: str) -> N
 
 
 # ---------------------------------------------------------------------------
+# DEV-1716 (Codex test-review High 2 / Med 3) — engine-level metadata
+# reconciliation + decode scoping for the mangling dialect.
+# ---------------------------------------------------------------------------
+
+
+async def _build_labeled_bigquery_engine(
+    rows: list[dict],
+) -> tuple[SlayerQueryEngine, tempfile.TemporaryDirectory, DatasourceConfig]:
+    """Like ``_build_bigquery_engine`` but the ``status`` column carries a
+    label, so ``resp.attributes.dimensions`` is non-empty iff the SQL-derived
+    ``expected_columns`` were decoded back to canonical dotted form."""
+    tmp = tempfile.TemporaryDirectory()
+    storage = YAMLStorage(base_dir=tmp.name)
+    ds = DatasourceConfig(name="bq", type="bigquery", database="proj.dataset")
+    await storage.save_datasource(ds)
+    model = SlayerModel(
+        name="orders",
+        sql_table="proj.dataset.orders_t",
+        data_source="bq",
+        columns=[
+            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+            Column(name="status", sql="status", type=DataType.TEXT, label="Order Status"),
+        ],
+    )
+    await storage.save_model(model)
+    engine = SlayerQueryEngine(storage=storage)
+    engine._sql_clients[_sql_client_cache_key(ds)] = _FakeBigQueryClient(rows)
+    return engine, tmp, ds
+
+
+async def test_bigquery_attributes_survive_alias_mangling() -> None:
+    """The mangled SQL-derived expected_columns must be decoded back to
+    canonical dotted form so the dimension's label survives in
+    ``resp.attributes`` (Codex High 2). Without the §3f reconciliation the
+    dotted slot key ``orders.status`` wouldn't match the mangled SQL key and
+    ``attributes.dimensions`` would be empty."""
+    rows = [{"orders___status": "paid"}]
+    engine, tmp, _ = await _build_labeled_bigquery_engine(rows)
+    try:
+        query = SlayerQuery(source_model="orders", dimensions=["status"])
+        resp = await engine.execute(query)
+        assert "orders.status" in resp.attributes.dimensions, (
+            f"BigQuery attributes lost the dimension after mangling: "
+            f"{resp.attributes.dimensions!r}"
+        )
+        assert resp.attributes.dimensions["orders.status"].label == "Order Status"
+    finally:
+        tmp.cleanup()
+
+
+class _EchoTypesClient:
+    """Stub SQL client whose ``get_column_types`` echoes the probe SQL's
+    projected column names (mangled, exactly as BigQuery would report them),
+    so the engine's read-side decode + qualified-alias map-back is exercised
+    end-to-end without predicting the probe's alias names."""
+
+    async def execute(self, *, sql: str) -> list[dict]:  # noqa: ARG002  # NOSONAR(S7503)
+        return []
+
+    async def get_column_types(self, *, sql: str) -> dict:
+        import sqlglot
+        parsed = sqlglot.parse_one(sql, dialect="bigquery")
+        return {name: "DOUBLE" for name in parsed.named_selects}
+
+
+async def test_get_column_types_decodes_bigquery_mangled_probe_keys() -> None:
+    """DEV-1716 (Codex review): the type-probe SQL is alias-mangled on BigQuery
+    (it must be, to execute), so the cursor returns mangled keys
+    (``orders___amount_max``). ``get_column_types`` must decode them before the
+    canonical-dotted map-back — otherwise type inference silently returns ``{}``
+    for BigQuery / T-SQL."""
+    tmp = tempfile.TemporaryDirectory()
+    try:
+        storage = YAMLStorage(base_dir=tmp.name)
+        ds = DatasourceConfig(name="bq", type="bigquery", database="proj.dataset")
+        await storage.save_datasource(ds)
+        model = SlayerModel(
+            name="orders",
+            sql_table="proj.dataset.orders_t",
+            data_source="bq",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            ],
+        )
+        await storage.save_model(model)
+        engine = SlayerQueryEngine(storage=storage)
+        engine._sql_clients[_sql_client_cache_key(ds)] = _EchoTypesClient()
+        types = await engine.get_column_types("orders")
+        # Without the decode fix, the mangled probe keys never match the dotted
+        # ``full`` lookups and this is empty for BigQuery.
+        assert types, f"expected a non-empty type map, got {types!r}"
+    finally:
+        tmp.cleanup()
+
+
+async def test_virtual_model_wrapped_refs_match_mangled_inner_bigquery() -> None:
+    """DEV-1716 (Codex review): stage rendering alias-mangles the inner query's
+    projection on BigQuery, so the virtual model's outer rename wrapper must
+    reference the mangled, backticked (``___``) form — NOT a raw ANSI
+    ``"orders.status"``, which BigQuery reads as a string literal pointing at a
+    column the mangled inner subquery no longer exposes.
+
+    Migrated from ``_query_as_model`` to the typed
+    ``_expand_query_backed_model`` (DEV-1485 Stage D). The mangling invariant is
+    unchanged — only the outer rename TARGET differs: the typed wrapper renames
+    to the flat downstream-bind name (``status``) rather than re-exposing the
+    dotted alias, which is the documented virtual-model contract.
+    """
+    engine, tmp, _ = await _build_bigquery_engine(rows=[])
+    try:
+        model = SlayerModel(
+            name="qb_orders",
+            data_source="bq",
+            source_queries=[SlayerQuery(
+                source_model="orders",
+                measures=[{"formula": "*:count"}],
+                dimensions=["status"],
+            )],
+        )
+        vmodel = await engine._expand_query_backed_model(
+            model=model,
+            outer_vars=None,
+            runtime_kwarg=None,
+            dry_run_placeholders=True,
+            _resolving=set(),
+        )
+        wrapped = vmodel.sql
+        # No ANSI-quoted dotted identifier survives (would be a string literal
+        # on BigQuery and reference a non-existent column).
+        assert '"orders.' not in wrapped, f"ANSI dotted ref leaked:\n{wrapped}"
+        # Both the inner projection AND the outer rename reference the mangled
+        # form. ``orders.status`` -> ``orders___status``; ``orders._count`` ->
+        # ``orders____count`` (3 underscores from the dot + 1 leading).
+        assert "orders___status" in wrapped, wrapped
+        assert "orders____count" in wrapped, wrapped
+        # The outer rename exposes the flat bind names downstream stages use.
+        assert [c.name for c in vmodel.columns] == ["status", "_count"], vmodel.columns
+    finally:
+        tmp.cleanup()
+
+
+async def test_bigquery_dry_run_does_not_decode_data_rows() -> None:
+    """The DATA-path row decode must NOT run on dry_run (Codex Med 3): dry_run
+    returns the SQL without executing, so the fetched data rows are never
+    decoded. (The response-metadata reconciliation legitimately decodes the
+    synthetic expected-columns row through the same hook — assert only that no
+    decode call received the actual data rows.)"""
+    data_rows = [{"orders___status": "paid"}]
+    engine, tmp, _ = await _build_bigquery_engine(rows=data_rows)
+    try:
+        query = SlayerQuery(source_model="orders", dimensions=["status"])
+        with patch.object(
+            BigqueryDialect, "decode_result_keys", autospec=True,
+            side_effect=lambda self, rows, **kw: rows,
+        ) as spy:
+            await engine.execute(query, dry_run=True)
+        decoded_args = [call.args[-1] for call in spy.call_args_list]
+        assert data_rows not in decoded_args, (
+            "dry_run must not decode the fetched data rows."
+        )
+    finally:
+        tmp.cleanup()
 # build_engine — per-end-user OAuth grant. Every credentials kwarg the driver
 # has routes to service_account.Credentials, so grants go through its
 # user_supplied_client escape hatch; these pin that wiring.
@@ -699,6 +853,8 @@ def _oauth_ds(name: str = "bq", **overrides) -> DatasourceConfig:
 def test_build_engine_oauth_uses_user_supplied_client() -> None:
     """Needs both the ``user_supplied_client`` flag and the client in
     ``connect_args``; without the flag the driver builds an ADC client first."""
+    pytest.importorskip("google.cloud.bigquery")
+    pytest.importorskip("google.oauth2.credentials")
     dialect = BigqueryDialect()
     captured: dict = {}
 
@@ -912,8 +1068,11 @@ def test_bigquery_outer_wrap_order_by_keeps_full_alias(order_sql: str) -> None:
     assert "ORDER BY\n  `orders.created_at` DESC" in out, out
 
 
-async def test_bigquery_computed_measure_with_order_by_resolves(tmp_path) -> None:
-    """End-to-end: the ORDER BY alias matches the mangled outer projection."""
+async def test_bigquery_computed_measure_with_order_by_resolves() -> None:
+    """End-to-end: a computed measure ordered by a time dimension renders
+    through BigQuery's outer wrap with no empty backtick qualifier and a full
+    outer-scope ORDER BY alias (the outer-wrap fix, driven on the DEV-1450
+    engine pipeline rather than the deleted enrichment stack)."""
     model = SlayerModel(
         name="orders",
         sql_table="orders",
@@ -935,15 +1094,11 @@ async def test_bigquery_computed_measure_with_order_by_resolves(tmp_path) -> Non
         order=[OrderItem(column="created_at", direction="desc")],
         limit=6,
     )
-    enriched = await enrich_query(
-        query=query,
-        model=model,
-        resolve_dimension_via_joins=_noop_async,
-        resolve_cross_model_measure=_noop_async,
-        resolve_join_target=_noop_async,
-    )
-    sql = SQLGenerator(dialect="bigquery").generate(enriched=enriched, render_mode="outer")
+    sql = await _engine_generate(query=query, model=model, dialect="bigquery")
     assert "``" not in sql, f"empty identifier emitted: {sql}"
+    # BigQuery bans dots in output aliases, so the dotted result key
+    # ``orders.created_at`` is mangled to ``orders___created_at`` and must
+    # match across SELECT / GROUP BY / ORDER BY.
     assert "ORDER BY\n  `orders___created_at` DESC" in sql, sql
 
 

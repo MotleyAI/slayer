@@ -41,6 +41,7 @@ from slayer.engine.introspect_utils import (
     _get_column_comments_fallback,
     _get_columns_fallback,
 )
+from slayer.engine.schema_scope import SchemaRef
 from slayer.engine.schema_drift import IdempotentIngestResult, ModelAddition
 from slayer.mcp.server import _render_ingest_result
 from slayer.storage.yaml_storage import YAMLStorage
@@ -255,7 +256,7 @@ class TestColumnCommentsFallback:
     def test_dialect_query_shape(self, dialect: str, source_marker: str) -> None:
         engine, conn = _mock_conn_engine(dialect_name=dialect, execute_side_effect=[("id", "row id"), ("x", None)])
         result = _get_column_comments_fallback(
-            sa_engine=engine, table_name="orders", schema=None
+            sa_engine=engine, table_name="orders", ref=None
         )
         assert result == {"id": "row id"}
         args, kwargs = conn.execute.call_args
@@ -271,7 +272,7 @@ class TestColumnCommentsFallback:
     def test_schema_is_bound_not_interpolated(self, dialect: str) -> None:
         engine, conn = _mock_conn_engine(dialect_name=dialect, execute_side_effect=[("id", "row id")])
         result = _get_column_comments_fallback(
-            sa_engine=engine, table_name="orders", schema="s1"
+            sa_engine=engine, table_name="orders", ref=SchemaRef(name="s1")
         )
         assert result == {"id": "row id"}
         args, kwargs = conn.execute.call_args
@@ -282,7 +283,7 @@ class TestColumnCommentsFallback:
 
     def test_clickhouse_defaults_to_current_database(self) -> None:
         engine, conn = _mock_conn_engine(dialect_name="clickhouse", execute_side_effect=[("id", "c")])
-        _get_column_comments_fallback(sa_engine=engine, table_name="t", schema=None)
+        _get_column_comments_fallback(sa_engine=engine, table_name="t", ref=None)
         sql_str = str(conn.execute.call_args[0][0]).lower()
         assert "currentdatabase()" in sql_str
 
@@ -297,7 +298,7 @@ class TestColumnCommentsFallback:
     )
     def test_no_schema_scopes_to_default(self, dialect: str, default_marker: str) -> None:
         engine, conn = _mock_conn_engine(dialect_name=dialect, execute_side_effect=[("id", "c")])
-        _get_column_comments_fallback(sa_engine=engine, table_name="t", schema=None)
+        _get_column_comments_fallback(sa_engine=engine, table_name="t", ref=None)
         sql_str = str(conn.execute.call_args[0][0]).lower()
         assert default_marker in sql_str
 
@@ -306,7 +307,7 @@ class TestColumnCommentsFallback:
         _get_column_comments_fallback(
             sa_engine=engine,
             table_name="'; DROP TABLE users;--",
-            schema="'; DROP TABLE users;--",
+            ref=SchemaRef(name="'; DROP TABLE users;--"),
         )
         args, _ = conn.execute.call_args
         assert "DROP TABLE" not in str(args[0])
@@ -314,7 +315,7 @@ class TestColumnCommentsFallback:
     def test_unknown_dialect_returns_empty(self) -> None:
         engine, conn = _mock_conn_engine(dialect_name="mssql", execute_side_effect=[("id", "x")])
         assert _get_column_comments_fallback(
-            sa_engine=engine, table_name="t", schema=None
+            sa_engine=engine, table_name="t", ref=None
         ) == {}
         conn.execute.assert_not_called()
 
@@ -324,13 +325,13 @@ class TestColumnCommentsFallback:
 
         engine, _ = _mock_conn_engine(dialect_name="duckdb", execute_side_effect=_boom)
         assert _get_column_comments_fallback(
-            sa_engine=engine, table_name="t", schema=None
+            sa_engine=engine, table_name="t", ref=None
         ) == {}
 
     def test_blank_comments_filtered(self) -> None:
         engine, _ = _mock_conn_engine(dialect_name="mysql", execute_side_effect=[("a", ""), ("b", "  "), ("c", "ok")])
         assert _get_column_comments_fallback(
-            sa_engine=engine, table_name="t", schema=None
+            sa_engine=engine, table_name="t", ref=None
         ) == {"c": "ok"}
 
     def test_generic_fallback_merges_comments(self) -> None:
@@ -343,7 +344,7 @@ class TestColumnCommentsFallback:
             return res
 
         engine, _ = _mock_conn_engine(dialect_name="duckdb", execute_side_effect=_dispatch)
-        cols = _get_columns_fallback(sa_engine=engine, table_name="t", schema=None)
+        cols = _get_columns_fallback(sa_engine=engine, table_name="t", ref=None)
         by_name = {c["name"]: c for c in cols}
         assert by_name["id"]["comment"] == "row id"
         assert by_name["x"].get("comment") is None

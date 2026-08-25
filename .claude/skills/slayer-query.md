@@ -20,7 +20,9 @@ A `SlayerQuery` is a JSON/dict object. The same shape works across the REST API,
 }
 ```
 
-`order[].column` is the short alias (`count`, `revenue_sum`) — not the colon form.
+`order[].column` uses the short alias (`count`, `revenue_sum`) to order by a measure declared in the same query; undeclared order targets use formula (colon) syntax — see below.
+
+**Ordering by something you don't project.** `order` may name an undeclared column/aggregate/expression ("top-N by X, show only Y, Z"). Computed hidden, sorted on, and stripped from the result: an **aggregate** (`amount:sum`, `customers.revenue:sum`), an inline **transform** (`rank(amount:sum)`, `change(...)`, `cumsum`/`lag`/`lead`/`ntile`), an inline **composite** (`revenue:sum / cnt:sum`, `abs(amount:sum)`), and a **windowed** aggregate (`amount:sum(window='90d')`, alone or inside a composite). A **raw row column** sorts directly in a raw-rows query (`distinct_dimension_values: false`); in a grouped/dedup query there is no single value per group, so it sorts **per group** by the extreme the direction puts first — `asc` by each group's `min`, `desc` by each group's `max`. Write `{"column": "created_at:max", "direction": "asc"}` explicitly for the other one. A **joined** row column (`customers.regions.name`), and a derived column whose `sql` reaches through a join, behave the same way — the join is pulled in for the sort, and in a grouped query the wrap is computed per host row-group rather than globally. NULLs sort **last** in both directions on every database (SQL Server excepted: its native ordering is used, because the portable emulation makes the statement fail there). An order target SLayer cannot resolve is an error, never a silently unsorted result. Order expressions must use formula syntax for their operands, not the `name`s of measures declared in the same query: `{"column": "revenue:sum / cnt:sum"}` works, `{"column": "rev / cnt"}` is rejected.
 
 **Dim-only queries deduplicate.** A query with no measures and at least one dimension or time-dimension auto-emits `GROUP BY <dim/td aliases>` and returns the distinct combinations. The `GROUP BY` is applied before `LIMIT`, so a row cap can't silently drop unique tuples. To opt out, set `"distinct_dimension_values": false` on the query — emits raw rows (no top-level `GROUP BY`), with WHERE / ORDER BY / LIMIT applied as usual. Any measure reference in `measures` / `filters` / `order` raises `DistinctDimensionValuesError` in this mode.
 
@@ -46,7 +48,7 @@ Each entry in `measures` is either a bare formula string or a `{"formula": ..., 
 ]
 ```
 
-Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `count_distinct_approx`, `first`, `last`, `weighted_avg`, `median`, `percentile`, `stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, `covar_pop`. `count_distinct_approx` is dialect-aware (native approximate-distinct where available, exact `COUNT(DISTINCT)` fallback otherwise). Two-column `corr`/`covar_samp`/`covar_pop` take the second column as a named param: `price:corr(other=quantity)`. `sum` and `avg` accept an optional trailing-window: `revenue:sum(window='30d')`.
+Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `count_distinct_approx`, `first`, `last`, `weighted_avg`, `median`, `percentile`, `stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, `covar_pop`. `count_distinct_approx` is dialect-aware (native approximate-distinct where available, exact `COUNT(DISTINCT)` fallback otherwise). Two-column `corr`/`covar_samp`/`covar_pop` take the second column as a named param: `price:corr(other=quantity)`. `sum` and `avg` accept an optional trailing-window: `revenue:sum(window='30d')`. A time bound narrows which buckets come back, not which rows the window may reach — so `date_range` and an equivalent explicit filter (`created_at >= '2025-01-01'`) give identical windowed numbers. Only `<`/`<=`/`>`/`>=` against a time dimension's own column and a literal counts; other operators, non-time-dimension columns, bounds under `or`/`not`, and model-level `filters` all restrict the window's input as usual. Same rule for `time_shift`.
 
 For month-over-month / period-over-period growth use `change_pct(x)` (absolute delta: `change(x)`) — both are calendar-aware and partition-safe (the underlying self-join matches on all non-time dimensions, so per-group series reset cleanly). Reach for `time_shift` only when you need the shifted value itself as a term in custom arithmetic or at a different grain (`time_shift(revenue:sum, -1, 'year')` for year-over-year).
 
@@ -70,7 +72,7 @@ Result column naming: `revenue:sum` → `orders.revenue_sum` (colon becomes unde
 
 **Boolean logic**: `AND`, `OR`, `NOT`
 
-**String-hygiene scalars** (DEV-1378, lowercase only): `lower`, `upper`, `trim`, `replace`, `substr`, `instr`, `length`, `concat`. Plus the SQL `||` operator (folded into `concat(...)`). Examples: `"lower(status) = 'active'"`, `"length(replace(x, ',', '')) > 0"`, `"substr(s, 1, instr(s, ',') - 1) = 'first'"`, `"first || ' ' || last = 'jane doe'"`. Calls outside this allowlist (`json_extract`, `coalesce`, …) belong in `Column.sql` / `Column.filter` / `SlayerModel.filters` (Mode A SQL), not query filters.
+**Mode-B scalars** (matched case-insensitively): string hygiene (`lower`, `upper`, `trim`, `ltrim`, `rtrim`, `replace`, `substr`, `substring`, `instr`, `length`, `concat`), null handling (`coalesce`, `nullif`, `ifnull`), math (`round`, `abs`, `ceil`, `floor`, `sign`, `trunc`, `mod`, `log10`, …), and scalar min/max (`greatest`, `least` — NULL handling is backend-specific; `trunc` is 1-arg). Plus the SQL `||` operator (folded into `concat(...)`). Examples: `"lower(status) = 'active'"`, `"coalesce(nickname, name) = 'Ada'"`, `"length(replace(x, ',', '')) > 0"`, `"first || ' ' || last = 'jane doe'"`. Raw SQL functions outside the allowlist (`json_extract`, `date_trunc`, …) belong in `Column.sql` / `Column.filter` / `SlayerModel.filters` (Mode A SQL), not query filters.
 
 **Filtering on computed measures**: `"change(revenue:sum) > 0"`, `"last(change(revenue:sum)) < 0"`. Applied as post-filters on the outer query.
 
@@ -86,7 +88,10 @@ Result column naming: `revenue:sum` → `orders.revenue_sum` (colon becomes unde
 engine = SlayerQueryEngine(storage=storage)
 
 # Async (most callers — REST/MCP):
-result = await engine.execute(query=query)  # SlayerResponse with .data, .columns, .row_count, .sql, .attributes
+result = await engine.execute(query=query)  # SlayerResponse with .data, .columns, .row_count, .sql, .attributes, .warnings
+# .warnings holds advisories, each tagged with .kind — "normalization" for an input
+# rewrite, "unreachable_filter_dropped" for a filter dropped from a cross-model CTE
+# (it still applies at the host). Empty for a clean query.
 
 # With runtime variables (highest precedence — wins over query.variables / model defaults):
 result = await engine.execute(query=query, variables={"region": "US"})
@@ -178,7 +183,7 @@ Surfaces: Python SDK `engine.execute(query=[...])`; CLI `slayer query @file.json
 
 ## Result format
 
-Column keys use `model_name.column_name` format: `"orders._count"`, `"orders.revenue_sum"`. For multi-hop joined dimensions, the full path is included: `"orders.customers.regions.name"`. An explicit `name` on a measure spec swaps the canonical leaf — local (`{"formula": "amount:sum", "name": "rev"}` → `"orders.rev"`) or cross-model (`{"formula": "customers.revenue:sum", "name": "cust_rev"}` → `"orders.customers.cust_rev"`, hop path preserved). In any downstream stage of a `query_nested` DAG the column is exposed under the bare `name` (e.g. `cust_rev`) — that's what you type in stage 2's `formula` to reference the value. The response also includes `attributes` — a `ResponseAttributes` object with `.dimensions` and `.measures` dicts, each mapping column alias → `FieldMetadata` (label, format).
+Column keys use `model_name.column_name` format: `"orders._count"`, `"orders.revenue_sum"`. For multi-hop joined dimensions, the full path is included: `"orders.customers.regions.name"`. Columns come back in the order you declare them in the query — dimensions, then time dimensions, then measures — regardless of measure kind (local, cross-model, or windowed); hidden order-only / filter-only targets never appear. An explicit `name` on a measure spec swaps the canonical leaf — local (`{"formula": "amount:sum", "name": "rev"}` → `"orders.rev"`) or cross-model (`{"formula": "customers.revenue:sum", "name": "cust_rev"}` → `"orders.customers.cust_rev"`, hop path preserved). In any downstream stage of a `query_nested` DAG the column is exposed under the bare `name` (e.g. `cust_rev`) — that's what you type in stage 2's `formula` to reference the value. The response also includes `attributes` — a `ResponseAttributes` object with `.dimensions` and `.measures` dicts, each mapping column alias → `FieldMetadata` (label, format).
 
 ## Strict validation (v3)
 

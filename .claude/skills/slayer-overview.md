@@ -8,8 +8,8 @@ SLayer is a lightweight, agent-first semantic layer. Instead of writing raw SQL,
 
 ## Architecture
 
-- **SlayerQueryEngine** — central orchestrator. Its `_enrich()` method resolves a SlayerQuery + SlayerModel into an EnrichedQuery (fully resolved SQL expressions), then passes it to SQLGenerator for SQL generation
-- **SQLGenerator** — takes an EnrichedQuery (not SlayerQuery) and converts it to SQL via sqlglot (dialect-aware: postgres, mysql, bigquery, etc.)
+- **SlayerQueryEngine** — central orchestrator. It resolves a SlayerQuery + SlayerModel into a PlannedQuery (typed value keys interned into slots, each carrying its resolved expression, join path and phase) via `stage_planner.plan_query`, then passes it to SQLGenerator
+- **SQLGenerator** — takes a PlannedQuery (not SlayerQuery) and converts it to SQL via sqlglot (dialect-aware: postgres, mysql, bigquery, etc.)
 - **SlayerSQLClient** — executes SQL via SQLAlchemy with retry logic and statement timeouts
 - **Storage** — YAML or SQLite backends for model and datasource configs
 - **Ingestion** — auto-generates models from DB schema with rollup-style FK joins (denormalized LEFT JOINs), importing DB column/table comments into `description`s (fill-if-empty, never overwriting; BigQuery also fills the datasource description from the dataset description; SQLite has no comments). It can be triggered manually (`slayer ingest`, `ingest_datasource_models`, `POST /ingest`) or **on every server boot** via `slayer serve --ingest-on-startup` / `slayer mcp --ingest-on-startup` (also `SLAYER_INGEST_ON_STARTUP=1`, or `create_app/create_mcp_server(ingest_on_startup=True)` programmatically). It is idempotent and continues on per-datasource failures.
@@ -42,7 +42,7 @@ Search: `search` (three-channel: entity-overlap BM25 over memory tags + tantivy 
 slayer/
   core/       — DataType, SlayerModel, SlayerQuery, formula parser (formula.py), etc.
   sql/        — SQLGenerator, SlayerSQLClient
-  engine/     — SlayerQueryEngine, EnrichedQuery, auto-ingestion with rollup joins
+  engine/     — SlayerQueryEngine, PlannedQuery, auto-ingestion with rollup joins
   storage/    — YAMLStorage, SQLiteStorage, StorageBackend protocol
   api/        — FastAPI server
   mcp/        — MCP server (FastMCP)

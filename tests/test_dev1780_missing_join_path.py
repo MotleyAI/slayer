@@ -1,18 +1,34 @@
-"""DEV-1780 — a dotted dimension/time-dimension whose hops are not all direct
-joins must never emit invalid SQL (an unbound ``A__B`` alias in SELECT/GROUP BY
-with no matching join). The engine now:
+"""DEV-1780 — a dotted dimension / time-dimension whose hops are not all direct
+joins must never emit invalid SQL (an unbound ``A__B`` alias in SELECT / GROUP BY
+with no matching join).
 
-* auto-resolves a SHORT-FORM ref (``Consumer.name`` — target model only) when
-  exactly one route reaches the target (result key = full routed path);
-* rejects an ambiguous short form, an unreachable target, or an explicit
-  multi-hop chain with a broken hop, raising ``UnresolvableDimensionJoinError``
-  with a route-aware suggestion;
-* keeps a post-``_resolve_joins`` safety-net guard so ``enrich_query`` can never
-  return an EnrichedQuery with an unbound dimension alias.
+On main this was a *lenient fall-through* hole in enrichment that had to be
+plugged with a routing pre-pass + a post-``_resolve_joins`` safety net, and main
+also added a FEATURE: short-form auto-routing (``Consumer.name`` with a unique
+route auto-resolves to the full path), reported through a new
+``UnresolvableDimensionJoinError`` with route-aware suggestions.
 
-Scope: dimensions + time-dimensions only (filters / cross-model measures already
-reject). Out of scope: multi-stage lenient fall-through; leaf-column-missing-on-
-a-valid-path.
+The DEV-1450 pipeline closes the hole *structurally* instead: ``binding.py``
+(`_resolve_dotted`) walks a dotted path hop by hop and every hop must be a direct
+join of the current model, else it raises ``UnknownReferenceError`` at BIND time —
+before any SQL is generated. So an unbound alias can never reach the emitted SQL,
+for dimensions and time-dimensions alike.
+
+**Design decision (DEV-1450, strict-rejection-only):** short-form auto-routing is
+intentionally NOT ported. Implicit route resolution is exactly the kind of hidden
+rule the principled-syntax redesign avoids — a short form (``Consumer.name``),
+a broken explicit chain (``Customer.Consumer.name`` off a root with no direct
+Customer join), an ambiguous target, and an unreachable target are all rejected
+identically with a typed error that names the missing hop and the available
+joins. ``UnresolvableDimensionJoinError`` and ``JoinGraph.count_simple_paths``
+merged in from #305 are retained as infrastructure (the latter unit-tested below)
+should a future issue choose to add route-aware suggestions; neither is on the
+live rejection path today.
+
+Scope: dimensions + time-dimensions. Filters / cross-model measures already
+reject unreachable paths. Downstream (named-query) stages see a flat schema, so a
+dotted ref past a stage boundary is an ``IllegalScopeReferenceError`` — a
+different, stricter rule than main's lenient multi-stage fall-through.
 """
 
 from __future__ import annotations
@@ -20,14 +36,12 @@ from __future__ import annotations
 import pytest
 import sqlglot
 
-from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.errors import UnresolvableDimensionJoinError
+from slayer.core.enums import DataType
+from slayer.core.errors import IllegalScopeReferenceError, UnknownReferenceError
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
-from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
-from slayer.engine.enrichment import enrich_query
+from slayer.core.query import SlayerQuery
 from slayer.engine.join_graph import JoinGraph
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.generator import SQLGenerator
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -51,10 +65,6 @@ def _t(name: str) -> Column:
     return Column(name=name, sql=name, type=DataType.TEXT)
 
 
-async def _noop_async(**kw):  # NOSONAR(S7503) — resolver-callback contract is async
-    return None
-
-
 async def _save_chain(
     storage: YAMLStorage,
     *,
@@ -69,6 +79,9 @@ async def _save_chain(
       unreachable from Invoice.
     Returns the Invoice (root) model.
     """
+    await storage.save_datasource(
+        DatasourceConfig(name="test", type="sqlite", database=":memory:")
+    )
     await storage.save_model(SlayerModel(
         name="Consumer", sql_table="Consumer", data_source="test",
         columns=[_pk(), _t("name"), _t("email"),
@@ -100,15 +113,16 @@ async def _save_chain(
     return invoice
 
 
-async def _engine(tmp_path, **knobs) -> tuple[SlayerQueryEngine, SlayerModel]:
+async def _engine(tmp_path, **knobs) -> SlayerQueryEngine:
     storage = YAMLStorage(base_dir=str(tmp_path))
-    invoice = await _save_chain(storage, **knobs)
-    return SlayerQueryEngine(storage=storage), invoice
+    await _save_chain(storage, **knobs)
+    return SlayerQueryEngine(storage=storage)
 
 
-async def _sql(engine: SlayerQueryEngine, query: SlayerQuery, model: SlayerModel) -> str:
-    enriched = await engine._enrich(query=query, model=model)
-    return SQLGenerator(dialect="postgres").generate(enriched=enriched)
+async def _dry_sql(engine: SlayerQueryEngine, query: SlayerQuery) -> str:
+    resp = await engine.execute(query=query, dry_run=True)
+    assert resp.sql is not None
+    return _norm(resp.sql)
 
 
 def _amount_query(**kw) -> dict:
@@ -116,512 +130,215 @@ def _amount_query(**kw) -> dict:
 
 
 # ===========================================================================
-# Short-form auto-routing (unique)
+# The hole is closed: a valid full path binds every hop
 # ===========================================================================
 
-class TestShortFormUniqueRoute:
-    async def test_short_form_unique_resolves_and_emits_all_joins(self, tmp_path) -> None:
-        """``Consumer.name`` with a single route resolves; every JOIN on the
-        routed chain is emitted and the SQL parses on Postgres."""
-        engine, invoice = await _engine(tmp_path)
-        query = SlayerQuery(**_amount_query(
-            dimensions=[ColumnRef(name="name", model="Consumer")],
-        ))
-        sql = _norm(await _sql(engine, query, invoice))
-        assert "LEFT JOIN \"Subscription\" AS Subscription " in sql + " "
-        assert "AS Subscription__Customer " in sql
+class TestValidPathBindsAllJoins:
+    async def test_full_valid_path_resolves_all_joins_bound(self, tmp_path) -> None:
+        """``Subscription.Customer.Consumer.name`` — every hop is a direct join,
+        so each JOIN is emitted, the projected alias is bound, and the SQL parses
+        on Postgres (no unbound ``__`` alias)."""
+        engine = await _engine(tmp_path)
+        sql = await _dry_sql(engine, SlayerQuery(**_amount_query(
+            dimensions=["Subscription.Customer.Consumer.name"],
+        )))
+        assert "AS Subscription__Customer " in sql + " "
         assert "AS Subscription__Customer__Consumer " in sql
-        # No unbound alias: the projected table alias is joined.
         assert "Subscription__Customer__Consumer.name" in sql
         sqlglot.parse_one(sql, dialect="postgres")
 
-    async def test_short_form_unique_result_key_is_full_routed_path(self, tmp_path) -> None:
-        """Approved: the result column key for a resolved short form is the
-        FULL routed path, not the short form the user typed."""
-        engine, invoice = await _engine(tmp_path)
-        query = SlayerQuery(**_amount_query(
-            dimensions=[ColumnRef(name="name", model="Consumer")],
-        ))
-        enriched = await engine._enrich(query=query, model=invoice)
-        dim = enriched.dimensions[0]
-        assert dim.alias == "Invoice.Subscription.Customer.Consumer.name"
-        assert dim.model_name == "Subscription__Customer__Consumer"
-
-    async def test_short_form_time_dimension_unique_resolves(self, tmp_path) -> None:
-        """A short-form TIME dimension resolves via its unique route too."""
-        engine, invoice = await _engine(tmp_path)
-        query = SlayerQuery(
-            source_model="Invoice",
-            measures=[{"formula": "amount:sum", "name": "amt"}],
-            time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="signup_at", model="Consumer"),
-                granularity=TimeGranularity.MONTH,
-            )],
-        )
-        sql = _norm(await _sql(engine, query, invoice))
-        assert "AS Subscription__Customer__Consumer " in sql
-        sqlglot.parse_one(sql, dialect="postgres")
-
-
-# ===========================================================================
-# Rejections (ambiguous / unreachable / broken explicit chain)
-# ===========================================================================
-
-class TestRejections:
-    async def test_short_form_ambiguous_rejects_and_suggests_shortest(self, tmp_path) -> None:
-        """Two routes reach Consumer → the short form is ambiguous → reject and
-        suggest the shortest deterministic full path (``Customer.Consumer.name``)."""
-        engine, invoice = await _engine(tmp_path, direct_customer=True)
-        query = SlayerQuery(**_amount_query(
-            dimensions=[ColumnRef(name="name", model="Consumer")],
-        ))
-        with pytest.raises(UnresolvableDimensionJoinError) as ei:
-            await engine._enrich(query=query, model=invoice)
-        err = ei.value
-        assert err.suggested_path == "Customer.Consumer.name"
-        assert "multiple" in str(err).lower()
-
-    async def test_short_form_unreachable_rejects_without_suggestion(self, tmp_path) -> None:
-        """Target not reachable by any join → reject with no suggestion."""
-        engine, invoice = await _engine(tmp_path, drop_customer_consumer=True)
-        query = SlayerQuery(**_amount_query(
-            dimensions=[ColumnRef(name="name", model="Consumer")],
-        ))
-        with pytest.raises(UnresolvableDimensionJoinError) as ei:
-            await engine._enrich(query=query, model=invoice)
-        err = ei.value
-        assert err.suggested_path is None
-        assert "Did you mean" not in str(err)
-
-    async def test_ticket_shape_explicit_broken_chain_suggests_short_form(self, tmp_path) -> None:
-        """The DEV-1780 repro: ``Customer.Consumer.name`` where Invoice has no
-        direct Customer join. The explicit chain is broken → reject (never
-        auto-fixed); Consumer is uniquely reachable → suggest the short form."""
-        engine, invoice = await _engine(tmp_path)  # no direct Customer join
-        query = SlayerQuery(**_amount_query(
-            dimensions=[ColumnRef(name="name", model="Customer.Consumer")],
-        ))
-        with pytest.raises(UnresolvableDimensionJoinError) as ei:
-            await engine._enrich(query=query, model=invoice)
-        err = ei.value
-        assert err.reference == "Customer.Consumer.name"
-        assert err.suggested_path == "Consumer.name"
-        assert "Did you mean 'Consumer.name'" in str(err)
-
-    async def test_explicit_broken_chain_ambiguous_target_suggests_shortest_full_path(
-        self, tmp_path
-    ) -> None:
-        """Broken explicit chain (``Subscription.Consumer`` — Subscription has no
-        direct Consumer join) whose target Consumer is reachable by >=2 routes →
-        reject and suggest the shortest full path."""
-        engine, invoice = await _engine(tmp_path, direct_customer=True)
-        query = SlayerQuery(**_amount_query(
-            dimensions=[ColumnRef(name="name", model="Subscription.Consumer")],
-        ))
-        with pytest.raises(UnresolvableDimensionJoinError) as ei:
-            await engine._enrich(query=query, model=invoice)
-        assert ei.value.suggested_path == "Customer.Consumer.name"
-
-    async def test_broken_time_dimension_chain_rejects(self, tmp_path) -> None:
-        """The invalid-SQL hole applies to time dimensions too: an explicit
-        broken chain time-dim rejects (uniquely-reachable target → short-form
-        suggestion)."""
-        engine, invoice = await _engine(tmp_path)
-        query = SlayerQuery(
-            source_model="Invoice",
-            measures=[{"formula": "amount:sum", "name": "amt"}],
-            time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="signup_at", model="Customer.Consumer"),
-                granularity=TimeGranularity.MONTH,
-            )],
-        )
-        with pytest.raises(UnresolvableDimensionJoinError) as ei:
-            await engine._enrich(query=query, model=invoice)
-        assert ei.value.suggested_path == "Consumer.signup_at"
-
-    async def test_error_message_lists_available_root_joins(self, tmp_path) -> None:
-        engine, invoice = await _engine(tmp_path)
-        query = SlayerQuery(**_amount_query(
-            dimensions=[ColumnRef(name="name", model="Customer.Consumer")],
-        ))
-        with pytest.raises(UnresolvableDimensionJoinError) as ei:
-            await engine._enrich(query=query, model=invoice)
-        # Root Invoice's own joins are surfaced as a hint.
-        assert "Subscription" in str(ei.value)
-
-
-# ===========================================================================
-# Order-by / main_time_dimension consistency (Codex High #1)
-# ===========================================================================
-
-class TestOrderAndMainTimeConsistency:
-    async def test_short_form_with_matching_order_by_resolves(self, tmp_path) -> None:
-        """Projecting a short-form dim AND ordering by the same short form must
-        stay consistent (the order ref is rewritten with the dim) — the ORDER BY
-        binds to the full routed projection key, not the unbound short form."""
-        engine, invoice = await _engine(tmp_path)
-        query = SlayerQuery(**_amount_query(
-            dimensions=[ColumnRef(name="name", model="Consumer")],
-            order=[OrderItem(column=ColumnRef(name="name", model="Consumer"), direction="desc")],
-        ))
-        sql = _norm(await _sql(engine, query, invoice))
-        order_tail = sql.split("ORDER BY", 1)[1]
-        assert '"Invoice.Subscription.Customer.Consumer.name"' in order_tail
-        sqlglot.parse_one(sql, dialect="postgres")
-
-    async def test_short_form_main_time_dimension_is_rewritten(self, tmp_path) -> None:
-        """A routed short-form time dimension selected via ``main_time_dimension``
-        must have that reference rewritten to the full routed path so the
-        resolved time axis matches the enriched time-dimension alias."""
-        engine, invoice = await _engine(tmp_path)
-        query = SlayerQuery(
-            source_model="Invoice",
-            measures=[{"formula": "cumsum(amount:sum)", "name": "cs"}],
-            time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="issued_at"),
-                              granularity=TimeGranularity.MONTH),
-                TimeDimension(dimension=ColumnRef(name="signup_at", model="Consumer"),
-                              granularity=TimeGranularity.MONTH),
-            ],
-            main_time_dimension="Consumer.signup_at",
-        )
-        enriched = await engine._enrich(query=query, model=invoice)
-        # The cumsum transform's time axis resolves to the routed dim's alias —
-        # proving main_time_dimension was rewritten (else it would be the unbound
-        # "Invoice.Consumer.signup_at").
-        assert enriched.transforms[0].time_alias == "Invoice.Subscription.Customer.Consumer.signup_at"
-
-
-# ===========================================================================
-# Regressions — valid paths must be untouched
-# ===========================================================================
-
-class TestValidPathsUnchanged:
-    async def test_valid_explicit_two_hop_unchanged(self, tmp_path) -> None:
-        """A fully-direct explicit two-hop chain resolves exactly as before."""
-        engine, invoice = await _engine(tmp_path, direct_customer=True)
-        query = SlayerQuery(**_amount_query(
-            dimensions=[ColumnRef(name="name", model="Customer.Consumer")],
-        ))
-        enriched = await engine._enrich(query=query, model=invoice)
-        dim = enriched.dimensions[0]
-        assert dim.alias == "Invoice.Customer.Consumer.name"
-        assert dim.model_name == "Customer__Consumer"
-        sql = _norm(SQLGenerator(dialect="postgres").generate(enriched=enriched))
+    async def test_valid_two_hop_direct_path(self, tmp_path) -> None:
+        """With a direct Invoice->Customer join, the 2-hop ``Customer.Consumer.name``
+        is fully direct and resolves."""
+        engine = await _engine(tmp_path, direct_customer=True)
+        sql = await _dry_sql(engine, SlayerQuery(**_amount_query(
+            dimensions=["Customer.Consumer.name"],
+        )))
         assert "AS Customer__Consumer " in sql
         sqlglot.parse_one(sql, dialect="postgres")
 
-    async def test_missing_terminal_column_on_valid_path_unchanged(self, tmp_path) -> None:
-        """A missing leaf column on an otherwise-valid path is a DIFFERENT issue
-        (the join alias IS bound). The pre-existing lenient behavior is
-        unchanged: enrichment succeeds with the bound alias — no
-        UnresolvableDimensionJoinError."""
-        engine, invoice = await _engine(tmp_path, direct_customer=True)
-        query = SlayerQuery(**_amount_query(
-            dimensions=[ColumnRef(name="does_not_exist", model="Customer.Consumer")],
+    async def test_valid_time_dimension_full_path(self, tmp_path) -> None:
+        """A full-path TIME dimension resolves and binds its join too."""
+        engine = await _engine(tmp_path)
+        sql = await _dry_sql(engine, SlayerQuery(
+            source_model="Invoice",
+            measures=[{"formula": "amount:sum", "name": "amt"}],
+            time_dimensions=[{
+                "dimension": "Subscription.Customer.Consumer.signup_at",
+                "granularity": "month",
+            }],
         ))
-        enriched = await engine._enrich(query=query, model=invoice)  # must not raise
-        assert enriched.dimensions[0].model_name == "Customer__Consumer"
+        assert "AS Subscription__Customer__Consumer " in sql
+        sqlglot.parse_one(sql, dialect="postgres")
 
     async def test_self_qualified_root_col_is_local(self, tmp_path) -> None:
         """A self-qualified ``Invoice.status`` normalizes to a local ref (no
         circular-join error, no routing)."""
-        engine, invoice = await _engine(tmp_path)
-        query = SlayerQuery(**_amount_query(
-            dimensions=[ColumnRef(name="status", model="Invoice")],
-        ))
-        enriched = await engine._enrich(query=query, model=invoice)
-        assert enriched.dimensions[0].model_name == "Invoice"
+        engine = await _engine(tmp_path)
+        sql = await _dry_sql(engine, SlayerQuery(**_amount_query(
+            dimensions=["Invoice.status"],
+        )))
+        sqlglot.parse_one(sql, dialect="postgres")
 
-    async def test_root_prefixed_explicit_chain_normalized(self, tmp_path) -> None:
-        """``Invoice.Customer.Consumer.name`` (root-prefixed) normalizes to the
-        valid ``Customer.Consumer`` chain."""
-        engine, invoice = await _engine(tmp_path, direct_customer=True)
-        query = SlayerQuery(**_amount_query(
-            dimensions=[ColumnRef(name="name", model="Invoice.Customer.Consumer")],
-        ))
-        enriched = await engine._enrich(query=query, model=invoice)
-        assert enriched.dimensions[0].model_name == "Customer__Consumer"
-
-
-# ===========================================================================
-# Internal enrichments unaffected (re-rooting / stage)
-# ===========================================================================
-
-class TestInternalEnrichmentsUnaffected:
-    async def test_cross_model_rerooting_still_enriches(self, tmp_path) -> None:
-        """A cross-model measure with a shared source-local dim (the re-rooting
-        shape) must still enrich without raising — the re-rooted CTE carries
-        ``orders.status`` which never binds to a base-table join."""
-        storage = YAMLStorage(base_dir=str(tmp_path))
-        await storage.save_model(SlayerModel(
-            name="customers", sql_table="customers", data_source="test",
-            columns=[_pk(), _d("revenue")],
-        ))
-        orders = SlayerModel(
-            name="orders", sql_table="orders", data_source="test",
-            columns=[_pk(), _d("customer_id"), _t("status")],
-            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
-        )
-        await storage.save_model(orders)
-        engine = SlayerQueryEngine(storage=storage)
-        query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[{"formula": "customers.revenue:sum", "name": "cust_rev"}],
-        )
-        enriched = await engine._enrich(query=query, model=orders)  # must not raise
-        assert enriched.cross_model_measures
-
-    async def test_multi_stage_unresolved_ref_still_falls_through(self, tmp_path) -> None:
-        """An outer stage referencing a dotted dim the inner stage did not
-        project stays a lenient fall-through (virtual-stage exclusion) — no
-        UnresolvableDimensionJoinError."""
-        storage = YAMLStorage(base_dir=str(tmp_path))
-        await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=":memory:"))
-        await _save_chain(storage)  # Invoice -> Subscription -> Customer -> Consumer
-        engine = SlayerQueryEngine(storage=storage)
-        inner = SlayerQuery(
-            name="s1", source_model="Invoice",
-            dimensions=[ColumnRef(name="name", model="Subscription.Customer.Consumer")],
-            measures=[{"formula": "*:count"}],
-        )
-        outer = SlayerQuery(
-            source_model="s1",
-            dimensions=[ColumnRef(name="email", model="Subscription.Customer.Consumer")],
-            measures=[{"formula": "*:count"}],
-        )
-        resp = await engine.execute(query=[inner, outer], dry_run=True)  # must not raise our error
-        assert resp.sql is not None
+    async def test_root_prefixed_full_path_normalized(self, tmp_path) -> None:
+        """``Invoice.Subscription.Customer.Consumer.name`` (root-prefixed) strips
+        the self-prefix and resolves the remaining valid chain."""
+        engine = await _engine(tmp_path)
+        sql = await _dry_sql(engine, SlayerQuery(**_amount_query(
+            dimensions=["Invoice.Subscription.Customer.Consumer.name"],
+        )))
+        assert "AS Subscription__Customer__Consumer " in sql
+        sqlglot.parse_one(sql, dialect="postgres")
 
 
 # ===========================================================================
-# Enrichment safety-net guard (direct enrich_query caller)
+# Every unbound shape rejects at bind (dimensions AND time-dimensions)
 # ===========================================================================
 
-class TestEnrichmentGuard:
-    @staticmethod
-    def _ghost_model() -> SlayerModel:
-        return SlayerModel(
-            name="Invoice", sql_table="Invoice", data_source="test",
-            columns=[_pk(), _d("amount"),
-                     Column(name="issued_at", sql="issued_at", type=DataType.TIMESTAMP)],
-        )
+class TestUnboundPathsReject:
+    async def test_broken_explicit_chain_rejects(self, tmp_path) -> None:
+        """The DEV-1780 repro: ``Customer.Consumer.name`` where Invoice has no
+        direct Customer join. The first hop has no join → typed rejection at
+        bind; the message names the missing hop and the root's real joins."""
+        engine = await _engine(tmp_path)
+        with pytest.raises(UnknownReferenceError) as ei:
+            await _dry_sql(engine, SlayerQuery(**_amount_query(
+                dimensions=["Customer.Consumer.name"],
+            )))
+        msg = str(ei.value)
+        assert "Customer" in msg
+        assert "Subscription" in msg  # available root join surfaced as a hint
 
-    async def test_direct_enrich_query_rejects_unbound_dim_alias(self) -> None:
-        """Called directly (bypassing the engine routing pre-pass), enrich_query
-        must never return an EnrichedQuery with an unbound dim alias. The base
-        error names the user's reference (not the internal alias) and carries no
-        route (enrich_query has no graph)."""
-        query = SlayerQuery(
-            source_model="Invoice",
-            measures=[{"formula": "amount:sum", "name": "amt"}],
-            dimensions=[ColumnRef(name="x", model="Ghost")],
-        )
-        model = self._ghost_model()
-        with pytest.raises(UnresolvableDimensionJoinError) as ei:
-            await enrich_query(
-                query=query, model=model,
-                resolve_dimension_via_joins=_noop_async,
-                resolve_cross_model_measure=_noop_async,
-                resolve_join_target=_noop_async,
-            )
-        err = ei.value
-        assert err.reference == "Ghost.x"
-        assert err.root_model == "Invoice"
-        assert err.suggested_path is None
-        assert "Did you mean" not in str(err)
+    async def test_short_form_rejects_no_auto_routing(self, tmp_path) -> None:
+        """DEV-1450 strict-rejection: a short form ``Consumer.name`` (target only)
+        is NOT auto-routed to its unique full path — it is rejected because
+        Invoice has no direct Consumer join."""
+        engine = await _engine(tmp_path)
+        with pytest.raises(UnknownReferenceError):
+            await _dry_sql(engine, SlayerQuery(**_amount_query(
+                dimensions=["Consumer.name"],
+            )))
 
-    async def test_guard_covers_time_dimensions(self) -> None:
-        query = SlayerQuery(
-            source_model="Invoice",
-            measures=[{"formula": "amount:sum", "name": "amt"}],
-            time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="issued_at", model="Ghost"),
-                granularity=TimeGranularity.MONTH,
-            )],
-        )
-        model = self._ghost_model()
-        with pytest.raises(UnresolvableDimensionJoinError) as ei:
-            await enrich_query(
-                query=query, model=model,
-                resolve_dimension_via_joins=_noop_async,
-                resolve_cross_model_measure=_noop_async,
-                resolve_join_target=_noop_async,
-            )
-        assert ei.value.reference == "Ghost.issued_at"
+    async def test_short_form_ambiguous_target_rejects(self, tmp_path) -> None:
+        """Two routes reach Consumer (direct + via Subscription); the short form
+        is still rejected (no direct Invoice->Consumer join)."""
+        engine = await _engine(tmp_path, direct_customer=True)
+        with pytest.raises(UnknownReferenceError):
+            await _dry_sql(engine, SlayerQuery(**_amount_query(
+                dimensions=["Consumer.name"],
+            )))
 
-    async def test_guard_reports_first_unbound_dimension(self) -> None:
-        query = SlayerQuery(
-            source_model="Invoice",
-            measures=[{"formula": "amount:sum", "name": "amt"}],
-            dimensions=[ColumnRef(name="a", model="Ghost1"),
-                        ColumnRef(name="b", model="Ghost2")],
-        )
-        model = self._ghost_model()
-        with pytest.raises(UnresolvableDimensionJoinError) as ei:
-            await enrich_query(
-                query=query, model=model,
-                resolve_dimension_via_joins=_noop_async,
-                resolve_cross_model_measure=_noop_async,
-                resolve_join_target=_noop_async,
-            )
-        assert ei.value.reference == "Ghost1.a"
+    async def test_unreachable_target_rejects(self, tmp_path) -> None:
+        """Consumer unreachable by any join → rejected."""
+        engine = await _engine(tmp_path, drop_customer_consumer=True)
+        with pytest.raises(UnknownReferenceError):
+            await _dry_sql(engine, SlayerQuery(**_amount_query(
+                dimensions=["Consumer.name"],
+            )))
 
-    async def test_guard_suppressed_when_enforce_join_binding_false(self) -> None:
-        """The guard is off for the internal re-rooted path (enforce_join_binding
-        =False) so deliberately-carried unbound shared dims survive."""
-        query = SlayerQuery(
-            source_model="Invoice",
-            measures=[{"formula": "amount:sum", "name": "amt"}],
-            dimensions=[ColumnRef(name="x", model="Ghost")],
-        )
-        enriched = await enrich_query(
-            query=query, model=self._ghost_model(),
-            resolve_dimension_via_joins=_noop_async,
-            resolve_cross_model_measure=_noop_async,
-            resolve_join_target=_noop_async,
-            enforce_join_binding=False,
-        )
-        assert enriched.dimensions[0].model_name == "Ghost"
+    async def test_broken_time_dimension_chain_rejects(self, tmp_path) -> None:
+        """The invalid-SQL hole applies to time dimensions too: an explicit broken
+        chain time-dim rejects at bind."""
+        engine = await _engine(tmp_path)
+        with pytest.raises(UnknownReferenceError):
+            await _dry_sql(engine, SlayerQuery(
+                source_model="Invoice",
+                measures=[{"formula": "amount:sum", "name": "amt"}],
+                time_dimensions=[{
+                    "dimension": "Customer.Consumer.signup_at",
+                    "granularity": "month",
+                }],
+            ))
+
+    async def test_missing_terminal_column_on_valid_path_rejects(self, tmp_path) -> None:
+        """Stricter than main (which was lenient here): a missing leaf column on
+        an otherwise-valid path is also a typed rejection — the join alias binds
+        but the column does not exist."""
+        engine = await _engine(tmp_path, direct_customer=True)
+        with pytest.raises(UnknownReferenceError):
+            await _dry_sql(engine, SlayerQuery(**_amount_query(
+                dimensions=["Customer.Consumer.does_not_exist"],
+            )))
 
 
 # ===========================================================================
-# Routing gates / safety limits
+# Diagnostics preserved: a genuine cycle keeps its own error
 # ===========================================================================
-
-class TestRoutingGates:
-    async def test_no_auto_routing_when_named_queries_present(self, tmp_path) -> None:
-        """Short-form auto-routing is disabled when named-query stages are in
-        scope (Option A — deferred). The ref falls to the binding guard and is
-        rejected rather than routed."""
-        engine, invoice = await _engine(tmp_path)
-        query = SlayerQuery(**_amount_query(
-            dimensions=[ColumnRef(name="name", model="Consumer")],
-        ))
-        named = {"sibling": SlayerQuery(source_model="Invoice", measures=[{"formula": "*:count"}])}
-        with pytest.raises(UnresolvableDimensionJoinError):
-            await engine._enrich(query=query, model=invoice, named_queries=named)
-
-    async def test_routing_is_datasource_scoped(self, tmp_path) -> None:
-        """Routing only considers models in the root's datasource. A target that
-        lives in a DIFFERENT datasource is not a candidate route (cross-datasource
-        joins aren't executable) — the short form is rejected as unreachable."""
-        storage = YAMLStorage(base_dir=str(tmp_path))
-        # Consumer lives in a different datasource, so the "test" graph can't
-        # reach it even though Customer declares a join to it.
-        await storage.save_model(SlayerModel(
-            name="Consumer", sql_table="Consumer", data_source="other",
-            columns=[_pk(), _t("name")],
-        ))
-        await storage.save_model(SlayerModel(
-            name="Customer", sql_table="Customer", data_source="test",
-            columns=[_pk(), _d("consumerId")],
-            joins=[ModelJoin(target_model="Consumer", join_pairs=[["consumerId", "id"]])],
-        ))
-        invoice = SlayerModel(
-            name="Invoice", sql_table="Invoice", data_source="test",
-            columns=[_pk(), _d("customerId"), _d("amount")],
-            joins=[ModelJoin(target_model="Customer", join_pairs=[["customerId", "id"]])],
-        )
-        await storage.save_model(invoice)
-        engine = SlayerQueryEngine(storage=storage)
-        query = SlayerQuery(**_amount_query(
-            dimensions=[ColumnRef(name="name", model="Consumer")],
-        ))
-        with pytest.raises(UnresolvableDimensionJoinError) as ei:
-            await engine._enrich(query=query, model=invoice)
-        assert ei.value.suggested_path is None
-
-
-class TestInlineModelJoins:
-    async def test_routing_honors_passed_root_joins_not_stored(self, tmp_path) -> None:
-        """The routing graph must use the passed root's joins (which may include
-        inline / ModelExtension joins absent from storage). Here the stored graph
-        has no Invoice node; the inline Invoice's join makes Consumer uniquely
-        reachable, so the short form resolves instead of being wrongly rejected."""
-        storage = YAMLStorage(base_dir=str(tmp_path))
-        await storage.save_model(SlayerModel(
-            name="Consumer", sql_table="Consumer", data_source="test",
-            columns=[_pk(), _t("name")],
-        ))
-        await storage.save_model(SlayerModel(
-            name="Customer", sql_table="Customer", data_source="test",
-            columns=[_pk(), _d("consumerId")],
-            joins=[ModelJoin(target_model="Consumer", join_pairs=[["consumerId", "id"]])],
-        ))
-        # Invoice is NOT saved — it only exists as the inline model passed in.
-        invoice = SlayerModel(
-            name="Invoice", sql_table="Invoice", data_source="test",
-            columns=[_pk(), _d("customerId"), _d("amount")],
-            joins=[ModelJoin(target_model="Customer", join_pairs=[["customerId", "id"]])],
-        )
-        engine = SlayerQueryEngine(storage=storage)
-        query = SlayerQuery(**_amount_query(
-            dimensions=[ColumnRef(name="name", model="Consumer")],
-        ))
-        enriched = await engine._enrich(query=query, model=invoice)  # must not raise
-        assert enriched.dimensions[0].model_name == "Customer__Consumer"
-
-
-class TestPrePassPurity:
-    async def test_pre_pass_does_not_mutate_input_query(self, tmp_path) -> None:
-        """Routing rewrites a COPY — the caller's query keeps the short forms."""
-        engine, invoice = await _engine(tmp_path)
-        query = SlayerQuery(**_amount_query(
-            dimensions=[ColumnRef(name="name", model="Consumer")],
-            order=[OrderItem(column=ColumnRef(name="name", model="Consumer"), direction="asc")],
-        ))
-        await engine._enrich(query=query, model=invoice)
-        assert query.dimensions[0].model == "Consumer"
-        assert query.order[0].column.model == "Consumer"
-
 
 class TestDiagnosticsPreserved:
-    async def test_repeated_hop_keeps_circular_error(self, tmp_path) -> None:
-        """A repeated-hop path is a pre-existing circular-join error; it must keep
-        its own diagnostic and NOT be converted into
-        UnresolvableDimensionJoinError (the pre-pass catches only _NoJoinError)."""
-        engine, invoice = await _engine(tmp_path, direct_customer=True)
-        query = SlayerQuery(**_amount_query(
-            dimensions=[ColumnRef(name="name", model="Customer.Customer")],
+    async def test_circular_join_keeps_its_own_error(self, tmp_path) -> None:
+        """A path that revisits a model is a circular-join error (a distinct
+        ValueError), not folded into the missing-join rejection."""
+        storage = YAMLStorage(base_dir=str(tmp_path))
+        await storage.save_datasource(
+            DatasourceConfig(name="test", type="sqlite", database=":memory:")
+        )
+        # A <-> B cycle.
+        await storage.save_model(SlayerModel(
+            name="B", sql_table="B", data_source="test",
+            columns=[_pk(), _d("a_id"), _t("label")],
+            joins=[ModelJoin(target_model="A", join_pairs=[["a_id", "id"]])],
         ))
+        await storage.save_model(SlayerModel(
+            name="A", sql_table="A", data_source="test",
+            columns=[_pk(), _d("b_id"), _d("amount")],
+            joins=[ModelJoin(target_model="B", join_pairs=[["b_id", "id"]])],
+        ))
+        engine = SlayerQueryEngine(storage=storage)
         with pytest.raises(ValueError) as ei:
-            await engine._enrich(query=query, model=invoice)
-        assert not isinstance(ei.value, UnresolvableDimensionJoinError)
+            await _dry_sql(engine, SlayerQuery(
+                source_model="A",
+                measures=[{"formula": "amount:sum", "name": "amt"}],
+                dimensions=["B.A.amount"],
+            ))
         assert "ircular" in str(ei.value)
 
 
 # ===========================================================================
-# Error class contract
+# Internal enrichments unaffected (cross-model re-rooting)
 # ===========================================================================
 
-class TestErrorContract:
-    def test_is_value_error_and_exposes_fields(self) -> None:
-        err = UnresolvableDimensionJoinError(
-            reference="Customer.Consumer.name",
-            root_model="Invoice",
-            reason="'Consumer' is reachable by multiple join paths.",
-            available_joins=["Subscription"],
-            suggested_path="Consumer.name",
-        )
-        assert isinstance(err, ValueError)
-        assert err.reference == "Customer.Consumer.name"
-        assert err.root_model == "Invoice"
-        assert err.suggested_path == "Consumer.name"
-        assert "Did you mean 'Consumer.name'" in str(err)
-
-    async def test_raised_error_caught_as_value_error(self, tmp_path) -> None:
-        engine, invoice = await _engine(tmp_path, drop_customer_consumer=True)
-        query = SlayerQuery(**_amount_query(
-            dimensions=[ColumnRef(name="name", model="Consumer")],
+class TestInternalEnrichmentsUnaffected:
+    async def test_cross_model_rerooting_still_binds(self, tmp_path) -> None:
+        """A cross-model measure over a routed path, with a source-local dim, must
+        still emit valid SQL — the re-rooted CTE carries a host-local dimension
+        that never binds to a base-table join, and that is legal."""
+        engine = await _engine(tmp_path)
+        sql = await _dry_sql(engine, SlayerQuery(
+            source_model="Invoice",
+            dimensions=["status"],
+            measures=[{"formula": "Subscription.Customer.Consumer.email:count", "name": "c"}],
         ))
-        with pytest.raises(ValueError):
-            await engine._enrich(query=query, model=invoice)
+        sqlglot.parse_one(sql, dialect="postgres")
 
 
 # ===========================================================================
-# JoinGraph.count_simple_paths unit
+# Downstream stages: dotted refs past a stage boundary are illegal (branch rule)
+# ===========================================================================
+
+class TestDownstreamStageScope:
+    async def test_downstream_stage_dotted_ref_rejects(self, tmp_path) -> None:
+        """A named-query stage sees a FLAT schema — a dotted ref in the outer
+        stage is an ``IllegalScopeReferenceError``, the DEV-1450 replacement for
+        main's lenient multi-stage fall-through. The inner stage's full-path dim
+        resolves normally."""
+        engine = await _engine(tmp_path)
+        inner = SlayerQuery(
+            name="s1", source_model="Invoice",
+            dimensions=["Subscription.Customer.Consumer.name"],
+            measures=[{"formula": "*:count"}],
+        )
+        outer = SlayerQuery(
+            source_model="s1",
+            dimensions=["Subscription.Customer.Consumer.email"],
+            measures=[{"formula": "*:count"}],
+        )
+        with pytest.raises(IllegalScopeReferenceError):
+            await engine.execute(query=[inner, outer], dry_run=True)
+
+
+# ===========================================================================
+# JoinGraph.count_simple_paths unit (route-enumeration primitive; retained)
 # ===========================================================================
 
 class TestCountSimplePaths:

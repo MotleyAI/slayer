@@ -12,13 +12,13 @@ target's own SQL (qualified to the right path alias), and lets the bare
 base-column references qualify to the canonical ``__``-delimited path
 alias.
 
-The expansion runs in the enrichment phase, so the SQL generator never sees
+The expansion runs during binding/planning, so the SQL generator never sees
 unresolved derived references.
 """
 from __future__ import annotations
 
-from typing import Any
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
+from typing import List, Optional, Protocol, Set, Tuple
 
 import sqlglot
 from sqlglot import exp
@@ -26,9 +26,7 @@ from sqlglot.optimizer.scope import ScopeType, traverse_scope
 
 from slayer.core.errors import ColumnCycleError
 from slayer.core.models import Column, SlayerModel
-from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 
-ResolveModel = Callable[..., Awaitable[SlayerModel | None]]
 
 
 def _is_trivial_base(*, column: Column) -> bool:
@@ -83,12 +81,11 @@ def _root_scope_column_ids(*, parsed: exp.Expression) -> set[int]:
     if len(wrapper_cols) != len(parsed_cols):
         # Fail closed: if the positional pairing between the wrapper copy
         # and the original tree ever drifts, treat NO column as root-scope.
-        # That suppresses derived-column inlining entirely for this
-        # fragment, which is conservative (the compile-time guard still
-        # catches cycles, and a missed inline merely shows up as the
-        # historical bare-name auto-qualification — never as a silent
-        # cross-scope splice). This branch is unreachable today; the
-        # wrapper just wraps a deep copy and ``find_all`` walks in
+        # Since the root-scope gate now runs BEFORE qualification, an empty
+        # set leaves every bare column unqualified (not just un-inlined) —
+        # conservative: the compile-time guard still catches cycles, and no
+        # column is spliced across scopes. This branch is unreachable today;
+        # the wrapper just wraps a deep copy and ``find_all`` walks in
         # document order.
         return set()
     root_ids: set[int] = set()
@@ -105,37 +102,118 @@ def _root_scope_column_ids(*, parsed: exp.Expression) -> set[int]:
     return root_ids
 
 
-async def _walk_path_to_target(
+class _SyncBundle(Protocol):
+    """Minimal contract for ``collect_root_scope_joined_paths``'s bundle —
+    matches ``ResolvedSourceBundle.get_referenced_model``. Declared inline so
+    this helper stays import-free of the engine layer.
+    """
+
+    def get_referenced_model(self, name: str) -> Optional[SlayerModel]: ...
+
+
+def _resolve_alias_to_join_segments(
+    *,
+    alias: str,
+    source_model: SlayerModel,
+    bundle: _SyncBundle,
+) -> Optional[Tuple[str, ...]]:
+    """Walk the ``__``-segmented join alias against ``source_model``'s joins.
+
+    Returns the segments tuple when EVERY hop resolves (so a prefix walk
+    can emit join-path tuples), or ``None`` when any hop fails — that
+    aborts the caller's emission for this column (CTE / subquery alias
+    or a spurious dotted ref).
+    """
+    segments = tuple(alias.split("__"))
+    current = source_model
+    for seg in segments:
+        join = next(
+            (j for j in current.joins if j.target_model == seg), None,
+        )
+        if join is None:
+            return None
+        nxt = bundle.get_referenced_model(seg)
+        if nxt is None:
+            return None
+        current = nxt
+    return segments
+
+
+def collect_root_scope_joined_paths(
+    *,
+    parsed: exp.Expression,
+    source_model: SlayerModel,
+    source_relation: str,
+    bundle: _SyncBundle,
+) -> List[Tuple[str, ...]]:
+    """Collect the ordered de-duplicated list of join-path prefixes a parsed
+    SQL fragment references in its root scope.
+
+    Each ROOT-scope ``<alias>.<col>`` whose ``alias`` is not the source
+    relation and fully resolves as a join walk on ``source_model``
+    contributes its prefixes (``a__b`` yields ``("a",)`` AND ``("a", "b")``).
+    Aliases that don't resolve as a join walk (CTE / subquery aliases,
+    spurious dotted refs) are skipped, as are columns inside a nested
+    scope (subquery / set-op branch) — those belong to the inner rowset.
+
+    Shared by the SQL generator (``SQLGenerator._joined_paths_in_sql``) and
+    the planner-side column filter discovery
+    (``slayer.engine.column_filter_paths._walk_root_scope_paths``) so the
+    two surfaces agree on what counts as "crosses a join."
+    """
+    root_ids = _root_scope_column_ids(parsed=parsed)
+    seen: Set[Tuple[str, ...]] = set()
+    ordered: List[Tuple[str, ...]] = []
+    anchor_aliases = (source_relation, source_model.name)
+    for col in parsed.find_all(exp.Column):
+        tbl = col.args.get("table")
+        if tbl is None or col.args.get("db") or col.args.get("catalog"):
+            continue
+        if id(col) not in root_ids:
+            continue
+        alias = tbl.name
+        if alias in anchor_aliases:
+            continue
+        segments = _resolve_alias_to_join_segments(
+            alias=alias, source_model=source_model, bundle=bundle,
+        )
+        if segments is None:
+            continue
+        for i in range(1, len(segments) + 1):
+            prefix = segments[:i]
+            if prefix not in seen:
+                seen.add(prefix)
+                ordered.append(prefix)
+    return ordered
+
+
+# ---------------------------------------------------------------------------
+# Synchronous expansion (DEV-1450 typed pipeline)
+# ---------------------------------------------------------------------------
+#
+# The generator runs synchronously over a ``ResolvedSourceBundle`` that has
+# already loaded every referenced model (P11: storage consulted once, up
+# front), so it expands derived refs through a *sync* model resolver.
+#
+# Nothing awaits model resolution here — the expansion is fully synchronous.
+
+SyncResolveModel = Callable[[str], Optional[SlayerModel]]
+
+
+def _walk_path_to_target_sync(
     *,
     source_model: SlayerModel,
     source_alias: str,
     table_alias: str,
-    resolve_model: ResolveModel,
-    named_queries: dict[str, Any],
+    resolve_model: SyncResolveModel,
     is_root: bool,
-) -> tuple[SlayerModel | None, str | None]:
-    """Resolve a ``table_alias`` (e.g. ``B`` or ``B__C``) seen inside a
-    Column.sql to the terminal joined model and the canonical alias to use
-    in emitted SQL.
+) -> Tuple[Optional[SlayerModel], Optional[str]]:
+    """Walk a ``__``-delimited alias path to its terminal model.
 
-    The ``is_root`` flag captures whether ``source_model`` is the FROM root
-    of the outer query. When True, walked paths are emitted bare
-    (``"__".join(parts)``); when False, they are prefixed with
-    ``source_alias`` so a derived column on a joined model referencing a
-    further-joined model resolves to the right ``__``-delimited path
-    (e.g., walking ``C`` off source ``B`` reached from root via ``B`` →
-    canonical ``B__C``, not ``C``). Closes the alias-prefix bug raised on
-    PR #89.
-
-    Returns ``(None, None)`` if the alias does not resolve as a join path —
-    in that case the caller should leave the reference untouched (it is
-    likely a CTE / sub-query alias the user wired up themselves).
+    Returns ``(target_model, canonical_alias)``, or ``(None, None)`` when any
+    hop is unresolvable — an opaque alias (a CTE / subquery reference) is not
+    an error here, the caller leaves it untouched.
     """
-    # DEV-1410: literal match against the host's FROM alias or model name
-    # comes FIRST, before any ``__`` splitting. ``alias_path`` is already a
-    # canonical ``__``-delimited path coming from the engine (e.g.
-    # ``"B__C"``) — splitting it would falsely treat it as a multi-hop
-    # walk and fail to resolve as the host.
     if table_alias == source_alias or table_alias == source_model.name:
         return source_model, source_alias
     parts = table_alias.split("__") if "__" in table_alias else [table_alias]
@@ -144,7 +222,7 @@ async def _walk_path_to_target(
         join = next((j for j in current.joins if j.target_model == hop), None)
         if join is None:
             return None, None
-        nxt = await resolve_model(model_name=hop, named_queries=named_queries)
+        nxt = resolve_model(hop)
         if nxt is None:
             return None, None
         current = nxt
@@ -153,169 +231,118 @@ async def _walk_path_to_target(
     return current, canonical
 
 
-async def _process_column_node(
+def _process_column_node_sync(
     *,
     col: exp.Column,
     model: SlayerModel,
     alias_path: str,
-    resolve_model: ResolveModel,
-    named_queries: dict[str, Any],
+    resolve_model: SyncResolveModel,
     dialect: str,
-    visited: tuple[tuple[str, str], ...],
+    visited: Tuple[Tuple[str, str], ...],
     is_root: bool,
-    root_scope_ids: set[int],
-) -> None:
-    """Resolve one ``exp.Column`` node in the parsed AST, mutating it in
-    place. Encapsulates the multi-branch decision that drives expansion:
+    root_scope_ids: Set[int],
+) -> Optional[exp.Expression]:
+    """Expand one ``exp.Column`` node in place if it names a derived column.
 
-    - multi-part qualifier (``catalog.db.table.col``) → leave alone
-    - bare identifier → qualify to ``alias_path``
-    - ``<table>.<col>`` where the alias doesn't resolve as a join path
-      → leave alone (CTE / sub-query alias)
-    - ``<table>.<col>`` where the target column is base → rewrite table
-      to the canonical alias
-    - ``<table>.<col>`` where the target column is derived → recurse and
-      splice the expanded AST in (parenthesized for precedence safety)
+    Returns the replacement expression when the node was rewritten, ``None``
+    when it was left alone (a physical column — which is qualified in place —
+    or an unresolvable/opaque alias path).
 
-    Cycle detection raises ``ValueError`` with the recursion chain.
+    The return value matters only when ``col`` is the ROOT of the tree being
+    walked: ``Expression.replace`` swaps a node inside its parent, so on a
+    parentless root it is a no-op and the expansion would be computed and then
+    silently discarded. The caller rebinds the root from this return value.
     """
-    # exp.Column may carry a multi-part qualifier (catalog.db.table.col).
-    # We treat anything beyond the immediate table identifier as outside
-    # SLayer's contract (the Column.sql convention is `<alias>.<col>`).
     if col.args.get("db") or col.args.get("catalog"):
-        return
-
+        return None
+    # DEV-1752: gate BEFORE qualifying. A column outside the root scope belongs
+    # to a subquery / CTE / set-op branch and binds in its own scope, so it is
+    # left untouched — neither qualified against the outer root nor inlined.
+    if id(col) not in root_scope_ids:
+        return None
     table_id = col.args.get("table")
     col_name = col.name
-
-    # DEV-1410: bare identifiers and qualified ``<alias>.<col>`` refs flow
-    # through the SAME lookup. A bare ref is treated as if it had been
-    # written with the host alias — ``_walk_path_to_target`` returns
-    # ``(source_model, alias_path)`` for that single-part match, so the
-    # downstream derived-vs-base decision (and recursion) is shared.
     table_alias = table_id.name if table_id is not None else alias_path
-    target_model, canonical_alias = await _walk_path_to_target(
+    target_model, canonical_alias = _walk_path_to_target_sync(
         source_model=model,
         source_alias=alias_path,
         table_alias=table_alias,
         resolve_model=resolve_model,
-        named_queries=named_queries,
         is_root=is_root,
     )
     if target_model is None or canonical_alias is None:
-        return  # unknown alias — leave untouched
-
+        return None
     target_col = target_model.get_column(col_name)
     if target_col is None or _is_trivial_base(column=target_col):
-        # Base column or unknown identifier on a known target model:
-        # rewrite the table to the canonical alias and stop.
         col.set("table", exp.to_identifier(canonical_alias))
-        return
-
-    # DEV-1410 scope guard: only inline derived-column bodies when the
-    # reference is in the ROOT scope of the parent fragment. Nested
-    # scopes (subqueries, set-op branches, VALUES, CTEs) can legitimately
-    # use the same identifier to mean an inner column of a different
-    # rowset — leave them alone.
-    if id(col) not in root_scope_ids:
-        return
-
-    # Derived → recurse. Recursion stays "root" only when the target
-    # column lives on the same model (no alias change); a remote target
-    # descended via a path is by definition non-root, so its own walks
-    # must prefix the canonical alias.
+        return None
     next_is_root = is_root and (target_model is model)
     key = (target_model.name, col_name)
     if key in visited:
         cycle_start = visited.index(key)
         cycle = (*visited[cycle_start:], key)
         raise ColumnCycleError(cycle=list(cycle))
-    expanded_sql = await expand_derived_refs(
+    expanded_sql = expand_derived_refs_sync(
         sql=target_col.sql,
         model=target_model,
         alias_path=canonical_alias,
         resolve_model=resolve_model,
-        named_queries=named_queries,
         dialect=dialect,
         visited=(*visited, key),
         is_root=next_is_root,
     )
     if expanded_sql is None:
-        return
-    # Splice in, parenthesized so the surrounding expression's precedence
-    # is preserved.
-    # DEV-1686: quote bare reserved-word qualifiers/leaves (e.g. a derived
-    # column referencing a reserved joined model like ``grant.amount``) so the
-    # generated SQL parses.
-    expanded_ast = sqlglot.parse_one(
-        prequote_reserved_identifiers(sql=expanded_sql, dialect=dialect), dialect=dialect
-    )
-    col.replace(exp.Paren(this=expanded_ast))
+        return None
+    expanded_ast = sqlglot.parse_one(expanded_sql, dialect=dialect)
+    replacement = exp.Paren(this=expanded_ast)
+    col.replace(replacement)
+    return replacement
 
 
-async def expand_derived_refs(
+def expand_derived_refs_sync(
     *,
-    sql: str | None,
+    sql: Optional[str],
     model: SlayerModel,
     alias_path: str,
-    resolve_model: ResolveModel,
-    named_queries: dict[str, Any] | None = None,
+    resolve_model: SyncResolveModel,
     dialect: str,
-    visited: tuple[tuple[str, str], ...] | None = None,
+    visited: Optional[Tuple[Tuple[str, str], ...]] = None,
     is_root: bool = True,
-) -> str | None:
-    """Recursively expand cross-model and local derived-column references
-    inside ``sql``.
+) -> Optional[str]:
+    """Inline every derived-column reference in ``sql`` to its definition.
 
-    Args:
-        sql: The Column / measure SQL to expand. May be ``None`` — returned
-            unchanged.
-        model: The model whose join graph is the reference frame for
-            unprefixed and singly-prefixed identifiers in ``sql``.
-        alias_path: The alias prefix under which bare identifiers in ``sql``
-            should be qualified — typically the FROM alias used for ``model``
-            in the outer query (e.g., ``"orders"`` or ``"customers__regions"``).
-        resolve_model: Async callable ``(model_name=str, named_queries=...)``
-            that returns a ``SlayerModel`` (or None).
-        named_queries: Pass-through context for ``resolve_model``.
-        dialect: sqlglot dialect for parse/emit.
-        visited: Ordered cycle-detection chain of ``(model_name,
-            column_name)`` tuples populated during recursion. Ordered
-            (not a set) so the cycle path in error messages reflects the
-            actual recursion order — frozenset iteration is randomized
-            via PYTHONHASHSEED. Callers leave as None.
+    Recurses through chains (``A.ratio`` -> ``A.bar / B.foo_normalized`` ->
+    …) with cycle detection via ``visited``, raising ``ColumnCycleError`` on a
+    self-referential chain.
 
-    Raises:
-        ValueError: on a circular column-reference chain.
+    ``resolve_model`` is a plain ``name -> Optional[SlayerModel]`` lookup
+    (typically ``bundle.get_referenced_model``); there is no
+    ``named_queries`` parameter because the bundle has already resolved the
+    full referenced-model set.
     """
     if not sql:
         return sql
     visited = visited or ()
-    named_queries = named_queries or {}
-
-    # DEV-1686: prequote reserved-word qualifiers/leaves before parsing user
-    # ``Column.sql`` (may reference a reserved joined model, e.g. ``grant.x``).
-    parsed = sqlglot.parse_one(
-        prequote_reserved_identifiers(sql=sql, dialect=dialect), dialect=dialect
-    )
-    # Materialize the columns first — we may mutate them in place via .replace().
+    parsed = sqlglot.parse_one(sql, dialect=dialect)
     column_nodes = list(parsed.find_all(exp.Column))
-    # DEV-1410: compute root-scope membership once. Derived-column inlining
-    # only applies to root-scope refs; nested scopes (subqueries, set ops,
-    # VALUES, CTEs) are left alone.
     root_scope_ids = _root_scope_column_ids(parsed=parsed)
-
     for col in column_nodes:
-        await _process_column_node(
+        replacement = _process_column_node_sync(
             col=col,
             model=model,
             alias_path=alias_path,
             resolve_model=resolve_model,
-            named_queries=named_queries,
             dialect=dialect,
             visited=visited,
             is_root=is_root,
             root_scope_ids=root_scope_ids,
         )
-
+        # ``col.replace`` mutates the node's PARENT. When the whole fragment is
+        # a single column reference — ``Column.sql = "other_derived_col"``, an
+        # alias of another derived column — that column IS ``parsed`` and has
+        # no parent, so the replace is a silent no-op. Rebind the root here, or
+        # the correctly-expanded SQL is computed and thrown away and the
+        # emitted query references a derived column as though it were physical.
+        if replacement is not None and col is parsed:
+            parsed = replacement
     return parsed.sql(dialect=dialect)

@@ -30,6 +30,7 @@ import logging
 
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
+from slayer.engine.schema_scope import split_sql_table
 
 
 logger = logging.getLogger(__name__)
@@ -135,15 +136,19 @@ def has_sqlite_widenable_columns(d: dict) -> bool:
 def _parse_sql_table_with_default_schema(
     sql_table: str, datasource: DatasourceConfig,
 ) -> tuple[str | None, str]:
-    """Split ``sql_table`` into ``(schema, table)``, falling back to
+    """Split ``sql_table`` into ``(schema_token, table)``, falling back to
     ``datasource.schema_name`` when the name is unqualified. This honours
     attached SQLite schemas instead of silently using ``main``.
+
+    Splits on the FINAL dot (DEV-1758), so a 3-part ``catalog.schema.table``
+    keeps its catalog with the schema token rather than probing a nonexistent
+    ``catalog`` schema.
     """
     default_schema = getattr(datasource, "schema_name", None) or None
-    if "." in sql_table:
-        schema_name, _, table_name = sql_table.partition(".")
-        return (schema_name or None), table_name
-    return default_schema, sql_table
+    schema_token, table_name = split_sql_table(sql_table)
+    if schema_token is None:
+        return default_schema, table_name
+    return schema_token, table_name
 
 
 def _safe_probe(

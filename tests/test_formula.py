@@ -1,443 +1,32 @@
-"""Tests for the formula parser and unified fields."""
+"""Tests for the retained formula helpers — ``parse_filter`` (filter
+injection + string-hygiene scalars) and ``_rewrite_funcstyle_aggregations``
+(function-style -> colon rewrite + ORDER BY normalization).
+
+The legacy free-function formula parser and its AST node types were removed
+when the typed pipeline took over; their coverage now lives in
+``test_syntax.py`` (parse shape), ``test_binding.py`` /
+``test_transforms_planner.py`` (bind-time validation),
+``test_transform_lowerer.py`` (change/change_pct desugar),
+``test_named_measures.py`` (named-measure expansion, end-to-end),
+``test_model_measure_expansion.py`` (bind-time expansion, cycles, scoping),
+``test_measure_expansion.py`` (expansion eligibility), and
+``test_schema_drift_typed.py`` / ``test_memories_resolver_typed.py`` (typed
+ref-walk path extraction).
+"""
 
 import warnings
 
 import pytest
 
 from slayer.core.formula import (
-    AggregatedMeasureRef,
-    ArithmeticField,
-    MixedArithmeticField,
-    TransformField,
     _rewrite_funcstyle_aggregations,
     parse_filter,
-    parse_formula,
 )
-from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
-from slayer.engine.enrichment import _collect_needed_paths, extract_filter_transforms
-
-
-class TestFormulaParser:
-    def test_bare_measure_raises(self) -> None:
-        with pytest.raises(ValueError, match="is not a saved measure"):
-            parse_formula("count")
-
-    def test_bare_measure_in_arithmetic_raises(self) -> None:
-        with pytest.raises(ValueError, match="is not a saved measure"):
-            parse_formula("revenue / count")
-
-    def test_aggregated_measure(self) -> None:
-        result = parse_formula("*:count")
-        assert isinstance(result, AggregatedMeasureRef)
-        assert result.measure_name == "*"
-        assert result.aggregation_name == "count"
-
-    def test_aggregated_measure_sum(self) -> None:
-        result = parse_formula("revenue:sum")
-        assert isinstance(result, AggregatedMeasureRef)
-        assert result.measure_name == "revenue"
-        assert result.aggregation_name == "sum"
-
-    def test_arithmetic(self) -> None:
-        result = parse_formula("revenue:sum / *:count")
-        assert isinstance(result, ArithmeticField)
-
-    def test_arithmetic_complex(self) -> None:
-        result = parse_formula("(revenue:sum - cost:sum) / *:count")
-        assert isinstance(result, ArithmeticField)
-
-    def test_transform_cumsum(self) -> None:
-        result = parse_formula("cumsum(revenue:sum)")
-        assert isinstance(result, TransformField)
-        assert result.transform == "cumsum"
-        assert isinstance(result.inner, AggregatedMeasureRef)
-        assert result.inner.measure_name == "revenue"
-
-    def test_time_shift_row_based(self) -> None:
-        result = parse_formula("time_shift(revenue:sum, -1)")
-        assert isinstance(result, TransformField)
-        assert result.transform == "time_shift"
-        assert result.args == [-1]
-
-    def test_time_shift_calendar_based(self) -> None:
-        result = parse_formula("time_shift(revenue:sum, -1, 'year')")
-        assert isinstance(result, TransformField)
-        assert result.transform == "time_shift"
-        assert result.args == [-1, "year"]
-
-    def test_transform_last(self) -> None:
-        result = parse_formula("last(revenue:sum)")
-        assert isinstance(result, TransformField)
-        assert result.transform == "last"
-        assert isinstance(result.inner, AggregatedMeasureRef)
-        assert result.inner.measure_name == "revenue"
-
-    def test_transform_change(self) -> None:
-        result = parse_formula("change(revenue:sum)")
-        assert isinstance(result, TransformField)
-        assert result.transform == "change"
-
-    def test_nested_transform_with_arithmetic(self) -> None:
-        result = parse_formula("cumsum(revenue:sum / *:count)")
-        assert isinstance(result, TransformField)
-        assert result.transform == "cumsum"
-        assert isinstance(result.inner, ArithmeticField)
-
-    def test_rank(self) -> None:
-        result = parse_formula("rank(revenue:sum)")
-        assert isinstance(result, TransformField)
-        assert result.transform == "rank"
-
-    def test_rank_partition_by_single_column(self) -> None:
-        result = parse_formula("rank(revenue:sum, partition_by=region)")
-        assert isinstance(result, TransformField)
-        assert result.transform == "rank"
-        assert result.kwargs == {"partition_by": ["region"]}
-
-    def test_rank_partition_by_list(self) -> None:
-        result = parse_formula("rank(revenue:sum, partition_by=[region, channel])")
-        assert isinstance(result, TransformField)
-        assert result.kwargs == {"partition_by": ["region", "channel"]}
-
-    def test_rank_partition_by_dotted_path(self) -> None:
-        result = parse_formula("rank(revenue:sum, partition_by=customers.region)")
-        assert isinstance(result, TransformField)
-        assert result.kwargs == {"partition_by": ["customers.region"]}
-
-    def test_percent_rank_default(self) -> None:
-        result = parse_formula("percent_rank(revenue:sum)")
-        assert isinstance(result, TransformField)
-        assert result.transform == "percent_rank"
-        assert result.kwargs == {}
-
-    def test_percent_rank_with_partition(self) -> None:
-        result = parse_formula("percent_rank(revenue:sum, partition_by=region)")
-        assert isinstance(result, TransformField)
-        assert result.transform == "percent_rank"
-        assert result.kwargs == {"partition_by": ["region"]}
-
-    def test_dense_rank_default(self) -> None:
-        result = parse_formula("dense_rank(revenue:sum)")
-        assert isinstance(result, TransformField)
-        assert result.transform == "dense_rank"
-
-    def test_dense_rank_with_partition(self) -> None:
-        result = parse_formula("dense_rank(revenue:sum, partition_by=region)")
-        assert isinstance(result, TransformField)
-        assert result.transform == "dense_rank"
-        assert result.kwargs == {"partition_by": ["region"]}
-
-    def test_ntile_with_required_n(self) -> None:
-        result = parse_formula("ntile(revenue:sum, n=4)")
-        assert isinstance(result, TransformField)
-        assert result.transform == "ntile"
-        assert result.kwargs == {"n": 4}
-
-    def test_ntile_with_partition(self) -> None:
-        result = parse_formula("ntile(revenue:sum, n=4, partition_by=cohort)")
-        assert isinstance(result, TransformField)
-        assert result.transform == "ntile"
-        assert result.kwargs == {"n": 4, "partition_by": ["cohort"]}
-
-    def test_ntile_missing_n_raises(self) -> None:
-        with pytest.raises(ValueError, match=r"ntile.*\bn\b"):
-            parse_formula("ntile(revenue:sum)")
-
-    def test_ntile_zero_n_raises(self) -> None:
-        with pytest.raises(ValueError, match="positive integer"):
-            parse_formula("ntile(revenue:sum, n=0)")
-
-    def test_ntile_negative_n_raises(self) -> None:
-        with pytest.raises(ValueError, match="positive integer"):
-            parse_formula("ntile(revenue:sum, n=-1)")
-
-    def test_unknown_transform_kwarg_raises(self) -> None:
-        with pytest.raises(ValueError, match="partition_by"):
-            parse_formula("dense_rank(revenue:sum, foo=bar)")
-
-    def test_rank_rejects_n_kwarg(self) -> None:
-        """``n`` is only valid on ``ntile``."""
-        with pytest.raises(ValueError, match="partition_by"):
-            parse_formula("rank(revenue:sum, n=4)")
-
-    def test_cumsum_rejects_partition_by(self) -> None:
-        """``partition_by`` is rank-family only — ``cumsum`` partitions by query dims."""
-        with pytest.raises(ValueError, match="partition_by"):
-            parse_formula("cumsum(revenue:sum, partition_by=region)")
-
-    def test_rank_rejects_extra_positional_arg(self) -> None:
-        """rank-family is keyword-only after the measure; extra positionals must fail fast."""
-        with pytest.raises(ValueError, match="positional arguments"):
-            parse_formula("rank(revenue:sum, 2)")
-
-    def test_ntile_rejects_extra_positional_n(self) -> None:
-        """ntile(x, 4) is rejected — n must be passed by keyword (n=4)."""
-        with pytest.raises(ValueError, match="positional arguments"):
-            parse_formula("ntile(revenue:sum, 4)")
-
-    def test_consecutive_periods_predicate(self) -> None:
-        result = parse_formula("consecutive_periods(revenue:sum > 0)")
-        assert isinstance(result, TransformField)
-        assert result.transform == "consecutive_periods"
-        assert isinstance(result.inner, ArithmeticField)
-        assert ">" in result.inner.sql
-
-    def test_consecutive_periods_comparison(self) -> None:
-        result = parse_formula("consecutive_periods(revenue:sum > 0) >= 3")
-        assert isinstance(result, MixedArithmeticField)
-        assert len(result.sub_transforms) == 1
-        placeholder, transform = result.sub_transforms[0]
-        assert placeholder in result.sql
-        assert transform.transform == "consecutive_periods"
-
-    def test_change_pct(self) -> None:
-        result = parse_formula("change_pct(revenue:sum)")
-        assert isinstance(result, TransformField)
-        assert result.transform == "change_pct"
-
-    def test_unknown_function_raises(self) -> None:
-        with pytest.raises(ValueError, match="Unknown function"):
-            parse_formula("unknown_func(revenue)")
-
-    def test_invalid_syntax_raises(self) -> None:
-        with pytest.raises(ValueError, match="Invalid formula"):
-            parse_formula("revenue +")
-
-    def test_no_args_raises(self) -> None:
-        with pytest.raises(ValueError, match="requires at least one argument"):
-            parse_formula("cumsum()")
-
-    def test_nested_transforms(self) -> None:
-        """change(cumsum(revenue:sum)) → TransformField wrapping TransformField."""
-        result = parse_formula("change(cumsum(revenue:sum))")
-        assert isinstance(result, TransformField)
-        assert result.transform == "change"
-        assert isinstance(result.inner, TransformField)
-        assert result.inner.transform == "cumsum"
-        assert isinstance(result.inner.inner, AggregatedMeasureRef)
-        assert result.inner.inner.measure_name == "revenue"
-
-    def test_mixed_arithmetic_with_transform(self) -> None:
-        """cumsum(revenue:sum) / *:count → MixedArithmeticField."""
-        from slayer.core.formula import MixedArithmeticField
-        result = parse_formula("cumsum(revenue:sum) / *:count")
-        assert isinstance(result, MixedArithmeticField)
-        assert len(result.sub_transforms) == 1
-        placeholder, transform = result.sub_transforms[0]
-        assert isinstance(transform, TransformField)
-        assert transform.transform == "cumsum"
-
-    def test_triple_nesting(self) -> None:
-        """last(change(cumsum(revenue:sum))) → three levels deep."""
-        result = parse_formula("last(change(cumsum(revenue:sum)))")
-        assert isinstance(result, TransformField)
-        assert result.transform == "last"
-        assert isinstance(result.inner, TransformField)
-        assert result.inner.transform == "change"
-        assert isinstance(result.inner.inner, TransformField)
-        assert result.inner.inner.transform == "cumsum"
-
-
-class TestNamedMeasureExpansion:
-    """Bare-name resolution against ``SlayerModel.measures`` saved formulas.
-
-    The S3 milestone introduced ``ModelMeasure`` (a named saved formula). Queries
-    can reference these by bare name in their own measure formulas — e.g., a model
-    with ``measures=[ModelMeasure(name="aov", formula="revenue:sum / *:count")]``
-    can be queried with ``measures=[{"formula": "aov"}]`` or
-    ``measures=[{"formula": "cumsum(aov)"}]``. Expansion happens at parse time
-    via the ``named_measures`` argument.
-    """
-
-    def test_root_aggregated(self) -> None:
-        result = parse_formula("rev", named_measures={"rev": "revenue:sum"})
-        assert isinstance(result, AggregatedMeasureRef)
-        assert result.measure_name == "revenue"
-        assert result.aggregation_name == "sum"
-
-    def test_root_arithmetic(self) -> None:
-        result = parse_formula(
-            "aov", named_measures={"aov": "revenue:sum / *:count"}
-        )
-        assert isinstance(result, ArithmeticField)
-        agg_measure_names = sorted(r.measure_name for r in result.agg_refs.values())
-        assert agg_measure_names == ["*", "revenue"]
-
-    def test_inside_transform(self) -> None:
-        result = parse_formula(
-            "cumsum(aov)", named_measures={"aov": "revenue:sum"}
-        )
-        assert isinstance(result, TransformField)
-        assert result.transform == "cumsum"
-        assert isinstance(result.inner, AggregatedMeasureRef)
-        assert result.inner.measure_name == "revenue"
-
-    def test_inside_transform_arithmetic_inner(self) -> None:
-        """cumsum(aov) where aov expands to arithmetic → TransformField wrapping ArithmeticField."""
-        result = parse_formula(
-            "cumsum(aov)", named_measures={"aov": "revenue:sum / *:count"}
-        )
-        assert isinstance(result, TransformField)
-        assert result.transform == "cumsum"
-        assert isinstance(result.inner, ArithmeticField)
-
-    def test_in_arithmetic(self) -> None:
-        """``aov + tax`` where both are saved measures."""
-        result = parse_formula(
-            "aov + tax",
-            named_measures={"aov": "revenue:sum", "tax": "tax_amount:sum"},
-        )
-        assert isinstance(result, ArithmeticField)
-        agg_measure_names = sorted(r.measure_name for r in result.agg_refs.values())
-        assert agg_measure_names == ["revenue", "tax_amount"]
-
-    def test_arithmetic_with_constant(self) -> None:
-        result = parse_formula(
-            "aov * 1.1", named_measures={"aov": "revenue:sum"}
-        )
-        assert isinstance(result, ArithmeticField)
-
-    def test_chained_expansion(self) -> None:
-        """``a → b → revenue:sum`` is fully expanded."""
-        result = parse_formula(
-            "a", named_measures={"a": "b", "b": "revenue:sum"}
-        )
-        assert isinstance(result, AggregatedMeasureRef)
-        assert result.measure_name == "revenue"
-
-    def test_cycle_raises(self) -> None:
-        """``a → b → a`` raises with the chain in the error message."""
-        with pytest.raises(ValueError, match="cyclic"):
-            parse_formula("a", named_measures={"a": "b", "b": "a"})
-
-    def test_self_reference_raises(self) -> None:
-        with pytest.raises(ValueError, match="cyclic"):
-            parse_formula("a", named_measures={"a": "a"})
-
-    def test_not_substituted_in_colon_syntax(self) -> None:
-        """``revenue:sum`` parses as the column-aggregation form even if a saved
-        measure called ``revenue`` exists. Real models prevent this name
-        collision via the column/measure disjointness validator, but the
-        expander itself must not over-substitute.
-        """
-        result = parse_formula(
-            "revenue:sum", named_measures={"revenue": "*:count"}
-        )
-        assert isinstance(result, AggregatedMeasureRef)
-        assert result.measure_name == "revenue"
-        assert result.aggregation_name == "sum"
-
-    def test_not_substituted_after_dot(self) -> None:
-        """``customers.aov`` is a cross-model reference and is NOT expanded."""
-        with pytest.raises(ValueError, match="Cross-model measure"):
-            parse_formula(
-                "customers.aov", named_measures={"aov": "revenue:sum"}
-            )
-
-    def test_not_substituted_when_called(self) -> None:
-        """A saved measure shadowing a transform name is not expanded as an identifier
-        when followed by ``(``. The ``cumsum(...)`` token sequence is still parsed
-        as the transform.
-        """
-        result = parse_formula(
-            "cumsum(rev)",
-            named_measures={"cumsum": "*:count", "rev": "revenue:sum"},
-        )
-        assert isinstance(result, TransformField)
-        assert result.transform == "cumsum"
-        assert isinstance(result.inner, AggregatedMeasureRef)
-        assert result.inner.measure_name == "revenue"
-
-    def test_unknown_bare_name_still_raises(self) -> None:
-        with pytest.raises(ValueError, match="is not a saved measure"):
-            parse_formula(
-                "unknown_thing", named_measures={"aov": "revenue:sum"}
-            )
-
-    def test_no_named_measures_preserves_old_behavior(self) -> None:
-        """Calling ``parse_formula`` without ``named_measures`` keeps the
-        existing bare-name rejection — no regression for callers that don't
-        opt in.
-        """
-        with pytest.raises(ValueError, match="is not a saved measure"):
-            parse_formula("aov")
-
-
-class TestExtractFilterTransforms:
-    """Tests for extract_filter_transforms reverse mapping."""
-
-    def test_no_args_aggregation(self) -> None:
-        """revenue:sum → preserved as-is in reconstructed filter."""
-        rewritten, transforms = extract_filter_transforms("change(revenue:sum) > 0")
-        assert len(transforms) == 1
-        assert "revenue:sum" in transforms[0][1]
-
-    def test_positional_args_aggregation(self) -> None:
-        """revenue:last(ordered_at) → positional arg preserved."""
-        rewritten, transforms = extract_filter_transforms("change(revenue:last(ordered_at)) > 0")
-        assert len(transforms) == 1
-        assert "revenue:last(ordered_at)" in transforms[0][1]
-
-    def test_kwargs_only_aggregation(self) -> None:
-        """price:weighted_avg(weight=quantity) → kwarg preserved."""
-        rewritten, transforms = extract_filter_transforms(
-            "change(price:weighted_avg(weight=quantity)) > 0"
-        )
-        assert len(transforms) == 1
-        assert "price:weighted_avg(weight=quantity)" in transforms[0][1]
-
-    def test_rank_family_kwargs_preserved(self) -> None:
-        """``dense_rank(revenue:sum, partition_by=region) <= 5`` round-trips
-        through filter extraction without losing partition_by — re-parsing the
-        extracted formula yields a TransformField with the original kwargs.
-
-        Regression coverage for DEV-1353: a silent drop here would rank globally
-        instead of within the partition.
-        """
-        _, transforms = extract_filter_transforms(
-            "dense_rank(revenue:sum, partition_by=region) <= 5"
-        )
-        assert len(transforms) == 1
-        _name, formula = transforms[0]
-        assert "partition_by=region" in formula or "partition_by = region" in formula
-
-        reparsed = parse_formula(formula)
-        assert isinstance(reparsed, TransformField)
-        assert reparsed.transform == "dense_rank"
-        assert reparsed.kwargs == {"partition_by": ["region"]}
-
-    def test_ntile_kwargs_preserved(self) -> None:
-        """ntile(x, n=4, partition_by=cohort) preserves both kwargs through the
-        filter-extraction round-trip. n is required, so a silent drop would
-        cause the extracted formula to fail re-parsing.
-        """
-        _, transforms = extract_filter_transforms(
-            "ntile(revenue:sum, n=4, partition_by=cohort) <= 1"
-        )
-        assert len(transforms) == 1
-        _name, formula = transforms[0]
-        reparsed = parse_formula(formula)
-        assert isinstance(reparsed, TransformField)
-        assert reparsed.transform == "ntile"
-        assert reparsed.kwargs == {"n": 4, "partition_by": ["cohort"]}
-
-    def test_mixed_args_and_kwargs(self) -> None:
-        """Aggregation with both positional and keyword args preserved."""
-        rewritten, transforms = extract_filter_transforms(
-            "change(price:weighted_avg(col1, weight=quantity)) > 0"
-        )
-        assert len(transforms) == 1
-        assert "price:weighted_avg(col1, weight=quantity)" in transforms[0][1]
 
 
 class TestParseFilterBooleanLiterals:
-    """SQL spells its boolean literals in lower case; Python's ``ast`` does not.
-
-    ``true`` / ``false`` arrive as names rather than constants, so without
-    special handling they are collected as column references and then rejected
-    as unknown names.
-    """
+    """SQL's lowercase ``true`` / ``false`` arrive as ``ast`` names, not
+    constants, so without special handling they'd be read as column refs."""
 
     @pytest.mark.parametrize(
         ("expression", "expected"),
@@ -453,20 +42,16 @@ class TestParseFilterBooleanLiterals:
     ) -> None:
         parsed = parse_filter(expression)
         assert parsed.sql == expected
-        # A literal is a value, not a reference — strict name resolution in
-        # enrichment rejects anything that lands in ``columns``.
+        # The literal is a value, not a reference — it must not land in columns.
         assert parsed.columns == ["is_active"]
 
     def test_python_cased_literals_keep_working(self) -> None:
-        """``True`` / ``False`` are ``ast`` constants, so they never reached
-        the name path. SQL keywords are case-insensitive, so both render fine."""
+        # ``True`` / ``False`` are ``ast`` constants, so they skip the name path.
         assert parse_filter("is_active = True").sql == "is_active = True"
         assert parse_filter("is_active = False").sql == "is_active = False"
 
     def test_bare_literal_is_not_a_column_reference(self) -> None:
-        """Documents the trade-off: ``true`` always wins over a same-named
-        column. Both spellings are SQL reserved words, so no dialect allows
-        them as unquoted column names anyway."""
+        # ``true`` wins over a same-named column — moot, it's a reserved word.
         assert parse_filter("true").columns == []
 
 
@@ -844,84 +429,6 @@ class TestFuncStyleRewrite:
         assert _rewrite_funcstyle_aggregations(scalar_call) == scalar_call
 
 
-class TestFuncStyleEndToEnd:
-    """End-to-end tests through parse_formula and parse_filter."""
-
-    def test_sum_parses(self) -> None:
-        result = parse_formula("sum(revenue)")
-        assert isinstance(result, AggregatedMeasureRef)
-        assert result.measure_name == "revenue"
-        assert result.aggregation_name == "sum"
-
-    def test_count_star_parses(self) -> None:
-        result = parse_formula("count(*)")
-        assert isinstance(result, AggregatedMeasureRef)
-        assert result.measure_name == "*"
-        assert result.aggregation_name == "count"
-
-    def test_cross_model_parses(self) -> None:
-        result = parse_formula("sum(customers.revenue)")
-        assert isinstance(result, AggregatedMeasureRef)
-        assert result.measure_name == "customers.revenue"
-        assert result.aggregation_name == "sum"
-
-    def test_nested_in_cumsum_parses(self) -> None:
-        result = parse_formula("cumsum(sum(revenue))")
-        assert isinstance(result, TransformField)
-        assert result.transform == "cumsum"
-        assert isinstance(result.inner, AggregatedMeasureRef)
-        assert result.inner.measure_name == "revenue"
-        assert result.inner.aggregation_name == "sum"
-
-    def test_arithmetic_parses(self) -> None:
-        result = parse_formula("sum(revenue) / count(*)")
-        assert isinstance(result, (ArithmeticField, MixedArithmeticField))
-
-    def test_weighted_avg_parses(self) -> None:
-        result = parse_formula("weighted_avg(price, weight=qty)")
-        assert isinstance(result, AggregatedMeasureRef)
-        assert result.measure_name == "price"
-        assert result.aggregation_name == "weighted_avg"
-        assert result.agg_kwargs == {"weight": "qty"}
-
-    def test_windowed_sum_parses(self) -> None:
-        result = parse_formula("revenue:sum(window='1y2m3w5d6h7min8s')")
-        assert isinstance(result, AggregatedMeasureRef)
-        assert result.measure_name == "revenue"
-        assert result.aggregation_name == "sum"
-        assert result.agg_kwargs == {"window": "'1y2m3w5d6h7min8s'"}
-
-    def test_filter_funcstyle(self) -> None:
-        result = parse_filter("sum(revenue) > 100")
-        assert "revenue_sum" in result.sql
-        assert ">" in result.sql
-
-    def test_filter_count_star(self) -> None:
-        result = parse_filter("count(*) >= 5")
-        assert "_count" in result.sql
-
-    def test_last_bare_parses_as_aggregation(self) -> None:
-        result = parse_formula("last(revenue)")
-        assert isinstance(result, AggregatedMeasureRef)
-        assert result.measure_name == "revenue"
-        assert result.aggregation_name == "last"
-
-    def test_first_bare_parses_as_aggregation(self) -> None:
-        result = parse_formula("first(revenue)")
-        assert isinstance(result, AggregatedMeasureRef)
-        assert result.measure_name == "revenue"
-        assert result.aggregation_name == "first"
-
-    def test_cross_model_custom_agg_parses(self) -> None:
-        result = parse_formula(
-            "rolling_avg(customers.score)",
-            extra_agg_names=frozenset({"rolling_avg"}),
-        )
-        assert isinstance(result, AggregatedMeasureRef)
-        assert result.measure_name == "customers.score"
-        assert result.aggregation_name == "rolling_avg"
-
-
 class TestAggregationNameValidation:
     """Custom aggregation names must not conflict with transform names."""
 
@@ -945,30 +452,6 @@ class TestAggregationNameValidation:
         from slayer.core.models import Aggregation
         agg = Aggregation(name="sum")  # built-in override, no formula needed
         assert agg.name == "sum"
-
-
-class TestFirstTransform:
-    """Tests for the first() transform (mirroring last())."""
-
-    def test_first_transform_parses(self) -> None:
-        result = parse_formula("first(revenue:sum)")
-        assert isinstance(result, TransformField)
-        assert result.transform == "first"
-        assert isinstance(result.inner, AggregatedMeasureRef)
-        assert result.inner.measure_name == "revenue"
-        assert result.inner.aggregation_name == "sum"
-
-    def test_first_transform_in_filter(self) -> None:
-        """first() can be used in filter expressions like last()."""
-        rewritten, transforms = extract_filter_transforms("first(revenue:sum) > 0")
-        assert len(transforms) == 1
-        assert "revenue:sum" in transforms[0][1]
-
-    def test_last_transform_still_works(self) -> None:
-        """Existing last() transform should be unaffected."""
-        result = parse_formula("last(revenue:sum)")
-        assert isinstance(result, TransformField)
-        assert result.transform == "last"
 
 
 class TestOrderColumnNormalization:
@@ -1017,139 +500,12 @@ class TestOrderColumnNormalization:
         assert item.raw_formula == "price:weighted_avg(weight=qty)"
 
 
-class TestCollectNeededPathsExtraAggNames:
-    """Verify _collect_needed_paths forwards extra_agg_names to parse_filter."""
-
-    def test_funcstyle_custom_agg_in_filter_does_not_error(self) -> None:
-        """A filter with a function-style custom agg should parse without error
-        when extra_agg_names is provided."""
-        model = SlayerModel(
-            name="orders",
-            sql_table="orders",
-            data_source="ds",
-            columns=[
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
-            ],
-        )
-        # Filter uses a custom aggregation in function style: custom_total(revenue) > 100
-        # Without extra_agg_names, parse_filter won't rewrite it → potential misparse
-        paths = _collect_needed_paths(
-            model=model,
-            dimensions=[],
-            time_dimensions=[],
-            measures=[],
-            cross_model_measures=[],
-            processed_filters=[("custom_total(revenue) > 100", "dsl")],
-            extra_agg_names=frozenset({"custom_total"}),
-        )
-        # No cross-model references → empty paths
-        assert paths == set()
-
-    def test_funcstyle_custom_agg_with_dotted_column(self) -> None:
-        """A filter with a custom agg on a cross-model column should extract join paths."""
-        model = SlayerModel(
-            name="orders",
-            sql_table="orders",
-            data_source="ds",
-            columns=[
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
-            ],
-        )
-        paths = _collect_needed_paths(
-            model=model,
-            dimensions=[],
-            time_dimensions=[],
-            measures=[],
-            cross_model_measures=[],
-            processed_filters=[("customers.total:custom_total > 100", "dsl")],
-            extra_agg_names=frozenset({"custom_total"}),
-        )
-        # Should detect the "customers" join path from the dotted column reference
-        assert ("customers",) in paths
-
-
-class TestPlaceholderLeakRegression:
-    """DEV-1341: aggregated refs nested inside non-transform SQL function calls
-    (``nullif``, ``coalesce``, etc.) must be registered in the resulting
-    ``MixedArithmeticField`` so the ``__aggN__`` placeholders cannot leak through
-    to emitted SQL.
+class TestStringHygieneFilters:
+    """DEV-1378: lowercase string-hygiene scalar functions accepted inline
+    in Mode B (DSL) filters: ``lower``, ``upper``, ``trim``, ``replace``,
+    ``substr``, ``instr``, ``length``, ``concat``. The SQL ``||``
+    operator is rewritten to ``concat(...)`` by ``_preprocess_concat``.
     """
-
-    def test_colon_count_over_nullif_max(self) -> None:
-        """``*:count / nullif(temperature_c:max, 0)`` registers both refs."""
-        result = parse_formula("*:count / nullif(temperature_c:max, 0)")
-        assert isinstance(result, MixedArithmeticField)
-        # Both placeholders must be tracked by the field
-        assert "__agg0__" in result.measure_names
-        assert "__agg1__" in result.measure_names
-        assert "__agg0__" in result.agg_refs
-        assert "__agg1__" in result.agg_refs
-        # Verify the refs themselves are correct (order is preprocessing order)
-        ref0 = result.agg_refs["__agg0__"]
-        ref1 = result.agg_refs["__agg1__"]
-        assert (ref0.measure_name, ref0.aggregation_name) == ("*", "count")
-        assert (ref1.measure_name, ref1.aggregation_name) == ("temperature_c", "max")
-        # The serialized SQL still carries both placeholders for resolution
-        assert "__agg0__" in result.sql
-        assert "__agg1__" in result.sql
-
-    def test_funcstyle_count_over_nullif_max(self) -> None:
-        """Issue's verbatim function-style formula round-trips through the
-        function-style rewrite to colon syntax and registers both refs.
-        """
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            result = parse_formula("count(*) / nullif(max(temperature_c), 0)")
-        assert isinstance(result, MixedArithmeticField)
-        assert "__agg0__" in result.measure_names
-        assert "__agg1__" in result.measure_names
-        assert "__agg0__" in result.agg_refs
-        assert "__agg1__" in result.agg_refs
-        names = {(r.measure_name, r.aggregation_name) for r in result.agg_refs.values()}
-        assert ("*", "count") in names
-        assert ("temperature_c", "max") in names
-
-    def test_coalesce_wraps_aggregation(self) -> None:
-        """``coalesce(revenue:sum, 0) + amount:avg`` — coalesce-wrapped ref + outside ref."""
-        result = parse_formula("coalesce(revenue:sum, 0) + amount:avg")
-        assert isinstance(result, MixedArithmeticField)
-        assert "__agg0__" in result.measure_names
-        assert "__agg1__" in result.measure_names
-        assert "__agg0__" in result.agg_refs
-        assert "__agg1__" in result.agg_refs
-        names = {(r.measure_name, r.aggregation_name) for r in result.agg_refs.values()}
-        assert ("revenue", "sum") in names
-        assert ("amount", "avg") in names
-
-    def test_predicate_with_nullif_wrapper(self) -> None:
-        """``nullif(*:count, 0) > 5`` is a predicate; the wrapped ref must be tracked."""
-        result = parse_formula("nullif(*:count, 0) > 5")
-        assert isinstance(result, MixedArithmeticField)
-        assert result.is_predicate is True
-        assert "__agg0__" in result.measure_names
-        assert "__agg0__" in result.agg_refs
-        ref0 = result.agg_refs["__agg0__"]
-        assert (ref0.measure_name, ref0.aggregation_name) == ("*", "count")
-
-    def test_nested_non_transform_calls(self) -> None:
-        """``coalesce(nullif(*:count, 0), 1) / temperature_c:max`` — two nesting layers."""
-        result = parse_formula("coalesce(nullif(*:count, 0), 1) / temperature_c:max")
-        assert isinstance(result, MixedArithmeticField)
-        assert "__agg0__" in result.measure_names
-        assert "__agg1__" in result.measure_names
-        assert "__agg0__" in result.agg_refs
-        assert "__agg1__" in result.agg_refs
-        names = {(r.measure_name, r.aggregation_name) for r in result.agg_refs.values()}
-        assert ("*", "count") in names
-        assert ("temperature_c", "max") in names
-
-
-class TestStringScalarFilters:
-    """Scalar string functions accepted in Mode B filters via the unified
-    ``SCALAR_PASSTHROUGH`` set. The SQL ``||`` operator is rewritten to
-    ``concat(...)`` by ``_preprocess_concat``."""
 
     @pytest.mark.parametrize("op", ["lower", "upper", "trim", "length"])
     def test_unary_op_round_trips(self, op: str) -> None:
@@ -1233,41 +589,14 @@ class TestStringScalarFilters:
 
 
 class TestUnifiedScalarPassthrough:
-    """One canonical SCALAR_PASSTHROUGH set is consulted by every Mode B
-    surface — top-level formulas, inside-arithmetic formulas, and query
-    filters. Replaces the old three-allowlist regime."""
-
-    @pytest.mark.parametrize("fn", [
-        "coalesce", "nullif", "ifnull",
-        "ceil", "floor", "sqrt", "exp", "ln", "log10", "log2",
-        "greatest", "least", "mod", "sign",
-    ])
-    def test_scalar_top_level(self, fn: str) -> None:
-        parse_formula(f"{fn}(revenue:sum, 0)" if fn in {"coalesce", "nullif", "ifnull", "greatest", "least", "mod"}
-                      else f"{fn}(revenue:sum)")
-
-    def test_cto_repro_coalesce_nullif_arithmetic(self) -> None:
-        """The motivating Cube-translation case:
-        ``COALESCE(((SUM(a)/NULLIF(SUM(b),0)) - 1), -999999)``."""
-        result = parse_formula("coalesce((a:sum / nullif(b:sum, 0)) - 1, -999999)")
-        assert "coalesce" in result.sql.lower()
-        assert "nullif" in result.sql.lower()
-
-    def test_unknown_call_rejected_at_top_level(self) -> None:
-        with pytest.raises(ValueError, match="Unknown function"):
-            parse_formula("magic_fn(revenue:sum)")
-
-    def test_unknown_call_rejected_inside_arithmetic(self) -> None:
-        with pytest.raises(ValueError, match="Unknown function"):
-            parse_formula("revenue:sum + magic_fn(other:sum)")
-
-    def test_uppercase_accepted_case_insensitively(self) -> None:
-        # Case-insensitive lookup matches the Mode B convention.
-        parse_formula("COALESCE(revenue:sum, 0)")
-        parse_formula("Round(revenue:sum / 100, 2)")
+    """The canonical SCALAR_PASSTHROUGH set drives the retained filter
+    surface. The formula-side half of this class was deleted with the legacy
+    parser; the typed parser's allowlist is covered by
+    ``test_syntax.py::TestScalarFunctions`` and
+    ``test_keys.py::TestScalarFunctionsAllowlist``."""
 
     def test_filter_uses_same_set(self) -> None:
-        # The filter walker consults the same SCALAR_PASSTHROUGH so things
-        # like coalesce / greatest are now accepted in filters too.
+        # The filter walker consults SCALAR_PASSTHROUGH so things like
+        # coalesce / greatest are accepted in filters too.
         pf = parse_filter("coalesce(name, 'unknown') = 'foo'")
         assert "coalesce" in pf.sql.lower()

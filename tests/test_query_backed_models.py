@@ -49,6 +49,28 @@ async def _engine_with_orders(*extra_models: SlayerModel) -> tuple:
     return engine, tmp
 
 
+async def _expand_stage_as_model(
+    *,
+    engine: SlayerQueryEngine,
+    stage: SlayerQuery,
+    name: str,
+    data_source: str = "ds",
+) -> SlayerModel:
+    """Expand a single ``SlayerQuery`` stage into its virtual ``sql``-mode
+    model via the typed query-backed expansion
+    (``engine._expand_query_backed_model``, the DEV-1452 Stage B replacement
+    for the legacy join-target renderer).
+    """
+    model = SlayerModel(name=name, source_queries=[stage], data_source=data_source)
+    return await engine._expand_query_backed_model(
+        model=model,
+        outer_vars=None,
+        runtime_kwarg=None,
+        dry_run_placeholders=False,
+        _resolving=None,
+    )
+
+
 class TestExecuteByName:
     async def test_missing_model_raises(self) -> None:
         engine, tmp = await _engine_with_orders()
@@ -887,43 +909,53 @@ class TestJoinTargetIsQueryBacked:
         finally:
             tmp.cleanup()
 
-    async def test_join_target_resolving_set_is_per_context(self) -> None:
-        """The recursion guard set must be isolated per asyncio task / request,
-        not shared on the engine instance. Two tasks each push a unique name
-        into the set and assert they only see their own.
+    async def test_concurrent_expansions_do_not_share_recursion_state(self) -> None:
+        """Two concurrent expansions must not see each other's in-flight names.
+
+        DEV-1485 Stage D: this replaces
+        ``test_join_target_resolving_set_is_per_context``, which asserted the
+        legacy ``_join_target_resolving_var`` ContextVar was per-task rather
+        than an engine instance attribute. That guard is deleted with the
+        legacy stack — the typed path threads its ``_resolving`` set through
+        the call as an explicit PARAMETER, so isolation is structural rather
+        than something a ContextVar has to provide.
+
+        The property that actually matters is unchanged and is what this pins:
+        two expansions running concurrently on ONE engine each produce their
+        own correct SQL. If recursion state were shared, the second would
+        either short-circuit on the first's name or deadlock.
         """
         import asyncio
 
         engine, tmp = await _engine_with_orders()
         try:
-            both_started = asyncio.Event()
-            checked = asyncio.Event()
-
-            async def task(my_name: str, started: asyncio.Event) -> set:
-                s = engine._get_join_target_resolving()
-                s.add(my_name)
-                started.set()
-                # Wait until both tasks have populated their own sets, then
-                # observe — if the set were instance-shared, each task would
-                # see both names.
-                await both_started.wait()
-                snapshot = set(engine._get_join_target_resolving())
-                checked.set()
-                return snapshot
-
-            e1 = asyncio.Event()
-            e2 = asyncio.Event()
-
-            async def gate():
-                await asyncio.gather(e1.wait(), e2.wait())
-                both_started.set()
-
-            t1 = asyncio.create_task(task("alpha", e1))
-            t2 = asyncio.create_task(task("beta", e2))
-            await gate()
-            s1, s2 = await asyncio.gather(t1, t2)
-            assert s1 == {"alpha"}, f"task 1 leaked sibling state: {s1}"
-            assert s2 == {"beta"}, f"task 2 leaked sibling state: {s2}"
+            alpha, beta = await asyncio.gather(
+                _expand_stage_as_model(
+                    engine=engine,
+                    stage=SlayerQuery(
+                        source_model="orders",
+                        measures=[{"formula": "amount:sum"}],
+                        dimensions=["region"],
+                    ),
+                    name="alpha",
+                ),
+                _expand_stage_as_model(
+                    engine=engine,
+                    stage=SlayerQuery(
+                        source_model="orders",
+                        measures=[{"formula": "*:count"}],
+                        dimensions=["status"],
+                    ),
+                    name="beta",
+                ),
+            )
+            assert "SUM(" in alpha.sql.upper(), alpha.sql
+            assert "region" in alpha.sql, alpha.sql
+            assert "COUNT(" in beta.sql.upper(), beta.sql
+            assert "status" in beta.sql, beta.sql
+            # Neither expansion leaked the other's projection into its own.
+            assert "status" not in alpha.sql, alpha.sql
+            assert "region" not in beta.sql, beta.sql
         finally:
             tmp.cleanup()
 
@@ -1418,15 +1450,17 @@ class TestMultiStageMeasureRename:
                 f"expected 'rev_sum' in cached columns, got: {col_names}"
             )
             sql = loaded.backing_query_sql or ""
-            # Inner-stage wrap renames `"orders.rev" AS rev`; an all-lowercase
-            # short stays bare so it folds like the bare downstream reference.
+            # Inner-stage wrap renames the column to ``rev``; DEV-1452 Stage B's
+            # ``build_flat_rename_wrapper`` may emit the alias quoted
+            # (``AS "rev"``) or bare (``AS rev``); both forms satisfy the
+            # rename contract, so the assertion accepts either.
             import re
-            assert re.search(r"\bAS\s+rev\b", sql), (
+            assert re.search(r'\bAS\s+"?rev"?(?:\s|$)', sql), (
                 f"expected inner-stage 'AS rev' rename in SQL:\n{sql}"
             )
             # The canonical name must not leak into the wrapped subquery's
-            # exposed alias.
-            assert not re.search(r'\bAS\s+"?amount_sum"?', sql), (
+            # exposed alias (quoted or unquoted).
+            assert not re.search(r'\bAS\s+"?amount_sum"?(?:\s|$)', sql), (
                 f"canonical 'amount_sum' must not be the surfaced inner alias:\n{sql}"
             )
         finally:
@@ -1443,7 +1477,7 @@ class TestMultiStageMeasureRename:
                 dimensions=["region"],
                 measures=[{"formula": "amount:sum"}],  # no name
             )
-            virtual = await engine._query_as_model(inner_query=stage)
+            virtual = await _expand_stage_as_model(engine=engine, stage=stage, name="qb_default")
             col_names = [c.name for c in virtual.columns]
             assert "amount_sum" in col_names, (
                 f"unnamed measure must keep canonical 'amount_sum', got: {col_names}"
@@ -1462,7 +1496,7 @@ class TestMultiStageMeasureRename:
                 dimensions=["region"],
                 measures=[{"formula": "amount:sum", "name": "amount_sum"}],
             )
-            virtual = await engine._query_as_model(inner_query=stage)
+            virtual = await _expand_stage_as_model(engine=engine, stage=stage, name="qb_collide")
             col_names = [c.name for c in virtual.columns]
             assert col_names.count("amount_sum") == 1, (
                 f"name=canonical must not duplicate the column, got: {col_names}"
@@ -1470,9 +1504,10 @@ class TestMultiStageMeasureRename:
         finally:
             tmp.cleanup()
 
-    async def test_query_as_model_emits_user_alias_unit(self) -> None:
-        """Direct unit test on ``_query_as_model``: the wrap subquery and the
-        virtual model's ``columns`` must use the user-supplied ``name``.
+    async def test_query_backed_expansion_emits_user_alias_unit(self) -> None:
+        """Direct unit test on the query-backed expansion: the wrap subquery
+        and the virtual model's ``columns`` must use the user-supplied
+        ``name``.
         """
         engine, tmp = await _engine_with_orders()
         try:
@@ -1481,7 +1516,7 @@ class TestMultiStageMeasureRename:
                 dimensions=["region"],
                 measures=[{"formula": "amount:sum", "name": "rev"}],
             )
-            virtual = await engine._query_as_model(inner_query=stage)
+            virtual = await _expand_stage_as_model(engine=engine, stage=stage, name="qb_alias")
             col_names = [c.name for c in virtual.columns]
             assert "rev" in col_names, (
                 f"user-supplied 'name' must surface as a virtual column, got: {col_names}"
@@ -1491,8 +1526,7 @@ class TestMultiStageMeasureRename:
                 f"'name', got: {col_names}"
             )
             import re
-            # DEV-1756: an all-lowercase short stays bare (see above).
-            assert re.search(r"\bAS\s+rev\b", virtual.sql), (
+            assert re.search(r'\bAS\s+"?rev"?(?:\s|$)', virtual.sql or ""), (
                 f"wrapped SQL must rename to user alias 'rev':\n{virtual.sql}"
             )
         finally:

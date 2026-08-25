@@ -231,6 +231,66 @@ class TestClickHouseQueries:
         result = await clickhouse_env.execute(query=query)
         assert float(result.data[0]["orders.total_sum"]) == 875.0  # NOSONAR(S1244) — sum of integer cents, exact-representable
 
+    async def test_string_hygiene_functions_execute(
+        self, clickhouse_env: SlayerQueryEngine
+    ) -> None:
+        """The typed pipeline emits string functions UPPERCASE
+        (``LOWER(...)`` / ``SUBSTRING(...)``) where the legacy path emitted
+        ClickHouse's native lowercase spelling. ClickHouse function names are
+        case-sensitive in general, so this pins that the standard SQL aliases
+        really do resolve on a live server rather than trusting that the
+        emitted SQL merely looks plausible.
+
+        ``substr`` now reaches the server as ``SUBSTRING``: routing every
+        scalar through one dialect-aware policy means sqlglot transpiles the
+        call to the target's own spelling instead of passing the DSL name
+        through verbatim.
+        """
+        lowered = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "*:count"}],
+            filters=["lower(status) = 'completed'"],
+        )
+        result = await clickhouse_env.execute(query=lowered)
+        assert result.data[0]["orders._count"] > 0
+        assert "LOWER(" in (result.sql or ""), result.sql
+
+        subs = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "*:count"}],
+            filters=["substr(status, 1, 4) = 'comp'"],
+        )
+        result = await clickhouse_env.execute(query=subs)
+        assert result.data[0]["orders._count"] > 0
+        assert "SUBSTRING(" in (result.sql or ""), result.sql
+
+    async def test_trunc_executes_lowercase(
+        self, clickhouse_env: SlayerQueryEngine
+    ) -> None:
+        """DEV-1753: sqlglot emits ClickHouse ``trunc`` LOWERCASE while every
+        other backend uppercases it. ClickHouse function names are case-sensitive
+        in general, so this pins that the lowercase spelling really resolves on a
+        live server — and that ``trunc`` truncates toward zero rather than
+        rounding: ``trunc(total / 40.0)`` is 2.5 -> 2 only for total = 100.
+        """
+        acceptance = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "*:count"}],
+            filters=["trunc(total) >= 100"],
+        )
+        result = await clickhouse_env.execute(query=acceptance)
+        assert result.data[0]["orders._count"] > 0
+        assert "trunc(" in (result.sql or ""), result.sql
+        assert "TRUNC(" not in (result.sql or ""), result.sql
+
+        truncates = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "*:count"}],
+            filters=["trunc(total / 40.0) == 2"],
+        )
+        result = await clickhouse_env.execute(query=truncates)
+        assert result.data[0]["orders._count"] == 1, result.sql
+
     async def test_avg_measure(self, clickhouse_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(source_model="orders", measures=[{"formula": "avg_amount:avg"}])
         result = await clickhouse_env.execute(query=query)

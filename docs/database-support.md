@@ -242,7 +242,7 @@ plus `$GCP_PROJECT_ID` for billing). The `bigquery://` driver requires the
   rewrites `<model>.<column>` aliases (`orders._count`,
   `orders.products.category`) to `<model>___<column>` at emit time and
   reverses the mapping on result rows. The triple-underscore separator is
-  distinct from `__` (used by `_query_as_model` for cross-model leaf
+  distinct from `__` (used by the query-backed virtual-model wrap for cross-model leaf
   flattening), so the two encodings never collide. In `Column.sql`,
   fully-qualified table paths must be backticked per-segment
   (`` `project`.`dataset`.`table` ``) — a single backticked dotted path of

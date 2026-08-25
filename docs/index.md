@@ -75,7 +75,7 @@ Agent --> MCP / REST API / Python SDK
               |
          SlayerQueryEngine (resolves model definitions from storage)
               |
-         EnrichedQuery (resolved SQL expressions, model metadata)
+         PlannedQuery (typed value keys, slots, join paths, phases)
               |
          SQLGenerator (sqlglot AST --> dialect-aware SQL)
               |
@@ -84,6 +84,6 @@ Agent --> MCP / REST API / Python SDK
          SlayerResponse (data, columns, sql)
 ```
 
-**SlayerQuery** is what the user sends — names and references, no SQL. **EnrichedQuery** is the engine-internal form where every measure and dimension carries its resolved SQL, aggregation, and model context. New datasource adapters only need to translate EnrichedQuery.
+**SlayerQuery** is what the user sends — names and references, no SQL. **PlannedQuery** is the engine-internal form: every measure and dimension is a typed *value key* interned into a slot, carrying its resolved expression, aggregation, join path, and phase. New datasource adapters only need to translate PlannedQuery.
 
 Full concept docs: [Models](concepts/models.md) | [Queries](concepts/queries.md) | [Formulas](concepts/formulas.md)

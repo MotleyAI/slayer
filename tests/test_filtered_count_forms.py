@@ -10,6 +10,14 @@ aggregations:
 
 These are regression guards: a future change to the filter wrapper that broke
 count semantics would silently corrupt every filtered metric.
+
+``region`` is referenced by the filters but not declared as a model column.
+Since every Mode-A fragment enters through the one door, such a reference is
+qualified against the scope root (``orders.region``) like any other — the old
+path qualified only DECLARED columns and left this one bare, which bound it to
+whatever table happened to be in scope once the filter was re-rendered inside a
+rerooted CTE. The subject of these guards is the CASE-inside-aggregate shape,
+which is unchanged.
 """
 
 from __future__ import annotations
@@ -19,12 +27,8 @@ import re
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelMeasure, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.enrichment import enrich_query
-from slayer.sql.generator import SQLGenerator
 
-
-async def _noop(**k):  # NOSONAR(S7503) — must be a coroutine; awaited as an enrich_query resolver callback
-    return None
+from tests._engine_helpers import _engine_generate
 
 
 async def _gen(formula: str) -> str:
@@ -37,26 +41,22 @@ async def _gen(formula: str) -> str:
         ],
     )
     q = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula=formula)])
-    enriched = await enrich_query(
-        query=q, model=model, resolve_dimension_via_joins=_noop,
-        resolve_cross_model_measure=_noop, resolve_join_target=_noop,
-    )
-    return SQLGenerator(dialect="postgres").generate(enriched=enriched)
+    return await _engine_generate(query=q, model=model, dialect="postgres")
 
 
 async def test_filtered_count_uses_case_inside_count() -> None:
     sql = (await _gen("cust:count")).upper().replace(" ", "")
-    assert "COUNT(CASEWHENREGION='US'THENORDERS.CUSTOMER_IDEND)" in sql
+    assert "COUNT(CASEWHENORDERS.REGION='US'THENORDERS.CUSTOMER_IDEND)" in sql
 
 
 async def test_filtered_count_distinct_uses_case_inside_distinct() -> None:
     sql = (await _gen("cust:count_distinct")).upper().replace(" ", "")
-    assert "COUNT(DISTINCTCASEWHENREGION='US'THENORDERS.CUSTOMER_IDEND)" in sql
+    assert "COUNT(DISTINCTCASEWHENORDERS.REGION='US'THENORDERS.CUSTOMER_IDEND)" in sql
 
 
 async def test_filtered_sum_uses_case_inside_sum() -> None:
     sql = (await _gen("amt:sum")).upper().replace(" ", "")
-    assert "SUM(CASEWHENREGION='US'THENORDERS.AMOUNTEND)" in sql
+    assert "SUM(CASEWHENORDERS.REGION='US'THENORDERS.AMOUNTEND)" in sql
 
 
 async def test_filtered_count_distinct_approx_wraps_case_in_exact_fallback() -> None:
@@ -67,4 +67,4 @@ async def test_filtered_count_distinct_approx_wraps_case_in_exact_fallback() -> 
     # CASE (like the percentile / stat-agg builders), so the fallback emits
     # COUNT(DISTINCT (CASE WHEN ... THEN col END)).
     sql = re.sub(r"\s+", "", (await _gen("cust:count_distinct_approx")).upper())
-    assert "COUNT(DISTINCT(CASEWHENREGION='US'THENORDERS.CUSTOMER_IDEND))" in sql
+    assert "COUNT(DISTINCT(CASEWHENORDERS.REGION='US'THENORDERS.CUSTOMER_IDEND))" in sql

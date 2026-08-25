@@ -42,6 +42,7 @@ from slayer.core.recommend import (
     ItemPath,
     RootModelRecommendation,
 )
+from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.base import StorageBackend
 from slayer.storage.yaml_storage import YAMLStorage
@@ -329,15 +330,46 @@ class TestInnerJoins:
         assert rec.root_model == "orders"
         assert _paths(rec)["order_items.sku"] == "order_items.sku"
 
-    async def test_inner_path_resolvable_by_engine_walker(self, engine, storage) -> None:
-        # The emitted INNER hop must be walkable by the engine's own
-        # _walk_join_chain (the query-time resolver), proving the recommended
-        # path is query-resolvable given the storage symmetry invariant.
-        orders = await storage.get_model("orders", data_source="mydb")
-        terminal, _first = await engine._walk_join_chain(
-            source_model=orders, hop_names=["order_items"]
+    async def test_inner_path_resolvable_by_engine_walker(self, engine) -> None:
+        """The recommended INNER hop must be resolvable by the code that
+        actually runs a query, proving the path is query-resolvable given the
+        storage symmetry invariant (INNER joins stored on both sides).
+
+        DEV-1485 Stage D: this went through ``engine._walk_join_chain`` ->
+        ``path_resolution.walk_join_chain`` (both now deleted). That was the
+        query-time resolver
+        when the test was written, but it is not any more — the typed
+        pipeline walks join hops in ``binding.py`` against the resolved
+        bundle, and ``walk_join_chain``'s only callers were the legacy
+        resolvers deleted with the enrichment stack. Asserting against it now
+        would pin a function no query touches, so the test would keep passing
+        while the property it names silently broke.
+
+        Executing the recommended path is the honest form of the same check
+        and is strictly stronger: it fails if ANY layer (binder, planner,
+        generator) cannot traverse the hop.
+        """
+        # Same item set as ``test_inner_edge_used_as_path`` above, which pins
+        # that this resolves to root ``orders`` reaching ``order_items`` over
+        # the stored INNER edge (a two-item set would tie and break
+        # lexicographically to ``order_items``, testing nothing about the hop).
+        rec = await engine.recommend_root_model(
+            ["orders.status", "order_items.sku", "products.category"]
         )
-        assert terminal.name == "order_items"
+        assert rec.root_model == "orders"
+        path = _paths(rec)["order_items.sku"]
+        assert path == "order_items.sku"
+
+        # Feed the recommendation straight back in as a query.
+        resp = await engine.execute(
+            SlayerQuery(source_model=rec.root_model, dimensions=[path]),
+            dry_run=True,
+        )
+        sql = resp.sql or ""
+        assert "order_items" in sql, sql
+        assert "JOIN" in sql.upper(), sql
+        # Resolved as a joined dimension under the dotted result key.
+        assert "orders.order_items.sku" in sql, sql
 
 
 # --------------------------------------------------------------------------

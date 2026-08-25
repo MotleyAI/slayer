@@ -3,7 +3,7 @@
 ``JoinGraph`` builds an in-memory adjacency from a set of models' *stored
 outgoing* joins (directed edges). INNER joins are kept symmetric by the
 storage layer (``slayer/storage/join_sync.py``) — the same invariant the
-engine's own ``_walk_join_chain`` relies on — so a symmetric INNER pair
+the query-time join walk in ``binding.py`` relies on — so a symmetric INNER pair
 shows up here as two directed edges and is therefore traversable both ways.
 The primitive itself is join-type-agnostic: it just reads outgoing joins.
 

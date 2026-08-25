@@ -21,13 +21,13 @@ from __future__ import annotations
 
 import logging
 import os
-import subprocess
-import sys
 import tempfile
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
 
 import pytest
+
+from tests._cli_inprocess import run_cli_in_process
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
@@ -385,10 +385,7 @@ class TestCliSeeding:
 
 class TestCliParser:
     def test_help_subcommand_is_gone(self) -> None:
-        result = subprocess.run(
-            [sys.executable, "-m", "slayer.cli", "help"],
-            capture_output=True, text=True,
-        )
+        result = run_cli_in_process(["help"])
         assert result.returncode != 0
         # Specifically an argparse invalid-choice error, not an import/other
         # crash (Codex(tests) #11).
@@ -396,10 +393,7 @@ class TestCliParser:
         assert "help" in result.stderr
 
     def test_top_level_help_points_to_inspect_replacement(self) -> None:
-        result = subprocess.run(
-            [sys.executable, "-m", "slayer.cli", "--help"],
-            capture_output=True, text=True,
-        )
+        result = run_cli_in_process(["--help"])
         assert result.returncode == 0
         assert "memory:help.intro" in result.stdout
 

@@ -86,82 +86,97 @@ def test_sqlgenerator_dialect_attribute_used_by_sqlglot_emission() -> None:
     assert parsed.sql(dialect=gen.dialect) == "SELECT 1"
 
 
+# DEV-1571 Bug 1 — the live outer-wrap (``_emit_planned_outer_wrap``) delegates
+# to ``SqlDialect.emit_outer_wrap`` at generator.py; the hook itself is pinned
+# directly by ``tests/dialects/test_base.py`` / ``test_mysql.py``. The two tests
+# that drove the deleted EnrichedQuery-era ``_build_outer_wrap`` (delegation +
+# text-based trailing-pagination strip) were removed with it in PR 6 (DEV-1749);
+# the planned path carries pagination as detached AST, so there is nothing to
+# strip from inner text.
+
+
 # ---------------------------------------------------------------------------
-# DEV-1571 Bug 1 — _build_outer_wrap delegates to dialect.emit_outer_wrap
+# DEV-1716 (Codex test-review Med 4/5) — mechanism-level delegation spies.
+# The end-to-end SQL-shape pins verify the *output*; these verify the
+# generator actually *dispatches through the dialect strategy* so a future
+# inline reimplementation that happens to match the output still fails.
 # ---------------------------------------------------------------------------
 
 
-def test_build_outer_wrap_delegates_to_dialect_hook() -> None:
-    """``SQLGenerator._build_outer_wrap`` must dispatch through
-    ``self._dialect.emit_outer_wrap`` — never a hard-coded
-    ``if self.dialect == "tsql":`` branch in the generator. Pins the
-    strategy-class invariant so a future regression that re-introduces
-    string-keyed dispatch fails this test.
-    """
+def test_duration_interval_exprs_delegates_to_dialect_hook() -> None:
+    """``SQLGenerator._duration_interval_exprs`` must dispatch through
+    ``self._dialect.duration_interval_exprs`` — never an inline
+    ``if self.dialect == 'sqlite':`` branch."""
     gen = SQLGenerator(dialect="postgres")
+    sentinel = ["<<intervals>>"]
     with patch.object(
         type(gen._dialect),
-        "emit_outer_wrap",
+        "duration_interval_exprs",
         autospec=True,
-        return_value="<<stubbed>>",
+        return_value=sentinel,
     ) as spy:
-        result = gen._build_outer_wrap(
-            inner_sql="SELECT 1 AS x",
-            public=["x"],
-            order=None,
-            limit=None,
-            offset_arg=None,
-        )
+        out = gen._duration_interval_exprs("90d", sign=-1)
     assert spy.called, (
-        "SQLGenerator._build_outer_wrap must dispatch through "
-        "self._dialect.emit_outer_wrap. DEV-1571 Bug 1 plan."
+        "_duration_interval_exprs must dispatch through "
+        "self._dialect.duration_interval_exprs. DEV-1716 §3c."
     )
-    assert result == "<<stubbed>>", (
-        "Delegate must return the dialect hook's output verbatim, not "
-        "post-process it."
-    )
+    assert out is sentinel, "Delegate must return the hook's output verbatim."
 
 
-def test_build_outer_wrap_strips_pagination_before_delegate() -> None:
-    """``SQLGenerator._build_outer_wrap`` is the ONLY layer that strips
-    trailing ORDER BY / LIMIT / OFFSET from ``inner_sql`` before delegating
-    to ``dialect.emit_outer_wrap``. Hook never re-strips (DEV-1571 Codex
-    HIGH #3 pagination-strip contract).
-
-    Strategy: pass an inner SQL with trailing pagination text plus the
-    AST-detached pagination nodes; assert the spy's ``inner_sql`` kwarg
-    has no trailing ORDER BY / LIMIT.
-    """
+def test_add_intervals_expr_delegates_to_dialect_hook() -> None:
+    """``SQLGenerator._add_intervals_expr`` must dispatch through
+    ``self._dialect.add_intervals_expr`` (T-SQL overrides it to emit
+    ``DATEADD`` instead of ``± INTERVAL``)."""
     gen = SQLGenerator(dialect="postgres")
-    inner_with_pagination = 'SELECT 1 AS x ORDER BY x ASC LIMIT 10'
-    parsed = sqlglot.parse_one(inner_with_pagination, dialect="postgres")
-    order = parsed.args.get("order")
-    limit = parsed.args.get("limit")
+    base = sqlglot.parse_one("created_at", dialect="postgres")
     with patch.object(
         type(gen._dialect),
-        "emit_outer_wrap",
+        "add_intervals_expr",
         autospec=True,
-        return_value="<<stubbed>>",
+        return_value="<<added>>",
     ) as spy:
-        gen._build_outer_wrap(
-            inner_sql=inner_with_pagination,
-            public=["x"],
-            order=order,
-            limit=limit,
-            offset_arg=None,
-        )
-    assert spy.called
-    # spy.call_args.kwargs holds the kwargs the hook received.
-    delegated_inner = spy.call_args.kwargs["inner_sql"]
-    assert "ORDER BY" not in delegated_inner.upper(), (
-        f"_build_outer_wrap must strip trailing ORDER BY before "
-        f"delegating. Got inner_sql={delegated_inner!r}"
+        out = gen._add_intervals_expr(base, [], sign=1)
+    assert spy.called, (
+        "_add_intervals_expr must dispatch through "
+        "self._dialect.add_intervals_expr. DEV-1716 §3c."
     )
-    assert "LIMIT" not in delegated_inner.upper(), (
-        f"_build_outer_wrap must strip trailing LIMIT before delegating. "
-        f"Got inner_sql={delegated_inner!r}"
+    assert out == "<<added>>", "Delegate must return the hook's output verbatim."
+
+
+def test_parse_delegates_rewrite_parsed_ast_to_active_dialect() -> None:
+    """``SQLGenerator._parse`` must run the PARSE-dialect's
+    ``rewrite_parsed_ast`` hook (SQLite's JSONExtract->func-form rewrite),
+    not an inline ``if d == 'sqlite':`` branch. Pins the mechanism behind
+    the JSONExtract output-shape tests in test_generator_delegation.py."""
+    from slayer.sql.dialects.sqlite import SqliteDialect
+
+    gen = SQLGenerator(dialect="sqlite")
+    with patch.object(
+        SqliteDialect,
+        "rewrite_parsed_ast",
+        autospec=True,
+        side_effect=lambda self, tree: tree,
+    ) as spy:
+        gen._parse("json_extract(payload, '$.tier')")
+    assert spy.called, (
+        "_parse must dispatch through the active dialect's rewrite_parsed_ast "
+        "(SQLite JSONExtract rewrite). DEV-1716 §3b."
     )
-    # And the detached AST nodes must be passed through verbatim, not
-    # re-parsed from text.
-    assert spy.call_args.kwargs["order"] is order
-    assert spy.call_args.kwargs["limit"] is limit
+
+
+def test_parse_predicate_delegates_rewrite_parsed_ast_to_active_dialect() -> None:
+    """Same contract for the bare-predicate parser ``_parse_predicate``."""
+    from slayer.sql.dialects.sqlite import SqliteDialect
+
+    gen = SQLGenerator(dialect="sqlite")
+    with patch.object(
+        SqliteDialect,
+        "rewrite_parsed_ast",
+        autospec=True,
+        side_effect=lambda self, tree: tree,
+    ) as spy:
+        gen._parse_predicate("json_extract(payload, '$.tier') = 'gold'")
+    assert spy.called, (
+        "_parse_predicate must dispatch through the active dialect's "
+        "rewrite_parsed_ast. DEV-1716 §3b."
+    )

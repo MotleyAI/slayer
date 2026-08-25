@@ -13,12 +13,14 @@ from pydantic import ValidationError
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.engine.ingestion import (
+    _additive_merge_existing,
     ingest_datasource,
     ingest_datasource_idempotent,
     introspect_table_to_model,
     list_ingestable_objects,
 )
 from slayer.storage.migrations import CURRENT_VERSIONS, migrate
+from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -111,8 +113,6 @@ class TestPersistence:
         assert loaded.source_kind == "view"
 
     async def test_round_trips_through_sqlite_storage(self, workspace: Path) -> None:
-        from slayer.storage.sqlite_storage import SQLiteStorage
-
         storage = SQLiteStorage(db_path=str(workspace / "slayer.db"))
         model = SlayerModel(
             name="mv_orders",
@@ -281,8 +281,6 @@ class TestSourceKindRefresh:
 
     async def test_none_never_erases_a_known_value(self, workspace: Path) -> None:
         """A fresh model with kind None must not wipe a persisted value."""
-        from slayer.engine.ingestion import _additive_merge_existing
-
         persisted = SlayerModel(
             name="foo",
             sql_table="foo",
@@ -303,8 +301,6 @@ class TestSourceKindRefresh:
 
     def test_no_op_merge_preserves_the_early_return_contract(self) -> None:
         """An identical re-ingest must still short-circuit."""
-        from slayer.engine.ingestion import _additive_merge_existing
-
         model = SlayerModel(
             name="foo",
             sql_table="foo",

@@ -13,8 +13,9 @@ fields use class-level defaults (``sqlglot_name: str = "postgres"``).
 from __future__ import annotations
 
 import hashlib
+import re
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Optional
 from collections.abc import Callable, Sequence
 
 from pydantic import BaseModel, ConfigDict
@@ -23,7 +24,8 @@ from sqlglot.dialects.dialect import Dialect as _SqlglotDialect
 
 from slayer.core.enums import TimeGranularity
 from slayer.core.errors import IdentifierCollisionError
-from slayer.sql.dialects._identifier_fit import fit_identifier, substitute_quoted
+from slayer.sql._identifier_fit import fit_identifier, substitute_quoted
+from slayer.sql.naming_bijection import decode_alias, encode_alias
 
 if TYPE_CHECKING:
     import sqlalchemy as sa
@@ -200,6 +202,12 @@ class SqlDialect(BaseModel):
     # (Postgres), so a new dialect over-shortens rather than silently truncating.
     max_identifier_bytes: int | None = 63
 
+    # DEV-1595 approximate-distinct emission. Template dialects set the first
+    # ({col} substituted with the column SQL); Oracle/T-SQL set the second so
+    # sqlglot does not re-emit a parsed APPROX_COUNT_DISTINCT as APPROX_DISTINCT.
+    approx_count_distinct_template: str = "COUNT(DISTINCT {col})"
+    approx_count_distinct_anonymous_name: str | None = None
+
     @property
     def backslash_escapes_strings(self) -> bool:
         """Whether this dialect's string literals treat a backslash as an escape
@@ -214,6 +222,109 @@ class SqlDialect(BaseModel):
         disagree with the parser; a pinning test freezes the expected value.
         """
         return _sqlglot_backslash_escapes(self.sqlglot_name)
+
+    # ------------------------------------------------------------------
+    # Null-safe equality (DEV-1708 / Codex F2)
+    # ------------------------------------------------------------------
+
+    def build_null_safe_eq(
+        self, left: exp.Expression, right: exp.Expression,
+    ) -> exp.Expression:
+        """A null-safe equality (``left`` and ``right`` compare equal, and two
+        NULLs compare equal) for the cross-model grain join-back's ``ON`` clause.
+
+        Base (Postgres-family) uses sqlglot's ``NullSafeEQ`` → ``IS NOT DISTINCT
+        FROM``, which sqlglot also transpiles correctly for DuckDB / Snowflake /
+        BigQuery / Trino / Databricks / ClickHouse — and for MySQL, where it
+        emits ``<=>``. MySQL therefore needs no override here (an earlier
+        version of this docstring claimed one existed). ``SqliteDialect``
+        overrides to bare ``IS``; dialects with no native form (T-SQL / Oracle /
+        Redshift) to the expanded ``a = b OR (a IS NULL AND b IS NULL)``.
+        """
+        return exp.NullSafeEQ(this=left, expression=right)
+
+    # ------------------------------------------------------------------
+    # ORDER BY term construction (DEV-1747 D5 / P-H)
+    # ------------------------------------------------------------------
+
+    def build_ordered(
+        self,
+        order_col: exp.Expression,
+        *,
+        descending: bool,
+        nulls: Literal["default", "first", "last"] = "default",
+    ) -> exp.Ordered:
+        """Build one ``ORDER BY`` term with its null-ordering policy applied.
+
+        The single place any render site turns a resolved column plus a
+        direction into an ``exp.Ordered`` (P-H). It previously lived on the
+        generator as ``_ordered``, which meant the combined and transform-chain
+        paths — which built their own ``exp.Ordered`` — silently skipped it.
+
+        ``nulls="default"`` leaves ``nulls_first`` unset, which sqlglot renders
+        as **nulls last on every dialect** — an explicit ``NULLS LAST`` where
+        the native default differs and the syntax exists, a ``CASE WHEN <col>
+        IS NULL …`` emulation where it does not (MySQL / SQLite). That
+        uniformity is the point: a semantic layer whose NULLs sort first on
+        SQLite and last on Postgres answers the same question two ways.
+
+        T-SQL is the one exception and overrides this, because its emulation
+        does not merely look different — the bracketed alias inside the CASE
+        re-resolves against the FROM scope and the statement fails.
+
+        ``"first"`` / ``"last"`` are an explicit intent and are honoured as
+        asked, emulation included — that is the only way to express them on a
+        dialect with no NULLS syntax.
+        """
+        kwargs: dict = {"this": order_col, "desc": descending}
+        if nulls == "first":
+            kwargs["nulls_first"] = True
+        elif nulls == "last":
+            kwargs["nulls_first"] = False
+        return exp.Ordered(**kwargs)
+
+    def native_nulls_first(self, *, descending: bool) -> bool:
+        """Where NULLs sort in this dialect's OWN ordering for ``descending``.
+
+        Setting ``nulls_first`` to this value is what makes sqlglot emit a bare
+        ``ORDER BY``: no NULLS clause, no ``CASE WHEN … IS NULL`` emulation.
+        That is wanted for orderings that are internal machinery rather than a
+        user-visible sort — a window frame's ``OVER (ORDER BY …)``, where an
+        emulation term would change which rows the frame covers.
+
+        Read from the same dialect class that GENERATES the clause, for the
+        same reason :func:`_sqlglot_backslash_escapes` reads the tokenizer: a
+        hand-kept table would silently disagree with the emitter, and the
+        symptom is a wrong sort rather than an error.
+        """
+        ordering = getattr(
+            _SqlglotDialect.get_or_raise(self.sqlglot_name),
+            "NULL_ORDERING", None,
+        )
+        if ordering == "nulls_are_last":
+            return False
+        if ordering == "nulls_are_small":
+            return not descending
+        if ordering == "nulls_are_large":
+            return descending
+        raise RuntimeError(
+            f"Cannot derive the native null ordering for sqlglot dialect "
+            f"{self.sqlglot_name!r}: NULL_ORDERING is {ordering!r}. A sqlglot "
+            f"upgrade may have changed this API.",
+        )
+
+    @staticmethod
+    def _expanded_null_safe_eq(
+        left: exp.Expression, right: exp.Expression,
+    ) -> exp.Expression:
+        """``left = right OR (left IS NULL AND right IS NULL)`` — the portable
+        expansion for dialects without a native null-safe equality operator."""
+        eq = exp.EQ(this=left.copy(), expression=right.copy())
+        both_null = exp.And(
+            this=exp.Is(this=left.copy(), expression=exp.Null()),
+            expression=exp.Is(this=right.copy(), expression=exp.Null()),
+        )
+        return exp.paren(exp.Or(this=eq, expression=exp.paren(both_null)))
 
     # ------------------------------------------------------------------
     # Date-trunc / time arithmetic
@@ -357,16 +468,18 @@ class SqlDialect(BaseModel):
         *,
         parse: Callable[[str], exp.Expression],
     ) -> exp.Expression:
-        """Default: exact ``COUNT(DISTINCT col)`` fallback (DEV-1595).
+        """Approximate-distinct aggregate, driven by the two config fields.
 
-        Backends with no native approximate-distinct function (Postgres /
-        SQLite / MySQL) fall back to the exact count, which is *more*
-        accurate than an approximation — consistent with the "no
-        approximate SQL" rule. Native-supporting dialects override this to
-        emit their own approximate-distinct function (DuckDB
-        ``approx_count_distinct``, ClickHouse ``uniq``, …).
+        Base default is the exact ``COUNT(DISTINCT col)`` fallback (Postgres /
+        SQLite / MySQL) — more accurate than an approximation, per the "no
+        approximate SQL" rule.
         """
-        return parse(f"COUNT(DISTINCT {col_sql})")
+        if self.approx_count_distinct_anonymous_name is not None:
+            return exp.Anonymous(
+                this=self.approx_count_distinct_anonymous_name,
+                expressions=[parse(col_sql)],
+            )
+        return parse(self.approx_count_distinct_template.replace("{col}", col_sql))
 
     def build_stat_agg_1arg(
         self,
@@ -436,6 +549,33 @@ class SqlDialect(BaseModel):
         """
         return tree
 
+    def apply_pagination(
+        self,
+        select: exp.Select,
+        *,
+        limit: Optional[int],
+        offset: Optional[int],
+    ) -> exp.Select:
+        """Apply LIMIT/OFFSET to a completed ``SELECT`` (P-H).
+
+        The single place pagination is expressed. Every render path routes
+        here, so a dialect that spells pagination differently is handled once
+        rather than per path — the cross-model combined statement used to append
+        raw ``LIMIT``/``OFFSET`` text and emitted literal ``LIMIT`` on SQL
+        Server, while the same query carrying a transform layer went through the
+        outer wrap and came out correct.
+
+        Setting the bounds on the ``Select`` is what makes transposition work:
+        sqlglot rewrites them per dialect only when generating the wrapping
+        SELECT, never from a free-standing ``Limit`` node.
+        """
+        out = select
+        if limit is not None:
+            out = out.limit(limit)
+        if offset is not None:
+            out = out.offset(offset)
+        return out
+
     def emit_outer_wrap(
         self,
         *,
@@ -449,13 +589,14 @@ class SqlDialect(BaseModel):
         """Emit the DEV-1444 outer-projection wrap around ``inner_sql``.
 
         Contract: ``inner_sql`` is the inner SELECT with **trailing
-        pagination already detached** (``SQLGenerator._build_outer_wrap``
-        owns the strip). ``order`` / ``limit`` / ``offset_arg`` are the
-        detached sqlglot AST nodes the caller pulled off the inner; the
-        hook re-emits them on the outer statement.
+        pagination already detached** (the planned outer-wrap path,
+        ``SQLGenerator._emit_planned_outer_wrap``, owns it — pagination
+        arrives as detached AST from the plan). ``order`` / ``limit`` /
+        ``offset_arg`` are the detached sqlglot AST nodes the caller pulled
+        off the inner; the hook re-emits them on the outer statement.
 
         ``parse`` is the generator's ``_parse`` callback when the
-        generator is the caller (``SQLGenerator._build_outer_wrap``).
+        generator is the caller (``SQLGenerator._emit_planned_outer_wrap``).
         T-SQL needs it to preserve SLayer-specific AST rewrites (LOG10/
         LOG2 alias preservation, SQLite JSONExtract function-form) when
         the override re-parses ``inner_sql`` to detach the WITH clause.
@@ -587,10 +728,27 @@ class SqlDialect(BaseModel):
 
     def decode_alias_map(self, aliases: Sequence[str]) -> dict[str, str]:
         """``{emitted: canonical}`` — read-side inverse, rebuilt by re-running
-        the pure fitting rather than threading a map through generation."""
+        the pure fitting rather than threading a map through generation.
+
+        Raises on two canonical aliases fitting to one emitted form, for
+        symmetry with ``alias_rewrite_map`` — the read side can be handed a
+        different alias set than the write side, so its guard is independent.
+        Ownership is recorded for identity aliases too (only the output map
+        drops them), so a fitted alias colliding with an unchanged one is
+        caught just as ``alias_rewrite_map`` catches it.
+        """
         out: dict[str, str] = {}
+        owner: dict[str, str] = {}
         for alias in aliases:
             emitted = self.emit_alias(alias)
+            prior = owner.get(emitted)
+            if prior is not None and prior != alias:
+                raise IdentifierCollisionError(
+                    first=prior, second=alias, emitted=emitted,
+                    dialect=self.sqlglot_name, limit=self.max_identifier_bytes,
+                    namespace="result key",
+                )
+            owner[emitted] = alias
             if emitted != alias:
                 out[emitted] = alias
         return out
@@ -772,3 +930,56 @@ class SqlDialect(BaseModel):
         codes' mapping.
         """
         return None
+
+
+class DottedAliasManglingMixin:
+    """DEV-1571: shared ``.``-to-``___`` alias mangling for BigQuery / T-SQL.
+
+    ``fit_alias`` / ``emit_alias`` / ``decode_result_keys`` are identical on both;
+    only ``rewrite_emitted_sql``'s identifier-quote anchor differs, supplied via
+    the three class attributes. Mixed in before ``SqlDialect`` so the base LENGTH
+    pass runs first (``super().rewrite_emitted_sql``) and the dot-mangle composes
+    on its still-dotted output.
+    """
+
+    dotted_alias_re: ClassVar[re.Pattern[str]]
+    alias_quote_open: ClassVar[str]
+    alias_quote_close: ClassVar[str]
+
+    def fit_alias(self, name: str) -> str:
+        """Size the budget against the post-mangle form (``.`` -> ``___`` adds 2
+        bytes per dot); the return value stays dotted for the regex."""
+        return fit_identifier(
+            name=name, limit=self.max_identifier_bytes, expand=encode_alias,
+        )
+
+    def emit_alias(self, alias: str) -> str:
+        """The final identifier: length-fitted, then dot-mangled."""
+        return encode_alias(self.fit_alias(alias))
+
+    def rewrite_emitted_sql(
+        self, sql: str, *, aliases: Sequence[str] = (),
+    ) -> str:
+        """Base LENGTH pass, then ``.`` -> ``___`` inside quoted identifiers."""
+        sql = super().rewrite_emitted_sql(sql=sql, aliases=aliases)
+        return self.dotted_alias_re.sub(
+            lambda m: (
+                f"{self.alias_quote_open}{encode_alias(m.group(1))}"
+                f"{self.alias_quote_close}"
+            ),
+            sql,
+        )
+
+    def decode_result_keys(
+        self,
+        rows: list[dict[str, Any]],
+        *,
+        aliases: Sequence[str] = (),
+    ) -> list[dict[str, Any]]:
+        """Reverse the mangling on result-row keys: consult the emitted->canonical
+        map, falling back to the ``___`` -> ``.`` bijection for fitted keys."""
+        mapping = self.decode_alias_map(aliases)
+        return [
+            self._rekey_row(row=row, mapping=mapping, fallback=decode_alias)
+            for row in rows
+        ]

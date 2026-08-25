@@ -1381,6 +1381,52 @@ class TestDev1645ValidPostgres:
         result = await pg_dev1645.execute(query=query)
         assert result.row_count == 3
 
+    async def test_grouped_row_column_order_max_wrap_executes(
+        self, pg_dev1645: SlayerQueryEngine,
+    ) -> None:
+        """DEV-1703 Phase 1: a GROUPED query ordering by an unprojected LOCAL
+        row column materialises a hidden ``created_at:max`` wrap. Verified on
+        real Postgres — the shape must both execute and sort correctly.
+
+        Latest created_at per acct_form: Human 2024-03-01, Bot 2024-01-15 —
+        so descending puts Human first. The grain must stay one row per
+        acct_form, and the wrap must not surface in the response.
+        """
+        query = SlayerQuery(
+            source_model="accounts",
+            dimensions=[ColumnRef(name="acct_form")],
+            measures=[{"formula": "*:count", "name": "cnt"}],
+            order=[OrderItem(column=ColumnRef(name="created_at"), direction="desc")],
+        )
+        result = await pg_dev1645.execute(query=query)
+        assert [r["accounts.acct_form"] for r in result.data] == ["Human", "Bot"]
+        assert result.row_count == 2
+        assert all("created_at" not in c for c in result.columns), result.columns
+
+    async def test_ungrouped_joined_column_order_executes(
+        self, pg_dev1645: SlayerQueryEngine,
+    ) -> None:
+        """DEV-1703 Phase 1: a RAW-ROWS query ordering by a JOINED column pulls
+        the join (Law 1) and split-emits ``clusters.score``. Verified on real
+        Postgres — the split reference must bind, which is exactly what the
+        composite ``"clusters.score"`` form failed to do.
+
+        scores: account 1 -> 1.5, 2 -> 2.5, 3 -> 1.5; ascending by score then
+        id gives 1, 3, 2.
+        """
+        query = SlayerQuery(
+            source_model="accounts",
+            dimensions=[ColumnRef(name="id")],
+            distinct_dimension_values=False,
+            order=[
+                OrderItem(column=ColumnRef(name="score", model="clusters"), direction="asc"),
+                OrderItem(column=ColumnRef(name="id"), direction="asc"),
+            ],
+        )
+        result = await pg_dev1645.execute(query=query)
+        assert [r["accounts.id"] for r in result.data] == [1, 3, 2]
+        assert all("score" not in c for c in result.columns), result.columns
+
 
 # ---------------------------------------------------------------------------
 # DEV-1686: reserved-word model name executes live against Postgres.

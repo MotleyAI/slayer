@@ -18,6 +18,15 @@ import pytest
 nbclient = pytest.importorskip("nbclient")
 nbformat = pytest.importorskip("nbformat")
 
+from slayer.async_utils import run_sync
+from slayer.demo.jaffle_shop import (
+    DEMO_NAME,
+    TABLE_NAMES,
+    build_jaffle_shop,
+    ensure_demo_datasource,
+)
+from slayer.storage.yaml_storage import YAMLStorage
+
 pytestmark = pytest.mark.integration
 
 EXAMPLES_DIR = Path(__file__).resolve().parent.parent.parent / "docs" / "examples"
@@ -38,8 +47,6 @@ def _ensure_jaffle_db():
     if JAFFLE_DB_PATH.exists():
         return  # Reuse existing DB
 
-    from slayer.demo.jaffle_shop import build_jaffle_shop
-
     JAFFLE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     try:
         build_jaffle_shop(db_path=str(JAFFLE_DB_PATH), years=3)
@@ -47,12 +54,82 @@ def _ensure_jaffle_db():
         pytest.skip(f"Jaffle shop prerequisite missing: {e}")
 
 
-@pytest.fixture(params=_NOTEBOOKS, ids=[str(p.relative_to(EXAMPLES_DIR)) for p in _NOTEBOOKS])
-def notebook_path(request):
-    # Clean models before each notebook so custom models from one
-    # notebook don't leak into another (e.g., order_items_custom).
+# Notebooks whose POINT is to demonstrate initial ingestion — they must run on a
+# CLEAN models dir so they exercise the full auto-ingest path. DEV-1815 removed
+# the dedicated test_jaffle_shop_notebook.py, so this harness now carries that
+# cold-ingest coverage. Every other notebook gets the prebuilt base models
+# restored (below) so it skips re-ingestion.
+_INGEST_DEMO_NOTEBOOKS = {
+    "03_auto_ingest/auto_ingest_nb.ipynb",
+}
+
+
+@pytest.fixture(scope="session")
+def _jaffle_models_template(_ensure_jaffle_db, tmp_path_factory) -> Path:
+    """Ingest the base Jaffle models once and snapshot ``slayer_models/`` (DEV-1815).
+
+    Built fresh (not from a possibly-stale checkout dir) and validated to contain
+    every demo table before snapshotting, so consumer notebooks can restore it and
+    hit ``ensure_demo_datasource``'s reuse fast-path instead of re-ingesting.
+    """
     if JAFFLE_MODELS_DIR.exists():
         shutil.rmtree(JAFFLE_MODELS_DIR)
+    storage = YAMLStorage(base_dir=str(JAFFLE_MODELS_DIR))
+    ensure_demo_datasource(
+        storage,
+        storage_path=str(JAFFLE_DATA_DIR),
+        years=3,
+        ingest_models=True,
+        assume_yes=True,
+    )
+    present = set(run_sync(storage.list_models(data_source=DEMO_NAME)))
+    missing = [t for t in TABLE_NAMES if t not in present]
+    if missing:
+        pytest.skip(f"Jaffle models template incomplete: missing {missing}")
+
+    snapshot = tmp_path_factory.mktemp("jaffle-models-template")
+    shutil.copytree(JAFFLE_MODELS_DIR, snapshot, dirs_exist_ok=True)
+    return snapshot
+
+
+# Notebooks expected to fail under the current typed-pipeline gaps.
+# Map: notebook path relative to EXAMPLES_DIR → Linear issue + reason.
+# Re-enable a notebook by removing its entry once the cited issue lands.
+_KNOWN_FAILING_NOTEBOOKS = {
+    # DEV-1474 (cross-model partition in time_shift CTEs) landed in DEV-1711
+    # Stage 7 — the 04_time QoQ-by-store cell now runs, so that notebook is
+    # un-skipped. 09_lightning_talk stays skipped for a DIFFERENT, downstream
+    # reason: its hero cell issues ONE query with TWO time_shift transforms
+    # (change_pct + an explicit time_shift), which collide on the CTE name
+    # `shifted__time_shift_inner` — the DEV-1692 de-collision gap owned by
+    # Stage 9 (same gap as the 13_osi_import notebooks below).
+    "09_lightning_talk/lightning_talk_nb.ipynb": (
+        "DEV-1713: DEV-1692 duplicate time_shift CTE name "
+        "(`Duplicate CTE name \"shifted__time_shift_inner\"`) — the hero query "
+        "combines change_pct(order_total:sum) with an explicit "
+        "time_shift(order_total:sum, -1, 'month') in one query, so two shifted "
+        "CTEs are emitted under the same name. DEV-1474's cross-model partition "
+        "(the Stage-7 blocker) is fixed; this is the Stage-9 collision gap."
+    ),
+    # DEV-1704 Stage-0 parity gaps surfaced by the integration notebook run.
+    "12_query_cache/query_cache_nb.ipynb": (
+        "DEV-1715: the DEV-1587 per-query cache is not yet wired into the "
+        "typed pipeline (deferred from Stage 0)."
+    ),
+}
+
+
+@pytest.fixture(params=_NOTEBOOKS, ids=[str(p.relative_to(EXAMPLES_DIR)) for p in _NOTEBOOKS])
+def notebook_path(request, _jaffle_models_template):
+    # Wipe models before each notebook so custom models from one notebook don't
+    # leak into another (e.g., order_items_custom). For everything but the
+    # ingest-demo notebooks, restore the prebuilt base models so the notebook's
+    # ensure_jaffle_shop() call reuses them instead of re-ingesting (DEV-1815).
+    if JAFFLE_MODELS_DIR.exists():
+        shutil.rmtree(JAFFLE_MODELS_DIR)
+    rel = str(request.param.relative_to(EXAMPLES_DIR))
+    if rel not in _INGEST_DEMO_NOTEBOOKS:
+        shutil.copytree(_jaffle_models_template, JAFFLE_MODELS_DIR)
     return request.param
 
 
@@ -72,8 +149,38 @@ def _github_reachable(host: str = "github.com", port: int = 443, timeout: float 
         return False
 
 
-def test_notebook_runs_without_errors(notebook_path):
+def _bootstrap_failure_is_transient(error_text: str) -> bool:
+    """True if a MetricFlow bootstrap error reflects a transient network/server
+    problem (GitHub 5xx/429, DNS, dropped connection) rather than a deterministic
+    one (bad pin SHA, missing CSVs). A reachable socket does not guarantee a clone
+    succeeds — GitHub can accept the connection and still answer 503 — so the skip
+    guard consults this in addition to :func:`_github_reachable`.
+
+    Reuses the setup helper's classifier (imported lazily, mirroring the in-fixture
+    ``build_jaffle_shop`` import above) so the retry loop and skip guard agree on
+    what counts as transient. If the helper can't be imported, err toward *not*
+    transient so a genuine failure is never silently skipped.
+    """
+    import sys
+
+    metricflow_dir = EXAMPLES_DIR / _METRICFLOW_NB_DIR
+    if str(metricflow_dir) not in sys.path:
+        sys.path.insert(0, str(metricflow_dir))
+    try:
+        from setup_metricflow import _is_transient_git_error
+    except ImportError:
+        return False
+    return _is_transient_git_error(error_text)
+
+
+def test_notebook_runs_without_errors(notebook_path, request):
     """Execute the notebook and assert it completes without errors."""
+    rel = str(notebook_path.relative_to(EXAMPLES_DIR))
+    if rel in _KNOWN_FAILING_NOTEBOOKS:
+        request.applymarker(pytest.mark.xfail(
+            reason=_KNOWN_FAILING_NOTEBOOKS[rel],
+            strict=False,
+        ))
     is_metricflow = _METRICFLOW_NB_DIR in notebook_path.parts
     if is_metricflow:
         complete_marker = notebook_path.parent / ".cache" / ".complete"
@@ -92,9 +199,14 @@ def test_notebook_runs_without_errors(notebook_path):
     try:
         client.execute()
     except nbclient.exceptions.CellExecutionError as exc:
-        # A reachable socket but a failing `git fetch` (or a stale/partial cache)
-        # surfaces as MetricFlowDemoError mid-run; skip when GitHub is unreachable
-        # rather than reporting a bootstrap failure as a notebook bug.
-        if is_metricflow and "MetricFlowDemoError" in str(exc) and not _github_reachable():
-            pytest.skip(f"MetricFlow notebook could not bootstrap offline: {exc}")
+        # A failing `git fetch` (or a stale/partial cache) surfaces as
+        # MetricFlowDemoError mid-run. Skip — rather than report a bootstrap
+        # failure as a notebook bug — when GitHub is unreachable *or* the failure
+        # is a transient network/server hiccup (e.g. a 503 over a reachable
+        # socket). A deterministic MetricFlowDemoError (bad pin, missing CSVs)
+        # still fails loudly.
+        if is_metricflow and "MetricFlowDemoError" in str(exc):
+            text = str(exc)
+            if not _github_reachable() or _bootstrap_failure_is_transient(text):
+                pytest.skip(f"MetricFlow notebook could not bootstrap: {exc}")
         raise

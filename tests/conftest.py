@@ -36,6 +36,22 @@ def _disable_embedding_channel_by_default(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(embedding_client, "is_available", lambda: False)
 
 
+@pytest.fixture(autouse=True)
+def _enable_scope_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """DEV-1705: validate scope-closure on every generated statement.
+
+    Sets ``SLAYER_VALIDATE_SCOPES=1`` so the generator's post-mangle, pre-RLS
+    ``maybe_validate_scopes`` hook (``slayer/sql/scope_check.py``) runs for
+    every emitted statement across the suite. A *provable* out-of-scope
+    reference raises ``ScopeLeakError`` at generation time — turning
+    DEV-1703's "no gaps" invariant into a failing test. The validator is
+    sound-on-corpus (no false positives); if a currently-passing statement
+    trips it, that is either a genuine latent leak (pin strict-xfail to its
+    owning stage) or a validator bug (fix the validator) — never silence it.
+    """
+    monkeypatch.setenv("SLAYER_VALIDATE_SCOPES", "1")
+
+
 @pytest.fixture
 def sample_model() -> SlayerModel:
     return SlayerModel(

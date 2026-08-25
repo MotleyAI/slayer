@@ -862,3 +862,109 @@ class TestDatasourceResolution:
         assert len(entries) == 1
         assert entries[0].resolved_data_source == "db_a"  # not migrated to db_b
         assert entries[0].response.data[0]["orders.amount_sum"] == pytest.approx(350.0)
+
+
+async def _engine_with_repointed_datasource(tmp_path, *, a_stem, b_stem):
+    """Cache two entries under the SAME datasource name ``ds`` repointed from
+    db_a (seeded, ``amount`` sums to 350) to db_b (a single distinguishable row,
+    999) — leaving two fingerprint-scoped cache entries, each carrying the
+    ``MAX(updated_at)`` refresh key. Returns ``(engine, db_a, db_b)``."""
+    db_a = tmp_path / f"{a_stem}.db"
+    _seed_db(db_a)
+    db_b = tmp_path / f"{b_stem}.db"
+    _seed_orders_single(db_b, amount=999.0)
+    storage = YAMLStorage(base_dir=str(tmp_path / "store"))
+    await storage.save_datasource(
+        DatasourceConfig(name="ds", type="sqlite", database=str(db_a))
+    )
+    await storage.save_model(_orders_model("ds"))
+    engine = SlayerQueryEngine(
+        storage=storage,
+        cache_config=CacheConfig(refresh_keys=[("orders", "MAX(updated_at)")]),
+    )
+    await engine.execute(_sum_query(), cache=True)  # entry vs db_a
+    await storage.save_datasource(
+        DatasourceConfig(name="ds", type="sqlite", database=str(db_b))
+    )
+    await engine.execute(_sum_query(), cache=True)  # entry vs db_b
+    return engine, db_a, db_b
+
+
+class TestReviewFollowups:
+    """Regressions pinned by the PR #254 review (Codex + CodeRabbit)."""
+
+    async def test_concurrent_clear_not_reported_as_refreshed(self, tmp_path):
+        # A re-exec whose identity-guarded commit is skipped (the entry was
+        # concurrently cleared during refresh's awaits) must NOT be reported in
+        # refreshed / expired_refreshed — the cache was not actually updated.
+        clk = FakeClock()
+        engine = await _build_engine(tmp_path)
+        engine._cache = QueryCache(config=CacheConfig(ttl_seconds=100), clock=clk)
+        q = _sum_query()
+        await engine.execute(q, cache=True)
+
+        orig_reexec = engine._reexecute_entry
+
+        async def clearing_reexec(entry, now):
+            out = await orig_reexec(entry, now)
+            engine.clear_cache()  # a concurrent clear during refresh's awaits
+            return out
+
+        engine._reexecute_entry = clearing_reexec
+
+        clk.advance(200)  # TTL expired → re-exec path
+        result = await engine.refresh()
+        assert engine.cache_size == 0
+        assert result.expired_refreshed == []  # commit skipped → not reported
+        assert result.refreshed == []
+
+    async def test_variables_snapshot_is_deep_copied(self, tmp_path):
+        # The cached entry deep-copies variables (not a shallow dict), so a
+        # post-execute mutation of a nested value can't leak into the snapshot.
+        engine = await _build_engine(tmp_path)
+        nested = {"ids": [1, 2, 3]}
+        await engine.execute(_sum_query(), variables=nested, cache=True)
+        (entry,) = engine._cache._entries.values()
+        nested["ids"].append(999)  # mutate the caller's nested list post-execute
+        assert entry.variables["ids"] == [1, 2, 3]  # snapshot unaffected
+
+    async def test_refresh_scans_by_fingerprint_not_name(self, tmp_path):
+        # Two DBs behind the SAME datasource name → two fingerprint-scoped
+        # entries. refresh() must scan each against the connection it was cached
+        # under (its ds_key), NOT re-resolve the name to the current config —
+        # else the db_a entry is scanned against db_b (whose MAX(updated_at)
+        # differs) and spuriously reported refreshed.
+        engine, _db_a, _db_b = await _engine_with_repointed_datasource(
+            tmp_path, a_stem="fp_a", b_stem="fp_b"
+        )
+        assert engine.cache_size == 2
+
+        # Neither DB changed since its entry was cached → both must be unchanged.
+        result = await engine.refresh()
+        assert result.refreshed == []
+        assert len(result.unchanged) == 2
+        assert result.errors == []
+
+    async def test_refresh_reexec_pinned_to_entry_fingerprint(self, tmp_path):
+        # A refresh() re-exec must run against the DB the entry was cached under
+        # (its ds_key), not a repointed same-name datasource — else the
+        # refreshed rows come from the wrong database.
+        engine, db_a, _db_b = await _engine_with_repointed_datasource(
+            tmp_path, a_stem="re_a", b_stem="re_b"
+        )
+        assert engine.cache_size == 2
+
+        # Move db_a's MAX(updated_at) so ONLY its entry is detected stale.
+        _mutate(db_a, "INSERT INTO orders VALUES (4, 'pending', 1000.0, '2025-06-01')")
+        result = await engine.refresh()
+        assert len(result.refreshed) == 1
+
+        # The db_a entry re-executed against db_a → 1350, NOT db_b's 999.
+        vals = {
+            e.ds_key[0]: e.response.data[0]["orders.amount_sum"]
+            for e in engine._cache._entries.values()
+        }
+        a_val = next(v for k, v in vals.items() if "re_a" in k)
+        b_val = next(v for k, v in vals.items() if "re_b" in k)
+        assert a_val == pytest.approx(1350.0)
+        assert b_val == pytest.approx(999.0)

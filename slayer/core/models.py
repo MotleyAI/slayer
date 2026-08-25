@@ -26,9 +26,6 @@ _NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 logger = logging.getLogger(__name__)
 
-_MULTIDOT_COLUMN_RE = re.compile(r'\b([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*){2,})\b')
-_STRING_LITERAL_RE = re.compile(r"'[^']*'")
-
 # Host-field normalization for the generic connection URL. ``URL.create``
 # wants a raw host (IPv6 without brackets) plus a separate port, but the
 # pre-fix string branch tolerated the port being embedded in the host
@@ -144,41 +141,6 @@ def _validate_column_name(name: str, context: str) -> str:
     return name
 
 
-def _convert_multidot_ref(match: re.Match) -> str:
-    """Convert a multi-dot reference like ``a.b.c`` to ``a__b.c``."""
-    ref = match.group(1)
-    parts = ref.split(".")
-    return "__".join(parts[:-1]) + "." + parts[-1]
-
-
-def _fix_multidot_sql(sql: str, context: str) -> str:
-    """Auto-convert multi-dot references in a SQL snippet to __ alias syntax.
-
-    Single-dot references (``table.column``) are left as-is.
-    Multi-dot references (``a.b.c``) are converted to ``a__b.c`` with a warning.
-    String literals are skipped.
-    """
-    # Build a map of string-literal spans to skip
-    literal_spans = [m.span() for m in _STRING_LITERAL_RE.finditer(sql)]
-
-    def _in_literal(start: int) -> bool:
-        return any(s <= start < e for s, e in literal_spans)
-
-    result = sql
-    for match in list(_MULTIDOT_COLUMN_RE.finditer(sql)):
-        if _in_literal(match.start()):
-            continue
-        ref = match.group(1)
-        fixed = _convert_multidot_ref(match)
-        logger.warning(
-            "%s: auto-converting multi-dot reference '%s' to '%s'. "
-            "Use '__' for join paths in SQL snippets (e.g., '%s').",
-            context, ref, fixed, fixed,
-        )
-        result = result.replace(ref, fixed)
-    return result
-
-
 class Column(BaseModel):
     """A row-level column on a model.
 
@@ -232,18 +194,10 @@ class Column(BaseModel):
     def _validate_name(cls, v: str) -> str:
         return _validate_column_name(v, "Column")
 
-    @field_validator("sql")
-    @classmethod
-    def _fix_multidot_sql(cls, v: str | None) -> str | None:
-        if v is not None:
-            v = _fix_multidot_sql(v, context="Column sql")
-        return v
-
     @field_validator("filter")
     @classmethod
-    def _fix_multidot_filter(cls, v: str | None) -> str | None:
+    def _validate_filter_predicate(cls, v: Optional[str]) -> Optional[str]:
         if v is not None:
-            v = _fix_multidot_sql(v, context="Column filter")
             # DEV-1369: Column.filter is SQL-mode — validate at construction
             # time so DSL constructs (aggregation colon, transform calls) are
             # caught early. Result is discarded; we only care about the
@@ -327,7 +281,7 @@ class ModelMeasure(BaseModel):
     # DEV-1369: ModelMeasure formulas may legitimately contain ``__`` —
     # virtual-model columns produced by ``_query_as_model`` flatten join
     # paths into names like ``kpis__total_amount_sum``, which downstream
-    # stages reference directly. Strict resolution at enrichment time
+    # stages reference directly. Strict resolution at binding time
     # catches typos like ``customers__region`` that don't resolve to any
     # Column on the model.
 
@@ -434,7 +388,7 @@ class SourceModelOrigin(BaseModel):
     ``agg_column_names`` (Codex review on PR #137 round 9) records the
     flat names of columns on this stage that came from
     ``cross_model_measures`` or aggregated ``measures`` in the inner
-    query's enrichment — i.e. the columns the cross-stage intercept
+    query's binding — i.e. the columns the cross-stage intercept
     is safe to re-aggregate. Without this provenance, a user-defined
     dimension whose name happens to look like an aggregation canonical
     (e.g. ``customers__revenue_sum``) would be silently re-summed by
@@ -560,23 +514,18 @@ class SlayerModel(BaseModel):
 
     @field_validator("filters")
     @classmethod
-    def _fix_multidot_filters(cls, v: list[str]) -> list[str]:
-        """Auto-convert multi-dot column references in model filters and
-        validate each entry as a SQL-mode predicate (DEV-1369).
+    def _validate_filter_predicates(cls, v: list[str]) -> list[str]:
+        """Validate each model filter as a SQL-mode predicate (DEV-1369).
 
         Model filters are SQL snippets: joined column references use the
-        ``__`` alias syntax (``customers__regions.name``), not the
-        multi-dot query syntax (``customers.regions.name``). Single-dot
-        references like ``customers.name`` (table.column) are left as-is.
-
-        After the multi-dot rewrite each entry is parsed with
-        :func:`parse_sql_predicate` so DSL constructs (aggregation colon,
-        transform calls, raw OVER) are caught at construction time.
+        ``__`` alias syntax (``customers__regions.name``). Each entry is
+        parsed with :func:`parse_sql_predicate` so DSL constructs
+        (aggregation colon, transform calls, raw OVER) are caught at
+        construction time.
         """
-        rewritten = [_fix_multidot_sql(f, context="Model filter") for f in v]
-        for f in rewritten:
+        for f in v:
             parse_sql_predicate(f)
-        return rewritten
+        return v
 
     @model_validator(mode="after")
     def _validate_column_measure_disjoint(self) -> "SlayerModel":

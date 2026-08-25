@@ -283,6 +283,29 @@ class TestMySQLQueries:
         result = await mysql_env.execute(query=query)
         assert result.data[0]["orders._count"] == 3
 
+    async def test_trunc_executes(self, mysql_env: SlayerQueryEngine) -> None:
+        """DEV-1753: MySQL has no single-arg TRUNCATE — ``trunc(x)`` must reach
+        the server as ``TRUNCATE(x, 0)`` (bare ``TRUNCATE(x)`` is a syntax
+        error). Truncates toward zero: ``trunc(total / 40.0)`` is 2.5 -> 2 only
+        for total = 100."""
+        acceptance = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "*:count"}],
+            filters=["trunc(total) >= 100"],
+        )
+        result = await mysql_env.execute(query=acceptance)
+        assert result.data[0]["orders._count"] > 0
+        assert "TRUNCATE(" in (result.sql or ""), result.sql
+        assert ", 0)" in (result.sql or ""), result.sql
+
+        truncates = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "*:count"}],
+            filters=["trunc(total / 40.0) == 2"],
+        )
+        result = await mysql_env.execute(query=truncates)
+        assert result.data[0]["orders._count"] == 1, result.sql
+
     async def test_order_by_desc(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",

@@ -408,6 +408,14 @@ class SqliteDialect(SqlDialect):
     log2_native: bool = True
     max_identifier_bytes: int | None = None  # unbounded
 
+    def build_null_safe_eq(
+        self, left: exp.Expression, right: exp.Expression,
+    ) -> exp.Expression:
+        """DEV-1708: SQLite's ``IS`` is null-safe on every supported version;
+        ``IS NOT DISTINCT FROM`` (what sqlglot emits for ``NullSafeEQ``) needs
+        SQLite ≥ 3.39, so anchor on bare ``IS`` instead."""
+        return exp.Is(this=left, expression=right)
+
     def build_date_trunc(
         self,
         col_expr: exp.Expression,

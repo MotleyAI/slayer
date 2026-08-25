@@ -1,4 +1,4 @@
-version: 7
+version: 8
 name: stores
 sql_table: stores
 query_variables: {}
@@ -8,12 +8,14 @@ columns:
   sql: id
   type: TEXT
   primary_key: true
+  unique: false
   label: Store ID
   hidden: false
 - name: name
   sql: name
   type: TEXT
   primary_key: false
+  unique: false
   description: Store name.
   label: Store
   hidden: false
@@ -21,6 +23,7 @@ columns:
   sql: opened_at
   type: DATE
   primary_key: false
+  unique: false
   description: When the store opened.
   label: Opened
   hidden: false
@@ -28,6 +31,7 @@ columns:
   sql: tax_rate
   type: DOUBLE
   primary_key: false
+  unique: false
   description: Local sales-tax rate.
   label: Tax Rate
   hidden: false
