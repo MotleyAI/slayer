@@ -248,36 +248,29 @@ def _info_schema_columns_query(
 def _info_schema_type(data_type_str: str) -> tuple[DataType, bool]:
     """Map an INFORMATION_SCHEMA type string to ``(DataType, is_float)``.
 
-    NUMERIC/DECIMAL resolve float-vs-integer by scale (DEV-1361); integer- and
-    char/text-shaped names not in the base map narrow to INT / TEXT rather than
-    the coarse DOUBLE fallback.
+    NUMERIC/DECIMAL resolve float-vs-integer by scale (DEV-1361). Substring
+    branches are ordered widest-match-last: ``FLOATING POINT`` and ``INTERVAL``
+    both contain ``INT`` but must not read as INT.
     """
     # Strip precision info (e.g. "DECIMAL(10,2)" → "DECIMAL").
-    base_type = data_type_str.split("(")[0].upper().strip()
-    sa_type = _INFO_SCHEMA_TYPE_MAP.get(base_type)
-    is_float = base_type in _FLOAT_LIKE_INFO_SCHEMA_TYPES
-    if base_type in ("NUMERIC", "DECIMAL") or (
-        sa_type is None and ("DECIMAL" in base_type or "NUMERIC" in base_type)
-    ):
-        sa_type = sa_type or DataType.DOUBLE
-        is_float = _parse_info_schema_is_float(data_type_str)
-    elif sa_type is None and (
-        "DOUBLE" in base_type or "FLOAT" in base_type or "REAL" in base_type
-    ):
-        # Multi-word float names like Postgres "DOUBLE PRECISION" (DEV-1758,
-        # CodeRabbit): map to DOUBLE, not the coarse TEXT fallback. Checked
-        # BEFORE the loose ``"INT" in base_type`` branch, since a float name can
-        # contain "INT" (e.g. "FLOATING POINT") and must not read as INT (Codex).
-        sa_type = DataType.DOUBLE
-        is_float = True
-    elif sa_type is None and "TIMESTAMP" in base_type:
-        # e.g. "TIMESTAMP WITHOUT TIME ZONE".
-        sa_type = DataType.TIMESTAMP
-    elif sa_type is None and "INT" in base_type:
-        sa_type = DataType.INT
-    elif sa_type is None and ("CHAR" in base_type or "TEXT" in base_type):
-        sa_type = DataType.TEXT
-    return sa_type or DataType.TEXT, is_float
+    base = data_type_str.split("(")[0].upper().strip()
+    mapped = _INFO_SCHEMA_TYPE_MAP.get(base)
+    if mapped is not None:
+        return mapped, base in _FLOAT_LIKE_INFO_SCHEMA_TYPES
+    if "DECIMAL" in base or "NUMERIC" in base:
+        return DataType.DOUBLE, _parse_info_schema_is_float(data_type_str)
+    if "DOUBLE" in base or "FLOAT" in base or "REAL" in base:
+        # e.g. Postgres "DOUBLE PRECISION".
+        return DataType.DOUBLE, True
+    if "TIMESTAMP" in base or "DATETIME" in base:
+        return DataType.TIMESTAMP, False
+    if "INTERVAL" in base:
+        return DataType.TEXT, False  # no interval DataType; groupable as TEXT
+    if "INT" in base:
+        return DataType.INT, False
+    if "CHAR" in base or "TEXT" in base:
+        return DataType.TEXT, False
+    return DataType.TEXT, False
 
 
 def _get_columns_fallback(

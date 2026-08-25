@@ -63,6 +63,9 @@ class TestInfoSchemaTypeMapping:
             ("timestamp with time zone", DataType.TIMESTAMP, False),
             # A float name containing "INT" (POINT) must NOT read as INT (Codex).
             ("FLOATING POINT", DataType.DOUBLE, True),
+            # INTERVAL contains "INT" but is temporal → TEXT, not INT.
+            ("INTERVAL", DataType.TEXT, False),
+            ("interval day to second", DataType.TEXT, False),
             ("character varying", DataType.TEXT, False),
             ("integer", DataType.INT, False),
             ("bigint", DataType.INT, False),

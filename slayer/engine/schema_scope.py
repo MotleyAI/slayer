@@ -26,6 +26,13 @@ from pydantic import BaseModel
 logger = logging.getLogger(__name__)
 
 
+class SchemaEnumerationError(Exception):
+    """``get_schema_names()`` failed, so the schema list is unknown. Raised only
+    for ``all_schemas`` — an empty scope there would masquerade as an empty
+    datasource; the default / requested branches still work from a bare default.
+    """
+
+
 # Dialects whose ``get_schema_names()`` emits catalog-qualified
 # ``catalog.schema`` tokens (DuckDB lists every attached catalog's schemas), so
 # a dotted token there must be split into ``(catalog, name)``. Everywhere else a
@@ -309,18 +316,22 @@ def _enumerate_own_schemas(
     dialect: Optional[str],
     qualifies: bool,
     current_catalog: Optional[str],
-) -> tuple[list[SchemaRef], list[SkippedSchema]]:
+) -> tuple[list[SchemaRef], list[SkippedSchema], bool]:
     """Split the visible schemas into own-catalog non-system refs and skips.
 
     A schema in an attached catalog other than the connection's own is dropped
-    to ``skipped`` (with an actionable reason), never silently ingested.
+    to ``skipped``, never silently ingested. Third value ``enum_ok`` is False
+    when ``get_schema_names()`` failed, so ``all_schemas`` can raise rather than
+    return a silent empty scope.
     """
     own_refs: list[SchemaRef] = []
     skipped: list[SkippedSchema] = []
+    enum_ok = True
     try:
         tokens = list(inspector.get_schema_names() or [])
     except Exception:  # noqa: BLE001 — no schema listing → default-only scope
         tokens = []
+        enum_ok = False
     for tok in tokens:
         if is_system_schema(tok):
             continue
@@ -344,7 +355,7 @@ def _enumerate_own_schemas(
             )
             continue
         own_refs.append(ref)
-    return own_refs, skipped
+    return own_refs, skipped, enum_ok
 
 
 def _resolve_requested_name(
@@ -374,23 +385,27 @@ def _resolve_requested_name(
     return ref
 
 
-def _drop_foreign_catalog_refs(
+def _drop_out_of_scope_refs(
     schemas: list[SchemaRef],
     *,
     qualifies: bool,
     current_catalog: Optional[str],
     skipped: list[SkippedSchema],
 ) -> list[SchemaRef]:
-    """Move any ref naming an attached catalog other than the connection's own
-    into ``skipped`` (appended in place), returning the kept refs."""
+    """Drop refs that must never be ingested into ``skipped`` (in place),
+    returning the kept refs. Applied AFTER an explicit / persisted name is
+    resolved (enumeration's filter only sees the discovered set): a foreign
+    attached catalog, or a system schema (``--schema information_schema``).
+    """
     kept: list[SchemaRef] = []
     for ref in schemas:
-        if (
+        is_foreign = (
             qualifies
             and ref.catalog
             and current_catalog
             and ref.catalog != current_catalog
-        ):
+        )
+        if is_foreign:
             skipped.append(
                 SkippedSchema(
                     token=ref.token or "",
@@ -401,8 +416,16 @@ def _drop_foreign_catalog_refs(
                     ),
                 )
             )
-        else:
-            kept.append(ref)
+            continue
+        if is_system_schema(ref.token or ref.name or ""):
+            skipped.append(
+                SkippedSchema(
+                    token=ref.token or ref.name or "",
+                    reason="system / bookkeeping schema is never ingested",
+                )
+            )
+            continue
+        kept.append(ref)
     return kept
 
 
@@ -420,17 +443,20 @@ def resolve_ingest_scope(
     a ``requested`` list → those schemas (a single name is emitted verbatim,
     several are resolved against the enumerated set with the default staying
     bare); else a persisted ``datasource_schema`` (verbatim); else the bare
-    connection default. Foreign attached catalogs and system schemas are
-    reported in ``skipped``. When exactly one schema is in scope (and
-    ``all_schemas`` is off) the remaining own schemas are offered as
-    ``other_schemas`` hints.
+    connection default. Foreign attached catalogs and system schemas — whether
+    discovered, requested, or persisted — are reported in ``skipped``. When
+    exactly one schema is in scope (and ``all_schemas`` is off) the remaining
+    own schemas are offered as ``other_schemas`` hints.
+
+    Raises :class:`SchemaEnumerationError` for ``all_schemas`` when the schema
+    list can't be read (the other branches resolve from a bare default instead).
     """
     dialect = _dialect_name(sa_engine)
     qualifies = _dialect_qualifies_tokens(dialect)
     current_catalog = _current_catalog(sa_engine) if qualifies else None
     default_schema = _default_schema_name(inspector, sa_engine)
 
-    own_refs, skipped = _enumerate_own_schemas(
+    own_refs, skipped, enum_ok = _enumerate_own_schemas(
         inspector=inspector, dialect=dialect, qualifies=qualifies,
         current_catalog=current_catalog,
     )
@@ -439,6 +465,13 @@ def resolve_ingest_scope(
         own_by_name.setdefault(ref.name, ref)
 
     if all_schemas:
+        if not enum_ok:
+            raise SchemaEnumerationError(
+                "--all-schemas requested but the datasource's schema list could "
+                "not be read (revoked metadata permission or a transient error); "
+                "refusing to report an empty scope, which would look like an "
+                "empty datasource."
+            )
         schemas = [
             ref.model_copy(
                 update={"is_default": ref.name == default_schema, "requested": None}
@@ -470,9 +503,10 @@ def resolve_ingest_scope(
                            is_default=True)
         ]
 
-    # Defence-in-depth (Codex review): a schema request that names a foreign
-    # attached catalog is dropped to ``skipped``, never ingested.
-    schemas = _drop_foreign_catalog_refs(
+    # Defence-in-depth (Codex review): a resolved request that names a foreign
+    # attached catalog OR a system/bookkeeping schema is dropped to ``skipped``,
+    # never ingested — enumeration's filter only covers the discovered set.
+    schemas = _drop_out_of_scope_refs(
         schemas, qualifies=qualifies, current_catalog=current_catalog,
         skipped=skipped,
     )

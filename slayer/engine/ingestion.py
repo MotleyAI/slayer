@@ -1136,15 +1136,17 @@ def introspect_table_to_model(
     dbt hidden-model import. It never builds joins or traverses the FK graph.
 
     ``source_kind=None`` means "not classified": the dbt/OSI converters don't
-    know the live object's kind. ``schema`` is an explicit request here, so it
-    is emitted verbatim into ``sql_table``.
+    know the live object's kind. An explicit ``schema`` is emitted verbatim;
+    ``schema=None`` resolves to the catalog-qualified default so probes stay in
+    the current catalog (a bare token lets DuckDB sweep an attached twin), while
+    ``sql_table`` still stays bare for the default.
     """
     ref = (
         schema_ref_from_token(
             schema, dialect_name=sa_engine.dialect.name, requested=schema
         )
         if schema
-        else None
+        else default_schema_ref(inspector, sa_engine)
     )
     columns = _introspect_query_columns_via_inspector(
         sa_engine=sa_engine,
@@ -1155,7 +1157,7 @@ def introspect_table_to_model(
         referenced_tables=set(),
         fk_columns_by_table={},
     )
-    sql_table = f"{schema}.{table_name}" if schema else table_name
+    sql_table = ref.qualify(table_name)
     columns = _sqlite_probe_integer_columns(
         sa_engine=sa_engine,
         sql_table=sql_table,
@@ -1163,7 +1165,7 @@ def introspect_table_to_model(
     )
     unique_columns = _solo_unique_columns_for_table(
         inspector=inspector, sa_engine=sa_engine,
-        table_name=table_name, schema=schema,
+        table_name=table_name, schema=ref.token,
     )
     return _columns_to_model(
         name=model_name or table_name,
@@ -1172,7 +1174,7 @@ def introspect_table_to_model(
         sql_table=sql_table,
         unique_columns=unique_columns,
         source_kind=source_kind,
-        description=_safe_get_table_comment(inspector, table_name, schema),
+        description=_safe_get_table_comment(inspector, table_name, ref.token),
     )
 
 

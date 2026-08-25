@@ -25,7 +25,11 @@ from slayer.engine.ingestion import (
     ingest_datasource_report,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.schema_scope import SchemaRef, resolve_ingest_scope
+from slayer.engine.schema_scope import (
+    SchemaEnumerationError,
+    SchemaRef,
+    resolve_ingest_scope,
+)
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -443,6 +447,53 @@ class TestAttachedCatalogs:
         finally:
             engine.dispose()
 
+    def test_introspect_table_schema_none_resolves_the_qualified_default(
+        self, attached_paths
+    ) -> None:
+        """schema=None probes the qualified default: {m} not {m,o}, bare sql_table."""
+        from slayer.engine.ingestion import introspect_table_to_model
+        engine = _open_attached(attached_paths)
+        try:
+            insp = sa.inspect(engine)
+            model = introspect_table_to_model(
+                sa_engine=engine, inspector=insp, table_name="shared",
+                schema=None, data_source="ds",
+            )
+            assert {c.name for c in model.columns} == {"m"}
+            assert model.sql_table == "shared"      # default stays bare
+        finally:
+            engine.dispose()
+
+    def test_introspect_table_schema_none_never_unions_a_bare_result(
+        self, attached_paths, monkeypatch
+    ) -> None:
+        """Even when the Inspector RETURNS a bare-schema union, schema=None probes
+        the qualified default and keeps only {m}."""
+        from slayer.engine.ingestion import introspect_table_to_model
+        engine = _open_attached(attached_paths)
+        try:
+            insp = sa.inspect(engine)
+            real_get_columns = insp.get_columns
+
+            def _bare_returns_union(table_name, schema=None, **kw):
+                if schema is None:
+                    # Simulate an Inspector that sweeps every attached catalog for
+                    # a bare request and unions the twins.
+                    return [
+                        {"name": "m", "type": sa.INTEGER()},
+                        {"name": "o", "type": sa.INTEGER()},
+                    ]
+                return real_get_columns(table_name, schema=schema, **kw)
+
+            monkeypatch.setattr(insp, "get_columns", _bare_returns_union)
+            model = introspect_table_to_model(
+                sa_engine=engine, inspector=insp, table_name="shared",
+                schema=None, data_source="ds",
+            )
+            assert {c.name for c in model.columns} == {"m"}
+        finally:
+            engine.dispose()
+
     def test_requested_foreign_catalog_is_skipped_not_ingested(self, attached_paths) -> None:
         """Codex-review: explicitly requesting a foreign attached catalog
         (``--schema aaa.main``) drops it to ``skipped`` and out of scope, like
@@ -510,6 +561,57 @@ class TestScopeResolution:
     def test_multi_request_reports_no_hint(self, basic_db) -> None:
         scope = self._scope(basic_db, requested=["main", "openfda_rest"])
         assert scope.other_schemas == []
+
+    def test_requested_system_schema_is_dropped(self, basic_db) -> None:
+        """An explicitly requested system schema is dropped, not scanned."""
+        scope = self._scope(basic_db, requested=["information_schema"])
+        assert scope.schemas == []
+        assert any("information_schema" in (s.token or "") for s in scope.skipped)
+
+    def test_persisted_system_schema_is_dropped(self, basic_db) -> None:
+        """A persisted system schema_name is dropped too (datasource branch)."""
+        scope = self._scope(basic_db, datasource_schema="pg_catalog")
+        assert scope.schemas == []
+        assert any("pg_catalog" in (s.token or "") for s in scope.skipped)
+
+    def test_all_schemas_raises_when_enumeration_fails(
+        self, basic_db, monkeypatch
+    ) -> None:
+        """--all-schemas raises rather than returning a silent empty scope."""
+        ds = _ds(basic_db)
+        from slayer.sql import engine_factory
+        engine = engine_factory.get_engine(ds.resolve_env_vars())
+        insp = sa.inspect(engine)
+
+        def _boom() -> list[str]:
+            raise RuntimeError("metadata permission revoked")
+
+        monkeypatch.setattr(insp, "get_schema_names", _boom)
+        with pytest.raises(SchemaEnumerationError):
+            resolve_ingest_scope(
+                inspector=insp, sa_engine=engine, requested=None,
+                all_schemas=True, datasource_schema=None,
+            )
+
+    def test_default_scope_survives_enumeration_failure(
+        self, basic_db, monkeypatch
+    ) -> None:
+        """The implicit default request still resolves when enumeration fails."""
+        ds = _ds(basic_db)
+        from slayer.sql import engine_factory
+        engine = engine_factory.get_engine(ds.resolve_env_vars())
+        insp = sa.inspect(engine)
+
+        def _boom() -> list[str]:
+            raise RuntimeError("metadata permission revoked")
+
+        monkeypatch.setattr(insp, "get_schema_names", _boom)
+        scope = resolve_ingest_scope(
+            inspector=insp, sa_engine=engine, requested=None,
+            all_schemas=False, datasource_schema=None,
+        )
+        assert len(scope.schemas) == 1
+        assert scope.schemas[0].is_default is True
 
 
 # ===========================================================================
@@ -943,6 +1045,134 @@ class TestValidateModels:
         )
         await storage.save_model(model)
         to_delete = await self._validate(ds, [model])
+        assert not [e for e in to_delete if e.tool == "delete_model"]
+
+    async def test_pinned_schema_name_still_covers_other_own_schemas(
+        self, legacy_db, tmp_path
+    ) -> None:
+        """A model qualified to a non-pinned own schema isn't false-deleted."""
+        from slayer.core.models import Column
+        from slayer.core.enums import DataType
+        storage = YAMLStorage(base_dir=str(tmp_path / "store"))
+        ds = _ds(legacy_db, schema_name="main")
+        await storage.save_datasource(ds)
+        model = SlayerModel(
+            name="analytics_orders", sql_table="analytics.orders",
+            data_source="ds",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT),
+                Column(name="note", sql="note", type=DataType.TEXT),
+            ],
+        )
+        await storage.save_model(model)
+        to_delete = await self._validate(ds, [model])
+        assert not [e for e in to_delete if e.tool == "delete_model"]
+
+    async def test_validate_falls_back_when_enumeration_fails(
+        self, legacy_db, tmp_path, monkeypatch
+    ) -> None:
+        """Enumeration fails, yet a pinned-schema model still gets a real drift
+        verdict via the configured-schema fallback, not a silent skip."""
+        from slayer.core.models import Column
+        from slayer.core.enums import DataType
+        from slayer.engine import schema_drift as drift_mod
+        storage = YAMLStorage(base_dir=str(tmp_path / "store"))
+        ds = _ds(legacy_db, schema_name="main")
+        await storage.save_datasource(ds)
+        model = SlayerModel(
+            name="orders", sql_table="orders", data_source="ds",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT),
+                Column(name="ghost", sql="ghost", type=DataType.INT),  # not live
+            ],
+        )
+        await storage.save_model(model)
+
+        real = drift_mod.resolve_ingest_scope
+
+        def _no_enumerate(**kwargs):
+            if kwargs.get("all_schemas"):
+                raise SchemaEnumerationError("simulated least-privilege connection")
+            return real(**kwargs)
+
+        monkeypatch.setattr(drift_mod, "resolve_ingest_scope", _no_enumerate)
+        to_delete = await self._validate(ds, [model])
+        assert to_delete                                              # verdict, not a skip
+        assert not [e for e in to_delete if e.tool == "delete_model"]  # table resolved
+
+    async def test_fallback_covers_a_non_pinned_model_schema(
+        self, legacy_db, tmp_path, monkeypatch
+    ) -> None:
+        """Enumeration fails, but a model qualified to a NON-pinned own schema
+        still resolves — the fallback scopes to the models' own schemas, so it is
+        not false-deleted."""
+        from slayer.core.models import Column
+        from slayer.core.enums import DataType
+        from slayer.engine import schema_drift as drift_mod
+        storage = YAMLStorage(base_dir=str(tmp_path / "store"))
+        ds = _ds(legacy_db, schema_name="main")
+        await storage.save_datasource(ds)
+        model = SlayerModel(
+            name="analytics_orders", sql_table="analytics.orders",
+            data_source="ds",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT),
+                Column(name="note", sql="note", type=DataType.TEXT),
+            ],
+        )
+        await storage.save_model(model)
+
+        real = drift_mod.resolve_ingest_scope
+
+        def _no_enumerate(**kwargs):
+            if kwargs.get("all_schemas"):
+                raise SchemaEnumerationError("simulated least-privilege connection")
+            return real(**kwargs)
+
+        monkeypatch.setattr(drift_mod, "resolve_ingest_scope", _no_enumerate)
+        to_delete = await self._validate(ds, [model])
+        assert not [e for e in to_delete if e.tool == "delete_model"]
+
+    async def test_fallback_default_stays_bare_keyed_past_catalog_token(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Fallback: a model token equal to the catalog-qualified default
+        (``cat.main.x``) must not un-bare-key the default, or a bare model
+        alongside another schema gets false-deleted."""
+        from slayer.core.models import Column
+        from slayer.core.enums import DataType
+        from slayer.engine import schema_drift as drift_mod
+        path = str(tmp_path / "cat.duckdb")           # catalog "cat", default "main"
+        _duck(path=path, statements=[
+            "CREATE TABLE orders(id INTEGER)",
+            "CREATE TABLE customers(id INTEGER)",
+            "CREATE SCHEMA analytics",
+            "CREATE TABLE analytics.foo(id INTEGER)",
+        ])
+        storage = YAMLStorage(base_dir=str(tmp_path / "store"))
+        ds = _ds(path)
+        await storage.save_datasource(ds)
+        models = [
+            SlayerModel(name="orders", sql_table="orders", data_source="ds",
+                        columns=[Column(name="id", sql="id", type=DataType.INT)]),
+            SlayerModel(name="customers", sql_table="cat.main.customers",
+                        data_source="ds",
+                        columns=[Column(name="id", sql="id", type=DataType.INT)]),
+            SlayerModel(name="foo", sql_table="analytics.foo", data_source="ds",
+                        columns=[Column(name="id", sql="id", type=DataType.INT)]),
+        ]
+        for m in models:
+            await storage.save_model(m)
+
+        real = drift_mod.resolve_ingest_scope
+
+        def _no_enumerate(**kwargs):
+            if kwargs.get("all_schemas"):
+                raise SchemaEnumerationError("simulated least-privilege connection")
+            return real(**kwargs)
+
+        monkeypatch.setattr(drift_mod, "resolve_ingest_scope", _no_enumerate)
+        to_delete = await self._validate(ds, models)
         assert not [e for e in to_delete if e.tool == "delete_model"]
 
 
