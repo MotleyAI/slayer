@@ -146,8 +146,9 @@ def test_cross_catalog_fails_closed(engine, tmp_path, monkeypatch):
 def test_schema_resolves_ast_first(engine, tmp_path, monkeypatch):
     seen = {}
 
-    def capture(inspector, sa_engine, table_name, schema):
-        seen["schema"] = schema
+    def capture(inspector, sa_engine, table_name, ref):
+        # DEV-1758: the 4th arg is now a SchemaRef carrying the parsed schema.
+        seen["schema"] = ref.name if ref else None
         return [{"name": "org"}]
 
     monkeypatch.setattr(qe, "_safe_get_columns", capture)

@@ -103,6 +103,23 @@ and `datasources create --ingest` print a `Hidden (N)` section,
 `ingest_datasource_models` returns one, and `POST /ingest` carries
 `hidden_internals` in the 200 body.
 
+Auto-ingestion covers only the connection's default schema unless told
+otherwise: `--schema a,b` / `schemas=[…]`, or `--all-schemas`. On
+`ingest_datasource_models` / `POST /ingest` the fields are `schema_name` (a
+single schema), `schemas` (several), and `all_schemas`. `--schema` and
+`--all-schemas` (and their `schema_name`/`schemas`/`all_schemas` equivalents)
+are mutually exclusive → CLI error / 422 / MCP error string.
+A *single* requested schema is always emitted verbatim, even when it equals the
+connection default (`--schema public` → `sql_table: public.orders`). Only when
+*several* schemas are in scope (multiple `--schema` names or `--all-schemas`)
+does the default stay bare while non-default schemas are qualified
+(`analytics.orders`). A same-named table across schemas resolves to one winner
+(exact > sanitized, default > non-default, then lower schema / object name);
+columns and PKs are read only from the winner's own schema. A model stored bare
+before qualification existed is self-healed to its qualified `sql_table` on
+re-ingest when unambiguous. See
+[Auto-Ingestion](../../docs/concepts/ingestion.md#schema-scope).
+
 ## Query-backed models
 
 `create_model_from_query(query, name, variables=None)` saves a query (or list of stages) as a query-backed model. It populates `model.source_queries`, optional `model.query_variables` defaults, and caches `model.columns` + `model.backing_query_sql` from a save-time dry-run (unresolved `{var}` placeholders default to `'0'`).

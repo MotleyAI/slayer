@@ -174,10 +174,21 @@ def _fetch_tables(
     """
     try:
         from slayer.sql import engine_factory
+        from slayer.engine.schema_scope import schema_ref_from_token
         sa_engine = engine_factory.get_engine(ds.resolve_env_vars())
         inspector = sa.inspect(sa_engine)
+        # DEV-1758: route through a SchemaRef so ``schema_name=None`` resolves to
+        # the catalog-qualified default rather than sweeping every schema (DuckDB).
+        ref = (
+            schema_ref_from_token(
+                schema_name, dialect_name=sa_engine.dialect.name,
+                requested=schema_name,
+            )
+            if schema_name
+            else None
+        )
         objects = list_ingestable_objects(
-            inspector=inspector, schema=schema_name, include_views=True
+            inspector=inspector, ref=ref, include_views=True
         )
         return sorted(objects, key=lambda o: o.name), None
     except Exception as e:
@@ -283,6 +294,16 @@ def _render_skipped_section(skipped: list[Any]) -> list[str]:
     return out
 
 
+def _render_skipped_schemas_section(skipped_schemas: list[Any]) -> list[str]:
+    """Requested schemas dropped from scope (foreign catalog / system schema),
+    so an explicit request for one isn't reported as an empty success."""
+    if not skipped_schemas:
+        return []
+    out = ["", f"Skipped schemas ({len(skipped_schemas)}):"]
+    out.extend(f"- {entry.token}: {entry.reason}" for entry in skipped_schemas)
+    return out
+
+
 def _render_hidden_internals_section(
     hidden: list[Any], *, data_source: str | None = None
 ) -> list[str]:
@@ -324,6 +345,7 @@ def _render_ingest_result(
     # Read defensively — called with more than one result shape; an older one
     # may carry neither attribute.
     skipped = list(getattr(result, "skipped", None) or [])
+    skipped_schemas = list(getattr(result, "skipped_schemas", None) or [])
     hidden_internals = list(getattr(result, "hidden_internals", None) or [])
     datasource_described = bool(getattr(result, "datasource_described", False))
     if (
@@ -331,22 +353,26 @@ def _render_ingest_result(
         and not result.to_delete
         and not result.errors
         and not skipped
+        and not skipped_schemas
         and not hidden_internals
         and not datasource_described
     ):
         # Two distinct cases produce an empty result:
-        #   1. The schema actually has no tables (the agent should look
+        #   1. The scanned scope actually has no tables (the agent should look
         #      elsewhere — show the "Try schema_name=..." hint).
-        #   2. The schema has tables but every persisted model is sql /
+        #   2. The scope has tables but every persisted model is sql /
         #      query-backed (silently skipped by the additive pass) — no
         #      additive work to do, but the existing models are healthy.
-        # Probe the live table count so we don't misdirect the agent.
+        # Use the scan's own discovered objects (DEV-1758) rather than
+        # re-probing ``_fetch_tables(schema_name)``, which only sees the default
+        # schema and so misreports a synchronized ``schemas`` / ``all_schemas``
+        # request as empty.
         #
         # The skipped/hidden checks are part of this guard: a steady-state
         # re-ingest produces no additions, so without them this branch would
         # answer "already in sync" and swallow both sections.
-        tables, _err = _fetch_tables(ds=ds, schema_name=schema_name or None)
-        if tables is None or not tables:
+        scanned_objects = getattr(result, "objects", None) or []
+        if not scanned_objects:
             return _empty_ingest_message(schema_name=schema_name, ds=ds)
         return "Datasource already in sync — no additive changes."
 
@@ -365,6 +391,7 @@ def _render_ingest_result(
     lines.extend(_render_drift_section(list(result.to_delete)))
     # Same order as the CLI renderer, so the two surfaces read alike.
     lines.extend(_render_skipped_section(skipped))
+    lines.extend(_render_skipped_schemas_section(skipped_schemas))
     lines.extend(
         _render_hidden_internals_section(hidden_internals, data_source=ds.name)
     )
@@ -1480,6 +1507,8 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         password: str | None = None,
         connection_string: str | None = None,
         schema_name: str | None = None,
+        schemas: str = "",
+        all_schemas: bool = False,
         auto_ingest: bool = True,
     ) -> str:
         """Create a database connection, verify it, and auto-ingest models. Use ${ENV_VAR} syntax in credentials to reference environment variables.
@@ -1493,12 +1522,27 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             username: Database username.
             password: Database password.
             connection_string: Full connection string as alternative to individual fields.
-            schema_name: Default schema name. Also used as the schema for auto-ingestion.
+            schema_name: Default schema name. Also used as the single schema for auto-ingestion.
+            schemas: Comma-separated schemas to ingest. Mutually exclusive with schema_name / all_schemas.
+            all_schemas: Ingest every non-system schema. Mutually exclusive with schema_name / schemas.
             auto_ingest: Automatically ingest models from the database schema (default: true). Set to false to skip.
 
         Example: create_datasource(name="mydb", type="postgres", host="localhost", port=5432, database="app", username="user", password="pass")
         """
         from slayer.engine.ingestion import ingest_datasource_report as _ingest
+        from slayer.engine.schema_scope import validate_scope_args
+
+        schemas_list = [s.strip() for s in schemas.split(",") if s.strip()] or None
+        # Validate the scope BEFORE persisting — a conflicting request must not
+        # leave a half-created datasource behind (§3.9).
+        try:
+            validate_scope_args(
+                schema=schema_name or None,
+                schemas=schemas_list,
+                all_schemas=all_schemas,
+            )
+        except ValueError as exc:
+            return f"Invalid scope: {exc}"
 
         data = _build_dict(
             name=name,
@@ -1530,7 +1574,12 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
         # Auto-ingest models
         try:
-            ingest_output = _ingest(datasource=ds, schema=schema_name or None)
+            ingest_output = _ingest(
+                datasource=ds,
+                schema=schema_name or None,
+                schemas=schemas_list,
+                all_schemas=all_schemas,
+            )
         except Exception as e:
             if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
                 lines.append(f"Auto-ingestion failed: {_friendly_db_error(e)}")
@@ -1843,7 +1892,13 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     # -----------------------------------------------------------------------
 
     @mcp.tool()
-    async def ingest_datasource_models(datasource_name: str, include_tables: str = "", schema_name: str = "") -> str:
+    async def ingest_datasource_models(
+        datasource_name: str,
+        include_tables: str = "",
+        schema_name: str = "",
+        schemas: str = "",
+        all_schemas: bool = False,
+    ) -> str:
         """Auto-discover tables in a database and create / additively update semantic models from them.
 
         Idempotent (DEV-1356): re-runs are additive only. New columns and joins
@@ -1854,13 +1909,26 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         Args:
             datasource_name: Name of an existing datasource (from list_datasources).
             include_tables: Comma-separated list of table names to include. If empty, all tables are ingested.
-            schema_name: Database schema to inspect (e.g. "public"). If empty, uses the default schema.
+            schema_name: A single database schema to inspect (e.g. "public"). Empty uses the default schema.
+            schemas: Comma-separated schemas to inspect. Mutually exclusive with schema_name / all_schemas.
+            all_schemas: Ingest every non-system schema. Mutually exclusive with schema_name / schemas.
         """
         from slayer.engine.ingestion import ingest_datasource_idempotent
+        from slayer.engine.schema_scope import validate_scope_args
 
         ds = await storage.get_datasource(datasource_name)
         if ds is None:
             return f"Datasource '{datasource_name}' not found."
+
+        schemas_list = [s.strip() for s in schemas.split(",") if s.strip()] or None
+        try:
+            validate_scope_args(
+                schema=schema_name or None,
+                schemas=schemas_list,
+                all_schemas=all_schemas,
+            )
+        except ValueError as e:
+            return f"Invalid scope: {e}"
 
         try:
             include = [t.strip() for t in include_tables.split(",") if t.strip()] or None
@@ -1869,6 +1937,8 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 storage=storage,
                 include_tables=include,
                 schema=schema_name or None,
+                schemas=schemas_list,
+                all_schemas=all_schemas,
             )
         except Exception as e:
             if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):

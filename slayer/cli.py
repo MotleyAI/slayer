@@ -269,7 +269,15 @@ examples:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     ingest_parser.add_argument("--datasource", required=True, help="Name of the datasource to ingest from")
-    ingest_parser.add_argument("--schema", default=None, help="Database schema to introspect (e.g., public)")
+    ingest_scope = ingest_parser.add_mutually_exclusive_group()
+    ingest_scope.add_argument(
+        "--schema", default=None,
+        help="Schema(s) to introspect, comma-separated (e.g. public,analytics)",
+    )
+    ingest_scope.add_argument(
+        "--all-schemas", action="store_true", default=False,
+        help="Introspect every non-system schema (mutually exclusive with --schema)",
+    )
     ingest_parser.add_argument(
         "--include",
         default=None,
@@ -563,8 +571,21 @@ examples:
         action="store_true",
         help="Run auto-ingestion immediately after creating the datasource",
     )
-    datasources_create_parser.add_argument(
-        "--schema", default=None, help="(with --ingest) Schema to ingest from"
+    create_scope = datasources_create_parser.add_mutually_exclusive_group()
+    create_scope.add_argument(
+        "--schema", default=None,
+        help=(
+            "Persisted default schema (a single value is saved as the "
+            "datasource's schema_name); comma-separated values additionally "
+            "scope auto-ingestion when --ingest is passed"
+        ),
+    )
+    create_scope.add_argument(
+        "--all-schemas", action="store_true", default=False,
+        help=(
+            "With --ingest, ingest every non-system schema; persists no default "
+            "schema (mutually exclusive with --schema)"
+        ),
     )
     datasources_create_parser.add_argument(
         "--include",
@@ -1461,7 +1482,8 @@ def _run_ingest(args):
         ingest_datasource_idempotent(
             datasource=ds,
             storage=storage,
-            schema=args.schema,
+            schemas=_parse_csv_arg(args.schema),
+            all_schemas=getattr(args, "all_schemas", False),
             include_tables=_parse_csv_arg(args.include),
             exclude_tables=_parse_csv_arg(args.exclude),
             include_views=getattr(args, "include_views", True),
@@ -2200,12 +2222,18 @@ def _run_datasources_create(args, storage):
         sys.exit(1)
 
     name = args.name or derived_name
+    schema_list = _parse_csv_arg(args.schema)
+    all_schemas = getattr(args, "all_schemas", False)
+    # Persist ``schema_name`` only for a single explicit schema — a multi-schema
+    # or --all-schemas request has no one default schema to record (D-7).
+    persisted_schema = schema_list[0] if (schema_list and len(schema_list) == 1) else None
     ds = DatasourceConfig.model_validate(
         {
             "name": name,
             "type": ds_type,
             "connection_string": args.connection_string,
             "description": args.description,
+            "schema_name": persisted_schema,
         }
     )
 
@@ -2225,7 +2253,19 @@ def _run_datasources_create(args, storage):
 
     if not args.ingest:
         return
+    _create_ingest_and_report(
+        args=args, ds=ds, storage=storage,
+        schema_list=schema_list, all_schemas=all_schemas,
+    )
 
+
+def _create_ingest_and_report(*, args, ds, storage, schema_list, all_schemas):
+    """Run auto-ingestion for a freshly-created datasource and print the report.
+
+    Extracted from ``_run_datasources_create`` so that function stays under the
+    cognitive-complexity limit. Exit stays 0 on skips/hidden — creating the
+    datasource already succeeded.
+    """
     from slayer.engine.ingestion import (
         _print_ingest_drift_and_errors,
         ingest_datasource_report,
@@ -2239,7 +2279,8 @@ def _run_datasources_create(args, storage):
         # path hides recognised internals and skips with no output at all.
         report = ingest_datasource_report(
             datasource=ds,
-            schema=args.schema,
+            schemas=schema_list,
+            all_schemas=all_schemas,
             include_tables=include,
             exclude_tables=exclude,
             include_views=getattr(args, "include_views", True),
@@ -2259,8 +2300,7 @@ def _run_datasources_create(args, storage):
         except Exception as e:
             print(f"Could not save datasource description: {e}")
 
-    # After persistence, so the sections comment on what was just written. Exit
-    # stays 0 — creating the datasource succeeded, whatever was skipped/hidden.
+    # After persistence, so the sections comment on what was just written.
     _print_ingest_drift_and_errors(report, data_source=ds.name)
 
 

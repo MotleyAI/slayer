@@ -41,6 +41,15 @@ from slayer.core.query import SlayerQuery
 from slayer.core.refs import IDENTIFIER_RE
 from slayer.sql.sql_predicate import parse_sql_predicate
 from slayer.engine.introspect_utils import _safe_get_columns
+from slayer.engine.schema_scope import (
+    SchemaEnumerationError,
+    SchemaRef,
+    default_schema_ref,
+    engine_qualifies_tokens,
+    is_system_schema,
+    resolve_ingest_scope,
+    split_sql_table,
+)
 from slayer.engine.ingestion import (
     _safe_get_pk_constraint,
     _sa_type_is_float,
@@ -128,6 +137,9 @@ class ModelAddition(BaseModel):
     # (on created models: all columns that arrived with a description).
     described_columns: list[str] = Field(default_factory=list)
     model_described: bool = False
+    # DEV-1758: a self-heal that added a missing schema qualifier, rendered as
+    # "reports → openfda_rest.reports"; None when the qualifier was untouched.
+    sql_table_change: str | None = None
 
 
 class IngestionError(BaseModel):
@@ -159,6 +171,14 @@ class IdempotentIngestResult(BaseModel):
     # DEV-1809: True when the datasource description was filled from the
     # BigQuery dataset description during this pass.
     datasource_described: bool = False
+    # DEV-1758: a message naming schemas discovered but not ingested this pass,
+    # or None (all-schemas / multi-schema runs, or nothing new to offer).
+    schema_hint: str | None = None
+    # DEV-1758: requested schemas dropped from scope with a reason (foreign
+    # attached catalog or system schema), so an explicit request for one is
+    # reported rather than silently empty. ``Any`` avoids a circular import;
+    # entries are ``SkippedSchema``.
+    skipped_schemas: list[Any] = Field(default_factory=list)
 
 
 class AppliedEntry(BaseModel):
@@ -1707,10 +1727,166 @@ class IntrospectionUnavailable(Exception):
     is unknown — callers must not read that as "everything was dropped"."""
 
 
+def _live_schema_refs(
+    *,
+    inspector: sa.engine.Inspector,
+    sa_engine: sa.Engine,
+    datasource: DatasourceConfig,
+    schema: str | None,
+    fallback_schema_tokens: set[str] | None = None,
+) -> list[SchemaRef]:
+    """The schemas to introspect for a validate-models live map: an explicit
+    ``schema`` scopes to just that one; otherwise every own-catalog schema.
+
+    Both go through ``resolve_ingest_scope`` so the connection's current catalog
+    is attached to the ``SchemaRef`` — a bare ``main`` token would re-arm
+    DuckDB's cross-catalog sweep in the validate path.
+
+    ``fallback_schema_tokens`` (validate): the schemas the persisted models
+    reference. When the all-schemas listing fails or is empty (least-privilege
+    connection, or a driver returning ``[]``), scope to exactly those schemas
+    (plus the connection default, for bare models) instead of skipping — so
+    validation is never unconditionally coupled to enumeration, yet a model in a
+    non-default own schema is still diffed against the right table. Callers that
+    pass None (type refinement) stay fail-closed via ``IntrospectionUnavailable``.
+    """
+    try:
+        refs = resolve_ingest_scope(
+            inspector=inspector,
+            sa_engine=sa_engine,
+            requested=[schema] if schema is not None else None,
+            all_schemas=schema is None,
+            datasource_schema=datasource.schema_name,
+        ).schemas
+    except SchemaEnumerationError as exc:
+        if fallback_schema_tokens is None:
+            raise IntrospectionUnavailable(
+                f"validate_models: could not list schemas in datasource "
+                f"{datasource.name!r}; skipping drift verdict to avoid false "
+                f"deletions"
+            ) from exc
+        refs = []
+    if refs or fallback_schema_tokens is None:
+        return refs
+    # Enumeration failed/empty: introspect exactly the schemas the models use
+    # (+ the connection default for bare models). The requested / default
+    # branches of resolve_ingest_scope don't need get_schema_names() to succeed.
+    requested = set(fallback_schema_tokens)
+    if datasource.schema_name:
+        requested.add(datasource.schema_name)
+    resolved = resolve_ingest_scope(
+        inspector=inspector,
+        sa_engine=sa_engine,
+        requested=sorted(requested) or None,
+        all_schemas=False,
+        datasource_schema=datasource.schema_name,
+    ).schemas
+    # Add the connection default (for bare models), deduped by token but
+    # preferring the default-marked ref — so a model token that resolves to the
+    # catalog-qualified default doesn't leave it non-default and un-bare-keyed.
+    default_ref = default_schema_ref(inspector, sa_engine)
+    candidates = list(resolved)
+    default_token = default_ref.token or default_ref.name or ""
+    if not is_system_schema(default_token, qualifies=engine_qualifies_tokens(sa_engine)):
+        candidates.append(default_ref)  # skip a default that is itself a system schema (C2)
+    by_token: dict[str | None, SchemaRef] = {}
+    for ref in candidates:
+        prev = by_token.get(ref.token)
+        if prev is None or (ref.is_default and not prev.is_default):
+            by_token[ref.token] = ref
+    return list(by_token.values())
+
+
+def _add_live_object(
+    out: dict[str, LiveTable],
+    *,
+    inspector: sa.engine.Inspector,
+    sa_engine: sa.Engine,
+    ref: SchemaRef,
+    obj_name: str,
+    single: bool,
+    datasource: DatasourceConfig,
+) -> None:
+    """Introspect one object and key it into ``out`` (best-effort).
+
+    The default schema (and a single-schema scope) is keyed BOTH bare and
+    qualified so a legacy unqualified model and an explicit ``main.orders``
+    model both resolve via a full match — since ``_resolve_live_table`` no
+    longer strips a qualifier down to bare (that would mask a dropped
+    non-default twin).
+    """
+    try:
+        live = _introspect_one_table(
+            inspector=inspector, sa_engine=sa_engine, table_name=obj_name, ref=ref,
+        )
+    except Exception as exc:  # noqa: BLE001 — one object's introspection failed
+        logger.warning(
+            "validate_models: failed to introspect %r in datasource %r: %s",
+            obj_name, datasource.name, exc,
+        )
+        return
+    out[ref.qualify(obj_name)] = live
+    if ref.is_default or single:
+        out.setdefault(obj_name, live)
+        if ref.name:
+            out.setdefault(f"{ref.name}.{obj_name}", live)
+
+
+def _collect_live_tables(
+    refs: list[SchemaRef],
+    *,
+    inspector: sa.engine.Inspector,
+    sa_engine: sa.Engine,
+    datasource: DatasourceConfig,
+) -> tuple[dict[str, LiveTable], int]:
+    """Introspect every object across ``refs`` into a ``{key: LiveTable}`` map.
+
+    Keys are the persisted-``sql_table`` form (bare for the default, else
+    ``schema.table``); the default schema (and a single-schema scope) is also
+    exposed bare. Returns ``(map, object_count)`` — the count lets the caller
+    tell a genuinely empty datasource from a total introspection failure.
+    """
+    from slayer.engine.ingestion import list_ingestable_objects
+    single = len(refs) == 1
+    out: dict[str, LiveTable] = {}
+    object_count = 0
+    failed: list[str] = []
+    for ref in refs:
+        try:
+            objs = list_ingestable_objects(
+                inspector=inspector, ref=ref, include_views=True
+            )
+        except Exception as exc:  # noqa: BLE001 — one schema's listing failed
+            logger.warning(
+                "validate_models: failed to list schema %r in datasource "
+                "%r: %s", ref.token, datasource.name, exc,
+            )
+            failed.append(str(ref.token))
+            continue
+        for obj in objs:
+            object_count += 1
+            _add_live_object(
+                out=out, inspector=inspector, sa_engine=sa_engine, ref=ref,
+                obj_name=obj.name, single=single, datasource=datasource,
+            )
+    if failed:
+        # A schema in scope could not be listed, so its objects are absent from
+        # the map. Diffing against a PARTIAL map would report every model in
+        # that schema as a WholeModelDelete (a transient error → data loss under
+        # ``--force-clean``). Fail closed (CodeRabbit) — the caller catches this
+        # and skips the drift verdict entirely.
+        raise IntrospectionUnavailable(
+            f"validate_models: could not list schema(s) {failed} in datasource "
+            f"{datasource.name!r}; skipping drift verdict to avoid false deletions"
+        )
+    return out, object_count
+
+
 def _live_schema_for_datasource(
     *,
     datasource: DatasourceConfig,
     schema: str | None = None,
+    fallback_schema_tokens: set[str] | None = None,
 ) -> dict[str, LiveTable]:
     """Return ``{object_name: LiveTable}`` for every live table AND view in the
     DS, using the same ``Inspector`` fallback path as auto-ingestion.
@@ -1720,39 +1896,32 @@ def _live_schema_for_datasource(
     model whose ``sql_table`` names a view would otherwise resolve to ``None``
     and be reported as a ``WholeModelDelete`` that ``--force-clean`` acts on.
     Gating on ``--no-views`` would re-arm that data-loss bug.
+
+    ``fallback_schema_tokens`` is threaded to :func:`_live_schema_refs` — see there.
     """
-    from slayer.engine.ingestion import _dispose_quietly, list_ingestable_objects
+    from slayer.engine.ingestion import _dispose_quietly
     from slayer.sql import engine_factory
     sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
     try:
         inspector = sa.inspect(sa_engine)
-        table_names = [
-            o.name
-            for o in list_ingestable_objects(
-                inspector=inspector, schema=schema, include_views=True
-            )
-        ]
-        out: dict[str, LiveTable] = {}
-        for table_name in table_names:
-            try:
-                out[table_name] = _introspect_one_table(
-                    inspector=inspector,
-                    sa_engine=sa_engine,
-                    table_name=table_name,
-                    schema=schema,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "validate_models: failed to introspect %r in datasource "
-                    "%r: %s",
-                    table_name,
-                    datasource.name,
-                    exc,
-                )
-        if table_names and not out:
+        # DEV-1758: when no schema is pinned, cover every own-catalog schema so
+        # a model qualified to a non-default schema diffs against the right
+        # twin; an explicit ``schema`` scopes to just that schema. Keys are the
+        # persisted-``sql_table`` form (bare for the default, ``schema.table``
+        # otherwise), with the default schema also exposed bare so a legacy
+        # unqualified model resolves the way the database would.
+        refs = _live_schema_refs(
+            inspector=inspector, sa_engine=sa_engine,
+            datasource=datasource, schema=schema,
+            fallback_schema_tokens=fallback_schema_tokens,
+        )
+        out, object_count = _collect_live_tables(
+            refs, inspector=inspector, sa_engine=sa_engine, datasource=datasource,
+        )
+        if object_count and not out:
             raise IntrospectionUnavailable(
                 f"failed to introspect every table in datasource "
-                f"{datasource.name!r} ({len(table_names)} table(s))"
+                f"{datasource.name!r} ({object_count} table(s))"
             )
         return out
     finally:
@@ -1769,13 +1938,17 @@ def _introspect_one_table(
     inspector: sa.engine.Inspector,
     sa_engine: sa.Engine,
     table_name: str,
-    schema: str | None,
+    ref: SchemaRef | None,
 ) -> LiveTable:
     """Build a ``LiveTable`` for one table via the existing safe-introspection
     path used by ``slayer/engine/ingestion.py``.
+
+    ``ref`` carries the catalog-qualified schema identity so the column / PK
+    fallbacks stay catalog-scoped on DuckDB (never unioning an attached twin).
     """
-    cols_meta = _safe_get_columns(inspector, sa_engine, table_name, schema)
-    pk = _safe_get_pk_constraint(inspector, sa_engine, table_name, schema)
+    schema_token = ref.token if ref else None
+    cols_meta = _safe_get_columns(inspector, sa_engine, table_name, ref)
+    pk = _safe_get_pk_constraint(inspector, sa_engine, table_name, ref)
     pk_columns = set(pk.get("constrained_columns", []) or [])
 
     columns: dict[str, DataType] = {}
@@ -1791,7 +1964,7 @@ def _introspect_one_table(
 
     fks: list[tuple[str, str, str]] = []
     try:
-        for fk in inspector.get_foreign_keys(table_name, schema=schema):
+        for fk in inspector.get_foreign_keys(table_name, schema=schema_token):
             constrained = fk.get("constrained_columns") or []
             referred_table = fk.get("referred_table")
             referred = fk.get("referred_columns") or []
@@ -1872,19 +2045,26 @@ def _strip_ident_quotes(ident: str) -> str:
 def _resolve_live_table(
     *, sql_table: str, live_tables: dict[str, LiveTable]
 ) -> LiveTable | None:
-    """Look up a model's ``sql_table`` in the live introspection map,
-    falling back to the bare name when the persisted value is schema-
-    qualified (``schema.table``) and unquoting double-quoted identifiers
-    (e.g. ``prod."Company"`` for case-sensitive Postgres tables).
+    """Look up a model's ``sql_table`` in the live introspection map.
+
+    Walks the full value and its last two dotted segments
+    (``catalog.schema.table`` → ``schema.table``), plus double-quote-unquoted
+    variants (``prod."Company"`` → ``prod.Company``). A qualified name is NEVER
+    stripped down to a *bare* same-named object: doing so would let a dropped
+    non-default table (``analytics.orders``) masquerade as its default-schema
+    twin (``orders``) and hide the deletion (DEV-1758, Codex review). The live
+    map instead keys the default schema BOTH bare and qualified
+    (``_collect_live_tables``), so a legitimate default / bare reference still
+    resolves via a full or last-two match.
     """
-    candidates = [sql_table]
-    if "." in sql_table:
-        candidates.append(sql_table.split(".", 1)[1])
-    # Materialise the snapshot before extending — a bare generator
-    # ``(_strip_ident_quotes(c) for c in candidates)`` would iterate the
-    # list lazily WHILE ``extend`` appends to it, so every appended item
-    # gets re-fed into the iterator and the loop never terminates.
-    candidates.extend([_strip_ident_quotes(c) for c in candidates])
+    parts = sql_table.split(".")
+    # Unquote per segment (``prod."Company"`` → ``prod.Company``), NOT the whole
+    # string — only the object segment is typically quoted.
+    unq = [_strip_ident_quotes(p) for p in parts]
+    candidates = [sql_table, ".".join(unq)]
+    if len(parts) >= 2:
+        candidates.append(".".join(parts[-2:]))
+        candidates.append(".".join(unq[-2:]))
     for name in candidates:
         live = live_tables.get(name)
         if live is not None:
@@ -1966,11 +2146,9 @@ def _sqlite_probe_int_drift_for_model(
     if model.sql_table is None:
         return []
 
-    if "." in model.sql_table:
-        schema_name, _, table_name = model.sql_table.partition(".")
-        schema_name = schema_name or None
-    else:
-        schema_name, table_name = default_schema or None, model.sql_table
+    schema_name, table_name = split_sql_table(model.sql_table)
+    if schema_name is None:
+        schema_name = default_schema or None
 
     drifts: list[tuple[str, DataType, DeleteReason]] = []
     with sa_engine.connect() as conn:
@@ -2110,14 +2288,21 @@ async def _collect_sql_table_diffs(
     """
     if not sql_table_models:
         return {}
-    # Honour the datasource's configured schema_name so non-default-schema
-    # datasources diff against the right table set; otherwise SQLAlchemy
-    # introspects the default and produces false WholeModelDeletes.
+    # Introspect every own-catalog schema (not just the persisted schema_name):
+    # a pinned datasource can still hold a model qualified to another own schema,
+    # which a single-schema live map would report as a false WholeModelDelete.
+    # If enumeration is unavailable, fall back to exactly the models' own schemas
+    # so validation still works on a least-privilege connection.
+    fallback_tokens = {
+        tok for m in sql_table_models
+        if (tok := split_sql_table(m.sql_table or "")[0]) is not None
+    }
     try:
         live_tables = await asyncio.to_thread(
             _live_schema_for_datasource,
             datasource=datasource,
-            schema=datasource.schema_name or None,
+            schema=None,
+            fallback_schema_tokens=fallback_tokens,
         )
     except IntrospectionUnavailable as exc:
         # Unknown live schema — reporting every model for deletion here would
