@@ -239,6 +239,8 @@ Any aggregation takes `partition_by=` to compute it over a subset of the query's
 
 `partition_by=region` is the region total on every city row (so `share_of_region` sums to 1.0 per region); `partition_by=[]` is the grand total; a list (`[region, channel]`) or dotted path also work. The total is computed over rows passing row-level filters — filters on the measure (`having`) and pagination never change it.
 
+`partition_by` is not yet supported combined with `window=`, on `first`/`last`, nested inside a transform, or referenced in a filter — each raises a clear error rather than returning wrong numbers.
+
 ## Result column naming
 
 The colon becomes an underscore in result keys:

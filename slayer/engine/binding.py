@@ -807,7 +807,7 @@ def _bind_agg_partition_keys(
     elements = value if isinstance(value, tuple) else (value,)
     pks: List = []
     for elem in elements:
-        bound = _bind(elem, scope=scope, bundle=bundle, in_filter=False)
+        bound = _bind(parsed=elem, scope=scope, bundle=bundle, in_filter=False)
         if not isinstance(bound, (ColumnKey, ColumnSqlKey)):
             raise ValueError(
                 f"aggregation partition_by must resolve to a column reference; "
@@ -858,7 +858,7 @@ def _bind_agg(
     kwargs_list: List = []
     for k, v in parsed.kwargs:
         if k == "partition_by":
-            partition_keys = _bind_agg_partition_keys(v, scope=scope, bundle=bundle)
+            partition_keys = _bind_agg_partition_keys(value=v, scope=scope, bundle=bundle)
             continue
         kwargs_list.append((k, _bind_agg_arg(v, scope=scope, bundle=bundle)))
     kwargs = tuple(kwargs_list)

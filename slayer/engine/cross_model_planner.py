@@ -666,16 +666,17 @@ def _narrow_shared_grain_to_partition(
     *, shared_grain: List[SlotId], host_slots: List[ValueSlot], partition_keys,
 ) -> List[SlotId]:
     """Narrow a cross-model aggregate's forward shared grain to the
-    ``partition_by`` subset (DEV-1739). Intersection only — a partition key
-    reachable only via re-rooting is validated in the re-root builder, which
-    owns the authoritative not-in-grain guard."""
+    ``partition_by`` subset (DEV-1739). Kept in ``shared_grain`` (host-slot)
+    order so the emitted CTE projection / GROUP BY is deterministic across hash
+    seeds. Intersection only — a partition key reachable only via re-rooting is
+    validated in the re-root builder, which owns the not-in-grain guard."""
     slot_by_id = {s.id: s for s in host_slots}
-    key_to_id: dict = {}
+    narrowed: List[SlotId] = []
     for sid in shared_grain:
         s = slot_by_id.get(sid)
-        if s is not None and _key_grain_path(s.key):
-            key_to_id.setdefault(s.key, sid)
-    return [key_to_id[pk] for pk in partition_keys if pk in key_to_id]
+        if s is not None and _key_grain_path(s.key) and s.key in partition_keys:
+            narrowed.append(sid)
+    return narrowed
 
 
 class IsolatedCteCrossModelPlanner:

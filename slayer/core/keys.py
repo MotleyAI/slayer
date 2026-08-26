@@ -854,7 +854,7 @@ def _reroot_partition_keys(partition_keys, *, target_path: Tuple[str, ...]):
     if partition_keys is None:
         return None
     return frozenset(
-        reroot_value_key(p, target_path=target_path) for p in partition_keys
+        reroot_value_key(key=p, target_path=target_path) for p in partition_keys
     )
 
 
