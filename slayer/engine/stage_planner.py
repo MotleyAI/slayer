@@ -421,6 +421,49 @@ def _guard_windowed_measures(  # NOSONAR(S3776) — one cohesive ordered guard p
     return selected_windowed
 
 
+def _partitioned_agg_keys(vk: ValueKey) -> list:
+    """Every ``AggregateKey`` in ``vk`` carrying an explicit ``partition_by``."""
+    return [
+        k for k in walk_value_keys(vk)
+        if isinstance(k, AggregateKey) and k.partition_keys is not None
+    ]
+
+
+def _guard_partitioned_measures(
+    *, measure_vks: list, filter_vks: list, order_vks: list,
+) -> None:
+    """Reject the partition_by shapes deferred to DEV-1824: combined with
+    ``window=``, on ``first``/``last``, nested inside a transform, or referenced
+    in a query filter. Runs on the original value-key trees."""
+    all_vks = [*measure_vks, *filter_vks, *order_vks]
+    part_keys = [k for vk in all_vks for k in _partitioned_agg_keys(vk)]
+    if not part_keys:
+        return
+    if any(_window_kwarg_of(k) is not None for k in part_keys):
+        raise NotImplementedError(
+            "partition_by combined with window= on one aggregate is not yet "
+            "supported (DEV-1824)."
+        )
+    if any(k.agg in ("first", "last") for k in part_keys):
+        raise NotImplementedError(
+            "partition_by on first/last aggregations is not yet supported "
+            "(DEV-1824)."
+        )
+    if any(
+        isinstance(tk, TransformKey) and _partitioned_agg_keys(tk.input)
+        for vk in all_vks for tk in walk_value_keys(vk)
+    ):
+        raise NotImplementedError(
+            "A partition_by aggregate nested inside a transform is not yet "
+            "supported (DEV-1824)."
+        )
+    if any(_partitioned_agg_keys(vk) for vk in filter_vks):
+        raise NotImplementedError(
+            "Filtering on a partition_by aggregate is not yet supported "
+            "(DEV-1824)."
+        )
+
+
 def _windowed_grain_partition(
     *,
     row_slots: list,
@@ -1035,14 +1078,18 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     _td_key_set = set(_td_by_source.values())
     _available_dims = [dm.declared_name for dm in (*_dim_dms, *_td_dms)]
 
-    def _validate_partition_keys(tk: TransformKey) -> frozenset:
+    def _validate_partition_keys(key: ValueKey) -> frozenset:
+        label = (
+            f"Transform '{key.op}'" if isinstance(key, TransformKey)
+            else f"Aggregation '{key.agg}'"
+        )
         new_pks = []
-        for pk in tk.partition_keys:
+        for pk in key.partition_keys or ():
             if pk in _dim_key_set or pk in _td_key_set:
                 new_pks.append(pk)          # already a query dim / td bucket
             elif pk in _td_ambiguous_sources:
                 raise ValueError(
-                    f"Transform '{tk.op}': partition_by column "
+                    f"{label}: partition_by column "
                     f"'{_partition_key_display(pk)}' is ambiguous — it is a "
                     f"time dimension at multiple granularities. Partition by a "
                     f"single query dimension instead."
@@ -1051,7 +1098,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                 new_pks.append(_td_by_source[pk])  # td source col -> bucket
             else:
                 raise ValueError(
-                    f"Transform '{tk.op}': partition_by column "
+                    f"{label}: partition_by column "
                     f"'{_partition_key_display(pk)}' is not a query dimension. "
                     f"Add it to dimensions/time_dimensions, or choose one of: "
                     f"{', '.join(_available_dims) or '(none)'}."
@@ -1170,6 +1217,11 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     # projection) value-key trees. Raises on unsupported shapes (non-sum/avg,
     # no time dim, cross-model, transform, composite, hidden, mixed, malformed
     # duration); returns the set of cleanly-selected windowed AggregateKeys.
+    _guard_partitioned_measures(
+        measure_vks=[dm.bound.value_key for dm in declared_measures],
+        filter_vks=[bf.value_key for bf in bound_filters],
+        order_vks=[sp.bound.value_key for sp in order_specs],
+    )
     selected_windowed = _guard_windowed_measures(
         measure_vks=[dm.bound.value_key for dm in declared_measures],
         filter_vks=[bf.value_key for bf in bound_filters],

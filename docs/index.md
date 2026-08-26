@@ -42,7 +42,7 @@ Given an `orders` [model](concepts/models.md) with a `revenue` measure and joins
 
 One query, and SLayer handles:
 
-- **`revenue:sum`** — aggregation is chosen at query time, not baked into the measure definition. The same `revenue` measure works with `sum`, `avg`, `median`, `weighted_avg`, or [any custom aggregation](examples/07_aggregations/aggregations.md).
+- **`revenue:sum`** — aggregation is chosen at query time, not baked into the measure definition. The same `revenue` measure works with `sum`, `avg`, `median`, `weighted_avg`, or [any custom aggregation](examples/07_aggregations/aggregations.md). Add `partition_by=` for a coarser grain repeated across rows — `revenue:sum / revenue:sum(partition_by=region)` is share-of-parent.
 - **`change_pct(revenue:sum)`** — month-over-month growth as a [transform](examples/04_time/time.md). SLayer generates the necessary window query. Other built-in transforms: `cumsum`, `change`, `time_shift`, `rank` / `percent_rank` / `dense_rank` / `ntile`, `lag`, `lead` — all nestable (`"change(cumsum(revenue:sum))"` works).
 - **`revenue:sum / time_shift(revenue:sum, -1, 'year') - 1`** — arithmetic on aggregated measures. `time_shift` runs a separate time-shifted sub-query and joins it back by all dimensions; dividing by it gives year-over-year growth. Standard operator precedence applies.
 - **`customers.score:last(changed_at)`** — a measure from a [joined model](examples/05_joined_measures/joined_measures.md), resolved by walking the [join graph](examples/05_joins/joins.md). `last` is an aggregation that picks the latest record's value — `changed_at` tells it which column defines "latest."

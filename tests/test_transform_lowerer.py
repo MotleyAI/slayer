@@ -53,9 +53,8 @@ class TestDesugarChange:
         assert left is right.input or left == right.input
 
     def test_partition_by_threaded(self):
-        # change(amount:sum, partition_by=region) — the binder lifts
-        # partition_by onto TransformKey.partition_keys. The lowerer
-        # threads that frozenset through to the underlying time_shift.
+        # desugar_change threads partition_keys through to the underlying
+        # time_shift (mechanism pinned via direct construction).
         region = ColumnKey(path=(), leaf="region")
         change_key = TransformKey(
             op="change",

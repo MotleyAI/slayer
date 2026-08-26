@@ -533,6 +533,30 @@ Edge cases match Postgres exactly:
 
 See [database-support.md](../database-support.md#aggregation-support) for the per-engine support matrix.
 
+### Share of parent (`partition_by=`)
+
+`partition_by=` on an aggregation computes it over a subset of the query's
+dimensions and repeats the value across the finer rows — the share-of-parent /
+percent-of-total shape. See [Formulas](formulas.md#aggregate-at-a-coarser-grain-partition_by).
+
+```json
+{
+  "source_model": "orders",
+  "dimensions": [{"name": "region"}, {"name": "city"}],
+  "measures": [
+    {"formula": "revenue:sum", "name": "city_rev"},
+    {"formula": "revenue:sum / revenue:sum(partition_by=region)", "name": "share_of_region"},
+    {"formula": "revenue:sum / revenue:sum(partition_by=[])", "name": "share_of_total"}
+  ]
+}
+```
+
+`share_of_region` sums to 1.0 within each region; `share_of_total` sums to 1.0
+over the whole result. An unnamed partitioned measure's result key carries the
+partition in its suffix (`orders.revenue_sum_partition_by_region`,
+`orders.revenue_sum_partition_by` for the grand total) — name the measure to
+control the key.
+
 ### Cross-model measures
 
 When models have [joins](models.md#joins), you can reference measures from joined models using dotted syntax with colon aggregation — `model_name.measure_name:aggregation`:

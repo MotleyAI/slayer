@@ -504,6 +504,7 @@ class AggregateKey(_FrozenKey):
     kwargs: Tuple[Tuple[str, _AggregateKwargValue], ...] = ()
     column_filter_key: Optional[SqlExprKey] = None
     grain: Literal["target", "host"] = "target"
+    partition_keys: Optional[frozenset["ValueKey"]] = None
 
     @field_validator("kwargs", mode="before")
     @classmethod
@@ -523,6 +524,7 @@ class AggregateKey(_FrozenKey):
             _typed_kwargs(self.kwargs),
             self.column_filter_key,
             self.grain,
+            self.partition_keys,
         ))
 
     def __eq__(self, other: object) -> bool:
@@ -535,6 +537,7 @@ class AggregateKey(_FrozenKey):
             and _typed_kwargs(self.kwargs) == _typed_kwargs(other.kwargs)
             and self.column_filter_key == other.column_filter_key
             and self.grain == other.grain
+            and self.partition_keys == other.partition_keys
         )
 
 
@@ -845,6 +848,16 @@ def _reroot_sql_expr_key(
     )
 
 
+def _reroot_partition_keys(partition_keys, *, target_path: Tuple[str, ...]):
+    """Reroot an ``AggregateKey.partition_keys`` frozenset, preserving the
+    ``None`` (absent) vs empty (grand total) distinction."""
+    if partition_keys is None:
+        return None
+    return frozenset(
+        reroot_value_key(key=p, target_path=target_path) for p in partition_keys
+    )
+
+
 def reroot_value_key(
     key: _RerootableT, *, target_path: Tuple[str, ...],
 ) -> _RerootableT:
@@ -909,6 +922,9 @@ def reroot_value_key(
             "source": _recurse(key.source),
             "args": tuple(_recurse(a) for a in key.args),
             "kwargs": tuple((n, _recurse(v)) for n, v in key.kwargs),
+            "partition_keys": _reroot_partition_keys(
+                key.partition_keys, target_path=target_path,
+            ),
         })
     if isinstance(key, TransformKey):
         # ``args`` / ``kwargs`` are Tuple[Scalar, ...] — type-prohibited from

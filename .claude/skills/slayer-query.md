@@ -52,6 +52,8 @@ Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `c
 
 For month-over-month / period-over-period growth use `change_pct(x)` (absolute delta: `change(x)`) — both are calendar-aware and partition-safe (the underlying self-join matches on all non-time dimensions, so per-group series reset cleanly). Reach for `time_shift` only when you need the shifted value itself as a term in custom arithmetic or at a different grain (`time_shift(revenue:sum, -1, 'year')` for year-over-year).
 
+Any aggregation accepts `partition_by=` to compute it over a subset of the query's dimensions, repeated across the finer rows — the share-of-parent shape. With `dimensions: [region, city]`, `revenue:sum(partition_by=region)` is the region total on every city row, so `revenue:sum / revenue:sum(partition_by=region)` sums to 1.0 per region; `partition_by=[]` is the grand total. Takes one dimension, a list (`partition_by=[region, channel]`), a dotted path, or `[]`. Computed over rows passing row-level filters (HAVING/pagination never change the parent total). Not yet supported (raises): combined with `window=`, on `first`/`last`, nested in a transform, or in a filter. On transforms, `partition_by=` is rank-family only.
+
 `*:count` is always available — no column definition needed. `col:count` counts non-nulls.
 
 Saved named formulas (`SlayerModel.measures`) can be referenced by bare name in any formula context: `{"formula": "aov"}`.

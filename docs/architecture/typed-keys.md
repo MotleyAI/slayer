@@ -41,7 +41,7 @@ classDiagram
 | `StarKey(path)` | ROW | the `*` source for `*:count` (local or cross-model) |
 | `LiteralKey(value)` | ROW | a literal operand inside an expression tree |
 | `SqlExprKey(canonical_sql)` | ROW | a Mode-A SQL fragment (a `Column.filter`) |
-| `AggregateKey(source, agg, args, kwargs, column_filter_key)` | AGGREGATE | one aggregation slot |
+| `AggregateKey(source, agg, args, kwargs, column_filter_key, grain, partition_keys)` | AGGREGATE | one aggregation slot |
 | `TransformKey(op, input, args, kwargs, partition_keys, time_key)` | POST | a window/temporal transform over a value |
 | `ArithmeticKey(op, operands)` | max(operands) | arithmetic / comparison / boolean |
 | `ScalarCallKey(name, args)` | max(args) | a closed-allowlist scalar function call |
@@ -108,6 +108,18 @@ becomes part of the `AggregateKey` via `column_filter_key: Optional[SqlExprKey]`
 Two aggregates over the same column with different attached filters are therefore
 different slots; same-filter ones intern. `*:count` (a `StarKey` source) has no
 column, so `column_filter_key` stays `None`.
+
+### `partition_keys` coarsens an aggregate's grain
+
+`partition_by=` on an aggregation (`revenue:sum(partition_by=region)`, DEV-1739)
+lands on `partition_keys: Optional[frozenset[ValueKey]]`, mirroring
+`TransformKey.partition_keys`. `None` = no partition; an explicit empty frozenset
+= the grand total (`partition_by=[]`) — the two are distinct identities, so every
+check uses `is not None`, never truthiness. It participates in hash/eq, reroots
+with the rest of the key, and adds a `_partition_by[_…]` suffix to the canonical
+alias. A partitioned aggregate compiles to the same isolated CTE + null-safe
+join-back as a cross-model one, with the CTE grouped at the partition subset
+instead of the full query grain.
 
 ### `TimeTruncKey` is a distinct key, not a slot flag
 
