@@ -42,6 +42,7 @@ from slayer.core.keys import (
     BetweenKey,
     ColumnKey,
     ColumnSqlKey,
+    ConditionalKey,
     InKey,
     LiteralKey,
     Phase,
@@ -665,9 +666,14 @@ def _iter_slot_deps(key: ValueKey):
         for arg in key.args:
             if isinstance(
                 arg,
-                _SLOTTABLE_KIND + (ArithmeticKey, ScalarCallKey, BetweenKey),
+                _SLOTTABLE_KIND
+                + (ArithmeticKey, ScalarCallKey, ConditionalKey, BetweenKey),
             ):
                 yield from _iter_slot_deps(arg)
+        return
+    if isinstance(key, ConditionalKey):
+        for part in (key.cond, key.then, key.otherwise):
+            yield from _iter_slot_deps(part)
         return
     if isinstance(key, BetweenKey):
         # BetweenKey is not itself a slot — the generator inlines it
@@ -775,7 +781,7 @@ class ProjectionPlanner:
             # ORDER ONLY: filters keep the operands-only walk. A filter's
             # top-level composite is rendered inline into WHERE / HAVING, and
             # giving it a slot would change that emission.
-            if isinstance(o.bound.value_key, (ArithmeticKey, ScalarCallKey)):
+            if isinstance(o.bound.value_key, (ArithmeticKey, ScalarCallKey, ConditionalKey)):
                 self._intern_hidden(registry, o.bound.value_key)
 
         return ProjectionPlan(

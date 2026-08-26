@@ -71,35 +71,23 @@ from slayer.core.query import ColumnRef, ModelMeasure, SlayerQuery, TimeDimensio
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
-from tests._engine_helpers import _engine_generate, _extract_cte_body
+from tests._engine_helpers import _engine_generate
+# The customer/region models and the generic result helpers are byte-identical
+# to DEV-1739's; import them rather than restate them (DRY / Sonar duplication).
+from tests._dev1739_fixtures import (
+    approx_sum,
+    cm_cte_bodies,
+    customers_model,
+    month_key,
+    month_td,
+    regions_model,
+    rows_by,
+)
 
 
 # --------------------------------------------------------------------------- #
 # Models — orders (host) → customers → regions.
 # --------------------------------------------------------------------------- #
-def regions_model() -> SlayerModel:
-    return SlayerModel(
-        name="regions", data_source="test", sql_table="regions",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-        ],
-    )
-
-
-def customers_model() -> SlayerModel:
-    return SlayerModel(
-        name="customers", data_source="test", sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region_id", type=DataType.INT),
-            Column(name="tier", type=DataType.TEXT),
-            Column(name="spend", type=DataType.DOUBLE),
-        ],
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
-    )
-
-
 def orders_model() -> SlayerModel:
     return SlayerModel(
         name="orders", data_source="test", sql_table="orders",
@@ -138,19 +126,6 @@ async def gen(query, *, dialect: str = "duckdb", validate: bool = False) -> str:
         query=query, model=models[0], extra_models=models[1:],
         dialect=dialect, validate=validate,
     )
-
-
-def month_td(column: str = "ordered_at") -> List[TimeDimension]:
-    return [TimeDimension(
-        dimension=ColumnRef(name=column),
-        granularity=TimeGranularity.MONTH,
-    )]
-
-
-def cm_cte_bodies(sql: str) -> str:
-    """Concatenated body of every isolated aggregate (``_cm_*``) CTE — where a
-    partitioned aggregate's GROUP BY lives after the B2 desugar."""
-    return _extract_cte_body(sql, r"_cm_\w+")
 
 
 # --------------------------------------------------------------------------- #
@@ -292,25 +267,6 @@ def band_value_tuples(resp, *, region_key: str, band_key: str, total_key: str) -
     for r in resp.data:
         out.add((r[region_key], int(r[band_key]), round(float(r[total_key]), 3)))
     return out
-
-
-def month_key(value) -> str:
-    """First 7 chars of a DATE_TRUNC'd month value — a stable per-month key
-    across SQLite (``2024-01-01`` text) and DuckDB (``2024-01-01 00:00:00``)."""
-    return str(value)[:7]
-
-
-def rows_by(resp, *keys) -> dict:
-    """Index ``resp.data`` rows by the given result-column key tuple."""
-    out = {}
-    for r in resp.data:
-        out[tuple(r[k] for k in keys)] = r
-    return out
-
-
-def approx_sum(resp, key) -> float:
-    """Sum of a numeric result column over every row (NULLs skipped)."""
-    return sum(float(r[key]) for r in resp.data if r[key] is not None)
 
 
 __all__ = [

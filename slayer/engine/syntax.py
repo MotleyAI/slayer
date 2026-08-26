@@ -228,7 +228,7 @@ def _rewrite_case_when(text: str) -> str:
     return result
 
 
-def _rw_value(text, toks, i, stop_kws, start_char):
+def _rw_value(text, toks, i, stop_kws, start_char):  # NOSONAR(S3776) — one cohesive token-scan over a value/condition span: paren-depth tracking, the depth-0 stop-keyword break, and nested-CASE recursion are each one decision, and splitting them scatters the slice-and-recurse contract that preserves the original text.
     """Rewrite one value/condition span, returning ``(rewritten, next_index)``.
 
     ``start_char`` is where the span begins in ``text`` (the end of the keyword
@@ -242,7 +242,7 @@ def _rw_value(text, toks, i, stop_kws, start_char):
     depth = 0
     last = start_char
     while i < len(toks):
-        kind, val, start, end = toks[i]
+        kind, val, start, _ = toks[i]
         if kind == "lp":
             depth += 1
         elif kind == "rp":

@@ -64,14 +64,18 @@ class TestParseSearchedCase:
     def test_searched_case_parses_to_conditional(self) -> None:
         node = parse_expr("CASE WHEN amount > 5 THEN 1 ELSE 0 END")
         assert isinstance(node, Conditional)
-        assert isinstance(node.cond, Cmp) and node.cond.op == ">"
-        assert isinstance(node.then, Literal) and node.then.value == Decimal(1)
-        assert isinstance(node.otherwise, Literal) and node.otherwise.value == Decimal(0)
+        assert isinstance(node.cond, Cmp)
+        assert node.cond.op == ">"
+        assert isinstance(node.then, Literal)
+        assert node.then.value == Decimal(1)
+        assert isinstance(node.otherwise, Literal)
+        assert node.otherwise.value == Decimal(0)
 
     def test_missing_else_is_null_branch(self) -> None:
         node = parse_expr("CASE WHEN amount > 5 THEN 1 END")
         assert isinstance(node, Conditional)
-        assert isinstance(node.otherwise, Literal) and node.otherwise.value is None
+        assert isinstance(node.otherwise, Literal)
+        assert node.otherwise.value is None
 
     def test_multi_when_is_nested_conditional(self) -> None:
         node = parse_expr("CASE WHEN a > 2 THEN 10 WHEN a > 1 THEN 5 ELSE 0 END")
@@ -93,8 +97,10 @@ class TestParseSimpleCase:
     def test_simple_case_equality(self) -> None:
         node = parse_expr("CASE region WHEN 'EU' THEN 1 ELSE 0 END")
         assert isinstance(node, Conditional)
-        assert isinstance(node.cond, Cmp) and node.cond.op == "=="
-        assert isinstance(node.cond.left, Ref) and node.cond.left.name == "region"
+        assert isinstance(node.cond, Cmp)
+        assert node.cond.op == "=="
+        assert isinstance(node.cond.left, Ref)
+        assert node.cond.left.name == "region"
         assert node.cond.right.value == "EU"
 
     def test_simple_case_multi_branch(self) -> None:
@@ -124,21 +130,25 @@ class TestConditionOperatorNormalization:
         # WHEN condition must still accept SQL `=` and `AND`.
         node = parse_expr("CASE WHEN a = 5 AND b = 2 THEN 1 ELSE 0 END")
         assert isinstance(node, Conditional)
-        assert isinstance(node.cond, BoolOp) and node.cond.op == "and"
+        assert isinstance(node.cond, BoolOp)
+        assert node.cond.op == "and"
         assert all(isinstance(o, Cmp) and o.op == "==" for o in node.cond.operands)
 
     def test_sql_like_in_condition(self) -> None:
         node = parse_expr("CASE WHEN city LIKE 'Par%' THEN 1 ELSE 0 END")
         assert isinstance(node, Conditional)
-        assert isinstance(node.cond, ScalarCall) and node.cond.name == "like"
+        assert isinstance(node.cond, ScalarCall)
+        assert node.cond.name == "like"
 
     def test_not_equal_operator(self) -> None:
         node = parse_expr("CASE WHEN a <> 5 THEN 1 ELSE 0 END")
-        assert isinstance(node.cond, Cmp) and node.cond.op == "!="
+        assert isinstance(node.cond, Cmp)
+        assert node.cond.op == "!="
 
     def test_or_operator(self) -> None:
         node = parse_expr("CASE WHEN a = 1 OR b = 2 THEN 1 ELSE 0 END")
-        assert isinstance(node.cond, BoolOp) and node.cond.op == "or"
+        assert isinstance(node.cond, BoolOp)
+        assert node.cond.op == "or"
 
     def test_not_operator(self) -> None:
         node = parse_expr("CASE WHEN NOT a = 1 THEN 1 ELSE 0 END")
@@ -151,8 +161,10 @@ class TestBranchesNotBlanketNormalized:
         # Only the WHEN condition is operator-normalized; THEN/ELSE values must
         # survive verbatim — a blanket rewrite would lowercase AND/OR here.
         node = parse_expr("CASE WHEN region = 'EU' THEN 'a AND b' ELSE 'x OR y' END")
-        assert isinstance(node.then, Literal) and node.then.value == "a AND b"
-        assert isinstance(node.otherwise, Literal) and node.otherwise.value == "x OR y"
+        assert isinstance(node.then, Literal)
+        assert node.then.value == "a AND b"
+        assert isinstance(node.otherwise, Literal)
+        assert node.otherwise.value == "x OR y"
 
 
 class TestNestingEverywhere:
@@ -204,7 +216,8 @@ class TestFilterContext:
         node = parse_filter_expr(
             "CASE WHEN region = 'EU' THEN 1 ELSE 0 END = 1"
         )
-        assert isinstance(node, Cmp) and node.op == "=="
+        assert isinstance(node, Cmp)
+        assert node.op == "=="
         assert isinstance(node.left, Conditional)
 
 

@@ -337,7 +337,7 @@ def bind_filter(
 _VALUE_KEY_TYPES = (
     ColumnKey, ColumnSqlKey, StarKey, LiteralKey,
     AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey,
-    BetweenKey, InKey, TimeTruncKey,
+    ConditionalKey, BetweenKey, InKey, TimeTruncKey,
 )
 
 

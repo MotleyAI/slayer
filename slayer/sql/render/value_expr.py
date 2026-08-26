@@ -818,7 +818,7 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
 
 _VALUE_KEY_TYPES: Tuple[type, ...] = (
     ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey, LiteralKey, AggregateKey,
-    TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey, InKey,
+    TransformKey, ArithmeticKey, ScalarCallKey, ConditionalKey, BetweenKey, InKey,
 )
 
 
@@ -843,6 +843,11 @@ def contains_aggregate(key: ValueKey) -> bool:
             contains_aggregate(a)
             for a in key.args
             if isinstance(a, _VALUE_KEY_TYPES)
+        )
+    if isinstance(key, ConditionalKey):
+        return any(
+            contains_aggregate(k)
+            for k in (key.cond, key.then, key.otherwise)
         )
     if isinstance(key, TransformKey):
         # partition_keys and time_key are expression dependencies just as

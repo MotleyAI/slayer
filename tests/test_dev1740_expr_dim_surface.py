@@ -10,6 +10,7 @@ the execution suite.
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from slayer.core.query import ColumnRef, ComputedDimension, SlayerQuery
 
@@ -27,7 +28,7 @@ class TestDictForm:
         assert dim.name == "r"
 
     def test_extra_key_forbidden(self) -> None:
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             _dims([{"expression": "round(amount)", "name": "r", "bogus": 1}])
 
     def test_explicit_name_wins_over_autoname(self) -> None:
@@ -55,7 +56,8 @@ class TestBareIdentifierPathUnchanged:
     def test_dotted_path_stays_columnref(self) -> None:
         (dim,) = _dims(["customers.tier"])
         assert isinstance(dim, ColumnRef)
-        assert dim.model == "customers" and dim.name == "tier"
+        assert dim.model == "customers"
+        assert dim.name == "tier"
 
     def test_order_of_mixed_dims_preserved(self) -> None:
         dims = _dims(["region", {"expression": "lower(city)", "name": "lc"}, "channel"])
@@ -67,7 +69,8 @@ class TestBareIdentifierPathUnchanged:
 class TestAutoName:
     def test_unnamed_gets_a_valid_identifier(self) -> None:
         (dim,) = _dims(["round(amount)"])
-        assert dim.name and dim.name.replace("_", "a").isalnum()
+        assert dim.name
+        assert dim.name.replace("_", "a").isalnum()
 
     def test_distinct_expressions_get_distinct_names(self) -> None:
         a, b = _dims(["round(amount)", "lower(city)"])
@@ -84,7 +87,8 @@ class TestAutoName:
         a = "CASE WHEN lower(concat(city, channel, region)) = 'parisweeeu' THEN 1 ELSE 0 END"
         b = "CASE WHEN lower(concat(city, channel, region)) = 'berlinapeu' THEN 1 ELSE 0 END"
         d1, d2 = _dims([{"expression": a}, {"expression": b}])
-        assert d1.name and d2.name
+        assert d1.name
+        assert d2.name
         assert d1.name != d2.name
         # Deterministic across constructions.
         assert _dims([{"expression": a}])[0].name == d1.name
@@ -92,7 +96,7 @@ class TestAutoName:
 
 class TestNeitherRefNorExpression:
     def test_unparseable_string_names_both_readings(self) -> None:
-        with pytest.raises(Exception) as ei:
+        with pytest.raises(ValidationError) as ei:
             _dims(["!!! not valid @@@"])
         msg = str(ei.value).lower()
         assert "column" in msg or "reference" in msg

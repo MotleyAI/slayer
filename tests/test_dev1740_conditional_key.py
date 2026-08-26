@@ -90,6 +90,25 @@ class TestStructuralTraversal:
         assert agg in list(walk_value_keys(key))
 
 
+class TestNestedInScalarCall:
+    def test_aggregate_under_conditional_under_scalar_call_is_found(self) -> None:
+        # coalesce(iif(amount:sum > 5, 1, 0), -1): the aggregate sits two levels
+        # down (ScalarCallKey → ConditionalKey → cond). Both the structural walk
+        # and contains_aggregate must reach it.
+        from slayer.core.keys import ScalarCallKey
+        from slayer.sql.render.value_expr import contains_aggregate
+
+        agg = _amount()
+        cond = ConditionalKey(
+            cond=ArithmeticKey(op=">", operands=(agg, LiteralKey(value=5))),
+            then=LiteralKey(value=1),
+            otherwise=LiteralKey(value=0),
+        )
+        call = ScalarCallKey(name="coalesce", args=(cond, LiteralKey(value=-1)))
+        assert agg in list(walk_value_keys(call))
+        assert contains_aggregate(call) is True
+
+
 class TestReroot:
     def test_reroot_strips_prefix_in_every_branch(self) -> None:
         key = ConditionalKey(

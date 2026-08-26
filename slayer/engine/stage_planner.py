@@ -2398,7 +2398,7 @@ def _declared_computed_dimension(
     )
 
 
-def _declared_measures_from_query(
+def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projection passes (dimensions incl. computed, time dimensions, measures) building one ordered declared list; each pass is one contract and the order (dims → tds → measures) is the public projection order the function pins.
     *,
     query: SlayerQuery,
     scope: Union[ModelScope, StageSchema],

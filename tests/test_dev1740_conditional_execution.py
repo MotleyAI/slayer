@@ -119,7 +119,8 @@ class TestBranchTypingThroughPlanning:
         with pytest.raises(ValueError) as ei:
             await gen(q)
         msg = str(ei.value).upper()
-        assert "TEXT" in msg and "INT" in msg
+        assert "TEXT" in msg
+        assert "INT" in msg
 
     async def test_numeric_widened_branches_execute(self, exec_engine) -> None:
         # INT / DOUBLE branches widen to DOUBLE and execute cleanly.
@@ -135,6 +136,55 @@ class TestBranchTypingThroughPlanning:
         by = rows_by(resp, "orders.region")
         assert float(by[("EU",)]["orders.w"]) == pytest.approx(1.0)
         assert float(by[("US",)]["orders.w"]) == pytest.approx(0.5)
+
+
+class TestOrderByCaseComposite:
+    async def test_order_by_bare_case_expression(self, exec_engine) -> None:
+        # ORDER BY a CASE composite that is NOT projected — it must get a hidden
+        # slot and sort correctly. EU total 17000 > 12000 → 0 (first); US → 1.
+        resp = await exec_engine.execute(_q(
+            dimensions=["region"],
+            measures=[ModelMeasure(formula="amount:sum", name="rev")],
+            order=[{"column": "CASE WHEN amount:sum > 12000 THEN 0 ELSE 1 END",
+                    "direction": "asc"}],
+        ))
+        regions = [r["orders.region"] for r in resp.data]
+        assert regions == ["EU", "US"]
+
+
+class TestConditionalOverCrossModelAggregate:
+    async def test_case_over_joined_measure(self, exec_engine) -> None:
+        # CASE over a cross-model aggregate (customers.spend:sum lives in a _cm_
+        # CTE). By tier: gold=150 → 0, silver=500 → 1.
+        resp = await exec_engine.execute(_q(
+            dimensions=["customers.tier"],
+            measures=[
+                ModelMeasure(
+                    formula="CASE WHEN customers.spend:sum > 300 THEN 1 ELSE 0 END",
+                    name="b",
+                ),
+            ],
+        ))
+        by = {r["orders.customers.tier"]: int(r["orders.b"]) for r in resp.data}
+        assert by == {"gold": 0, "silver": 1}
+
+
+class TestConditionalNestedInScalarCall:
+    async def test_conditional_inside_coalesce(self, exec_engine) -> None:
+        # A ConditionalKey as a scalar-call arg must render (not be mistaken for
+        # a literal) and its inner aggregate must be discovered.
+        resp = await exec_engine.execute(_q(
+            dimensions=["region"],
+            measures=[
+                ModelMeasure(
+                    formula="coalesce(iif(amount:sum >= 10000, 1, 0), -1)",
+                    name="c",
+                ),
+            ],
+        ))
+        by = rows_by(resp, "orders.region")
+        assert int(by[("EU",)]["orders.c"]) == 1
+        assert int(by[("US",)]["orders.c"]) == 0
 
 
 class TestCaseInModelFormula:

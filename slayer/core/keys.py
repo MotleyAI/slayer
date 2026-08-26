@@ -881,7 +881,7 @@ def _reroot_partition_keys(partition_keys, *, target_path: Tuple[str, ...]):
     )
 
 
-def reroot_value_key(
+def reroot_value_key(  # NOSONAR(S3776) — the total re-anchoring visitor over the closed ValueKey union; each isinstance arm IS that kind's reroot contract, and the exhaustiveness (fail-closed on an unhandled kind) is the property the function exists to guarantee — extracting arms hides it.
     key: _RerootableT, *, target_path: Tuple[str, ...],
 ) -> _RerootableT:
     """Re-anchor every embedded reference in ``key`` from the query root into

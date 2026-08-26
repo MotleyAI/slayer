@@ -46,7 +46,8 @@ class TestBranchTypeJoin:
         with pytest.raises(ValueError) as ei:
             join_conditional_branch_types(a, b)
         msg = str(ei.value)
-        assert a.value in msg and b.value in msg
+        assert a.value in msg
+        assert b.value in msg
 
 
 class TestFormatPropagation:
