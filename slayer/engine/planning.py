@@ -500,6 +500,12 @@ def rewrite_rank_partition_keys(  # NOSONAR(S3776) — sequential isinstance dis
         if new_input is key.input and new_pk == key.partition_keys:
             return key
         return key.model_copy(update={"input": new_input, "partition_keys": new_pk})
+    if isinstance(key, AggregateKey):
+        if key.partition_keys:
+            new_pk = rewrite_fn(key)
+            if new_pk != key.partition_keys:
+                return key.model_copy(update={"partition_keys": new_pk})
+        return key
     if isinstance(key, ArithmeticKey):
         new_ops = tuple(_rec(op) for op in key.operands)
         unchanged = all(a is b for a, b in zip(new_ops, key.operands))

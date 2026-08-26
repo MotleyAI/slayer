@@ -39,7 +39,11 @@ from sqlglot import exp
 
 from slayer.core.errors import IdentifierCollisionError
 from slayer.core.keys import StarKey
-from slayer.core.refs import agg_kwarg_canonical_str, canonical_agg_name
+from slayer.core.refs import (
+    agg_kwarg_canonical_str,
+    canonical_agg_name,
+    partition_by_suffix,
+)
 from slayer.sql._identifier_fit import fit_identifier
 # DEV-1571 dotted-alias bijection, moved to a pure-string leaf module (DEV-1817)
 # to break a naming <-> dialects.base cycle; re-exported for existing consumers.
@@ -414,6 +418,8 @@ def canonical_aggregate_alias(  # NOSONAR(S3776) — sequential dispatch over th
     # column name and the renderer would emit whichever it wrote last.
     if getattr(key, "grain", "target") == "host":
         canonical = f"{canonical}_host"
+
+    canonical = f"{canonical}{partition_by_suffix(getattr(key, 'partition_keys', None))}"
 
     # --- prefix, per profile ---
     if profile in ("cte_schema", "declared_name"):

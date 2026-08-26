@@ -646,6 +646,38 @@ def _compute_shared_grain_slots(
     return shared_grain
 
 
+def _grain_slot_display(key) -> str:
+    if isinstance(key, TimeTruncKey):
+        key = key.column
+    if isinstance(key, ColumnKey):
+        return ".".join([*key.path, key.leaf])
+    if isinstance(key, ColumnSqlKey):
+        return ".".join([*key.path, key.column_name])
+    return str(key)
+
+
+def _key_grain_path(key) -> Tuple[str, ...]:
+    if isinstance(key, TimeTruncKey):
+        return column_path(key.column)
+    return tuple(getattr(key, "path", ()))
+
+
+def _narrow_shared_grain_to_partition(
+    *, shared_grain: List[SlotId], host_slots: List[ValueSlot], partition_keys,
+) -> List[SlotId]:
+    """Narrow a cross-model aggregate's forward shared grain to the
+    ``partition_by`` subset (DEV-1739). Intersection only — a partition key
+    reachable only via re-rooting is validated in the re-root builder, which
+    owns the authoritative not-in-grain guard."""
+    slot_by_id = {s.id: s for s in host_slots}
+    key_to_id: dict = {}
+    for sid in shared_grain:
+        s = slot_by_id.get(sid)
+        if s is not None and _key_grain_path(s.key):
+            key_to_id.setdefault(s.key, sid)
+    return [key_to_id[pk] for pk in partition_keys if pk in key_to_id]
+
+
 class IsolatedCteCrossModelPlanner:
     """Default impl — one CTE per (target_model, shared_grain) tuple.
 
@@ -726,6 +758,11 @@ class IsolatedCteCrossModelPlanner:
         shared_grain = _compute_shared_grain_slots(
             host_slots=host_slots, target_path=target_path,
         )
+        if aggregate_key.partition_keys is not None:
+            shared_grain = _narrow_shared_grain_to_partition(
+                shared_grain=shared_grain, host_slots=host_slots,
+                partition_keys=aggregate_key.partition_keys,
+            )
 
         first_hop = join_chain[0]
         first_hop_target = (
@@ -839,7 +876,10 @@ class IsolatedCteCrossModelPlanner:
                 bundle=bundle,
             ),
         )
-        if not has_crossing_input:
+        # DEV-1739 — a partitioned local aggregate isolates even with no crossing
+        # input: its own CTE groups at the coarser partition subset.
+        has_partition = aggregate_key.partition_keys is not None
+        if not has_crossing_input and not has_partition:
             raise ValueError(
                 f"AggregateKey on {agg_source!r} has empty source.path, "
                 f"no cross-model column_filter_key, AND no other crossing "
@@ -920,6 +960,31 @@ class IsolatedCteCrossModelPlanner:
             host_filters=host_filters,
         )
         routing_by_id = {hf.filter_id: hf for hf in host_filters}
+        # DEV-1739 — an explicit partition_by narrows the sub-plan's grain to the
+        # partition subset (``[]`` -> no grain -> grand total). ``n_dims`` /
+        # ``n_time_dimensions`` must match the narrowed grain or the sub-plan's
+        # PreboundQuery validator rejects the prefix.
+        if aggregate_key.partition_keys is not None:
+            pk = aggregate_key.partition_keys
+            subset = [
+                dm for dm in host_prebound.grain_declared_measures
+                if dm.bound.value_key in pk
+            ]
+            sub_dims = [
+                dm for dm in subset
+                if not isinstance(dm.bound.value_key, TimeTruncKey)
+            ]
+            sub_tds = [
+                dm for dm in subset
+                if isinstance(dm.bound.value_key, TimeTruncKey)
+            ]
+            grain_measures = [*sub_dims, *sub_tds]
+            sub_n_dims: Optional[int] = len(sub_dims)
+            sub_n_tds: Optional[int] = len(sub_tds)
+        else:
+            grain_measures = list(host_prebound.grain_declared_measures)
+            sub_n_dims = None
+            sub_n_tds = None
         sub_prebound = _nested_prebound(
             host_prebound=host_prebound,
             aggregate_measure=_aggregate_declared_measure(
@@ -927,12 +992,14 @@ class IsolatedCteCrossModelPlanner:
                 model=host_model,
                 public_alias=public_alias,
             ),
-            grain_measures=list(host_prebound.grain_declared_measures),
+            grain_measures=grain_measures,
             inherited_filters=[
                 routing_by_id[fid].bound
                 for fid in host_rooted_routes.applied
                 if routing_by_id[fid].bound is not None
             ],
+            n_dims=sub_n_dims,
+            n_time_dimensions=sub_n_tds,
         )
         sub_plan = subplan_builder(
             StrictQueryCarrier(
@@ -1312,12 +1379,20 @@ def _maybe_reroot_cross_model_plan(  # NOSONAR(S3776) — one re-rooting decisio
     grain_rerooted_keys: List[ValueKey] = []
     needs_reroot = False
 
+    # DEV-1739 — an explicit partition_by narrows the (rerooted) grain to the
+    # subset. ``matched_pk`` tracks which partition keys resolved to a grain
+    # member reachable at the target, so an unreachable one raises below.
+    partition_keys = agg_key.partition_keys
+    matched_pk: set = set()
+
     # The public_projection[i] positional pairing (and its silent None
     # fallback) is deliberately left as-is; the cardinality/ambiguity concern
     # it encodes is out of scope here (DEV-1688).
     for i, dm in enumerate(host_prebound.grain_declared_measures):
         host_sid = public_projection[i] if i < len(public_projection) else None
         host_key = dm.bound.value_key
+        if partition_keys is not None and host_key not in partition_keys:
+            continue
         inner = (
             host_key.column if isinstance(host_key, TimeTruncKey) else host_key
         )
@@ -1325,6 +1400,8 @@ def _maybe_reroot_cross_model_plan(  # NOSONAR(S3776) — one re-rooting decisio
         rr_key = _reroot(host_key)
         if not _reaches(rr_key):
             continue  # unreachable from target -> drop
+        if partition_keys is not None:
+            matched_pk.add(host_key)
         if not _is_forward(host_path):
             needs_reroot = True
         if host_sid is None:
@@ -1335,6 +1412,19 @@ def _maybe_reroot_cross_model_plan(  # NOSONAR(S3776) — one re-rooting decisio
         ))
         grain_host_sids.append(host_sid)
         grain_rerooted_keys.append(rr_key)
+
+    if partition_keys:
+        unmatched = set(partition_keys) - matched_pk
+        if unmatched:
+            names = ", ".join(sorted(_grain_slot_display(k) for k in unmatched))
+            available = ", ".join(sorted(
+                _grain_slot_display(dm.bound.value_key)
+                for dm in host_prebound.grain_declared_measures
+            )) or "(none)"
+            raise ValueError(
+                f"Aggregation partition_by column '{names}' is not in this "
+                f"cross-model aggregate's grain. Choose one of: {available}."
+            )
 
     # Filters vote structurally, before any classification. A filter that
     # reaches OFF the host→target forward path is exactly what the forward CTE

@@ -355,17 +355,11 @@ class TestShiftedCtePartitionShape:
         assert _grain_pair_count(on) == 2, on
         assert_scope_closed(sql)
 
-    async def test_explicit_partition_by_cross_model_dedups_with_dim(self) -> None:
-        """The explicit ``partition_by=`` form (DEV-1450 C6) accepts a cross-model
-        path AND dedups against the auto-included query dimension: supplying
-        ``partition_by=stores.name`` when ``stores.name`` is already a dimension
-        must NOT emit the store pair twice — the grain stays exactly {time,
-        stores.name} (2 pairs, not 3).
-
-        (Under the uniform rule a projected cross-model dim already joins the
-        shift back; for time_shift, ``partition_by`` must be ⊆ query dims for the
-        join-back to resolve — so the explicit form's only observable job here is
-        to be idempotent with the dim, which this pins.)"""
+    async def test_explicit_partition_by_rejected_on_time_shift(self) -> None:
+        """DEV-1739 D6: explicit ``partition_by=`` on ``time_shift`` is rejected at
+        bind time. The auto-include of query dimensions does the shift join-back;
+        the explicit form was a no-op under the uniform rule, so it now raises
+        rather than silently accepting an inert kwarg."""
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
@@ -381,15 +375,8 @@ class TestShiftedCtePartitionShape:
                 ),
             ],
         )
-        sql = await _gen(query, _orders(), extra_models=[_stores(), _regions()])
-        shifted = _shifted_body(sql)
-        assert "LEFT JOIN stores AS stores" in shifted, shifted
-        on = _sjoin_on(sql)
-        _assert_grain_pair(on, r"ordered_at")
-        _assert_grain_pair(on, r"stores[._]+name")
-        # Deduped: the store partition appears once, not once-per-source.
-        assert _grain_pair_count(on) == 2, on
-        assert_scope_closed(sql)
+        with pytest.raises(ValueError, match=r"partition_by"):
+            await _gen(query, _orders(), extra_models=[_stores(), _regions()])
 
     async def test_joined_time_axis_pulls_join_into_shifted_cte(self) -> None:
         """When the SHIFT-axis time dimension is itself a joined column

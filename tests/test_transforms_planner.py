@@ -276,13 +276,12 @@ class TestBindTransformValidation:
 
 class TestIterSlotDepsTransformAux:
     def test_iter_slot_deps_partition_keys(self) -> None:
-        # cumsum(amount:sum, partition_by=region) — the region ColumnKey
-        # must surface as a slot dep so the planner materialises it as
-        # a hidden slot (for the generator's PARTITION BY).
+        # rank(amount:sum, partition_by=region) — the region ColumnKey must
+        # surface as a slot dep so the planner materialises it as a hidden slot.
         inner = AggregateKey(source=ColumnKey(path=(), leaf="amount"), agg="sum")
         region = ColumnKey(path=(), leaf="region")
         tk = TransformKey(
-            op="cumsum",
+            op="rank",
             input=inner,
             partition_keys=frozenset({region}),
         )
@@ -316,13 +315,12 @@ class TestIterSlotDepsTransformAux:
         assert tt in deps
 
     def test_iter_slot_deps_multiple_partition_keys(self) -> None:
-        # partition_keys is a frozenset; ordering is insertion-agnostic.
-        # All keys in the set must surface as slot deps.
+        # partition_keys is a frozenset; all keys must surface as slot deps.
         inner = AggregateKey(source=ColumnKey(path=(), leaf="amount"), agg="sum")
         region = ColumnKey(path=(), leaf="region")
         customer = ColumnKey(path=(), leaf="customer_id")
         tk = TransformKey(
-            op="cumsum",
+            op="rank",
             input=inner,
             partition_keys=frozenset({region, customer}),
         )
@@ -330,10 +328,9 @@ class TestIterSlotDepsTransformAux:
         assert region in deps
         assert customer in deps
 
-    def test_partition_keys_materialize_as_hidden_slots(self) -> None:
-        # End-to-end through plan_query: a cumsum measure with
-        # partition_by=region produces a hidden ColumnKey slot for
-        # region that the public projection does NOT include.
+    def test_partition_by_rejected_on_non_rank_transform(self) -> None:
+        # DEV-1739 D6: explicit partition_by on a time-ordered transform is
+        # rejected at bind time (a coarse ROWS-frame partition is nondeterministic).
         q = SlayerQuery(
             source_model="orders",
             measures=[
@@ -346,19 +343,8 @@ class TestIterSlotDepsTransformAux:
                 ),
             ],
         )
-        planned = plan_query(query=q, bundle=_bundle())
-        # All slots in the registry.
-        all_slots = (
-            planned.row_slots
-            + planned.aggregate_slots
-            + planned.combined_expression_slots
-        )
-        region_slots = [
-            s for s in all_slots
-            if isinstance(s.key, ColumnKey) and s.key.leaf == "region"
-        ]
-        assert len(region_slots) == 1, region_slots
-        assert region_slots[0].hidden is True, region_slots[0]
+        with pytest.raises(ValueError, match=r"partition_by"):
+            plan_query(query=q, bundle=_bundle())
 
 
 # ---------------------------------------------------------------------------

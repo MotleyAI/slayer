@@ -53,6 +53,7 @@ from slayer.core.enums import (
     format_unknown_aggregation,
     normalize_aggregation_name,
 )
+from slayer.core.formula import RANK_FAMILY_TRANSFORMS
 from slayer.core.keys import (
     SCALAR_FUNCTIONS,
     check_scalar_arity,
@@ -350,6 +351,8 @@ def walk_value_keys(key: ValueKey):
         for _, v in key.kwargs:
             if isinstance(v, _VALUE_KEY_TYPES):
                 yield from walk_value_keys(v)
+        for pk in key.partition_keys or ():
+            yield from walk_value_keys(pk)
     elif isinstance(key, TransformKey):
         if isinstance(key.input, _VALUE_KEY_TYPES):
             yield from walk_value_keys(key.input)
@@ -825,14 +828,32 @@ def _bind_agg(
         source = bound_source
 
     # Bind args / kwargs. For aggregations, identifier args/kwargs become
-    # ColumnKey via the binder; scalars normalise.
+    # ColumnKey via the binder; scalars normalise. ``partition_by`` is lifted
+    # out of kwargs onto ``partition_keys`` (DEV-1739): a single ref, a list,
+    # or ``[]`` (grand total). ``None`` means no partition.
     args = tuple(
         _bind_agg_arg(a, scope=scope, bundle=bundle) for a in parsed.args
     )
-    kwargs = tuple(
-        (k, _bind_agg_arg(v, scope=scope, bundle=bundle))
-        for k, v in parsed.kwargs
-    )
+    partition_keys: Optional[frozenset] = None
+    kwargs_list: List = []
+    for k, v in parsed.kwargs:
+        if k == "partition_by":
+            elements = v if isinstance(v, tuple) else (v,)
+            pks: List = []
+            for elem in elements:
+                bound_elem = _bind(
+                    elem, scope=scope, bundle=bundle, in_filter=False,
+                )
+                if not isinstance(bound_elem, (ColumnKey, ColumnSqlKey)):
+                    raise ValueError(
+                        f"aggregation partition_by must resolve to a column "
+                        f"reference; got {type(bound_elem).__name__}."
+                    )
+                pks.append(bound_elem)
+            partition_keys = frozenset(pks)
+            continue
+        kwargs_list.append((k, _bind_agg_arg(v, scope=scope, bundle=bundle)))
+    kwargs = tuple(kwargs_list)
     # DEV-1450 stage 7b.12: propagate ``Column.filter`` into the
     # AggregateKey's structural identity. The resolved source's column
     # may carry a Mode-A SQL fragment (``filter="status = 'paid'"``)
@@ -861,6 +882,7 @@ def _bind_agg(
         args=args,
         kwargs=kwargs,
         column_filter_key=column_filter_key,
+        partition_keys=partition_keys,
     )
 
 
@@ -1163,15 +1185,10 @@ def _bind_transform(
                 f"Transform {parsed.op!r} got {k!r} both positionally and "
                 f"as a keyword argument."
             )
+    rank_partition_ok = parsed.op in RANK_FAMILY_TRANSFORMS
     for k, v in [*positional_pairs, *parsed.kwargs]:
-        if k == "partition_by":
-            # ``partition_by`` accepts a single column ref OR a tuple/list of
-            # them (Codex review): ``rank(x, partition_by=[region, channel])``.
-            # ``_convert_kwarg_value`` returns a Python tuple for the list
-            # form; bind each element independently and accumulate into
-            # ``partition_keys`` so the SQL gen emits a multi-column OVER
-            # (PARTITION BY ...). A single ref still flows through the
-            # scalar branch.
+        if k == "partition_by" and rank_partition_ok:
+            # A single ref, or a tuple/list (``rank(x, partition_by=[a, b])``).
             elements = v if isinstance(v, tuple) else (v,)
             for elem in elements:
                 bound_elem = _bind(
@@ -1187,10 +1204,10 @@ def _bind_transform(
                     )
             continue
         if k not in allowed_kwargs:
+            advertised = allowed_kwargs | ({"partition_by"} if rank_partition_ok else set())
             raise ValueError(
                 f"Transform {parsed.op!r} does not accept keyword "
-                f"argument {k!r}. Accepted: "
-                f"{sorted(allowed_kwargs | {'partition_by'})}."
+                f"argument {k!r}. Accepted: {sorted(advertised)}."
             )
         seen_kwargs.add(k)
         scalar = _fold_to_scalar(v)
