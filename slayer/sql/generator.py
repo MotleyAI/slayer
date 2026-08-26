@@ -2775,6 +2775,7 @@ class SQLGenerator:
             ArithmeticKey,
             ColumnKey,
             ColumnSqlKey,
+            ConditionalKey,
             Phase,
             ScalarCallKey,
             TimeTruncKey,
@@ -2923,17 +2924,35 @@ class SQLGenerator:
                     select_columns.append(col_expr.copy().as_(full_alias))
                     group_by_keys.setdefault(sid, col_expr)
                     _record_alias(sid, full_alias)
-                elif isinstance(key, (ScalarCallKey, ArithmeticKey)):
+                elif isinstance(key, (ScalarCallKey, ArithmeticKey, ConditionalKey)) and slot.is_dimension:
+                    # DEV-1740: a computed (expression) dimension — render the
+                    # ROW-phase expression inline (its leaf columns resolve
+                    # through the host scope) and GROUP BY it.
+                    dim_expr = render_value_key(
+                        key=key,
+                        ctx=RenderContext(
+                            scope=self._throwaway_frame(
+                                model=source_model,
+                                relation=source_relation,
+                                bundle=bundle,
+                            ),
+                            dialect=self._dialect,
+                        ),
+                    )
+                    select_columns.append(dim_expr.copy().as_(full_alias))
+                    group_by_keys.setdefault(sid, dim_expr)
+                    _record_alias(sid, full_alias)
+                elif isinstance(key, (ScalarCallKey, ArithmeticKey, ConditionalKey)):
                     # DEV-1576 / DEV-1717: a ROW-phase composite here is a
                     # non-aggregating measure expression (a bare column, or
                     # arithmetic / scalar-call over bare columns such as
                     # ``round(amount, 2)`` / ``abs(amount)`` / ``amount + 1``).
-                    # Dimensions are ColumnKey / TimeTruncKey / ColumnSqlKey,
-                    # already handled above; the only way to reach here with a
-                    # composite key is a measure that never aggregates. Raise
-                    # the same actionable "Bare measure name" error the
-                    # enrich_query path raises rather than leaking an internal
-                    # NotImplementedError.
+                    # Dimensions are ColumnKey / TimeTruncKey / ColumnSqlKey /
+                    # a computed dimension (handled above); the only way to reach
+                    # here with a composite key is a measure that never
+                    # aggregates. Raise the same actionable "Bare measure name"
+                    # error the enrich_query path raises rather than leaking an
+                    # internal NotImplementedError.
                     bare = _first_bare_column_name(key) or full_alias
                     raise ValueError(
                         f"'{bare}' needs an aggregation inside an expression. "

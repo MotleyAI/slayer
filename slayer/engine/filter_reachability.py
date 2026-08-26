@@ -40,6 +40,7 @@ from slayer.core.errors import SlayerError
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
+    ConditionalKey,
     BetweenKey,
     ColumnKey,
     ColumnSqlKey,
@@ -252,6 +253,8 @@ def _child_keys(node, *, descend_aggregates: bool = True) -> List:
         return [node.column, *node.values]
     if isinstance(node, BetweenKey):
         return [node.column, node.low, node.high]
+    if isinstance(node, ConditionalKey):
+        return [node.cond, node.then, node.otherwise]
     raise UnhandledValueKindError(node)
 
 

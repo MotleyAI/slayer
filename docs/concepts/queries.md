@@ -9,7 +9,7 @@ A `SlayerQuery` specifies what data to retrieve from a model.
 | `name` | string | No | Name for this query — used to reference it from other queries in a list |
 | `source_model` | string, SlayerModel, or ModelExtension | Yes | Source model name, inline model, or model extension (adds columns/measures/joins) |
 | `measures` | list[ModelMeasure] | No | Computed/aggregated values — formulas, arithmetic, transforms. See [Formulas](formulas.md). |
-| `dimensions` | list[str \| ColumnRef] | No | Columns to group by — bare strings (`"status"`) or `{"name": "status"}` dicts. Supports dotted names for joined models (`customers.name`, `customers.regions.name`). |
+| `dimensions` | list[str \| ColumnRef \| ComputedDimension] | No | Columns to group by — bare strings (`"status"`) or `{"name": "status"}` dicts, dotted names for joined models (`customers.name`), or `{"expression": …, "name": …}` for a [computed expression](#expression-dimensions). |
 | `time_dimensions` | list[TimeDimension] | No | Time dimensions with granularity |
 | `main_time_dimension` | string | No | Explicit time dimension name for transforms (overrides auto-detection) |
 | `filters` | list[str] | No | Conditions as formula strings. Supports `{variable}` placeholders. See [Filters](#filters). |
@@ -41,7 +41,32 @@ Each entry in `dimensions` is either a bare string (the canonical short form for
 | `name` | string | Column name. Supports dotted paths for joined models. |
 | `label` | string | Optional human-readable display name |
 
-For computed columns (SQL expressions like CASE), use [ModelExtension](#modelextension) on the query's `source_model` field. For derived metrics, use [formulas](formulas.md) in `measures`.
+### Expression dimensions
+
+To group by a computed expression (rather than a bare column), give a dict with
+an `expression` and an optional `name`:
+
+```json
+"dimensions": [
+  "region",
+  {"expression": "lower(city)", "name": "city_lc"},
+  {"expression": "CASE WHEN amount > 2000 THEN 'big' ELSE 'small' END", "name": "size"}
+]
+```
+
+The expression is a [Mode-B formula](references.md) (scalar functions,
+arithmetic, `CASE` / `iif`) over the model's columns; it is projected **and**
+grouped. A bare-string entry that is not a valid identifier / dotted path is
+also parsed as an expression (`"round(amount)"`), auto-named from its text —
+name it to control the result key (`model.<name>`). A name that collides with an
+existing column or measure is rejected. The name is resolvable from `filters`
+and `order`.
+
+Grouping by an expression **over an aggregate** (e.g. banding cities by whether
+`amount:sum(partition_by=city)` crosses a threshold) is a separate,
+aggregate-then-regroup capability that is not yet available; until it lands,
+such a dimension raises a clear error pointing at the two-stage form (aggregate
+in a first stage, then band and regroup in a `ModelExtension` over it).
 
 ### Dim-only queries deduplicate
 

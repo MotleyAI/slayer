@@ -33,6 +33,7 @@ from slayer.core.keys import (
     BetweenKey,
     ColumnKey,
     ColumnSqlKey,
+    ConditionalKey,
     InKey,
     LiteralKey,
     ScalarCallKey,
@@ -402,6 +403,17 @@ class TestTotalityAndFailClosed:
             InKey: InKey(
                 column=ColumnKey(path=("customers",), leaf="tier"),
                 values=(LiteralKey(value="gold"),),
+            ),
+            ConditionalKey: ConditionalKey(
+                cond=ArithmeticKey(
+                    op=">",
+                    operands=(
+                        ColumnKey(path=("customers",), leaf="spend"),
+                        LiteralKey(value=Decimal("1")),
+                    ),
+                ),
+                then=ColumnKey(path=("customers",), leaf="tier"),
+                otherwise=LiteralKey(value=None),
             ),
         }
         members = set(get_args(ValueKey))

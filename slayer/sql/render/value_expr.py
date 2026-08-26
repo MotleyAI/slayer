@@ -59,6 +59,7 @@ from slayer.core.keys import (
     BetweenKey,
     ColumnKey,
     ColumnSqlKey,
+    ConditionalKey,
     InKey,
     LiteralKey,
     ScalarCallKey,
@@ -754,6 +755,18 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
         return render_scalar_call(
             name=key.name, args=args, dialect=ctx.dialect,
         )
+
+    if isinstance(key, ConditionalKey):
+        # Flatten the ``otherwise``-nested chain into ONE multi-WHEN CASE.
+        ifs = []
+        node: ValueKey = key
+        while isinstance(node, ConditionalKey):
+            ifs.append(exp.If(
+                this=render_value_key(key=node.cond, ctx=ctx),
+                true=render_value_key(key=node.then, ctx=ctx),
+            ))
+            node = node.otherwise
+        return exp.Case(ifs=ifs, default=render_value_key(key=node, ctx=ctx))
 
     if isinstance(key, BetweenKey):
         return exp.Between(

@@ -62,6 +62,7 @@ from slayer.core.keys import (
     BetweenKey,
     ColumnKey,
     ColumnSqlKey,
+    ConditionalKey,
     InKey,
     LiteralKey,
     Phase,
@@ -85,6 +86,7 @@ from slayer.engine.syntax import (
     Arith,
     BoolOp,
     Cmp,
+    Conditional,
     DottedRef,
     Literal,
     ParsedExpr,
@@ -373,6 +375,10 @@ def walk_value_keys(key: ValueKey):
         for arg in key.args:
             if isinstance(arg, _VALUE_KEY_TYPES):
                 yield from walk_value_keys(arg)
+    elif isinstance(key, ConditionalKey):
+        yield from walk_value_keys(key.cond)
+        yield from walk_value_keys(key.then)
+        yield from walk_value_keys(key.otherwise)
     elif isinstance(key, BetweenKey):
         yield from walk_value_keys(key.column)
         yield from walk_value_keys(key.low)
@@ -469,6 +475,13 @@ def _bind(
             for v in parsed.operands
         )
         return ArithmeticKey(op=parsed.op, operands=operands)
+
+    if isinstance(parsed, Conditional):
+        return ConditionalKey(
+            cond=_bind(parsed.cond, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map),
+            then=_bind(parsed.then, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map),
+            otherwise=_bind(parsed.otherwise, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map),
+        )
 
     raise ValueError(
         f"Unsupported ParsedExpr node: {type(parsed).__name__}"

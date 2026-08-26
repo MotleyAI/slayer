@@ -28,6 +28,9 @@ from typing import Literal, Optional, Tuple, TypeVar, Union, cast
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from slayer.core.enums import DataType
+from slayer.core.format import NumberFormat
+
 
 # ---------------------------------------------------------------------------
 # Closed scalar-function allowlist (C12).
@@ -702,6 +705,24 @@ class ScalarCallKey(_FrozenKey):
         )
 
 
+class ConditionalKey(_FrozenKey):
+    """Identity for a ``CASE WHEN cond THEN then ELSE otherwise END`` (DEV-1740).
+
+    Multi-WHEN CASE nests through ``otherwise``; a missing ELSE gives a NULL
+    ``otherwise`` (a ``LiteralKey(value=None)``). Phase is the maximum of the
+    three parts (P8), so a partitioned aggregate nested in ANY branch bubbles up
+    and is discovered by the structural walk.
+    """
+
+    cond: "ValueKey"
+    then: "ValueKey"
+    otherwise: "ValueKey"
+
+    @property
+    def phase(self) -> Phase:
+        return max(self.cond.phase, self.then.phase, self.otherwise.phase)
+
+
 # ---------------------------------------------------------------------------
 # BetweenKey — DEV-1450 stage 7b.9
 # ---------------------------------------------------------------------------
@@ -797,6 +818,7 @@ ValueKey = Union[
     TransformKey,
     ArithmeticKey,
     ScalarCallKey,
+    ConditionalKey,
     BetweenKey,
     InKey,
 ]
@@ -806,6 +828,7 @@ ValueKey = Union[
 TransformKey.model_rebuild()
 ArithmeticKey.model_rebuild()
 ScalarCallKey.model_rebuild()
+ConditionalKey.model_rebuild()
 BetweenKey.model_rebuild()
 InKey.model_rebuild()
 # TimeTruncKey.column is a Union[ColumnKey, ColumnSqlKey] (DEV-1450 #4a).
@@ -946,6 +969,12 @@ def reroot_value_key(
         return key.model_copy(update={
             "args": tuple(_recurse(a) for a in key.args),
         })
+    if isinstance(key, ConditionalKey):
+        return key.model_copy(update={
+            "cond": _recurse(key.cond),
+            "then": _recurse(key.then),
+            "otherwise": _recurse(key.otherwise),
+        })
     if isinstance(key, BetweenKey):
         return key.model_copy(update={
             "column": _recurse(key.column),
@@ -964,3 +993,42 @@ def reroot_value_key(
         f"letting an unrerooted key through, which the SQL generator cannot "
         f"distinguish from a correctly-local one."
     )
+
+
+# ---------------------------------------------------------------------------
+# Conditional branch typing (DEV-1740) — Postgres CASE semantics.
+# ---------------------------------------------------------------------------
+
+_NUMERIC_TYPES = frozenset({DataType.INT, DataType.DOUBLE})
+
+
+def join_conditional_branch_types(
+    a: Optional[DataType], b: Optional[DataType],
+) -> Optional[DataType]:
+    """The result type of a conditional whose branches are ``a`` / ``b``.
+
+    ``None`` marks a NULL-literal branch, absorbed by the other. Identical
+    types pass through; a numeric mix widens to ``DOUBLE``; any other mix is a
+    plan-time error naming both types (matching what Postgres itself rejects,
+    so a query never works on one Tier-1 engine and explodes on another).
+    """
+    if a is None:
+        return b
+    if b is None:
+        return a
+    if a == b:
+        return a
+    if a in _NUMERIC_TYPES and b in _NUMERIC_TYPES:
+        return DataType.DOUBLE
+    raise ValueError(
+        f"CASE/iif branches have incompatible types {a.value} and {b.value}: "
+        f"branches must share a type (numeric types widen to DOUBLE). Cast one "
+        f"branch so both match."
+    )
+
+
+def conditional_number_format(
+    a: Optional[NumberFormat], b: Optional[NumberFormat],
+) -> Optional[NumberFormat]:
+    """A conditional carries a number format only when both branches agree."""
+    return a if (a is not None and a == b) else None
