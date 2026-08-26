@@ -138,22 +138,10 @@ class BoolOp(_BaseNode):
     operands: Tuple[Any, ...]
 
 
-class Conditional(_BaseNode):
-    """A ``CASE WHEN cond THEN then ELSE otherwise END`` / ``iif`` expression.
-
-    Multi-WHEN and simple-form CASE are lowered to nested ``Conditional``s by
-    ``_rewrite_case_when``; a missing ELSE gives a NULL ``otherwise``.
-    """
-
-    cond: Any
-    then: Any
-    otherwise: Any
-
-
 ParsedExpr = Union[
     Ref, DottedRef, StarSource, Literal, TupleLit,
     AggCall, TransformCall, ScalarCall,
-    Arith, UnaryOp, Cmp, BoolOp, Conditional,
+    Arith, UnaryOp, Cmp, BoolOp,
 ]
 
 
@@ -735,11 +723,6 @@ def walk_parsed_refs(
         for op in parsed.operands:
             yield from walk_parsed_refs(op)
         return
-    if isinstance(parsed, Conditional):
-        yield from walk_parsed_refs(parsed.cond)
-        yield from walk_parsed_refs(parsed.then)
-        yield from walk_parsed_refs(parsed.otherwise)
-        return
     # Literal / StarSource / TupleLit → no references.
     # ``TupleLit`` carries only ``Literal`` elements by construction
     # (see the ``ast.Compare`` branch of ``_convert``) so the walk stops
@@ -1080,16 +1063,6 @@ def _convert_call(
         idx = int(m.group(1))
         source, agg = agg_map[idx]
         return AggCall(source=source, agg=agg, args=args, kwargs=kwargs)
-
-    # Conditional — ``iif(cond, then, otherwise)`` and the CASE-lowering target.
-    if func_name.lower() == "iif":
-        if len(args) != 3 or kwargs:
-            raise ValueError(
-                f"Invalid Mode-B expression {original!r}: iif(...) takes exactly "
-                f"three positional arguments (condition, then, otherwise); use "
-                f"CASE WHEN … THEN … ELSE … END for more branches."
-            )
-        return Conditional(cond=args[0], then=args[1], otherwise=args[2])
 
     # Transform?
     if func_name in ALL_TRANSFORMS:

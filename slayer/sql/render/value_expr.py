@@ -59,7 +59,6 @@ from slayer.core.keys import (
     BetweenKey,
     ColumnKey,
     ColumnSqlKey,
-    ConditionalKey,
     InKey,
     LiteralKey,
     ScalarCallKey,
@@ -746,6 +745,8 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
         return render_arithmetic(op=op, operands=operands)
 
     if isinstance(key, ScalarCallKey):
+        if key.name == "iif":
+            return _render_iif_case(key=key, ctx=ctx)
         args = [
             render_value_key(key=a, ctx=ctx)
             if isinstance(a, _VALUE_KEY_TYPES)
@@ -755,18 +756,6 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
         return render_scalar_call(
             name=key.name, args=args, dialect=ctx.dialect,
         )
-
-    if isinstance(key, ConditionalKey):
-        # Flatten the ``otherwise``-nested chain into ONE multi-WHEN CASE.
-        ifs = []
-        node: ValueKey = key
-        while isinstance(node, ConditionalKey):
-            ifs.append(exp.If(
-                this=render_value_key(key=node.cond, ctx=ctx),
-                true=render_value_key(key=node.then, ctx=ctx),
-            ))
-            node = node.otherwise
-        return exp.Case(ifs=ifs, default=render_value_key(key=node, ctx=ctx))
 
     if isinstance(key, BetweenKey):
         return exp.Between(
@@ -818,8 +807,25 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
 
 _VALUE_KEY_TYPES: Tuple[type, ...] = (
     ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey, LiteralKey, AggregateKey,
-    TransformKey, ArithmeticKey, ScalarCallKey, ConditionalKey, BetweenKey, InKey,
+    TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey, InKey,
 )
+
+
+def _render_iif_case(*, key: ScalarCallKey, ctx: "RenderContext") -> exp.Case:
+    """Render an ``iif`` chain as ONE multi-WHEN CASE, flattening nested
+    ``iif`` in the otherwise position (multi-WHEN CASE lowers to that)."""
+    def _part(a):
+        return (
+            render_value_key(key=a, ctx=ctx)
+            if isinstance(a, _VALUE_KEY_TYPES) else _literal(a)
+        )
+
+    ifs: List[exp.If] = []
+    node = key
+    while isinstance(node, ScalarCallKey) and node.name == "iif":
+        ifs.append(exp.If(this=_part(node.args[0]), true=_part(node.args[1])))
+        node = node.args[2]
+    return exp.Case(ifs=ifs, default=_part(node))
 
 
 def contains_aggregate(key: ValueKey) -> bool:
@@ -843,11 +849,6 @@ def contains_aggregate(key: ValueKey) -> bool:
             contains_aggregate(a)
             for a in key.args
             if isinstance(a, _VALUE_KEY_TYPES)
-        )
-    if isinstance(key, ConditionalKey):
-        return any(
-            contains_aggregate(k)
-            for k in (key.cond, key.then, key.otherwise)
         )
     if isinstance(key, TransformKey):
         # partition_keys and time_key are expression dependencies just as

@@ -429,7 +429,8 @@ Any formula, filter, or field expression can branch with SQL `CASE`:
   **simple** (`CASE x WHEN v1 THEN r1 … END`, lowered to `x = v1`) forms are both
   accepted; keywords are case-insensitive and CASE nests anywhere.
 - A missing `ELSE` yields `NULL`. `iif(cond, then, otherwise)` is an equivalent
-  spelling. Everything renders to a portable SQL `CASE` on every Tier-1 dialect.
+  spelling — an allowlisted scalar function taking exactly three arguments.
+  Everything renders to a portable SQL `CASE` on every Tier-1 dialect.
 - Inside a `WHEN` condition you may use SQL operators (`=`, `<>`, `AND`, `OR`,
   `NOT`, `LIKE`) even in a measure formula; `THEN` / `ELSE` values are taken
   as-is (a string literal like `'a AND b'` is never rewritten).

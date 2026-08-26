@@ -54,6 +54,9 @@ SCALAR_FUNCTIONS: frozenset[str] = frozenset({
     # Pattern match — ``like(value, pattern)`` emits the SQL ``LIKE`` operator
     # (sqlglot ``exp.Like``); see SQLGenerator scalar-call rendering.
     "like",
+    # Conditional — ``iif(cond, then, otherwise)`` emits ``CASE WHEN``; the
+    # ``CASE`` surface rewrites to it at parse time (DEV-1740).
+    "iif",
 })
 
 
@@ -97,6 +100,7 @@ SCALAR_FUNCTION_ARITY: dict[str, tuple[int, Optional[int]]] = {
     "replace": (3, 3), "substr": (2, 3), "substring": (2, 3), "instr": (2, 2),
     "concat": (1, None),
     "like": (2, 2),
+    "iif": (3, 3),
 }
 
 # Not a second allowlist: the table above must cover ``SCALAR_FUNCTIONS``
@@ -705,24 +709,6 @@ class ScalarCallKey(_FrozenKey):
         )
 
 
-class ConditionalKey(_FrozenKey):
-    """Identity for a ``CASE WHEN cond THEN then ELSE otherwise END`` (DEV-1740).
-
-    Multi-WHEN CASE nests through ``otherwise``; a missing ELSE gives a NULL
-    ``otherwise`` (a ``LiteralKey(value=None)``). Phase is the maximum of the
-    three parts (P8), so a partitioned aggregate nested in ANY branch bubbles up
-    and is discovered by the structural walk.
-    """
-
-    cond: "ValueKey"
-    then: "ValueKey"
-    otherwise: "ValueKey"
-
-    @property
-    def phase(self) -> Phase:
-        return max(self.cond.phase, self.then.phase, self.otherwise.phase)
-
-
 # ---------------------------------------------------------------------------
 # BetweenKey — DEV-1450 stage 7b.9
 # ---------------------------------------------------------------------------
@@ -818,7 +804,6 @@ ValueKey = Union[
     TransformKey,
     ArithmeticKey,
     ScalarCallKey,
-    ConditionalKey,
     BetweenKey,
     InKey,
 ]
@@ -828,7 +813,6 @@ ValueKey = Union[
 TransformKey.model_rebuild()
 ArithmeticKey.model_rebuild()
 ScalarCallKey.model_rebuild()
-ConditionalKey.model_rebuild()
 BetweenKey.model_rebuild()
 InKey.model_rebuild()
 # TimeTruncKey.column is a Union[ColumnKey, ColumnSqlKey] (DEV-1450 #4a).
@@ -881,7 +865,7 @@ def _reroot_partition_keys(partition_keys, *, target_path: Tuple[str, ...]):
     )
 
 
-def reroot_value_key(  # NOSONAR(S3776) — the total re-anchoring visitor over the closed ValueKey union; each isinstance arm IS that kind's reroot contract, and the exhaustiveness (fail-closed on an unhandled kind) is the property the function exists to guarantee — extracting arms hides it.
+def reroot_value_key(
     key: _RerootableT, *, target_path: Tuple[str, ...],
 ) -> _RerootableT:
     """Re-anchor every embedded reference in ``key`` from the query root into
@@ -968,12 +952,6 @@ def reroot_value_key(  # NOSONAR(S3776) — the total re-anchoring visitor over 
     if isinstance(key, ScalarCallKey):
         return key.model_copy(update={
             "args": tuple(_recurse(a) for a in key.args),
-        })
-    if isinstance(key, ConditionalKey):
-        return key.model_copy(update={
-            "cond": _recurse(key.cond),
-            "then": _recurse(key.then),
-            "otherwise": _recurse(key.otherwise),
         })
     if isinstance(key, BetweenKey):
         return key.model_copy(update={

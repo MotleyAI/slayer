@@ -13,7 +13,14 @@ import pytest
 
 from slayer.core.query import ModelMeasure, SlayerQuery
 
-from tests._dev1740_fixtures import REGION_SUM, gen, make_exec_engine, rows_by
+from tests._dev1740_fixtures import (
+    REGION_SUM,
+    gen,
+    make_exec_engine,
+    month_key,
+    month_td,
+    rows_by,
+)
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -171,7 +178,7 @@ class TestConditionalOverCrossModelAggregate:
 
 class TestConditionalNestedInScalarCall:
     async def test_conditional_inside_coalesce(self, exec_engine) -> None:
-        # A ConditionalKey as a scalar-call arg must render (not be mistaken for
+        # An iif as a scalar-call arg must render (not be mistaken for
         # a literal) and its inner aggregate must be discovered.
         resp = await exec_engine.execute(_q(
             dimensions=["region"],
@@ -205,6 +212,50 @@ class TestCaseInModelFormula:
         by = rows_by(resp, "orders.region")
         assert int(by[("EU",)]["orders.big"]) == 1
         assert int(by[("US",)]["orders.big"]) == 0
+
+
+class TestIifWrongArityAtBind:
+    async def test_two_arg_iif_raises_naming_iif(self) -> None:
+        # Arity is enforced by the generic scalar path at bind time (3, 3).
+        q = _q(
+            dimensions=["region"],
+            measures=[ModelMeasure(formula="iif(amount:sum >= 10000, 1)", name="b")],
+        )
+        with pytest.raises(ValueError, match=r"iif"):
+            await gen(q)
+
+
+class TestConditionalFilterPullsJoin:
+    async def test_case_over_joined_column_in_filter(self, exec_engine) -> None:
+        # A ROW-phase CASE over a JOINED column in a filter must pull the
+        # customers join (gold customers 1 & 3 → orders 1, 2, 5, 6 — all EU).
+        resp = await exec_engine.execute(_q(
+            dimensions=["region"],
+            filters=["CASE WHEN customers.tier = 'gold' THEN 1 ELSE 0 END == 1"],
+            measures=[ModelMeasure(formula="amount:sum", name="rev")],
+        ))
+        by = rows_by(resp, "orders.region")
+        assert set(by) == {("EU",)}
+        assert float(by[("EU",)]["orders.rev"]) == pytest.approx(8000.0)
+
+
+class TestConditionalOverTransform:
+    async def test_case_over_change_transform(self, exec_engine) -> None:
+        # A CASE over a transform must plan and execute like the scalar-call
+        # equivalent (``coalesce(change(...), 0)``). Months: Jan 9200,
+        # Feb 14000, Mar 1800 → change NULL, +4800, -12200 → up 0, 1, 0.
+        resp = await exec_engine.execute(_q(
+            time_dimensions=month_td(),
+            measures=[
+                ModelMeasure(
+                    formula="CASE WHEN change(amount:sum) > 0 THEN 1 ELSE 0 END",
+                    name="up",
+                ),
+            ],
+        ))
+        by = {month_key(r["orders.ordered_at"]): int(r["orders.up"])
+              for r in resp.data}
+        assert by == {"2024-01": 0, "2024-02": 1, "2024-03": 0}
 
 
 class TestCaseInColumnSql:

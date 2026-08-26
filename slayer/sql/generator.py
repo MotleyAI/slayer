@@ -1929,7 +1929,6 @@ class SQLGenerator:
         """
         from slayer.core.keys import (
             ArithmeticKey as _ArithKey,
-            ConditionalKey as _CondKey,
             ScalarCallKey as _ScalarKey,
             TransformKey as _TKey,
         )
@@ -1939,7 +1938,7 @@ class SQLGenerator:
                 continue
             if cslot.id in aliases_by_slot_id:
                 continue
-            if isinstance(cslot.key, (_ArithKey, _ScalarKey, _CondKey)):
+            if isinstance(cslot.key, (_ArithKey, _ScalarKey)):
                 unmaterialised.append(cslot)
         return unmaterialised
 
@@ -2339,7 +2338,6 @@ class SQLGenerator:
             BetweenKey,
             ColumnKey,
             ColumnSqlKey,
-            ConditionalKey,
             InKey,
             Phase,
             ScalarCallKey,
@@ -2384,16 +2382,11 @@ class SQLGenerator:
                         a,
                         (
                             TransformKey, ArithmeticKey, ScalarCallKey,
-                            ConditionalKey, BetweenKey, InKey, ColumnKey,
+                            BetweenKey, InKey, ColumnKey,
                             ColumnSqlKey, TimeTruncKey, AggregateKey,
                         ),
                     ):
                         _collect_from(a)
-                return
-            if isinstance(key, ConditionalKey):
-                _collect_from(key.cond)
-                _collect_from(key.then)
-                _collect_from(key.otherwise)
                 return
             if isinstance(key, BetweenKey):
                 _collect_from(key.column)
@@ -2470,7 +2463,7 @@ class SQLGenerator:
                 # is owned by the combined SELECT and rendering it in ``_base``
                 # would reference an out-of-scope column. The cross-model
                 # renderer routes them via ``outer_composite_slot_ids``.
-                if isinstance(slot.key, (ArithmeticKey, ScalarCallKey, ConditionalKey)):
+                if isinstance(slot.key, (ArithmeticKey, ScalarCallKey)):
                     if not SQLGenerator._composite_has_remote_operand(
                         key=slot.key, slots_by_id=slots_by_id,
                         slot_id_by_key=slot_id_by_key,
@@ -2782,7 +2775,6 @@ class SQLGenerator:
             ArithmeticKey,
             ColumnKey,
             ColumnSqlKey,
-            ConditionalKey,
             Phase,
             ScalarCallKey,
             TimeTruncKey,
@@ -2931,7 +2923,7 @@ class SQLGenerator:
                     select_columns.append(col_expr.copy().as_(full_alias))
                     group_by_keys.setdefault(sid, col_expr)
                     _record_alias(sid, full_alias)
-                elif isinstance(key, (ScalarCallKey, ArithmeticKey, ConditionalKey)) and slot.is_dimension:
+                elif isinstance(key, (ScalarCallKey, ArithmeticKey)) and slot.is_dimension:
                     # DEV-1740: a computed (expression) dimension — render the
                     # ROW-phase expression inline (its leaf columns resolve
                     # through the host scope) and GROUP BY it.
@@ -2949,7 +2941,7 @@ class SQLGenerator:
                     select_columns.append(dim_expr.copy().as_(full_alias))
                     group_by_keys.setdefault(sid, dim_expr)
                     _record_alias(sid, full_alias)
-                elif isinstance(key, (ScalarCallKey, ArithmeticKey, ConditionalKey)):
+                elif isinstance(key, (ScalarCallKey, ArithmeticKey)):
                     # DEV-1576 / DEV-1717: a ROW-phase composite here is a
                     # non-aggregating measure expression (a bare column, or
                     # arithmetic / scalar-call over bare columns such as
@@ -3797,10 +3789,9 @@ class SQLGenerator:
         # ``cma_slot_ids`` and ``_cm_*`` CTEs.
         from slayer.core.keys import (
             ArithmeticKey as _ArithKey,
-            ConditionalKey as _CondKey,
             ScalarCallKey as _ScalarKey,
         )
-        composite_kinds = (_ArithKey, _ScalarKey, _CondKey)
+        composite_kinds = (_ArithKey, _ScalarKey)
         outer_composite_slot_ids: Set[str] = set()
         # A composite slot routes to the outer combined SELECT when it is
         # referenced by EITHER the public projection OR an ORDER BY entry —
@@ -8721,7 +8712,6 @@ class SQLGenerator:
             ArithmeticKey,
             ColumnKey,
             ColumnSqlKey,
-            ConditionalKey,
             ScalarCallKey,
             TimeTruncKey,
             TransformKey,
@@ -8733,7 +8723,7 @@ class SQLGenerator:
         # alias must still hit the split-emission / invariant branches below,
         # never be ordered on as a bare column that is not in the GROUP BY.
         _MATERIALISED_ORDER_KINDS = (
-            AggregateKey, ArithmeticKey, ScalarCallKey, ConditionalKey, TransformKey,
+            AggregateKey, ArithmeticKey, ScalarCallKey, TransformKey,
         )
 
         if not slot.hidden:

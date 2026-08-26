@@ -1916,10 +1916,11 @@ class TestParserAndBinderScalarSetsAgree:
     def test_no_parser_only_names_remain(self) -> None:
         assert SCALAR_PASSTHROUGH - SCALAR_FUNCTIONS == set()
 
-    def test_like_is_the_only_binder_only_name(self) -> None:
-        """``like`` is an operator, not a pass-through function — the parser
-        handles it through its own internal ``__like__`` form."""
-        assert SCALAR_FUNCTIONS - SCALAR_PASSTHROUGH == {"like"}
+    def test_binder_only_names_are_like_and_iif(self) -> None:
+        """``like`` is an operator (the parser handles it through its internal
+        ``__like__`` form) and ``iif`` is the CASE-rewrite target (DEV-1740);
+        neither is a legacy-formula pass-through name."""
+        assert SCALAR_FUNCTIONS - SCALAR_PASSTHROUGH == {"like", "iif"}
 
 
 class TestArityIsRejectedAtBindTime:
