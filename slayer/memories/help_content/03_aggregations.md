@@ -68,8 +68,9 @@ in `1y2m3w5d6h7min8s`, `90d`, `6h`, or `15min`.
 
 ## Coarser grain — `partition_by` (share of parent)
 
-Any aggregation takes `partition_by=` to compute it over a subset of the query's
-dimensions, repeated across the finer rows (like `SUM(x) OVER (PARTITION BY …)`):
+Most aggregations take an optional `partition_by=` to compute over a subset of
+the query's dimensions, repeated across the finer rows (like `SUM(x) OVER
+(PARTITION BY …)`):
 
 ```json
 {

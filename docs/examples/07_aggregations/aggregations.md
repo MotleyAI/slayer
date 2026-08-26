@@ -224,7 +224,7 @@ Cross-model:
 
 ## Share of parent (`partition_by`)
 
-Any aggregation takes `partition_by=` to compute it over a subset of the query's dimensions, repeated across the finer rows — `SUM(x) OVER (PARTITION BY …)`:
+Most aggregations take an optional `partition_by=` to compute over a subset of the query's dimensions, repeated across the finer rows — `SUM(x) OVER (PARTITION BY …)` (not yet supported with `window=`, on `first`/`last`, nested in a transform, or in a filter — see the restriction note below):
 
 ```json
 {
