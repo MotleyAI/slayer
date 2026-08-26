@@ -2023,11 +2023,24 @@ class TestIifDirectRender:
 
     @pytest.mark.parametrize("argc", [1, 2, 4])
     def test_malformed_arity_raises_the_backstop_error(self, argc: int) -> None:
+        # NotImplementedError, matching render_scalar_call's backstop (the
+        # user-facing arity ValueError lives at bind time).
         key = ScalarCallKey(
             name="iif",
             args=tuple(LiteralKey(value=i) for i in range(argc)),
         )
-        with pytest.raises(ValueError, match="iif"):
+        with pytest.raises(NotImplementedError, match="iif"):
+            render_value_key(key=key, ctx=_filter_ctx())
+
+    def test_malformed_nested_chain_node_raises_too(self) -> None:
+        # A valid outer iif whose otherwise branch is malformed — pins the
+        # PER-NODE check (a hoisted single check would pass the outer only).
+        key = ScalarCallKey(name="iif", args=(
+            LiteralKey(value=True),
+            LiteralKey(value=1),
+            ScalarCallKey(name="iif", args=(LiteralKey(value=False),)),
+        ))
+        with pytest.raises(NotImplementedError, match="iif"):
             render_value_key(key=key, ctx=_filter_ctx())
 
     @staticmethod
