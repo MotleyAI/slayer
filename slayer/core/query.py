@@ -24,7 +24,9 @@ from pydantic import (
 )
 
 from slayer.core.enums import TimeGranularity
-from slayer.core.models import ModelMeasure, SlayerModel
+from slayer.core.errors import DistinctDimensionValuesError
+from slayer.core.formula import _rewrite_funcstyle_aggregations
+from slayer.core.models import ModelMeasure, SlayerModel, _validate_model_name
 from slayer.engine.syntax import parse_expr
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 from slayer.storage.migrations import migrate as _migrate_schema
@@ -748,7 +750,6 @@ class ComputedDimension(BaseModel):
 
     @model_validator(mode="after")
     def _fill_name(self) -> "ComputedDimension":
-        from slayer.core.models import _validate_model_name
         if self.name is None:
             self.name = _auto_name_from_expression(self.expression)
         _validate_model_name(self.name, "Computed dimension")
@@ -789,8 +790,6 @@ def _order_formula_candidate(v: str) -> str | None:
     them recognised a shape, the item would either lose its formula or bind a
     meaningless placeholder name.
     """
-    from slayer.core.formula import _rewrite_funcstyle_aggregations
-
     rewritten = _rewrite_funcstyle_aggregations(v)
     if ":" in rewritten or _FUNCSTYLE_CALL_PATTERN.match(rewritten):
         return rewritten
@@ -830,7 +829,6 @@ def _coerce_order_column(v: Any) -> Any:
     construction is better than a deep binder error.
     """
     if isinstance(v, str):
-        from slayer.core.formula import _rewrite_funcstyle_aggregations
         candidate = _order_formula_candidate(v)
         rewritten = (
             candidate if candidate is not None
@@ -1115,7 +1113,6 @@ class SlayerQuery(BaseModel):
         # aggregation separator).
         if v is None:
             return v
-        from slayer.core.models import _validate_model_name
         return _validate_model_name(v, "Query")
     dimensions: Annotated[list[ColumnRef | ComputedDimension] | None, BeforeValidator(_coerce_dimensions)] = None
     time_dimensions: list[TimeDimension] | None = None
@@ -1176,8 +1173,6 @@ class SlayerQuery(BaseModel):
         """
         if self.distinct_dimension_values:
             return
-        from slayer.core.errors import DistinctDimensionValuesError
-
         if self.measures:
             n = len(self.measures)
             raise DistinctDimensionValuesError(

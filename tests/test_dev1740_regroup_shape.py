@@ -11,14 +11,14 @@ import re
 
 import pytest
 
+from slayer.core.query import ModelMeasure, SlayerQuery
+
+from tests._dev1740_fixtures import cm_cte_bodies, gen
+
 # Desugar SQL-shape acceptance for B2 — deferred to DEV-1825 (regroup primitive).
 pytestmark = pytest.mark.skip(
     reason="B2 aggregate-then-regroup deferred to DEV-1825 (regroup primitive)"
 )
-
-from slayer.core.query import ModelMeasure, SlayerQuery
-
-from tests._dev1740_fixtures import cm_cte_bodies, gen
 
 
 def _q(**kw) -> SlayerQuery:

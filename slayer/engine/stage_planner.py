@@ -138,7 +138,13 @@ from slayer.engine.source_bundle import (
     synthetic_model_from_stage_schema,
 )
 from slayer.engine.normalization import func_style_agg_to_colon
-from slayer.engine.syntax import parse_expr, parse_filter_expr
+from slayer.engine.syntax import (
+    AggCall,
+    Ref,
+    TransformCall,
+    parse_expr,
+    parse_filter_expr,
+)
 from slayer.sql.naming import flat_name
 from slayer.sql.sql_expr import has_window_function
 from slayer.sql.sql_predicate import parse_sql_predicate
@@ -598,8 +604,6 @@ def _expr_has_measure_ref(node, *, measure_names: FrozenSet[str]) -> bool:
     Structural walk over the typed parser's AST — the legacy check re-parsed
     the raw text with the enrichment parsers, which no longer exist.
     """
-    from slayer.engine.syntax import AggCall, Ref, TransformCall
-
     if node is None:
         return False
     if isinstance(node, (AggCall, TransformCall)):

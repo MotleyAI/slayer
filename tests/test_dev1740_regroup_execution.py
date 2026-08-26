@@ -13,13 +13,6 @@ from __future__ import annotations
 
 import pytest
 
-# The aggregate-then-regroup desugar (grouping by an expression over a
-# partitioned aggregate) is deferred to DEV-1825; these executed-value tests are
-# its acceptance. Un-skip when the regroup primitive lands.
-pytestmark = pytest.mark.skip(
-    reason="B2 aggregate-then-regroup deferred to DEV-1825 (regroup primitive)"
-)
-
 from slayer.core.query import ModelMeasure, SlayerQuery
 
 from tests._dev1740_fixtures import (
@@ -36,6 +29,13 @@ from tests._dev1740_fixtures import (
     month_td,
     rows_by,
     two_stage_banding,
+)
+
+# The aggregate-then-regroup desugar (grouping by an expression over a
+# partitioned aggregate) is deferred to DEV-1825; these executed-value tests are
+# its acceptance. Un-skip when the regroup primitive lands.
+pytestmark = pytest.mark.skip(
+    reason="B2 aggregate-then-regroup deferred to DEV-1825 (regroup primitive)"
 )
 
 
