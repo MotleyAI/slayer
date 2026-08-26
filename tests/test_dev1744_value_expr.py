@@ -2029,8 +2029,9 @@ class TestIifDirectRender:
             name="iif",
             args=tuple(LiteralKey(value=i) for i in range(argc)),
         )
+        ctx = _filter_ctx()
         with pytest.raises(NotImplementedError, match="iif"):
-            render_value_key(key=key, ctx=_filter_ctx())
+            render_value_key(key=key, ctx=ctx)
 
     def test_malformed_nested_chain_node_raises_too(self) -> None:
         # A valid outer iif whose otherwise branch is malformed — pins the
@@ -2040,8 +2041,9 @@ class TestIifDirectRender:
             LiteralKey(value=1),
             ScalarCallKey(name="iif", args=(LiteralKey(value=False),)),
         ))
+        ctx = _filter_ctx()
         with pytest.raises(NotImplementedError, match="iif"):
-            render_value_key(key=key, ctx=_filter_ctx())
+            render_value_key(key=key, ctx=ctx)
 
     @staticmethod
     def _query(predicate: str) -> SlayerQuery:

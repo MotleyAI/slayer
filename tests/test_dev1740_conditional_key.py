@@ -34,7 +34,7 @@ def _iif(cond, then, otherwise) -> ScalarCallKey:
 def _band_over_agg() -> ScalarCallKey:
     """``CASE WHEN amount:sum > 5000 THEN 1 ELSE 0 END`` as a key."""
     cond = ArithmeticKey(op=">", operands=(_amount(), LiteralKey(value=5000)))
-    return _iif(cond, LiteralKey(value=1), LiteralKey(value=0))
+    return _iif(cond=cond, then=LiteralKey(value=1), otherwise=LiteralKey(value=0))
 
 
 class TestConstruction:
@@ -47,12 +47,12 @@ class TestConstruction:
 class TestPhaseJoin:
     def test_all_row_parts_is_row(self) -> None:
         key = _iif(
-            ArithmeticKey(
+            cond=ArithmeticKey(
                 op=">", operands=(ColumnKey(path=(), leaf="amount"),
                                   LiteralKey(value=5)),
             ),
-            LiteralKey(value=1),
-            LiteralKey(value=0),
+            then=LiteralKey(value=1),
+            otherwise=LiteralKey(value=0),
         )
         assert key.phase == Phase.ROW
 
@@ -72,8 +72,8 @@ class TestIdentity:
 
     def test_swapped_branches_differ(self) -> None:
         cond = ArithmeticKey(op=">", operands=(_amount(), LiteralKey(value=5000)))
-        a = _iif(cond, LiteralKey(value=1), LiteralKey(value=0))
-        b = _iif(cond, LiteralKey(value=0), LiteralKey(value=1))
+        a = _iif(cond=cond, then=LiteralKey(value=1), otherwise=LiteralKey(value=0))
+        b = _iif(cond=cond, then=LiteralKey(value=0), otherwise=LiteralKey(value=1))
         assert a != b
         assert len({a, b}) == 2
 
@@ -84,7 +84,7 @@ class TestStructuralTraversal:
         agg = _amount(partition_keys=frozenset({ColumnKey(path=(), leaf="city")}))
         parts = [LiteralKey(value=True), LiteralKey(value=1), LiteralKey(value=0)]
         parts[where] = agg
-        key = _iif(*parts)
+        key = _iif(cond=parts[0], then=parts[1], otherwise=parts[2])
         assert agg in list(walk_value_keys(key))
 
 
@@ -95,9 +95,9 @@ class TestNestedInScalarCall:
         # contains_aggregate must reach it.
         agg = _amount()
         cond = _iif(
-            ArithmeticKey(op=">", operands=(agg, LiteralKey(value=5))),
-            LiteralKey(value=1),
-            LiteralKey(value=0),
+            cond=ArithmeticKey(op=">", operands=(agg, LiteralKey(value=5))),
+            then=LiteralKey(value=1),
+            otherwise=LiteralKey(value=0),
         )
         call = ScalarCallKey(name="coalesce", args=(cond, LiteralKey(value=-1)))
         assert agg in list(walk_value_keys(call))
@@ -107,7 +107,7 @@ class TestNestedInScalarCall:
 class TestReroot:
     def test_reroot_strips_prefix_in_every_branch(self) -> None:
         key = _iif(
-            ArithmeticKey(
+            cond=ArithmeticKey(
                 op=">",
                 operands=(
                     AggregateKey(source=ColumnKey(path=("customers",), leaf="spend"),
@@ -115,9 +115,9 @@ class TestReroot:
                     LiteralKey(value=100),
                 ),
             ),
-            ColumnKey(path=("customers",), leaf="tier"),
-            LiteralKey(value=None),
+            then=ColumnKey(path=("customers",), leaf="tier"),
+            otherwise=LiteralKey(value=None),
         )
-        rerooted = reroot_value_key(key, target_path=("customers",))
+        rerooted = reroot_value_key(key=key, target_path=("customers",))
         assert rerooted.args[1] == ColumnKey(path=(), leaf="tier")
         assert rerooted.args[0].operands[0].source == ColumnKey(path=(), leaf="spend")
