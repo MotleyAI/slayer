@@ -66,6 +66,28 @@ class TestNoSecondPass:
         assert "CASE" not in sql.upper()  # lower(city) is a plain scalar
 
 
+class TestJoinedColumnInExpression:
+    async def test_computed_dim_over_joined_column_pulls_the_join(self) -> None:
+        # The expression crosses orders → customers; the base FROM must LEFT
+        # JOIN customers (a throwaway-scope render dropped the registration).
+        sql = await gen(_q(
+            dimensions=[{"expression": "upper(customers.tier)", "name": "T"}],
+            measures=[ModelMeasure(formula="amount:sum", name="rev")],
+        ))
+        assert "JOIN" in sql.upper()
+        assert "customers" in sql
+
+    async def test_computed_dim_over_joined_column_executes(self, exec_engine) -> None:
+        # gold = customers 1 & 3 → orders 1,2,5,6 = 8000; silver = customers
+        # 2 & 4 → orders 3,4,7,8,9 = 17000.
+        resp = await exec_engine.execute(_q(
+            dimensions=[{"expression": "upper(customers.tier)", "name": "T"}],
+            measures=[ModelMeasure(formula="amount:sum", name="rev")],
+        ))
+        got = {r["orders.T"]: float(r["orders.rev"]) for r in resp.data}
+        assert got == {"GOLD": pytest.approx(8000.0), "SILVER": pytest.approx(17000.0)}
+
+
 class TestNameReferences:
     async def test_order_by_computed_name(self, exec_engine) -> None:
         # Order by the COMPUTED dimension's name (not a measure).

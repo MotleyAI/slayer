@@ -2710,6 +2710,30 @@ class SQLGenerator:
             allocator=allocator,
         )
 
+    def _render_computed_dims_via_scope(
+        self, *, base_render_order, slots_by_id, scope,
+    ) -> Dict[str, exp.Expression]:
+        """Render ROW-phase computed (expression) dimensions through the HOST
+        scope BEFORE the FROM is built, so a join the expression crosses
+        registers into ``scope.join_paths`` (DEV-1740). Returns the rendered
+        expr per slot id; the base-SELECT branch reads it instead of
+        re-rendering."""
+        from slayer.core.keys import ArithmeticKey, Phase, ScalarCallKey
+
+        out: Dict[str, exp.Expression] = {}
+        for sid in base_render_order:
+            slot = slots_by_id[sid]
+            if (
+                slot.phase == Phase.ROW
+                and slot.is_dimension
+                and isinstance(slot.key, (ScalarCallKey, ArithmeticKey))
+            ):
+                out[sid] = render_value_key(
+                    key=slot.key,
+                    ctx=RenderContext(scope=scope, dialect=self._dialect),
+                )
+        return out
+
     def _resolve_agg_kwargs_for_key(
         self, *, key, source_model, source_relation: str, bundle,
     ) -> "Optional[Dict[str, ResolvedAggKwarg]]":
@@ -2818,6 +2842,15 @@ class SQLGenerator:
             bundle=bundle, scope=host_scope,
             order_slot_ids=[e.slot_id for e in planned_query.order],
         )
+        # DEV-1740: pre-render computed (expression) dimensions through the
+        # HOST scope (position 2.5) so a join their expression crosses is
+        # registered before the FROM is built — a throwaway frame here dropped
+        # the customers join for ``upper(customers.tier)``.
+        computed_dim_expr_by_sid = self._render_computed_dims_via_scope(
+            base_render_order=base_render_order,
+            slots_by_id=slots_by_id,
+            scope=host_scope,
+        )
         # WHERE-phase filters referencing joined columns (direct, derived, or
         # Mode-A ``__`` paths) register their joins into the scope too (position
         # 3). Filters routed to a cross-model ``_cm_*`` CTE (``skip_filter_ids``)
@@ -2924,20 +2957,10 @@ class SQLGenerator:
                     group_by_keys.setdefault(sid, col_expr)
                     _record_alias(sid, full_alias)
                 elif isinstance(key, (ScalarCallKey, ArithmeticKey)) and slot.is_dimension:
-                    # DEV-1740: a computed (expression) dimension — render the
-                    # ROW-phase expression inline (its leaf columns resolve
-                    # through the host scope) and GROUP BY it.
-                    dim_expr = render_value_key(
-                        key=key,
-                        ctx=RenderContext(
-                            scope=self._throwaway_frame(
-                                model=source_model,
-                                relation=source_relation,
-                                bundle=bundle,
-                            ),
-                            dialect=self._dialect,
-                        ),
-                    )
+                    # DEV-1740: a computed (expression) dimension — rendered
+                    # through the host scope in the pre-pass above (so a
+                    # crossed join reached the FROM); GROUP BY the expression.
+                    dim_expr = computed_dim_expr_by_sid[sid]
                     select_columns.append(dim_expr.copy().as_(full_alias))
                     group_by_keys.setdefault(sid, dim_expr)
                     _record_alias(sid, full_alias)
