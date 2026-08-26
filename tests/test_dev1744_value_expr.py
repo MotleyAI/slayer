@@ -1997,6 +1997,39 @@ class TestNullInInList:
             "orders.label IN ('a', 'b')"
         )
 
+
+class TestIifDirectRender:
+    """DEV-1740: the reserved-name ``iif`` render on a directly constructed
+    key — the flattened multi-WHEN CASE shape and the fail-closed arity
+    backstop (the binder validates first; render must not IndexError)."""
+
+    def test_nested_chain_renders_one_flattened_case(self) -> None:
+        key = ScalarCallKey(name="iif", args=(
+            ArithmeticKey(op=">", operands=(
+                ColumnKey(leaf="amount"), LiteralKey(value=5))),
+            LiteralKey(value=1),
+            ScalarCallKey(name="iif", args=(
+                ArithmeticKey(op=">", operands=(
+                    ColumnKey(leaf="amount"), LiteralKey(value=2))),
+                LiteralKey(value=2),
+                LiteralKey(value=0),
+            )),
+        ))
+        out = _sql(render_value_key(key=key, ctx=_filter_ctx()))
+        assert out == (
+            "CASE WHEN orders.amount > 5 THEN 1 "
+            "WHEN orders.amount > 2 THEN 2 ELSE 0 END"
+        )
+
+    @pytest.mark.parametrize("argc", [1, 2, 4])
+    def test_malformed_arity_raises_the_backstop_error(self, argc: int) -> None:
+        key = ScalarCallKey(
+            name="iif",
+            args=tuple(LiteralKey(value=i) for i in range(argc)),
+        )
+        with pytest.raises(ValueError, match="iif"):
+            render_value_key(key=key, ctx=_filter_ctx())
+
     @staticmethod
     def _query(predicate: str) -> SlayerQuery:
         return SlayerQuery(

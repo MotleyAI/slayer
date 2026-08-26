@@ -823,6 +823,11 @@ def _render_iif_case(*, key: ScalarCallKey, ctx: "RenderContext") -> exp.Case:
     ifs: List[exp.If] = []
     node = key
     while isinstance(node, ScalarCallKey) and node.name == "iif":
+        # Fail-closed arity backstop (mirrors render_scalar_call): a directly
+        # constructed malformed key must not surface an opaque IndexError.
+        arity_error = check_scalar_arity(name="iif", argc=len(node.args))
+        if arity_error is not None:
+            raise ValueError(arity_error)
         ifs.append(exp.If(this=_part(node.args[0]), true=_part(node.args[1])))
         node = node.args[2]
     return exp.Case(ifs=ifs, default=_part(node))
