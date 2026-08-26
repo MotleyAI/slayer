@@ -797,6 +797,26 @@ def _resolve_dotted_star(
     return StarKey(path=tuple(hop_path))
 
 
+def _bind_agg_partition_keys(
+    value, *,
+    scope: Union[ModelScope, StageSchema],
+    bundle: ResolvedSourceBundle,
+) -> frozenset:
+    """Bind an aggregation ``partition_by`` value (single ref, list/tuple, or
+    ``[]``) to a frozenset of column keys (DEV-1739)."""
+    elements = value if isinstance(value, tuple) else (value,)
+    pks: List = []
+    for elem in elements:
+        bound = _bind(elem, scope=scope, bundle=bundle, in_filter=False)
+        if not isinstance(bound, (ColumnKey, ColumnSqlKey)):
+            raise ValueError(
+                f"aggregation partition_by must resolve to a column reference; "
+                f"got {type(bound).__name__}."
+            )
+        pks.append(bound)
+    return frozenset(pks)
+
+
 def _bind_agg(
     parsed: AggCall, *,
     scope: Union[ModelScope, StageSchema],
@@ -838,19 +858,7 @@ def _bind_agg(
     kwargs_list: List = []
     for k, v in parsed.kwargs:
         if k == "partition_by":
-            elements = v if isinstance(v, tuple) else (v,)
-            pks: List = []
-            for elem in elements:
-                bound_elem = _bind(
-                    elem, scope=scope, bundle=bundle, in_filter=False,
-                )
-                if not isinstance(bound_elem, (ColumnKey, ColumnSqlKey)):
-                    raise ValueError(
-                        f"aggregation partition_by must resolve to a column "
-                        f"reference; got {type(bound_elem).__name__}."
-                    )
-                pks.append(bound_elem)
-            partition_keys = frozenset(pks)
+            partition_keys = _bind_agg_partition_keys(v, scope=scope, bundle=bundle)
             continue
         kwargs_list.append((k, _bind_agg_arg(v, scope=scope, bundle=bundle)))
     kwargs = tuple(kwargs_list)

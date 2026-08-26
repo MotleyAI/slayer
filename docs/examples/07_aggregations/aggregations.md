@@ -222,6 +222,23 @@ Cross-model:
 {"formula": "cumsum(customers.*:count)"}
 ```
 
+## Share of parent (`partition_by`)
+
+Any aggregation takes `partition_by=` to compute it over a subset of the query's dimensions, repeated across the finer rows — `SUM(x) OVER (PARTITION BY …)`:
+
+```json
+{
+  "source_model": "orders",
+  "dimensions": ["region", "city"],
+  "measures": [
+    {"formula": "revenue:sum / revenue:sum(partition_by=region)", "name": "share_of_region"},
+    {"formula": "revenue:sum / revenue:sum(partition_by=[])", "name": "share_of_total"}
+  ]
+}
+```
+
+`partition_by=region` is the region total on every city row (so `share_of_region` sums to 1.0 per region); `partition_by=[]` is the grand total; a list (`[region, channel]`) or dotted path also work. The total is computed over rows passing row-level filters — filters on the measure (`having`) and pagination never change it.
+
 ## Result column naming
 
 The colon becomes an underscore in result keys:
@@ -232,6 +249,7 @@ The colon becomes an underscore in result keys:
 | `*:count` | `orders._count` |
 | `revenue:avg` | `orders.revenue_avg` |
 | `customers.*:count` | `orders.customers._count` |
+| `revenue:sum(partition_by=region)` | `orders.revenue_sum_partition_by_region` |
 
 When a query is saved as a model (`create_model` with a `query` parameter), these canonical names become the new model's column names.
 

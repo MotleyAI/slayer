@@ -343,8 +343,9 @@ class TestIterSlotDepsTransformAux:
                 ),
             ],
         )
+        bundle = _bundle()
         with pytest.raises(ValueError, match=r"partition_by"):
-            plan_query(query=q, bundle=_bundle())
+            plan_query(query=q, bundle=bundle)
 
 
 # ---------------------------------------------------------------------------

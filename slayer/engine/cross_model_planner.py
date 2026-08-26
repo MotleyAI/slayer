@@ -1384,6 +1384,7 @@ def _maybe_reroot_cross_model_plan(  # NOSONAR(S3776) — one re-rooting decisio
     # member reachable at the target, so an unreachable one raises below.
     partition_keys = agg_key.partition_keys
     matched_pk: set = set()
+    reachable_grain: list = []
 
     # The public_projection[i] positional pairing (and its silent None
     # fallback) is deliberately left as-is; the cardinality/ambiguity concern
@@ -1391,14 +1392,17 @@ def _maybe_reroot_cross_model_plan(  # NOSONAR(S3776) — one re-rooting decisio
     for i, dm in enumerate(host_prebound.grain_declared_measures):
         host_sid = public_projection[i] if i < len(public_projection) else None
         host_key = dm.bound.value_key
-        if partition_keys is not None and host_key not in partition_keys:
-            continue
         inner = (
             host_key.column if isinstance(host_key, TimeTruncKey) else host_key
         )
         host_path = tuple(getattr(inner, "path", ()) or ())
         rr_key = _reroot(host_key)
-        if not _reaches(rr_key):
+        reaches = _reaches(rr_key)
+        if reaches:
+            reachable_grain.append(_grain_slot_display(host_key))
+        if partition_keys is not None and host_key not in partition_keys:
+            continue  # DEV-1739: not in the partition subset
+        if not reaches:
             continue  # unreachable from target -> drop
         if partition_keys is not None:
             matched_pk.add(host_key)
@@ -1417,13 +1421,10 @@ def _maybe_reroot_cross_model_plan(  # NOSONAR(S3776) — one re-rooting decisio
         unmatched = set(partition_keys) - matched_pk
         if unmatched:
             names = ", ".join(sorted(_grain_slot_display(k) for k in unmatched))
-            available = ", ".join(sorted(
-                _grain_slot_display(dm.bound.value_key)
-                for dm in host_prebound.grain_declared_measures
-            )) or "(none)"
+            available = ", ".join(sorted(reachable_grain)) or "(none)"
             raise ValueError(
-                f"Aggregation partition_by column '{names}' is not in this "
-                f"cross-model aggregate's grain. Choose one of: {available}."
+                f"Aggregation partition_by column '{names}' is not expressible at "
+                f"this cross-model aggregate's grain. Choose one of: {available}."
             )
 
     # Filters vote structurally, before any classification. A filter that

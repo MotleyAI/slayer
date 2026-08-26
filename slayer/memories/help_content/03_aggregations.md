@@ -66,6 +66,28 @@ It can be larger than, equal to, or smaller than the query time granularity.
 Duration syntax is compact: `y`, `m`, `w`, `d`, `h`, `min`, `s`, combinable as
 in `1y2m3w5d6h7min8s`, `90d`, `6h`, or `15min`.
 
+## Coarser grain — `partition_by` (share of parent)
+
+Any aggregation takes `partition_by=` to compute it over a subset of the query's
+dimensions, repeated across the finer rows (like `SUM(x) OVER (PARTITION BY …)`):
+
+```json
+{
+  "source_model": "orders",
+  "dimensions": ["region", "city"],
+  "measures": [
+    {"formula": "revenue:sum / revenue:sum(partition_by=region)", "name": "share_of_region"},
+    {"formula": "revenue:sum / revenue:sum(partition_by=[])", "name": "share_of_total"}
+  ]
+}
+```
+
+`partition_by=region` is the region total on every city row; `partition_by=[]` is
+the grand total; a list (`[region, channel]`) or dotted path also work. Computed
+over rows passing row-level filters (HAVING/pagination never change the parent
+total). Not yet supported: with `window=`, on `first`/`last`, nested in a
+transform, or in a filter.
+
 ## Allowed aggregations (whitelist)
 
 A column can restrict which aggregations make sense. Model-side:

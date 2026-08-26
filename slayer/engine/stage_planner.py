@@ -436,33 +436,32 @@ def _guard_partitioned_measures(
     ``window=``, on ``first``/``last``, nested inside a transform, or referenced
     in a query filter. Runs on the original value-key trees."""
     all_vks = [*measure_vks, *filter_vks, *order_vks]
-    if not any(_partitioned_agg_keys(vk) for vk in all_vks):
+    part_keys = [k for vk in all_vks for k in _partitioned_agg_keys(vk)]
+    if not part_keys:
         return
-    for vk in all_vks:
-        for k in _partitioned_agg_keys(vk):
-            if _window_kwarg_of(k) is not None:
-                raise NotImplementedError(
-                    "partition_by combined with window= on one aggregate is not "
-                    "yet supported (DEV-1824)."
-                )
-            if k.agg in ("first", "last"):
-                raise NotImplementedError(
-                    "partition_by on first/last aggregations is not yet "
-                    "supported (DEV-1824)."
-                )
-    for vk in all_vks:
-        for tk in walk_value_keys(vk):
-            if isinstance(tk, TransformKey) and _partitioned_agg_keys(tk.input):
-                raise NotImplementedError(
-                    "A partition_by aggregate nested inside a transform is not "
-                    "yet supported (DEV-1824)."
-                )
-    for vk in filter_vks:
-        if _partitioned_agg_keys(vk):
-            raise NotImplementedError(
-                "Filtering on a partition_by aggregate is not yet supported "
-                "(DEV-1824)."
-            )
+    if any(_window_kwarg_of(k) is not None for k in part_keys):
+        raise NotImplementedError(
+            "partition_by combined with window= on one aggregate is not yet "
+            "supported (DEV-1824)."
+        )
+    if any(k.agg in ("first", "last") for k in part_keys):
+        raise NotImplementedError(
+            "partition_by on first/last aggregations is not yet supported "
+            "(DEV-1824)."
+        )
+    if any(
+        isinstance(tk, TransformKey) and _partitioned_agg_keys(tk.input)
+        for vk in all_vks for tk in walk_value_keys(vk)
+    ):
+        raise NotImplementedError(
+            "A partition_by aggregate nested inside a transform is not yet "
+            "supported (DEV-1824)."
+        )
+    if any(_partitioned_agg_keys(vk) for vk in filter_vks):
+        raise NotImplementedError(
+            "Filtering on a partition_by aggregate is not yet supported "
+            "(DEV-1824)."
+        )
 
 
 def _windowed_grain_partition(

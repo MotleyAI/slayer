@@ -375,8 +375,9 @@ class TestShiftedCtePartitionShape:
                 ),
             ],
         )
+        orders, stores, regions = _orders(), _stores(), _regions()
         with pytest.raises(ValueError, match=r"partition_by"):
-            await _gen(query, _orders(), extra_models=[_stores(), _regions()])
+            await _gen(query, orders, extra_models=[stores, regions])
 
     async def test_joined_time_axis_pulls_join_into_shifted_cte(self) -> None:
         """When the SHIFT-axis time dimension is itself a joined column

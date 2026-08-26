@@ -31,78 +31,79 @@ def _q(**kw) -> SlayerQuery:
 # --------------------------------------------------------------------------- #
 class TestGrainGuards:
     async def test_non_dimension_partition_key_raises(self) -> None:
-        with pytest.raises(ValueError, match=r"partition_by.*not a query dimension"):
-            await gen(_q(
-                dimensions=["region"],
-                measures=[ModelMeasure(formula="amount:sum(partition_by=city)")],
-            ))
-
-    async def test_non_dimension_message_lists_available_dims(self) -> None:
-        with pytest.raises(ValueError, match=r"region"):
-            await gen(_q(
-                dimensions=["region"],
-                measures=[ModelMeasure(formula="amount:sum(partition_by=city)")],
-            ))
+        q = _q(
+            dimensions=["region"],
+            measures=[ModelMeasure(formula="amount:sum(partition_by=city)")],
+        )
+        with pytest.raises(ValueError, match=r"partition_by.*not a query dimension") as ei:
+            await gen(q)
+        assert "region" in str(ei.value)  # message lists the available dims
 
     async def test_ambiguous_time_granularity_raises(self) -> None:
+        q = _q(
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="ordered_at"),
+                              granularity=TimeGranularity.MONTH),
+                TimeDimension(dimension=ColumnRef(name="ordered_at"),
+                              granularity=TimeGranularity.DAY),
+            ],
+            measures=[ModelMeasure(formula="amount:sum(partition_by=ordered_at)")],
+        )
         with pytest.raises(ValueError, match=r"ambiguous"):
-            await gen(_q(
-                time_dimensions=[
-                    TimeDimension(dimension=ColumnRef(name="ordered_at"),
-                                  granularity=TimeGranularity.MONTH),
-                    TimeDimension(dimension=ColumnRef(name="ordered_at"),
-                                  granularity=TimeGranularity.DAY),
-                ],
-                measures=[ModelMeasure(formula="amount:sum(partition_by=ordered_at)")],
-            ))
+            await gen(q)
 
     async def test_cross_model_partition_outside_derived_grain_raises(self) -> None:
-        with pytest.raises(ValueError, match=r"partition_by") as excinfo:
-            await gen(_q(
-                dimensions=["region", "customers.tier"],
-                measures=[
-                    ModelMeasure(formula="customers.spend:sum(partition_by=region)"),
-                ],
-            ))
-        assert "customers.tier" in str(excinfo.value)
+        q = _q(
+            dimensions=["region", "customers.tier"],
+            measures=[
+                ModelMeasure(formula="customers.spend:sum(partition_by=region)"),
+            ],
+        )
+        with pytest.raises(ValueError, match=r"partition_by") as ei:
+            await gen(q)
+        assert "customers.tier" in str(ei.value)
 
 
 class TestDeferredShapeGuards:
     async def test_window_plus_partition_raises(self) -> None:
+        q = _q(
+            dimensions=["region"],
+            time_dimensions=month_td(),
+            measures=[
+                ModelMeasure(formula="amount:sum(window='90d', partition_by=region)"),
+            ],
+        )
         with pytest.raises(NotImplementedError, match=r"DEV-1824"):
-            await gen(_q(
-                dimensions=["region"],
-                time_dimensions=month_td(),
-                measures=[
-                    ModelMeasure(formula="amount:sum(window='90d', partition_by=region)"),
-                ],
-            ))
+            await gen(q)
 
     @pytest.mark.parametrize("agg", ["first", "last"])
     async def test_first_last_plus_partition_raises(self, agg: str) -> None:
+        q = _q(
+            dimensions=["region", "city"],
+            measures=[ModelMeasure(formula=f"amount:{agg}(partition_by=region)")],
+        )
         with pytest.raises(NotImplementedError, match=r"DEV-1824"):
-            await gen(_q(
-                dimensions=["region", "city"],
-                measures=[ModelMeasure(formula=f"amount:{agg}(partition_by=region)")],
-            ))
+            await gen(q)
 
     async def test_partitioned_aggregate_nested_in_transform_raises(self) -> None:
+        q = _q(
+            dimensions=["region"],
+            time_dimensions=month_td(),
+            measures=[
+                ModelMeasure(formula="cumsum(amount:sum(partition_by=region))"),
+            ],
+        )
         with pytest.raises(NotImplementedError, match=r"DEV-1824"):
-            await gen(_q(
-                dimensions=["region"],
-                time_dimensions=month_td(),
-                measures=[
-                    ModelMeasure(formula="cumsum(amount:sum(partition_by=region))"),
-                ],
-            ))
+            await gen(q)
 
     async def test_partitioned_aggregate_in_filter_raises(self) -> None:
+        q = _q(
+            dimensions=["region", "city"],
+            filters=["amount:sum(partition_by=region) > 50"],
+            measures=[ModelMeasure(formula="amount:sum")],
+        )
         with pytest.raises(NotImplementedError, match=r"DEV-1824"):
-            await gen(_q(
-                dimensions=["region", "city"],
-                filters=["amount:sum(partition_by=region) > 50"],
-                measures=[ModelMeasure(formula="amount:sum")],
-            ))
+            await gen(q)
 
 
 _NON_RANK_FORMULAS = {
@@ -120,19 +121,22 @@ class TestDriveByNonRankTransform:
     @pytest.mark.parametrize("formula", list(_NON_RANK_FORMULAS.values()),
                              ids=list(_NON_RANK_FORMULAS))
     async def test_partition_by_rejected_on_non_rank_transforms(self, formula: str) -> None:
+        q = _q(
+            dimensions=["region"],
+            time_dimensions=month_td(),
+            measures=[ModelMeasure(formula=formula)],
+        )
         with pytest.raises(ValueError, match=r"partition_by"):
-            await gen(_q(
-                dimensions=["region"],
-                time_dimensions=month_td(),
-                measures=[ModelMeasure(formula=formula)],
-            ))
+            await gen(q)
 
     async def test_partition_by_still_accepted_on_rank(self) -> None:
         sql = await gen(_q(
             dimensions=["region", "city"],
             measures=[ModelMeasure(formula="rank(amount:sum, partition_by=region)")],
         ))
-        assert "RANK" in sql.upper()
+        upper = sql.upper()
+        assert "RANK()" in upper
+        assert "PARTITION BY" in upper
 
 
 # --------------------------------------------------------------------------- #

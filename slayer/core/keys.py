@@ -848,6 +848,16 @@ def _reroot_sql_expr_key(
     )
 
 
+def _reroot_partition_keys(partition_keys, *, target_path: Tuple[str, ...]):
+    """Reroot an ``AggregateKey.partition_keys`` frozenset, preserving the
+    ``None`` (absent) vs empty (grand total) distinction."""
+    if partition_keys is None:
+        return None
+    return frozenset(
+        reroot_value_key(p, target_path=target_path) for p in partition_keys
+    )
+
+
 def reroot_value_key(
     key: _RerootableT, *, target_path: Tuple[str, ...],
 ) -> _RerootableT:
@@ -912,9 +922,8 @@ def reroot_value_key(
             "source": _recurse(key.source),
             "args": tuple(_recurse(a) for a in key.args),
             "kwargs": tuple((n, _recurse(v)) for n, v in key.kwargs),
-            "partition_keys": (
-                None if key.partition_keys is None
-                else frozenset(_recurse(p) for p in key.partition_keys)
+            "partition_keys": _reroot_partition_keys(
+                key.partition_keys, target_path=target_path,
             ),
         })
     if isinstance(key, TransformKey):

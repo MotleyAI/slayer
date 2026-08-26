@@ -16,23 +16,23 @@
   "cross_model/rerooted_partition_key::tsql": "WITH _base AS (\n  SELECT\n    customers__regions.name AS [orders___customers___regions___name],\n    customers.tier AS [orders___customers___tier]\n  FROM orders AS orders\n  LEFT JOIN customers AS customers\n    ON orders.customer_id = customers.id\n  LEFT JOIN regions AS customers__regions\n    ON customers.region_id = customers__regions.id\n  GROUP BY\n    customers__regions.name,\n    customers.tier\n), _cm_orders__customers__spend_sum_partition_by_customers_regions_name AS (\n  SELECT\n    regions.name AS [customers___regions___name],\n    CAST(SUM(customers.spend) AS FLOAT) AS [customers___spend_sum_partition_by_regions_name]\n  FROM customers AS customers\n  LEFT JOIN regions AS regions\n    ON customers.region_id = regions.id\n  GROUP BY\n    regions.name\n)\nSELECT\n  _base.[orders___customers___regions___name],\n  _base.[orders___customers___tier],\n  _cm_orders__customers__spend_sum_partition_by_customers_regions_name.[customers___spend_sum_partition_by_regions_name] AS [orders___rt]\nFROM _base\nLEFT JOIN _cm_orders__customers__spend_sum_partition_by_customers_regions_name\n  ON (\n    _base.[orders___customers___regions___name] = _cm_orders__customers__spend_sum_partition_by_customers_regions_name.[customers___regions___name]\n    OR (\n      _base.[orders___customers___regions___name] IS NULL\n      AND _cm_orders__customers__spend_sum_partition_by_customers_regions_name.[customers___regions___name] IS NULL\n    )\n  )",
   "guard/cross_model_outside_grain::bigquery": {
     "error": "ValueError",
-    "message": "Aggregation partition_by column 'region' is not in this cross-model aggregate's grain. Choose one of: customers.tier, region."
+    "message": "Aggregation partition_by column 'region' is not expressible at this cross-model aggregate's grain. Choose one of: customers.tier."
   },
   "guard/cross_model_outside_grain::duckdb": {
     "error": "ValueError",
-    "message": "Aggregation partition_by column 'region' is not in this cross-model aggregate's grain. Choose one of: customers.tier, region."
+    "message": "Aggregation partition_by column 'region' is not expressible at this cross-model aggregate's grain. Choose one of: customers.tier."
   },
   "guard/cross_model_outside_grain::postgres": {
     "error": "ValueError",
-    "message": "Aggregation partition_by column 'region' is not in this cross-model aggregate's grain. Choose one of: customers.tier, region."
+    "message": "Aggregation partition_by column 'region' is not expressible at this cross-model aggregate's grain. Choose one of: customers.tier."
   },
   "guard/cross_model_outside_grain::sqlite": {
     "error": "ValueError",
-    "message": "Aggregation partition_by column 'region' is not in this cross-model aggregate's grain. Choose one of: customers.tier, region."
+    "message": "Aggregation partition_by column 'region' is not expressible at this cross-model aggregate's grain. Choose one of: customers.tier."
   },
   "guard/cross_model_outside_grain::tsql": {
     "error": "ValueError",
-    "message": "Aggregation partition_by column 'region' is not in this cross-model aggregate's grain. Choose one of: customers.tier, region."
+    "message": "Aggregation partition_by column 'region' is not expressible at this cross-model aggregate's grain. Choose one of: customers.tier."
   },
   "guard/first::bigquery": {
     "error": "NotImplementedError",
