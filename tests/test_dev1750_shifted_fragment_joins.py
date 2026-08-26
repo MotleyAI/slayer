@@ -80,7 +80,7 @@ class TestShiftedCteFragmentUserKwarg:
     async def test_user_string_kwarg_crossing_join_registers(self) -> None:
         sql = await gen(_q(measures=[
             ModelMeasure(
-                formula="time_shift(amount:wscaled_sum(w='customers__regions.weight'), -1)",
+                formula="time_shift(amount:wscaled_sum(w='customers.regions.weight'), -1)",
                 name="prev",
             ),
         ]))
@@ -115,7 +115,7 @@ class TestFragmentRegistrationUnit:
 
     def test_non_overridden_default_is_scanned(self) -> None:
         entered = self._entered(kwargs=())
-        assert entered == ["customers__regions.weight"], entered
+        assert entered == ["customers.regions.weight"], entered
 
     def test_overridden_default_uses_the_override_not_the_default(self) -> None:
         # Overriding ``w`` replaces the default: only the override is scanned,

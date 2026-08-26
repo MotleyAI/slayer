@@ -130,7 +130,7 @@ class TestResolveRegistersJoins:
 
     def test_derived_columnsqlkey_crossing_registers_prefixes(self) -> None:
         orders = _orders(extra=[
-            Column(name="region_weight", sql="customers__regions.weight",
+            Column(name="region_weight", sql="customers.regions.weight",
                    type=DataType.DOUBLE),
         ])
         scope = _scope(orders, _customers(), _regions())

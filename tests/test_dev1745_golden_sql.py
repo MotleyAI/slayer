@@ -148,10 +148,10 @@ def _orders() -> SlayerModel:
             Column(name="quoted_cross", sql='"customers"."spend"',
                    type=DataType.DOUBLE),
             # derived-of-derived, two hops (currently BROKEN — see module doc)
-            Column(name="deep_pop", sql="customers__regions.pop_x2",
+            Column(name="deep_pop", sql="customers.regions.pop_x2",
                    type=DataType.DOUBLE),
             Column(name="multi_model",
-                   sql="customers.spend + customers__regions.population",
+                   sql="customers.spend + customers.regions.population",
                    type=DataType.DOUBLE),
         ],
         joins=[ModelJoin(

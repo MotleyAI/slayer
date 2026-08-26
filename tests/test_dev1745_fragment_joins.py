@@ -108,7 +108,7 @@ def _orders_local_agg() -> SlayerModel:
             Aggregation(
                 name="wscaled_sum", formula="SUM({value} * {w})",
                 params=[AggregationParam(
-                    name="w", sql="customers__regions.weight",
+                    name="w", sql="customers.regions.weight",
                 )],
             ),
         ],
@@ -268,7 +268,7 @@ class TestHostPathFragmentJoinsStillWork:
                 source_model="orders",
                 dimensions=[{"formula": "status", "name": "status"}],
                 measures=[{
-                    "formula": "amount:wscaled_sum(w='customers__regions.weight')",
+                    "formula": "amount:wscaled_sum(w='customers.regions.weight')",
                     "name": "m0",
                 }],
             ),

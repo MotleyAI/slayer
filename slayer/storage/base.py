@@ -22,11 +22,16 @@ from slayer.memories.models import (
     _validate_memory_id_charset,
 )
 from slayer.storage import migrations as _mig
+from slayer.storage.legacy_alias_rewrite import (
+    apply_dunder_rewrite,
+    extract_dunder_chains,
+)
 from slayer.storage.type_refinement import (
     has_refineable_columns,
     has_sqlite_widenable_columns,
     refine_dict_with_live_schema,
 )
+
 
 
 def _write_sample_fields(
@@ -274,6 +279,21 @@ class StorageBackend(ABC):
         data_source: str | None = None,
     ) -> SlayerModel | None: ...
 
+    async def _load_raw_model_dict(
+        self, *, name: str, data_source: str,
+    ) -> dict | None:
+        """Return the persisted model dict verbatim — no migration, no
+        validation. Returns ``None`` when no such model exists.
+
+        The DEV-1743 v9 legacy-``__`` rewrite (in
+        :meth:`_migrate_and_refine_on_load`) resolves multi-hop join walks by
+        reading sibling models raw, so it must reach them without triggering
+        their own load pipeline (which would recurse and re-validate). YAML and
+        SQLite override this; the default returns ``None``, which safely limits
+        the rewrite to first-hop walks resolvable from the host's own ``joins``.
+        """
+        return None
+
     async def delete_model(
         self,
         name: str,
@@ -368,9 +388,10 @@ class StorageBackend(ABC):
         live introspection is needed for ``data`` and dispatch to it.
 
         Hard-fails (``ValueError``) when the dict has DOUBLE base columns
-        and the datasource is missing. SQLite-INT widening with missing DS
-        is best-effort — logs a warning and skips. No-op when neither
-        predicate fires.
+        and the datasource is missing. SQLite-INT widening with a missing OR
+        unreachable DS is best-effort — logs a warning and skips (DEV-1743
+        [C1]: the pure-textual v8→v9 bump must not turn an unreachable probe
+        into a load failure). No-op when neither predicate fires.
         """
         needs_double = has_refineable_columns(data)
         needs_sqlite_int = has_sqlite_widenable_columns(data)
@@ -378,7 +399,15 @@ class StorageBackend(ABC):
             return
         ds = await self.get_datasource(data_source)
         if ds is not None:
-            refine_dict_with_live_schema(data, ds)
+            try:
+                refine_dict_with_live_schema(data, ds)
+            except Exception:
+                # A configured-but-unreachable DS: DOUBLE narrowing is a hard
+                # requirement (propagate), but INT-only widening is advisory —
+                # the persisted INT is a safe default, so warn and skip.
+                if needs_double:
+                    raise
+                self._warn_skipped_int_probe(name=name, data_source=data_source)
             return
         if needs_double:
             raise ValueError(
@@ -387,6 +416,10 @@ class StorageBackend(ABC):
                 f"refinement. Restore the datasource entry or "
                 f"remove the stale model file."
             )
+        self._warn_skipped_int_probe(name=name, data_source=data_source)
+
+    @staticmethod
+    def _warn_skipped_int_probe(*, name: str, data_source: str) -> None:
         import logging as _logging
         _logging.getLogger(__name__).warning(
             "Datasource %r unavailable; skipping SQLite "
@@ -436,6 +469,12 @@ class StorageBackend(ABC):
         pre_version = int(data.get("version", 1))
         if pre_version < _mig.CURRENT_VERSIONS["SlayerModel"]:
             data = _mig.migrate("SlayerModel", data)
+            # DEV-1743 v9: rewrite legacy ``__`` split-alias qualifiers to
+            # dotted on the RAW dict, BEFORE validation ([C6]). Runs on every
+            # forward migration (older stores may carry the legacy form too).
+            data = await self._rewrite_legacy_join_aliases(
+                name=name, data=data, data_source=data_source,
+            )
             write_back = True
             await self._apply_refinement_or_raise(
                 name=name, data=data, data_source=data_source,
@@ -448,6 +487,99 @@ class StorageBackend(ABC):
             # could not load a broken legacy model to repair it.
             await self.save_model(model, _validate=False)
         return model
+
+    async def _rewrite_legacy_join_aliases(
+        self, *, name: str, data: dict, data_source: str,
+    ) -> dict:
+        """DEV-1743 v9: rewrite legacy ``__`` split-alias qualifiers to dotted
+        across every Mode-A surface (``Column.sql`` / ``Column.filter`` and
+        model ``filters``) on the raw dict ``data``.
+
+        Each ``a__b__c`` qualifier is naive-split and resolved as a join walk:
+        the first hop against ``data``'s own ``joins``, deeper hops against the
+        sibling raw dicts loaded via :meth:`_load_raw_model_dict`. Only fully
+        resolvable walks are rewritten; an unresolvable ``__`` (a CTE alias, a
+        physical column) is left byte-verbatim. Returns ``data`` (mutated in
+        place); a no-legacy-``__`` model is untouched.
+        """
+        columns = data.get("columns")
+        filters = data.get("filters")
+        surfaces: list[str] = []
+        if isinstance(columns, list):
+            for col in columns:
+                if isinstance(col, dict):
+                    for key in ("sql", "filter"):
+                        if isinstance(col.get(key), str):
+                            surfaces.append(col[key])
+        if isinstance(filters, list):
+            surfaces.extend(f for f in filters if isinstance(f, str))
+
+        all_chains: set[tuple[str, ...]] = set()
+        for text in surfaces:
+            all_chains |= extract_dunder_chains(text)
+        if not all_chains:
+            return data
+
+        raw_cache: dict[str, dict | None] = {name: data}
+        resolvable: set[tuple[str, ...]] = set()
+        for chain in all_chains:
+            if await self._dunder_chain_is_join_walk(
+                chain=chain, host=data, data_source=data_source, cache=raw_cache,
+            ):
+                resolvable.add(chain)
+        if not resolvable:
+            return data
+
+        if isinstance(columns, list):
+            for col in columns:
+                if not isinstance(col, dict):
+                    continue
+                for key in ("sql", "filter"):
+                    if isinstance(col.get(key), str):
+                        col[key] = apply_dunder_rewrite(
+                            col[key], resolvable=resolvable,
+                        )
+        if isinstance(filters, list):
+            data["filters"] = [
+                apply_dunder_rewrite(f, resolvable=resolvable)
+                if isinstance(f, str) else f
+                for f in filters
+            ]
+        return data
+
+    async def _dunder_chain_is_join_walk(
+        self,
+        *,
+        chain: tuple[str, ...],
+        host: dict,
+        data_source: str,
+        cache: dict[str, dict | None],
+    ) -> bool:
+        """True iff every hop in ``chain`` is a join target on the preceding
+        model — the host for the first hop, each hop's own model thereafter.
+
+        Sibling dicts are loaded raw (and memoised in ``cache``) so a broken or
+        missing intermediate collapses the whole chain to unresolvable.
+        """
+        current: dict | None = host
+        for i, hop in enumerate(chain):
+            if current is None:
+                return False
+            joins = current.get("joins")
+            targets = {
+                j.get("target_model")
+                for j in joins if isinstance(j, dict)
+            } if isinstance(joins, list) else set()
+            if hop not in targets:
+                return False
+            if i == len(chain) - 1:
+                return True
+            if hop not in cache:
+                cache[hop] = await self._load_raw_model_dict(
+                    name=hop, data_source=data_source,
+                )
+            current = cache[hop]
+        return True
 
     # ---- datasource CRUD ---------------------------------------------------
 

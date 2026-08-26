@@ -226,7 +226,7 @@ class TestSqlModeRuntime:
             name="m",
             sql_table="t",
             data_source="test",
-            filters=["customers__regions.name = 'EU'"],
+            filters=["customers.regions.name = 'EU'"],
             columns=[
                 Column(name="id", sql="id", type=DataType.INT, primary_key=True),
                 Column(name="customer_id", sql="customer_id", type=DataType.INT),

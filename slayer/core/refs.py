@@ -253,33 +253,3 @@ def split_agg_suffix(raw: str) -> tuple[str, str | None]:
     return raw, None
 
 
-# ---------------------------------------------------------------------------
-# User-input validation
-# ---------------------------------------------------------------------------
-
-
-def reject_user_dunder(value: str, *, context: str) -> str:
-    """Reject ``__`` in user-supplied query / DSL input.
-
-    The double-underscore separator is reserved for internal join-path
-    aliases (``customers__regions``) and for virtual-model column names
-    produced by ``_query_as_model`` (``stores__name``). User-authored
-    queries and ModelMeasure formulas must use single-dot DSL paths
-    (``customers.regions.name``).
-
-    SQL-mode fields (``Column.sql``, ``Column.filter``,
-    ``SlayerModel.filters``) intentionally do NOT call this validator —
-    they accept ``__`` as legitimate join-alias syntax.
-
-    Returns the value unchanged on success; raises ``ValueError`` on a
-    violation. The message names the offending context so multi-field
-    validators surface a helpful error.
-    """
-    if "__" in value:
-        raise ValueError(
-            f"{context} contains a reserved double-underscore (`__`) in "
-            f"{value!r}. `__` is reserved for internal join-path aliases "
-            f"in generated SQL — use single-dot DSL paths "
-            f"(e.g. `customers.region`) in queries and ModelMeasure formulas."
-        )
-    return value

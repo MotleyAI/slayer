@@ -656,3 +656,31 @@ class UnresolvableDimensionJoinError(SlayerError, ValueError):
         if self.suggested_path:
             msg += f" Did you mean '{self.suggested_path}'?"
         return msg
+
+
+class LegacyDunderAliasError(SlayerError, ValueError):
+    """A ``__``-delimited Mode-A join qualifier that is no longer accepted
+    (DEV-1743 D2).
+
+    The dotted-canonical flip made ``.`` the only chain separator in Mode-A
+    free SQL. A ``__`` qualifier that does not name a real (possibly
+    ``__``-bearing) join target, but whose naive ``split('__')`` still walks the
+    join graph, is the legacy split-alias spelling — a hard error naming the
+    dotted replacement, with no deprecation window.
+
+    Multi-inherits ``ValueError`` so existing ``except ValueError`` sites keep
+    working.
+    """
+
+    def __init__(self, *, alias: str, dotted: str, model: str) -> None:
+        self.alias = alias
+        self.dotted = dotted
+        self.model = model
+        super().__init__()
+
+    def __str__(self) -> str:
+        return (
+            f"No joined model named '{self.alias}' on '{self.model}'. The "
+            f"'__'-delimited split-alias form is no longer accepted; write the "
+            f"join path with dots instead: '{self.dotted}'."
+        )

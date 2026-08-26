@@ -6,18 +6,18 @@ SLayer has two distinct expression layers and the rules for what each one accept
 
 | Mode | Fields | Parser | Accepts | Rejects |
 |---|---|---|---|---|
-| **A — SQL** | `Column.sql`, `Column.filter`, each entry of `SlayerModel.filters` | sqlglot | Any valid SQL expression for the underlying dialect — function calls (`json_extract`, `coalesce`, `nullif`, `lower`, `length`, …), arithmetic, `CASE WHEN`, string literals, comparison and boolean operators in SQL spelling (`=`, `<>`, `IS NULL`, `AND`, `OR`, `NOT`, `IN`, `LIKE`). Bare names and `__`-delimited join paths. | Aggregation colon syntax (`revenue:sum`); SLayer transform calls (`cumsum`, `change`, `rank`, …); references to `ModelMeasure` formulas; raw `OVER (...)` window functions inside `Column.filter` / `SlayerModel.filters` (allowed only in `Column.sql`). |
-| **B — DSL** | `ModelMeasure.formula`, `SlayerQuery.measures`, `SlayerQuery.filters`, `SlayerQuery.dimensions`, `SlayerQuery.time_dimensions`, `SlayerQuery.order`, `SlayerQuery.main_time_dimension` | Python AST formula parser | Bare names that resolve to a `Column` or `ModelMeasure` on the model; single-dot dotted paths through joins (`customers.regions.name`, `customers.revenue:sum`); aggregation colon syntax (`<col>:<agg>`, `*:count`, parametric forms); transform calls (`cumsum(revenue:sum)`, `rank(revenue:sum, partition_by=region)`); arithmetic / boolean / comparison operators; the SQL `\|\|` concat operator (folded into `concat(...)`); pattern matching via the `like(value, pattern)` scalar (emits the SQL `LIKE` operator — wrap in `not (...)` for `NOT LIKE`); a closed allowlist of scalar functions (matched case-insensitively) — null handling (`nullif`, `coalesce`, `ifnull`), math (`ln`, `log10`, `log2`, `log`, `exp`, `sqrt`, `pow`, `power`, `abs`, `floor`, `ceil`, `ceiling`, `round`, `sign`, `trunc`, `mod`), scalar min/max (`greatest`, `least`), string hygiene (`lower`, `upper`, `trim`, `ltrim`, `rtrim`, `replace`, `substr`, `substring`, `instr`, `length`, `concat`) and `like`, each with a declared argument count that is validated (`coalesce`, `concat`, `greatest` and `least` are variadic; `trunc` takes exactly one argument); `{variable}` placeholders (filters only). | `__`-delimited tokens in user input; raw SQL function calls outside that allowlist (`json_extract`, `date_trunc`, …), and any allowlisted call with the wrong number of arguments; raw `OVER (...)`; bare names that don't resolve to a Column / ModelMeasure / custom aggregation / query alias; `NULL` inside an `in` / `not in` list (use `is null` / `is not null` instead — see below). |
+| **A — SQL** | `Column.sql`, `Column.filter`, each entry of `SlayerModel.filters` | sqlglot | Any valid SQL expression for the underlying dialect — function calls (`json_extract`, `coalesce`, `nullif`, `lower`, `length`, …), arithmetic, `CASE WHEN`, string literals, comparison and boolean operators in SQL spelling (`=`, `<>`, `IS NULL`, `AND`, `OR`, `NOT`, `IN`, `LIKE`). Bare names and dotted join paths (`customers.regions.name`). | Aggregation colon syntax (`revenue:sum`); SLayer transform calls (`cumsum`, `change`, `rank`, …); references to `ModelMeasure` formulas; raw `OVER (...)` window functions inside `Column.filter` / `SlayerModel.filters` (allowed only in `Column.sql`); the legacy `__`-delimited split-alias qualifier (`customers__regions.name`) — now a hard error (`LegacyDunderAliasError`). |
+| **B — DSL** | `ModelMeasure.formula`, `SlayerQuery.measures`, `SlayerQuery.filters`, `SlayerQuery.dimensions`, `SlayerQuery.time_dimensions`, `SlayerQuery.order`, `SlayerQuery.main_time_dimension` | Python AST formula parser | Bare names that resolve to a `Column` or `ModelMeasure` on the model; single-dot dotted paths through joins (`customers.regions.name`, `customers.revenue:sum`); aggregation colon syntax (`<col>:<agg>`, `*:count`, parametric forms); transform calls (`cumsum(revenue:sum)`, `rank(revenue:sum, partition_by=region)`); arithmetic / boolean / comparison operators; the SQL `\|\|` concat operator (folded into `concat(...)`); pattern matching via the `like(value, pattern)` scalar (emits the SQL `LIKE` operator — wrap in `not (...)` for `NOT LIKE`); a closed allowlist of scalar functions (matched case-insensitively) — null handling (`nullif`, `coalesce`, `ifnull`), math (`ln`, `log10`, `log2`, `log`, `exp`, `sqrt`, `pow`, `power`, `abs`, `floor`, `ceil`, `ceiling`, `round`, `sign`, `trunc`, `mod`), scalar min/max (`greatest`, `least`), string hygiene (`lower`, `upper`, `trim`, `ltrim`, `rtrim`, `replace`, `substr`, `substring`, `instr`, `length`, `concat`) and `like`, each with a declared argument count that is validated (`coalesce`, `concat`, `greatest` and `least` are variadic; `trunc` takes exactly one argument); `{variable}` placeholders (filters only). | identifiers using the reserved `__slayer_` prefix; raw SQL function calls outside that allowlist (`json_extract`, `date_trunc`, …), and any allowlisted call with the wrong number of arguments; raw `OVER (...)`; bare names that don't resolve to a Column / ModelMeasure / custom aggregation / query alias; `NULL` inside an `in` / `not in` list (use `is null` / `is not null` instead — see below). |
 
 ## Identifier resolution
 
 ### SQL mode (`Column.sql`, `Column.filter`, `SlayerModel.filters`)
 
 * A bare identifier `col` resolves to the column named `col` on the underlying table or SQL of this model.
-* A path `a__b__c.col` resolves through the join graph: `a__b__c` is the SQL table alias produced by walking `model → a → b → c`, and `.col` is the leaf column on the final model. **`__` separates join hops only**; the leaf column always follows a single dot. The flattened form `a__b__c__col` does **not** exist in SQL mode — it appears only inside virtual-model column names produced by the query-backed model wrap (see below).
+* A join path is written with **dots**: `a.b.c.col` walks `model → a → b → c` and resolves the leaf column `col` on the final model. Dots separate join hops; the leaf column follows the final dot. The generated SQL emits this walk with a `__`-delimited internal table alias (`LEFT JOIN … AS a__b__c`), but that spelling is an emitted-SQL detail you never write. A `__` token in a qualifier is treated as part of **one exact name**, never split into a hop walk — `customers__region.label` means "the directly-joined model literally named `customers__region`, column `label`". The legacy `__`-delimited split-alias input form (`customers__regions.name` meant as a `customers → regions` walk) is a hard error (`LegacyDunderAliasError`), not auto-converted. The flattened form `a__b__c__col` appears only inside virtual-model column names produced by the query-backed model wrap (see below).
 * Single-dot `t.col` is a literal `<table>.<column>` SQL reference (sqlglot's normal behavior).
-* User-supplied multi-dot input (`a.b.c`) is auto-rewritten to `a__b.c` at validation time with a warning.
-* Other derived columns of the same model (or of a joined model via `__`) are recursively expanded so chains like `A.ratio = "A.bar / B.foo_normalized"` (where `B.foo_normalized` is itself derived) work.
+* Multi-dot input (`a.b.c`) stays dotted through to resolution — there is no `__` rewrite (the old dotted→`__` normalization is retired).
+* Other derived columns of the same model (or of a joined model via a dotted join path) are recursively expanded so chains like `A.ratio = "A.bar / B.foo_normalized"` (where `B.foo_normalized` is itself derived) work.
 * A subquery in a Mode-A surface (`col IN (SELECT … FROM other)`, a scalar `= (SELECT … LIMIT 1)`) must be **self-contained**: its own columns bind against the subquery's own `FROM`, never against this model — reference resolution does not reach in to re-qualify them. Correlating back to the outer model is **not** supported (an outer reference inside the subquery is a scope leak, flagged by the scope-closure check SLayer runs over generated SQL under `SLAYER_VALIDATE_SCOPES`).
 * `ModelMeasure` names are not visible from SQL mode — saved measures are DSL-only.
 * `{variable}` placeholders are substituted into these Mode-A surfaces from the merged variable set (raise-on-missing once any variable is in play; a fully variable-free execution leaves braces as literals; Mode-A- and dialect-aware string escaping, so quoted values round-trip on backslash-escaping backends like MySQL/ClickHouse — DEV-1727). See [Variables in model SQL](models.md#variables-in-model-sql).
@@ -28,15 +28,15 @@ SLayer has two distinct expression layers and the rules for what each one accept
 * A single-dot dotted path walks the join graph: `customers.regions.name` traverses `model → customers → regions` and resolves `name` on the regions model. Multi-hop is supported.
 * Aggregation colon syntax: `<col>:<agg>` (e.g. `revenue:sum`), `*:count`, `<col>:<agg>(<args>)` (e.g. `price:weighted_avg(weight=quantity)`), and `<dotted.path>:<agg>` for cross-model aggregations.
 * Transform calls wrap aggregated refs: `cumsum(revenue:sum)`, `rank(revenue:sum, partition_by=region)`, `change(customers.revenue:sum)`, etc.
-* `__`-delimited tokens are rejected in user input — they're reserved for internal join-path aliases. Use single-dot DSL paths instead.
+* A `__` token in a name is matched by **exact name**, not split into a join walk — write a single-dot DSL path (`customers.region`) for a join. Only the reserved `__slayer_` prefix is rejected.
 
-## The internal `__` carve-out
+## `__` in identifiers
 
-The `Column._validate_name` validator allows `__` inside `Column.name`. This is required by the query-backed model wrap (`_expand_query_backed_model`, via `flat_name` in `slayer/sql/naming.py`), which flattens joined-model columns into virtual-model column names like `stores__name` or `customers__regions__name` — the entire dotted path becomes one SQL identifier on the synthetic table.
+`__` is a legal character in model / query / column / measure names, matched by **exact name**. A model can be named `customers__region`, and a Mode-A qualifier `customers__region.label` binds to that exact directly-joined model — it is never split into a `customers → region` walk. Dots are the only join-hop separator, so there is no ambiguity between a multi-token name and a join path.
 
-`__` is **not** rejected at SlayerQuery / ModelMeasure construction. A user-authored DSL formula or filter that references such a virtual column by name (e.g. a downstream stage filtering on `kpis__total_amount_sum`) needs to remain constructible. Instead, **strict resolution at binding time** catches the cases that are actually wrong: any bare name in a query measure / filter / dimension that doesn't resolve to a `Column` / `ModelMeasure` / custom aggregation / canonical agg alias / query-level alias on the source model raises `ReferenceError`. Typos like `customers__region` (against a model that has `customers` joined to `region`, but no virtual column with that flattened name) are surfaced at execution time, not at construction.
+The one reserved spelling is the **`__slayer_` prefix**: model / column / measure names and Mode-B tokens beginning with `__slayer_` are rejected, since that namespace is reserved for SLayer-internal identifiers.
 
-`reject_user_dunder` in `slayer/core/refs.py` is retained as a helper for narrow contexts where `__` is unambiguously wrong (e.g. `SlayerQuery.name`, where `__` would clash with the SQL alias namespace) — it is not applied to free-form formula / filter strings.
+The query-backed model wrap (`_expand_query_backed_model`, via `flat_name` in `slayer/sql/naming.py`) still flattens joined-model columns into virtual-model column names like `stores__name` or `customers__regions__name` — the entire dotted path becomes one SQL identifier on the synthetic table. A downstream stage references such a column by that exact flattened name; strict resolution at binding time raises `ReferenceError` for any bare name that doesn't resolve to a `Column` / `ModelMeasure` / custom aggregation / canonical agg alias / query-level alias on the source model.
 
 ## Reference-resolution rules at a glance
 
@@ -57,7 +57,7 @@ Accepted at `Column` construction:
 ```json
 {"name": "active_amount", "sql": "amount", "filter": "json_extract(metadata, '$.active') = 1", "type": "DOUBLE"}
 {"name": "amt", "sql": "amount", "filter": "CASE WHEN status = 'active' THEN 1 ELSE 0 END = 1", "type": "DOUBLE"}
-{"name": "amt", "sql": "amount", "filter": "customers__regions.name = 'US'", "type": "DOUBLE"}
+{"name": "amt", "sql": "amount", "filter": "customers.regions.name = 'US'", "type": "DOUBLE"}
 ```
 
 Rejected at `Column` construction:
@@ -95,8 +95,8 @@ Rejected at enrichment:
 // ↑ ReferenceError: 'unknown_col' is not a Column / ModelMeasure on 'orders'
 
 {"source_model": "orders", "dimensions": ["id"], "filters": ["customers__region = 'EU'"]}
-// ↑ ReferenceError: 'customers__region' doesn't resolve to any virtual-model column
-//   (use single-dot DSL: 'customers.region')
+// ↑ ReferenceError: no Column / ModelMeasure named 'customers__region' on 'orders'
+//   (`__` is matched by exact name, not split — for the join write dotted: 'customers.region')
 ```
 
 ### `ModelMeasure.formula` (DSL mode)
@@ -189,4 +189,4 @@ Test for null separately:
 * [Models](models.md) — `Column.sql`, `Column.filter`, model-level filters
 * [Queries](queries.md) — `SlayerQuery` field semantics
 * [Formulas](formulas.md) — DSL grammar and transforms
-* [Joins](models.md#joins) — `__` alias convention for join-path SQL
+* [Joins](models.md#joins) — dotted join paths in model SQL (generated SQL uses `__` internal aliases)

@@ -112,7 +112,7 @@ def orders_model() -> SlayerModel:
             Aggregation(
                 name="wscaled_sum", formula="SUM({value} * {w})",
                 params=[AggregationParam(
-                    name="w", sql="customers__regions.weight",
+                    name="w", sql="customers.regions.weight",
                 )],
             ),
             Aggregation(

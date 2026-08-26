@@ -751,13 +751,13 @@ def _s5_orders() -> SlayerModel:
             Column(name="amount", type=DataType.DOUBLE),
             Column(name="created_at", type=DataType.TIMESTAMP),
             # Derived source crossing via multi-hop `__` path alias.
-            Column(name="region_pay", sql="customers__regions.payment_amount",
+            Column(name="region_pay", sql="customers.regions.payment_amount",
                    type=DataType.DOUBLE),
             # Derived source crossing via single-dot form.
             Column(name="cust_weight_d", sql="customers.weight",
                    type=DataType.DOUBLE),
             # Sibling derived chain: doubled_pop -> pop_helper -> crossing.
-            Column(name="pop_helper", sql="customers__regions.payment_amount",
+            Column(name="pop_helper", sql="customers.regions.payment_amount",
                    type=DataType.DOUBLE),
             Column(name="doubled_pop", sql="pop_helper * 2",
                    type=DataType.DOUBLE),
@@ -781,7 +781,7 @@ def _s5_orders() -> SlayerModel:
             Aggregation(
                 name="wscaled_sum", formula="SUM({value} * {w})",
                 params=[AggregationParam(
-                    name="w", sql="customers__regions.weight",
+                    name="w", sql="customers.regions.weight",
                 )],
             ),
         ],
@@ -928,7 +928,7 @@ class TestWidenedLaw3TriggerCrossingInputs:
 
     def test_user_template_fragment_kwarg_crossing_triggers(self):
         _, plans = _s5_plans(
-            "amount:scaled_sum(scale='customers__regions.weight')",
+            "amount:scaled_sum(scale='customers.regions.weight')",
         )
         _assert_single_host_rooted(plans)
 

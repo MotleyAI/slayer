@@ -22,7 +22,7 @@ from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.formula import parse_formula
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.refs import IDENTIFIER_RE as _IDENTIFIER_RE
-from slayer.engine.column_expansion import _root_scope_column_ids
+from slayer.engine.column_expansion import _root_scope_column_ids, resolve_ref_target
 from slayer.engine.ingestion import introspect_table_to_model
 from slayer.engine.join_graph import JoinGraph, min_hops_root
 from slayer.ingest_report import ConversionResult, ConversionWarning
@@ -60,7 +60,9 @@ class OsiConversionError(Exception):
 # Characters/shapes that are unsafe in a SLayer model name — notably path
 # separators and NUL, since a model name becomes a filename in YAML storage
 # (``<dir>/<name>.yaml``); an absolute/traversal name would escape the tree.
-_UNSAFE_MODEL_NAME_CHARS = ("__", ".", ":", "/", "\\", "\x00")
+# DEV-1743: ``__`` is no longer unsafe — model names may contain it (the ban is
+# lifted); it is matched exactly, never split.
+_UNSAFE_MODEL_NAME_CHARS = (".", ":", "/", "\\", "\x00")
 
 
 def _legal_model_name(name: str) -> bool:
@@ -672,18 +674,18 @@ class OsiToSlayerConverter:
         return bad
 
     def _walk_join_alias(self, host: SlayerModel, alias: str) -> SlayerModel | None:
-        """Resolve a ``__``-delimited join alias (e.g. ``customers__regions``)
-        to the terminal joined model by walking ``host``'s join chain, or None
-        if any hop is not a declared join."""
-        current = host
-        for hop in (alias.split("__") if "__" in alias else [alias]):
-            join = next((j for j in current.joins if j.target_model == hop), None)
-            if join is None:
-                return None
-            current = self._models.get(hop)
-            if current is None:
-                return None
-        return current
+        """Resolve a Mode-A join qualifier to its terminal joined model, or None.
+
+        DEV-1743 strict-D2 (P1): ``alias`` is exact-matched first (a directly-
+        joined model MAY contain ``__``), then walked as a dotted chain of exact
+        hops — NEVER ``__``-split. A legacy ``customers__regions`` split-alias
+        (no model of that exact name) is unresolvable (``None``), not silently
+        walked as ``customers → regions``."""
+        return resolve_ref_target(
+            qualifiers=tuple(alias.split(".")),
+            source_model=host,
+            resolve_model=self._models.get,
+        )
 
     def _model_has_column(self, model_name: str, column: str) -> bool:
         model = self._models.get(model_name)

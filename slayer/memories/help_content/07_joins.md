@@ -31,16 +31,16 @@ In **queries**, use dots:
 
 {{product}} walks the join graph via BFS and inserts the LEFT JOINs.
 
-In **SQL snippets** (dimension `sql`, measure `sql`, model `filters`), use
-`__` instead of dots, because dots aren't valid SQL:
+In **SQL snippets** (dimension `sql`, measure `sql`, model `filters`), use the
+same dotted join paths — dots now work in Mode-A SQL too:
 
 ```yaml
 filters:
-  - "customers__regions.name = 'US'"
+  - "customers.regions.name = 'US'"
 ```
 
-Single-dot `customers.name` (table.column) is also fine in SQL snippets — it's
-only multi-hop paths that need `__`.
+Single-dot `customers.name` (table.column) works as well. The legacy
+`__`-delimited split-alias form is no longer accepted — it is a hard error.
 
 ## Cross-model measures — why sub-queries
 
@@ -93,15 +93,16 @@ produces a **separate** sub-query with its own alias:
 ```
 
 If you really want to re-collapse the diamond, add a model filter that equates
-them (using `__` syntax):
+them (dotted paths, since model filters are SQL snippets):
 
 ```yaml
 filters:
-  - "customers__regions.id = warehouses__regions.id"
+  - "customers.regions.id = warehouses.regions.id"
 ```
 
 ## See also
 
-- `memory:help.models` — declaring joins and the `__` alias convention.
+- `memory:help.models` — declaring joins and the dotted join-path convention
+  (generated SQL uses `__` aliases internally).
 - `memory:help.extending` — adding ad-hoc joins via `ModelExtension`.
 - `memory:help.queries` — dotted dimensions and time dimensions.
