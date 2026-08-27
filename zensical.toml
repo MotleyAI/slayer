@@ -111,6 +111,11 @@ nav = [
       "examples/14_variable_substitution/variable_substitution.md",
       { "Notebook" = "examples/14_variable_substitution/variable_substitution_nb.ipynb" },
     ]},
+    { "DuckDB" = [
+      "examples/15_duckdb/duckdb.md",
+      { "Notebook (Python)" = "examples/15_duckdb/duckdb_python_nb.ipynb" },
+      { "Notebook (MCP)" = "examples/15_duckdb/duckdb_mcp_nb.ipynb" },
+    ]},
     { "Schema Drift (worked example)" = "examples/schema-drift.md" },
   ]},
   { "Configuration" = [

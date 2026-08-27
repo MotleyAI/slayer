@@ -9,6 +9,7 @@ cross-notebook state (custom models created by one notebook shouldn't
 leak into another).
 """
 
+import re
 import shutil
 import socket
 from pathlib import Path
@@ -173,6 +174,43 @@ def _bootstrap_failure_is_transient(error_text: str) -> bool:
     return _is_transient_git_error(error_text)
 
 
+# The DuckDB example notebooks read a CSV live over httpfs and let DuckDB
+# auto-install the httpfs extension from its repo, so both hosts must be
+# reachable. Mirrors the MetricFlow guard above: skip (never fail) when the
+# network can't be reached, so offline runs stay green.
+_DUCKDB_NB_DIR = "15_duckdb"
+_DUCKDB_REMOTE_HOSTS = ("cdn.jsdelivr.net", "extensions.duckdb.org")
+
+# Substrings marking a mid-run failure as a transient network/server hiccup
+# reaching the remote CSV or the extension repo. Matched case-insensitively and
+# only when the error also names one of the remote hosts, so genuine query /
+# ingestion bugs still fail loudly.
+_DUCKDB_TRANSIENT_SIGNATURES = (
+    r"http (?:429|5\d\d)",
+    r"could not resolve host",
+    r"temporary failure in name resolution",
+    r"name or service not known",
+    r"connection reset",
+    r"connection refused",
+    r"connection timed out",
+    r"timed out",
+    r"broken pipe",
+    r"could not establish",
+    r"failed to (?:connect|download)",
+)
+
+
+def _duckdb_hosts_reachable() -> bool:
+    return all(_github_reachable(host=h) for h in _DUCKDB_REMOTE_HOSTS)
+
+
+def _duckdb_network_error_is_transient(error_text: str) -> bool:
+    text = error_text.lower()
+    if not any(host in text for host in _DUCKDB_REMOTE_HOSTS):
+        return False
+    return any(re.search(pattern, text) for pattern in _DUCKDB_TRANSIENT_SIGNATURES)
+
+
 def test_notebook_runs_without_errors(notebook_path, request):
     """Execute the notebook and assert it completes without errors."""
     rel = str(notebook_path.relative_to(EXAMPLES_DIR))
@@ -186,6 +224,12 @@ def test_notebook_runs_without_errors(notebook_path, request):
         complete_marker = notebook_path.parent / ".cache" / ".complete"
         if not complete_marker.exists() and not _github_reachable():
             pytest.skip("GitHub unreachable; cannot bootstrap the MetricFlow notebook")
+
+    is_duckdb = _DUCKDB_NB_DIR in notebook_path.parts
+    if is_duckdb and not _duckdb_hosts_reachable():
+        pytest.skip(
+            "CDN or DuckDB extension repo unreachable; cannot run the DuckDB httpfs notebook"
+        )
 
     with open(notebook_path) as f:
         nb = nbformat.read(f, as_version=4)
@@ -209,4 +253,10 @@ def test_notebook_runs_without_errors(notebook_path, request):
             text = str(exc)
             if not _github_reachable() or _bootstrap_failure_is_transient(text):
                 pytest.skip(f"MetricFlow notebook could not bootstrap: {exc}")
+        # Narrow by design: skip only when the error text itself names a remote
+        # host AND matches a transient signature. A coincidental outage must not
+        # turn a real NotImplementedError / assertion / query bug into a skip —
+        # the pre-run reachability probe already covers "network down at start".
+        if is_duckdb and _duckdb_network_error_is_transient(str(exc)):
+            pytest.skip(f"DuckDB notebook hit a transient network error: {exc}")
         raise
