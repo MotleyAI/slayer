@@ -159,7 +159,9 @@ _RESERVED_EXPR_PREFIX = "__slayer_"
 # is a legal saved name and must stay referenceable — a raw substring check
 # would reject it. The lookbehind rejects a token that opens the identifier
 # (start-of-string or after an operator/dot) while allowing an embedded run.
-_RESERVED_EXPR_PREFIX_RE = re.compile(r"(?<![A-Za-z0-9_])__slayer_")
+# ``\w`` is Unicode-aware (str patterns), so a Unicode-identifier name like
+# ``é__slayer_bar`` — legal at save — stays referenceable too (Codex).
+_RESERVED_EXPR_PREFIX_RE = re.compile(r"(?<!\w)__slayer_")
 _PLACEHOLDER_PREFIX = "__slayer_agg_"
 _PLACEHOLDER_RE = re.compile(rf"^{_PLACEHOLDER_PREFIX}(\d+)__$")
 _OVER_RE = re.compile(r"\bOVER\s*\(", re.IGNORECASE)

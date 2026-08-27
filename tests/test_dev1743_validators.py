@@ -124,6 +124,13 @@ class TestParserSlayerPrefixReservation:
         parsed = parse_expr("customers.foo__slayer_bar:sum")
         assert parsed is not None
 
+    def test_unicode_embedded_slayer_run_still_parses(self) -> None:
+        # The identifier-boundary check must be Unicode-aware (Codex): a name
+        # like ``é__slayer_bar`` is a legal saved name (reservation is a prefix
+        # check) and a valid Python identifier, so it stays referenceable.
+        assert parse_expr("é__slayer_bar") is not None
+        assert parse_expr("变量__slayer_bar") is not None
+
     def test_colon_aggregation_still_parses(self) -> None:
         # revenue:sum is rewritten to a __slayer_agg_ placeholder INTERNALLY;
         # the raw-input scan must not mistake that for a spoof.
