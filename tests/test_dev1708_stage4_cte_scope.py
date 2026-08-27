@@ -299,7 +299,7 @@ class TestDev1702B2ForwardMaterialization:
         join unregistered."""
         customers_extra = [Column(
             name="deep_pop_flt", sql="regions.population", type=DataType.DOUBLE,
-            filter="regions__countries.gdp > 5")]
+            filter="regions.countries.gdp > 5")]
         query = SlayerQuery(
             source_model="orders_x",
             measures=[ModelMeasure(

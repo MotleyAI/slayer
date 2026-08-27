@@ -39,7 +39,7 @@ A query then asks for `revenue:sum` (aggregate the `revenue` column), `aov` (the
 | `description` | string | No | Helps agents and users understand the model |
 | `hidden` | bool | No | Hide from listings (still queryable by name and joinable). Set automatically at ingest for recognised ELT/migration internals — see [Recognised internals](../reference/cli.md#recognised-internals) |
 | `meta` | dict | No | Arbitrary JSON metadata for caller bookkeeping. Ingestion writes `internal_table: <tool>` on auto-hidden internals |
-| `version` | int | No | Schema version stamp (currently `8`) |
+| `version` | int | No | Schema version stamp (currently `9`) |
 
 ## Source modes
 
@@ -58,10 +58,11 @@ primary-key column and no auto-generated joins; `source_kind` is what tells you
 that re-ingesting will never produce them. A re-ingest refreshes the field, so a
 view later rebuilt as a table (dbt's `+materialized: table`) is picked up.
 
-Model names may not contain `__`, which is reserved for join-path aliases in
-generated SQL, but `sql_table` has no such restriction. Auto-ingestion uses
-this: an object named `reports__patient__drug` becomes a model named
-`reports_patient_drug` whose `sql_table` is still `reports__patient__drug`.
+Model names may contain `__`; it is matched as part of the exact name, not a
+join-path delimiter (dots are the only join separator). Auto-ingestion preserves
+the faithful object name: an object named `reports__patient__drug` becomes a
+model named `reports__patient__drug`, and `a__b` and `a_b` are distinct models.
+Only the `__slayer_` prefix is reserved for SLayer-internal identifiers.
 
 ## Columns
 
@@ -71,7 +72,7 @@ A column is the unit of structure on the model. The same column entry can serve 
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `name` | string | Yes | — | Unique within the model. Must not contain `.` |
+| `name` | string | Yes | — | Unique within the model. Must not contain `.` or `:`; the `__slayer_` prefix is reserved. `__` is otherwise allowed |
 | `description` | string | No | — | Clarifies meaning for agents and users |
 | `label` | string | No | — | Display name; propagates into query result metadata |
 | `sql` | string | No | (bare column name) | SQL expression — defaults to the column's name |
@@ -156,7 +157,7 @@ joins:
     join_pairs: [["station_id", "id"]]
 ```
 
-At query time, `aoi_ratio` expands to `telescopes.aperture / (stations.foo_raw / 100.0)`. The same applies to local-model chains (a column on the source model referencing another derived column on the same model) and to multi-hop join paths (use the `__`-delimited form, e.g., `B__C.x_derived`, when crossing more than one join).
+At query time, `aoi_ratio` expands to `telescopes.aperture / (stations.foo_raw / 100.0)`. The same applies to local-model chains (a column on the source model referencing another derived column on the same model) and to multi-hop join paths (use the dotted form, e.g., `B.C.x_derived`, when crossing more than one join).
 
 Same-model references may be written **bare** (just the column name) or qualified with the host alias — both forms expand the same way. So given `bucket.sql = "raw_a / 10"`, a sibling `rn.sql = "ROW_NUMBER() OVER (PARTITION BY bucket ORDER BY id)"` correctly expands `bucket` to the inlined body. Bare references inside a nested scope (sub-query, `UNION` branch, CTE, `VALUES`) are NOT inlined — those identifiers belong to the inner rowset, not the host model — so `Column.sql = "(SELECT MAX(score) FROM other) + score"` inlines the outer `score` but leaves the inner one alone.
 
@@ -170,7 +171,7 @@ A column's `sql` may contain a window function (`row_number() over (...)`, `dens
 
 ### SQL expression conventions
 
-Bare column names auto-qualify against the model's own table — single references (`"amount"`) and arithmetic alike (`"amount * quantity"`). Explicit `model.column` works too but adds nothing. For joined columns inside a model's own `sql`, use the `__` alias form (`customers__regions.name`) — see [Joins](#joins).
+Bare column names auto-qualify against the model's own table — single references (`"amount"`) and arithmetic alike (`"amount * quantity"`). Explicit `model.column` works too but adds nothing. For joined columns inside a model's own `sql`, use the dotted join path (`customers.regions.name`) — see [Joins](#joins).
 
 ### SQLite JSON extraction
 
@@ -333,7 +334,7 @@ Joined tables use `__`-delimited path aliases in generated SQL so **diamond join
 - `customers.regions.name` → table alias `customers__regions`
 - `warehouses.regions.name` → table alias `warehouses__regions`
 
-The convention is split by context: **queries use dots** for paths (`customers.regions.name`), **model-internal SQL uses `__`** for the alias (`customers__regions.name`). See [Diamond Joins](ingestion.md#diamond-joins) for details.
+You write dotted join paths everywhere — in both queries and model-internal SQL (`customers.regions.name`). The `__`-delimited alias is purely an emitted-SQL detail SLayer generates for you. See [Diamond Joins](ingestion.md#diamond-joins) for details.
 
 ## Model filters
 
@@ -347,7 +348,7 @@ filters:
   - "status <> 'test'"
 ```
 
-These are SQL-mode expressions (Mode A): any valid SQL the underlying dialect accepts — function calls (`json_extract`, `coalesce`, …), `CASE WHEN`, joined-column references via the `__` alias. Aggregation colon syntax and SLayer transforms are rejected here — those are DSL constructs (Mode B) and belong in query-level filters or `ModelMeasure.formula`. See [references.md](references.md) for the full Mode A / Mode B table. Multi-hop joined references (`customers.regions.name`) are auto-converted to the `__` form with a warning.
+These are SQL-mode expressions (Mode A): any valid SQL the underlying dialect accepts — function calls (`json_extract`, `coalesce`, …), `CASE WHEN`, joined-column references via dotted join paths (`customers.regions.name`). Aggregation colon syntax and SLayer transforms are rejected here — those are DSL constructs (Mode B) and belong in query-level filters or `ModelMeasure.formula`. See [references.md](references.md) for the full Mode A / Mode B table. Dotted paths stay dotted (no auto-conversion); the legacy `__`-delimited split-alias form (`customers__regions.name`) is a hard error.
 
 ## Query-backed models
 
@@ -512,7 +513,7 @@ Query results use `model_name.column_name` keys. Colon syntax is converted: `rev
 
 ## Schema versioning
 
-Every persisted SLayer entity (`SlayerModel`, `SlayerQuery`, `DatasourceConfig`) carries a `version: int` field — currently `6` for `SlayerModel`, `3` for `SlayerQuery`, `1` for `DatasourceConfig`. Behaviour:
+Every persisted SLayer entity (`SlayerModel`, `SlayerQuery`, `DatasourceConfig`) carries a `version: int` field — currently `9` for `SlayerModel`, `3` for `SlayerQuery`, `1` for `DatasourceConfig`. Behaviour:
 
 - **On save**, SLayer always writes the current schema version.
 - **On load**, an older `version` triggers a chain of pure dict→dict converters before Pydantic validation. Hand-edited and older files keep working as the schema evolves.

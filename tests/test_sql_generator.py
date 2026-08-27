@@ -3642,7 +3642,7 @@ class TestPathAliasJoinInference:
                 Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
                 Column(
                     name="is_us",
-                    sql="CASE WHEN customers__regions.name = 'US' THEN 1 ELSE 0 END",
+                    sql="CASE WHEN customers.regions.name = 'US' THEN 1 ELSE 0 END",
                     type=DataType.DOUBLE,
                 ),
 
@@ -3697,7 +3697,7 @@ class TestPathAliasJoinInference:
                 Column(name="user_id", sql="user_id", type=DataType.DOUBLE),
                 Column(
                     name="user_signup_date",
-                    sql="users__orgs.signup_date",
+                    sql="users.orgs.signup_date",
                     type=DataType.TIMESTAMP,
                 ),
 
@@ -3731,7 +3731,7 @@ class TestPathAliasJoinInference:
         dimension and time-dimension cases above).
         """
         chained_model.columns.append(
-            Column(name="region_pop_sum", sql="customers__regions.population", type=DataType.DOUBLE)
+            Column(name="region_pop_sum", sql="customers.regions.population", type=DataType.DOUBLE)
         )
         query = SlayerQuery(
             source_model="orders",
@@ -3850,7 +3850,7 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         model = self._orders_model(extra_columns=[
-            Column(name="region_payment", sql="customers__regions.payment_amount",
+            Column(name="region_payment", sql="customers.regions.payment_amount",
                    type=DataType.DOUBLE),
         ])
         await engine.storage.save_model(model)
@@ -3901,7 +3901,7 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         model = self._orders_model(extra_columns=[
-            Column(name="region_payment", sql="customers__regions.payment_amount",
+            Column(name="region_payment", sql="customers.regions.payment_amount",
                    type=DataType.DOUBLE, filter="orders.amount > 100"),
         ])
         await engine.storage.save_model(model)
@@ -3933,9 +3933,9 @@ class TestMeasureSourceSqlJoinInference:
         merging (DEV-1709 interview decision; merging is DEV-1688 /
         ``may_inline`` territory). Dedupe is therefore per-CTE."""
         model = self._orders_model(extra_columns=[
-            Column(name="region_payment_a", sql="customers__regions.payment_amount",
+            Column(name="region_payment_a", sql="customers.regions.payment_amount",
                    type=DataType.DOUBLE),
-            Column(name="region_payment_b", sql="customers__regions.payment_amount",
+            Column(name="region_payment_b", sql="customers.regions.payment_amount",
                    type=DataType.DOUBLE),
         ])
         await engine.storage.save_model(model)
@@ -3970,9 +3970,9 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         model = self._orders_model(extra_columns=[
-            Column(name="region_pay_d", sql="customers__regions.payment_amount * 2",
+            Column(name="region_pay_d", sql="customers.regions.payment_amount * 2",
                    type=DataType.DOUBLE),
-            Column(name="region_pay_i", sql="customers__regions.payment_amount * 2",
+            Column(name="region_pay_i", sql="customers.regions.payment_amount * 2",
                    type=DataType.INT),
         ])
         await engine.storage.save_model(model)
@@ -3999,7 +3999,7 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         model = self._orders_model(extra_columns=[
-            Column(name="region_payment", sql="customers__regions.payment_amount",
+            Column(name="region_payment", sql="customers.regions.payment_amount",
                    type=DataType.DOUBLE),
         ])
         await engine.storage.save_model(model)
@@ -4026,7 +4026,7 @@ class TestMeasureSourceSqlJoinInference:
         (DEV-1503 rule; HAVING-into-the-CTE would surface host rows as
         NULL instead of dropping them)."""
         model = self._orders_model(extra_columns=[
-            Column(name="region_payment", sql="customers__regions.payment_amount",
+            Column(name="region_payment", sql="customers.regions.payment_amount",
                    type=DataType.DOUBLE),
         ])
         await engine.storage.save_model(model)
@@ -4053,7 +4053,7 @@ class TestMeasureSourceSqlJoinInference:
     ) -> None:
         model = self._orders_model(extra_columns=[
             Column(name="_val_0", sql="amount", type=DataType.DOUBLE),
-            Column(name="region_payment", sql="customers__regions.payment_amount",
+            Column(name="region_payment", sql="customers.regions.payment_amount",
                    type=DataType.DOUBLE),
         ])
         await engine.storage.save_model(model)
@@ -4154,7 +4154,7 @@ class TestMeasureSourceSqlJoinInference:
         model = self._orders_model(extra_columns=[
             Column(
                 name="region_pop_sum",
-                sql="customers__regions.population",
+                sql="customers.regions.population",
                 type=DataType.DOUBLE,
             ),
         ])
@@ -4189,7 +4189,7 @@ class TestMeasureSourceSqlJoinInference:
         model = self._orders_model(extra_columns=[
             Column(
                 name="region_pop_sum",
-                sql="customers__regions.population",
+                sql="customers.regions.population",
                 type=DataType.DOUBLE,
             ),
         ])
@@ -4219,7 +4219,7 @@ class TestMeasureSourceSqlJoinInference:
         model = self._orders_model(extra_columns=[
             Column(
                 name="region_prop_x",
-                sql="json_extract(customers__regions.props, '$.x')",
+                sql="json_extract(customers.regions.props, '$.x')",
                 type=DataType.DOUBLE,
             ),
         ])
@@ -4247,7 +4247,7 @@ class TestMeasureSourceSqlJoinInference:
         model = self._orders_model(extra_columns=[
             Column(
                 name="pop_helper",
-                sql="customers__regions.population",
+                sql="customers.regions.population",
                 type=DataType.DOUBLE,
             ),
             Column(
@@ -4285,7 +4285,7 @@ class TestMeasureSourceSqlJoinInference:
         model = self._orders_model(extra_columns=[
             Column(
                 name="region_pop_sum",
-                sql="customers__regions.population",
+                sql="customers.regions.population",
                 type=DataType.DOUBLE,
             ),
         ])
@@ -4322,12 +4322,12 @@ class TestMeasureSourceSqlJoinInference:
         model = self._orders_model(extra_columns=[
             Column(
                 name="region_pop_sum",
-                sql="customers__regions.population",
+                sql="customers.regions.population",
                 type=DataType.DOUBLE,
             ),
             Column(
                 name="region_weight_sum",
-                sql="customers__regions.weight",
+                sql="customers.regions.weight",
                 type=DataType.DOUBLE,
             ),
         ])
@@ -4366,7 +4366,7 @@ class TestMeasureSourceSqlJoinInference:
         model = self._orders_model(extra_columns=[
             Column(
                 name="region_pop_sum",
-                sql="customers__regions.population",
+                sql="customers.regions.population",
                 type=DataType.DOUBLE,
             ),
         ])
@@ -4399,7 +4399,7 @@ class TestMeasureSourceSqlJoinInference:
         model = self._orders_model(extra_columns=[
             Column(
                 name="region_pop_sum",
-                sql="customers__regions.population",
+                sql="customers.regions.population",
                 type=DataType.DOUBLE,
                 # Filter crosses only the customers hop — does NOT touch
                 # customers__regions. Without DEV-1502 the regions join
@@ -4548,7 +4548,7 @@ class TestMeasureSourceSqlJoinInference:
         model = self._orders_model(extra_columns=[
             Column(
                 name="region_weight",
-                sql="customers__regions.weight",
+                sql="customers.regions.weight",
                 type=DataType.DOUBLE,
             ),
         ])
@@ -4628,7 +4628,7 @@ class TestDev1709WidenedIsolationShapes:
         """DEV-1702-B1: a regular crossing aggregate next to a local
         first/last isolates — it never renders in the ranked outer scope."""
         orders = self._orders_model(extra_columns=[
-            Column(name="region_pop_sum", sql="customers__regions.population",
+            Column(name="region_pop_sum", sql="customers.regions.population",
                    type=DataType.DOUBLE),
         ])
         query = SlayerQuery(
@@ -4659,7 +4659,7 @@ class TestDev1709WidenedIsolationShapes:
         parametric aggregate the same way (Codex plan-review F4 fold-in:
         kwarg expressions must never leak into the ranked outer scope)."""
         orders = self._orders_model(extra_columns=[
-            Column(name="region_weight", sql="customers__regions.weight",
+            Column(name="region_weight", sql="customers.regions.weight",
                    type=DataType.DOUBLE),
         ])
         query = SlayerQuery(
@@ -4728,7 +4728,7 @@ class TestDev1709WidenedIsolationShapes:
         query = SlayerQuery(
             source_model="orders",
             measures=[ModelMeasure(
-                formula="amount:scaled_sum(scale='customers__regions.weight')",
+                formula="amount:scaled_sum(scale='customers.regions.weight')",
             )],
         )
         sql = await self._sql(query, orders)
@@ -4747,7 +4747,7 @@ class TestDev1709WidenedIsolationShapes:
             Aggregation(
                 name="wscaled_sum", formula="SUM({value} * {w})",
                 params=[AggregationParam(
-                    name="w", sql="customers__regions.weight",
+                    name="w", sql="customers.regions.weight",
                 )],
             ),
         ])
@@ -4770,7 +4770,7 @@ class TestDev1709WidenedIsolationShapes:
         BOTH the host base WHERE and the isolation CTE's scope, each with
         its own join registration."""
         orders = self._orders_model(extra_columns=[
-            Column(name="region_pop_sum", sql="customers__regions.population",
+            Column(name="region_pop_sum", sql="customers.regions.population",
                    type=DataType.DOUBLE),
         ])
         query = SlayerQuery(
@@ -4803,7 +4803,7 @@ class TestDev1709WidenedIsolationShapes:
         refs only; composite lowering for filter-only and projected
         consumers is pinned by the sibling tests.)"""
         orders = self._orders_model(extra_columns=[
-            Column(name="region_pop_sum", sql="customers__regions.population",
+            Column(name="region_pop_sum", sql="customers.regions.population",
                    type=DataType.DOUBLE),
         ])
         query = SlayerQuery(
@@ -4826,7 +4826,7 @@ class TestDev1709WidenedIsolationShapes:
         isolates, the comparison lands in the combined outer WHERE (never
         HAVING), local operand promoted into ``_base``."""
         orders = self._orders_model(extra_columns=[
-            Column(name="region_pop_sum", sql="customers__regions.population",
+            Column(name="region_pop_sum", sql="customers.regions.population",
                    type=DataType.DOUBLE),
         ])
         query = SlayerQuery(
@@ -4860,9 +4860,9 @@ class TestDev1709WidenedIsolationShapes:
         suppressed. The type-distinctness claim is unchanged and is what the
         two CASTs below still pin."""
         orders = self._orders_model(extra_columns=[
-            Column(name="region_pay_d", sql="customers__regions.population * 2",
+            Column(name="region_pay_d", sql="customers.regions.population * 2",
                    type=DataType.DOUBLE),
-            Column(name="region_pay_i", sql="customers__regions.population * 2",
+            Column(name="region_pay_i", sql="customers.regions.population * 2",
                    type=DataType.INT),
         ])
         bundle = ResolvedSourceBundle(
@@ -4905,7 +4905,7 @@ class TestDev1709WidenedIsolationShapes:
         renders INLINE in ``_base``, which is legal there, and the ranked CTE
         neither sees it nor is affected by it."""
         orders = self._orders_model(extra_columns=[
-            Column(name="region_weight", sql="customers__regions.weight",
+            Column(name="region_weight", sql="customers.regions.weight",
                    type=DataType.DOUBLE),
         ])
         bundle = ResolvedSourceBundle(
@@ -9300,7 +9300,7 @@ class TestIsolatedFilteredMeasureCTEs:
                 # Derived column reaching `customers__regions.code` via a
                 # 2-hop walk (Mode A uses ``__`` between hops + single dot
                 # before the leaf).
-                Column(name="region_code", sql="customers__regions.code", type=DataType.TEXT),
+                Column(name="region_code", sql="customers.regions.code", type=DataType.TEXT),
                 # Filtered local measure: filter references the derived column.
                 Column(
                     name="eu_amount", sql="amount", filter="region_code = 'EU'",
@@ -12263,7 +12263,7 @@ class TestCrossModelAggregateSourceSqlJoinInference:
 
     async def test_multi_hop_further_join_source_sql(self, storage) -> None:
         engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
-            Column(name="deep_gdp", sql="regions__countries.gdp", type=DataType.DOUBLE),
+            Column(name="deep_gdp", sql="regions.countries.gdp", type=DataType.DOUBLE),
         ]))
         query = SlayerQuery(
             source_model="orders_x",
@@ -12277,7 +12277,7 @@ class TestCrossModelAggregateSourceSqlJoinInference:
 
     async def test_path_alias_source_sql(self, storage) -> None:
         engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
-            Column(name="deep_country_name", sql="regions__countries.name",
+            Column(name="deep_country_name", sql="regions.countries.name",
                    type=DataType.TEXT),
         ]))
         query = SlayerQuery(
@@ -12357,7 +12357,7 @@ class TestCrossModelAggregateSourceSqlJoinInference:
     async def test_filter_and_source_cross_different_depths(self, storage) -> None:
         engine = await self._engine_with(storage, self._customers_v2(
             extra_columns=[
-                Column(name="deep_gdp", sql="regions__countries.gdp",
+                Column(name="deep_gdp", sql="regions.countries.gdp",
                        type=DataType.DOUBLE),
             ],
             filters=["regions.name IS NOT NULL"],

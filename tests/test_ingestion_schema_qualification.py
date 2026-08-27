@@ -681,15 +681,19 @@ class TestCollisions:
         backward = ingest_datasource_report(datasource=_ds(same_name_db), schemas=["s3", "s2"])
         assert _sql_tables(forward)["reports"] == _sql_tables(backward)["reports"]
 
-    def test_exact_name_beats_sanitized_across_schemas(self, sanitize_collision_db) -> None:
-        """``s2.a_b`` (exact) beats ``s1.a__b`` (sanitises to ``a_b``) — rule 1,
-        regardless of schema order."""
+    def test_faithful_and_sanitized_names_do_not_collide_across_schemas(
+        self, sanitize_collision_db
+    ) -> None:
+        """DEV-1743: ``s1.a__b`` keeps its faithful name ``a__b``; ``s2.a_b`` is
+        the distinct ``a_b`` — the old sanitize-collapse collision is gone, so
+        both are modelled and neither is skipped."""
         report = ingest_datasource_report(
             datasource=_ds(sanitize_collision_db), all_schemas=True
         )
-        winner = next(m for m in report.models if m.name == "a_b")
-        assert winner.sql_table == "s2.a_b"
-        assert any("a__b" in lbl for lbl in _skip_labels(report))
+        tables = _sql_tables(report)
+        assert tables["a__b"] == "s1.a__b"
+        assert tables["a_b"] == "s2.a_b"
+        assert not any("a__b" in lbl for lbl in _skip_labels(report))
 
     def test_single_schema_output_is_unqualified(self, same_name_db) -> None:
         """Bare ingest of one schema keeps ``sql_table`` and skip labels bare —
@@ -698,37 +702,36 @@ class TestCollisions:
         assert _sql_tables(report) == {"reports": "reports"}
         assert report.skipped == []
 
-    def test_single_schema_skip_label_is_bare(self, tmp_path) -> None:
-        """A collision within ONE schema keeps a BARE skip label — the
-        >1-schema disambiguation must not fire when only one schema is scanned
-        (byte-identical to today; see test_ingestion_name_sanitize.py)."""
+    def test_faithful_and_sanitized_names_are_distinct_in_one_schema(
+        self, tmp_path
+    ) -> None:
+        """DEV-1743: within one schema ``a_b`` and ``a__b`` are distinct models —
+        no collision, nothing skipped."""
         path = str(tmp_path / "one.duckdb")
         _duck(path=path, statements=[
-            "CREATE TABLE a_b(real_col INTEGER)",     # default schema, exact name
-            "CREATE TABLE a__b(x INTEGER)",           # sanitises to a_b → loses
+            "CREATE TABLE a_b(real_col INTEGER)",
+            "CREATE TABLE a__b(x INTEGER)",
         ])
         report = ingest_datasource_report(datasource=_ds(path))
-        assert _skip_labels(report) == ["a__b"]       # bare, not "main.a__b"
+        assert {"a_b", "a__b"} <= {m.name for m in report.models}
+        assert _skip_labels(report) == []
 
 
 class TestCollisionTieBreaks:
-    def test_lower_object_name_breaks_a_tie(self, tmp_path) -> None:
-        """Two objects in the SAME non-default schema sanitising to one model
-        name tie on schema; the lexicographically lower object name wins
-        (rule 4), order-independent and byte-identical to the pre-scope
-        collision policy."""
+    def test_distinct_dunder_names_in_one_schema_do_not_tie(self, tmp_path) -> None:
+        """DEV-1743: ``s2.a__b`` and ``s2.a___b`` are different faithful models —
+        no sanitize-collapse tie, both modelled, nothing skipped."""
         path = str(tmp_path / "tie.duckdb")
         _duck(path=path, statements=[
             "CREATE SCHEMA s2",
             "CREATE TABLE s2.a__b(x INTEGER)",
-            "CREATE TABLE s2.a___b(y INTEGER)",   # both sanitise to a_b
+            "CREATE TABLE s2.a___b(y INTEGER)",
         ])
         report = ingest_datasource_report(datasource=_ds(path), schemas=["s2"])
-        winner = next(m for m in report.models if m.name == "a_b")
-        # 'a___b' < 'a__b' (underscore 0x5f sorts before 'b' 0x62), so a___b
-        # is the lexicographically lower object name and wins deterministically.
-        assert winner.sql_table == "s2.a___b"
-        assert any("a__b" in lbl for lbl in _skip_labels(report))
+        tables = _sql_tables(report)
+        assert tables["a__b"] == "s2.a__b"
+        assert tables["a___b"] == "s2.a___b"
+        assert _skip_labels(report) == []
 
 
 class TestWinnersOnlyStructures:

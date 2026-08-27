@@ -423,15 +423,6 @@ def _is_host_grain(key) -> bool:
     return getattr(key, "grain", "target") == "host"
 
 
-def _host_grain_join_alias(path) -> str:
-    """The FROM alias a join ``path`` is emitted under.
-
-    Mirrors ``_build_from_and_joins``: the first hop uses the target's bare
-    name, later hops the ``__``-delimited path alias.
-    """
-    return "__".join(path)
-
-
 def _first_bare_column_name(key) -> Optional[str]:
     """Return the leaf name of the first bare column reference inside a
     ROW-phase composite key (DEV-1576 / DEV-1717 error messages).
@@ -686,6 +677,25 @@ class SQLGenerator:
         site in this module — pinned by test_dev1726_cte_case_folding — so a
         new allocation path cannot silently lose dialect awareness."""
         return AliasAllocator(folds_case=dialect_folds_case(self.dialect))
+
+    def _join_alias(self, *, root: str, path: Tuple[str, ...]) -> str:
+        """Mint the internal JOIN alias for cumulative ``path`` under ``root``
+        via the generation-wide registry (DEV-1743). The registry keeps the
+        JOIN clause, the dim-column qualifier and the scope anchor agreed on
+        one alias per path, length-fits it, and uniquifies a chain leaf vs a
+        literal ``__``-named model. Falls back to the legacy ``__``-join only
+        when no generation allocator is installed (isolated direct calls)."""
+        alloc = self._gen_allocator
+        if alloc is None:
+            return root if not path else "__".join(path)
+        return alloc.alias_for(
+            root=root, path=path, limit=self._dialect.max_identifier_bytes,
+        )
+
+    def _join_alias_resolver(self, root: str) -> "Callable[[Tuple[str, ...]], str]":
+        """A root-bound alias resolver for ``expand_derived_refs_sync`` so a
+        derived column's qualifiers match the emitted JOIN aliases (DEV-1743)."""
+        return lambda path: self._join_alias(root=root, path=path)
 
     def _scope_frame(self, *, model, relation, bundle, allocator):
         """Build a ``ScopeFrame`` rooted at ``model`` / ``relation`` on the
@@ -2624,9 +2634,17 @@ class SQLGenerator:
             # do (the widened Law-3 trigger isolates on them, and the CTE
             # sub-render lands here). Shared with the ``_cm_*`` CTE path so the
             # two cannot drift apart again (DEV-1745 W2).
-            self._register_fragment_kwarg_joins(
+            #
+            # DEV-1743: keep the RESOLVED (alias-rewritten) fragment per name so
+            # the render embeds it (a multi-hop dotted fragment must become its
+            # ``__`` join alias, not stay dotted-unbound).
+            frags = self._register_fragment_kwarg_joins(
                 key=key, scope=scope, model=scope.root_model,
             )
+            if frags:
+                bucket = resolved.setdefault(key, {})
+                for name, ast in frags.items():
+                    bucket.setdefault(name, ResolvedAggKwarg(kind="expr", value=ast))
 
         def _resolve_first_last_time_arg(key) -> None:
             # DEV-1710 Stage 6 — a first/last explicit ranking-time arg
@@ -5420,6 +5438,20 @@ class SQLGenerator:
                 cte_resolved_kwargs[_kname] = ResolvedAggKwarg(
                     kind="expr", value=cte_scope.resolve(_kval),
                 )
+        # DEV-1745 (W2) + DEV-1743: the aggregation's template FRAGMENTS — string
+        # kwargs plus non-overridden ``AggregationParam.sql`` defaults — substitute
+        # into the CTE's aggregate expression, so the joins they cross belong in
+        # this CTE's FROM AND their alias-rewritten form must be embedded (a
+        # multi-hop dotted fragment ``customers.regions.weight`` becomes the
+        # ``customers__regions`` alias, not a dotted-unbound ``regions``). Resolve
+        # them here — BEFORE the spec is built — through the same door the host
+        # path uses, so the two cannot drift apart again.
+        for _fname, _fast in self._register_fragment_kwarg_joins(
+            key=local_agg_key, scope=cte_scope, model=target_model,
+        ).items():
+            cte_resolved_kwargs.setdefault(
+                _fname, ResolvedAggKwarg(kind="expr", value=_fast),
+            )
 
         synth = self._build_agg_render_spec_from_planned(
             slot=local_slot,
@@ -5462,18 +5494,9 @@ class SQLGenerator:
         if local_agg_key.column_filter_key is not None:
             _register_filter_join_paths(local_agg_key.column_filter_key.canonical_sql)
 
-        # DEV-1745 (W2): the aggregation's template FRAGMENTS — string kwargs
-        # plus the non-overridden ``AggregationParam.sql`` defaults — substitute
-        # verbatim into the CTE's aggregate expression, so the joins they cross
-        # belong in this CTE's FROM. The host path has always registered them;
-        # this path never did, which is why a default like ``w='regions.weight'``
-        # emitted ``SUM(customers.spend * regions.weight) FROM customers`` with
-        # no join to regions. Routing the fragments through the door makes the
-        # registration a side effect of resolving them, so the two paths cannot
-        # drift apart again.
-        self._register_fragment_kwarg_joins(
-            key=local_agg_key, scope=cte_scope, model=target_model,
-        )
+        # The aggregation's template fragments are resolved (and their joins
+        # registered into ``cte_scope``) ABOVE, before the render spec is built,
+        # so the resolved fragment can be embedded into it (DEV-1743).
 
         where_parts: List[exp.Expression] = []
         for filter_text in plan.target_model_filters:
@@ -5999,9 +6022,8 @@ class SQLGenerator:
                     raise ValueError(
                         f"Join target {hop!r} not in resolved source bundle.",
                     )
-                next_alias = (
-                    hop if hop_idx == 0
-                    else f"{current_alias}__{hop}"
+                next_alias = self._join_alias(
+                    root=source_relation, path=path[: hop_idx + 1],
                 )
                 if next_alias not in emitted_aliases:
                     join_on_parts = []
@@ -6076,9 +6098,8 @@ class SQLGenerator:
         current_alias = source_relation
         current_model = source_model
         for hop_idx, hop in enumerate(path):
-            target_alias = (
-                hop if hop_idx == 0
-                else f"{current_alias}__{hop}"
+            target_alias = self._join_alias(
+                root=source_relation, path=path[: hop_idx + 1],
             )
             current_alias = target_alias
             target_model = bundle.get_referenced_model(hop)
@@ -6823,6 +6844,7 @@ class SQLGenerator:
         # base SELECT (``_resolve_agg_inputs_via_scope``) and the ``_cm_`` CTE do
         # — otherwise a crossing default param (``w='customers__regions.weight'``)
         # re-aggregates with no join to regions, which no database binds.
+        shifted_frag_kwargs: "Dict[str, ResolvedAggKwarg]" = {}
         if isinstance(inner_key, AggregateKey):
             # source: derived (crosses inside Column.sql) or path-bearing.
             if isinstance(inner_key.source, ColumnSqlKey) or getattr(
@@ -6841,9 +6863,15 @@ class SQLGenerator:
                     shifted_scope.resolve(_kval)
             # template fragments + non-overridden default AggregationParam.sql —
             # the one door shared with the host + ``_cm_`` paths (DEV-1745 W2).
-            self._register_fragment_kwarg_joins(
+            # DEV-1743: keep the resolved (alias-rewritten) fragments so the
+            # shifted re-aggregation spec embeds them (multi-hop dotted →
+            # ``__`` alias), not the raw dotted text.
+            for _fname, _fast in self._register_fragment_kwarg_joins(
                 key=inner_key, scope=shifted_scope, model=source_model,
-            )
+            ).items():
+                shifted_frag_kwargs.setdefault(
+                    _fname, ResolvedAggKwarg(kind="expr", value=_fast),
+                )
             if (
                 inner_key.column_filter_key is not None
                 and inner_key.column_filter_key.canonical_sql
@@ -6948,6 +6976,7 @@ class SQLGenerator:
                 source_relation=source_relation,
                 full_alias=input_alias,
                 bundle=bundle,
+                resolved_agg_kwargs=shifted_frag_kwargs or None,
             )
             agg_expr, _ = self._build_agg(synth)
             agg_expr = _wrap_cast_for_type(agg_expr, inner_slot.type)
@@ -7437,27 +7466,28 @@ class SQLGenerator:
 
     def _register_fragment_kwarg_joins(
         self, *, key, scope: ScopeFrame, model,
-    ) -> None:
-        """Register the joins an aggregation's template FRAGMENTS cross.
+    ) -> "Dict[str, exp.Expression]":
+        """Resolve an aggregation's template FRAGMENTS through the Mode-A door,
+        registering the joins they cross AND returning the alias-rewritten AST
+        keyed by param name.
 
         The sources are the aggregate's string kwargs plus the non-overridden
         ``AggregationParam.sql`` defaults of the aggregation named by
-        ``key.agg`` on ``model``. Both substitute verbatim into the rendered
-        aggregate expression, so whatever they reach has to be in the FROM.
+        ``key.agg`` on ``model``. Both substitute into the rendered aggregate
+        expression, so whatever they reach has to be in the FROM.
 
-        Shared by the host base SELECT and the ``_cm_*`` cross-model CTE. The
-        host path always did this; the CTE path did not, and emitted
-        ``SUM(customers.spend * regions.weight) FROM customers`` — SQL no
-        database accepts. One implementation, entered through the one door, is
-        what stops that from recurring (DEV-1745 W2).
+        DEV-1743: the resolved AST is RETURNED (not discarded) so the render
+        path embeds it. A multi-hop dotted fragment (``customers.regions.weight``)
+        must be rewritten to its internal join alias (``customers__regions.weight``)
+        exactly like ``Column.sql`` is — re-parsing the raw dotted text would
+        emit an unbound ``regions`` qualifier. (A single-hop fragment already
+        happened to work because the alias IS the bare target name.)
 
-        Only values the aggregation's formula actually SUBSTITUTES are treated
-        as SQL. A string kwarg whose ``{name}`` never appears in the template is
-        a marker, not a fragment — ``revenue:sum(window='90d')`` being the
-        standing example — and handing it to a SQL parser is meaningless. It
-        was harmless while the scan swallowed parse errors; now that the door
-        raises, a marker that does not happen to parse would take the query
-        down with it.
+        Shared by the host base SELECT and the ``_cm_*`` cross-model CTE. Only
+        values the aggregation's formula actually SUBSTITUTES are treated as SQL:
+        a string kwarg whose ``{name}`` never appears in the template is a
+        marker, not a fragment (``revenue:sum(window='90d')``), and handing it
+        to a SQL parser is meaningless.
         """
         agg_def = next(
             (a for a in (model.aggregations or []) if a.name == key.agg), None,
@@ -7465,25 +7495,27 @@ class SQLGenerator:
         if agg_def is None:
             # A built-in aggregation has no template, so no kwarg of it is a
             # SQL fragment.
-            return
+            return {}
         formula = agg_def.formula or ""
         overridden = {name for name, _ in key.kwargs}
-        fragments = [
-            v for name, v in key.kwargs
+        named_fragments: List[Tuple[str, str]] = [
+            (name, v) for name, v in key.kwargs
             if isinstance(v, str) and f"{{{name}}}" in formula
         ]
-        fragments.extend(
-            p.sql for p in (agg_def.params or [])
+        named_fragments.extend(
+            (p.name, p.sql) for p in (agg_def.params or [])
             if p.name not in overridden and p.sql
         )
-        for frag in fragments:
-            self._enter_mode_a_expression(
+        resolved: "Dict[str, exp.Expression]" = {}
+        for name, frag in named_fragments:
+            resolved[name] = self._enter_mode_a_expression(
                 sql=frag, scope=scope,
                 location=(
                     f"aggregation {key.agg!r} template fragment on model "
                     f"{model.name!r}"
                 ),
             )
+        return resolved
 
     def _expand_derived_row_dims(  # NOSONAR(S3776) — one cohesive per-slot pass expanding derived ROW/TIME dimensions and registering the joins they cross.
         self, *, base_render_order, slots_by_id, source_relation: str,
@@ -7550,23 +7582,26 @@ class SQLGenerator:
             # rooted at the ``__``-path alias of the owning joined model, with
             # ``is_root=False`` so a further-joined ref carries the full prefix
             # (``B`` reaching ``C`` → ``B__C``).
+            crossed: Set[Tuple[str, ...]] = set()
             expr = self._derived_column_expr(
                 key=key, source_model=source_model,
                 source_relation=source_relation, bundle=bundle,
+                crossed_paths=crossed,
             )
             if expr is None:
                 continue
             derived_expr_by_sid[sid] = expr
             _add(key.path)  # the join to the owning model itself (cross-model)
-            for p in self._joined_paths_in_sql(
-                sql_expr=expr, source_relation=source_relation,
-                source_model=source_model, bundle=bundle,
-            ):
+            # DEV-1743: register the joins the derived column crosses
+            # STRUCTURALLY (a chain leaf and a literal ``__``-named model must
+            # not collapse onto one path when re-scanning the internal alias).
+            for p in sorted(crossed, key=lambda t: (len(t), t)):
                 _add(p)
         return derived_expr_by_sid
 
     def _derived_column_expr(
         self, *, key, source_model, source_relation: str, bundle,
+        crossed_paths: "Optional[Set[Tuple[str, ...]]]" = None,
     ) -> "Optional[exp.Expression]":
         """The rendered expression for a derived (``ColumnSqlKey``) column.
 
@@ -7592,7 +7627,9 @@ class SQLGenerator:
             owner_relation = source_relation
         expanded_sql = self._expand_derived_column_sql(
             source_model=owner_model, source_relation=owner_relation,
-            column_name=key.column_name, bundle=bundle, is_root=not key.path,
+            column_name=key.column_name, bundle=bundle,
+            owner_path=tuple(key.path), root_relation=source_relation,
+            crossed_paths=crossed_paths,
         )
         col = next(
             (c for c in owner_model.columns if c.name == key.column_name), None,
@@ -7714,7 +7751,7 @@ class SQLGenerator:
                     source_relation="__".join(time_column.path),
                     column_name=time_column.column_name,
                     bundle=bundle,
-                    is_root=False,
+                    owner_path=tuple(time_column.path),
                 )
             else:
                 expanded_sql = self._expand_derived_column_sql(
@@ -7730,7 +7767,9 @@ class SQLGenerator:
 
     def _expand_derived_column_sql(
         self, *, source_model, source_relation: str, column_name: str, bundle,
-        is_root: bool = True,
+        owner_path: Tuple[str, ...] = (),
+        root_relation: "Optional[str]" = None,
+        crossed_paths: "Optional[Set[Tuple[str, ...]]]" = None,
     ) -> str:
         """Expand a derived ``Column.sql`` (a ``ColumnSqlKey`` target) into a
         fully-qualified SQL string, recursively inlining references to other
@@ -7738,11 +7777,13 @@ class SQLGenerator:
         DEV-1410). Bare identifiers qualify to ``source_relation``; joined
         refs qualify to their ``__``-canonical path alias.
 
-        ``is_root`` is ``False`` when the derived column lives on a JOINED
-        model (a cross-model derived dimension, ``source_relation`` being the
-        ``__``-path alias). A further-joined reference inside that column's
-        sql then resolves to the full path (``B`` reaching ``C`` →
-        ``B__C``), not the bare child alias.
+        ``owner_path`` is the ROOT-relative join path of ``source_model`` (empty
+        when the derived column is local to the query root; the ``__``-path
+        tuple when it lives on a JOINED model). A further-joined reference
+        inside the column's sql then resolves to the full path. When
+        ``crossed_paths`` is supplied, every join the fragment (recursively)
+        crosses is added to it STRUCTURALLY (DEV-1743) — the caller no longer
+        re-scans the internal-alias output.
 
         Synchronous: resolves join targets through ``bundle.get_referenced_
         model`` (every model is already loaded — P11). Returns the column's
@@ -7758,13 +7799,16 @@ class SQLGenerator:
             )
         if col.sql is None:
             return col.name
+        resolver_root = root_relation if root_relation is not None else source_relation
         expanded = expand_derived_refs_sync(
             sql=col.sql,
             model=source_model,
             alias_path=source_relation,
             resolve_model=bundle.get_referenced_model,
             dialect=self.dialect,
-            is_root=is_root,
+            owner_path=owner_path,
+            alias_resolver=self._join_alias_resolver(resolver_root),
+            crossed_paths=crossed_paths,
         )
         return expanded if expanded is not None else col.sql
 
@@ -7877,19 +7921,20 @@ class SQLGenerator:
                 if prefix and prefix not in out:
                     out.append(prefix)
 
-        def _scan(parsed: exp.Expression) -> None:
-            for p in self._joined_paths_in_sql(
-                sql_expr=parsed, source_relation=source_relation,
-                source_model=source_model, bundle=bundle,
-            ):
+        def _derived_paths(*, model, relation, column_name, owner_path) -> None:
+            # DEV-1743: collect the joins the derived column crosses
+            # STRUCTURALLY as it expands, rather than re-scanning the
+            # internal-alias output (which cannot tell a chain alias from a
+            # literal ``__``-named model once serialized).
+            crossed: Set[Tuple[str, ...]] = set()
+            self._expand_derived_column_sql(
+                source_model=model, source_relation=relation,
+                column_name=column_name, bundle=bundle, owner_path=owner_path,
+                crossed_paths=crossed,
+            )
+            for p in sorted(crossed, key=lambda t: (len(t), t)):
                 if p not in out:
                     out.append(p)
-
-        def _derived_paths(*, model, relation, column_name, is_root: bool) -> None:
-            _scan(self._parse(self._expand_derived_column_sql(
-                source_model=model, source_relation=relation,
-                column_name=column_name, bundle=bundle, is_root=is_root,
-            )))
 
         def _walk(k) -> None:
             if isinstance(k, ColumnKey):
@@ -7902,18 +7947,15 @@ class SQLGenerator:
                     else source_model
                 )
                 if model is not None:
-                    # ``is_root=False`` for a JOINED derived column: a further
-                    # -joined ref inside its ``sql`` must resolve to the full
-                    # path (``customers_v2`` reaching ``regions`` →
-                    # ``customers_v2__regions``). Rooting it here instead left
-                    # the ref bare, so the scan found no path and the hop was
-                    # never joined — the filter then referenced a table that
-                    # is not in the FROM.
+                    # A JOINED derived column (``k.path`` non-empty) roots its
+                    # inner refs at its own ``__``-path alias so a further-joined
+                    # ref resolves to the full path; a local one roots at the
+                    # query root.
                     _derived_paths(
                         model=model,
                         relation="__".join(k.path) if k.path else source_relation,
                         column_name=k.column_name,
-                        is_root=not k.path,
+                        owner_path=tuple(k.path),
                     )
             elif isinstance(k, ArithmeticKey):
                 for o in k.operands:
@@ -8076,13 +8118,22 @@ class SQLGenerator:
             # that join's FROM alias. Re-anchor before the lookup below; the
             # join itself is already in this scope's FROM, registered by the
             # aggregate-input scope pass.
+            host_grain_root: Optional[str] = None
             if source.path and _is_host_grain(key) and bundle is not None:
                 terminal = self._walk_join_path_model(
                     source_model=source_model, path=source.path, bundle=bundle,
                 )
                 if terminal is not None:
                     source_model = terminal
-                    source_relation = _host_grain_join_alias(source.path)
+                    # Qualify through the generation AliasAllocator (NOT a raw
+                    # "__".join) so the alias matches the one _build_from_and_
+                    # joins() emitted — the allocator uniquifies a chain leaf vs
+                    # a literal __-named model (D4). Retain the query root for
+                    # derived-ref expansion below.
+                    host_grain_root = source_relation
+                    source_relation = self._join_alias(
+                        root=source_relation, path=source.path,
+                    )
             # ColumnKey is a bare / trivial column (``sql`` None or a bare
             # identifier remap); ColumnSqlKey is a derived column (``Column.sql``
             # set to a non-trivial expression — ``amount * 2``). Both resolve
@@ -8128,6 +8179,11 @@ class SQLGenerator:
                     source_relation=source_relation,
                     column_name=col.name,
                     bundle=bundle,
+                    # Host-grain re-anchor: expand the inner refs in the
+                    # allocator namespace of the EMITTED joins (the query root),
+                    # not the re-anchored terminal alias.
+                    owner_path=source.path if host_grain_root is not None else (),
+                    root_relation=host_grain_root,
                 )
             else:
                 sql_text = col.sql if col.sql else col.name
@@ -8144,6 +8200,15 @@ class SQLGenerator:
                 k: (resolved_kw[k] if k in resolved_kw else agg_kwarg_canonical_str(v))
                 for k, v in key.kwargs
             }
+            # DEV-1743: a non-overridden model-default ``AggregationParam.sql``
+            # fragment is not a ``key.kwargs`` entry, so its resolved
+            # (alias-rewritten) form is surfaced here under the param name — the
+            # render's ``if name in spec.agg_kwargs`` branch then embeds it
+            # instead of re-parsing the raw dotted ``param.sql``.
+            key_kwarg_names = {k for k, _ in key.kwargs}
+            for _name, _resolved in resolved_kw.items():
+                if _name not in key_kwarg_names:
+                    agg_kwargs_str.setdefault(_name, _resolved)
             # DEV-1450 stage 7b.12: propagate ``AggregateKey.column_filter_key``
             # into ``AggRenderSpec.filter_sql`` so ``_build_agg`` wraps the
             # aggregate argument as ``SUM(CASE WHEN <filter> THEN col END)``.

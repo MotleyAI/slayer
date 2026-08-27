@@ -75,6 +75,7 @@ from slayer.engine.response_meta import (
     build_response_metadata,
     projection_result_keys,
 )
+from slayer.engine.column_expansion import expand_derived_refs_sync
 from slayer.engine.source_bundle import (
     ResolvedSourceBundle,
     build_resolved_source_bundle,
@@ -3236,6 +3237,7 @@ class SlayerQueryEngine:
                     f"is auto-managed and must not be supplied."
                 )
             model = await self._validate_and_populate_cache(model)
+        await self._validate_mode_a_join_paths(model)
         await self.storage.save_model(model)
         # Clean up the stale storage entry if the cache populator moved a
         # query-backed model to a different datasource.
@@ -3247,6 +3249,70 @@ class SlayerQueryEngine:
                 model.name, data_source=prior_data_source
             )
         return model
+
+    async def _validate_mode_a_join_paths(self, model: SlayerModel) -> None:
+        """DEV-1743 [C5] — the save-time Mode-A resolution door.
+
+        Runs the SAME strict resolver the generator runs, over every Mode-A
+        free-SQL surface (``Column.sql`` / ``Column.filter`` /
+        ``SlayerModel.filters``), so a legacy ``__`` split-alias
+        (:class:`LegacyDunderAliasError`) or a broken dotted chain is rejected
+        at ``save_model`` — not only later at generation. Models that bypass
+        this path (MCP/CLI/ingestion save) are still covered by the identical
+        generation-time door.
+        """
+        if not model.joins:
+            return  # no join graph → no chain qualifiers to resolve
+        loaded = await self._preload_join_targets(model)
+
+        def _resolve(name: str) -> Optional[SlayerModel]:
+            return loaded.get(name)
+
+        # Parse with the datasource's own dialect (matching generation), not a
+        # hardcoded postgres — else valid non-Postgres Mode-A SQL could be
+        # mis-parsed/rejected at save. Missing datasource → postgres (lenient).
+        datasource = await self.storage.get_datasource(model.data_source)
+        dialect = self._dialect_for_type(datasource.type if datasource else None)
+
+        surfaces: List[str] = []
+        for col in model.columns:
+            if col.sql:
+                surfaces.append(col.sql)
+            if col.filter:
+                surfaces.append(col.filter)
+        surfaces.extend(model.filters or [])
+        for sql in surfaces:
+            expand_derived_refs_sync(
+                sql=sql,
+                model=model,
+                alias_path=model.name,
+                resolve_model=_resolve,
+                dialect=dialect,
+            )
+
+    async def _preload_join_targets(
+        self, model: SlayerModel,
+    ) -> Dict[str, Optional[SlayerModel]]:
+        """BFS-load every model reachable via joins from ``model`` into a sync
+        dict, so the (synchronous) resolver can walk the chain. Missing targets
+        map to ``None`` — resolution then treats that qualifier as opaque."""
+        loaded: Dict[str, Optional[SlayerModel]] = {model.name: model}
+        queue: List[str] = [j.target_model for j in (model.joins or [])]
+        while queue:
+            name = queue.pop()
+            if name in loaded:
+                continue
+            target: Optional[SlayerModel] = None
+            try:
+                target = await self.storage.get_model(
+                    name, data_source=model.data_source,
+                )
+            except Exception:
+                target = None
+            loaded[name] = target
+            if target is not None:
+                queue.extend(j.target_model for j in (target.joins or []))
+        return loaded
 
     async def _validate_and_populate_cache(self, model: SlayerModel) -> SlayerModel:
         """Run save-time dry-run validation on a query-backed model and

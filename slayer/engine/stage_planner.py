@@ -802,11 +802,6 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     if query.distinct_dimension_values is False:
         _reject_measure_refs_for_raw_rows(query=query, scope=scope)
 
-    # Downstream stages bind against a flat StageSchema — ``__`` is legal
-    # in their refs (the upstream's flattened multi-hop aliases); model-
-    # scoped stages keep the P1 rejection.
-    flat_scope = isinstance(scope, StageSchema)
-
     declared_measures = _declared_measures_from_query(
         query=query, scope=scope, bundle=bundle,
     )
@@ -907,7 +902,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         if not isinstance(f, str):
             continue
         bf = bind_filter(
-            parsed=parse_filter_expr(f, allow_dunder=flat_scope),
+            parsed=parse_filter_expr(f),
             scope=scope,
             bundle=bundle,
             alias_map=filter_alias_map,
@@ -936,7 +931,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         if col_name in ORDER_PLACEHOLDER_NAMES and o.raw_formula:
             order_specs.append(OrderSpec(
                 bound=bind_expr(
-                    parsed=parse_expr(o.raw_formula, allow_dunder=flat_scope),
+                    parsed=parse_expr(o.raw_formula),
                     scope=scope,
                     bundle=bundle,
                 ),
@@ -988,7 +983,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
             bo = declared_alias_to_bound[f"_{col_name}"]
         elif o.raw_formula:
             bo = bind_expr(
-                parsed=parse_expr(o.raw_formula, allow_dunder=flat_scope),
+                parsed=parse_expr(o.raw_formula),
                 scope=scope,
                 bundle=bundle,
             )
@@ -998,7 +993,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
             # raw_formula rebinds as ``region`` and hits the wrong host
             # column or fails as ambiguous (CR).
             bo = bind_expr(
-                parsed=parse_expr(full_name, allow_dunder=flat_scope),
+                parsed=parse_expr(full_name),
                 scope=scope,
                 bundle=bundle,
             )
@@ -2383,11 +2378,10 @@ def _declared_computed_dimension(
     query: SlayerQuery,
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
-    flat_scope: bool,
 ) -> DeclaredMeasure:
     """Bind a computed (expression) dimension to a declared slot (DEV-1740)."""
     _reject_computed_dim_name_collision(name=d.name, query=query, scope=scope)
-    parsed = parse_expr(d.expression, allow_dunder=flat_scope)
+    parsed = parse_expr(d.expression)
     if isinstance(scope, ModelScope) and scope.source_model is not None:
         parsed = expand_model_measures(expr=parsed, model=scope.source_model)
     bound = bind_expr(parsed=parsed, scope=scope, bundle=bundle)
@@ -2402,34 +2396,57 @@ def _declared_computed_dimension(
     )
 
 
+def _flatten_collision_message(flat_name: str) -> str:
+    """Shared wording for the ``.``→``__`` flatten collision (DEV-1743 [D5]),
+    used both here (pre-interning, over declared names) and by
+    :func:`_emit_stage_schema` (at CTE emission)."""
+    return (
+        f"Stage column name collision on {flat_name!r}: two projected "
+        f"columns flatten to the same downstream name. Give one an "
+        f"explicit measure `name` to disambiguate."
+    )
+
+
 def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projection passes (dimensions incl. computed, time dimensions, measures) building one ordered declared list; each pass is one contract and the order (dims → tds → measures) is the public projection order the function pins.
     *,
     query: SlayerQuery,
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
 ) -> List[DeclaredMeasure]:
-    # Downstream stages bind against a flat StageSchema whose columns ARE
-    # the ``__``-flattened multi-hop aliases of the upstream stage, so
-    # ``__`` is legal in their refs (P5 / DEV-1449). Model-scoped stages
-    # keep the P1 rejection.
-    flat_scope = isinstance(scope, StageSchema)
     declared: List[DeclaredMeasure] = []
+    # DEV-1743 [D5]: two DISTINCT projected names (a joined ``customers.region``
+    # and a literal ``customers__region``) can flatten to one downstream name.
+    # Detect that here, before interning, so the clear collision message wins
+    # over the generic ``DuplicateMeasureNameError``.
+    seen_flat: Dict[str, str] = {}
+
+    def _guard_flatten(*, flat_name: str, origin: str) -> None:
+        prior = seen_flat.get(flat_name)
+        if prior is not None and prior != origin:
+            raise ValueError(_flatten_collision_message(flat_name))
+        seen_flat[flat_name] = origin
+
     for d in (query.dimensions or []):
         if isinstance(d, ComputedDimension):
-            declared.append(_declared_computed_dimension(
-                d, query=query, scope=scope, bundle=bundle, flat_scope=flat_scope,
-            ))
+            dm = _declared_computed_dimension(
+                d, query=query, scope=scope, bundle=bundle,
+            )
+            # [D5] a computed dim whose name flattens onto a dotted dim's
+            # downstream name collides too — surface the clear message here.
+            _guard_flatten(flat_name=_flatten_dotted(d.name), origin=d.name)
+            declared.append(dm)
             continue
         full = d.full_name
         _reject_opaque_grouping_dim(
             query=query, scope=scope, full_name=full, bundle=bundle,
         )
         bound = bind_expr(
-            parsed=parse_expr(full, allow_dunder=flat_scope),
+            parsed=parse_expr(full),
             scope=scope,
             bundle=bundle,
         )
         flat_name = _flatten_dotted(full)
+        _guard_flatten(flat_name=flat_name, origin=full)
         fmt, desc = _format_description_for_dimension(
             scope=scope, full_name=full,
         )
@@ -2452,6 +2469,7 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
         full = td.dimension.full_name
         bound = bind_time_dimension(td=td, scope=scope, bundle=bundle)
         flat_name = _flatten_dotted(full)
+        _guard_flatten(flat_name=flat_name, origin=full)
         declared.append(DeclaredMeasure(
             bound=bound,
             declared_name=flat_name,
@@ -2462,7 +2480,7 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
     for m in (query.measures or []):
         formula = m.formula
         explicit_name = m.name
-        parsed = parse_expr(formula, allow_dunder=flat_scope)
+        parsed = parse_expr(formula)
         # DEV-1450 stage 7b.8 — pre-bind ModelMeasure expansion. A bare
         # ``Ref`` whose name matches a saved ``ModelMeasure`` on the
         # host model is rewritten to the measure's formula AST so the
@@ -2767,11 +2785,7 @@ def _emit_stage_schema(
         # CTE column ambiguous. Surface it instead of silently binding the
         # first match downstream.
         if any(c.name == flat for c in columns):
-            raise ValueError(
-                f"Stage column name collision on {flat!r}: two projected "
-                f"columns flatten to the same downstream name. Give one an "
-                f"explicit measure `name` to disambiguate."
-            )
+            raise ValueError(_flatten_collision_message(flat))
         columns.append(StageColumn(
             name=flat,
             sql_alias=flat,

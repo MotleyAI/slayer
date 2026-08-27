@@ -346,7 +346,7 @@ async def test_multihop_derived_via_join_path(tmp_path) -> None:
             # either dot or __ form.
             Column(
                 name="ratio_multihop",
-                sql="A.bar / B__C.x_derived",
+                sql="A.bar / B.C.x_derived",
                 type=DataType.DOUBLE,
             ),
         ],
@@ -414,7 +414,7 @@ async def test_diamond_join_derived(tmp_path) -> None:
             Column(name="warehouse_id", sql="warehouse_id", type=DataType.DOUBLE),
             Column(
                 name="diamond_concat",
-                sql="customers__regions.name_upper || '/' || warehouses__regions.name_upper",
+                sql="customers.regions.name_upper || '/' || warehouses.regions.name_upper",
                 type=DataType.TEXT,
             ),
         ],
@@ -1118,7 +1118,7 @@ async def test_dev1334_query_filter_on_multi_hop_derived_col_adds_all_prefixes(
             Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
             Column(
                 name="region_label",
-                sql="customers__regions.name",
+                sql="customers.regions.name",
                 type=DataType.TEXT,
             ),
         ],
@@ -1470,7 +1470,7 @@ async def test_dev1494_column_filter_multihop_dotted_input_adds_all_joins(
         tmp_path,
         extra_models=[claim, loss_payment],
         claim_columns=[
-            Column(name="amt", sql="amount", filter="loss_payment__claim.state = 'open'", type=DataType.DOUBLE),
+            Column(name="amt", sql="amount", filter="loss_payment.claim.state = 'open'", type=DataType.DOUBLE),
         ],
         measures=[ModelMeasure(formula="amt:sum", name="a")],
     )

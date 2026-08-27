@@ -869,7 +869,7 @@ def _dev1531_duckdb_storage(tmp_path_factory):
             Column(name="customer_id", sql="customer_id", type=DataType.INT),
             Column(name="amount", sql="amount", type=DataType.DOUBLE),
             Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-            Column(name="region_payment", sql="customers__regions.payment_amount", type=DataType.DOUBLE),
+            Column(name="region_payment", sql="customers.regions.payment_amount", type=DataType.DOUBLE),
             Column(name="cust_balance", sql="customers.balance", type=DataType.DOUBLE),
         ],
         joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
