@@ -105,10 +105,3 @@ Intentional exceptions: `docs/CLAUDE.md` and `docs/api_gaps.md`.
 rationale, with issue refs. Consult it before changing established behavior. When you
 make an important design decision in a session, append one entry at the bottom in the
 existing format.
-
-## Git merges
-
-When running `git merge -m`, the message's first line MUST contain the merged ref in
-single quotes, e.g. `Merge branch 'origin/main' ...` — GitKraken crashes and refuses
-to open the repo/worktree while a merge whose MERGE_MSG lacks a 'quoted' ref name sits
-uncommitted. Put any extra explanation after the quoted name or on later lines.
