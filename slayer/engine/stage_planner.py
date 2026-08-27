@@ -2428,9 +2428,13 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
 
     for d in (query.dimensions or []):
         if isinstance(d, ComputedDimension):
-            declared.append(_declared_computed_dimension(
+            dm = _declared_computed_dimension(
                 d, query=query, scope=scope, bundle=bundle,
-            ))
+            )
+            # [D5] a computed dim whose name flattens onto a dotted dim's
+            # downstream name collides too — surface the clear message here.
+            _guard_flatten(flat_name=_flatten_dotted(d.name), origin=d.name)
+            declared.append(dm)
             continue
         full = d.full_name
         _reject_opaque_grouping_dim(

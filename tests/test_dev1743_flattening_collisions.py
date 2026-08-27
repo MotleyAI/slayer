@@ -214,3 +214,44 @@ class TestQueryBackedFlattenMessage:
                 )
             # The sentinel must NOT be what propagated.
             assert "WRAPPER_REACHED" not in str(ei.value)
+
+
+# --------------------------------------------------------------------------- #
+# 4. Computed dimension (DEV-1740) whose name flattens onto a dotted dim's
+#    downstream name collides too — the computed branch must not `continue` past
+#    the [D5] flatten guard (Codex, post-merge review).
+# --------------------------------------------------------------------------- #
+class TestComputedDimFlattenCollision:
+    def _host(self) -> SlayerModel:
+        # No literal ``customers__region`` column here (so the computed-dim name
+        # doesn't trip the column/measure shadow check first) — only the joined
+        # ``customers.region``, which flattens to ``customers__region``.
+        return SlayerModel(
+            name="hostm", data_source=DS, sql_table="hostm_t",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="cust_id", type=DataType.INT),
+                Column(name="amount", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(target_model="customers",
+                             join_pairs=[["cust_id", "id"]])],
+        )
+
+    @pytest.mark.asyncio
+    async def test_computed_dim_named_like_flattened_join_collides(self) -> None:
+        """FAIL-FIRST: a computed dim explicitly named ``customers__region`` and a
+        joined dim ``customers.region`` both flatten to ``customers__region`` and
+        must raise the clear D5 message, not a generic duplicate-name error."""
+        query = SlayerQuery(
+            source_model="hostm",
+            dimensions=[
+                "customers.region",
+                {"expression": "amount", "name": "customers__region"},
+            ],
+            measures=[{"formula": "amount:sum"}],
+        )
+        with pytest.raises(ValueError, match=r"flatten to the same downstream name"):
+            await _engine_generate(
+                query=query, model=self._host(),
+                extra_models=[_customers()], validate=False,
+            )
