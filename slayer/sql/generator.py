@@ -1678,7 +1678,7 @@ class SQLGenerator:
         # resolve the substituted placeholders and add the null-safe join.
         regroup_ctes, regroup_env, regroup_join_specs = (
             self._prepare_regroup_attaches(planned_query=planned_query, bundle=bundle)
-            if planned_query.regroup_attach_plans
+            if _row_attaches
             else ([], {}, [])
         )
 
@@ -5383,7 +5383,7 @@ class SQLGenerator:
         )
         return cte_sql, joinback_pairs, agg_col_alias
 
-    def _prepare_combined_regroup_attaches(
+    def _prepare_combined_regroup_attaches(  # NOSONAR(S3776) — one cohesive combined-attach render (producer CTE → placeholder env → join-back); the phases share local state and reads clearer inline.
         self, *, planned_query, bundle, source_relation, slot_by_key,
     ):
         """Render each DEV-1829 combined regroup producer as a ``_cm_*`` CTE.
@@ -5489,6 +5489,11 @@ class SQLGenerator:
         join_specs: List[Tuple[str, List[Tuple[Any, str]]]] = []
         allocator = self._gen_allocator or self._new_allocator()
         for attach in planned_query.regroup_attach_plans:
+            # ROW attaches only — a combined attach renders through
+            # ``_render_with_cross_model_plans``. Explicit so a future DEV-1824
+            # row+combined query can't double-render a combined producer here.
+            if attach.attach_phase != "row":
+                continue
             cte_name = cte_name_from_alias(
                 prefix="_cm_", alias=attach.alias_hint, allocator=allocator,
                 dialect=self.dialect, limit=self._dialect.max_identifier_bytes,

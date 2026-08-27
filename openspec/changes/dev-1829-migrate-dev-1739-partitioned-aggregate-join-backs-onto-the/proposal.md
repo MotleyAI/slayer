@@ -14,13 +14,21 @@ DEV-1825 landed a first-class regroup primitive (`RegroupAttachPlan`) to replace
 ## Capabilities
 
 ### New Capabilities
-<!-- None: this is a pure internal refactor. The observable behavior (generated SQL,
-     response contract, guard messages) is byte-identical; only the internal plan
-     object and render routing change. skip_specs: true is set in .openspec.yaml. -->
+<!-- None: this is an internal refactor. The response contract (result keys, meta,
+     guard messages, warnings) is unchanged; only the internal plan object and render
+     routing change. skip_specs: true is set in .openspec.yaml. -->
 
 ### Modified Capabilities
-<!-- None. No specified behavior changes — byte-identical SQL and identical response
-     contract, verified by the unchanged tests/test_dev1739_*.py suites. -->
+<!-- None at the spec level, and the DEV-1739 golden cases stay byte-identical. Two
+     SQL-level behaviors change INTENTIONALLY (recorded in DECISIONS.md), neither a
+     specified-behavior promise: an ORDER-BY-only partitioned aggregate now isolates
+     and sorts at its partition grain (the DEV-1739 path silently sorted by the finer
+     per-row total), and same-partition-set measures now intern into one producer with
+     N outputs. Response contract (result keys / meta / warnings) is unchanged. -->
+
+<!-- NOTE: the earlier "byte-identical generated SQL" framing was corrected here (CR):
+     it holds for the DEV-1739 golden baseline, not for the two ORDER BY / interning
+     cases above, which are approved divergences. -->
 
 ## Impact
 

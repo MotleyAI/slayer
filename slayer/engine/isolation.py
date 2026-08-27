@@ -162,10 +162,13 @@ def classify_isolation(
     # non-suppressed path (a cross-model partitioned aggregate returns
     # TARGET_ROOTED above; a producer sub-plan returns NONE via the guard above).
     # Fail closed: a discovery gap would otherwise silently drop the isolation.
-    assert key.partition_keys is None, (
-        f"A local partitioned aggregate {key!r} reached classify_isolation "
-        f"without being desugared into a combined regroup producer (DEV-1829)."
-    )
+    if key.partition_keys is not None:
+        # Explicit raise, not ``assert`` — this guards a silent wrong-grain
+        # result, so it must survive ``python -O`` (Codex).
+        raise AssertionError(
+            f"A local partitioned aggregate {key!r} reached classify_isolation "
+            f"without being desugared into a combined regroup producer (DEV-1829)."
+        )
 
     crossed = _crossing_input_paths(key=key, bundle=bundle)
     if not crossed:

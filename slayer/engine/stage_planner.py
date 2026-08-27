@@ -1357,9 +1357,14 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
             "query) is not yet supported (DEV-1824)."
         )
     # Codex F4 — a real column sharing the reserved placeholder prefix would
-    # shadow a placeholder at render; reject it while a regroup is active.
+    # shadow a placeholder at render; reject it while a regroup is active. Scan
+    # a downstream StageSchema's own columns too (CR): its ``columns`` carry
+    # ``.name``, so when scope is a StageSchema (producer_model None) the guard
+    # would otherwise skip an upstream ``__regroup__*`` column.
     producer_model = scope.source_model if isinstance(scope, ModelScope) else None
-    reserved = reserved_prefix_columns(producer_model)
+    reserved = reserved_prefix_columns(
+        producer_model if isinstance(scope, ModelScope) else scope
+    )
     if reserved:
         raise ValueError(
             f"Column(s) {reserved!r} use the reserved '__regroup__' prefix, which "
@@ -1617,17 +1622,17 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     # producer's own answer and renders inline as a plain grouped aggregate — a
     # recursive desugar would re-discover it and synthesize a producer forever.
     regroup_attach_plans: List[RegroupAttachPlan] = []
+    if isinstance(query.source_model, str):
+        _producer_source_model = query.source_model
+    elif render_source_model is not None:
+        _producer_source_model = render_source_model.name
+    else:
+        _producer_source_model = None
     regroup_result = (
         None if disable_host_rooted_isolation else _plan_regroups(
             prebound=prebound, scope=scope, bundle=bundle,
             cross_model_planner=cross_model_planner, stage_schemas=stage_schemas,
-            producer_source_model=(
-                query.source_model if isinstance(query.source_model, str)
-                else (
-                    render_source_model.name
-                    if render_source_model is not None else None
-                )
-            ),
+            producer_source_model=_producer_source_model,
         )
     )
     if regroup_result is not None:

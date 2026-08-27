@@ -318,7 +318,7 @@ class ScopeFrame(BaseModel):
         expr = self.resolve(ref)
         return None if expr is None else expr.sql(dialect=self.dialect.sqlglot_name)
 
-    def _anchor(self, ref: Ref) -> exp.Expression:
+    def _anchor(self, ref: Ref) -> exp.Expression:  # NOSONAR(S3776) — a single dispatch over the Ref union; each branch anchors one key kind and cannot be hoisted without losing the fail-closed fall-through.
         if isinstance(ref, ColumnKey):
             # DEV-1825: a regroup placeholder resolves from the attach registry
             # by EXACT membership; a reserved-prefix leaf that misses is

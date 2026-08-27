@@ -3,6 +3,7 @@
 Flow: SlayerQuery → plan_query() → PlannedQuery → SQLGenerator → SQL → execute
 """
 
+import asyncio
 import copy
 import decimal
 import logging
@@ -20,8 +21,14 @@ from pydantic import (
     model_validator,
 )
 
+from slayer.async_utils import run_sync
 from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, DataType, JoinCardinality
-from slayer.core.errors import AmbiguousModelError, ForcedFilterError
+from slayer.core.errors import (
+    AmbiguousModelError,
+    ForcedFilterError,
+    SchemaDriftError,
+    UnreachableFilterDroppedWarning,
+)
 from slayer.engine.cardinality import (
     CardinalityVerdict,
     JoinCardinalityFinding,
@@ -452,7 +459,6 @@ def _emit_dropped_filter_warnings(response) -> None:
 
     Called once, at the outermost boundary, AFTER the response is built.
     """
-    from slayer.core.errors import UnreachableFilterDroppedWarning
 
     for w in response.warnings or ():
         if isinstance(w, DroppedFilterWarning):
@@ -1467,7 +1473,6 @@ class SlayerQueryEngine:
         data_source: Optional[str] = None,
     ) -> bool:
         """Synchronous wrapper for :meth:`evict`."""
-        from slayer.async_utils import run_sync
 
         async def _run() -> bool:
             try:
@@ -1652,7 +1657,6 @@ class SlayerQueryEngine:
 
     def refresh_sync(self) -> RefreshResult:
         """Synchronous wrapper for :meth:`refresh`."""
-        from slayer.async_utils import run_sync
 
         async def _run() -> RefreshResult:
             try:
@@ -1804,7 +1808,6 @@ class SlayerQueryEngine:
         Any error from ``validate_models`` itself is swallowed so the
         original exception is never masked.
         """
-        from slayer.core.errors import SchemaDriftError
 
         try:
             touched = set(touched_models)
@@ -2039,7 +2042,6 @@ class SlayerQueryEngine:
         async engines in ``finally`` so they don't outlive their owning loop —
         see ``aclose`` (DEV-1656).
         """
-        from slayer.async_utils import run_sync
 
         async def _run_and_cleanup() -> SlayerResponse:
             try:
@@ -2293,7 +2295,6 @@ class SlayerQueryEngine:
         root_hint: str | None = None,
     ) -> RootModelRecommendation:
         """Synchronous wrapper for :meth:`recommend_root_model`."""
-        from slayer.async_utils import run_sync
 
         async def _run() -> RootModelRecommendation:
             try:
@@ -2723,7 +2724,6 @@ class SlayerQueryEngine:
         ``data_source`` is ``None``, every datasource is validated
         concurrently and results are concatenated.
         """
-        import asyncio as _asyncio
 
         from slayer.engine.schema_drift import (
             ToDeleteEntry,
@@ -2754,7 +2754,7 @@ class SlayerQueryEngine:
         async def _validate_one(name: str) -> "List[ToDeleteEntry]":
             return await self.validate_models(data_source=name)
 
-        results = await _asyncio.gather(
+        results = await asyncio.gather(
             *(_validate_one(n) for n in ds_names), return_exceptions=True
         )
         out: List = []
@@ -2774,7 +2774,6 @@ class SlayerQueryEngine:
         save: bool = True,
     ) -> SlayerModel:
         """Synchronous wrapper for create_model_from_query()."""
-        from slayer.async_utils import run_sync
 
         return run_sync(
             self.create_model_from_query(

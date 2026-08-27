@@ -5,9 +5,17 @@ column leaks into result keys / columns / warnings."""
 
 from __future__ import annotations
 
+import os
 import re
+import sqlite3
 
 import pytest
+
+from slayer.core.enums import DataType
+from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.engine.source_bundle import build_resolved_source_bundle
+from slayer.engine.stage_planner import plan_stages
+from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._dev1739_fixtures import (
     ModelMeasure,
@@ -99,12 +107,13 @@ class TestInFilterOverComposite:
     async def test_filter_over_partitioned_composite_raises(self) -> None:
         # An aggregate/post filter over a composite that contains a partitioned
         # aggregate is the deferred in-filter shape → DEV-1824.
+        q = _q(
+            dimensions=["region", "city"],
+            filters=["amount:sum / amount:sum(partition_by=region) > 0.5"],
+            measures=[ModelMeasure(formula="amount:sum", name="cell")],
+        )
         with pytest.raises(NotImplementedError, match=r"DEV-1824"):
-            await gen(_q(
-                dimensions=["region", "city"],
-                filters=["amount:sum / amount:sum(partition_by=region) > 0.5"],
-                measures=[ModelMeasure(formula="amount:sum", name="cell")],
-            ))
+            await gen(q)
 
 
 class TestDuplicateAliases:
@@ -163,3 +172,64 @@ class TestResponseContractNoLeak:
         assert data_keys == {"orders.region", "orders.city", "orders.region_rev"}
         # This shape drops no filter and synthesizes no warning.
         assert not resp.warnings
+
+
+class TestReservedPrefixAcrossStages:
+    """A downstream stage's regroup guard must scan the upstream StageSchema's
+    columns — an upstream ``__regroup__*`` column would otherwise shadow a
+    placeholder at render (CR). Two-stage: stage1 emits a reserved-prefix column,
+    stage2's computed-dimension regroup must reject it at plan time."""
+
+    async def test_upstream_reserved_prefix_column_rejected(self, tmp_path) -> None:
+        db_path = os.path.join(tmp_path, "t.db")
+        con = sqlite3.connect(db_path)
+        con.execute("CREATE TABLE orders (region TEXT, amount REAL)")
+        con.executemany(
+            "INSERT INTO orders VALUES (?, ?)", [("North", 10.0), ("South", 20.0)],
+        )
+        con.commit()
+        con.close()
+
+        storage = YAMLStorage(base_dir=os.path.join(tmp_path, "store"))
+        await storage.save_datasource(
+            DatasourceConfig(name="prod", type="sqlite", database=db_path)
+        )
+        await storage.save_model(
+            SlayerModel(
+                name="orders", sql_table="orders", data_source="prod",
+                columns=[
+                    Column(name="region", type=DataType.TEXT),
+                    Column(name="amount", type=DataType.DOUBLE),
+                ],
+            ),
+            _validate=False,
+        )
+        # stage1 emits a column whose name collides with the reserved regroup
+        # prefix; it flows through untouched (stage1 has no regroup).
+        stage1 = SlayerQuery(
+            name="stage1", source_model="orders", dimensions=["region"],
+            measures=[
+                ModelMeasure(formula="amount:sum", name="__regroup__0__amount_sum"),
+                ModelMeasure(formula="amount:sum", name="total"),
+            ],
+        )
+        # stage2's computed dimension activates the regroup desugar, whose
+        # reserved-prefix guard must see stage1's StageSchema column.
+        root = SlayerQuery(
+            source_model="stage1",
+            dimensions=[
+                "region",
+                {
+                    "expression":
+                        "CASE WHEN total:sum(partition_by=region) > 5 "
+                        "THEN 1 ELSE 0 END",
+                    "name": "band",
+                },
+            ],
+            measures=[ModelMeasure(formula="total:sum", name="s")],
+        )
+        bundle = await build_resolved_source_bundle(
+            query=root, storage=storage, named_queries={"stage1": stage1},
+        )
+        with pytest.raises(ValueError, match=r"reserved '__regroup__' prefix"):
+            plan_stages(queries=[stage1, root], bundle=bundle)
