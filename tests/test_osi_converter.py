@@ -836,6 +836,25 @@ def test_two_hop_cross_model_ref_to_unknown_column_dropped(shop_engine):
     assert _reported(result)
 
 
+def test_physical_multipart_ref_whose_first_hop_is_not_a_join_is_kept(shop_engine):
+    # Precedence lock (Codex): the multi-hop physical/join classification mirrors
+    # the runtime resolver — a qualifier whose FIRST hop is NOT a join target is an
+    # opaque physical ``schema.table.column`` ref and is left alone (kept), NOT
+    # flagged. (The collision case — first hop IS a join but the walk is broken —
+    # is a broken join walk and IS dropped, per the sibling unknown-column test.)
+    doc = _mini_doc(
+        datasets=[
+            OSIDataset(name="orders", source="orders", fields=[
+                OSIField(name="customer_id", expression=_expr("customer_id")),
+                # ``warehouse`` is not a relationship target on orders → opaque.
+                OSIField(name="phys", expression=_expr("warehouse.sku.qty"))]),
+        ],
+    )
+    result = _convert(shop_engine, doc)
+    orders = {m.name: m for m in result.models}["orders"]
+    assert "phys" in {c.name for c in orders.columns}
+
+
 def test_cross_model_derived_field_unknown_column_dropped(shop_engine):
     doc = _mini_doc(
         datasets=[
