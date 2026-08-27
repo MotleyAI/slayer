@@ -192,18 +192,22 @@ def _map_type_code(type_code, db_type: str | None = None) -> str:
     """
     if isinstance(type_code, int) and db_type:
         from slayer.sql.dialects import dialect_for_ds_type  # noqa: PLC0415
+
         dialect_category = dialect_for_ds_type(db_type).map_cursor_type_code(type_code)
         if dialect_category is not None:
             return dialect_category
+    if db_type and "duckdb" in db_type.lower():
+        # DuckDB returns ``DuckDBPyType`` objects whose string form is the type name.
+        type_code = str(type_code)
     if isinstance(type_code, str):
-        # DuckDB returns type name strings like 'INTEGER', 'VARCHAR', etc.
         tc = type_code.upper()
+        # Check temporal names before numeric ones: INTERVAL contains "INT".
+        if any(t in tc for t in ("TIMESTAMP", "DATE", "TIME", "INTERVAL")):
+            return "time"
         if any(t in tc for t in ("INT", "FLOAT", "DOUBLE", "DECIMAL", "NUMERIC", "REAL")):
             return "number"
         if any(t in tc for t in ("VARCHAR", "TEXT", "CHAR", "STRING", "BLOB", "ENUM")):
             return "string"
-        if any(t in tc for t in ("TIMESTAMP", "DATE", "TIME", "INTERVAL")):
-            return "time"
         if "BOOL" in tc:
             return "boolean"
         return "string"

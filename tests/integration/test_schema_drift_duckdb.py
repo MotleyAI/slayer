@@ -156,6 +156,33 @@ async def test_no_drift_returns_empty(duckdb_drift_env) -> None:
     assert result == []
 
 
+async def test_sql_model_typed_columns_do_not_report_false_drift(
+    duckdb_drift_env,
+) -> None:
+    engine, _ = duckdb_drift_env
+    await engine.storage.save_model(
+        SlayerModel(
+            name="typed_sql",
+            data_source="dduckdb",
+            sql=(
+                "SELECT 7::INTEGER AS qty, TRUE AS active, "
+                "TIMESTAMP '2026-01-02 03:04:05' AS occurred_at, "
+                "'ok'::VARCHAR AS label"
+            ),
+            columns=[
+                Column(name="qty", type=DataType.INT),
+                Column(name="active", type=DataType.BOOLEAN),
+                Column(name="occurred_at", type=DataType.TIMESTAMP),
+                Column(name="label", type=DataType.TEXT),
+            ],
+        )
+    )
+
+    result = await engine.validate_models(data_source="dduckdb")
+
+    assert result == []
+
+
 async def test_drop_column_yields_edit_model_delete(duckdb_drift_env) -> None:
     engine, db_path = duckdb_drift_env
     conn = duckdb.connect(db_path)
