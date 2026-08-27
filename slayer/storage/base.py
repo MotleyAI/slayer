@@ -23,8 +23,9 @@ from slayer.memories.models import (
 )
 from slayer.storage import migrations as _mig
 from slayer.storage.legacy_alias_rewrite import (
-    apply_dunder_rewrite,
+    apply_dunder_rewrite_to_model_dict,
     extract_dunder_chains,
+    mode_a_surface_texts,
 )
 from slayer.storage.type_refinement import (
     has_refineable_columns,
@@ -292,6 +293,7 @@ class StorageBackend(ABC):
         SQLite override this; the default returns ``None``, which safely limits
         the rewrite to first-hop walks resolvable from the host's own ``joins``.
         """
+        await asyncio.sleep(0)  # awaited protocol hook; async impls override
         return None
 
     async def delete_model(
@@ -502,20 +504,8 @@ class StorageBackend(ABC):
         physical column) is left byte-verbatim. Returns ``data`` (mutated in
         place); a no-legacy-``__`` model is untouched.
         """
-        columns = data.get("columns")
-        filters = data.get("filters")
-        surfaces: list[str] = []
-        if isinstance(columns, list):
-            for col in columns:
-                if isinstance(col, dict):
-                    for key in ("sql", "filter"):
-                        if isinstance(col.get(key), str):
-                            surfaces.append(col[key])
-        if isinstance(filters, list):
-            surfaces.extend(f for f in filters if isinstance(f, str))
-
         all_chains: set[tuple[str, ...]] = set()
-        for text in surfaces:
+        for text in mode_a_surface_texts(data):
             all_chains |= extract_dunder_chains(text)
         if not all_chains:
             return data
@@ -530,21 +520,7 @@ class StorageBackend(ABC):
         if not resolvable:
             return data
 
-        if isinstance(columns, list):
-            for col in columns:
-                if not isinstance(col, dict):
-                    continue
-                for key in ("sql", "filter"):
-                    if isinstance(col.get(key), str):
-                        col[key] = apply_dunder_rewrite(
-                            col[key], resolvable=resolvable,
-                        )
-        if isinstance(filters, list):
-            data["filters"] = [
-                apply_dunder_rewrite(f, resolvable=resolvable)
-                if isinstance(f, str) else f
-                for f in filters
-            ]
+        apply_dunder_rewrite_to_model_dict(data, resolvable=resolvable)
         return data
 
     async def _dunder_chain_is_join_walk(

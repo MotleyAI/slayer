@@ -2282,6 +2282,54 @@ def _sql_table_identity(
     return (schema if schema is not None else default_schema, obj)
 
 
+async def _stored_sanitized_identity_map(
+    *,
+    storage: StorageBackend,
+    datasource: DatasourceConfig,
+    default_schema: str | None,
+) -> tuple[set[str], dict[str, tuple[str | None, str] | None]]:
+    """Stored model names for ``datasource`` plus each one's live-object identity
+    (used by the same-object guard in :func:`_adopt_stored_sanitized_names`)."""
+    identities = await storage._list_all_model_identities()
+    stored_names = {n for d, n in identities if d == datasource.name}
+    stored_identity: dict[str, tuple[str | None, str] | None] = {}
+    for name in stored_names:
+        stored = await storage.get_model(name, data_source=datasource.name)
+        if stored is not None:
+            stored_identity[name] = _sql_table_identity(
+                stored.sql_table, default_schema=default_schema,
+            )
+    return stored_names, stored_identity
+
+
+def _sanitized_rename_map(
+    *,
+    fresh_by_name: dict[str, "SlayerModel"],
+    stored_names: set[str],
+    stored_identity: dict[str, tuple[str | None, str] | None],
+    default_schema: str | None,
+) -> dict[str, str]:
+    """Map each faithful fresh name onto a stored sanitized spelling that models
+    the SAME live object (stored-name-wins). Skips exact stored matches, a name
+    whose sanitized form is itself a distinct live object this run (would collapse
+    two tables), and twins whose live-object identities differ."""
+    rename_map: dict[str, str] = {}
+    for name, fresh in fresh_by_name.items():
+        if name in stored_names:
+            continue  # exact stored model — additive pass matches it directly
+        sanitized = sanitize_model_name(name)
+        if sanitized == name or sanitized not in stored_names:
+            continue
+        if sanitized in fresh_by_name:
+            continue  # sanitized spelling is a distinct live object — don't collapse
+        fresh_identity = _sql_table_identity(
+            fresh.sql_table, default_schema=default_schema,
+        )
+        if fresh_identity is not None and stored_identity.get(sanitized) == fresh_identity:
+            rename_map[name] = sanitized
+    return rename_map
+
+
 async def _adopt_stored_sanitized_names(
     *,
     fresh_by_name: dict[str, "SlayerModel"],
@@ -2299,29 +2347,13 @@ async def _adopt_stored_sanitized_names(
     DIFFERENT object never matches (the identity guard). Renames cascade over
     every fresh model's ``ModelJoin.target_model`` so joins keep resolving.
     """
-    identities = await storage._list_all_model_identities()
-    stored_names = {n for d, n in identities if d == datasource.name}
-    # Stored sanitized-name → its live-object identity, for the same-object guard.
-    stored_identity: dict[str, tuple[str | None, str] | None] = {}
-    for name in stored_names:
-        stored = await storage.get_model(name, data_source=datasource.name)
-        if stored is not None:
-            stored_identity[name] = _sql_table_identity(
-                stored.sql_table, default_schema=default_schema,
-            )
-
-    rename_map: dict[str, str] = {}
-    for name, fresh in fresh_by_name.items():
-        if name in stored_names:
-            continue  # exact stored model — additive pass matches it directly
-        sanitized = sanitize_model_name(name)
-        if sanitized == name or sanitized not in stored_names:
-            continue
-        fresh_identity = _sql_table_identity(
-            fresh.sql_table, default_schema=default_schema,
-        )
-        if fresh_identity is not None and stored_identity.get(sanitized) == fresh_identity:
-            rename_map[name] = sanitized
+    stored_names, stored_identity = await _stored_sanitized_identity_map(
+        storage=storage, datasource=datasource, default_schema=default_schema,
+    )
+    rename_map = _sanitized_rename_map(
+        fresh_by_name=fresh_by_name, stored_names=stored_names,
+        stored_identity=stored_identity, default_schema=default_schema,
+    )
     if not rename_map:
         return fresh_by_name
 

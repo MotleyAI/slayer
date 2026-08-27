@@ -112,6 +112,18 @@ class TestParserSlayerPrefixReservation:
         with pytest.raises(ValueError):
             parse_expr("__slayer_secret + 1")
 
+    def test_embedded_slayer_run_still_parses(self) -> None:
+        # A2/A1 carve-out: name validation reserves ``__slayer_`` only as a
+        # *prefix*, so ``foo__slayer_bar`` is a legal saved name and must stay
+        # referenceable in Mode-B. The reservation scan matches at an identifier
+        # boundary, not as a raw substring, so the embedded run is allowed.
+        parsed = parse_expr("foo__slayer_bar")
+        assert parsed is not None
+
+    def test_dotted_embedded_slayer_run_still_parses(self) -> None:
+        parsed = parse_expr("customers.foo__slayer_bar:sum")
+        assert parsed is not None
+
     def test_colon_aggregation_still_parses(self) -> None:
         # revenue:sum is rewritten to a __slayer_agg_ placeholder INTERNALLY;
         # the raw-input scan must not mistake that for a spoof.

@@ -111,8 +111,9 @@ class TestStageFlattenCollision:
         can produce the collision message. Post-flip the reference binds (D5)
         and the stage guard fires.
         """
+        models = [_customers(), _host_with_flat_collider(), self._qb()]
         with pytest.raises(ValueError, match=r"[Cc]ollision"):
-            await _execute_named([_customers(), _host_with_flat_collider(), self._qb()], "qb")
+            await _execute_named(models, "qb")
 
 
 # --------------------------------------------------------------------------- #
@@ -146,8 +147,9 @@ class TestSameNameCollisionGuardLive:
                 {"dimension": {"name": "created_at"}, "granularity": "month"},
             ],
         )
+        model = self._orders()
         with pytest.raises(ValueError, match=r"Stage column name collision on 'dup'"):
-            await _engine_generate(query=query, model=self._orders(), validate=False)
+            await _engine_generate(query=query, model=model, validate=False)
 
 
 # --------------------------------------------------------------------------- #
@@ -172,14 +174,13 @@ class TestQueryBackedFlattenMessage:
             await storage.save_model(_customers(), _validate=False)
             await storage.save_model(_host_with_flat_collider(), _validate=False)
             engine = SlayerQueryEngine(storage=storage)
+            query = SlayerQuery(
+                source_model="hostm",
+                dimensions=["customers.region", "customers__region"],
+            )
             with pytest.raises(Exception, match=r"(?i)flatten|collision"):
                 await engine.create_model_from_query(
-                    query=SlayerQuery(
-                        source_model="hostm",
-                        dimensions=["customers.region", "customers__region"],
-                    ),
-                    name="cmfq",
-                    save=False,
+                    query=query, name="cmfq", save=False,
                 )
 
     @pytest.mark.asyncio
@@ -203,13 +204,13 @@ class TestQueryBackedFlattenMessage:
             await storage.save_model(_customers(), _validate=False)
             await storage.save_model(_host_with_flat_collider(), _validate=False)
             engine = SlayerQueryEngine(storage=storage)
+            query = SlayerQuery(
+                source_model="hostm",
+                dimensions=["customers.region", "customers__region"],
+            )
             with pytest.raises(Exception, match=r"(?i)flatten|collision") as ei:
                 await engine.create_model_from_query(
-                    query=SlayerQuery(
-                        source_model="hostm",
-                        dimensions=["customers.region", "customers__region"],
-                    ),
-                    name="cmfq2", save=False,
+                    query=query, name="cmfq2", save=False,
                 )
             # The sentinel must NOT be what propagated.
             assert "WRAPPER_REACHED" not in str(ei.value)

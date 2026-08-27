@@ -79,7 +79,7 @@ def apply_dunder_rewrite(
         return sql_text
     root = parsed
     changed = False
-    for col in list(parsed.find_all(exp.Column)):
+    for col in list(parsed.find_all(exp.Column)):  # NOSONAR(S7504) — materialised before in-place col.replace mutation
         chain = _dunder_chain_for_column(col)
         if chain is None or chain not in resolvable:
             continue
@@ -91,3 +91,43 @@ def apply_dunder_rewrite(
             col.replace(dotted)
         changed = True
     return root.sql() if changed else sql_text
+
+
+def mode_a_surface_texts(data: dict) -> list[str]:
+    """Every Mode-A free-SQL string in a raw model dict: each column's ``sql``
+    and ``filter``, plus the model-level ``filters``."""
+    texts: list[str] = []
+    columns = data.get("columns")
+    if isinstance(columns, list):
+        for col in columns:
+            if isinstance(col, dict):
+                for key in ("sql", "filter"):
+                    if isinstance(col.get(key), str):
+                        texts.append(col[key])
+    filters = data.get("filters")
+    if isinstance(filters, list):
+        texts.extend(f for f in filters if isinstance(f, str))
+    return texts
+
+
+def apply_dunder_rewrite_to_model_dict(
+    data: dict, *, resolvable: set[tuple[str, ...]],
+) -> None:
+    """Rewrite every Mode-A surface in ``data`` in place — each column's ``sql`` /
+    ``filter`` and the model ``filters`` — replacing resolvable legacy ``__`` join
+    qualifiers with their dotted form."""
+    columns = data.get("columns")
+    if isinstance(columns, list):
+        for col in columns:
+            if not isinstance(col, dict):
+                continue
+            for key in ("sql", "filter"):
+                if isinstance(col.get(key), str):
+                    col[key] = apply_dunder_rewrite(col[key], resolvable=resolvable)
+    filters = data.get("filters")
+    if isinstance(filters, list):
+        data["filters"] = [
+            apply_dunder_rewrite(f, resolvable=resolvable)
+            if isinstance(f, str) else f
+            for f in filters
+        ]

@@ -173,6 +173,40 @@ class TestReingestMatching:
         )
 
     @pytest.mark.asyncio
+    async def test_distinct_live_twin_not_collapsed_by_stored_legacy(
+        self, workspace: Path
+    ) -> None:
+        """FAIL-FIRST (A2): when BOTH ``a__b`` and ``a_b`` are live objects and a
+        stored legacy ``a_b`` points at ``a__b``, the re-ingest rename pre-pass
+        must NOT adopt ``a__b`` → ``a_b`` — that would collapse two distinct live
+        tables onto one model. The sanitized-is-a-live-object guard prevents it."""
+        db_path = str(workspace / "live.db")
+        _exec(
+            db_path,
+            """
+            CREATE TABLE a__b (id INTEGER PRIMARY KEY, viaview TEXT);
+            CREATE TABLE a_b (id INTEGER PRIMARY KEY, real_col TEXT);
+            """,
+        )
+        storage = YAMLStorage(base_dir=str(workspace / "store"))
+        ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
+        await storage.save_datasource(ds)
+        # Seed the old-world legacy model whose sql_table is the OTHER live object.
+        await storage.save_model(SlayerModel(
+            name="a_b", data_source="ds", sql_table="a__b",
+            columns=[Column(name="id", type=DataType.INT, primary_key=True),
+                     Column(name="x", type=DataType.TEXT)],
+        ))
+        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        a__b = await storage.get_model("a__b", data_source="ds")
+        a_b = await storage.get_model("a_b", data_source="ds")
+        assert a__b is not None, "the live a__b table must keep its own model"
+        assert a_b is not None, "the live a_b table must keep its own model"
+        # Distinct live objects → distinct models; a__b is not collapsed away.
+        assert a__b.sql_table == "a__b"
+
+    @pytest.mark.asyncio
     async def test_stored_sanitized_name_wins_no_duplicate(
         self, workspace: Path
     ) -> None:

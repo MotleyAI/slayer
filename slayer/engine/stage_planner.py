@@ -2245,25 +2245,25 @@ def _flatten_collision_message(flat_name: str) -> str:
     )
 
 
-def _declared_measures_from_query(
+def _guard_flatten_name(
+    *, seen_flat: Dict[str, str], flat_name: str, origin: str,
+) -> None:
+    """Raise the [D5] collision message when two DISTINCT projected names flatten
+    to ``flat_name``; otherwise record ``origin`` as its owner."""
+    prior = seen_flat.get(flat_name)
+    if prior is not None and prior != origin:
+        raise ValueError(_flatten_collision_message(flat_name))
+    seen_flat[flat_name] = origin
+
+
+def _declared_from_dimensions(
     *,
     query: SlayerQuery,
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
+    seen_flat: Dict[str, str],
 ) -> List[DeclaredMeasure]:
     declared: List[DeclaredMeasure] = []
-    # DEV-1743 [D5]: two DISTINCT projected names (a joined ``customers.region``
-    # and a literal ``customers__region``) can flatten to one downstream name.
-    # Detect that here, before interning, so the clear collision message wins
-    # over the generic ``DuplicateMeasureNameError``.
-    seen_flat: Dict[str, str] = {}
-
-    def _guard_flatten(*, flat_name: str, origin: str) -> None:
-        prior = seen_flat.get(flat_name)
-        if prior is not None and prior != origin:
-            raise ValueError(_flatten_collision_message(flat_name))
-        seen_flat[flat_name] = origin
-
     for d in (query.dimensions or []):
         full = d.full_name
         _reject_opaque_grouping_dim(
@@ -2275,7 +2275,7 @@ def _declared_measures_from_query(
             bundle=bundle,
         )
         flat_name = _flatten_dotted(full)
-        _guard_flatten(flat_name=flat_name, origin=full)
+        _guard_flatten_name(seen_flat=seen_flat, flat_name=flat_name, origin=full)
         fmt, desc = _format_description_for_dimension(
             scope=scope, full_name=full,
         )
@@ -2291,14 +2291,25 @@ def _declared_measures_from_query(
             format=fmt,
             description=desc,
         ))
+    return declared
+
+
+def _declared_from_time_dimensions(
+    *,
+    query: SlayerQuery,
+    scope: Union[ModelScope, StageSchema],
+    bundle: ResolvedSourceBundle,
+    seen_flat: Dict[str, str],
+) -> List[DeclaredMeasure]:
     # Time dimensions follow dimensions in the public projection — matches
     # the legacy ``user_projection`` order (dims, then time dims, then
     # measures).
+    declared: List[DeclaredMeasure] = []
     for td in (query.time_dimensions or []):
         full = td.dimension.full_name
         bound = bind_time_dimension(td=td, scope=scope, bundle=bundle)
         flat_name = _flatten_dotted(full)
-        _guard_flatten(flat_name=flat_name, origin=full)
+        _guard_flatten_name(seen_flat=seen_flat, flat_name=flat_name, origin=full)
         declared.append(DeclaredMeasure(
             bound=bound,
             declared_name=flat_name,
@@ -2306,6 +2317,16 @@ def _declared_measures_from_query(
             label=td.label,
             type=DataType.TIMESTAMP,
         ))
+    return declared
+
+
+def _declared_from_measures(
+    *,
+    query: SlayerQuery,
+    scope: Union[ModelScope, StageSchema],
+    bundle: ResolvedSourceBundle,
+) -> List[DeclaredMeasure]:
+    declared: List[DeclaredMeasure] = []
     for m in (query.measures or []):
         formula = m.formula
         explicit_name = m.name
@@ -2367,6 +2388,30 @@ def _declared_measures_from_query(
             description=desc,
         ))
     return declared
+
+
+def _declared_measures_from_query(
+    *,
+    query: SlayerQuery,
+    scope: Union[ModelScope, StageSchema],
+    bundle: ResolvedSourceBundle,
+) -> List[DeclaredMeasure]:
+    # DEV-1743 [D5]: two DISTINCT projected names (a joined ``customers.region``
+    # and a literal ``customers__region``) can flatten to one downstream name.
+    # Detect that before interning so the clear collision message wins over the
+    # generic ``DuplicateMeasureNameError``. The flatten-guard state is shared
+    # across dimensions and time dimensions (projection order: dims, time dims,
+    # then measures).
+    seen_flat: Dict[str, str] = {}
+    return [
+        *_declared_from_dimensions(
+            query=query, scope=scope, bundle=bundle, seen_flat=seen_flat,
+        ),
+        *_declared_from_time_dimensions(
+            query=query, scope=scope, bundle=bundle, seen_flat=seen_flat,
+        ),
+        *_declared_from_measures(query=query, scope=scope, bundle=bundle),
+    ]
 
 
 def _topo_sort(queries: List[SlayerQuery]) -> List[SlayerQuery]:

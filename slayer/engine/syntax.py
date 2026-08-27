@@ -154,6 +154,12 @@ ParsedExpr = Union[
 # ``__slayer_`` prefix is reserved from user input (P3), so a literal spoof of
 # the placeholder cannot slip past ``_convert``'s ``_PLACEHOLDER_RE`` match.
 _RESERVED_EXPR_PREFIX = "__slayer_"
+# Match the reserved prefix only at an identifier boundary: name validation
+# reserves it as a *prefix* (a name must START with it), so ``foo__slayer_bar``
+# is a legal saved name and must stay referenceable — a raw substring check
+# would reject it. The lookbehind rejects a token that opens the identifier
+# (start-of-string or after an operator/dot) while allowing an embedded run.
+_RESERVED_EXPR_PREFIX_RE = re.compile(r"(?<![A-Za-z0-9_])__slayer_")
 _PLACEHOLDER_PREFIX = "__slayer_agg_"
 _PLACEHOLDER_RE = re.compile(rf"^{_PLACEHOLDER_PREFIX}(\d+)__$")
 _OVER_RE = re.compile(r"\bOVER\s*\(", re.IGNORECASE)
@@ -626,9 +632,10 @@ def _reject_reserved_expr_token(text: str) -> None:
     placeholders, so a colon-agg like ``revenue:sum`` is unaffected while a
     literal ``__slayer_agg_0__`` spoof is rejected [C3]. String literals are
     blanked first (Python syntax, so escapes count) so quoted data is never
-    mistaken for an identifier.
+    mistaken for an identifier. Matched at an identifier boundary so a legal
+    embedded name like ``foo__slayer_bar`` stays referenceable.
     """
-    if _RESERVED_EXPR_PREFIX in _PY_STRING_LITERAL_RE.sub("", text):
+    if _RESERVED_EXPR_PREFIX_RE.search(_PY_STRING_LITERAL_RE.sub("", text)):
         raise ValueError(
             f"Mode-B expression {text!r} uses the reserved "
             f"{_RESERVED_EXPR_PREFIX!r} identifier prefix, which is reserved "

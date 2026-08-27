@@ -157,16 +157,12 @@ def _identifier_chain(node: exp.Expression) -> Optional[List[str]]:
     return None
 
 
-def _reference_sites(
+def _dot_reference_sites(
     parsed: exp.Expression, root_scope_ids: Set[int],
-) -> List[Tuple[exp.Expression, Tuple[str, ...], str]]:
-    """Yield ``(node, qualifiers, leaf)`` for every root-scope reference.
-
-    A 5+-part reference parses as an outer ``exp.Dot`` wrapping a ``Column``;
-    a 2–4-part (or bare) reference is a plain ``Column``. Both are surfaced,
-    with the wrapping ``Dot`` preferred so its inner ``Column`` is not double-
-    counted.
-    """
+) -> Tuple[List[Tuple[exp.Expression, Tuple[str, ...], str]], Set[int]]:
+    """Root-scope references that parse as an outermost ``exp.Dot`` (5+-part
+    refs), plus the ids of the ``Column`` nodes they consume so the plain-Column
+    pass in :func:`_reference_sites` does not double-count them."""
     sites: List[Tuple[exp.Expression, Tuple[str, ...], str]] = []
     consumed: Set[int] = set()
     for dot in parsed.find_all(exp.Dot):
@@ -182,6 +178,20 @@ def _reference_sites(
         sites.append((dot, tuple(chain[:-1]), chain[-1]))
         for c in dot.find_all(exp.Column):
             consumed.add(id(c))
+    return sites, consumed
+
+
+def _reference_sites(
+    parsed: exp.Expression, root_scope_ids: Set[int],
+) -> List[Tuple[exp.Expression, Tuple[str, ...], str]]:
+    """Yield ``(node, qualifiers, leaf)`` for every root-scope reference.
+
+    A 5+-part reference parses as an outer ``exp.Dot`` wrapping a ``Column``;
+    a 2–4-part (or bare) reference is a plain ``Column``. Both are surfaced,
+    with the wrapping ``Dot`` preferred so its inner ``Column`` is not double-
+    counted.
+    """
+    sites, consumed = _dot_reference_sites(parsed, root_scope_ids)
     for col in parsed.find_all(exp.Column):
         if id(col) in consumed or id(col) not in root_scope_ids:
             continue
@@ -264,35 +274,68 @@ def _resolve_qualifiers(
     if _walk_exact(path, source_model, resolve_model) is not None:
         return path
     if len(path) == 1:
-        q = path[0]
-        if "__" in q:
-            naive = tuple(q.split("__"))
-            if _walk_exact(naive, source_model, resolve_model) is not None:
-                raise LegacyDunderAliasError(
-                    alias=q, dotted=".".join((*naive, leaf)),
-                    model=source_model.name,
-                )
+        _raise_if_legacy_split_alias(
+            qualifier=path[0], leaf=leaf,
+            source_model=source_model, resolve_model=resolve_model,
+        )
         return None  # opaque single qualifier
-    # Multi-part chain. If the first hop IS a join target but a later hop
-    # failed, name the failing hop; otherwise the whole chain is opaque
-    # (physical schema.table.column — join-target-beats-schema precedence).
-    if any(j.target_model == path[0] for j in source_model.joins):
-        current = source_model
-        for hop in path:
-            if not any(j.target_model == hop for j in current.joins):
-                raise UnresolvableDimensionJoinError(
-                    reference=".".join((*path, leaf)),
-                    root_model=source_model.name,
-                    reason=f"'{hop}' is not a joined model on the preceding hop.",
-                )
-            current = resolve_model(hop)
-            if current is None:
-                raise UnresolvableDimensionJoinError(
-                    reference=".".join((*path, leaf)),
-                    root_model=source_model.name,
-                    reason=f"joined model '{hop}' is not in the resolved bundle.",
-                )
+    _raise_if_broken_join_walk(
+        path=path, leaf=leaf,
+        source_model=source_model, resolve_model=resolve_model,
+    )
     return None
+
+
+def _raise_if_legacy_split_alias(
+    *,
+    qualifier: str,
+    leaf: str,
+    source_model: SlayerModel,
+    resolve_model: SyncResolveModel,
+) -> None:
+    """D2 door: a single opaque qualifier ``a__b`` that naive-splits into a real
+    join walk is the legacy split-alias form — raise :class:`LegacyDunderAliasError`
+    naming the dotted replacement. A qualifier without ``__`` (or whose split is
+    not a join walk) is left opaque (no raise)."""
+    if "__" not in qualifier:
+        return
+    naive = tuple(qualifier.split("__"))
+    if _walk_exact(naive, source_model, resolve_model) is not None:
+        raise LegacyDunderAliasError(
+            alias=qualifier, dotted=".".join((*naive, leaf)),
+            model=source_model.name,
+        )
+
+
+def _raise_if_broken_join_walk(
+    *,
+    path: Tuple[str, ...],
+    leaf: str,
+    source_model: SlayerModel,
+    resolve_model: SyncResolveModel,
+) -> None:
+    """Multi-part chain whose first hop IS a join target but a later hop fails:
+    raise :class:`UnresolvableDimensionJoinError` naming the failing hop. A chain
+    whose first hop is NOT a join target is opaque (physical
+    ``schema.table.column`` — join-target-beats-schema precedence) and returns
+    without raising."""
+    if not any(j.target_model == path[0] for j in source_model.joins):
+        return
+    current: Optional[SlayerModel] = source_model
+    for hop in path:
+        if current is None or not any(j.target_model == hop for j in current.joins):
+            raise UnresolvableDimensionJoinError(
+                reference=".".join((*path, leaf)),
+                root_model=source_model.name,
+                reason=f"'{hop}' is not a joined model on the preceding hop.",
+            )
+        current = resolve_model(hop)
+        if current is None:
+            raise UnresolvableDimensionJoinError(
+                reference=".".join((*path, leaf)),
+                root_model=source_model.name,
+                reason=f"joined model '{hop}' is not in the resolved bundle.",
+            )
 
 
 def _lenient_path(

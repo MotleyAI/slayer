@@ -71,7 +71,8 @@ class TestModeBOverDunderModels:
             extra_models=[dunder],
             validate=False,
         )
-        assert isinstance(sql, str) and sql
+        assert isinstance(sql, str)
+        assert sql
         # Post-flip the count reads the __-named model's physical table.
         assert "customer_region_dim" in sql
 
@@ -106,7 +107,8 @@ class TestModeBOverDunderModels:
             extra_models=[dunder],
             validate=False,
         )
-        assert isinstance(sql, str) and sql
+        assert isinstance(sql, str)
+        assert sql
         assert "customer_region_dim" in sql
 
     @pytest.mark.asyncio

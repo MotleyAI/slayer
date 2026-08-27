@@ -21,6 +21,7 @@ import tempfile
 import pytest
 
 from slayer.core.enums import DataType
+from slayer.core.errors import UnresolvableDimensionJoinError
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -102,8 +103,9 @@ class TestLegacyDunderIsHardErrorAtSave:
     @pytest.mark.asyncio
     async def test_save_raises_d2_with_dotted_suggestion(self) -> None:
         engine = await _engine_with([chain_regions(), chain_customers()])
+        model = self._orders_with_legacy_alias()
         with pytest.raises(ValueError) as ei:
-            await engine.save_model(self._orders_with_legacy_alias())
+            await engine.save_model(model)
         msg = str(ei.value)
         # Names BOTH the rejected legacy qualifier and the dotted replacement,
         # so an unrelated downstream error that merely quotes the path can't
@@ -132,11 +134,12 @@ class TestLegacyDunderIsHardErrorAtGeneration:
 
     @pytest.mark.asyncio
     async def test_generation_raises_d2(self) -> None:
+        query = SlayerQuery(source_model="orders", dimensions=["rn"])
+        model = self._orders_with_legacy_alias()
+        extras = [chain_customers(), chain_regions()]
         with pytest.raises(ValueError) as ei:
             await _engine_generate(
-                query=SlayerQuery(source_model="orders", dimensions=["rn"]),
-                model=self._orders_with_legacy_alias(),
-                extra_models=[chain_customers(), chain_regions()],
+                query=query, model=model, extra_models=extras,
                 validate=False,  # bypass save-time pass; door must still fire
             )
         msg = str(ei.value)
@@ -165,8 +168,9 @@ class TestBrokenChainNamesFailingHop:
     @pytest.mark.asyncio
     async def test_save_raises_naming_the_hop(self) -> None:
         engine = await _engine_with([chain_regions(), chain_customers()])
-        with pytest.raises(Exception) as ei:
-            await engine.save_model(self._orders_broken_chain())
+        model = self._orders_broken_chain()
+        with pytest.raises(UnresolvableDimensionJoinError) as ei:
+            await engine.save_model(model)
         assert "nonexistent" in str(ei.value)
 
 
@@ -222,17 +226,17 @@ class TestFilterSurfacesResolve:
     @pytest.mark.asyncio
     async def test_column_filter_legacy_dunder_is_d2(self) -> None:
         engine = await _engine_with([chain_regions(), chain_customers()])
+        host = self._host(col_filter="customers__regions.name = 'US'")
         with pytest.raises(ValueError) as ei:
-            await engine.save_model(
-                self._host(col_filter="customers__regions.name = 'US'"))
+            await engine.save_model(host)
         assert "customers.regions.name" in str(ei.value)
 
     @pytest.mark.asyncio
     async def test_model_filter_legacy_dunder_is_d2(self) -> None:
         engine = await _engine_with([chain_regions(), chain_customers()])
+        host = self._host(model_filters=["customers__regions.name = 'US'"])
         with pytest.raises(ValueError) as ei:
-            await engine.save_model(
-                self._host(model_filters=["customers__regions.name = 'US'"]))
+            await engine.save_model(host)
         assert "customers.regions.name" in str(ei.value)
 
 
