@@ -93,6 +93,27 @@ def apply_dunder_rewrite(
     return root.sql() if changed else sql_text
 
 
+def _column_surface_refs(columns):
+    """Yield ``(col_dict, key)`` for each column's ``sql`` / ``filter`` string."""
+    if not isinstance(columns, list):
+        return
+    for col in columns:
+        if not isinstance(col, dict):
+            continue
+        for key in ("sql", "filter"):
+            if isinstance(col.get(key), str):
+                yield col, key
+
+
+def _filter_surface_refs(filters):
+    """Yield ``(filters_list, index)`` for each model-level filter string."""
+    if not isinstance(filters, list):
+        return
+    for i, f in enumerate(filters):
+        if isinstance(f, str):
+            yield filters, i
+
+
 def _mode_a_surface_refs(data: dict):
     """Yield ``(container, key)`` for each Mode-A free-SQL string surface in a raw
     model dict — each column's ``sql`` / ``filter`` (container = the column dict)
@@ -100,19 +121,8 @@ def _mode_a_surface_refs(data: dict):
     ``container[key]`` reads and writes that surface. One traversal shared by the
     read (:func:`mode_a_surface_texts`) and the mutate
     (:func:`apply_dunder_rewrite_to_model_dict`) helpers so they can't drift."""
-    columns = data.get("columns")
-    if isinstance(columns, list):
-        for col in columns:
-            if not isinstance(col, dict):
-                continue
-            for key in ("sql", "filter"):
-                if isinstance(col.get(key), str):
-                    yield col, key
-    filters = data.get("filters")
-    if isinstance(filters, list):
-        for i, f in enumerate(filters):
-            if isinstance(f, str):
-                yield filters, i
+    yield from _column_surface_refs(data.get("columns"))
+    yield from _filter_surface_refs(data.get("filters"))
 
 
 def mode_a_surface_texts(data: dict) -> list[str]:

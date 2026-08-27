@@ -250,8 +250,9 @@ class TestComputedDimFlattenCollision:
             ],
             measures=[{"formula": "amount:sum"}],
         )
+        host = self._host()
+        extras = [_customers()]
         with pytest.raises(ValueError, match=r"flatten to the same downstream name"):
             await _engine_generate(
-                query=query, model=self._host(),
-                extra_models=[_customers()], validate=False,
+                query=query, model=host, extra_models=extras, validate=False,
             )
