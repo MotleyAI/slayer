@@ -222,6 +222,14 @@ Cross-model:
 {"formula": "cumsum(customers.*:count)"}
 ```
 
+Conditionals — `CASE WHEN` (or `iif(cond, then, otherwise)`) can branch on an aggregated value; the branch runs after grouping:
+
+```json
+{"formula": "CASE WHEN revenue:sum >= 10000 THEN 'high' ELSE 'standard' END", "name": "tier"}
+```
+
+See [Formulas — Conditionals](../../concepts/formulas.md#conditionals-case-when-iif) for branch-typing rules, and [Queries — Expression dimensions](../../concepts/queries.md) for grouping by a computed expression.
+
 ## Share of parent (`partition_by`)
 
 Most aggregations take an optional `partition_by=` to compute over a subset of the query's dimensions, repeated across the finer rows — `SUM(x) OVER (PARTITION BY …)` (not yet supported with `window=`, on `first`/`last`, nested in a transform, or in a filter — see the restriction note below):

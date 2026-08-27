@@ -256,6 +256,7 @@ class ValueRegistry:
         expression: Optional["BoundExpr"] = None,
         format: Optional[NumberFormat] = None,
         description: Optional[str] = None,
+        is_dimension: bool = False,
     ) -> SlotId:
         self._validate_alias_collisions(
             key=key,
@@ -309,6 +310,7 @@ class ValueRegistry:
             phase=phase,
             label=label,
             type=type,
+            is_dimension=is_dimension,
             expression=expression if expression is not None else BoundExpr(value_key=key),
             format=format,
             description=description,
@@ -589,6 +591,10 @@ class DeclaredMeasure(BaseModel):
     type: Optional[DataType] = None
     format: Optional[NumberFormat] = None
     description: Optional[str] = None
+    # DEV-1740: a computed (expression) dimension is a ROW-phase composite that
+    # must be projected AND grouped, unlike a bare-measure expression (which is
+    # a user error). The flag tells the generator which one it is.
+    is_dimension: bool = False
 
 
 class OrderSpec(BaseModel):
@@ -659,7 +665,8 @@ def _iter_slot_deps(key: ValueKey):
         for arg in key.args:
             if isinstance(
                 arg,
-                _SLOTTABLE_KIND + (ArithmeticKey, ScalarCallKey, BetweenKey),
+                _SLOTTABLE_KIND
+                + (ArithmeticKey, ScalarCallKey, BetweenKey),
             ):
                 yield from _iter_slot_deps(arg)
         return
@@ -735,6 +742,7 @@ class ProjectionPlanner:
                 type=m.type,
                 format=m.format,
                 description=m.description,
+                is_dimension=m.is_dimension,
             )
             public_projection.append(sid)
             # Materialise any auxiliary slot-worthy deps of the measure

@@ -28,6 +28,9 @@ from typing import Literal, Optional, Tuple, TypeVar, Union, cast
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from slayer.core.enums import DataType
+from slayer.core.format import NumberFormat
+
 
 # ---------------------------------------------------------------------------
 # Closed scalar-function allowlist (C12).
@@ -51,6 +54,9 @@ SCALAR_FUNCTIONS: frozenset[str] = frozenset({
     # Pattern match — ``like(value, pattern)`` emits the SQL ``LIKE`` operator
     # (sqlglot ``exp.Like``); see SQLGenerator scalar-call rendering.
     "like",
+    # Conditional — ``iif(cond, then, otherwise)`` emits ``CASE WHEN``; the
+    # ``CASE`` surface rewrites to it at parse time (DEV-1740).
+    "iif",
 })
 
 
@@ -94,6 +100,7 @@ SCALAR_FUNCTION_ARITY: dict[str, tuple[int, Optional[int]]] = {
     "replace": (3, 3), "substr": (2, 3), "substring": (2, 3), "instr": (2, 2),
     "concat": (1, None),
     "like": (2, 2),
+    "iif": (3, 3),
 }
 
 # Not a second allowlist: the table above must cover ``SCALAR_FUNCTIONS``
@@ -964,3 +971,42 @@ def reroot_value_key(
         f"letting an unrerooted key through, which the SQL generator cannot "
         f"distinguish from a correctly-local one."
     )
+
+
+# ---------------------------------------------------------------------------
+# Conditional branch typing (DEV-1740) — Postgres CASE semantics.
+# ---------------------------------------------------------------------------
+
+_NUMERIC_TYPES = frozenset({DataType.INT, DataType.DOUBLE})
+
+
+def join_conditional_branch_types(
+    a: Optional[DataType], b: Optional[DataType],
+) -> Optional[DataType]:
+    """The result type of a conditional whose branches are ``a`` / ``b``.
+
+    ``None`` marks a NULL-literal branch, absorbed by the other. Identical
+    types pass through; a numeric mix widens to ``DOUBLE``; any other mix is a
+    plan-time error naming both types (matching what Postgres itself rejects,
+    so a query never works on one Tier-1 engine and explodes on another).
+    """
+    if a is None:
+        return b
+    if b is None:
+        return a
+    if a == b:
+        return a
+    if a in _NUMERIC_TYPES and b in _NUMERIC_TYPES:
+        return DataType.DOUBLE
+    raise ValueError(
+        f"CASE/iif branches have incompatible types {a.value} and {b.value}: "
+        f"branches must share a type (numeric types widen to DOUBLE). Cast one "
+        f"branch so both match."
+    )
+
+
+def conditional_number_format(
+    a: Optional[NumberFormat], b: Optional[NumberFormat],
+) -> Optional[NumberFormat]:
+    """A conditional carries a number format only when both branches agree."""
+    return a if (a is not None and a == b) else None

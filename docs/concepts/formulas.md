@@ -417,6 +417,29 @@ Column(name="ln_amount", sql="ln(amount)", type=DataType.DOUBLE)
 Column(name="rms", sql="sqrt(pow(x, 2) + pow(y, 2))", type=DataType.DOUBLE)
 ```
 
+## Conditionals (`CASE WHEN` / `iif`)
+
+Any formula, filter, or field expression can branch with SQL `CASE`:
+
+```json
+{"formula": "CASE WHEN revenue:sum >= 10000 THEN 1 ELSE 0 END", "name": "big"}
+```
+
+- **Searched** (`CASE WHEN c1 THEN v1 [WHEN c2 THEN v2 …] [ELSE d] END`) and
+  **simple** (`CASE x WHEN v1 THEN r1 … END`, lowered to `x = v1`) forms are both
+  accepted; keywords are case-insensitive and CASE nests anywhere.
+- A missing `ELSE` yields `NULL`. `iif(cond, then, otherwise)` is an equivalent
+  spelling — an allowlisted scalar function taking exactly three arguments.
+  Everything renders to a portable SQL `CASE` on every Tier-1 dialect.
+- Inside a `WHEN` condition you may use SQL operators (`=`, `<>`, `AND`, `OR`,
+  `NOT`, `LIKE`) even in a measure formula; `THEN` / `ELSE` values are taken
+  as-is (a string literal like `'a AND b'` is never rewritten).
+- The result **type is the join of the branches** (Postgres semantics):
+  identical types pass through, a numeric mix widens to `DOUBLE`, a `NULL`
+  branch is absorbed by the other, and any other mix is a plan-time error
+  naming both types. The Python conditional `x if c else y` is not supported —
+  use `CASE` / `iif`.
+
 ---
 
 ## Parsing Internals
