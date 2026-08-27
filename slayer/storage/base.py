@@ -537,6 +537,18 @@ class StorageBackend(ABC):
         Sibling dicts are loaded raw (and memoised in ``cache``) so a broken or
         missing intermediate collapses the whole chain to unresolvable.
         """
+        # D1: an exact ``__``-named join target beats a legacy split-alias
+        # reading. If the host directly joins a model literally named
+        # ``a__b`` (== ``"__".join(chain)``), the qualifier is an exact
+        # reference, never a hop-walk — it must not be rewritten to ``a.b``.
+        host_joins = host.get("joins")
+        host_targets = {
+            j.get("target_model")
+            for j in host_joins if isinstance(j, dict)
+        } if isinstance(host_joins, list) else set()
+        if "__".join(chain) in host_targets:
+            return False
+
         current: dict | None = host
         for i, hop in enumerate(chain):
             if current is None:

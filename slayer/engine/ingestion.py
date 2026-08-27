@@ -2336,7 +2336,7 @@ async def _adopt_stored_sanitized_names(
     storage: StorageBackend,
     datasource: DatasourceConfig,
     default_schema: str | None,
-) -> dict[str, "SlayerModel"]:
+) -> tuple[dict[str, "SlayerModel"], dict[str, str]]:
     """DEV-1743 [C2] re-ingest matching pre-pass (D3): stored-name-wins.
 
     A faithful fresh model (``a__b``) whose live object is ALREADY modelled by a
@@ -2346,6 +2346,10 @@ async def _adopt_stored_sanitized_names(
     (a stored ``a__b``) are left untouched; a sanitized stored twin pointing at a
     DIFFERENT object never matches (the identity guard). Renames cascade over
     every fresh model's ``ModelJoin.target_model`` so joins keep resolving.
+
+    Returns ``(adopted_models, rename_map)`` — the ``original → stored`` name map
+    so the caller can also re-point ``InternalTable.model_name`` entries (else a
+    hidden-internal lookup by the stale faithful name silently drops it).
     """
     stored_names, stored_identity = await _stored_sanitized_identity_map(
         storage=storage, datasource=datasource, default_schema=default_schema,
@@ -2355,7 +2359,7 @@ async def _adopt_stored_sanitized_names(
         stored_identity=stored_identity, default_schema=default_schema,
     )
     if not rename_map:
-        return fresh_by_name
+        return fresh_by_name, {}
 
     adopted: dict[str, "SlayerModel"] = {}
     for name, fresh in fresh_by_name.items():
@@ -2371,7 +2375,7 @@ async def _adopt_stored_sanitized_names(
         if joins != fresh.joins:
             updates["joins"] = joins
         adopted[new_name] = fresh.model_copy(update=updates) if updates else fresh
-    return adopted
+    return adopted, rename_map
 
 
 async def _scoped_models_for_validation(
@@ -2575,13 +2579,22 @@ async def ingest_datasource_idempotent(
     # DEV-1743 [C2] D3: a faithful fresh ``a__b`` whose live object is already
     # modelled by a stored sanitized ``a_b`` adopts the stored name (no
     # duplicate), guarded by same-live-object identity.
-    fresh_by_name = await _adopt_stored_sanitized_names(
+    fresh_by_name, adopted_renames = await _adopt_stored_sanitized_names(
         fresh_by_name=fresh_by_name,
         storage=storage,
         datasource=datasource,
         default_schema=default_schema_name,
     )
     fresh_models = list(fresh_by_name.values())
+    # A stored-name adoption also renames the model an internal-table entry
+    # points at; re-point them so the hidden-internal re-check (keyed on
+    # ``model_name``) doesn't miss an adopted internal and drop it from the report.
+    if adopted_renames:
+        scan.internal_tables = [
+            e.model_copy(update={"model_name": adopted_renames[e.model_name]})
+            if e.model_name in adopted_renames else e
+            for e in scan.internal_tables
+        ]
     # Keyed on the live object name, not the model name: validation scoping
     # compares against ``_bare_table_name(m.sql_table)``, so any model whose
     # name differs from its table (``__``-sanitized or dbt/OSI hidden) would

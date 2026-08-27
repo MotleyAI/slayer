@@ -443,15 +443,20 @@ def _requalify(node: exp.Expression, *, alias: str, leaf: str) -> exp.Expression
 
     For a plain ``Column`` the leaf identifier is preserved IN PLACE (only the
     table qualifier is reset and any db/catalog cleared) so a quoted leaf
-    (``customers."spend"``) keeps its quoting. A nested ``Dot`` (5+ parts) is
-    rebuilt from ``leaf`` — those deep chains never carry a quoted leaf in
-    practice."""
+    (``customers."spend"``) keeps its quoting. A nested ``Dot`` (5+ parts) reuses
+    its tail ``Identifier`` so a quoted / mixed-case leaf (``a.b.c."Spend"``)
+    keeps its quoting on case-folding dialects too (CR)."""
     if isinstance(node, exp.Column):
         node.set("table", exp.to_identifier(alias))
         node.set("db", None)
         node.set("catalog", None)
         return node
-    replacement = exp.column(leaf, table=alias)
+    tail = (
+        node.expression.copy()
+        if isinstance(node, exp.Dot) and isinstance(node.expression, exp.Identifier)
+        else exp.to_identifier(leaf)
+    )
+    replacement = exp.column(tail, table=alias)
     node.replace(replacement)
     return replacement
 

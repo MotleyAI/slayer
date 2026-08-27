@@ -16,7 +16,11 @@ and a short cleanup list. The authoritative spec is the Linear **DEV-1743** body
 (mirror in the session scratchpad `dev-1743-spec.md`); the original pre-impl
 build plan is `specs/DEV-1743-IMPLEMENTATION-PLAN.md`.
 
-## Snapshot
+## Snapshot — HISTORICAL (pre-completion, superseded by the STATUS banner above)
+
+> Everything from here down is the original mid-implementation work log, kept for
+> provenance. Its "21 failed" / open-gap claims describe the state BEFORE the flip
+> landed and are **no longer current** — see the COMPLETE status banner at the top.
 
 - Full non-integration suite: **13,225 passed**, 98 skipped, 2 xfailed,
   **21 failed** — and every one of the 21 is a DEV-1743 fail-first test for an

@@ -412,6 +412,28 @@ class TestLiveNameSurvivesToTheReport:
         result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
         assert "_dlt_loads" in {h.table_name for h in result.hidden_internals}
 
+    async def test_adopted_internal_name_still_reported(
+        self, workspace: Path
+    ) -> None:
+        """FAIL-FIRST (CR): when a fresh dlt internal ``_dlt_loads__x`` adopts a
+        stored sanitized ``_dlt_loads_x`` (stored-name-wins), the internal-table
+        entry's ``model_name`` must be re-pointed onto the adopted name — else the
+        hidden-internal re-check looks up the stale ``__`` name and drops it."""
+        _, ds = _ds(
+            workspace,
+            "CREATE TABLE _dlt_loads__x (id INTEGER PRIMARY KEY, v TEXT);",
+        )
+        storage = await _storage_with(workspace, ds)
+        # Seed the old-world sanitized model pointing at the live __ object.
+        await storage.save_model(SlayerModel(
+            name="_dlt_loads_x", data_source="ds", sql_table="_dlt_loads__x",
+            hidden=True, meta={"internal_table": "dlt"},
+            columns=[Column(name="id", type=DataType.INT, primary_key=True),
+                     Column(name="v", type=DataType.TEXT)],
+        ))
+        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        assert "_dlt_loads__x" in {h.table_name for h in result.hidden_internals}
+
 
 class TestSurfaceInternals:
     def test_flag_records_the_classification_anyway(

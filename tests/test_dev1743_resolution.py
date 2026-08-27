@@ -35,7 +35,7 @@ from tests._dev1743_fixtures import (
     chain_regions,
     dunder_target,
 )
-from tests._engine_helpers import _engine_generate, _join_aliases
+from tests._engine_helpers import _engine_generate
 
 
 async def _engine_with(models, *, dialect="postgres"):
@@ -47,6 +47,15 @@ async def _engine_with(models, *, dialect="postgres"):
     for m in models:
         await engine.save_model(m)
     return engine
+
+
+def _joined_table_names(sql: str) -> set[str]:
+    """Physical table names that appear as ``exp.Table`` in the SQL — proves a
+    join is actually WIRED (vs a raw substring hit anywhere in the text)."""
+    import sqlglot
+    from sqlglot import exp
+    tree = sqlglot.parse_one(sql, read="postgres")
+    return {t.name for t in tree.find_all(exp.Table)}
 
 
 # --------------------------------------------------------------------------- #
@@ -269,9 +278,11 @@ class TestAmbiguityImpossible:
                               dimensions=["chain_val", "direct_val"]),
             model=self._host(), extra_models=[ai_a(), ai_b(), ai_a__b()],
         )
-        # The chain's leaf table and the direct model's table are BOTH joined.
-        assert "a_b_direct" in sql, f"direct model a__b not joined:\n{sql}"
-        assert "b" in _join_aliases(sql) or " b " in sql
+        # The chain's leaf table and the direct model's table are BOTH joined
+        # (assert on parsed exp.Table names, not a raw substring).
+        joined = _joined_table_names(sql)
+        assert "a_b_direct" in joined, f"direct model a__b not joined:\n{sql}"
+        assert "b" in joined, f"chain leaf table b not joined:\n{sql}"
 
 
 # --------------------------------------------------------------------------- #
@@ -314,6 +325,55 @@ class TestDeepDottedChainResolves:
             query=SlayerQuery(source_model="hh", dimensions=["deep"]),
             model=host, extra_models=extra,
         )
-        # Every hop's physical table is joined into the query.
+        # Every hop's physical table is actually joined (parsed exp.Table names,
+        # not a raw substring — the aliases are the __-joined path aa__bb__cc__dd).
+        joined = _joined_table_names(sql)
         for tbl in ("aa", "bb", "cc", "dd"):
-            assert tbl in _join_aliases(sql) or f" {tbl} " in sql
+            assert tbl in joined, f"hop table {tbl} not joined:\n{sql}"
+
+
+# --------------------------------------------------------------------------- #
+# The save-time Mode-A door parses with the datasource's OWN dialect (Codex/CR),
+# not a hardcoded postgres — else valid non-Postgres Mode-A SQL can be rejected.
+# --------------------------------------------------------------------------- #
+class TestModeAValidationDialect:
+    @pytest.mark.asyncio
+    async def test_save_time_mode_a_uses_datasource_dialect(self, monkeypatch) -> None:
+        import slayer.engine.query_engine as qe_mod
+        captured: dict = {}
+
+        def _spy(*, sql, model, alias_path, resolve_model, dialect):
+            captured["dialect"] = dialect
+
+        monkeypatch.setattr(qe_mod, "expand_derived_refs_sync", _spy)
+
+        d = tempfile.mkdtemp()
+        storage = YAMLStorage(base_dir=d)
+        await storage.save_datasource(DatasourceConfig(name="test", type="mysql"))
+        engine = SlayerQueryEngine(storage=storage)
+        host = SlayerModel(
+            name="orders", data_source="test", sql_table="orders",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="cr_id", type=DataType.INT),
+                Column(name="rl", type=DataType.TEXT, sql="customer__region.label"),
+            ],
+            joins=[ModelJoin(target_model="customer__region",
+                             join_pairs=[["cr_id", "id"]])],
+        )
+        await engine.save_model(host)
+        assert captured.get("dialect") == "mysql"
+
+
+# --------------------------------------------------------------------------- #
+# A quoted / mixed-case leaf in a deep (nested-Dot) chain keeps its quoting when
+# re-qualified — else it mis-references the physical column on case-folding
+# dialects (CR).
+# --------------------------------------------------------------------------- #
+def test_requalify_preserves_quoted_mixed_case_deep_leaf() -> None:
+    import sqlglot
+
+    from slayer.engine.column_expansion import _requalify
+    node = sqlglot.parse_one('a.b.c.d."Spend"')  # nested Dot, quoted mixed-case leaf
+    out = _requalify(node, alias="x__y", leaf="Spend")
+    assert '"Spend"' in out.sql(), out.sql()

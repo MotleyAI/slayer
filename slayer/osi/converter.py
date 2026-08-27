@@ -251,7 +251,7 @@ class OsiToSlayerConverter:
             self._warn(
                 f"Dataset name {ds.name!r} is not a safe SLayer model name "
                 f"(empty, surrounding whitespace, or a forbidden character such "
-                f"as '__', '.', ':', '/', '\\\\', NUL); skipping.",
+                f"as '.', ':', '/', '\\\\', NUL); skipping.",
                 model_name=ds.name, category="illegal_name",
             )
             return
@@ -632,12 +632,19 @@ class OsiToSlayerConverter:
             tree = sqlglot.parse_one(sql)
         except sqlglot.errors.ParseError:
             return None
-        if not isinstance(tree, exp.Column) or not tree.table or tree.table == model.name:
+        if not isinstance(tree, exp.Column):
             return None
-        target = self._walk_join_alias(host=model, alias=tree.table)
+        # Use the FULL qualifier chain (``col.parts``) — a 2+-hop dotted ref like
+        # ``customers.regions.name`` stores earlier hops in ``.db``/``.catalog``,
+        # so reading only ``.table`` would drop them and mis-resolve the target.
+        parts = [p.name for p in tree.parts]
+        quals = parts[:-1]
+        if not quals or quals == [model.name]:
+            return None
+        target = self._walk_join_alias(host=model, alias=".".join(quals))
         if target is None:
             return None
-        tcol = next((c for c in target.columns if c.name == tree.name), None)
+        tcol = next((c for c in target.columns if c.name == parts[-1]), None)
         return tcol.type if tcol is not None else None
 
     def _join_columns_missing(self, model: SlayerModel, join: ModelJoin) -> bool:
@@ -664,13 +671,21 @@ class OsiToSlayerConverter:
         for col in tree.find_all(exp.Column):
             if id(col) not in root_ids:
                 continue  # nested-scope alias (CTE / sub-query) — not a join ref
-            if col.args.get("db") or col.args.get("catalog"):
-                continue  # catalog/db-qualified physical ref — outside SLayer's contract
-            if not col.table or col.table == model.name:
+            # Use the FULL qualifier chain — a 2+-hop dotted join path stores its
+            # earlier hops in ``.db``/``.catalog``, so ``.table`` alone drops them.
+            parts = [p.name for p in col.parts]
+            quals, leaf = parts[:-1], parts[-1]
+            if not quals or quals == [model.name]:
+                continue  # self / unqualified — validated at field-overlay time
+            # A multi-hop qualifier whose FIRST hop is not a join target is a
+            # physical ``schema.table.column`` ref — outside SLayer's contract.
+            if len(quals) >= 2 and not any(
+                j.target_model == quals[0] for j in model.joins
+            ):
                 continue
-            target = self._walk_join_alias(host=model, alias=col.table)
-            if target is None or not any(c.name == col.name for c in target.columns):
-                bad.append(f"{col.table}.{col.name}")
+            target = self._walk_join_alias(host=model, alias=".".join(quals))
+            if target is None or not any(c.name == leaf for c in target.columns):
+                bad.append(".".join(parts))
         return bad
 
     def _walk_join_alias(self, host: SlayerModel, alias: str) -> SlayerModel | None:

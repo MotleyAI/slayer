@@ -423,15 +423,6 @@ def _is_host_grain(key) -> bool:
     return getattr(key, "grain", "target") == "host"
 
 
-def _host_grain_join_alias(path) -> str:
-    """The FROM alias a join ``path`` is emitted under.
-
-    Mirrors ``_build_from_and_joins``: the first hop uses the target's bare
-    name, later hops the ``__``-delimited path alias.
-    """
-    return "__".join(path)
-
-
 def _first_bare_column_name(key) -> Optional[str]:
     """Return the leaf name of the first bare column reference inside a
     ROW-phase composite key (DEV-1576 / DEV-1717 error messages).
@@ -8127,13 +8118,22 @@ class SQLGenerator:
             # that join's FROM alias. Re-anchor before the lookup below; the
             # join itself is already in this scope's FROM, registered by the
             # aggregate-input scope pass.
+            host_grain_root: Optional[str] = None
             if source.path and _is_host_grain(key) and bundle is not None:
                 terminal = self._walk_join_path_model(
                     source_model=source_model, path=source.path, bundle=bundle,
                 )
                 if terminal is not None:
                     source_model = terminal
-                    source_relation = _host_grain_join_alias(source.path)
+                    # Qualify through the generation AliasAllocator (NOT a raw
+                    # "__".join) so the alias matches the one _build_from_and_
+                    # joins() emitted — the allocator uniquifies a chain leaf vs
+                    # a literal __-named model (D4). Retain the query root for
+                    # derived-ref expansion below.
+                    host_grain_root = source_relation
+                    source_relation = self._join_alias(
+                        root=source_relation, path=source.path,
+                    )
             # ColumnKey is a bare / trivial column (``sql`` None or a bare
             # identifier remap); ColumnSqlKey is a derived column (``Column.sql``
             # set to a non-trivial expression — ``amount * 2``). Both resolve
@@ -8179,6 +8179,11 @@ class SQLGenerator:
                     source_relation=source_relation,
                     column_name=col.name,
                     bundle=bundle,
+                    # Host-grain re-anchor: expand the inner refs in the
+                    # allocator namespace of the EMITTED joins (the query root),
+                    # not the re-anchored terminal alias.
+                    owner_path=source.path if host_grain_root is not None else (),
+                    root_relation=host_grain_root,
                 )
             else:
                 sql_text = col.sql if col.sql else col.name

@@ -113,6 +113,45 @@ class TestLongChainAliasesAreLengthFitted:
 # --------------------------------------------------------------------------- #
 # Invariant: a plain chain keeps today's alias spellings (golden byte-stability).
 # --------------------------------------------------------------------------- #
+class TestHostGrainOrderWrapUsesEmittedAlias:
+    @pytest.mark.asyncio
+    async def test_host_grain_agg_qualifies_to_chain_leaf_not_direct_model(self) -> None:
+        """FAIL-FIRST (CR): a host-grain aggregate over the chain path (a, b) must
+        qualify to the EMITTED chain-leaf alias, not a raw ``"__".join(path)`` —
+        which, when a direct model literally named ``a__b`` is also joined,
+        silently reads the WRONG physical table (a_b_direct instead of b)."""
+        models = ambiguity_impossible_models()
+        host, extra = models[0], models[1:]
+        # Group by the direct model's column, order by the CHAIN path → the
+        # planner wraps the un-grouped chain column in a host-grain MIN.
+        sql = await _engine_generate(
+            query=SlayerQuery(
+                source_model="host",
+                dimensions=["direct_val"],
+                measures=["*:count"],
+                order=[{"column": "a.b.val", "direction": "asc"}],
+            ),
+            model=host, extra_models=extra,
+        )
+        tbl = _join_table_to_alias(sql)
+        b_alias = tbl["b"]                 # chain leaf physical table
+        direct_alias = tbl["a_b_direct"]  # the direct __-named model
+        assert b_alias != direct_alias, f"aliases collapsed:\n{sql}"
+        tree = sqlglot.parse_one(sql, dialect="postgres")
+        aggs = list(tree.find_all(exp.Min)) + list(tree.find_all(exp.Max))
+        assert aggs, f"no host-grain MIN/MAX order-wrap emitted:\n{sql}"
+        quals: set[str] = set()
+        for a in aggs:
+            quals |= {c.table for c in a.find_all(exp.Column)}
+        assert b_alias in quals, (
+            f"host-grain agg does not read the chain leaf alias {b_alias!r}:\n{sql}"
+        )
+        assert direct_alias not in quals, (
+            f"host-grain agg reads the WRONG table (direct model alias "
+            f"{direct_alias!r}):\n{sql}"
+        )
+
+
 class TestPlainChainSpellingIsStable:
     @pytest.mark.asyncio
     async def test_single_and_two_hop_alias_spellings(self) -> None:

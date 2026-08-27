@@ -97,6 +97,38 @@ def _orders_v8(*, region_sql: str) -> dict:
     }
 
 
+def _customers__regions_v8() -> dict:
+    """A model literally named ``customers__regions`` (exact ``__`` name, D3)."""
+    return {
+        "version": 8, "name": "customers__regions", "sql_table": "customers__regions",
+        "data_source": "ds",
+        "columns": [
+            {"name": "id", "type": "INT", "primary_key": True},
+            {"name": "name", "type": "TEXT"},
+        ],
+    }
+
+
+def _orders_v8_dual(*, region_sql: str) -> dict:
+    """orders joins BOTH ``customers`` (walk → regions) AND the exact model
+    ``customers__regions`` — so ``customers__regions.name`` is ambiguous between
+    a split-path and an exact name; the exact name must win (D1)."""
+    return {
+        "version": 8, "name": "orders", "sql_table": "orders",
+        "data_source": "ds",
+        "columns": [
+            {"name": "id", "type": "INT", "primary_key": True},
+            {"name": "customer_id", "type": "INT"},
+            {"name": "cr_id", "type": "INT"},
+            {"name": "region_name", "type": "TEXT", "sql": region_sql},
+        ],
+        "joins": [
+            {"target_model": "customers", "join_pairs": [["customer_id", "id"]]},
+            {"target_model": "customers__regions", "join_pairs": [["cr_id", "id"]]},
+        ],
+    }
+
+
 async def _seed_yaml(tmpdir: str, payloads: list[dict]) -> YAMLStorage:
     storage = YAMLStorage(base_dir=tmpdir)
     await storage.save_datasource(
@@ -272,6 +304,26 @@ class TestPartialResolvableSubset:
             assert "customers.regions.name" in sql
             assert "cte__x.y" in sql
             assert "customers__regions" not in sql
+
+
+# --------------------------------------------------------------------------- #
+# D1 exact-beats-split: a ``__``-named EXACT join target is never rewritten as a
+# legacy split-alias, even when the split path also happens to be a valid walk.
+# --------------------------------------------------------------------------- #
+class TestExactDunderTargetBeatsSplit:
+    @pytest.mark.asyncio
+    async def test_exact_dunder_join_target_not_rewritten(self) -> None:
+        """FAIL-FIRST: orders joins the exact model ``customers__regions`` AND
+        has the walk customers→regions. ``customers__regions.name`` must stay
+        verbatim (exact name wins), not be rewritten to ``customers.regions.name``."""
+        with tempfile.TemporaryDirectory() as d:
+            storage = await _seed_yaml(d, [
+                _orders_v8_dual(region_sql="customers__regions.name"),
+                _customers_v8(), _regions_v8(), _customers__regions_v8(),
+            ])
+            loaded = await storage.get_model("orders", data_source="ds")
+            assert loaded is not None
+            assert loaded.get_column("region_name").sql == "customers__regions.name"
 
 
 # --------------------------------------------------------------------------- #

@@ -773,6 +773,69 @@ def test_cross_model_derived_field_inherits_target_type(shop_engine):
     assert {c.name: c for c in orders.columns}["seg"].type == DataType.TEXT
 
 
+def _two_hop_doc():
+    # orders -> customers -> regions; regions.name is TEXT.
+    return _mini_doc(
+        datasets=[
+            OSIDataset(name="orders", source="orders", fields=[
+                OSIField(name="customer_id", expression=_expr("customer_id")),
+                OSIField(name="region_name",
+                         expression=_expr("customers.regions.name"))]),
+            OSIDataset(name="customers", source="customers", fields=[
+                OSIField(name="customer_id", expression=_expr("customer_id")),
+                OSIField(name="region_id", expression=_expr("region_id"))]),
+            OSIDataset(name="regions", source="regions", fields=[
+                OSIField(name="region_id", expression=_expr("region_id"))]),
+        ],
+        relationships=[
+            OSIRelationship(name="o2c", **{"from": "orders"}, to="customers",
+                            from_columns=["customer_id"], to_columns=["customer_id"]),
+            OSIRelationship(name="c2r", **{"from": "customers"}, to="regions",
+                            from_columns=["region_id"], to_columns=["region_id"]),
+        ],
+    )
+
+
+def test_two_hop_cross_model_derived_field_inherits_target_type(shop_engine):
+    # FAIL-FIRST (CR): a 2-hop dotted ref (customers.regions.name) must resolve
+    # through BOTH hops and inherit the target column's TEXT type — not drop the
+    # intermediate `customers` hop (reading only exp.Column.table) and fall back
+    # to the DOUBLE local-probe default.
+    result = _convert(shop_engine, _two_hop_doc())
+    orders = {m.name: m for m in result.models}["orders"]
+    cols = {c.name: c for c in orders.columns}
+    assert "region_name" in cols
+    assert cols["region_name"].type == DataType.TEXT
+
+
+def test_two_hop_cross_model_ref_to_unknown_column_dropped(shop_engine):
+    # A bogus terminal on a real 2-hop path must be flagged + dropped, not
+    # silently admitted (the old db/catalog skip let every multi-hop ref pass).
+    doc = _mini_doc(
+        datasets=[
+            OSIDataset(name="orders", source="orders", fields=[
+                OSIField(name="customer_id", expression=_expr("customer_id")),
+                OSIField(name="bad",
+                         expression=_expr("customers.regions.no_such"))]),
+            OSIDataset(name="customers", source="customers", fields=[
+                OSIField(name="customer_id", expression=_expr("customer_id")),
+                OSIField(name="region_id", expression=_expr("region_id"))]),
+            OSIDataset(name="regions", source="regions", fields=[
+                OSIField(name="region_id", expression=_expr("region_id"))]),
+        ],
+        relationships=[
+            OSIRelationship(name="o2c", **{"from": "orders"}, to="customers",
+                            from_columns=["customer_id"], to_columns=["customer_id"]),
+            OSIRelationship(name="c2r", **{"from": "customers"}, to="regions",
+                            from_columns=["region_id"], to_columns=["region_id"]),
+        ],
+    )
+    result = _convert(shop_engine, doc)
+    orders = {m.name: m for m in result.models}["orders"]
+    assert "bad" not in {c.name for c in orders.columns}
+    assert _reported(result)
+
+
 def test_cross_model_derived_field_unknown_column_dropped(shop_engine):
     doc = _mini_doc(
         datasets=[

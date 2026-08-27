@@ -90,8 +90,9 @@ class TestNormalizeModelWiresDotPath:
         result = normalize_model(m)
         out_col = next(c for c in result.model.columns if c.name == "region_amount")
         assert out_col.filter is not None
-        assert "customers.regions.name" in out_col.filter
-        assert "customers__regions" not in out_col.filter
+        # Verbatim: the dotted-canonical input is preserved exactly (operator +
+        # literal too), not merely "contains the path / lacks the legacy token".
+        assert out_col.filter == "customers.regions.name = 'EU'"
 
         dot_ws = [w for w in result.warnings if w.rule_id == "DOT_PATH_IN_SQL"]
         assert dot_ws == []
@@ -102,9 +103,8 @@ class TestNormalizeModelWiresDotPath:
             m, raw_filters=["customers.regions.name IS NOT NULL"],
         )
         result = normalize_model(m)
-        assert len(result.model.filters) == 1
-        assert "customers.regions.name" in result.model.filters[0]
-        assert "customers__regions" not in result.model.filters[0]
+        # Verbatim preservation of the whole filter, not a substring probe.
+        assert result.model.filters == ["customers.regions.name IS NOT NULL"]
 
         dot_ws = [w for w in result.warnings if w.rule_id == "DOT_PATH_IN_SQL"]
         assert dot_ws == []

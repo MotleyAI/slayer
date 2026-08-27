@@ -3268,6 +3268,12 @@ class SlayerQueryEngine:
         def _resolve(name: str) -> Optional[SlayerModel]:
             return loaded.get(name)
 
+        # Parse with the datasource's own dialect (matching generation), not a
+        # hardcoded postgres — else valid non-Postgres Mode-A SQL could be
+        # mis-parsed/rejected at save. Missing datasource → postgres (lenient).
+        datasource = await self.storage.get_datasource(model.data_source)
+        dialect = self._dialect_for_type(datasource.type if datasource else None)
+
         surfaces: List[str] = []
         for col in model.columns:
             if col.sql:
@@ -3281,7 +3287,7 @@ class SlayerQueryEngine:
                 model=model,
                 alias_path=model.name,
                 resolve_model=_resolve,
-                dialect="postgres",
+                dialect=dialect,
             )
 
     async def _preload_join_targets(

@@ -93,21 +93,32 @@ def apply_dunder_rewrite(
     return root.sql() if changed else sql_text
 
 
-def mode_a_surface_texts(data: dict) -> list[str]:
-    """Every Mode-A free-SQL string in a raw model dict: each column's ``sql``
-    and ``filter``, plus the model-level ``filters``."""
-    texts: list[str] = []
+def _mode_a_surface_refs(data: dict):
+    """Yield ``(container, key)`` for each Mode-A free-SQL string surface in a raw
+    model dict — each column's ``sql`` / ``filter`` (container = the column dict)
+    and each model-level filter (container = the ``filters`` list, key = index).
+    ``container[key]`` reads and writes that surface. One traversal shared by the
+    read (:func:`mode_a_surface_texts`) and the mutate
+    (:func:`apply_dunder_rewrite_to_model_dict`) helpers so they can't drift."""
     columns = data.get("columns")
     if isinstance(columns, list):
         for col in columns:
-            if isinstance(col, dict):
-                for key in ("sql", "filter"):
-                    if isinstance(col.get(key), str):
-                        texts.append(col[key])
+            if not isinstance(col, dict):
+                continue
+            for key in ("sql", "filter"):
+                if isinstance(col.get(key), str):
+                    yield col, key
     filters = data.get("filters")
     if isinstance(filters, list):
-        texts.extend(f for f in filters if isinstance(f, str))
-    return texts
+        for i, f in enumerate(filters):
+            if isinstance(f, str):
+                yield filters, i
+
+
+def mode_a_surface_texts(data: dict) -> list[str]:
+    """Every Mode-A free-SQL string in a raw model dict: each column's ``sql``
+    and ``filter``, plus the model-level ``filters``."""
+    return [container[key] for container, key in _mode_a_surface_refs(data)]
 
 
 def apply_dunder_rewrite_to_model_dict(
@@ -116,18 +127,5 @@ def apply_dunder_rewrite_to_model_dict(
     """Rewrite every Mode-A surface in ``data`` in place — each column's ``sql`` /
     ``filter`` and the model ``filters`` — replacing resolvable legacy ``__`` join
     qualifiers with their dotted form."""
-    columns = data.get("columns")
-    if isinstance(columns, list):
-        for col in columns:
-            if not isinstance(col, dict):
-                continue
-            for key in ("sql", "filter"):
-                if isinstance(col.get(key), str):
-                    col[key] = apply_dunder_rewrite(col[key], resolvable=resolvable)
-    filters = data.get("filters")
-    if isinstance(filters, list):
-        data["filters"] = [
-            apply_dunder_rewrite(f, resolvable=resolvable)
-            if isinstance(f, str) else f
-            for f in filters
-        ]
+    for container, key in _mode_a_surface_refs(data):
+        container[key] = apply_dunder_rewrite(container[key], resolvable=resolvable)
