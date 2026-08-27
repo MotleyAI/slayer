@@ -43,6 +43,7 @@ __all__ = [
     "REGROUP_LEAF_PREFIX",
     "RegroupPlaceholderRegistry",
     "dimension_partitioned_aggregates",
+    "combined_partitioned_aggregates",
     "classify_regroup_filter",
     "substitute_in_bound_filter",
     "reserved_prefix_columns",
@@ -106,6 +107,52 @@ def dimension_partitioned_aggregates(declared_measures) -> List[AggregateKey]:
                 seen.add(k)
                 out.append(k)
     return out
+
+
+def combined_partitioned_aggregates(
+    declared_measures, order_specs, *, row_agg_set: frozenset,
+) -> Tuple[List[AggregateKey], Dict[AggregateKey, str]]:
+    """Partitioned ``AggregateKey``s destined for a COMBINED attach (DEV-1829).
+
+    Every LOCAL partitioned aggregate reachable from a NON-dimension measure or
+    an order spec — a partitioned MEASURE or a composite / order leaf — that is
+    not already a computed-dimension (row-attach) aggregate in ``row_agg_set``.
+    In first-seen order, deduped by structural identity. A cross-model source
+    (non-empty ``source.path``) is EXCLUDED (D2): those keep the DEV-1739
+    cross-model narrow path, deferred to DEV-1824.
+
+    The second return is the public-alias map for producer naming (F1 / D4): a
+    directly-named measure whose value_key IS the partitioned aggregate maps to
+    its public name; a composite / order leaf is absent (rendered under the
+    canonical alias)."""
+
+    def _is_local_combined(k: ValueKey) -> bool:
+        return (
+            isinstance(k, AggregateKey)
+            and k.partition_keys is not None
+            and not getattr(k.source, "path", ())
+            and k not in row_agg_set
+        )
+
+    seen: set = set()
+    out: List[AggregateKey] = []
+    public_alias_by_agg: Dict[AggregateKey, str] = {}
+    for dm in declared_measures:
+        if dm.is_dimension:
+            continue
+        vk = dm.bound.value_key
+        for k in walk_value_keys(vk):
+            if _is_local_combined(k) and k not in seen:
+                seen.add(k)
+                out.append(k)
+        if _is_local_combined(vk) and dm.public_name is not None:
+            public_alias_by_agg.setdefault(vk, dm.public_name)
+    for sp in order_specs:
+        for k in walk_value_keys(sp.bound.value_key):
+            if _is_local_combined(k) and k not in seen:
+                seen.add(k)
+                out.append(k)
+    return out, public_alias_by_agg
 
 
 # --------------------------------------------------------------------------- #

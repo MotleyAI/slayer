@@ -156,12 +156,16 @@ def classify_isolation(
     if disable_host_rooted_isolation:
         return IsolationKind.NONE
 
-    # DEV-1739 — a local aggregate carrying an explicit partition_by is grouped
-    # at a coarser grain in its own host-rooted CTE and joined back on that
-    # subset. ``is not None`` (not truthiness) so ``partition_by=[]`` (grand
-    # total) isolates too. Suppressed above by the recursion guard.
-    if key.partition_keys is not None:
-        return IsolationKind.HOST_ROOTED
+    # DEV-1829 — a LOCAL partitioned aggregate is migrated to a combined regroup
+    # attach (``RegroupAttachPlan(attach_phase="combined")``) and substituted
+    # away before the aggregate loop, so none should reach the classifier on the
+    # non-suppressed path (a cross-model partitioned aggregate returns
+    # TARGET_ROOTED above; a producer sub-plan returns NONE via the guard above).
+    # Fail closed: a discovery gap would otherwise silently drop the isolation.
+    assert key.partition_keys is None, (
+        f"A local partitioned aggregate {key!r} reached classify_isolation "
+        f"without being desugared into a combined regroup producer (DEV-1829)."
+    )
 
     crossed = _crossing_input_paths(key=key, bundle=bundle)
     if not crossed:

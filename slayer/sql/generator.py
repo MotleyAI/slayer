@@ -1556,29 +1556,49 @@ class SQLGenerator:
                 "the query the sub-plan cannot express in one SELECT.",
             )
 
-        # DEV-1825 — a regroup attach renders in the plain base path (its
-        # producers are separate _cm_ CTEs joined into the base FROM). Composing
-        # it with the consumer ALSO carrying an isolated-CTE feature (cross-model
-        # / windowed / ranked / transform measure) is a later step; raise loudly
-        # rather than silently drop the attach (the placeholder would then fail
-        # to resolve at the base scope).
-        if planned_query.regroup_attach_plans and (
+        # DEV-1825 / DEV-1829 — a ROW regroup attach (computed dimension) renders
+        # in the plain base path; a COMBINED regroup attach (partitioned measure)
+        # renders through ``_render_with_cross_model_plans`` (the position the
+        # DEV-1739 ``CrossModelAggregatePlan`` occupied). Either one composing
+        # with an isolated-CTE feature (cross-model / windowed / ranked /
+        # transform measure), or nested as a CTE body, is deferred to DEV-1824 —
+        # raise loudly rather than silently drop the attach.
+        _row_attaches = [
+            r for r in planned_query.regroup_attach_plans
+            if r.attach_phase == "row"
+        ]
+        _combined_attaches = [
+            r for r in planned_query.regroup_attach_plans
+            if r.attach_phase == "combined"
+        ]
+        _has_isolated_feature = (
             planned_query.cross_model_aggregate_plans
             or planned_query.windowed_aggregate_plans
             or planned_query.ranked_aggregate_plans
             or planned_query.transform_layers
-            or as_cte_body
+        )
+        if (_row_attaches or _combined_attaches) and (
+            _has_isolated_feature or as_cte_body
         ):
             raise NotImplementedError(
-                "A computed dimension over a partitioned aggregate combined with "
-                "a cross-model / windowed / ranked / transform measure (or inside "
-                "a nested CTE) is not yet supported (DEV-1824)."
+                "A partitioned-aggregate regroup attach combined with a "
+                "cross-model / windowed / ranked / transform measure (or nested "
+                "in a CTE body) is not yet supported (DEV-1824)."
+            )
+        # A row and a combined attach in one query is deferred (the planner
+        # already raises; this is the render-side belt).
+        if _row_attaches and _combined_attaches:
+            raise NotImplementedError(
+                "A row regroup attach (computed dimension) and a combined regroup "
+                "attach (partitioned measure) in one query is not yet supported "
+                "(DEV-1824)."
             )
 
         if (
             planned_query.cross_model_aggregate_plans
             or planned_query.windowed_aggregate_plans
             or planned_query.ranked_aggregate_plans
+            or _combined_attaches
         ):
             return self._render_with_cross_model_plans(
                 planned_query=planned_query, bundle=bundle,
@@ -3815,7 +3835,6 @@ class SQLGenerator:
         ranked_slot_ids = {
             p.aggregate_slot_id for p in planned_query.ranked_aggregate_plans
         }
-        isolated_slot_ids = cma_slot_ids | windowed_slot_ids | ranked_slot_ids
 
         # DEV-1503 / DEV-1745 (P-D) — the outer combined-SELECT WHERE wrapper is
         # routed by the PLANNER (``_plan_outer_where_filters``), which knows
@@ -3824,6 +3843,25 @@ class SQLGenerator:
         # ``filters_by_phase`` here to rediscover it would be routing policy
         # chosen during emission, and the two could disagree.
         slot_by_key = {s.key: s for s in slots_by_id.values()}
+
+        # DEV-1829 — combined regroup producers. Rendered here as ``_cm_`` CTEs
+        # and joined back at the combined SELECT, substituting for the DEV-1739
+        # partitioned-measure ``CrossModelAggregatePlan``. Their placeholder
+        # slots are excluded from ``_base`` (like isolated aggregate slots) and
+        # projected from the producer column instead.
+        (
+            cm_regroup_ctes,
+            regroup_placeholder_to_cm,
+            regroup_placeholder_slot_ids,
+            regroup_joinbacks,
+        ) = self._prepare_combined_regroup_attaches(
+            planned_query=planned_query, bundle=bundle,
+            source_relation=source_relation, slot_by_key=slot_by_key,
+        )
+        isolated_slot_ids = (
+            cma_slot_ids | windowed_slot_ids | ranked_slot_ids
+            | regroup_placeholder_slot_ids
+        )
         outer_where_filter_ids: Set[str] = set(
             planned_query.outer_where_filter_ids,
         )
@@ -3867,6 +3905,12 @@ class SQLGenerator:
             if not isinstance(slot.key, composite_kinds):
                 continue
             for k in walk_value_keys(slot.key):
+                # DEV-1829 — a combined regroup placeholder operand routes the
+                # composite outward like a cross-model one: its value lives in a
+                # ``_cm_`` producer joined back to ``_base``.
+                if isinstance(k, ColumnKey) and k in regroup_placeholder_to_cm:
+                    outer_composite_slot_ids.add(slot.id)
+                    break
                 if isinstance(k, AggregateKey):
                     s = slot_by_key.get(k)
                     # DEV-1733: a WINDOWED operand routes the composite outward
@@ -4422,6 +4466,13 @@ class SQLGenerator:
                     rk_cte_name_for_plan[plan.aggregate_slot_id],
                     rk_agg_col_for_plan[plan.aggregate_slot_id],
                 )
+            # DEV-1829 — a combined regroup placeholder resolves to its producer
+            # column exactly like a cross-model aggregate does, keyed by the
+            # placeholder slot's id so the outer-wrapper facility resolves it.
+            for _ph_key, _cm in regroup_placeholder_to_cm.items():
+                _ph_slot = slot_by_key.get(_ph_key)
+                if _ph_slot is not None:
+                    outer_composite_cm_map[_ph_slot.id] = _cm
 
             def _render_outer_composite(cslot) -> exp.Expression:
                 rendered = render_value_key(
@@ -4535,6 +4586,32 @@ class SQLGenerator:
             combined_aliases_by_slot_id[plan.aggregate_slot_id] = list(
                 public_aliases,
             )
+
+        # DEV-1829 — regroup side: a directly-projected combined placeholder
+        # (a partitioned measure) surfaces the producer's aggregate column under
+        # the consumer's public alias(es), remapping ``AS`` for extra names
+        # (C13). A hidden order-only placeholder is trimmed — its ``_cm_`` CTE is
+        # still joined below and its ORDER BY reference resolves CTE-qualified.
+        for _ph_key, (_cte_name, _agg_col) in regroup_placeholder_to_cm.items():
+            ph_slot = slot_by_key.get(_ph_key)
+            if ph_slot is None or ph_slot.id not in regroup_placeholder_slot_ids:
+                continue
+            public_aliases = (
+                []
+                if ph_slot.hidden
+                else self._public_aliases_for_cross_model_agg(
+                    slot=ph_slot,
+                    source_relation=source_relation,
+                    canonical_alias=_agg_col,
+                )
+            )
+            for pub in public_aliases:
+                col = grain_alias_column(alias=_agg_col, table=_cte_name)
+                _emit(
+                    ph_slot.id,
+                    col if pub == _agg_col else col.as_(pub, quoted=True),
+                )
+            combined_aliases_by_slot_id[ph_slot.id] = list(public_aliases)
 
         # DEV-1714 Stage 10 — windowed side: project each ``_wm_`` CTE's
         # aggregate column. Codex#2: one occurrence per declared user alias (C13
@@ -4674,7 +4751,7 @@ class SQLGenerator:
                 rk_joinback_pairs_for_plan.get(plan.aggregate_slot_id, []),
             )
             for plan in planned_query.ranked_aggregate_plans
-        ]
+        ] + regroup_joinbacks  # DEV-1829 — combined regroup producers
         for cte_name, joinback_pairs in joinback_specs:
             if cte_name in joined_cte_names:
                 continue
@@ -4816,6 +4893,12 @@ class SQLGenerator:
         cte_entries += [
             CteEntry(name=name, query=query) for name, query in cm_ctes
         ]
+        # DEV-1829 — combined regroup producers are host-rooted single SELECTs
+        # (``FROM <host>``), rooted at a real relation like a ``_cm_`` CTE, so
+        # they declare no ``_base`` dependency.
+        cte_entries += [
+            CteEntry(name=name, query=query) for name, query in cm_regroup_ctes
+        ]
         cte_entries += [
             CteEntry(name=name, query=query, depends_on=["_base"])
             for name, query in wm_ctes
@@ -4856,6 +4939,15 @@ class SQLGenerator:
                 alias=rk_agg_col_for_plan[plan.aggregate_slot_id],
                 table=rk_cte_name_for_plan[plan.aggregate_slot_id],
             )
+        # DEV-1829 — an ORDER BY over a combined regroup placeholder resolves to
+        # its producer column, exactly like a cross-model aggregate (the planner
+        # classifies it CROSS_MODEL_CTE).
+        for _ph_key, (_cte_name, _agg_col) in regroup_placeholder_to_cm.items():
+            _ph_slot = slot_by_key.get(_ph_key)
+            if _ph_slot is not None:
+                order_env.cross_model_cte[_ph_slot.id] = grain_alias_column(
+                    alias=_agg_col, table=_cte_name,
+                )
         # A PROJECTED outer composite orders on its combined-SELECT alias; an
         # order-only one has no alias and renders INLINE, so no synthetic
         # column leaks into the public projection.
@@ -5272,6 +5364,92 @@ class SQLGenerator:
             alias_index={},
         )
         return cte_sql, joinback_pairs, agg_col_alias
+
+    def _prepare_combined_regroup_attaches(
+        self, *, planned_query, bundle, source_relation, slot_by_key,
+    ):
+        """Render each DEV-1829 combined regroup producer as a ``_cm_*`` CTE.
+
+        The combined attach substitutes for the DEV-1739 partitioned-measure
+        ``CrossModelAggregatePlan``, so its producer renders through the SAME
+        machinery: a host-rooted single SELECT with dotted output aliases and
+        public / canonical aggregate names, joined back at the combined SELECT.
+
+        Returns ``(ctes, placeholder_to_cm, placeholder_slot_ids, joinbacks)``:
+        * ``ctes`` — ``(cte_name, parsed_body)`` per producer;
+        * ``placeholder_to_cm`` — placeholder ``ColumnKey`` → ``(cte_name,
+          agg_col_alias)`` for combined-scope resolution (projection / composite
+          / order);
+        * ``placeholder_slot_ids`` — consumer slot ids whose key is a combined
+          placeholder (excluded from ``_base``, projected from the producer);
+        * ``joinbacks`` — ``(cte_name, [(host_base_alias, producer_grain_alias)])``
+          per producer; an empty pair list attaches as a single-row CROSS JOIN.
+        """
+        ctes: List[Tuple[str, exp.Expression]] = []
+        placeholder_to_cm: Dict[Any, Tuple[str, str]] = {}
+        placeholder_slot_ids: Set[str] = set()
+        joinbacks: List[Tuple[str, List[Tuple[str, str]]]] = []
+        allocator = self._gen_allocator or self._new_allocator()
+        for attach in planned_query.regroup_attach_plans:
+            if attach.attach_phase != "combined":
+                continue
+            producer = attach.producer_plan
+            sub_slots = {
+                s.id: s
+                for s in (
+                    list(producer.row_slots)
+                    + list(producer.aggregate_slots)
+                    + list(producer.combined_expression_slots)
+                )
+            }
+            # CTE name from the canonical (host-prefixed) alias of the first
+            # consumed aggregate — reproduces the DEV-1739 ``_cm_`` seed.
+            seed_key = attach.substitutions[0].original_key
+            cte_name = cte_name_from_alias(
+                prefix="_cm_",
+                alias=self._canonical_cross_model_alias(
+                    source_relation=source_relation, key=seed_key,
+                ),
+                allocator=allocator, dialect=self.dialect,
+                limit=self._dialect.max_identifier_bytes,
+            )
+            producer_sql = self.generate_from_planned(
+                producer, bundle=bundle, as_cte_body=True,
+            )
+            ctes.append((cte_name, self._parse_cte_body(producer_sql)))
+            producer_relation = producer.source_relation
+            for sub in attach.substitutions:
+                agg_slot = sub_slots.get(sub.producer_slot_id)
+                if agg_slot is None:
+                    raise RuntimeError(
+                        f"Combined regroup producer is missing aggregate slot "
+                        f"{sub.producer_slot_id!r}.",
+                    )
+                agg_col = self._full_alias_for_slot(
+                    slot=agg_slot, source_relation=producer_relation, alias_index={},
+                )
+                placeholder_to_cm[sub.placeholder] = (cte_name, agg_col)
+                ph_slot = slot_by_key.get(sub.placeholder)
+                if ph_slot is not None:
+                    placeholder_slot_ids.add(ph_slot.id)
+            pairs: List[Tuple[str, str]] = []
+            for host_key, producer_slot_id in attach.join_pairs:
+                grain_slot = sub_slots.get(producer_slot_id)
+                host_slot = slot_by_key.get(host_key)
+                if grain_slot is None or host_slot is None:
+                    raise RuntimeError(
+                        "Combined regroup attach is missing a host / producer "
+                        "grain slot for its join-back.",
+                    )
+                host_alias = self._full_alias_for_slot(
+                    slot=host_slot, source_relation=source_relation, alias_index={},
+                )
+                grain_alias = self._full_alias_for_slot(
+                    slot=grain_slot, source_relation=producer_relation, alias_index={},
+                )
+                pairs.append((host_alias, grain_alias))
+            joinbacks.append((cte_name, pairs))
+        return ctes, placeholder_to_cm, placeholder_slot_ids, joinbacks
 
     def _prepare_regroup_attaches(self, *, planned_query, bundle):
         """Render each DEV-1825 regroup producer as a ``_cm_*`` CTE.
