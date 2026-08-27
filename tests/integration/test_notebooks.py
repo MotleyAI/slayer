@@ -182,12 +182,19 @@ def _bootstrap_failure_is_transient(error_text: str) -> bool:
 # stay green.
 _DUCKDB_NB_DIR = "15_duckdb"
 _DUCKDB_DATA_HOST = "cdn.jsdelivr.net"
-_DUCKDB_REMOTE_HOSTS = (_DUCKDB_DATA_HOST, "extensions.duckdb.org")
+# Remote hosts the DuckDB notebooks reach: the CSV CDN, the httpfs extension
+# repo, and (CLI notebook) the DuckDB CLI installer + version endpoint.
+_DUCKDB_REMOTE_HOSTS = (
+    _DUCKDB_DATA_HOST,
+    "extensions.duckdb.org",
+    "install.duckdb.org",
+    "duckdb.org",
+)
 
 # Substrings marking a mid-run failure as a transient network/server hiccup
-# reaching the remote CSV or the extension repo. Matched case-insensitively and
-# only when the error also names one of the remote hosts, so genuine query /
-# ingestion bugs still fail loudly.
+# reaching one of those hosts. Matched case-insensitively and only when the
+# error also names a remote host, so genuine query / ingestion bugs still fail
+# loudly.
 _DUCKDB_TRANSIENT_SIGNATURES = (
     r"http (?:429|5\d\d)",
     r"could not resolve host",
@@ -205,6 +212,28 @@ _DUCKDB_TRANSIENT_SIGNATURES = (
 
 def _duckdb_data_host_reachable() -> bool:
     return _github_reachable(host=_DUCKDB_DATA_HOST)
+
+
+def _duckdb_failure_text(nb) -> str:
+    """Error text of whichever cell failed, for transient classification.
+
+    A failing ``%%bash`` cell raises ``CalledProcessError`` whose message only
+    embeds the cell *source* (always contains the CDN URL) — the real error
+    ("could not resolve host", an HTTP 5xx) lands on the cell's stderr *stream*.
+    So classify from the failing cell's captured outputs, not from ``exc``.
+    """
+    parts: list[str] = []
+    for cell in nb.cells:
+        outputs = cell.get("outputs", [])
+        if not any(o.get("output_type") == "error" for o in outputs):
+            continue
+        for out in outputs:
+            if out.get("output_type") == "stream":
+                parts.append(out.get("text", ""))
+            elif out.get("output_type") == "error":
+                parts.append(out.get("evalue", ""))
+                parts.append("\n".join(out.get("traceback", [])))
+    return "\n".join(parts)
 
 
 def _duckdb_network_error_is_transient(error_text: str) -> bool:
@@ -254,11 +283,12 @@ def test_notebook_runs_without_errors(notebook_path, request):
             text = str(exc)
             if not _github_reachable() or _bootstrap_failure_is_transient(text):
                 pytest.skip(f"MetricFlow notebook could not bootstrap: {exc}")
-        # Narrow by design: classify the kernel error MESSAGE (``evalue``), never
-        # ``str(exc)`` — the latter embeds the failing cell's source, which always
-        # contains the CDN URL, so the host-name gate would always pass and a real
-        # NotImplementedError / assertion / query bug could be misread as transient.
-        # The pre-run probe already covers "network down at start".
-        if is_duckdb and _duckdb_network_error_is_transient(getattr(exc, "evalue", "")):
+        # Narrow by design: classify the failing cell's captured stderr/error
+        # output, never ``str(exc)`` or a ``%%bash`` ``evalue`` — both embed the
+        # cell source, which always contains the CDN URL, so the host-name gate
+        # would always pass and a real NotImplementedError / assertion / query
+        # bug could be misread as transient. The pre-run probe already covers
+        # "network down at start".
+        if is_duckdb and _duckdb_network_error_is_transient(_duckdb_failure_text(nb)):
             pytest.skip(f"DuckDB notebook hit a transient network error: {exc}")
         raise

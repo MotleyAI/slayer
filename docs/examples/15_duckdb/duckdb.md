@@ -31,5 +31,6 @@ generated.
 - **[Notebook — Python](duckdb_python_nb.ipynb)** — everything in-process through
   the SLayer Python client, with live schema auto-ingestion.
 - **[Notebook — CLI](duckdb_cli_nb.ipynb)** — the same demo driven entirely from
-  the `slayer` command line: register the datasource, define a one-model semantic
-  layer over the remote CSV, and query it with `slayer query` (JSON in, JSON out).
+  the command line: install the DuckDB CLI, expose the remote CSV as a view,
+  let `slayer datasources create --ingest` auto-build the model, and query it
+  with `slayer query`.
