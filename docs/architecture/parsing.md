@@ -48,10 +48,13 @@ work:
    capturing the source kind (`*` / `Ref` / `DottedRef`) and agg name in a side
    map. Any trailing `(args)` is left in place so Python parses it as a `Call`
    naturally. String-literal spans are skipped so quoted contents aren't touched.
-2. **`_reject_dunder_in_ast`** walks the parsed AST and rejects any user
-   identifier containing `__` (on `Name`, `Attribute.attr`, and `keyword.arg`),
-   unless `allow_dunder=True`. `__` is reserved for internal join-path aliases on
-   the SQL side; users write single-dot DSL paths.
+2. **`_reject_reserved_expr_token`** (DEV-1743) scans the raw text — with
+   string-literal spans blanked, and *before* `_preprocess_colons` runs — for the
+   reserved `__slayer_` prefix, raising `ValueError` if a user token uses it. The
+   scan runs before colon preprocessing precisely because that step mints
+   internal `__slayer_agg_N__` placeholders, which must not trip the guard. A
+   plain `__` in a user identifier is otherwise legal now (the DEV-1743 flip lifts
+   the `__` ban); only the `__slayer_` namespace is reserved.
 
 `_convert` then maps AST nodes to `ParsedExpr` nodes. A `Call` dispatches in a
 fixed order: aggregation placeholder → transform (in `ALL_TRANSFORMS`, requires
@@ -67,19 +70,18 @@ The parser is where the Mode-B contract is enforced:
   `UnknownFunctionError`;
 - a raw `OVER(...)` clause anywhere in the text → `IllegalWindowInFilterError`
   (checked by regex before AST parsing);
-- `__` in a user identifier → `ValueError` (unless `allow_dunder`);
+- the reserved `__slayer_` prefix in a user token → `ValueError` (DEV-1743);
 - chained comparisons (`1 < x < 10`) → `ValueError` (split into `1 < x and x <
   10`); the binder can't give a chained comparison a single phase.
 
-### `allow_dunder` — the StageSchema escape hatch (DEV-1449)
+### `__` in Mode-B refs (DEV-1743)
 
-`parse_expr(text, *, allow_dunder=False)` defaults to rejecting `__`. The
-[stage planner](stage-planning.md) sets `allow_dunder=True` *only* when binding a
-downstream stage against a flat `StageSchema`, whose columns **are** the
-`__`-flattened multi-hop aliases of the upstream stage (`customers__region`).
-Legality there is the binder's concern (the column must exist in the upstream
-schema). This is the one place `__` is legal in a Mode-B ref, and it is exactly
-what makes a downstream stage able to name an upstream joined dimension.
+`parse_expr` no longer takes an `allow_dunder` flag — a plain `__` in a user
+identifier is legal everywhere. A downstream stage bound against a flat
+`StageSchema` names the upstream stage's `__`-flattened multi-hop aliases
+(`customers__region`) directly, with no escape hatch; legality is the binder's
+concern (the column must exist in the upstream schema). Only the `__slayer_`
+prefix is reserved (see `_reject_reserved_expr_token` above).
 
 ### `parse_filter_expr` — SQL-operator leniency
 

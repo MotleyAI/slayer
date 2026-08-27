@@ -3465,7 +3465,7 @@ async def test_model_filter_with_double_underscore_join_path_runs(tmp_path):
         sql_table="orders",
         data_source="ds",
         # Mode A SQL filter with __-delimited join path through customers→regions.
-        filters=["customers__regions.name = 'EU'"],
+        filters=["customers.regions.name = 'EU'"],
         columns=[
             Column(name="id", sql="id", type=DataType.INT, primary_key=True),
             Column(name="customer_id", sql="customer_id", type=DataType.INT),
@@ -3748,7 +3748,7 @@ async def test_measure_source_sql_with_path_alias_executes_sqlite(tmp_path):
             Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
             Column(
                 name="region_pop",
-                sql="customers__regions.population",
+                sql="customers.regions.population",
                 type=DataType.DOUBLE,
             ),
         ],

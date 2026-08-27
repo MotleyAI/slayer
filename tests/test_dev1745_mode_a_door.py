@@ -232,14 +232,14 @@ class TestJoinRegistration:
 
     def test_predicate_crossing_two_hops_registers_every_prefix(self) -> None:
         scope = _scope()
-        scope.enter_predicate("customers__regions.population > 1")
+        scope.enter_predicate("customers.regions.population > 1")
         paths = scope.join_paths.as_list()
         assert ("customers",) in paths
         assert ("customers", "regions") in paths
 
     def test_expression_crossing_registers_too(self) -> None:
         scope = _scope()
-        scope.enter_expression("customers__regions.population")
+        scope.enter_expression("customers.regions.population")
         paths = scope.join_paths.as_list()
         # every PREFIX is required, not just the deepest hop — the FROM builder
         # needs the intermediate join to reach the last one

@@ -287,7 +287,7 @@ def dev1748_models() -> List[SlayerModel]:
             # A derived value whose sql CROSSES into regions.
             Column(
                 name="cust_region", type=DataType.TEXT,
-                sql="customers__regions.name",
+                sql="customers.regions.name",
             ),
             # A local derived value — the non-crossing control.
             Column(name="amount_x2", type=DataType.DOUBLE, sql="amount * 2"),

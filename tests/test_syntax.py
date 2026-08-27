@@ -498,19 +498,22 @@ class TestRejection:
         with pytest.raises(UnknownFunctionError):
             parse_expr("revenue:sum + magic_fn(other:sum)")
 
-    def test_double_underscore_in_ref_raises(self):
-        # Mode B rejects `__` in identifiers — `__` is reserved for
-        # internal join-path aliases on the SQL side.
-        with pytest.raises(ValueError, match="__|double-underscore"):
-            parse_expr("customers__regions.name")
+    def test_double_underscore_in_ref_now_parses(self):
+        # DEV-1743: the parser no longer rejects `__` in identifiers —
+        # binding legality is the binder's concern, not the parser's.
+        assert parse_expr("customers__regions.name") is not None
 
-    def test_double_underscore_in_bare_ref_raises(self):
-        with pytest.raises(ValueError, match="__|double-underscore"):
-            parse_expr("foo__bar")
+    def test_double_underscore_in_bare_ref_now_parses(self):
+        assert parse_expr("foo__bar") is not None
 
-    def test_double_underscore_inside_dotted_part_raises(self):
-        with pytest.raises(ValueError, match="__|double-underscore"):
-            parse_expr("customers.foo__bar")
+    def test_double_underscore_inside_dotted_part_now_parses(self):
+        assert parse_expr("customers.foo__bar") is not None
+
+    def test_reserved_slayer_prefix_still_rejected(self):
+        # P3: the `__slayer_` prefix stays reserved so user input cannot spoof
+        # the colon-agg placeholder the preprocessor mints internally.
+        with pytest.raises(ValueError, match="__slayer_"):
+            parse_expr("__slayer_agg_0__")
 
     def test_function_style_aggregation_rejected(self):
         # `sum(revenue)` is canonicalised by the slack normalization layer

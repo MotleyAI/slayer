@@ -84,6 +84,23 @@ class TestMapTypeCode:
     def test_duckdb_timestamp(self) -> None:
         assert _map_type_code("TIMESTAMP") == "time"
 
+    def test_duckdb_driver_type_objects(self) -> None:
+        duckdb = pytest.importorskip("duckdb")
+        connection = duckdb.connect()
+        try:
+            description = connection.execute(
+                "SELECT 1::INTEGER AS i, TRUE AS b, CURRENT_TIMESTAMP AS t, INTERVAL 1 DAY AS iv"
+            ).description
+        finally:
+            connection.close()
+
+        assert {column[0]: _map_type_code(type_code=column[1], db_type="duckdb") for column in description} == {
+            "i": "number",
+            "b": "boolean",
+            "t": "time",
+            "iv": "time",
+        }
+
     # --- Dialect-aware OID mapping ---
 
     def test_pg_oid_16_is_boolean(self) -> None:

@@ -18,7 +18,7 @@ That may seem verbose, but avoids ambiguity when there are multiple ways of reac
 
 As described in the discussion of [SQL vs expressions](../02_sql_vs_dsl/sql_vs_dsl.md), you will use SQL snippets when defining measures, dimensions, and filters at model level. 
 
-As the multidot syntax described above would not be valid SQL, the syntax for referring to columns of the SQL expressions underlying the joined models is the same as above with double underscores substituted for dots, that is if model_a has a join to model_b, and model_b has a join to model_c, then the measures, dimensions and filters in model_a can refer to a column from the underlying query of model_c as `model_b__model_c.column_name`. These will be substituted for correct aliases for the corresponding subquery at resolution time.
+You reference columns of joined models with the same **dotted** join-path syntax as above: if model_a has a join to model_b, and model_b has a join to model_c, then the measures, dimensions and filters in model_a refer to a column from the underlying query of model_c as `model_b.model_c.column_name`. Dots separate join hops and the leaf column follows the final dot; SLayer resolves the path through the join graph and emits the correct subquery aliases at resolution time. (The legacy `__`-delimited split-alias form is no longer accepted — it is a hard error.)
 
 ## Auto-ingesting schemas
 
@@ -28,7 +28,7 @@ When auto-ingesting a schema, SLayer introspects foreign key relationships and c
 
 For now, if there are multiple ways in the join graph to reach a given model, we treat these as separate copies when constructing queries, de facto turning the join graph into a tree. For example, if we have joins like A → B → C and A → D→ C, then B.C.column1 and D.C.column1 will refer to separate subqueries in the SLayer-constructed query. 
 
-If that is not the desired behavior, you can add to the model a filter `B__C.column1==D__C.column1` (using the `__` alias syntax, since model filters are SQL snippets), re-creating the diamond pattern.
+If that is not the desired behavior, you can add to the model a filter `B.C.column1 == D.C.column1` (dotted paths work in model filters, which are SQL snippets), re-creating the diamond pattern.
 
 ## Dynamic joins
 

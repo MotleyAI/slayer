@@ -329,16 +329,17 @@ async def test_save_model_ignores_indirect_join_target_in_cycle_detection(
 async def test_save_model_detects_cycle_via_canonical_multihop_path_alias(
     tmp_path,
 ) -> None:
-    """Canonical ``__``-delimited multi-hop path aliases (``B__C.x``) must
-    resolve at save time the same way they do at compile time — by
-    walking each hop through the join chain. A.foo references B__C.x;
-    C.x references A.foo via a back-walk; the cycle must be detected."""
+    """Canonical DOTTED multi-hop path chains (``B.C.x``) must resolve at save
+    time the same way they do at compile time — by walking each hop through the
+    join chain (DEV-1743: dots are the canonical delimiter; the legacy ``__``
+    split-alias no longer resolves). A.foo references B.C.x; C.x references
+    A.foo via a back-walk; the cycle must be detected."""
     storage = _yaml_storage(tmp_path)
-    # A → B → C; A.foo references B__C.x via canonical multi-hop path.
+    # A → B → C; A.foo references B.C.x via the canonical dotted multi-hop path.
     # C.x has the back-reference into A.foo (C joins A), so saving A
     # completes a cycle.
     model_a, model_b, model_c = _abc_chain(
-        a_foo_sql="B__C.x + 1", c_x_sql="A.foo + 1", c_joins_back_to_a=True,
+        a_foo_sql="B.C.x + 1", c_x_sql="A.foo + 1", c_joins_back_to_a=True,
     )
     await storage.save_model(model_c, _validate=False)  # A doesn't exist yet
     await storage.save_model(model_b)

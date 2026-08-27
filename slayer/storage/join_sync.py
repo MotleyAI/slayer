@@ -216,6 +216,13 @@ class JoinSyncStorage(StorageBackend):
         await self._ensure_reconciled()
         return await self._inner.get_model(name, data_source=data_source)
 
+    async def _load_raw_model_dict(
+        self, *, name: str, data_source: str,
+    ) -> dict | None:
+        return await self._inner._load_raw_model_dict(
+            name=name, data_source=data_source,
+        )
+
     async def update_column_sampled(
         self,
         *,

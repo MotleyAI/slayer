@@ -110,10 +110,10 @@ def _orders() -> SlayerModel:
                    type=DataType.DOUBLE),
             # derived referencing TWO models
             Column(name="multi_model",
-                   sql="customers.balance + customers__regions.population",
+                   sql="customers.balance + customers.regions.population",
                    type=DataType.DOUBLE),
             # derived-of-derived across two hops
-            Column(name="deep_pop", sql="customers__regions.pop_x2",
+            Column(name="deep_pop", sql="customers.regions.pop_x2",
                    type=DataType.DOUBLE),
             # quoted dotted identifier
             Column(name="quoted_cross", sql='"customers"."balance"',

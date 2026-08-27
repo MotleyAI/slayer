@@ -276,10 +276,12 @@ class TestScanClassification:
 
 
 class TestMatchesTheLiveObjectName:
-    def test_sanitized_model_name_does_not_decide_the_match(
+    def test_dunder_internal_keeps_its_faithful_name(
         self, workspace: Path
     ) -> None:
-        """The rule must match the live object name, not the `__`-sanitized model name; the report carries both."""
+        """DEV-1743: the internal-table rule matches the live object name, and the
+        model keeps that faithful ``__`` name (no sanitization); the report carries
+        both, now equal."""
         _, ds = _ds(
             workspace,
             "CREATE TABLE _dlt_loads__x (id INTEGER PRIMARY KEY, v TEXT);",
@@ -287,12 +289,12 @@ class TestMatchesTheLiveObjectName:
         report = ingest_datasource_report(datasource=ds)
         by_name = {m.name: m for m in report.models}
 
-        assert "_dlt_loads_x" in by_name
-        assert by_name["_dlt_loads_x"].hidden is True
+        assert "_dlt_loads__x" in by_name
+        assert by_name["_dlt_loads__x"].hidden is True
 
         entry = next(iter(report.hidden_internals))
         assert entry.table_name == "_dlt_loads__x"
-        assert entry.model_name == "_dlt_loads_x"
+        assert entry.model_name == "_dlt_loads__x"
 
 
 class TestSqlitePrefixOnAnotherEngine:
@@ -344,10 +346,12 @@ class TestSkipAndHideAreDisjoint:
         # A sibling internal still classifies — the failure is isolated.
         assert "_dlt_loads" in {h.table_name for h in report.hidden_internals}
 
-    def test_collision_skipped_object_is_not_also_reported_hidden(
+    def test_distinct_dunder_internals_are_both_hidden_not_skipped(
         self, workspace: Path
     ) -> None:
-        """A name-collision skip must not also appear in `hidden_internals` — the two verdicts are mutually exclusive."""
+        """DEV-1743: ``_dlt_loads_x`` and ``_dlt_loads__x`` no longer collapse, so
+        both are distinct hidden internals — neither is skipped, and skip/hide
+        stay disjoint (nothing skipped)."""
         _, ds = _ds(
             workspace,
             """
@@ -360,10 +364,8 @@ class TestSkipAndHideAreDisjoint:
         skipped_names = {s.table_name for s in report.skipped}
         hidden_names = {h.table_name for h in report.hidden_internals}
 
-        assert "_dlt_loads__x" in skipped_names
+        assert {"_dlt_loads_x", "_dlt_loads__x"} <= hidden_names
         assert not (skipped_names & hidden_names)
-        # The winner still classifies normally.
-        assert "_dlt_loads_x" in hidden_names
 
 
 # ---------------------------------------------------------------------------
@@ -409,6 +411,28 @@ class TestLiveNameSurvivesToTheReport:
 
         result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
         assert "_dlt_loads" in {h.table_name for h in result.hidden_internals}
+
+    async def test_adopted_internal_name_still_reported(
+        self, workspace: Path
+    ) -> None:
+        """FAIL-FIRST (CR): when a fresh dlt internal ``_dlt_loads__x`` adopts a
+        stored sanitized ``_dlt_loads_x`` (stored-name-wins), the internal-table
+        entry's ``model_name`` must be re-pointed onto the adopted name — else the
+        hidden-internal re-check looks up the stale ``__`` name and drops it."""
+        _, ds = _ds(
+            workspace,
+            "CREATE TABLE _dlt_loads__x (id INTEGER PRIMARY KEY, v TEXT);",
+        )
+        storage = await _storage_with(workspace, ds)
+        # Seed the old-world sanitized model pointing at the live __ object.
+        await storage.save_model(SlayerModel(
+            name="_dlt_loads_x", data_source="ds", sql_table="_dlt_loads__x",
+            hidden=True, meta={"internal_table": "dlt"},
+            columns=[Column(name="id", type=DataType.INT, primary_key=True),
+                     Column(name="v", type=DataType.TEXT)],
+        ))
+        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        assert "_dlt_loads__x" in {h.table_name for h in result.hidden_internals}
 
 
 class TestSurfaceInternals:
@@ -605,10 +629,11 @@ class TestIdempotencyAndReporting:
         assert loaded.hidden is False
         assert "_dlt_loads" not in {h.table_name for h in result.hidden_internals}
 
-    async def test_sanitized_model_is_reported_with_both_names(
+    async def test_dunder_internal_model_uses_faithful_name(
         self, workspace: Path
     ) -> None:
-        """The post-merge re-derivation keys on `model_name`, so a `__`-sanitized table is reported with both names."""
+        """DEV-1743: a ``__``-named internal table keeps its faithful model name
+        (no sanitization), so table_name == model_name in the report."""
         _, ds = _ds(
             workspace,
             "CREATE TABLE _dlt_loads__x (id INTEGER PRIMARY KEY, v TEXT);",
@@ -621,7 +646,7 @@ class TestIdempotencyAndReporting:
         for result in (first, second):
             entry = next(iter(result.hidden_internals))
             assert entry.table_name == "_dlt_loads__x"
-            assert entry.model_name == "_dlt_loads_x"
+            assert entry.model_name == "_dlt_loads__x"
 
     async def test_surface_internals_does_not_unhide_an_existing_model(
         self, workspace: Path
@@ -1001,14 +1026,16 @@ class TestDatasourcesCreateReporting:
         assert "alembic_version" in out
 
     def test_skipped_section_printed(self, workspace: Path, capsys) -> None:
-        """The report form closes the pre-existing gap where this path swallowed skips entirely."""
+        """The report form closes the pre-existing gap where this path swallowed
+        skips entirely. DEV-1743: ``__`` is no longer a skip cause, so the skip
+        is driven by the reserved ``__slayer_`` prefix instead."""
         from slayer.cli import _run_datasources_create
 
         db_path, _ = _ds(
             workspace,
             """
-            CREATE TABLE a_b (id INTEGER PRIMARY KEY);
-            CREATE TABLE a__b (id INTEGER PRIMARY KEY);
+            CREATE TABLE orders (id INTEGER PRIMARY KEY);
+            CREATE TABLE __slayer_reserved (id INTEGER PRIMARY KEY);
             """,
         )
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
@@ -1017,7 +1044,7 @@ class TestDatasourcesCreateReporting:
 
         out = capsys.readouterr().out
         assert "Skipped (1)" in out
-        assert "a__b" in out
+        assert "__slayer_reserved" in out
 
     def test_flag_surfaces_them(self, workspace: Path, capsys) -> None:
         from slayer.cli import _run_datasources_create
@@ -1358,10 +1385,12 @@ class TestMcpIngestReporting:
         assert "Hidden (4)" in second
         assert "- _dlt_version: dlt" in second
 
-    async def test_report_names_the_model_when_it_differs(
+    async def test_report_uses_the_faithful_dunder_name(
         self, workspace: Path
     ) -> None:
-        """The report names the MODEL for a `__`-sanitized table, since the live name alone is not actionable."""
+        """DEV-1743: a ``__``-named internal table keeps its faithful model name,
+        so the report shows the bare name with no ``(model: …)`` annotation (the
+        model no longer differs from the live object)."""
         _, ds = _ds(
             workspace, "CREATE TABLE _dlt_loads__x (id INTEGER PRIMARY KEY);"
         )
@@ -1369,7 +1398,8 @@ class TestMcpIngestReporting:
 
         out = await self._ingest_via_mcp(storage)
 
-        assert "- _dlt_loads__x (model: _dlt_loads_x): dlt" in out
+        assert "- _dlt_loads__x: dlt" in out
+        assert "(model:" not in out
 
     async def test_report_points_at_the_escape_hatch(
         self, workspace: Path
@@ -1433,12 +1463,13 @@ class TestMcpIngestReporting:
     async def test_skipped_objects_are_reported_too(
         self, workspace: Path
     ) -> None:
-        """Skips are reported here too: `_dlt_loads_x` reserves the name, so `_dlt_loads__x` is skipped rather than modelled."""
+        """Skips are reported here too. DEV-1743: ``__`` no longer causes a skip,
+        so the reserved ``__slayer_`` prefix drives the skip instead."""
         _, ds = _ds(
             workspace,
             """
-            CREATE TABLE _dlt_loads_x (id INTEGER PRIMARY KEY);
-            CREATE TABLE _dlt_loads__x (id INTEGER PRIMARY KEY);
+            CREATE TABLE orders (id INTEGER PRIMARY KEY);
+            CREATE TABLE __slayer_reserved (id INTEGER PRIMARY KEY);
             """,
         )
         storage = await _storage_with(workspace, ds)
@@ -1446,7 +1477,7 @@ class TestMcpIngestReporting:
         out = await self._ingest_via_mcp(storage)
 
         assert "Skipped (1)" in out
-        assert "_dlt_loads__x" in out
+        assert "__slayer_reserved" in out
         # No `--exclude` in sight: this tool has no such argument.
         assert "--exclude" not in out
 
