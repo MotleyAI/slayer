@@ -258,6 +258,29 @@ class TestConditionalOverTransform:
         assert by == {"2024-01": 0, "2024-02": 1, "2024-03": 0}
 
 
+class TestChangeOverComputedDimension:
+    async def test_shift_partitions_by_the_computed_dimension(self, exec_engine) -> None:
+        # The shifted CTE must GROUP BY / join back on the computed dimension,
+        # not just the time bucket. band = amount > 5000 (only row 9, Feb).
+        # band0 monthly sums: Jan 9200, Feb 8000, Mar 1800 → change NULL,
+        # -1200, -6200; band1: Feb 6000 → change NULL (no band1 January).
+        resp = await exec_engine.execute(_q(
+            dimensions=[{"expression": "CASE WHEN amount > 5000 THEN 1 ELSE 0 END",
+                         "name": "band"}],
+            time_dimensions=month_td(),
+            measures=[
+                ModelMeasure(formula="amount:sum", name="rev"),
+                ModelMeasure(formula="change(amount:sum)", name="chg"),
+            ],
+        ))
+        by = {(int(r["orders.band"]), month_key(r["orders.ordered_at"])): r
+              for r in resp.data}
+        assert by[(0, "2024-01")]["orders.chg"] is None
+        assert float(by[(0, "2024-02")]["orders.chg"]) == pytest.approx(-1200.0)
+        assert float(by[(0, "2024-03")]["orders.chg"]) == pytest.approx(-6200.0)
+        assert by[(1, "2024-02")]["orders.chg"] is None
+
+
 class TestCaseInColumnSql:
     async def test_mode_a_case_column_still_executes(self, exec_engine) -> None:
         # A CASE in Column.sql (raw SQL) grouped as a dimension — the existing

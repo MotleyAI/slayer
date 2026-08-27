@@ -6769,10 +6769,19 @@ class SQLGenerator:
                 )
             if isinstance(pk_obj, (ColumnKey, ColumnSqlKey)):
                 return shifted_scope.resolve(pk_obj)
+            if isinstance(pk_obj, (ScalarCallKey, ArithmeticKey)):
+                # DEV-1740: a computed (expression) dimension — render through
+                # the shifted scope so its leaf columns resolve (and any
+                # crossed join registers) inside the shifted CTE.
+                return render_value_key(
+                    key=pk_obj,
+                    ctx=RenderContext(scope=shifted_scope, dialect=self._dialect),
+                )
             raise NotImplementedError(
                 f"time_shift partition on {type(pk_obj).__name__} is not "
-                f"supported (only column / derived-column / time-dimension "
-                f"partitions render in the shifted CTE). slot id={slot.id!r}.",
+                f"supported (only column / derived-column / time-dimension / "
+                f"computed-dimension partitions render in the shifted CTE). "
+                f"slot id={slot.id!r}.",
             )
 
         def _add_partition(pk_obj, *, where: str) -> None:
@@ -6789,13 +6798,18 @@ class SQLGenerator:
             partition_specs.append((pk_sid, pk_alias, _resolve_partition_expr(pk_obj)))
             seen_partition_sids.add(pk_sid)
 
-        # Auto-include EVERY projected row dimension (column, derived column, or
-        # secondary time dimension); the shift axis is skipped by slot id above.
+        # Auto-include EVERY projected row dimension (column, derived column,
+        # secondary time dimension, or DEV-1740 computed dimension); the shift
+        # axis is skipped by slot id above.
         for sid in planned_query.projection:
             dim_slot = slots_by_id.get(sid)
             if dim_slot is None or dim_slot.phase != Phase.ROW:
                 continue
-            if not isinstance(dim_slot.key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+            plain = isinstance(dim_slot.key, (ColumnKey, ColumnSqlKey, TimeTruncKey))
+            computed = dim_slot.is_dimension and isinstance(
+                dim_slot.key, (ScalarCallKey, ArithmeticKey),
+            )
+            if not (plain or computed):
                 continue
             _add_partition(dim_slot.key, where="query dimension")
 
