@@ -13,6 +13,7 @@ revenue:sum          — SUM the "revenue" measure
 *:count              — COUNT(*), always available, no measure definition needed
 revenue:avg          — AVG the "revenue" measure
 revenue:sum(window='90d')  — trailing 90-day SUM ending at each output bucket
+revenue:sum(partition_by=region)  — the region total, repeated on every finer row
 price:weighted_avg(weight=quantity)  — weighted average with kwargs
 latency:stddev_samp  — sample standard deviation
 latency:var_pop      — population variance
@@ -132,6 +133,38 @@ position; a windowed measure nested in an arithmetic/composite expression in
 against a plain aggregate inside one filter
 (`revenue:sum(window='90d') > 100 and revenue:sum > 50`).
 
+### Aggregate at a coarser grain (`partition_by=`)
+
+Any aggregation accepts an optional `partition_by=` to compute it over a
+**subset** of the query's dimensions, repeated across the finer rows — the
+share-of-parent shape (`SUM(revenue) OVER (PARTITION BY region)`):
+
+```json
+{
+  "dimensions": ["region", "city"],
+  "measures": [
+    {"formula": "revenue:sum", "name": "city_rev"},
+    {"formula": "revenue:sum(partition_by=region)", "name": "region_rev"},
+    {"formula": "revenue:sum / revenue:sum(partition_by=region)", "name": "share_of_region"}
+  ]
+}
+```
+
+`region_rev` repeats the region total on every city row, so `share_of_region`
+sums to 1.0 within each region. `partition_by` takes one query dimension, a list
+(`partition_by=[region, channel]`), a dotted path (`partition_by=customers.region`),
+or `[]` for the grand total (share of total). A time dimension partitions by its
+truncated bucket. The coarser aggregate is computed over the rows passing the
+query's row-level filters — `having`-phase filters and pagination change which
+rows you see, never the parent total. NULL-valued partition dimensions keep their
+group.
+
+These shapes raise a clear error rather than returning wrong numbers, and are
+planned follow-ups: `partition_by` combined with `window=`; on `first`/`last`;
+nested inside a transform (`cumsum(revenue:sum(partition_by=region))`); or
+referenced in a filter. A `partition_by` column that is not a query dimension
+(or, cross-model, not expressible at the aggregate's root) errors at plan time.
+
 ---
 
 ## Field Formulas
@@ -219,7 +252,11 @@ Functions apply window operations to measures:
 
 Time-ordered window transforms partition by the query's non-time dimensions.
 For example, `cumsum(revenue:sum)` grouped by `status` computes one running
-total per status, not one running total across the whole result set.
+total per status, not one running total across the whole result set. An explicit
+`partition_by=` is accepted only on the rank family; on other transforms it
+errors (their partition is fixed to the query's dimensions). To coarsen the
+*measure* itself, put `partition_by=` on the aggregation
+([above](#aggregate-at-a-coarser-grain-partition_by)).
 
 **Self-join transforms vs window-function transforms:**
 
@@ -379,6 +416,29 @@ The single-arg aliases `log10(x)` and `log2(x)` round-trip verbatim in emitted S
 Column(name="ln_amount", sql="ln(amount)", type=DataType.DOUBLE)
 Column(name="rms", sql="sqrt(pow(x, 2) + pow(y, 2))", type=DataType.DOUBLE)
 ```
+
+## Conditionals (`CASE WHEN` / `iif`)
+
+Any formula, filter, or field expression can branch with SQL `CASE`:
+
+```json
+{"formula": "CASE WHEN revenue:sum >= 10000 THEN 1 ELSE 0 END", "name": "big"}
+```
+
+- **Searched** (`CASE WHEN c1 THEN v1 [WHEN c2 THEN v2 …] [ELSE d] END`) and
+  **simple** (`CASE x WHEN v1 THEN r1 … END`, lowered to `x = v1`) forms are both
+  accepted; keywords are case-insensitive and CASE nests anywhere.
+- A missing `ELSE` yields `NULL`. `iif(cond, then, otherwise)` is an equivalent
+  spelling — an allowlisted scalar function taking exactly three arguments.
+  Everything renders to a portable SQL `CASE` on every Tier-1 dialect.
+- Inside a `WHEN` condition you may use SQL operators (`=`, `<>`, `AND`, `OR`,
+  `NOT`, `LIKE`) even in a measure formula; `THEN` / `ELSE` values are taken
+  as-is (a string literal like `'a AND b'` is never rewritten).
+- The result **type is the join of the branches** (Postgres semantics):
+  identical types pass through, a numeric mix widens to `DOUBLE`, a `NULL`
+  branch is absorbed by the other, and any other mix is a plan-time error
+  naming both types. The Python conditional `x if c else y` is not supported —
+  use `CASE` / `iif`.
 
 ---
 

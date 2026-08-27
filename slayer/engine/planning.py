@@ -269,6 +269,7 @@ class ValueRegistry:
         expression: Optional["BoundExpr"] = None,
         format: Optional[NumberFormat] = None,
         description: Optional[str] = None,
+        is_dimension: bool = False,
     ) -> SlotId:
         self._validate_alias_collisions(
             key=key,
@@ -322,6 +323,7 @@ class ValueRegistry:
             phase=phase,
             label=label,
             type=type,
+            is_dimension=is_dimension,
             expression=expression if expression is not None else BoundExpr(value_key=key),
             format=format,
             description=description,
@@ -513,6 +515,12 @@ def rewrite_rank_partition_keys(  # NOSONAR(S3776) — sequential isinstance dis
         if new_input is key.input and new_pk == key.partition_keys:
             return key
         return key.model_copy(update={"input": new_input, "partition_keys": new_pk})
+    if isinstance(key, AggregateKey):
+        if key.partition_keys:
+            new_pk = rewrite_fn(key)
+            if new_pk != key.partition_keys:
+                return key.model_copy(update={"partition_keys": new_pk})
+        return key
     if isinstance(key, ArithmeticKey):
         new_ops = tuple(_rec(op) for op in key.operands)
         unchanged = all(a is b for a, b in zip(new_ops, key.operands))
@@ -596,6 +604,10 @@ class DeclaredMeasure(BaseModel):
     type: Optional[DataType] = None
     format: Optional[NumberFormat] = None
     description: Optional[str] = None
+    # DEV-1740: a computed (expression) dimension is a ROW-phase composite that
+    # must be projected AND grouped, unlike a bare-measure expression (which is
+    # a user error). The flag tells the generator which one it is.
+    is_dimension: bool = False
 
 
 class OrderSpec(BaseModel):
@@ -666,7 +678,8 @@ def _iter_slot_deps(key: ValueKey):
         for arg in key.args:
             if isinstance(
                 arg,
-                _SLOTTABLE_KIND + (ArithmeticKey, ScalarCallKey, BetweenKey),
+                _SLOTTABLE_KIND
+                + (ArithmeticKey, ScalarCallKey, BetweenKey),
             ):
                 yield from _iter_slot_deps(arg)
         return
@@ -742,6 +755,7 @@ class ProjectionPlanner:
                 type=m.type,
                 format=m.format,
                 description=m.description,
+                is_dimension=m.is_dimension,
             )
             public_projection.append(sid)
             # Materialise any auxiliary slot-worthy deps of the measure

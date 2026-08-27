@@ -156,6 +156,13 @@ def classify_isolation(
     if disable_host_rooted_isolation:
         return IsolationKind.NONE
 
+    # DEV-1739 — a local aggregate carrying an explicit partition_by is grouped
+    # at a coarser grain in its own host-rooted CTE and joined back on that
+    # subset. ``is not None`` (not truthiness) so ``partition_by=[]`` (grand
+    # total) isolates too. Suppressed above by the recursion guard.
+    if key.partition_keys is not None:
+        return IsolationKind.HOST_ROOTED
+
     crossed = _crossing_input_paths(key=key, bundle=bundle)
     if not crossed:
         return IsolationKind.NONE

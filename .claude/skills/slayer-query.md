@@ -52,6 +52,8 @@ Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `c
 
 For month-over-month / period-over-period growth use `change_pct(x)` (absolute delta: `change(x)`) — both are calendar-aware and partition-safe (the underlying self-join matches on all non-time dimensions, so per-group series reset cleanly). Reach for `time_shift` only when you need the shifted value itself as a term in custom arithmetic or at a different grain (`time_shift(revenue:sum, -1, 'year')` for year-over-year).
 
+Any aggregation accepts `partition_by=` to compute it over a subset of the query's dimensions, repeated across the finer rows — the share-of-parent shape. With `dimensions: [region, city]`, `revenue:sum(partition_by=region)` is the region total on every city row, so `revenue:sum / revenue:sum(partition_by=region)` sums to 1.0 per region; `partition_by=[]` is the grand total. Takes one dimension, a list (`partition_by=[region, channel]`), a dotted path, or `[]`. Computed over rows passing row-level filters (HAVING/pagination never change the parent total). Not yet supported (raises): combined with `window=`, on `first`/`last`, nested in a transform, or in a filter. On transforms, `partition_by=` is rank-family only.
+
 `*:count` is always available — no column definition needed. `col:count` counts non-nulls.
 
 Saved named formulas (`SlayerModel.measures`) can be referenced by bare name in any formula context: `{"formula": "aov"}`.
@@ -72,7 +74,11 @@ Result column naming: `revenue:sum` → `orders.revenue_sum` (colon becomes unde
 
 **Boolean logic**: `AND`, `OR`, `NOT`
 
-**Mode-B scalars** (matched case-insensitively): string hygiene (`lower`, `upper`, `trim`, `ltrim`, `rtrim`, `replace`, `substr`, `substring`, `instr`, `length`, `concat`), null handling (`coalesce`, `nullif`, `ifnull`), math (`round`, `abs`, `ceil`, `floor`, `sign`, `trunc`, `mod`, `log10`, …), and scalar min/max (`greatest`, `least` — NULL handling is backend-specific; `trunc` is 1-arg). Plus the SQL `||` operator (folded into `concat(...)`). Examples: `"lower(status) = 'active'"`, `"coalesce(nickname, name) = 'Ada'"`, `"length(replace(x, ',', '')) > 0"`, `"first || ' ' || last = 'jane doe'"`. Raw SQL functions outside the allowlist (`json_extract`, `date_trunc`, …) belong in `Column.sql` / `Column.filter` / `SlayerModel.filters` (Mode A SQL), not query filters.
+**Mode-B scalars** (matched case-insensitively): string hygiene (`lower`, `upper`, `trim`, `ltrim`, `rtrim`, `replace`, `substr`, `substring`, `instr`, `length`, `concat`), null handling (`coalesce`, `nullif`, `ifnull`), math (`round`, `abs`, `ceil`, `floor`, `sign`, `trunc`, `mod`, `log10`, …), scalar min/max (`greatest`, `least` — NULL handling is backend-specific; `trunc` is 1-arg), and the conditional `iif(c, x, y)` (see below). Plus the SQL `||` operator (folded into `concat(...)`). Examples: `"lower(status) = 'active'"`, `"coalesce(nickname, name) = 'Ada'"`, `"length(replace(x, ',', '')) > 0"`, `"first || ' ' || last = 'jane doe'"`. Raw SQL functions outside the allowlist (`json_extract`, `date_trunc`, …) belong in `Column.sql` / `Column.filter` / `SlayerModel.filters` (Mode A SQL), not query filters.
+
+**Conditionals**: any formula / filter / expression can branch with SQL `CASE WHEN c THEN x [WHEN …] [ELSE y] END` (searched or simple `CASE col WHEN v THEN …`; missing `ELSE` → NULL) or `iif(c, x, y)` — e.g. `{"formula": "CASE WHEN revenue:sum >= 10000 THEN 1 ELSE 0 END", "name": "big"}`. Renders to portable SQL `CASE`; branch types must agree (a NULL branch — e.g. from a missing `ELSE` — is absorbed by the other branch's type, a numeric mix widens, any other mix is a plan-time error). The Python `x if c else y` is not supported.
+
+**Expression dimensions**: group by a computed expression with a dict `{"expression": "lower(city)", "name": "city_lc"}` in `dimensions` (a bare non-identifier string like `"round(amount)"` is also parsed as one, auto-named). The expression is projected and grouped; its name is usable in `filters`/`order`. Grouping by an expression *over an aggregate* (`amount:sum(partition_by=city)` inside the dimension) is not yet available — raises with a pointer to the two-stage form.
 
 **Filtering on computed measures**: `"change(revenue:sum) > 0"`, `"last(change(revenue:sum)) < 0"`. Applied as post-filters on the outer query.
 

@@ -196,6 +196,119 @@ def _rewrite_sql_like(text: str) -> str:
         return f"not {call}" if neg else call
 
     return _SQL_LIKE_RE.sub(_sub, text)
+
+
+# SQL ``CASE WHEN … END`` → nested ``iif(cond, then, otherwise)``. Lowered to the
+# host language (a plain call) so binding + per-dialect emission reuse the whole
+# scalar-call machinery. Only the WHEN-condition segments are operator-normalised
+# (so ``CASE WHEN a = 5 …`` works in measures too); THEN/ELSE values are sliced
+# verbatim and only recursed for nested CASE, so a value like ``'a AND b'`` is
+# never rewritten. String literals are single tokens, so keywords inside them are
+# invisible to the keyword scan.
+_CASE_TOKEN_RE = re.compile(
+    r"(?P<str>'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\")"
+    r"|(?P<id>[A-Za-z_]\w*)"
+    r"|(?P<lp>[(\[])"
+    r"|(?P<rp>[)\]])",
+    re.DOTALL,
+)
+_CASE_STOPS_OPERAND = frozenset({"WHEN", "THEN", "ELSE", "END"})
+
+
+def _rewrite_case_when(text: str) -> str:
+    if "case" not in text.lower():
+        return text
+    toks = [
+        (m.lastgroup, m.group(), m.start(), m.end())
+        for m in _CASE_TOKEN_RE.finditer(text)
+    ]
+    if not any(k == "id" and v.upper() == "CASE" for k, v, _, _ in toks):
+        return text
+    result, _ = _rw_value(text, toks, 0, frozenset(), 0)
+    return result
+
+
+def _rw_value(text, toks, i, stop_kws, start_char):  # NOSONAR(S3776) — one cohesive token-scan over a value/condition span: paren-depth tracking, the depth-0 stop-keyword break, and nested-CASE recursion are each one decision, and splitting them scatters the slice-and-recurse contract that preserves the original text.
+    """Rewrite one value/condition span, returning ``(rewritten, next_index)``.
+
+    ``start_char`` is where the span begins in ``text`` (the end of the keyword
+    just consumed) — the lexer only tokenises strings / idents / parens, so bare
+    values like ``1`` have no token and must be recovered by slicing. Slices the
+    ORIGINAL text for non-CASE content (preserving colons, dots, spacing) and
+    recurses into nested CASE. Stops at a depth-0 stop keyword or an unmatched
+    closing paren.
+    """
+    parts: List[str] = []
+    depth = 0
+    last = start_char
+    while i < len(toks):
+        kind, val, start, _ = toks[i]
+        if kind == "lp":
+            depth += 1
+        elif kind == "rp":
+            if depth == 0:
+                break
+            depth -= 1
+        elif kind == "id":
+            up = val.upper()
+            if depth == 0 and up in stop_kws:
+                break
+            if up == "CASE":
+                parts.append(text[last:start])
+                nested, i = _rw_case(text, toks, i)
+                parts.append(nested)
+                last = toks[i - 1][3]
+                continue
+        i += 1
+    stop_char = toks[i][2] if i < len(toks) else len(text)
+    parts.append(text[last:stop_char])
+    return "".join(parts).strip(), i
+
+
+def _rw_case(text, toks, i):
+    """Rewrite a ``CASE … END`` starting at ``toks[i]`` (the CASE keyword)."""
+    i += 1  # consume CASE
+    operand, i = _rw_value(text, toks, i, _CASE_STOPS_OPERAND, toks[i - 1][3])
+    is_simple = bool(operand)
+    branches: List[Tuple[str, str]] = []
+    while i < len(toks) and toks[i][0] == "id" and toks[i][1].upper() == "WHEN":
+        i += 1
+        cond, i = _rw_value(text, toks, i, frozenset({"THEN"}), toks[i - 1][3])
+        if not (i < len(toks) and toks[i][0] == "id" and toks[i][1].upper() == "THEN"):
+            raise ValueError(
+                f"Malformed CASE expression in {text!r}: a WHEN branch is "
+                f"missing its THEN."
+            )
+        i += 1
+        then_val, i = _rw_value(
+            text, toks, i, frozenset({"WHEN", "ELSE", "END"}), toks[i - 1][3],
+        )
+        branches.append((cond, then_val))
+    else_val = "None"
+    if i < len(toks) and toks[i][0] == "id" and toks[i][1].upper() == "ELSE":
+        i += 1
+        else_val, i = _rw_value(text, toks, i, frozenset({"END"}), toks[i - 1][3])
+        else_val = else_val or "None"
+    if not (i < len(toks) and toks[i][0] == "id" and toks[i][1].upper() == "END"):
+        raise ValueError(
+            f"Malformed CASE expression in {text!r}: missing END."
+        )
+    i += 1  # consume END
+    if not branches:
+        raise ValueError(
+            f"Malformed CASE expression in {text!r}: needs at least one "
+            f"WHEN … THEN branch."
+        )
+    result = else_val
+    for cond, then_val in reversed(branches):
+        if is_simple:
+            cond_expr = f"{operand} == {cond}"
+        else:
+            cond_expr = _normalize_sql_filter_operators(cond)
+        result = f"iif({cond_expr}, {then_val}, {result})"
+    return result, i
+
+
 _COLON_AGG_RE = re.compile(
     r"(\*|[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*(?:\.\*)?)"  # source: * / ident / dotted
     r":"
@@ -284,7 +397,7 @@ def parse_expr(text: str) -> ParsedExpr:
             ),
         )
 
-    preprocessed, agg_map = _preprocess_colons(text)
+    preprocessed, agg_map = _preprocess_colons(_rewrite_case_when(text))
 
     try:
         py_ast = ast.parse(preprocessed, mode="eval").body
@@ -813,6 +926,13 @@ def _convert(node: ast.AST, *, agg_map: Dict, original: str) -> ParsedExpr:  # N
             _convert(v, agg_map=agg_map, original=original) for v in node.values
         )
         return BoolOp(op=op_str, operands=operands)
+
+    if isinstance(node, ast.IfExp):
+        raise ValueError(
+            f"Invalid Mode-B expression {original!r}: the Python conditional "
+            f"'x if cond else y' is not supported. Use SQL "
+            f"'CASE WHEN cond THEN x ELSE y END' or iif(cond, x, y)."
+        )
 
     raise ValueError(
         f"Invalid Mode-B expression {original!r}: unsupported AST node "

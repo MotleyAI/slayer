@@ -19,7 +19,7 @@ import re
 from decimal import Decimal
 from typing import Any
 
-from slayer.core.keys import ColumnKey, ColumnSqlKey
+from slayer.core.keys import ColumnKey, ColumnSqlKey, TimeTruncKey
 
 # ---------------------------------------------------------------------------
 # Identifier shapes
@@ -89,6 +89,30 @@ def agg_signature_suffix(
         if sv:
             parts.append(sv)
     return "_" + "_".join(parts) if parts else ""
+
+
+def _partition_key_display(key: Any) -> str:
+    if isinstance(key, TimeTruncKey):
+        key = key.column
+    if isinstance(key, ColumnKey):
+        parts = [*key.path, key.leaf]
+    elif isinstance(key, ColumnSqlKey):
+        parts = [*key.path, key.column_name]
+    else:
+        parts = [str(key)]
+    return _NON_IDENT_RE.sub("_", "_".join(parts)).strip("_")
+
+
+def partition_by_suffix(partition_keys) -> str:
+    """Deterministic identifier suffix for an aggregate's ``partition_keys``.
+
+    ``None`` (no partition) -> empty. An explicit empty frozenset (grand total)
+    -> ``_partition_by``. Non-empty -> ``_partition_by`` plus each key's
+    display, sorted."""
+    if partition_keys is None:
+        return ""
+    displays = sorted(_partition_key_display(k) for k in partition_keys)
+    return "_partition_by" + "".join(f"_{d}" for d in displays)
 
 
 def _decimal_to_plain_str(value: Decimal) -> str:

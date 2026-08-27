@@ -63,6 +63,7 @@ from slayer.core.keys import (
 from slayer.core.models import SlayerModel
 from slayer.core.query import (
     ORDER_PLACEHOLDER_NAMES,
+    ComputedDimension,
     ModelExtension,
     SlayerQuery,
     TimeDimension,
@@ -137,7 +138,13 @@ from slayer.engine.source_bundle import (
     synthetic_model_from_stage_schema,
 )
 from slayer.engine.normalization import func_style_agg_to_colon
-from slayer.engine.syntax import parse_expr, parse_filter_expr
+from slayer.engine.syntax import (
+    AggCall,
+    Ref,
+    TransformCall,
+    parse_expr,
+    parse_filter_expr,
+)
 from slayer.sql.naming import flat_name
 from slayer.sql.sql_expr import has_window_function
 from slayer.sql.sql_predicate import parse_sql_predicate
@@ -421,6 +428,49 @@ def _guard_windowed_measures(  # NOSONAR(S3776) — one cohesive ordered guard p
     return selected_windowed
 
 
+def _partitioned_agg_keys(vk: ValueKey) -> list:
+    """Every ``AggregateKey`` in ``vk`` carrying an explicit ``partition_by``."""
+    return [
+        k for k in walk_value_keys(vk)
+        if isinstance(k, AggregateKey) and k.partition_keys is not None
+    ]
+
+
+def _guard_partitioned_measures(
+    *, measure_vks: list, filter_vks: list, order_vks: list,
+) -> None:
+    """Reject the partition_by shapes deferred to DEV-1824: combined with
+    ``window=``, on ``first``/``last``, nested inside a transform, or referenced
+    in a query filter. Runs on the original value-key trees."""
+    all_vks = [*measure_vks, *filter_vks, *order_vks]
+    part_keys = [k for vk in all_vks for k in _partitioned_agg_keys(vk)]
+    if not part_keys:
+        return
+    if any(_window_kwarg_of(k) is not None for k in part_keys):
+        raise NotImplementedError(
+            "partition_by combined with window= on one aggregate is not yet "
+            "supported (DEV-1824)."
+        )
+    if any(k.agg in ("first", "last") for k in part_keys):
+        raise NotImplementedError(
+            "partition_by on first/last aggregations is not yet supported "
+            "(DEV-1824)."
+        )
+    if any(
+        isinstance(tk, TransformKey) and _partitioned_agg_keys(tk.input)
+        for vk in all_vks for tk in walk_value_keys(vk)
+    ):
+        raise NotImplementedError(
+            "A partition_by aggregate nested inside a transform is not yet "
+            "supported (DEV-1824)."
+        )
+    if any(_partitioned_agg_keys(vk) for vk in filter_vks):
+        raise NotImplementedError(
+            "Filtering on a partition_by aggregate is not yet supported "
+            "(DEV-1824)."
+        )
+
+
 def _windowed_grain_partition(
     *,
     row_slots: list,
@@ -554,8 +604,6 @@ def _expr_has_measure_ref(node, *, measure_names: FrozenSet[str]) -> bool:
     Structural walk over the typed parser's AST — the legacy check re-parsed
     the raw text with the enrichment parsers, which no longer exist.
     """
-    from slayer.engine.syntax import AggCall, Ref, TransformCall
-
     if node is None:
         return False
     if isinstance(node, (AggCall, TransformCall)):
@@ -695,6 +743,7 @@ def _map_bound_keys(
             type=dm.type,
             format=dm.format,
             description=dm.description,
+            is_dimension=dm.is_dimension,
         )
         for dm in declared_measures
     ]
@@ -795,6 +844,12 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         for alias in (dm.public_name, dm.declared_name, dm.canonical_alias):
             if alias is not None:
                 filter_alias_map.setdefault(alias, dm.bound.value_key)
+    # DEV-1740: a computed dimension's name is a query-local alias resolvable
+    # in filters and order (unlike a plain/time dimension, whose name is a raw
+    # column that must resolve to the column, not a slot).
+    for dm in declared_measures:
+        if dm.is_dimension and dm.public_name is not None:
+            filter_alias_map.setdefault(dm.public_name, dm.bound.value_key)
 
     # DEV-1450 stage 7b.9 — filter list construction in legacy WHERE
     # order: date_range filters first, then SlayerModel.filters
@@ -1030,14 +1085,18 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     _td_key_set = set(_td_by_source.values())
     _available_dims = [dm.declared_name for dm in (*_dim_dms, *_td_dms)]
 
-    def _validate_partition_keys(tk: TransformKey) -> frozenset:
+    def _validate_partition_keys(key: ValueKey) -> frozenset:
+        label = (
+            f"Transform '{key.op}'" if isinstance(key, TransformKey)
+            else f"Aggregation '{key.agg}'"
+        )
         new_pks = []
-        for pk in tk.partition_keys:
+        for pk in key.partition_keys or ():
             if pk in _dim_key_set or pk in _td_key_set:
                 new_pks.append(pk)          # already a query dim / td bucket
             elif pk in _td_ambiguous_sources:
                 raise ValueError(
-                    f"Transform '{tk.op}': partition_by column "
+                    f"{label}: partition_by column "
                     f"'{_partition_key_display(pk)}' is ambiguous — it is a "
                     f"time dimension at multiple granularities. Partition by a "
                     f"single query dimension instead."
@@ -1046,7 +1105,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                 new_pks.append(_td_by_source[pk])  # td source col -> bucket
             else:
                 raise ValueError(
-                    f"Transform '{tk.op}': partition_by column "
+                    f"{label}: partition_by column "
                     f"'{_partition_key_display(pk)}' is not a query dimension. "
                     f"Add it to dimensions/time_dimensions, or choose one of: "
                     f"{', '.join(_available_dims) or '(none)'}."
@@ -1165,6 +1224,11 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     # projection) value-key trees. Raises on unsupported shapes (non-sum/avg,
     # no time dim, cross-model, transform, composite, hidden, mixed, malformed
     # duration); returns the set of cleanly-selected windowed AggregateKeys.
+    _guard_partitioned_measures(
+        measure_vks=[dm.bound.value_key for dm in declared_measures],
+        filter_vks=[bf.value_key for bf in bound_filters],
+        order_vks=[sp.bound.value_key for sp in order_specs],
+    )
     selected_windowed = _guard_windowed_measures(
         measure_vks=[dm.bound.value_key for dm in declared_measures],
         filter_vks=[bf.value_key for bf in bound_filters],
@@ -2234,6 +2298,104 @@ def _bare_saved_measure_name(
     return saved.name if saved is not None else None
 
 
+def _reject_computed_dim_name_collision(
+    *, name: str, query: SlayerQuery, scope: Union[ModelScope, StageSchema],
+) -> None:
+    """A computed dimension's name must not shadow a resolvable column / measure
+    (fail-closed: a shadowed reference in a filter or order would be ambiguous)."""
+    if isinstance(scope, ModelScope) and scope.source_model is not None:
+        model = scope.source_model
+        if model.get_column(name) is not None or model.get_measure(name) is not None:
+            raise ValueError(
+                f"Computed dimension name {name!r} collides with an existing "
+                f"column or measure on model {model.name!r}. Choose a different "
+                f"name."
+            )
+    for m in (query.measures or []):
+        if m.name == name:
+            raise ValueError(
+                f"Computed dimension name {name!r} collides with a query measure "
+                f"of the same name. Choose a different name."
+            )
+
+
+def _guard_computed_dimension(*, d: ComputedDimension, bound, query: SlayerQuery) -> None:
+    """Enforce the DEV-1740 rules on a computed dimension's bound expression.
+
+    A transform is deferred (DEV-1824). An aggregate inside the expression must
+    carry ``partition_by=`` (else the group key is a pure function of the query's
+    own dimensions and adds no grouping); ``first``/``last`` and ``window=`` are
+    deferred; and an aggregate-referencing dimension is incompatible with the
+    raw-rows mode.
+    """
+    all_keys = list(walk_value_keys(bound.value_key))
+    if any(isinstance(k, TransformKey) for k in all_keys):
+        raise NotImplementedError(
+            "A transform (cumsum / rank / time_shift / …) inside a computed "
+            "dimension is not yet supported (DEV-1824)."
+        )
+    aggs = [k for k in all_keys if isinstance(k, AggregateKey)]
+    if not aggs:
+        return  # row-level (B1)
+    if not query.distinct_dimension_values:
+        raise DistinctDimensionValuesError(
+            f"Computed dimension {d.name!r} references an aggregate, so it cannot "
+            f"be used with distinct_dimension_values=False (raw rows). Remove the "
+            f"flag (the default aggregates) or drop the aggregate from the "
+            f"dimension."
+        )
+    for agg in aggs:
+        if agg.partition_keys is None:
+            raise ValueError(
+                f"The aggregate inside computed dimension {d.name!r} must declare "
+                f"the grain it aggregates over with partition_by=, e.g. "
+                f"'CASE WHEN amount:sum(partition_by=city) > 5000 THEN 1 ELSE 0 END'. "
+                f"Without partition_by the group key is a function of the query's "
+                f"own dimensions and adds no grouping."
+            )
+        if agg.agg in ("first", "last"):
+            raise NotImplementedError(
+                "first / last inside a computed dimension is not yet supported "
+                "(DEV-1824)."
+            )
+        if _window_kwarg_of(agg) is not None:
+            raise NotImplementedError(
+                "window= combined with a computed dimension is not yet supported "
+                "(DEV-1824)."
+            )
+    raise NotImplementedError(
+        f"Grouping by computed dimension {d.name!r} — an expression over a "
+        f"partitioned aggregate — requires the aggregate-then-regroup path, "
+        f"which is not yet wired (DEV-1825). Use the two-stage form for now: "
+        f"aggregate at the partition grain in a first stage, then band and "
+        f"regroup in a ModelExtension over it."
+    )
+
+
+def _declared_computed_dimension(
+    d: ComputedDimension,
+    *,
+    query: SlayerQuery,
+    scope: Union[ModelScope, StageSchema],
+    bundle: ResolvedSourceBundle,
+) -> DeclaredMeasure:
+    """Bind a computed (expression) dimension to a declared slot (DEV-1740)."""
+    _reject_computed_dim_name_collision(name=d.name, query=query, scope=scope)
+    parsed = parse_expr(d.expression)
+    if isinstance(scope, ModelScope) and scope.source_model is not None:
+        parsed = expand_model_measures(expr=parsed, model=scope.source_model)
+    bound = bind_expr(parsed=parsed, scope=scope, bundle=bundle)
+    _guard_computed_dimension(d=d, bound=bound, query=query)
+    dim_type = _type_for_measure_formula(scope=scope, bound=bound)
+    return DeclaredMeasure(
+        bound=bound,
+        declared_name=d.name,
+        public_name=d.name,
+        type=dim_type,
+        is_dimension=True,
+    )
+
+
 def _flatten_collision_message(flat_name: str) -> str:
     """Shared wording for the ``.``→``__`` flatten collision (DEV-1743 [D5]),
     used both here (pre-interning, over declared names) and by
@@ -2245,26 +2407,31 @@ def _flatten_collision_message(flat_name: str) -> str:
     )
 
 
-def _guard_flatten_name(
-    *, seen_flat: Dict[str, str], flat_name: str, origin: str,
-) -> None:
-    """Raise the [D5] collision message when two DISTINCT projected names flatten
-    to ``flat_name``; otherwise record ``origin`` as its owner."""
-    prior = seen_flat.get(flat_name)
-    if prior is not None and prior != origin:
-        raise ValueError(_flatten_collision_message(flat_name))
-    seen_flat[flat_name] = origin
-
-
-def _declared_from_dimensions(
+def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projection passes (dimensions incl. computed, time dimensions, measures) building one ordered declared list; each pass is one contract and the order (dims → tds → measures) is the public projection order the function pins.
     *,
     query: SlayerQuery,
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
-    seen_flat: Dict[str, str],
 ) -> List[DeclaredMeasure]:
     declared: List[DeclaredMeasure] = []
+    # DEV-1743 [D5]: two DISTINCT projected names (a joined ``customers.region``
+    # and a literal ``customers__region``) can flatten to one downstream name.
+    # Detect that here, before interning, so the clear collision message wins
+    # over the generic ``DuplicateMeasureNameError``.
+    seen_flat: Dict[str, str] = {}
+
+    def _guard_flatten(*, flat_name: str, origin: str) -> None:
+        prior = seen_flat.get(flat_name)
+        if prior is not None and prior != origin:
+            raise ValueError(_flatten_collision_message(flat_name))
+        seen_flat[flat_name] = origin
+
     for d in (query.dimensions or []):
+        if isinstance(d, ComputedDimension):
+            declared.append(_declared_computed_dimension(
+                d, query=query, scope=scope, bundle=bundle,
+            ))
+            continue
         full = d.full_name
         _reject_opaque_grouping_dim(
             query=query, scope=scope, full_name=full, bundle=bundle,
@@ -2275,7 +2442,7 @@ def _declared_from_dimensions(
             bundle=bundle,
         )
         flat_name = _flatten_dotted(full)
-        _guard_flatten_name(seen_flat=seen_flat, flat_name=flat_name, origin=full)
+        _guard_flatten(flat_name=flat_name, origin=full)
         fmt, desc = _format_description_for_dimension(
             scope=scope, full_name=full,
         )
@@ -2291,25 +2458,14 @@ def _declared_from_dimensions(
             format=fmt,
             description=desc,
         ))
-    return declared
-
-
-def _declared_from_time_dimensions(
-    *,
-    query: SlayerQuery,
-    scope: Union[ModelScope, StageSchema],
-    bundle: ResolvedSourceBundle,
-    seen_flat: Dict[str, str],
-) -> List[DeclaredMeasure]:
     # Time dimensions follow dimensions in the public projection — matches
     # the legacy ``user_projection`` order (dims, then time dims, then
     # measures).
-    declared: List[DeclaredMeasure] = []
     for td in (query.time_dimensions or []):
         full = td.dimension.full_name
         bound = bind_time_dimension(td=td, scope=scope, bundle=bundle)
         flat_name = _flatten_dotted(full)
-        _guard_flatten_name(seen_flat=seen_flat, flat_name=flat_name, origin=full)
+        _guard_flatten(flat_name=flat_name, origin=full)
         declared.append(DeclaredMeasure(
             bound=bound,
             declared_name=flat_name,
@@ -2317,16 +2473,6 @@ def _declared_from_time_dimensions(
             label=td.label,
             type=DataType.TIMESTAMP,
         ))
-    return declared
-
-
-def _declared_from_measures(
-    *,
-    query: SlayerQuery,
-    scope: Union[ModelScope, StageSchema],
-    bundle: ResolvedSourceBundle,
-) -> List[DeclaredMeasure]:
-    declared: List[DeclaredMeasure] = []
     for m in (query.measures or []):
         formula = m.formula
         explicit_name = m.name
@@ -2388,30 +2534,6 @@ def _declared_from_measures(
             description=desc,
         ))
     return declared
-
-
-def _declared_measures_from_query(
-    *,
-    query: SlayerQuery,
-    scope: Union[ModelScope, StageSchema],
-    bundle: ResolvedSourceBundle,
-) -> List[DeclaredMeasure]:
-    # DEV-1743 [D5]: two DISTINCT projected names (a joined ``customers.region``
-    # and a literal ``customers__region``) can flatten to one downstream name.
-    # Detect that before interning so the clear collision message wins over the
-    # generic ``DuplicateMeasureNameError``. The flatten-guard state is shared
-    # across dimensions and time dimensions (projection order: dims, time dims,
-    # then measures).
-    seen_flat: Dict[str, str] = {}
-    return [
-        *_declared_from_dimensions(
-            query=query, scope=scope, bundle=bundle, seen_flat=seen_flat,
-        ),
-        *_declared_from_time_dimensions(
-            query=query, scope=scope, bundle=bundle, seen_flat=seen_flat,
-        ),
-        *_declared_from_measures(query=query, scope=scope, bundle=bundle),
-    ]
 
 
 def _topo_sort(queries: List[SlayerQuery]) -> List[SlayerQuery]:

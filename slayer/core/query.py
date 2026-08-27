@@ -8,6 +8,7 @@ paths and phases, and is ready for SQL generation.
 from __future__ import annotations
 
 import datetime
+import hashlib
 import logging
 import math
 import re
@@ -23,7 +24,10 @@ from pydantic import (
 )
 
 from slayer.core.enums import TimeGranularity
-from slayer.core.models import ModelMeasure, SlayerModel
+from slayer.core.errors import DistinctDimensionValuesError
+from slayer.core.formula import _rewrite_funcstyle_aggregations
+from slayer.core.models import ModelMeasure, SlayerModel, _validate_model_name
+from slayer.engine.syntax import parse_expr
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 from slayer.storage.migrations import migrate as _migrate_schema
 
@@ -713,6 +717,45 @@ class ColumnRef(BaseModel):
         return cls(name=s)
 
 
+def _auto_name_from_expression(expression: str) -> str:
+    """A deterministic identifier for an unnamed computed dimension.
+
+    Sanitises the expression text to an identifier; when that is over-long it is
+    shortened to ``<head>_<hash8>_<tail>`` so distinct expressions never collide
+    on a truncated prefix. Name the dimension to control the result key.
+    """
+    base = re.sub(r"\W+", "_", expression.strip()).strip("_").lower() or "expr"
+    if base[0].isdigit():
+        base = f"e_{base}"
+    if len(base) > 48:
+        digest = hashlib.sha256(expression.encode("utf-8")).hexdigest()[:8]
+        base = f"{base[:28]}_{digest}_{base[-8:]}"
+    # No ``__`` — reserved for join-path aliases in generated SQL.
+    return re.sub(r"_+", "_", base).strip("_")
+
+
+class ComputedDimension(BaseModel):
+    """A dimension defined by a Mode-B expression rather than a bare reference.
+
+    ``expression`` is grouped by (and projected). ``name`` is the result key's
+    leaf (``model.<name>``); when omitted it is derived from the expression.
+    An aggregate inside the expression must carry ``partition_by=`` and triggers
+    the aggregate-then-regroup path (DEV-1740).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    expression: str
+    name: str | None = None
+
+    @model_validator(mode="after")
+    def _fill_name(self) -> "ComputedDimension":
+        if self.name is None:
+            self.name = _auto_name_from_expression(self.expression)
+        _validate_model_name(self.name, "Computed dimension")
+        return self
+
+
 def _coerce_column_ref(v: Any) -> Any:
     """Allow plain string where a ColumnRef is expected: "x" → {"name": "x"}."""
     if isinstance(v, str):
@@ -747,8 +790,6 @@ def _order_formula_candidate(v: str) -> str | None:
     them recognised a shape, the item would either lose its formula or bind a
     meaningless placeholder name.
     """
-    from slayer.core.formula import _rewrite_funcstyle_aggregations
-
     rewritten = _rewrite_funcstyle_aggregations(v)
     if ":" in rewritten or _FUNCSTYLE_CALL_PATTERN.match(rewritten):
         return rewritten
@@ -788,7 +829,6 @@ def _coerce_order_column(v: Any) -> Any:
     construction is better than a deep binder error.
     """
     if isinstance(v, str):
-        from slayer.core.formula import _rewrite_funcstyle_aggregations
         candidate = _order_formula_candidate(v)
         rewritten = (
             candidate if candidate is not None
@@ -894,13 +934,42 @@ def _coerce_measures(v: Any) -> Any:
     return [{"formula": item} if isinstance(item, str) else item for item in v]
 
 
+def _coerce_dimension_item(item: Any) -> Any:
+    """Coerce one ``dimensions`` entry (DEV-1740).
+
+    A bare identifier / dotted path stays a ``ColumnRef``; any other string is
+    parsed as a Mode-B expression → ``ComputedDimension`` (a string that is
+    neither raises, naming both readings). A dict with ``expression`` is a
+    ``ComputedDimension``; other dicts / instances pass through unchanged.
+    """
+    if isinstance(item, (ColumnRef, ComputedDimension)):
+        return item
+    if isinstance(item, dict):
+        if "expression" in item:
+            return ComputedDimension(**item)
+        return item
+    if isinstance(item, str):
+        if _is_valid_column_ref_name(item):
+            return {"name": item}
+        try:
+            parse_expr(item)
+        except Exception as exc:
+            raise ValueError(
+                f"Dimension {item!r} is neither a column reference (a bare "
+                f"identifier or dotted join path) nor a parseable Mode-B "
+                f"expression: {exc}"
+            ) from exc
+        return ComputedDimension(expression=item)
+    return item
+
+
 def _coerce_dimensions(v: Any) -> Any:
-    """Allow plain strings in the dimensions list: "status" → {"name": "status"}."""
+    """Allow plain strings / expression dicts in the dimensions list."""
     if v is None:
         return v
     if not isinstance(v, (list, tuple)):
         raise TypeError(f"'dimensions' must be a list, got {type(v).__name__}")
-    return [{"name": item} if isinstance(item, str) else item for item in v]
+    return [_coerce_dimension_item(item) for item in v]
 
 
 def _process_order_item(item: Any) -> list:
@@ -986,14 +1055,19 @@ def _get_source_model_name(source_model: object) -> str | None:
     return None
 
 
-def _strip_column_ref(ref: ColumnRef, model_name: str) -> ColumnRef:
+def _strip_column_ref(ref, model_name: str):
     """Strip source model prefix from a ColumnRef.
 
     "orders.status"          on model "orders" → model=None,  name="status"
     "orders.customers.name"  on model "orders" → model="customers", name="name"
     "customers.name"         on model "orders" → unchanged
     "status"                 on model "orders" → unchanged
+
+    A ``ComputedDimension`` carries a free-form expression, not a model-qualified
+    reference, so it passes through untouched.
     """
+    if isinstance(ref, ComputedDimension):
+        return ref
     if ref.model is None:
         return ref
     if ref.model == model_name:
@@ -1039,9 +1113,8 @@ class SlayerQuery(BaseModel):
         # aggregation separator).
         if v is None:
             return v
-        from slayer.core.models import _validate_model_name
         return _validate_model_name(v, "Query")
-    dimensions: Annotated[list[ColumnRef] | None, BeforeValidator(_coerce_dimensions)] = None
+    dimensions: Annotated[list[ColumnRef | ComputedDimension] | None, BeforeValidator(_coerce_dimensions)] = None
     time_dimensions: list[TimeDimension] | None = None
     main_time_dimension: str | None = None  # Explicit time dimension for transforms (overrides auto-detection)
     filters: list[str] | None = None
@@ -1100,8 +1173,6 @@ class SlayerQuery(BaseModel):
         """
         if self.distinct_dimension_values:
             return
-        from slayer.core.errors import DistinctDimensionValuesError
-
         if self.measures:
             n = len(self.measures)
             raise DistinctDimensionValuesError(

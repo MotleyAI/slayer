@@ -26,6 +26,7 @@ from typing import (
     Union,
 )
 
+from decimal import Decimal
 import sqlglot
 from sqlglot import exp
 
@@ -41,8 +42,20 @@ from pydantic import BaseModel, ConfigDict, field_validator
 from slayer.core.errors import AggregationNotAllowedError
 from slayer.core.formula import RANK_FAMILY_TRANSFORMS
 from slayer.core.keys import (
+    AggregateKey,
+    ArithmeticKey,
+    BetweenKey,
+    ColumnKey,
+    ColumnSqlKey,
+    InKey,
+    Phase,
+    ScalarCallKey,
+    StarKey,
+    TimeTruncKey,
+    TransformKey,
     _FrozenKey,
     _reroot_path_ref,
+    column_leaf,
     column_path,
     reroot_aggregate_key,
 )
@@ -50,11 +63,13 @@ from slayer.core.models import Aggregation
 from slayer.core.refs import agg_kwarg_canonical_str
 from slayer.core.time_bounds import strip_frame_bounds
 from slayer.core.window_duration import parse_window_duration as _parse_window_duration
+from slayer.engine.binding import walk_value_keys
 from slayer.engine.column_expansion import (
     _is_trivial_base,
     collect_root_scope_joined_paths,
     expand_derived_refs_sync,
 )
+from slayer.engine.planned import ValueSlot
 from slayer.engine.source_bundle import (
     stage_bundle_with_siblings,
     synthetic_model_from_stage_schema,
@@ -426,13 +441,6 @@ def _first_bare_column_name(key) -> Optional[str]:
     "Bare measure name '<col>'" error names the offending column. Returns
     ``None`` when no column ref is found (caller falls back to the alias).
     """
-    from slayer.core.keys import (
-        ArithmeticKey,
-        ColumnKey,
-        ColumnSqlKey,
-        ScalarCallKey,
-        TransformKey,
-    )
 
     if isinstance(key, ColumnKey):
         return key.leaf
@@ -1946,18 +1954,13 @@ class SQLGenerator:
         that subtracts them needs its own step CTE. Same shape covers
         ``change_pct`` and any future POST-phase non-transform slot.
         """
-        from slayer.core.keys import (
-            ArithmeticKey as _ArithKey,
-            ScalarCallKey as _ScalarKey,
-            TransformKey as _TKey,
-        )
         unmaterialised: List[Any] = []
         for cslot in planned_query.combined_expression_slots:
-            if isinstance(cslot.key, _TKey):
+            if isinstance(cslot.key, TransformKey):
                 continue
             if cslot.id in aliases_by_slot_id:
                 continue
-            if isinstance(cslot.key, (_ArithKey, _ScalarKey)):
+            if isinstance(cslot.key, (ArithmeticKey, ScalarCallKey)):
                 unmaterialised.append(cslot)
         return unmaterialised
 
@@ -2177,17 +2180,6 @@ class SQLGenerator:
           rejected with a ``composite-input transforms`` marker so the
           test suite's per-op composite assertions pin a unified message.
         """
-        from slayer.core.keys import (
-            AggregateKey,
-            ArithmeticKey,
-            BetweenKey,
-            ColumnKey,
-            ColumnSqlKey,
-            InKey,
-            ScalarCallKey,
-            TimeTruncKey,
-            TransformKey,
-        )
 
         # 7b.11 lifted these — placeholder set for future slices.
         deferred: set = set()
@@ -2302,8 +2294,6 @@ class SQLGenerator:
         are owned by the combined SELECT instead, which resolves each operand
         to its CTE-qualified column.
         """
-        from slayer.core.keys import AggregateKey as _AggKey
-        from slayer.engine.binding import walk_value_keys
 
         remote_slot_ids = {
             p.aggregate_slot_id
@@ -2313,7 +2303,7 @@ class SQLGenerator:
             for p in planned_query.windowed_aggregate_plans
         }
         for node in walk_value_keys(key):
-            if not isinstance(node, _AggKey):
+            if not isinstance(node, AggregateKey):
                 continue
             if getattr(node.source, "path", ()):
                 return True  # cross-model source, even without a plan yet
@@ -2351,18 +2341,6 @@ class SQLGenerator:
         BY and silently change query grain). Composites still recurse so
         their AggregateKey operands surface.
         """
-        from slayer.core.keys import (
-            AggregateKey,
-            ArithmeticKey,
-            BetweenKey,
-            ColumnKey,
-            ColumnSqlKey,
-            InKey,
-            Phase,
-            ScalarCallKey,
-            TimeTruncKey,
-            TransformKey,
-        )
 
         if aggregates_only:
             base_kinds: Tuple[type, ...] = (AggregateKey,)
@@ -2401,8 +2379,8 @@ class SQLGenerator:
                         a,
                         (
                             TransformKey, ArithmeticKey, ScalarCallKey,
-                            BetweenKey, InKey, ColumnKey, ColumnSqlKey,
-                            TimeTruncKey, AggregateKey,
+                            BetweenKey, InKey, ColumnKey,
+                            ColumnSqlKey, TimeTruncKey, AggregateKey,
                         ),
                     ):
                         _collect_from(a)
@@ -2504,17 +2482,6 @@ class SQLGenerator:
         reference (``input`` + ``partition_keys`` + ``time_key``) has
         an alias materialised in a prior CTE.
         """
-        from slayer.core.keys import (
-            AggregateKey,
-            ArithmeticKey,
-            BetweenKey,
-            ColumnKey,
-            ColumnSqlKey,
-            InKey,
-            ScalarCallKey,
-            TimeTruncKey,
-            TransformKey,
-        )
 
         slotted_kinds = (
             ColumnKey, ColumnSqlKey, TimeTruncKey, AggregateKey, TransformKey,
@@ -2607,14 +2574,6 @@ class SQLGenerator:
         sub-pass: their inputs are owned by the per-plan ``_cm_*`` CTE
         (Stage 4 / DEV-1708). Recurses into composite AGGREGATE keys.
         """
-        from slayer.core.keys import (
-            AggregateKey,
-            ArithmeticKey,
-            ColumnKey,
-            ColumnSqlKey,
-            Phase,
-            ScalarCallKey,
-        )
 
         resolved: "Dict[Any, Dict[str, ResolvedAggKwarg]]" = {}
 
@@ -2737,6 +2696,29 @@ class SQLGenerator:
             allocator=allocator,
         )
 
+    def _render_computed_dims_via_scope(
+        self, *, base_render_order, slots_by_id, scope,
+    ) -> Dict[str, exp.Expression]:
+        """Render ROW-phase computed (expression) dimensions through the HOST
+        scope BEFORE the FROM is built, so a join the expression crosses
+        registers into ``scope.join_paths`` (DEV-1740). Returns the rendered
+        expr per slot id; the base-SELECT branch reads it instead of
+        re-rendering."""
+
+        out: Dict[str, exp.Expression] = {}
+        for sid in base_render_order:
+            slot = slots_by_id[sid]
+            if (
+                slot.phase == Phase.ROW
+                and slot.is_dimension
+                and isinstance(slot.key, (ScalarCallKey, ArithmeticKey))
+            ):
+                out[sid] = render_value_key(
+                    key=slot.key,
+                    ctx=RenderContext(scope=scope, dialect=self._dialect),
+                )
+        return out
+
     def _resolve_agg_kwargs_for_key(
         self, *, key, source_model, source_relation: str, bundle,
     ) -> "Optional[Dict[str, ResolvedAggKwarg]]":
@@ -2752,7 +2734,6 @@ class SQLGenerator:
         (the HAVING aggregate is also a ``base_render_order`` slot), so the
         throwaway scope's own ``join_paths`` are intentionally discarded.
         """
-        from slayer.core.keys import ColumnKey, ColumnSqlKey
 
         kwargs = getattr(key, "kwargs", None)
         if bundle is None or not kwargs:
@@ -2796,16 +2777,6 @@ class SQLGenerator:
         cross-model orchestrator so the ``_base`` CTE omits AGGREGATE
         slots that live in a per-plan ``_cm_*`` CTE.
         """
-        from slayer.core.enums import TimeGranularity
-        from slayer.core.keys import (
-            AggregateKey,
-            ArithmeticKey,
-            ColumnKey,
-            ColumnSqlKey,
-            Phase,
-            ScalarCallKey,
-            TimeTruncKey,
-        )
 
         # DEV-1706 Stage 2: the host base is a single scope; every join-crossing
         # ref registers its path into ``host_scope.join_paths`` as a side effect
@@ -2844,6 +2815,15 @@ class SQLGenerator:
             source_relation=source_relation, source_model=source_model,
             bundle=bundle, scope=host_scope,
             order_slot_ids=[e.slot_id for e in planned_query.order],
+        )
+        # DEV-1740: pre-render computed (expression) dimensions through the
+        # HOST scope (position 2.5) so a join their expression crosses is
+        # registered before the FROM is built — a throwaway frame here dropped
+        # the customers join for ``upper(customers.tier)``.
+        computed_dim_expr_by_sid = self._render_computed_dims_via_scope(
+            base_render_order=base_render_order,
+            slots_by_id=slots_by_id,
+            scope=host_scope,
         )
         # WHERE-phase filters referencing joined columns (direct, derived, or
         # Mode-A ``__`` paths) register their joins into the scope too (position
@@ -2950,17 +2930,25 @@ class SQLGenerator:
                     select_columns.append(col_expr.copy().as_(full_alias))
                     group_by_keys.setdefault(sid, col_expr)
                     _record_alias(sid, full_alias)
+                elif isinstance(key, (ScalarCallKey, ArithmeticKey)) and slot.is_dimension:
+                    # DEV-1740: a computed (expression) dimension — rendered
+                    # through the host scope in the pre-pass above (so a
+                    # crossed join reached the FROM); GROUP BY the expression.
+                    dim_expr = computed_dim_expr_by_sid[sid]
+                    select_columns.append(dim_expr.copy().as_(full_alias))
+                    group_by_keys.setdefault(sid, dim_expr)
+                    _record_alias(sid, full_alias)
                 elif isinstance(key, (ScalarCallKey, ArithmeticKey)):
                     # DEV-1576 / DEV-1717: a ROW-phase composite here is a
                     # non-aggregating measure expression (a bare column, or
                     # arithmetic / scalar-call over bare columns such as
                     # ``round(amount, 2)`` / ``abs(amount)`` / ``amount + 1``).
-                    # Dimensions are ColumnKey / TimeTruncKey / ColumnSqlKey,
-                    # already handled above; the only way to reach here with a
-                    # composite key is a measure that never aggregates. Raise
-                    # the same actionable "Bare measure name" error the
-                    # enrich_query path raises rather than leaking an internal
-                    # NotImplementedError.
+                    # Dimensions are ColumnKey / TimeTruncKey / ColumnSqlKey /
+                    # a computed dimension (handled above); the only way to reach
+                    # here with a composite key is a measure that never
+                    # aggregates. Raise the same actionable "Bare measure name"
+                    # error the enrich_query path raises rather than leaking an
+                    # internal NotImplementedError.
                     bare = _first_bare_column_name(key) or full_alias
                     raise ValueError(
                         f"'{bare}' needs an aggregation inside an expression. "
@@ -3072,7 +3060,6 @@ class SQLGenerator:
         of any other type (first/last never takes a leading non-column
         positional).
         """
-        from slayer.core.keys import ColumnKey, ColumnSqlKey
 
         if key.agg not in ("first", "last"):
             return None
@@ -3134,7 +3121,6 @@ class SQLGenerator:
         is grouped at the host grain and LEFT-JOINed back to ``_base`` by the
         caller. Returns ``(cte_sql, grain_aliases)``.
         """
-        from slayer.core.keys import AggregateKey
 
         key = agg_slot.key
         assert isinstance(key, AggregateKey)
@@ -3342,8 +3328,6 @@ class SQLGenerator:
         effect here rather than a separate pass (Law 1), so the CTE's FROM can
         never be missing one.
         """
-        from slayer.core.enums import TimeGranularity
-        from slayer.core.keys import ColumnKey, ColumnSqlKey, TimeTruncKey
 
         def _register(expr: exp.Expression, path: Tuple[str, ...]) -> None:
             if path:
@@ -3401,7 +3385,6 @@ class SQLGenerator:
         decide — and would keep the residual-path raise alive on a path that no
         longer has the limitation it describes.
         """
-        from slayer.core.keys import ColumnKey, ColumnSqlKey, StarKey
 
         source = key.source
         if isinstance(source, StarKey):
@@ -3464,7 +3447,6 @@ class SQLGenerator:
         rn-suffix scheme that used to disambiguate several rankings sharing one
         scope has nothing left to disambiguate.
         """
-        from slayer.core.keys import AggregateKey, reroot_aggregate_key
 
         key = agg_slot.key
         if not isinstance(key, AggregateKey):
@@ -3728,8 +3710,6 @@ class SQLGenerator:
         mode is loud. Most acceptance / parity tests don't exercise that
         combination.
         """
-        from slayer.core.keys import AggregateKey, Phase
-        from slayer.engine.binding import walk_value_keys
 
         source_model = bundle.source_model
         source_relation = planned_query.source_relation
@@ -3796,11 +3776,7 @@ class SQLGenerator:
         # adjacent composites). Walk both, but skip pure-leaf
         # ``AggregateKey`` slots — those have their own routing via
         # ``cma_slot_ids`` and ``_cm_*`` CTEs.
-        from slayer.core.keys import (
-            ArithmeticKey as _ArithKey,
-            ScalarCallKey as _ScalarKey,
-        )
-        composite_kinds = (_ArithKey, _ScalarKey)
+        composite_kinds = (ArithmeticKey, ScalarCallKey)
         outer_composite_slot_ids: Set[str] = set()
         # A composite slot routes to the outer combined SELECT when it is
         # referenced by EITHER the public projection OR an ORDER BY entry —
@@ -4872,7 +4848,6 @@ class SQLGenerator:
         sets it to the host name). A local inner (no plan) or host-rooted inner
         renders; ``consecutive_periods`` never re-aggregates and is exempt.
         """
-        from slayer.core.keys import TransformKey
 
         target_rooted_agg_slot_ids = {
             p.aggregate_slot_id
@@ -5255,13 +5230,6 @@ class SQLGenerator:
         ``plan.having_filter_ids`` / ``plan.target_model_filters`` so
         the CTE renders each route without re-classifying.
         """
-        from slayer.core.enums import TimeGranularity
-        from slayer.core.keys import (
-            ColumnKey,
-            ColumnSqlKey,
-            Phase,
-            TimeTruncKey,
-        )
 
         target_model_name = plan.target_model
         target_model = bundle.get_referenced_model(target_model_name)
@@ -5348,10 +5316,9 @@ class SQLGenerator:
             # the target relation. A derived (ColumnSqlKey) column — base dim
             # or time dimension — expands its Column.sql rooted at the target;
             # a base column emits the bare ``target.leaf``.
-            from slayer.core.keys import ColumnSqlKey as _ColumnSqlKey
 
             grain_column = key.column if isinstance(key, TimeTruncKey) else key
-            if isinstance(grain_column, _ColumnSqlKey):
+            if isinstance(grain_column, ColumnSqlKey):
                 # DEV-1728: a derived (ColumnSqlKey) grain — plain dimension OR
                 # time dimension — expands its Column.sql rooted at the target and
                 # renders here. (The DEV-1708 raise for a PLAIN derived grain is
@@ -5659,15 +5626,6 @@ class SQLGenerator:
         the path it crosses; free-SQL ``column_filter`` predicates keep the
         quote-tolerant dual-scan of the Mode-A door (``ScopeFrame.enter_predicate``).
         """
-        from slayer.core.keys import (
-            AggregateKey,
-            ArithmeticKey,
-            BetweenKey,
-            ColumnKey,
-            ColumnSqlKey,
-            InKey,
-            ScalarCallKey,
-        )
 
         if not filter_ids:
             return
@@ -5720,7 +5678,6 @@ class SQLGenerator:
         elsewhere and had its refs resolved in the wrong namespace. Now the
         scope is the only namespace, and the question cannot arise.
         """
-        from slayer.core.keys import ColumnKey, ColumnSqlKey
 
         cross_model_path = getattr(agg_key.source, "path", ())
         local_agg = reroot_aggregate_key(agg_key, target_path=cross_model_path)
@@ -5750,7 +5707,6 @@ class SQLGenerator:
         guard is unreachable for binder keys (``model == path[-1]``,
         ``target_relation == target_model.name``) so it fails closed on
         inconsistent hand-built / deserialized ones."""
-        from slayer.core.keys import ColumnKey, ColumnSqlKey
 
         if isinstance(key, ColumnKey):
             if key.path and key.path[-1] != target_relation:
@@ -5788,12 +5744,6 @@ class SQLGenerator:
         Column leaves reroot via :meth:`_reroot_routed_leaf`; composites rebuild
         with rerooted children. ``AggregateKey`` leaves are left intact — the
         HAVING seam reroots them via ``reroot_aggregate_key``."""
-        from slayer.core.keys import (
-            ArithmeticKey,
-            BetweenKey,
-            InKey,
-            ScalarCallKey,
-        )
 
         leaf = self._reroot_routed_leaf(
             key, target_relation=target_relation, target_model=target_model,
@@ -5854,11 +5804,10 @@ class SQLGenerator:
         the first/last variant stays on the legacy renderer (escape hatch)."""
 
         def build(agg_key, _slot, _having_full_alias) -> exp.Expression:
-            from slayer.engine.planned import ValueSlot as _Slot
 
             cross_model_path = getattr(agg_key.source, "path", ())
             local_agg = reroot_aggregate_key(agg_key, target_path=cross_model_path)
-            tmp_slot = _Slot(
+            tmp_slot = ValueSlot(
                 id="_cte_having_tmp", key=local_agg, declared_name="_having_agg",
                 phase=agg_key.phase, type=None,
             )
@@ -5954,14 +5903,6 @@ class SQLGenerator:
         the single owner of the dotted form; response_meta mirrors this
         via the same builder so the two producers cannot drift.
         """
-        from slayer.core.keys import (
-            ColumnKey,
-            ColumnSqlKey,
-            Phase,
-            TimeTruncKey,
-            column_leaf,
-            column_path,
-        )
 
         if slot.phase == Phase.ROW:
             key = slot.key
@@ -6016,7 +5957,6 @@ class SQLGenerator:
         ORDER BY emits still needs its join bound in the base FROM — Law 1
         applies to a sort key exactly as it does to a filter ref.
         """
-        from slayer.core.keys import ColumnKey, Phase, TimeTruncKey
 
         seen: set = set()
         ordered: List[Tuple[str, ...]] = []
@@ -6236,11 +6176,6 @@ class SQLGenerator:
         only`` (NOT time dimensions) for non-rank ops; rank-family defaults to
         no PARTITION BY.
         """
-        from slayer.core.keys import (
-            ColumnKey,
-            Phase,
-            TransformKey,
-        )
 
         key = slot.key
         if not isinstance(key, TransformKey):
@@ -6257,12 +6192,8 @@ class SQLGenerator:
         # aliases — the Kahn readiness check (``_transform_layer_deps_ready``
         # → ``_ready(tk.input)``) guarantees every operand slot is in a
         # prior CTE before this layer runs, so no extra inner CTE is needed.
-        from slayer.core.keys import (
-            ArithmeticKey as _ArithKey,
-            ScalarCallKey as _ScalarKey,
-        )
 
-        if isinstance(key.input, (_ArithKey, _ScalarKey)):
+        if isinstance(key.input, (ArithmeticKey, ScalarCallKey)):
             measure = render_value_key(
                 key=key.input,
                 ctx=self._alias_render_ctx(
@@ -6377,7 +6308,6 @@ class SQLGenerator:
             """Reject bool / non-integral periods; accept int / integral
             Decimal. Mirrors the strict validation the binder applies to
             ``ntile.n`` and ``time_shift.periods``."""
-            from decimal import Decimal
             if isinstance(raw, bool):
                 raise ValueError(
                     f"transform {op!r} kwarg {kw!r} must be an integer; "
@@ -6473,7 +6403,6 @@ class SQLGenerator:
         composition uses the same operator dispatch as the WHERE
         renderer in ``render_value_key``.
         """
-        from slayer.core.keys import Phase
 
         out: List[str] = []
         for fp in planned_query.filters_by_phase:
@@ -6608,7 +6537,6 @@ class SQLGenerator:
         needs is emitted. Filters over the same join set the base already
         applies keep population parity between ``_base`` and the shifted CTE.
         """
-        from slayer.core.keys import Phase
 
         out: List[str] = []
         crossed_paths: List[Tuple[str, ...]] = []
@@ -6759,14 +6687,6 @@ class SQLGenerator:
         source_relation = chain.source_relation
         planned_query = render.planned_query
         bundle = render.bundle
-        from slayer.core.enums import TimeGranularity
-        from slayer.core.keys import (
-            AggregateKey,
-            ColumnKey,
-            ColumnSqlKey,
-            TimeTruncKey,
-            TransformKey,
-        )
 
         key = slot.key
         if not isinstance(key, TransformKey) or key.op != "time_shift":
@@ -6798,7 +6718,6 @@ class SQLGenerator:
                 f"time_shift requires 'periods' kwarg; planner gap "
                 f"(slot id={slot.id!r}).",
             )
-        from decimal import Decimal
         if isinstance(periods_raw, bool):
             raise ValueError(
                 f"time_shift periods must be an integer; got bool {periods_raw!r}",
@@ -6863,7 +6782,6 @@ class SQLGenerator:
         # (a second time dim, distinct from the shift axis) — plus any explicit
         # ``partition_keys`` (C6). The shift axis itself is the time-join
         # column, excluded by slot id.
-        from slayer.core.keys import Phase as _Phase
         partition_specs: list[tuple[str, str, exp.Expression]] = []
         # entries: (slot_id, base_alias, resolved_expr_for_select_and_group_by)
         seen_partition_sids: set = set()
@@ -6881,10 +6799,19 @@ class SQLGenerator:
                 )
             if isinstance(pk_obj, (ColumnKey, ColumnSqlKey)):
                 return shifted_scope.resolve(pk_obj)
+            if isinstance(pk_obj, (ScalarCallKey, ArithmeticKey)):
+                # DEV-1740: a computed (expression) dimension — render through
+                # the shifted scope so its leaf columns resolve (and any
+                # crossed join registers) inside the shifted CTE.
+                return render_value_key(
+                    key=pk_obj,
+                    ctx=RenderContext(scope=shifted_scope, dialect=self._dialect),
+                )
             raise NotImplementedError(
                 f"time_shift partition on {type(pk_obj).__name__} is not "
-                f"supported (only column / derived-column / time-dimension "
-                f"partitions render in the shifted CTE). slot id={slot.id!r}.",
+                f"supported (only column / derived-column / time-dimension / "
+                f"computed-dimension partitions render in the shifted CTE). "
+                f"slot id={slot.id!r}.",
             )
 
         def _add_partition(pk_obj, *, where: str) -> None:
@@ -6901,13 +6828,18 @@ class SQLGenerator:
             partition_specs.append((pk_sid, pk_alias, _resolve_partition_expr(pk_obj)))
             seen_partition_sids.add(pk_sid)
 
-        # Auto-include EVERY projected row dimension (column, derived column, or
-        # secondary time dimension); the shift axis is skipped by slot id above.
+        # Auto-include EVERY projected row dimension (column, derived column,
+        # secondary time dimension, or DEV-1740 computed dimension); the shift
+        # axis is skipped by slot id above.
         for sid in planned_query.projection:
             dim_slot = slots_by_id.get(sid)
-            if dim_slot is None or dim_slot.phase != _Phase.ROW:
+            if dim_slot is None or dim_slot.phase != Phase.ROW:
                 continue
-            if not isinstance(dim_slot.key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+            plain = isinstance(dim_slot.key, (ColumnKey, ColumnSqlKey, TimeTruncKey))
+            computed = dim_slot.is_dimension and isinstance(
+                dim_slot.key, (ScalarCallKey, ArithmeticKey),
+            )
+            if not (plain or computed):
                 continue
             _add_partition(dim_slot.key, where="query dimension")
 
@@ -7233,15 +7165,6 @@ class SQLGenerator:
         aliases_by_slot_id = chain.aliases_by_slot_id
         source_relation = chain.source_relation
         planned_query = render.planned_query
-        from slayer.core.keys import (
-            AggregateKey,
-            ArithmeticKey,
-            ColumnKey,
-            ColumnSqlKey,
-            Phase,
-            TimeTruncKey,
-            TransformKey,
-        )
 
         key = slot.key
         if not isinstance(key, TransformKey) or key.op != "consecutive_periods":
@@ -7625,7 +7548,6 @@ class SQLGenerator:
         has already rewritten its sort key to an aggregate wrap, which is
         isolated rather than pulled (DEV-1735 / D9).
         """
-        from slayer.core.keys import ColumnSqlKey, Phase, TimeTruncKey
 
         def _add(path: Tuple[str, ...]) -> None:
             if path:
@@ -7805,7 +7727,6 @@ class SQLGenerator:
           relation for a local derived column, or at the ``__``-path alias
           for a joined one. The DATE_TRUNC is applied by the caller.
         """
-        from slayer.core.keys import ColumnKey, ColumnSqlKey
 
         if isinstance(time_column, ColumnKey):
             return self._joined_or_local_dim_expr(
@@ -7958,7 +7879,6 @@ class SQLGenerator:
         the windowed ``_src`` scope passes the SAME rewritten list it renders, so
         discovery and rendering can never disagree about what the CTE contains.
         """
-        from slayer.core.keys import Phase
 
         skip = skip_filter_ids or set()
         filters = (
@@ -8001,14 +7921,6 @@ class SQLGenerator:
         already emits path prefixes, and ``ColumnKey.path`` prefixes are
         expanded here.
         """
-        from slayer.core.keys import (
-            ArithmeticKey,
-            BetweenKey,
-            ColumnKey,
-            ColumnSqlKey,
-            InKey,
-            ScalarCallKey,
-        )
 
         out: List[Tuple[str, ...]] = []
 
@@ -8129,7 +8041,6 @@ class SQLGenerator:
         (``ColumnKey``) and derived-column (``ColumnSqlKey``) kwarg
         refs go through this gate (CodeRabbit fold-in on PR #144).
         """
-        from slayer.core.keys import ColumnKey, ColumnSqlKey
 
         if not source.path:
             return
@@ -8180,7 +8091,6 @@ class SQLGenerator:
         source) and ``COUNT(col)`` (ColumnKey source with sql=None on a bare
         column) take their distinct branches inside ``_build_agg``.
         """
-        from slayer.core.keys import ColumnKey, ColumnSqlKey, StarKey
 
         # ``slot`` may be ``None`` when this spec is built for a HAVING term
         # whose aggregate isn't a declared projection slot; the result type is
@@ -8342,7 +8252,6 @@ class SQLGenerator:
     ):
         """``filters_override`` (DEV-1732) replaces ``filters_by_phase`` as the
         list being rendered — see ``_effective_src_filters``."""
-        from slayer.core.keys import Phase
 
         skip = skip_filter_ids or set()
         # key -> slot map so a HAVING term's local AggregateKey renders as the
@@ -8566,15 +8475,6 @@ class SQLGenerator:
         ungrouped row column. The walk stops at ``AggregateKey`` /
         ``TransformKey`` (their inner columns are aggregated, not grouped).
         """
-        from slayer.core.keys import (
-            AggregateKey,
-            ArithmeticKey,
-            BetweenKey,
-            ColumnKey,
-            InKey,
-            ScalarCallKey,
-            TransformKey,
-        )
 
         out: List[Any] = []
 
@@ -8749,15 +8649,6 @@ class SQLGenerator:
         (its expansion, provided it crosses no join — a hidden derived column
         never had its join pulled into the base FROM).
         """
-        from slayer.core.keys import (
-            AggregateKey,
-            ArithmeticKey,
-            ColumnKey,
-            ColumnSqlKey,
-            ScalarCallKey,
-            TimeTruncKey,
-            TransformKey,
-        )
 
         # DEV-1733: the EXACT set of hidden key kinds that resolve to a
         # materialised alias. Deliberately enumerated rather than "any hidden

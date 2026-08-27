@@ -110,6 +110,9 @@ class ValueSlot(BaseModel):
     phase: Phase
     label: Optional[str] = None
     type: Optional[DataType] = None
+    # DEV-1740: True for a computed (expression) dimension — a ROW-phase
+    # composite that projects AND groups, distinct from a bare-measure mistake.
+    is_dimension: bool = False
     expression: Optional[BoundExpr] = None
     # DEV-1452 Stage B decision #8 — typed format / description propagated
     # by the planner from the source ``ModelMeasure`` / ``Column`` and
