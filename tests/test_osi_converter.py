@@ -853,6 +853,7 @@ def test_physical_multipart_ref_whose_first_hop_is_not_a_join_is_kept(shop_engin
     result = _convert(shop_engine, doc)
     orders = {m.name: m for m in result.models}["orders"]
     assert "phys" in {c.name for c in orders.columns}
+    assert not _reported(result)  # opaque physical ref: kept AND not flagged
 
 
 def test_cross_model_derived_field_unknown_column_dropped(shop_engine):
