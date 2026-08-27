@@ -31,14 +31,6 @@ from tests._dev1740_fixtures import (
     two_stage_banding,
 )
 
-# The aggregate-then-regroup desugar (grouping by an expression over a
-# partitioned aggregate) is deferred to DEV-1825; these executed-value tests are
-# its acceptance. Un-skip when the regroup primitive lands.
-pytestmark = pytest.mark.skip(
-    reason="B2 aggregate-then-regroup deferred to DEV-1825 (regroup primitive)"
-)
-
-
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def exec_engine(request):
     async for engine in make_exec_engine(request):

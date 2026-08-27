@@ -62,11 +62,39 @@ name it to control the result key (`model.<name>`). A name that collides with an
 existing column or measure is rejected. The name is resolvable from `filters`
 and `order`.
 
-Grouping by an expression **over an aggregate** (e.g. banding cities by whether
-`amount:sum(partition_by=city)` crosses a threshold) is a separate,
-aggregate-then-regroup capability that is not yet available; until it lands,
-such a dimension raises a clear error pointing at the two-stage form (aggregate
-in a first stage, then band and regroup in a `ModelExtension` over it).
+#### Grouping by an expression over an aggregate
+
+A computed dimension may also group by a value derived from an aggregate at a
+**finer grain** than the query — e.g. band cities by whether each city's total
+crosses a threshold, then group by `(region, band)`:
+
+```json
+{
+  "source_model": "orders",
+  "dimensions": [
+    "region",
+    {"expression": "CASE WHEN amount:sum(partition_by=city) > 5000 THEN 1 ELSE 0 END", "name": "band"}
+  ],
+  "measures": [{"formula": "amount:sum", "name": "band_total"}]
+}
+```
+
+The aggregate inside the expression **must** carry
+[`partition_by=`](formulas.md#aggregate-at-a-coarser-grain-partition_by), which
+names the grain it aggregates over (here, `city`). SLayer computes that
+aggregate in a synthesized internal stage, attaches it to the raw rows on the
+partition grain, evaluates the expression per row, then regroups by the query's
+dimensions — so every measure still aggregates the raw rows once (non-additive
+measures like `avg` / `count_distinct` reconcile correctly, and a `NULL`
+partition value keeps its own group). The `partition_by` grain may be any
+groupable key: a query dimension, a finer local column (`city`), a joined path
+(`customers.region_id`), a time bucket, or `[]` for the grand total. A base-row
+filter (`status == 'ok'`) also constrains the partition aggregate; a filter on
+the computed dimension name (`band == 1`) applies after regrouping.
+
+Deferred shapes (raise a clear error citing the follow-up): the partitioned
+aggregate combined with `window=`, on `first` / `last`, over a cross-model
+source, or nested inside a transform.
 
 ### Dim-only queries deduplicate
 

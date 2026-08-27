@@ -58,7 +58,9 @@ from slayer.core.keys import (
     TimeTruncKey,
     TransformKey,
     ValueKey,
+    column_leaf,
     normalize_scalar,
+    substitute_value_keys,
 )
 from slayer.core.models import SlayerModel
 from slayer.core.query import (
@@ -103,6 +105,8 @@ from slayer.engine.planned import (
     OrderScope,
     PlannedQuery,
     RankedAggregatePlan,
+    RegroupAttachPlan,
+    RegroupSubstitution,
     SlotId,
     SrcFilterRewrite,
     TransformLayer,
@@ -126,9 +130,17 @@ from slayer.engine.planning import (
 from slayer.engine.prebound import (
     PreboundQuery,
     StrictQueryCarrier,
+    dimension_key_metadata,
     measure_key_format_description,
     measure_key_type,
     partition_declared_measures,
+)
+from slayer.engine.regroup_planner import (
+    RegroupPlaceholderRegistry,
+    classify_regroup_filter,
+    dimension_partitioned_aggregates,
+    reserved_prefix_columns,
+    substitute_in_bound_filter,
 )
 from slayer.engine.source_bundle import (
     ResolvedSourceBundle,
@@ -1089,12 +1101,18 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         _td_by_source[vk.column] = vk
     _td_key_set = set(_td_by_source.values())
     _available_dims = [dm.declared_name for dm in (*_dim_dms, *_td_dms)]
+    # DEV-1825 — a partitioned aggregate INSIDE a computed dimension declares
+    # the grain of a synthesized producer stage, so its partition_by may be ANY
+    # groupable key (a finer grain than the query), not only a query dimension.
+    # The time-bucket rewrite and multi-granularity guard still apply.
+    _dim_agg_keys = frozenset(dimension_partitioned_aggregates(declared_measures))
 
     def _validate_partition_keys(key: ValueKey) -> frozenset:
         label = (
             f"Transform '{key.op}'" if isinstance(key, TransformKey)
             else f"Aggregation '{key.agg}'"
         )
+        lenient = key in _dim_agg_keys
         new_pks = []
         for pk in key.partition_keys or ():
             if pk in _dim_key_set or pk in _td_key_set:
@@ -1108,6 +1126,8 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                 )
             elif pk in _td_by_source:
                 new_pks.append(_td_by_source[pk])  # td source col -> bucket
+            elif lenient:
+                new_pks.append(pk)          # finer-grain producer key (DEV-1825)
             else:
                 raise ValueError(
                     f"{label}: partition_by column "
@@ -1140,6 +1160,260 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         offset=query.offset,
         distinct_dimension_values=query.distinct_dimension_values,
     )
+
+
+# ---------------------------------------------------------------------------
+# DEV-1825 — regroup desugar: synthesize a producer stage per partition set.
+# ---------------------------------------------------------------------------
+
+
+def _regroup_grain_name(pk: ValueKey) -> str:
+    """A producer output column name for a partition key (its join-back key)."""
+    if isinstance(pk, TimeTruncKey):
+        return f"{column_leaf(pk.column)}_{pk.granularity}"
+    path = tuple(getattr(pk, "path", ()) or ())
+    leaf = getattr(pk, "leaf", None) or getattr(pk, "column_name", None) or "grain"
+    return "__".join([*path, leaf])
+
+
+def _regroup_partition_order(pks: FrozenSet[ValueKey]) -> List[ValueKey]:
+    """Deterministic member order: plain dimensions first, then time buckets."""
+    return sorted(
+        pks, key=lambda k: (isinstance(k, TimeTruncKey), _regroup_grain_name(k), repr(k)),
+    )
+
+
+def _regroup_producer_prebound(
+    *,
+    pks: FrozenSet[ValueKey],
+    aggs: List[AggregateKey],
+    model: Optional[SlayerModel],
+    bundle: ResolvedSourceBundle,
+    inherited: List[BoundFilter],
+    n_date_range: int,
+) -> Tuple[PreboundQuery, List[ValueKey]]:
+    """The producer's bind product: grain from the partition keys, one measure
+    per consumed aggregate (verbatim, ``partition_keys`` retained so it renders
+    as a plain grouped aggregate at this grain), the base-row filters inherited.
+    Returns the prebound plus the ordered partition keys (for join-pair building).
+    """
+    ordered = _regroup_partition_order(pks)
+    dims = [pk for pk in ordered if not isinstance(pk, TimeTruncKey)]
+    tds = [pk for pk in ordered if isinstance(pk, TimeTruncKey)]
+    grain_dms: List[DeclaredMeasure] = []
+    for pk in [*dims, *tds]:
+        if model is not None:
+            d_type, d_fmt, d_desc = dimension_key_metadata(
+                model=model, key=pk, bundle=bundle,
+            )
+        else:
+            d_type, d_fmt, d_desc = None, None, None
+        name = _regroup_grain_name(pk)
+        grain_dms.append(DeclaredMeasure(
+            bound=BinderBoundExpr(value_key=pk),
+            declared_name=name, public_name=name,
+            type=d_type, format=d_fmt, description=d_desc,
+        ))
+    agg_dms: List[DeclaredMeasure] = []
+    for agg in aggs:
+        canonical = canonical_aggregate_alias(agg, profile="stage_formula") or agg.agg
+        if model is not None:
+            a_type = measure_key_type(model=model, key=agg)
+            a_fmt, a_desc = measure_key_format_description(model=model, key=agg)
+        else:
+            a_type, a_fmt, a_desc = None, None, None
+        agg_dms.append(DeclaredMeasure(
+            bound=BinderBoundExpr(value_key=agg),
+            declared_name=canonical, public_name=canonical,
+            type=a_type, format=a_fmt, description=a_desc,
+        ))
+    prebound = PreboundQuery(
+        declared_measures=[*grain_dms, *agg_dms],
+        bound_filters=list(inherited),
+        bound_filter_texts=[None] * len(inherited),
+        n_date_range=n_date_range,
+        order_specs=[],
+        main_time_key=None,
+        n_dims=len(dims),
+        n_time_dimensions=len(tds),
+        distinct_dimension_values=True,
+    )
+    return prebound, ordered
+
+
+def _regroup_inherited_filters(
+    prebound: PreboundQuery, dim_agg_set: FrozenSet[AggregateKey],
+) -> Tuple[List[BoundFilter], int]:
+    """The base-row filters to copy into every producer, date-range bounds
+    first (so ``n_date_range`` still slices them). Raises on a mixed predicate."""
+    date_bounds: List[BoundFilter] = []
+    others: List[BoundFilter] = []
+    for idx, bf in enumerate(prebound.bound_filters):
+        if classify_regroup_filter(bf, dim_agg_set) != "row_inherit":
+            continue
+        if idx < prebound.n_date_range:
+            date_bounds.append(bf)
+        else:
+            others.append(bf)
+    return [*date_bounds, *others], len(date_bounds)
+
+
+def _find_regroup_slot(slots: List[ValueSlot], key: ValueKey, *, role: str) -> SlotId:
+    for slot in slots:
+        if slot.key == key:
+            return slot.id
+    raise ValueError(
+        f"Regroup producer plan is missing the {role} slot for "
+        f"{type(key).__name__}; synthesis and planning disagree on its grain.",
+    )
+
+
+def _plan_dimension_regroups(
+    *,
+    prebound: PreboundQuery,
+    scope: Union[ModelScope, StageSchema],
+    bundle: ResolvedSourceBundle,
+    cross_model_planner: CrossModelPlanner,
+    stage_schemas: Dict[str, StageSchema],
+    producer_source_model: Optional[str],
+) -> Optional[Tuple[PreboundQuery, List[RegroupAttachPlan]]]:
+    """Discover partitioned aggregates inside computed dimensions, synthesize a
+    producer stage per distinct partition set, and rewrite the prebound so each
+    aggregate becomes a reserved-leaf placeholder resolving to the producer's
+    attached output. ``None`` when there is nothing to regroup (the zero-cost
+    common case, and the producer-recursion terminator)."""
+    dim_aggs = dimension_partitioned_aggregates(prebound.declared_measures)
+    if not dim_aggs:
+        return None
+    # Codex F4 — a real column sharing the reserved placeholder prefix would
+    # shadow a placeholder at render; reject it while a regroup is active.
+    producer_model = scope.source_model if isinstance(scope, ModelScope) else None
+    reserved = reserved_prefix_columns(producer_model)
+    if reserved:
+        raise ValueError(
+            f"Column(s) {reserved!r} use the reserved '__regroup__' prefix, which "
+            f"collides with the regroup primitive's placeholders. Rename them."
+        )
+    # Codex F1 — a joined aggregate SOURCE would need a target-rooted producer
+    # (its own nested WITH); deferred with the DEV-1824 combos.
+    for agg in dim_aggs:
+        if getattr(agg.source, "path", ()):
+            raise NotImplementedError(
+                "A cross-model aggregate source inside a computed dimension "
+                "(e.g. 'customers.spend:sum(partition_by=...)') is not yet "
+                "supported (DEV-1824); the partitioned aggregate must be local "
+                "to the query's source."
+            )
+    registry = RegroupPlaceholderRegistry()
+    mapping: Dict[ValueKey, ValueKey] = {
+        agg: registry.placeholder_for(agg) for agg in dim_aggs
+    }
+    dim_agg_set = frozenset(dim_aggs)
+
+    inherited, n_inherited_date = _regroup_inherited_filters(prebound, dim_agg_set)
+
+    groups: Dict[FrozenSet[ValueKey], List[AggregateKey]] = {}
+    for agg in dim_aggs:
+        groups.setdefault(agg.partition_keys, []).append(agg)
+
+    attaches: List[RegroupAttachPlan] = []
+    for pks, aggs in groups.items():
+        producer_prebound, ordered_pks = _regroup_producer_prebound(
+            pks=pks, aggs=aggs, model=producer_model, bundle=bundle,
+            inherited=inherited, n_date_range=n_inherited_date,
+        )
+        producer_plan = plan_query(
+            query=StrictQueryCarrier(
+                source_model=producer_source_model, prebound=producer_prebound,
+            ),
+            bundle=bundle,
+            scope=scope,
+            cross_model_planner=cross_model_planner,
+            stage_schemas=stage_schemas,
+            disable_host_rooted_isolation=True,
+            prebound=producer_prebound,
+        )
+        if (
+            producer_plan.cross_model_aggregate_plans
+            or producer_plan.windowed_aggregate_plans
+            or producer_plan.ranked_aggregate_plans
+            or producer_plan.transform_layers
+            or producer_plan.regroup_attach_plans
+        ):
+            raise NotImplementedError(
+                "A partitioned aggregate inside a computed dimension whose "
+                "producer itself needs an isolated CTE (cross-model / windowed / "
+                "ranked / transform) is not yet supported (DEV-1824); it needs "
+                "the producer CTE-hoist."
+            )
+        substitutions = [
+            RegroupSubstitution(
+                placeholder=mapping[agg],
+                producer_slot_id=_find_regroup_slot(
+                    producer_plan.aggregate_slots, agg, role="aggregate",
+                ),
+                original_key=agg,
+            )
+            for agg in aggs
+        ]
+        join_pairs = [
+            (
+                pk,
+                _find_regroup_slot(producer_plan.row_slots, pk, role="grain"),
+            )
+            for pk in ordered_pks
+        ]
+        attaches.append(RegroupAttachPlan(
+            producer_plan=producer_plan,
+            alias_hint=(
+                canonical_aggregate_alias(aggs[0], profile="stage_formula")
+                or aggs[0].agg
+            ),
+            attach_phase="row",
+            join_pairs=join_pairs,
+            substitutions=substitutions,
+            partition_display=[_regroup_grain_name(pk) for pk in ordered_pks],
+        ))
+
+    rewritten = PreboundQuery(
+        declared_measures=[
+            DeclaredMeasure(
+                bound=BinderBoundExpr(
+                    value_key=substitute_value_keys(dm.bound.value_key, mapping),
+                ),
+                declared_name=dm.declared_name,
+                public_name=dm.public_name,
+                label=dm.label,
+                canonical_alias=dm.canonical_alias,
+                type=dm.type,
+                format=dm.format,
+                description=dm.description,
+                is_dimension=dm.is_dimension,
+            )
+            for dm in prebound.declared_measures
+        ],
+        bound_filters=[
+            substitute_in_bound_filter(bf, mapping) for bf in prebound.bound_filters
+        ],
+        bound_filter_texts=list(prebound.bound_filter_texts),
+        n_date_range=prebound.n_date_range,
+        order_specs=[
+            OrderSpec(
+                bound=BinderBoundExpr(
+                    value_key=substitute_value_keys(sp.bound.value_key, mapping),
+                ),
+                direction=sp.direction,
+            )
+            for sp in prebound.order_specs
+        ],
+        main_time_key=prebound.main_time_key,
+        n_dims=prebound.n_dims,
+        n_time_dimensions=prebound.n_time_dimensions,
+        limit=prebound.limit,
+        offset=prebound.offset,
+        distinct_dimension_values=prebound.distinct_dimension_values,
+    )
+    return rewritten, attaches
 
 
 def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-1503 addition is a small trigger-predicate branch + a kwarg pass-through; the function's pre-existing complexity is owned by the multi-stage scope / bundle / projection / filter-routing wiring it orchestrates and is tracked as a separate refactor.
@@ -1211,6 +1485,32 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     n_dims = prebound.n_dims
     n_tds = prebound.n_time_dimensions
     distinct_dimension_values = prebound.distinct_dimension_values
+
+    # DEV-1825 — desugar computed dimensions over partitioned aggregates into
+    # synthesized producer stages + reserved-leaf placeholders. Runs BEFORE
+    # ``_guard_partitioned_measures`` so the substituted trees (no partitioned
+    # aggregate left in the dimension / its filters) pass its filter guard,
+    # while a genuine partitioned MEASURE still reaches its DEV-1739 path.
+    regroup_attach_plans: List[RegroupAttachPlan] = []
+    regroup_result = _plan_dimension_regroups(
+        prebound=prebound, scope=scope, bundle=bundle,
+        cross_model_planner=cross_model_planner, stage_schemas=stage_schemas,
+        producer_source_model=(
+            query.source_model if isinstance(query.source_model, str)
+            else (render_source_model.name if render_source_model is not None else None)
+        ),
+    )
+    if regroup_result is not None:
+        prebound, regroup_attach_plans = regroup_result
+        declared_measures = list(prebound.declared_measures)
+        bound_filters = list(prebound.bound_filters)
+        bound_filter_texts = list(prebound.bound_filter_texts)
+        n_date_range = prebound.n_date_range
+        order_specs = list(prebound.order_specs)
+        active_td_key = prebound.main_time_key
+        n_dims = prebound.n_dims
+        n_tds = prebound.n_time_dimensions
+        distinct_dimension_values = prebound.distinct_dimension_values
 
     # SlayerModel.filters — Mode-A SQL, always-applied WHERE. Scope-derived
     # (see ``bind_query_inputs``), so a pre-bound sub-plan picks up its OWN
@@ -1749,6 +2049,7 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         cross_model_aggregate_plans=cross_model_plans,
         windowed_aggregate_plans=windowed_plans,
         ranked_aggregate_plans=ranked_plans,
+        regroup_attach_plans=regroup_attach_plans,
         combined_expression_slots=combined_slots,
         transform_layers=transform_layers,
         filters_by_phase=filters_by_phase,
@@ -2368,13 +2669,8 @@ def _guard_computed_dimension(*, d: ComputedDimension, bound, query: SlayerQuery
                 "window= combined with a computed dimension is not yet supported "
                 "(DEV-1824)."
             )
-    raise NotImplementedError(
-        f"Grouping by computed dimension {d.name!r} — an expression over a "
-        f"partitioned aggregate — requires the aggregate-then-regroup path, "
-        f"which is not yet wired (DEV-1825). Use the two-stage form for now: "
-        f"aggregate at the partition grain in a first stage, then band and "
-        f"regroup in a ModelExtension over it."
-    )
+    # A valid partitioned-aggregate dimension is desugared into a synthesized
+    # producer stage by ``_plan_dimension_regroups`` (DEV-1825).
 
 
 def _declared_computed_dimension(

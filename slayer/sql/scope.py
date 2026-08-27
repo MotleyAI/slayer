@@ -21,7 +21,7 @@ existing engine-layer expansion/scan helpers (D-G wrap-and-reuse).
 
 from __future__ import annotations
 
-from typing import List, Literal, Optional, Tuple, Union
+from typing import Dict, List, Literal, Optional, Tuple, Union
 
 import sqlglot
 from pydantic import BaseModel, ConfigDict, Field
@@ -30,7 +30,7 @@ from sqlglot.errors import ParseError
 
 from slayer.core.enums import DataType
 from slayer.core.errors import ModeASqlParseError, UnknownReferenceError
-from slayer.core.keys import ColumnKey, ColumnSqlKey
+from slayer.core.keys import REGROUP_LEAF_PREFIX, ColumnKey, ColumnSqlKey
 from slayer.core.models import SlayerModel
 from slayer.engine.column_expansion import (
     collect_root_scope_joined_paths,
@@ -109,6 +109,10 @@ class ScopeFrame(BaseModel):
     allocator: AliasAllocator
     join_paths: _OrderedPathSet = Field(default_factory=_OrderedPathSet)
     materializations: List[Materialization] = Field(default_factory=list)
+    # DEV-1825 — reserved-leaf placeholder → its rendered column on an attached
+    # regroup producer CTE. Resolved by EXACT membership before ordinary column
+    # anchoring; a prefixed leaf that misses this registry is fail-closed.
+    attached_columns: Dict[ColumnKey, exp.Expression] = Field(default_factory=dict)
 
     # ---- Law 1 -------------------------------------------------------------
     def resolve(self, ref: Ref, *, consumer: "ScopeFrame | None" = None) -> exp.Expression:
@@ -291,6 +295,19 @@ class ScopeFrame(BaseModel):
 
     def _anchor(self, ref: Ref) -> exp.Expression:
         if isinstance(ref, ColumnKey):
+            # DEV-1825: a regroup placeholder resolves from the attach registry
+            # by EXACT membership; a reserved-prefix leaf that misses is
+            # fail-closed rather than emitting a phantom ``__regroup__`` column.
+            attached = self.attached_columns.get(ref)
+            if attached is not None:
+                return attached.copy()
+            if ref.leaf.startswith(REGROUP_LEAF_PREFIX):
+                raise ValueError(
+                    f"Regroup placeholder {ref.leaf!r} has no attached producer "
+                    f"column in this scope. A __regroup__ leaf must resolve "
+                    f"through the attach registry; reaching column anchoring "
+                    f"means the placeholder escaped its producer's join scope.",
+                )
             alias = self.root_relation if not ref.path else "__".join(ref.path)
             return exp.Column(
                 this=exp.to_identifier(ref.leaf),
