@@ -29,7 +29,7 @@ generated.
 ## Two ways in
 
 - **[Notebook — Python](duckdb_python_nb.ipynb)** — everything in-process through
-  the SLayer Python client.
-- **[Notebook — MCP](duckdb_mcp_nb.ipynb)** — the same demo the way an AI agent
-  sees it: start `slayer mcp` from the command line and drive it over its
-  Model Context Protocol tools.
+  the SLayer Python client, with live schema auto-ingestion.
+- **[Notebook — CLI](duckdb_cli_nb.ipynb)** — the same demo driven entirely from
+  the `slayer` command line: register the datasource, define a one-model semantic
+  layer over the remote CSV, and query it with `slayer query` (JSON in, JSON out).

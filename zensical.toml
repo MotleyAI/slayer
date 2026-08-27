@@ -114,7 +114,7 @@ nav = [
     { "DuckDB" = [
       "examples/15_duckdb/duckdb.md",
       { "Notebook (Python)" = "examples/15_duckdb/duckdb_python_nb.ipynb" },
-      { "Notebook (MCP)" = "examples/15_duckdb/duckdb_mcp_nb.ipynb" },
+      { "Notebook (CLI)" = "examples/15_duckdb/duckdb_cli_nb.ipynb" },
     ]},
     { "Schema Drift (worked example)" = "examples/schema-drift.md" },
   ]},

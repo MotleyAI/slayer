@@ -12,12 +12,10 @@ leak into another).
 import re
 import shutil
 import socket
+import sys
 from pathlib import Path
 
 import pytest
-
-nbclient = pytest.importorskip("nbclient")
-nbformat = pytest.importorskip("nbformat")
 
 from slayer.async_utils import run_sync
 from slayer.demo.jaffle_shop import (
@@ -27,6 +25,9 @@ from slayer.demo.jaffle_shop import (
     ensure_demo_datasource,
 )
 from slayer.storage.yaml_storage import YAMLStorage
+
+nbclient = pytest.importorskip("nbclient")
+nbformat = pytest.importorskip("nbformat")
 
 pytestmark = pytest.mark.integration
 
@@ -162,24 +163,26 @@ def _bootstrap_failure_is_transient(error_text: str) -> bool:
     what counts as transient. If the helper can't be imported, err toward *not*
     transient so a genuine failure is never silently skipped.
     """
-    import sys
-
     metricflow_dir = EXAMPLES_DIR / _METRICFLOW_NB_DIR
     if str(metricflow_dir) not in sys.path:
         sys.path.insert(0, str(metricflow_dir))
     try:
-        from setup_metricflow import _is_transient_git_error
+        from setup_metricflow import _is_transient_git_error  # ALLOW(import-not-top): sys.path set above at call time
     except ImportError:
         return False
     return _is_transient_git_error(error_text)
 
 
-# The DuckDB example notebooks read a CSV live over httpfs and let DuckDB
-# auto-install the httpfs extension from its repo, so both hosts must be
-# reachable. Mirrors the MetricFlow guard above: skip (never fail) when the
-# network can't be reached, so offline runs stay green.
+# The DuckDB example notebooks read a CSV live over httpfs; DuckDB also
+# auto-installs the httpfs extension from its repo on a clean machine. The CDN
+# host serving the CSV is always needed, so the pre-run probe gates on it (over
+# 443). A missing extension repo (served over 80) surfaces only mid-run and is
+# caught by the transient classifier below, which names both hosts. Mirrors the
+# MetricFlow guard: skip (never fail) when the network is down, so offline runs
+# stay green.
 _DUCKDB_NB_DIR = "15_duckdb"
-_DUCKDB_REMOTE_HOSTS = ("cdn.jsdelivr.net", "extensions.duckdb.org")
+_DUCKDB_DATA_HOST = "cdn.jsdelivr.net"
+_DUCKDB_REMOTE_HOSTS = (_DUCKDB_DATA_HOST, "extensions.duckdb.org")
 
 # Substrings marking a mid-run failure as a transient network/server hiccup
 # reaching the remote CSV or the extension repo. Matched case-insensitively and
@@ -200,15 +203,15 @@ _DUCKDB_TRANSIENT_SIGNATURES = (
 )
 
 
-def _duckdb_hosts_reachable() -> bool:
-    return all(_github_reachable(host=h) for h in _DUCKDB_REMOTE_HOSTS)
+def _duckdb_data_host_reachable() -> bool:
+    return _github_reachable(host=_DUCKDB_DATA_HOST)
 
 
 def _duckdb_network_error_is_transient(error_text: str) -> bool:
-    text = error_text.lower()
+    text = (error_text or "").lower()
     if not any(host in text for host in _DUCKDB_REMOTE_HOSTS):
         return False
-    return any(re.search(pattern, text) for pattern in _DUCKDB_TRANSIENT_SIGNATURES)
+    return any(re.search(pattern=pattern, string=text) for pattern in _DUCKDB_TRANSIENT_SIGNATURES)
 
 
 def test_notebook_runs_without_errors(notebook_path, request):
@@ -226,10 +229,8 @@ def test_notebook_runs_without_errors(notebook_path, request):
             pytest.skip("GitHub unreachable; cannot bootstrap the MetricFlow notebook")
 
     is_duckdb = _DUCKDB_NB_DIR in notebook_path.parts
-    if is_duckdb and not _duckdb_hosts_reachable():
-        pytest.skip(
-            "CDN or DuckDB extension repo unreachable; cannot run the DuckDB httpfs notebook"
-        )
+    if is_duckdb and not _duckdb_data_host_reachable():
+        pytest.skip("jsDelivr CDN unreachable; cannot run the DuckDB httpfs notebook")
 
     with open(notebook_path) as f:
         nb = nbformat.read(f, as_version=4)
@@ -253,10 +254,11 @@ def test_notebook_runs_without_errors(notebook_path, request):
             text = str(exc)
             if not _github_reachable() or _bootstrap_failure_is_transient(text):
                 pytest.skip(f"MetricFlow notebook could not bootstrap: {exc}")
-        # Narrow by design: skip only when the error text itself names a remote
-        # host AND matches a transient signature. A coincidental outage must not
-        # turn a real NotImplementedError / assertion / query bug into a skip —
-        # the pre-run reachability probe already covers "network down at start".
-        if is_duckdb and _duckdb_network_error_is_transient(str(exc)):
+        # Narrow by design: classify the kernel error MESSAGE (``evalue``), never
+        # ``str(exc)`` — the latter embeds the failing cell's source, which always
+        # contains the CDN URL, so the host-name gate would always pass and a real
+        # NotImplementedError / assertion / query bug could be misread as transient.
+        # The pre-run probe already covers "network down at start".
+        if is_duckdb and _duckdb_network_error_is_transient(getattr(exc, "evalue", "")):
             pytest.skip(f"DuckDB notebook hit a transient network error: {exc}")
         raise
