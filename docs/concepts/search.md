@@ -438,8 +438,7 @@ refreshed; tantivy/embeddings catch up on the next `slayer ingest`.
   `SidecarEmbeddingStore`. Search loads the matrix fresh and runs cosine in numpy.
 - Same render pipeline as tantivy — one text per doc feeds both.
 - Refresh is inline on the same edges as `Column.sampled` (ingest, `edit_model`,
-  `save_memory`), skipped by SHA256 content hash; batched read+write make refresh
-  cost independent of subtree size. Memories are refreshed by `slayer ingest`
+  `save_memory`), skipped by SHA256 content hash. Memories are refreshed by `slayer ingest`
   (filtered to those rooted at the current datasource), so `embeddings.db` is
   repairable by re-running ingest — no separate refresh step.
 - **Cascade delete** matches the canonical id exactly or as a strict dotted-path
@@ -447,4 +446,3 @@ refreshed; tantivy/embeddings catch up on the next `slayer ingest`.
   `delete_datasource("orders")` spares `orders_archive`.
 - Optional extra: `pip install motley-slayer[advanced_search]` (litellm + numpy);
   without it the embedding channel just warns.
-- Stored as JSON float lists — portable, debuggable, ~6 KB per 1536-dim row.
