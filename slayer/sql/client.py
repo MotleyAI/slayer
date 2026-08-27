@@ -12,10 +12,13 @@ import sqlalchemy as sa
 import sqlalchemy.engine.url
 import sqlalchemy.event as sa_event
 import sqlalchemy.exc
+from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import StaticPool
 
 from slayer.core.models import DatasourceConfig
 from slayer.engine import timing
+from slayer.sql import engine_factory
+from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.dialects.sqlite import SqliteDialect
 
 # Module-level singleton — its ``register_udfs`` is the SQLAlchemy
@@ -156,8 +159,6 @@ def _get_async_engine(connection_string: str):
     compared to the query itself, and the connection pool handles reuse within
     a single engine's lifetime.
     """
-    from sqlalchemy.ext.asyncio import create_async_engine
-
     return create_async_engine(connection_string, pool_pre_ping=True)
 
 
@@ -191,8 +192,6 @@ def _map_type_code(type_code, db_type: str | None = None) -> str:
     Postgres-OID / MySQL-fieldtype / ODBC paths below.
     """
     if isinstance(type_code, int) and db_type:
-        from slayer.sql.dialects import dialect_for_ds_type  # noqa: PLC0415
-
         dialect_category = dialect_for_ds_type(db_type).map_cursor_type_code(type_code)
         if dialect_category is not None:
             return dialect_category
@@ -403,7 +402,6 @@ def _apply_type_probe_timeout(conn, db_type: str | None, timeout_seconds: int) -
     """
     if not db_type:
         return
-    from slayer.sql.dialects import dialect_for_ds_type  # noqa: PLC0415
     timeout_sql = dialect_for_ds_type(db_type).statement_timeout_sql(timeout_seconds)
     if timeout_sql:
         conn.execute(sa.text(timeout_sql))
@@ -413,7 +411,6 @@ async def _apply_type_probe_timeout_async(conn, db_type: str | None, timeout_sec
     """Async sibling of ``_apply_type_probe_timeout``."""
     if not db_type:
         return
-    from slayer.sql.dialects import dialect_for_ds_type  # noqa: PLC0415
     timeout_sql = dialect_for_ds_type(db_type).statement_timeout_sql(timeout_seconds)
     if timeout_sql:
         await conn.execute(sa.text(timeout_sql))
@@ -528,7 +525,6 @@ class SlayerSQLClient:
             self._sync_engine = _create_in_memory_sqlite_engine(conn_str)
             return self._sync_engine
         # Cached factory engine — dialect hooks attach listeners + creator=.
-        from slayer.sql import engine_factory  # noqa: PLC0415
         self._sync_engine = engine_factory.get_engine(self.datasource)
         return self._sync_engine
 
@@ -544,7 +540,6 @@ class SlayerSQLClient:
         """
         if not _is_auth_failure(exc):
             return False
-        from slayer.sql import engine_factory  # noqa: PLC0415
         self._sync_engine = None
         try:
             engine_factory.invalidate_engine(self.datasource)
@@ -845,7 +840,6 @@ async def _execute_sql_async(
             # SqlDialect returns None — only dialects with a custom
             # statement_timeout_sql (currently SnowflakeDialect) emit a
             # SET.
-            from slayer.sql.dialects import dialect_for_ds_type  # noqa: PLC0415
             timeout_sql = dialect_for_ds_type(db_type).statement_timeout_sql(timeout_seconds)
             if timeout_sql:
                 await conn.execute(sa.text(timeout_sql))
@@ -951,7 +945,6 @@ def _execute_sql_sync(
             # SqlDialect returns None — only dialects with a custom
             # statement_timeout_sql (currently SnowflakeDialect) emit a
             # SET.
-            from slayer.sql.dialects import dialect_for_ds_type  # noqa: PLC0415
             timeout_sql = dialect_for_ds_type(db_type).statement_timeout_sql(timeout_seconds)
             if timeout_sql:
                 conn.execute(sa.text(timeout_sql))

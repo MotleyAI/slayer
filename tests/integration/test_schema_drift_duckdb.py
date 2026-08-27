@@ -8,10 +8,6 @@ from __future__ import annotations
 
 import pytest
 
-pytest.importorskip("duckdb")
-
-import duckdb
-
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
 from slayer.core.models import (
@@ -24,6 +20,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.schema_drift import EditModelDelete, WholeModelDelete
 from slayer.storage.yaml_storage import YAMLStorage
 
+duckdb = pytest.importorskip("duckdb")
 
 pytestmark = pytest.mark.integration
 
