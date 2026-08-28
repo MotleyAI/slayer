@@ -318,23 +318,26 @@ class ScopeFrame(BaseModel):
         expr = self.resolve(ref)
         return None if expr is None else expr.sql(dialect=self.dialect.sqlglot_name)
 
-    def _anchor(self, ref: Ref) -> exp.Expression:  # NOSONAR(S3776) — a single dispatch over the Ref union; each branch anchors one key kind and cannot be hoisted without losing the fail-closed fall-through.
+    def _anchor(self, ref: Ref) -> exp.Expression:  # NOSONAR(S3776) — flat dispatch over the Ref kinds (ColumnKey / ColumnSqlKey / str); each arm is independently simple and splitting would scatter the one-resolver-per-scope contract
         if isinstance(ref, ColumnKey):
             # DEV-1825: a regroup placeholder resolves from the attach registry
             # by EXACT membership; a reserved-prefix leaf that misses is
-            # fail-closed rather than emitting a phantom ``__regroup__`` column.
+            # fail-closed — but ONLY when a regroup is active in this scope
+            # (non-empty registry). With nothing attached, a leaf that merely
+            # collides with the reserved prefix is an ordinary column: the
+            # plan-time prefix fence runs only when a regroup is planned.
             attached = self.attached_columns.get(ref)
             if attached is not None:
                 return attached.copy()
-            if ref.leaf.startswith(REGROUP_LEAF_PREFIX):
+            if self.attached_columns and ref.leaf.startswith(REGROUP_LEAF_PREFIX):
                 raise ValueError(
                     f"Regroup placeholder {ref.leaf!r} has no attached producer "
                     f"column in this scope. A __regroup__ leaf must resolve "
                     f"through the attach registry; reaching column anchoring "
                     f"means the placeholder escaped its producer's join scope.",
                 )
-            # DEV-1743: alias via the graph-guided allocator (the ``__`` ban on
-            # model names was lifted), registering the path prefixes it crosses.
+            # DEV-1743: the allocator is the single join-alias authority
+            # (dotted-canonical); it also registers the crossed path prefixes.
             alias = self.allocator.alias_for(
                 root=self.root_relation, path=ref.path,
                 limit=self.dialect.max_identifier_bytes,

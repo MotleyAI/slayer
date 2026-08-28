@@ -137,6 +137,6 @@ class TestTotality:
         class NotAKey:
             pass
 
-        bad = NotAKey()
+        not_a_key = NotAKey()
         with pytest.raises(TypeError):
-            substitute_value_keys(bad, MAPPING)  # type: ignore[arg-type]
+            substitute_value_keys(not_a_key, MAPPING)  # type: ignore[arg-type]

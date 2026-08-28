@@ -616,9 +616,9 @@ class RegroupAttachPlan(BaseModel):
 
     ``join_pairs`` pairs each host-coordinate partition key (rendered in the
     CONSUMER scope) with the producer's matching grain slot; an empty list is a
-    grand-total producer and attaches as a single-row CROSS JOIN. ``outputs``
-    is one entry per distinct consumed aggregate — several may share one
-    producer (one partition set, N aggregates).
+    grand-total producer and attaches as a single-row CROSS JOIN.
+    ``substitutions`` is one entry per distinct consumed aggregate — several may
+    share one producer (one partition set, N aggregates).
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)

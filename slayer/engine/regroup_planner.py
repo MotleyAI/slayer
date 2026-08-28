@@ -170,7 +170,7 @@ def combined_partitioned_aggregates(  # NOSONAR(S3776) — one cohesive discover
 _REF_LEAVES = (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey, AggregateKey)
 
 
-def _top_level_refs(  # NOSONAR(S3776) — a single recursive ValueKey walker; the per-node-kind branches are the irreducible shape of the union.
+def _top_level_refs(  # NOSONAR(S3776) — one flat structural walk over the ValueKey union (arithmetic / scalar-call / between / in / transform / leaves); each arm is independently trivial and splitting would fragment a single recursive dispatch
     vk: ValueKey, dim_agg_set: frozenset,
 ) -> Tuple[List[AggregateKey], List[ValueKey]]:
     """Split ``vk``'s references into (discovered dim-aggregates, other

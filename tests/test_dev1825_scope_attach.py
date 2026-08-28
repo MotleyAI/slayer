@@ -61,5 +61,15 @@ class TestAttachedColumnAnchor:
     def test_unregistered_prefixed_leaf_raises(self) -> None:
         scope = _scope(attached={PLACEHOLDER: exp.column("x", table="_cm_x")})
         missing = ColumnKey(path=(), leaf="__regroup__9__not_registered")
-        with pytest.raises(Exception, match=r"__regroup__"):
+        with pytest.raises(ValueError, match=r"__regroup__"):
             scope.resolve(missing)
+
+    def test_prefixed_leaf_without_active_regroup_anchors_normally(self) -> None:
+        # Codex F4: with no regroup active (empty registry) a column that only
+        # collides with the reserved prefix is NOT a placeholder — it anchors as
+        # an ordinary column, never fail-closed. The prefix is fenced at plan
+        # time only when a regroup is planned; here nothing is attached.
+        scope = _scope()
+        ref = ColumnKey(path=(), leaf="__regroup__legacy_col")
+        out = scope.resolve(ref)
+        assert "__regroup__legacy_col" in out.sql(dialect="postgres")
