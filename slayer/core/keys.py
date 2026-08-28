@@ -1013,7 +1013,7 @@ def substitute_value_keys(
     column-to-column mapping reaches a time bucket's wrapped column.
     """
     def _recurse(value):
-        return substitute_value_keys(value, mapping)
+        return substitute_value_keys(key=value, mapping=mapping)
 
     # Scalars ride through untouched (ScalarCallKey args, AggregateKey kwargs).
     if key is None or isinstance(key, (Decimal, str, bool, int, float)):

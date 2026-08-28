@@ -43,6 +43,7 @@ __all__ = [
     "REGROUP_LEAF_PREFIX",
     "RegroupPlaceholderRegistry",
     "dimension_partitioned_aggregates",
+    "combined_partitioned_aggregates",
     "classify_regroup_filter",
     "substitute_in_bound_filter",
     "reserved_prefix_columns",
@@ -108,6 +109,58 @@ def dimension_partitioned_aggregates(declared_measures) -> List[AggregateKey]:
     return out
 
 
+def combined_partitioned_aggregates(  # NOSONAR(S3776) — one cohesive discovery walk over measures + orders; splitting scatters the shared seen-set / alias-map state.
+    declared_measures, order_specs, *, row_agg_set: frozenset,
+) -> Tuple[List[AggregateKey], Dict[AggregateKey, str]]:
+    """Partitioned ``AggregateKey``s destined for a COMBINED attach (DEV-1829).
+
+    Every LOCAL partitioned aggregate reachable from a NON-dimension measure or
+    an order spec — a partitioned MEASURE or a composite / order leaf. In
+    first-seen order, deduped by structural identity. A cross-model source
+    (non-empty ``source.path``) is EXCLUDED (D2): those keep the DEV-1739
+    cross-model narrow path, deferred to DEV-1824.
+
+    ``row_agg_set`` (the computed-dimension / row-attach aggregates) is treated
+    asymmetrically (CR): a MEASURE use of such a key IS a genuine row+combined
+    coexistence and is kept here so ``_plan_regroups`` rejects it (DEV-1824)
+    rather than silently rewriting the measure to a row placeholder; but an
+    ORDER BY over a computed dimension merely references that dimension's own
+    row attach, so an order-spec key already in ``row_agg_set`` is excluded (it
+    is not a combined attach and must not trip the coexistence guard).
+
+    The second return is the public-alias map for producer naming (F1 / D4): a
+    directly-named measure whose value_key IS the partitioned aggregate maps to
+    its public name; a composite / order leaf is absent (rendered under the
+    canonical alias)."""
+
+    def _is_local_combined(k: ValueKey) -> bool:
+        return (
+            isinstance(k, AggregateKey)
+            and k.partition_keys is not None
+            and not getattr(k.source, "path", ())
+        )
+
+    seen: set = set()
+    out: List[AggregateKey] = []
+    public_alias_by_agg: Dict[AggregateKey, str] = {}
+    for dm in declared_measures:
+        if dm.is_dimension:
+            continue
+        vk = dm.bound.value_key
+        for k in walk_value_keys(vk):
+            if _is_local_combined(k) and k not in seen:
+                seen.add(k)
+                out.append(k)
+        if _is_local_combined(vk) and dm.public_name is not None:
+            public_alias_by_agg.setdefault(vk, dm.public_name)
+    for sp in order_specs:
+        for k in walk_value_keys(sp.bound.value_key):
+            if _is_local_combined(k) and k not in seen and k not in row_agg_set:
+                seen.add(k)
+                out.append(k)
+    return out, public_alias_by_agg
+
+
 # --------------------------------------------------------------------------- #
 # Filter classification — total over the PRE-substitution tree.
 # --------------------------------------------------------------------------- #
@@ -168,7 +221,7 @@ def classify_regroup_filter(bf: BoundFilter, dim_agg_set: frozenset) -> str:
     * ``"standard"`` — an aggregate/post predicate with no dim-aggregate:
       existing routing, untouched.
     """
-    dim_hits, other = _top_level_refs(bf.value_key, dim_agg_set)
+    dim_hits, other = _top_level_refs(vk=bf.value_key, dim_agg_set=dim_agg_set)
     if dim_hits and other:
         raise NotImplementedError(
             "A single filter that mixes a computed-dimension aggregate with "
@@ -188,7 +241,7 @@ def substitute_in_bound_filter(
 ) -> BoundFilter:
     """Substitute placeholders in a filter and RECOMPUTE its phase — the swap
     lowers an aggregate-phase ``band == 1`` predicate to ROW."""
-    new_vk = substitute_value_keys(bf.value_key, mapping)
+    new_vk = substitute_value_keys(key=bf.value_key, mapping=mapping)
     refs = tuple(walk_value_keys(new_vk))
     phase = max((k.phase for k in refs), default=new_vk.phase)
     return BoundFilter(value_key=new_vk, phase=phase, referenced_keys=refs)

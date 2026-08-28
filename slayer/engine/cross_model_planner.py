@@ -877,10 +877,12 @@ class IsolatedCteCrossModelPlanner:
                 bundle=bundle,
             ),
         )
-        # DEV-1739 — a partitioned local aggregate isolates even with no crossing
-        # input: its own CTE groups at the coarser partition subset.
-        has_partition = aggregate_key.partition_keys is not None
-        if not has_crossing_input and not has_partition:
+        # DEV-1829 — a LOCAL partitioned aggregate no longer reaches here: it is
+        # migrated to a combined regroup attach and substituted away before the
+        # aggregate loop (the ``partition_keys`` branch of ``classify_isolation``
+        # was retired). Only a genuine crossing-input host-rooted aggregate
+        # (DEV-1503 / DEV-1709) triggers filtered-local now.
+        if not has_crossing_input:
             raise ValueError(
                 f"AggregateKey on {agg_source!r} has empty source.path, "
                 f"no cross-model column_filter_key, AND no other crossing "
@@ -961,31 +963,15 @@ class IsolatedCteCrossModelPlanner:
             host_filters=host_filters,
         )
         routing_by_id = {hf.filter_id: hf for hf in host_filters}
-        # DEV-1739 — an explicit partition_by narrows the sub-plan's grain to the
-        # partition subset (``[]`` -> no grain -> grand total). ``n_dims`` /
-        # ``n_time_dimensions`` must match the narrowed grain or the sub-plan's
-        # PreboundQuery validator rejects the prefix.
-        if aggregate_key.partition_keys is not None:
-            pk = aggregate_key.partition_keys
-            subset = [
-                dm for dm in host_prebound.grain_declared_measures
-                if dm.bound.value_key in pk
-            ]
-            sub_dims = [
-                dm for dm in subset
-                if not isinstance(dm.bound.value_key, TimeTruncKey)
-            ]
-            sub_tds = [
-                dm for dm in subset
-                if isinstance(dm.bound.value_key, TimeTruncKey)
-            ]
-            grain_measures = [*sub_dims, *sub_tds]
-            sub_n_dims: Optional[int] = len(sub_dims)
-            sub_n_tds: Optional[int] = len(sub_tds)
-        else:
-            grain_measures = list(host_prebound.grain_declared_measures)
-            sub_n_dims = None
-            sub_n_tds = None
+        # DEV-1829 — the LOCAL partitioned-measure grain-narrow arm was retired:
+        # a local partitioned aggregate is now migrated to a combined regroup
+        # attach and never reaches this path. A crossing-input filtered-local
+        # aggregate carries no partition_by, so the sub-plan keeps the full host
+        # grain. (The cross-model narrow — ``_narrow_shared_grain_to_partition``
+        # — is kept for cross-model partitioned measures, D2.)
+        grain_measures = list(host_prebound.grain_declared_measures)
+        sub_n_dims: Optional[int] = None
+        sub_n_tds: Optional[int] = None
         sub_prebound = _nested_prebound(
             host_prebound=host_prebound,
             aggregate_measure=_aggregate_declared_measure(
