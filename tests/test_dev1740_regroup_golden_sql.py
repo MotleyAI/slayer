@@ -9,19 +9,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from slayer.core.query import SlayerQuery
 
 from tests._dev1740_fixtures import dev1740_models, month_td
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
-
-# Five-dialect golden for the B2 desugar — deferred to DEV-1825 (regroup
-# primitive). The baseline is blessed when the desugar lands.
-pytestmark = pytest.mark.skip(
-    reason="B2 aggregate-then-regroup deferred to DEV-1825 (regroup primitive)"
-)
 
 GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1740_regroup_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb", "tsql", "bigquery"]

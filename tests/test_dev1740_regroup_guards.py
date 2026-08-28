@@ -33,13 +33,13 @@ class TestPartitionByRequired:
         assert "partition_by" in str(ei.value)
 
 
-class TestAggregateReferencingDimDeferred:
-    async def test_valid_partitioned_dim_raises_pending_dev1825(self) -> None:
+class TestAggregateReferencingDimGenerates:
+    async def test_valid_partitioned_dim_desugars_to_regroup(self) -> None:
         # A plain partitioned aggregate inside a dimension is the valid
-        # aggregate-then-regroup case (B2); the regroup desugar is deferred to
-        # DEV-1825, so it must raise a clear, actionable error rather than
-        # silently mis-plan. (Note: the DEV-1739 measures-only "not a query
-        # dimension" guard must NOT fire here — city is a legal finer grain.)
+        # aggregate-then-regroup case (B2) — the DEV-1825 regroup primitive
+        # isolates it in a `_cm_` producer CTE. (The DEV-1739 measures-only
+        # "not a query dimension" guard must NOT fire — city is a legal finer
+        # grain.)
         q = _q(
             dimensions=[
                 "region",
@@ -48,9 +48,8 @@ class TestAggregateReferencingDimDeferred:
             ],
             measures=[ModelMeasure(formula="amount:sum", name="t")],
         )
-        with pytest.raises(NotImplementedError, match=r"DEV-1825") as ei:
-            await gen(q)
-        assert "not a query dimension" not in str(ei.value)
+        sql = await gen(q)
+        assert "_cm_" in sql
 
 
 class TestDeferredShapesRaiseDev1824:

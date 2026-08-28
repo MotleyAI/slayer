@@ -396,6 +396,10 @@ def _walk_cross_model_plans(planned):
         nested = getattr(plan, "rerooted_plan", None)
         if nested is not None:
             yield from _walk_cross_model_plans(nested)
+    # DEV-1825 — a synthesized regroup producer is a full nested plan; descend so
+    # any cross-model plan it carries surfaces its warnings (total by construction).
+    for attach in getattr(planned, "regroup_attach_plans", ()) or ():
+        yield from _walk_cross_model_plans(attach.producer_plan)
 
 
 def _stage_location(stages, index: int) -> str:
