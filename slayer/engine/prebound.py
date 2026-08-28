@@ -28,7 +28,7 @@ to avoid that cycle).
 
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, TypeGuard
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -38,13 +38,18 @@ from slayer.core.enums import (
     classify_aggregation,
 )
 from slayer.core.format import NumberFormat
+from decimal import Decimal
+
 from slayer.core.keys import (
     AggregateKey,
     ColumnKey,
     ColumnSqlKey,
+    LiteralKey,
+    ScalarCallKey,
     StarKey,
     TimeTruncKey,
     ValueKey,
+    join_conditional_branch_types,
 )
 from slayer.core.models import SlayerModel
 from slayer.engine.binding import BoundFilter
@@ -247,10 +252,56 @@ def _local_aggregate_source_name(key: ValueKey) -> Optional[str]:
     return getattr(src, "leaf", None) or getattr(src, "column_name", None)
 
 
+def _literal_data_type(value) -> Optional[DataType]:
+    """The SLayer type of a scalar literal (``None`` for a NULL literal)."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return DataType.BOOLEAN
+    if isinstance(value, Decimal):
+        return DataType.INT if value == value.to_integral_value() else DataType.DOUBLE
+    if isinstance(value, str):
+        return DataType.TEXT
+    return None
+
+
+def _is_iif(key: object) -> TypeGuard[ScalarCallKey]:
+    return isinstance(key, ScalarCallKey) and key.name == "iif"
+
+
+def _branch_type(*, model: SlayerModel, key) -> Optional[DataType]:
+    """The type of one CASE/iif branch, from the model alone (``None`` when it
+    cannot be determined — a joined column, an arithmetic expression — so it is
+    treated as NULL-absorbing rather than an incompatibility)."""
+    if key is None or isinstance(key, (Decimal, str, bool)):
+        return _literal_data_type(key)
+    if isinstance(key, LiteralKey):
+        return _literal_data_type(key.value)
+    if isinstance(key, ColumnKey) and not key.path:
+        col = model.get_column(key.leaf)
+        return col.type if col is not None else None
+    return measure_key_type(model=model, key=key)
+
+
 def measure_key_type(
     *, model: SlayerModel, key: ValueKey,
 ) -> Optional[DataType]:
     """``type`` for a measure slot, from its bound key alone."""
+    if _is_iif(key):
+        # Postgres branch typing: the join over every THEN branch and the final
+        # ELSE. Raises on an incompatible mix (DEV-1740).
+        result: Optional[DataType] = None
+        node = key
+        branches = []
+        while _is_iif(node):
+            branches.append(node.args[1])
+            node = node.args[2]
+        branches.append(node)
+        for branch in branches:
+            result = join_conditional_branch_types(
+                result, _branch_type(model=model, key=branch),
+            )
+        return result
     name = _local_aggregate_source_name(key)
     if name is None:
         return None

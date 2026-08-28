@@ -70,14 +70,14 @@ def _orders() -> SlayerModel:
             Column(name="doubled", sql="amount * 2", type=DataType.DOUBLE),
             # --- the defect shapes: sql is ONE bare derived reference ---
             Column(name="alias_local", sql="doubled", type=DataType.DOUBLE),
-            Column(name="deep_pop", sql="customers__regions.pop_x2",
+            Column(name="deep_pop", sql="customers.regions.pop_x2",
                    type=DataType.DOUBLE),
-            Column(name="deep_live", sql="customers__regions.is_live",
+            Column(name="deep_live", sql="customers.regions.is_live",
                    type=DataType.BOOLEAN),
             # --- controls: same reference inside a larger expression ---
-            Column(name="deep_pop_compound", sql="customers__regions.pop_x2 * 1",
+            Column(name="deep_pop_compound", sql="customers.regions.pop_x2 * 1",
                    type=DataType.DOUBLE),
-            Column(name="deep_pop_paren", sql="(customers__regions.pop_x2)",
+            Column(name="deep_pop_paren", sql="(customers.regions.pop_x2)",
                    type=DataType.DOUBLE),
         ],
         joins=[ModelJoin(
@@ -94,13 +94,13 @@ def _resolve(name: str):
 
 
 def _expand(sql: str) -> str:
-    # The SAME instance ``_resolve`` hands back. ``_process_column_node_sync``
-    # compares ``target_model is model`` by IDENTITY to decide ``next_is_root``;
-    # passing a second, equal-but-distinct ``_orders()` would make that test
-    # false the moment the root path resolves through ``resolve_model``.
+    # The SAME instance ``_resolve`` hands back — the reference resolver walks
+    # ``model``'s joins by identity, so passing a second, equal-but-distinct
+    # ``_orders()`` would diverge the moment the root path resolves through
+    # ``resolve_model``. ``owner_path=()`` (the default) roots at ``orders``.
     out = expand_derived_refs_sync(
         sql=sql, model=_MODELS["orders"], alias_path="orders",
-        resolve_model=_resolve, dialect="postgres", is_root=True,
+        resolve_model=_resolve, dialect="postgres",
     )
     assert out is not None, f"expansion returned None for {sql!r}"
     return out
@@ -118,7 +118,7 @@ class TestBareDerivedReferenceExpands:
         # regions.pop_x2 is DERIVED ("population * 2") — it is not a real
         # column of the regions table, so leaving the reference intact emits
         # SQL no database can bind.
-        out = _expand("customers__regions.pop_x2")
+        out = _expand("customers.regions.pop_x2")
         assert "pop_x2" not in out, (
             f"derived column name leaked into emitted SQL: {out!r}"
         )
@@ -135,7 +135,7 @@ class TestBareDerivedReferenceExpands:
         assert "* 2" in out
 
     def test_boolean_derived_of_derived_expands(self) -> None:
-        out = _expand("customers__regions.is_live")
+        out = _expand("customers.regions.is_live")
         assert "is_live" not in out, (
             f"derived column name leaked into emitted SQL: {out!r}"
         )
@@ -147,12 +147,12 @@ class TestCompoundControlsStillWork:
     defect is easy to miss."""
 
     def test_compound_expression_expands(self) -> None:
-        out = _expand("customers__regions.pop_x2 * 1")
+        out = _expand("customers.regions.pop_x2 * 1")
         assert "pop_x2" not in out
         assert "customers__regions.population" in out
 
     def test_parenthesised_reference_expands(self) -> None:
-        out = _expand("(customers__regions.pop_x2)")
+        out = _expand("(customers.regions.pop_x2)")
         assert "pop_x2" not in out
         assert "customers__regions.population" in out
 

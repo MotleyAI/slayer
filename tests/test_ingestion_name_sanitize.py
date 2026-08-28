@@ -13,7 +13,6 @@ from slayer.core.models import DatasourceConfig, SlayerModel, sanitize_model_nam
 from slayer.sql import engine_factory
 from slayer.engine.ingestion import (
     IngestionScanReport,
-    SkippedTable,
     ingest_datasource,
     ingest_datasource_report,
 )
@@ -97,10 +96,11 @@ class TestSanitizer:
 
 
 class TestDunderTableIngestion:
-    def test_dunder_table_is_modelled_under_a_sanitized_name(
+    def test_dunder_table_is_modelled_under_its_faithful_name(
         self, workspace: Path
     ) -> None:
-        """sql_table keeps the real object name so queries still resolve."""
+        """DEV-1743: the ``__`` ban is lifted — the model keeps the faithful
+        object name, and ``sql_table`` matches."""
         ds = _sqlite_ds(
             workspace,
             """
@@ -111,7 +111,7 @@ class TestDunderTableIngestion:
             """,
         )
         models = ingest_datasource(datasource=ds)
-        model = next(m for m in models if m.name == "reports_patient_drug")
+        model = next(m for m in models if m.name == "reports__patient__drug")
         assert model.sql_table == "reports__patient__drug"
 
     def test_one_bad_name_no_longer_kills_the_run(self, workspace: Path) -> None:
@@ -128,10 +128,10 @@ class TestDunderTableIngestion:
         names = {m.name for m in models}
         assert "orders" in names
         assert "customers" in names
-        assert "reports_patient_drug" in names
+        assert "reports__patient__drug" in names
 
-    def test_dunder_view_is_also_sanitized(self, workspace: Path) -> None:
-        """dlt child tables are sometimes exposed as views."""
+    def test_dunder_view_is_preserved(self, workspace: Path) -> None:
+        """dlt child tables are sometimes exposed as views; ``__`` is kept."""
         ds = _sqlite_ds(
             workspace,
             """
@@ -140,19 +140,20 @@ class TestDunderTableIngestion:
             """,
         )
         models = ingest_datasource(datasource=ds)
-        model = next(m for m in models if m.name == "stg_nested_thing")
+        model = next(m for m in models if m.name == "stg__nested__thing")
         assert model.sql_table == "stg__nested__thing"
 
     def test_schema_qualified_dunder_table_keeps_qualified_sql_table(
         self, workspace: Path
     ) -> None:
-        """The schema prefix survives sanitization; only the model name changes."""
+        """The schema prefix stays on ``sql_table``; the model keeps the faithful
+        ``__`` name."""
         ds = _sqlite_ds(
             workspace,
             "CREATE TABLE reports__patient (id INTEGER PRIMARY KEY, x TEXT);",
         )
         report = ingest_datasource_report(datasource=ds, schema="main")
-        model = next(m for m in report.models if m.name == "reports_patient")
+        model = next(m for m in report.models if m.name == "reports__patient")
         assert model.sql_table == "main.reports__patient"
 
 
@@ -162,34 +163,40 @@ class TestDunderTableIngestion:
 
 
 class TestCollisionPolicy:
+    """DEV-1743: ``__`` is a legal model-name character now, so ``a__b`` and
+    ``a_b`` (and ``a___b``) are DISTINCT models — the old sanitize-collapse
+    collision between them no longer exists. A genuine collision is now only two
+    objects sharing one raw name across different schemas (covered in
+    ``test_ingestion_schema_qualification.py``)."""
+
     _SCRIPT = """
         CREATE TABLE a__b (id INTEGER PRIMARY KEY, viaview TEXT);
         CREATE TABLE a_b (id INTEGER PRIMARY KEY, real_col TEXT);
     """
 
-    def test_real_table_wins_and_dunder_table_is_skipped(
+    def test_faithful_and_sanitized_names_are_distinct_models(
         self, workspace: Path
     ) -> None:
-        """An unsanitized name always beats a sanitized one for the same model name."""
+        """``a__b`` keeps its faithful name; ``a_b`` is its own model; no skip."""
         ds = _sqlite_ds(workspace, self._SCRIPT)
         report = ingest_datasource_report(datasource=ds)
 
-        model = next(m for m in report.models if m.name == "a_b")
-        assert model.sql_table == "a_b"
-        assert "a__b" in _skipped_names(report)
+        by_name = {m.name: m for m in report.models}
+        assert by_name["a__b"].sql_table == "a__b"
+        assert by_name["a_b"].sql_table == "a_b"
+        assert "a__b" not in _skipped_names(report)
 
-    def test_collision_skip_records_a_reason(self, workspace: Path) -> None:
+    def test_no_collision_skip_for_distinct_faithful_names(
+        self, workspace: Path
+    ) -> None:
         ds = _sqlite_ds(workspace, self._SCRIPT)
         report = ingest_datasource_report(datasource=ds)
-        entry = next(s for s in report.skipped if s.table_name == "a__b")
-        assert isinstance(entry, SkippedTable)
-        assert "collision" in entry.reason.lower()
-        assert "a_b" in entry.reason
+        assert report.skipped == []
 
-    def test_collision_outcome_is_order_independent(
+    def test_outcome_is_order_independent(
         self, workspace: Path, monkeypatch
     ) -> None:
-        """Reversing the scan order must not flip which object wins the name."""
+        """Reversing the scan order must not change the (distinct) result."""
         from slayer.engine import ingestion as ingestion_module
 
         ds = _sqlite_ds(workspace, self._SCRIPT)
@@ -219,19 +226,21 @@ class TestCollisionPolicy:
         CREATE TABLE a___b (id INTEGER PRIMARY KEY, y TEXT);
     """
 
-    def test_two_dunder_names_collapsing_to_one_skips_the_second(
+    def test_two_dunder_names_are_distinct_models(
         self, workspace: Path
     ) -> None:
-        """Two dunder names collapsing to one: exactly one wins, the other skips."""
+        """``a__b`` and ``a___b`` are different objects → different faithful
+        models; nothing collapses, nothing is skipped."""
         ds = _sqlite_ds(workspace, self._TWO_DUNDER)
         report = ingest_datasource_report(datasource=ds)
-        assert len([m for m in report.models if m.name == "a_b"]) == 1
-        assert len(report.skipped) == 1
+        names = {m.name for m in report.models}
+        assert {"a__b", "a___b"} <= names
+        assert report.skipped == []
 
-    def test_sanitized_vs_sanitized_winner_is_order_independent(
+    def test_two_dunder_names_result_is_order_independent(
         self, workspace: Path, monkeypatch
     ) -> None:
-        """Two names collapsing to the same model must pick an order-independent winner."""
+        """Both distinct models appear regardless of scan order."""
         from slayer.engine import ingestion as ingestion_module
 
         ds = _sqlite_ds(workspace, self._TWO_DUNDER)
@@ -244,11 +253,11 @@ class TestCollisionPolicy:
         monkeypatch.setattr(ingestion_module, "list_ingestable_objects", _reversed)
         backward = ingest_datasource_report(datasource=ds)
 
-        def _winner(report):
-            return next(m.sql_table for m in report.models if m.name == "a_b")
+        def _mapping(report):
+            return {m.name: m.sql_table for m in report.models}
 
-        assert _winner(forward) == _winner(backward)
-        assert _skipped_names(forward) == _skipped_names(backward)
+        assert _mapping(forward) == _mapping(backward)
+        assert _skipped_names(forward) == _skipped_names(backward) == set()
 
 
 # ---------------------------------------------------------------------------
@@ -463,11 +472,11 @@ class TestWrapperContract:
 class TestJoinTargetsUseModelNames:
     """A join must name the persisted MODEL, not the live object.
 
-    ``__`` is sanitized out of model names, so an FK pointing at
-    ``reports__patient__drug`` has to bind to ``reports_patient_drug``.
+    DEV-1743: model names keep ``__``, so an FK pointing at
+    ``reports__patient__drug`` binds to the faithful ``reports__patient__drug``.
     """
 
-    def test_fk_to_sanitized_table_targets_the_model_name(
+    def test_fk_to_dunder_table_targets_the_faithful_model_name(
         self, workspace: Path
     ) -> None:
         ds = _sqlite_ds(
@@ -481,21 +490,22 @@ class TestJoinTargetsUseModelNames:
             """,
         )
         models = {m.name: m for m in ingest_datasource(datasource=ds)}
-        assert "reports_patient_drug" in models
+        assert "reports__patient__drug" in models
 
         visits = models["visits"]
-        assert [j.target_model for j in visits.joins] == ["reports_patient_drug"]
+        assert [j.target_model for j in visits.joins] == ["reports__patient__drug"]
         # The whole point: the target resolves to a model that exists.
         assert visits.joins[0].target_model in models
 
     def test_join_is_dropped_when_the_target_has_no_model(
         self, workspace: Path
     ) -> None:
-        """A collided target is skipped, so a join to it would dangle."""
+        """An out-of-scope target is not ingested, so a join to it is dropped
+        rather than left dangling (DEV-1743: no longer a sanitize-collision, but
+        the exclude filter still yields a target with no model)."""
         ds = _sqlite_ds(
             workspace,
             """
-            CREATE TABLE a_b (id INTEGER PRIMARY KEY);
             CREATE TABLE a__b (id INTEGER PRIMARY KEY);
             CREATE TABLE refs_it (
                 id INTEGER PRIMARY KEY,
@@ -503,11 +513,12 @@ class TestJoinTargetsUseModelNames:
             );
             """,
         )
-        report = ingest_datasource_report(datasource=ds)
+        report = ingest_datasource_report(datasource=ds, exclude_tables=["a__b"])
         models = {m.name: m for m in report.models}
-        assert "a__b" in _skipped_names(report)
+        assert "a__b" not in models
 
         refs_it = models["refs_it"]
+        assert refs_it.joins == []
         assert all(j.target_model in models for j in refs_it.joins)
 
 
@@ -566,13 +577,15 @@ class TestEmptyJoinListIsNotNoJoinList:
 
 
 class TestSanitizedNamesDoNotLeakIntoColumns:
-    """A dropped join must not reappear as `__`-bearing dotted columns."""
+    """A join target's name must never leak into the source model's COLUMNS as a
+    dotted/qualified column — join paths belong in ``joins``, not column names."""
 
-    def test_no_dotted_columns_for_a_skipped_target(self, workspace: Path) -> None:
+    def test_no_dotted_columns_when_target_is_a_faithful_dunder_model(
+        self, workspace: Path
+    ) -> None:
         ds = _sqlite_ds(
             workspace,
             """
-            CREATE TABLE a_b (id INTEGER PRIMARY KEY);
             CREATE TABLE a__b (id INTEGER PRIMARY KEY, label TEXT);
             CREATE TABLE refs_it (
                 id INTEGER PRIMARY KEY,
@@ -582,9 +595,8 @@ class TestSanitizedNamesDoNotLeakIntoColumns:
         )
         models = {m.name: m for m in ingest_datasource(datasource=ds)}
         refs_it = models["refs_it"]
-        assert refs_it.joins == []
-        # The fallback used to fire on the now-empty join list and introspect
-        # the skipped object anyway, emitting `a__b.label` — a column name the
-        # SQL generator reads as a join path.
-        assert all("__" not in c.name for c in refs_it.columns)
-        assert all(not c.name.startswith("a_b.") for c in refs_it.columns)
+        # DEV-1743: a__b is a valid model now, so the FK becomes a real join
+        # (not dropped) targeting the faithful name.
+        assert [j.target_model for j in refs_it.joins] == ["a__b"]
+        # No qualified column names leaked in from the join target.
+        assert all("." not in c.name for c in refs_it.columns)

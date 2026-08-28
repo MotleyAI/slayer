@@ -21,7 +21,7 @@ existing engine-layer expansion/scan helpers (D-G wrap-and-reuse).
 
 from __future__ import annotations
 
-from typing import List, Literal, Optional, Tuple, Union
+from typing import Callable, Dict, List, Literal, Optional, Tuple, Union
 
 import sqlglot
 from pydantic import BaseModel, ConfigDict, Field
@@ -30,7 +30,7 @@ from sqlglot.errors import ParseError
 
 from slayer.core.enums import DataType
 from slayer.core.errors import ModeASqlParseError, UnknownReferenceError
-from slayer.core.keys import ColumnKey, ColumnSqlKey
+from slayer.core.keys import REGROUP_LEAF_PREFIX, ColumnKey, ColumnSqlKey
 from slayer.core.models import SlayerModel
 from slayer.engine.column_expansion import (
     collect_root_scope_joined_paths,
@@ -109,16 +109,28 @@ class ScopeFrame(BaseModel):
     allocator: AliasAllocator
     join_paths: _OrderedPathSet = Field(default_factory=_OrderedPathSet)
     materializations: List[Materialization] = Field(default_factory=list)
+    # DEV-1825 — reserved-leaf placeholder → its rendered column on an attached
+    # regroup producer CTE. Resolved by EXACT membership before ordinary column
+    # anchoring; a prefixed leaf that misses this registry is fail-closed.
+    attached_columns: Dict[ColumnKey, exp.Expression] = Field(default_factory=dict)
 
     # ---- Law 1 -------------------------------------------------------------
     def resolve(self, ref: Ref, *, consumer: "ScopeFrame | None" = None) -> exp.Expression:
         """Anchor ``ref`` in this scope, register the joins it crosses, and —
         when a ``consumer`` scope is named — materialise it and return the bare
         alias for the consumer.
-        """
+
+        DEV-1743: ``_anchor`` registers the crossed join paths STRUCTURALLY
+        (into ``self.join_paths``) as it resolves — the emitted AST is never
+        re-scanned, because an internal ``__`` join alias is indistinguishable
+        from a user ``__``-named model once serialized."""
         template = self._anchor(ref)
-        self._register_join_paths(template)
         return self._close(template, consumer=consumer)
+
+    def _register_path_prefixes(self, path: Tuple[str, ...]) -> None:
+        """Register every join-path prefix of ``path`` into this scope."""
+        for i in range(1, len(path) + 1):
+            self.join_paths.add(path[:i])
 
     # ---- The one Mode-A door (P-A) -----------------------------------------
     def enter_predicate(
@@ -189,6 +201,11 @@ class ScopeFrame(BaseModel):
         raw_ast = self._parse_mode_a(
             prequoted, grammar=grammar, fragment=sql, location=location,
         )
+        # Scan the RAW (dotted) form for the join paths its references cross;
+        # the expansion below additionally registers any joins revealed only by
+        # inlining a derived column (the DEV-1494 dual-discovery contract), now
+        # collected STRUCTURALLY via ``crossed_paths`` rather than by re-scanning
+        # the internal-alias output (DEV-1743).
         self._register_join_paths(raw_ast)
 
         expanded = expand_derived_refs_sync(
@@ -197,7 +214,9 @@ class ScopeFrame(BaseModel):
             alias_path=self.root_relation,
             resolve_model=self.bundle.get_referenced_model,
             dialect=self.dialect.sqlglot_name,
-            is_root=True,
+            owner_path=(),
+            alias_resolver=self._alias_resolver(),
+            crossed_paths=self.join_paths,
         )
         if expanded is None or expanded == prequoted:
             final = raw_ast
@@ -205,7 +224,6 @@ class ScopeFrame(BaseModel):
             final = self._parse_mode_a(
                 expanded, grammar=grammar, fragment=sql, location=location,
             )
-            self._register_join_paths(final)
 
         return self._close(final, consumer=consumer)
 
@@ -245,6 +263,17 @@ class ScopeFrame(BaseModel):
 
     def _default_location(self) -> str:
         return f"Mode-A SQL in scope rooted at model {self.root_model.name!r}"
+
+    def _alias_resolver(self) -> Callable[[Tuple[str, ...]], str]:
+        """The WP3 registry-backed alias resolver for this scope (DEV-1743):
+        maps a root-relative join path to the internal JOIN alias the generator
+        will emit, so ``expand_derived_refs_sync`` qualifies refs to a matching
+        alias even when a chain leaf collides with a literal ``__``-named
+        model."""
+        return lambda path: self.allocator.alias_for(
+            root=self.root_relation, path=path,
+            limit=self.dialect.max_identifier_bytes,
+        )
 
     def _register_join_paths(self, parsed: exp.Expression) -> None:
         """Law 1's side effect: every join path ``parsed`` crosses is recorded
@@ -289,9 +318,31 @@ class ScopeFrame(BaseModel):
         expr = self.resolve(ref)
         return None if expr is None else expr.sql(dialect=self.dialect.sqlglot_name)
 
-    def _anchor(self, ref: Ref) -> exp.Expression:
+    def _anchor(self, ref: Ref) -> exp.Expression:  # NOSONAR(S3776) — flat dispatch over the Ref kinds (ColumnKey / ColumnSqlKey / str); each arm is independently simple and splitting would scatter the one-resolver-per-scope contract
         if isinstance(ref, ColumnKey):
-            alias = self.root_relation if not ref.path else "__".join(ref.path)
+            # DEV-1825: a regroup placeholder resolves from the attach registry
+            # by EXACT membership; a reserved-prefix leaf that misses is
+            # fail-closed — but ONLY when a regroup is active in this scope
+            # (non-empty registry). With nothing attached, a leaf that merely
+            # collides with the reserved prefix is an ordinary column: the
+            # plan-time prefix fence runs only when a regroup is planned.
+            attached = self.attached_columns.get(ref)
+            if attached is not None:
+                return attached.copy()
+            if self.attached_columns and ref.leaf.startswith(REGROUP_LEAF_PREFIX):
+                raise ValueError(
+                    f"Regroup placeholder {ref.leaf!r} has no attached producer "
+                    f"column in this scope. A __regroup__ leaf must resolve "
+                    f"through the attach registry; reaching column anchoring "
+                    f"means the placeholder escaped its producer's join scope.",
+                )
+            # DEV-1743: the allocator is the single join-alias authority
+            # (dotted-canonical); it also registers the crossed path prefixes.
+            alias = self.allocator.alias_for(
+                root=self.root_relation, path=ref.path,
+                limit=self.dialect.max_identifier_bytes,
+            )
+            self._register_path_prefixes(ref.path)
             return exp.Column(
                 this=exp.to_identifier(ref.leaf),
                 table=exp.to_identifier(alias),
@@ -309,24 +360,29 @@ class ScopeFrame(BaseModel):
                 raw_sql = col.name
             # DEV-1711: a derived column ON a JOINED model (``path`` non-empty,
             # e.g. ``stores.tier`` where ``tier`` lives on the joined ``stores``)
-            # must anchor at the ``__``-path alias with ``is_root=False`` so a
-            # bare inner ref (``name``) qualifies to ``stores.name`` — and a
+            # anchors at its ``__``-path alias (``owner_path=ref.path``) so a
+            # bare inner ref (``name``) qualifies to ``stores.name`` and a
             # further-joined inner ref (``regions.population``) to the full
-            # ``stores__regions`` path (the DEV-1701 shape). A local derived
-            # column (empty path) keeps anchoring at the scope root.
-            if ref.path:
-                alias_path = "__".join(ref.path)
-                is_root = False
+            # ``stores__regions`` path. A local derived column (empty path)
+            # keeps anchoring at the scope root.
+            owner_path = tuple(ref.path)
+            if owner_path:
+                alias_path = self.allocator.alias_for(
+                    root=self.root_relation, path=owner_path,
+                    limit=self.dialect.max_identifier_bytes,
+                )
             else:
                 alias_path = self.root_relation
-                is_root = True
+            self._register_path_prefixes(owner_path)
             expanded = expand_derived_refs_sync(
                 sql=raw_sql,
                 model=model,
                 alias_path=alias_path,
                 resolve_model=self.bundle.get_referenced_model,
                 dialect=self.dialect.sqlglot_name,
-                is_root=is_root,
+                owner_path=owner_path,
+                alias_resolver=self._alias_resolver(),
+                crossed_paths=self.join_paths,
             )
             return self._parse(expanded or raw_sql)
         if isinstance(ref, str):
@@ -339,7 +395,9 @@ class ScopeFrame(BaseModel):
                 alias_path=self.root_relation,
                 resolve_model=self.bundle.get_referenced_model,
                 dialect=self.dialect.sqlglot_name,
-                is_root=True,
+                owner_path=(),
+                alias_resolver=self._alias_resolver(),
+                crossed_paths=self.join_paths,
             )
             return self._parse(expanded or prequoted)
         raise NotImplementedError(

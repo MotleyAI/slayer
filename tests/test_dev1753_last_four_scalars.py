@@ -72,8 +72,10 @@ class TestScalarSetsClosed:
         pass-through scalars."""
         assert SCALAR_PASSTHROUGH - SCALAR_FUNCTIONS == set()
 
-    def test_like_stays_the_only_binder_only_name(self) -> None:
-        assert SCALAR_FUNCTIONS - SCALAR_PASSTHROUGH == {"like"}
+    def test_binder_only_names_are_like_and_iif(self) -> None:
+        # ``like`` arrives via the LIKE-operator rewrite, ``iif`` via the CASE
+        # rewrite (DEV-1740); neither is a legacy-formula pass-through name.
+        assert SCALAR_FUNCTIONS - SCALAR_PASSTHROUGH == {"like", "iif"}
 
     def test_arity_entries_exist_for_the_four(self) -> None:
         assert SCALAR_FUNCTION_ARITY["greatest"] == (2, None)

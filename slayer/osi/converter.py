@@ -22,7 +22,7 @@ from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.formula import parse_formula
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.refs import IDENTIFIER_RE as _IDENTIFIER_RE
-from slayer.engine.column_expansion import _root_scope_column_ids
+from slayer.engine.column_expansion import _root_scope_column_ids, resolve_ref_target
 from slayer.engine.ingestion import introspect_table_to_model
 from slayer.engine.join_graph import JoinGraph, min_hops_root
 from slayer.ingest_report import ConversionResult, ConversionWarning
@@ -60,7 +60,9 @@ class OsiConversionError(Exception):
 # Characters/shapes that are unsafe in a SLayer model name — notably path
 # separators and NUL, since a model name becomes a filename in YAML storage
 # (``<dir>/<name>.yaml``); an absolute/traversal name would escape the tree.
-_UNSAFE_MODEL_NAME_CHARS = ("__", ".", ":", "/", "\\", "\x00")
+# DEV-1743: ``__`` is no longer unsafe — model names may contain it (the ban is
+# lifted); it is matched exactly, never split.
+_UNSAFE_MODEL_NAME_CHARS = (".", ":", "/", "\\", "\x00")
 
 
 def _legal_model_name(name: str) -> bool:
@@ -249,7 +251,7 @@ class OsiToSlayerConverter:
             self._warn(
                 f"Dataset name {ds.name!r} is not a safe SLayer model name "
                 f"(empty, surrounding whitespace, or a forbidden character such "
-                f"as '__', '.', ':', '/', '\\\\', NUL); skipping.",
+                f"as '.', ':', '/', '\\\\', NUL); skipping.",
                 model_name=ds.name, category="illegal_name",
             )
             return
@@ -630,12 +632,19 @@ class OsiToSlayerConverter:
             tree = sqlglot.parse_one(sql)
         except sqlglot.errors.ParseError:
             return None
-        if not isinstance(tree, exp.Column) or not tree.table or tree.table == model.name:
+        if not isinstance(tree, exp.Column):
             return None
-        target = self._walk_join_alias(host=model, alias=tree.table)
+        # Use the FULL qualifier chain (``col.parts``) — a 2+-hop dotted ref like
+        # ``customers.regions.name`` stores earlier hops in ``.db``/``.catalog``,
+        # so reading only ``.table`` would drop them and mis-resolve the target.
+        parts = [p.name for p in tree.parts]
+        quals = parts[:-1]
+        if not quals or quals == [model.name]:
+            return None
+        target = self._walk_join_alias(host=model, alias=".".join(quals))
         if target is None:
             return None
-        tcol = next((c for c in target.columns if c.name == tree.name), None)
+        tcol = next((c for c in target.columns if c.name == parts[-1]), None)
         return tcol.type if tcol is not None else None
 
     def _join_columns_missing(self, model: SlayerModel, join: ModelJoin) -> bool:
@@ -662,28 +671,36 @@ class OsiToSlayerConverter:
         for col in tree.find_all(exp.Column):
             if id(col) not in root_ids:
                 continue  # nested-scope alias (CTE / sub-query) — not a join ref
-            if col.args.get("db") or col.args.get("catalog"):
-                continue  # catalog/db-qualified physical ref — outside SLayer's contract
-            if not col.table or col.table == model.name:
+            # Use the FULL qualifier chain — a 2+-hop dotted join path stores its
+            # earlier hops in ``.db``/``.catalog``, so ``.table`` alone drops them.
+            parts = [p.name for p in col.parts]
+            quals, leaf = parts[:-1], parts[-1]
+            if not quals or quals == [model.name]:
+                continue  # self / unqualified — validated at field-overlay time
+            # A multi-hop qualifier whose FIRST hop is not a join target is a
+            # physical ``schema.table.column`` ref — outside SLayer's contract.
+            if len(quals) >= 2 and not any(
+                j.target_model == quals[0] for j in model.joins
+            ):
                 continue
-            target = self._walk_join_alias(host=model, alias=col.table)
-            if target is None or not any(c.name == col.name for c in target.columns):
-                bad.append(f"{col.table}.{col.name}")
+            target = self._walk_join_alias(host=model, alias=".".join(quals))
+            if target is None or not any(c.name == leaf for c in target.columns):
+                bad.append(".".join(parts))
         return bad
 
     def _walk_join_alias(self, host: SlayerModel, alias: str) -> SlayerModel | None:
-        """Resolve a ``__``-delimited join alias (e.g. ``customers__regions``)
-        to the terminal joined model by walking ``host``'s join chain, or None
-        if any hop is not a declared join."""
-        current = host
-        for hop in (alias.split("__") if "__" in alias else [alias]):
-            join = next((j for j in current.joins if j.target_model == hop), None)
-            if join is None:
-                return None
-            current = self._models.get(hop)
-            if current is None:
-                return None
-        return current
+        """Resolve a Mode-A join qualifier to its terminal joined model, or None.
+
+        DEV-1743 strict-D2 (P1): ``alias`` is exact-matched first (a directly-
+        joined model MAY contain ``__``), then walked as a dotted chain of exact
+        hops — NEVER ``__``-split. A legacy ``customers__regions`` split-alias
+        (no model of that exact name) is unresolvable (``None``), not silently
+        walked as ``customers → regions``."""
+        return resolve_ref_target(
+            qualifiers=tuple(alias.split(".")),
+            source_model=host,
+            resolve_model=self._models.get,
+        )
 
     def _model_has_column(self, model_name: str, column: str) -> bool:
         model = self._models.get(model_name)

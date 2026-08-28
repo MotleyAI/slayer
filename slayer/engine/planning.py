@@ -223,11 +223,24 @@ class ValueRegistry:
             and isinstance(getattr(key, "source", None), StarKey)
             and canonical_alias is None
         )
+        # DEV-1743 [D5]: a JOINED/pathed column ref (``customers.region``) only
+        # flattens to a ``__`` name at a stage / query-backed boundary. If that
+        # flattened name coincides with a source column (``customers__region``,
+        # the C11 carve-out), it is a FLATTEN collision — owned by the stage-
+        # schema guard (``stage_planner._emit_stage_schema``, "Stage column name
+        # collision"), not a measure-shadows-column. Exempt it here so the
+        # clearer stage message fires instead of preempting with this one. In a
+        # regular (non-stage) query the public name stays dotted and can never be
+        # a source column, so this exemption is a no-op there.
+        is_pathed_projection = (
+            isinstance(key, (ColumnKey, ColumnSqlKey)) and key.path != ()
+        )
         if (
             public_name is not None
             and public_name in self._source_columns
             and not is_self_named_dimension
             and not is_unnamed_star_agg
+            and not is_pathed_projection
         ):
             raise MeasureNameCollidesWithColumnError(
                 name=public_name, model=self._host_model_name,
@@ -256,6 +269,7 @@ class ValueRegistry:
         expression: Optional["BoundExpr"] = None,
         format: Optional[NumberFormat] = None,
         description: Optional[str] = None,
+        is_dimension: bool = False,
     ) -> SlotId:
         self._validate_alias_collisions(
             key=key,
@@ -309,6 +323,7 @@ class ValueRegistry:
             phase=phase,
             label=label,
             type=type,
+            is_dimension=is_dimension,
             expression=expression if expression is not None else BoundExpr(value_key=key),
             format=format,
             description=description,
@@ -589,6 +604,10 @@ class DeclaredMeasure(BaseModel):
     type: Optional[DataType] = None
     format: Optional[NumberFormat] = None
     description: Optional[str] = None
+    # DEV-1740: a computed (expression) dimension is a ROW-phase composite that
+    # must be projected AND grouped, unlike a bare-measure expression (which is
+    # a user error). The flag tells the generator which one it is.
+    is_dimension: bool = False
 
 
 class OrderSpec(BaseModel):
@@ -659,7 +678,8 @@ def _iter_slot_deps(key: ValueKey):
         for arg in key.args:
             if isinstance(
                 arg,
-                _SLOTTABLE_KIND + (ArithmeticKey, ScalarCallKey, BetweenKey),
+                _SLOTTABLE_KIND
+                + (ArithmeticKey, ScalarCallKey, BetweenKey),
             ):
                 yield from _iter_slot_deps(arg)
         return
@@ -735,6 +755,7 @@ class ProjectionPlanner:
                 type=m.type,
                 format=m.format,
                 description=m.description,
+                is_dimension=m.is_dimension,
             )
             public_projection.append(sid)
             # Materialise any auxiliary slot-worthy deps of the measure

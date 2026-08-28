@@ -54,7 +54,7 @@ def _cases() -> dict:
             {"formula": "time_shift(amount:wscaled_sum, -1)", "name": "prev"},
         ]),
         "b/host_rooted_wscaled_user_kwarg": _q(measures=[
-            {"formula": "time_shift(amount:wscaled_sum(w='customers__regions.weight'), -1)",
+            {"formula": "time_shift(amount:wscaled_sum(w='customers.regions.weight'), -1)",
              "name": "prev"},
         ]),
         "b/wscaled_with_local_sibling": _q(measures=[

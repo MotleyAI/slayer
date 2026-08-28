@@ -26,6 +26,7 @@ from typing import (
     Union,
 )
 
+from decimal import Decimal
 import sqlglot
 from sqlglot import exp
 
@@ -41,8 +42,20 @@ from pydantic import BaseModel, ConfigDict, field_validator
 from slayer.core.errors import AggregationNotAllowedError
 from slayer.core.formula import RANK_FAMILY_TRANSFORMS
 from slayer.core.keys import (
+    AggregateKey,
+    ArithmeticKey,
+    BetweenKey,
+    ColumnKey,
+    ColumnSqlKey,
+    InKey,
+    Phase,
+    ScalarCallKey,
+    StarKey,
+    TimeTruncKey,
+    TransformKey,
     _FrozenKey,
     _reroot_path_ref,
+    column_leaf,
     column_path,
     reroot_aggregate_key,
 )
@@ -50,11 +63,13 @@ from slayer.core.models import Aggregation
 from slayer.core.refs import agg_kwarg_canonical_str
 from slayer.core.time_bounds import strip_frame_bounds
 from slayer.core.window_duration import parse_window_duration as _parse_window_duration
+from slayer.engine.binding import walk_value_keys
 from slayer.engine.column_expansion import (
     _is_trivial_base,
     collect_root_scope_joined_paths,
     expand_derived_refs_sync,
 )
+from slayer.engine.planned import ValueSlot
 from slayer.engine.source_bundle import (
     stage_bundle_with_siblings,
     synthetic_model_from_stage_schema,
@@ -408,15 +423,6 @@ def _is_host_grain(key) -> bool:
     return getattr(key, "grain", "target") == "host"
 
 
-def _host_grain_join_alias(path) -> str:
-    """The FROM alias a join ``path`` is emitted under.
-
-    Mirrors ``_build_from_and_joins``: the first hop uses the target's bare
-    name, later hops the ``__``-delimited path alias.
-    """
-    return "__".join(path)
-
-
 def _first_bare_column_name(key) -> Optional[str]:
     """Return the leaf name of the first bare column reference inside a
     ROW-phase composite key (DEV-1576 / DEV-1717 error messages).
@@ -426,13 +432,6 @@ def _first_bare_column_name(key) -> Optional[str]:
     "Bare measure name '<col>'" error names the offending column. Returns
     ``None`` when no column ref is found (caller falls back to the alias).
     """
-    from slayer.core.keys import (
-        ArithmeticKey,
-        ColumnKey,
-        ColumnSqlKey,
-        ScalarCallKey,
-        TransformKey,
-    )
 
     if isinstance(key, ColumnKey):
         return key.leaf
@@ -679,9 +678,32 @@ class SQLGenerator:
         new allocation path cannot silently lose dialect awareness."""
         return AliasAllocator(folds_case=dialect_folds_case(self.dialect))
 
-    def _scope_frame(self, *, model, relation, bundle, allocator):
+    def _join_alias(self, *, root: str, path: Tuple[str, ...]) -> str:
+        """Mint the internal JOIN alias for cumulative ``path`` under ``root``
+        via the generation-wide registry (DEV-1743). The registry keeps the
+        JOIN clause, the dim-column qualifier and the scope anchor agreed on
+        one alias per path, length-fits it, and uniquifies a chain leaf vs a
+        literal ``__``-named model. Falls back to the legacy ``__``-join only
+        when no generation allocator is installed (isolated direct calls)."""
+        alloc = self._gen_allocator
+        if alloc is None:
+            return root if not path else "__".join(path)
+        return alloc.alias_for(
+            root=root, path=path, limit=self._dialect.max_identifier_bytes,
+        )
+
+    def _join_alias_resolver(self, root: str) -> "Callable[[Tuple[str, ...]], str]":
+        """A root-bound alias resolver for ``expand_derived_refs_sync`` so a
+        derived column's qualifiers match the emitted JOIN aliases (DEV-1743)."""
+        return lambda path: self._join_alias(root=root, path=path)
+
+    def _scope_frame(self, *, model, relation, bundle, allocator, attached_columns=None):
         """Build a ``ScopeFrame`` rooted at ``model`` / ``relation`` on the
-        injected ``allocator`` (its ``next_scope_id`` mints the scope id)."""
+        injected ``allocator`` (its ``next_scope_id`` mints the scope id).
+
+        ``attached_columns`` (DEV-1825) seeds the regroup placeholder registry so
+        a computed dimension over a partitioned aggregate resolves the aggregate
+        to its attached producer-CTE column."""
         return ScopeFrame(
             scope_id=allocator.next_scope_id(relation),
             root_model=model,
@@ -689,6 +711,7 @@ class SQLGenerator:
             bundle=bundle,
             dialect=self._dialect,
             allocator=allocator,
+            attached_columns=dict(attached_columns or {}),
         )
 
     def _alias_render_ctx(self, *, slot_id_by_key, available_alias_by_slot_id):
@@ -1543,10 +1566,49 @@ class SQLGenerator:
                 "the query the sub-plan cannot express in one SELECT.",
             )
 
+        # DEV-1825 / DEV-1829 — a ROW regroup attach (computed dimension) renders
+        # in the plain base path; a COMBINED regroup attach (partitioned measure)
+        # renders through ``_render_with_cross_model_plans`` (the position the
+        # DEV-1739 ``CrossModelAggregatePlan`` occupied). Either one composing
+        # with an isolated-CTE feature (cross-model / windowed / ranked /
+        # transform measure), or nested as a CTE body, is deferred to DEV-1824 —
+        # raise loudly rather than silently drop the attach.
+        _row_attaches = [
+            r for r in planned_query.regroup_attach_plans
+            if r.attach_phase == "row"
+        ]
+        _combined_attaches = [
+            r for r in planned_query.regroup_attach_plans
+            if r.attach_phase == "combined"
+        ]
+        _has_isolated_feature = (
+            planned_query.cross_model_aggregate_plans
+            or planned_query.windowed_aggregate_plans
+            or planned_query.ranked_aggregate_plans
+            or planned_query.transform_layers
+        )
+        if (_row_attaches or _combined_attaches) and (
+            _has_isolated_feature or as_cte_body
+        ):
+            raise NotImplementedError(
+                "A partitioned-aggregate regroup attach combined with a "
+                "cross-model / windowed / ranked / transform measure (or nested "
+                "in a CTE body) is not yet supported (DEV-1824)."
+            )
+        # A row and a combined attach in one query is deferred (the planner
+        # already raises; this is the render-side belt).
+        if _row_attaches and _combined_attaches:
+            raise NotImplementedError(
+                "A row regroup attach (computed dimension) and a combined regroup "
+                "attach (partitioned measure) in one query is not yet supported "
+                "(DEV-1824)."
+            )
+
         if (
             planned_query.cross_model_aggregate_plans
             or planned_query.windowed_aggregate_plans
             or planned_query.ranked_aggregate_plans
+            or _combined_attaches
         ):
             return self._render_with_cross_model_plans(
                 planned_query=planned_query, bundle=bundle,
@@ -1611,6 +1673,15 @@ class SQLGenerator:
         # canonical "pick one" map used by transform-input / time-key /
         # partition-key / order-entry lookups (any alias of the slot
         # refers to the same column value, so any will do).
+        # DEV-1825 — render the regroup producers as _cm_ CTEs and their attach
+        # registry / join specs before the base SELECT, so the base scope can
+        # resolve the substituted placeholders and add the null-safe join.
+        regroup_ctes, regroup_env, regroup_join_specs = (
+            self._prepare_regroup_attaches(planned_query=planned_query, bundle=bundle)
+            if _row_attaches
+            else ([], {}, [])
+        )
+
         (
             base_select,
             aliases_by_slot_id,
@@ -1623,6 +1694,8 @@ class SQLGenerator:
             source_relation=source_relation,
             base_render_order=base_render_order,
             slots_by_id=slots_by_id,
+            regroup_env=regroup_env,
+            regroup_join_specs=regroup_join_specs,
         )
 
         where_clause, having_clause = self._build_where_having_from_planned(
@@ -1631,6 +1704,7 @@ class SQLGenerator:
             source_model=source_model,
             bundle=bundle,
             aliases_by_slot_id=aliases_by_slot_id,
+            regroup_env=regroup_env,
         )
 
         if where_clause is not None:
@@ -1669,7 +1743,7 @@ class SQLGenerator:
                 sid not in public_slot_ids for sid in base_render_order
             )
             if has_hidden_materialised:
-                return self._build_outer_trim_wrap_sql(
+                final_select = self._build_outer_trim_wrap_select(
                     base_select=base_select,
                     planned_query=planned_query,
                     source_relation=source_relation,
@@ -1677,16 +1751,23 @@ class SQLGenerator:
                     slots_by_id=slots_by_id,
                     bundle=bundle,
                 )
-            base_select = self._apply_planned_order_limit(
-                select=base_select,
-                planned_query=planned_query,
-                source_relation=source_relation,
-                slots_by_id=slots_by_id,
-                source_model=source_model,
-                bundle=bundle,
-                aliases_by_slot_id=aliases_by_slot_id,
-            )
-            return base_select.sql(dialect=self.dialect, pretty=True)
+            else:
+                final_select = self._apply_planned_order_limit(
+                    select=base_select,
+                    planned_query=planned_query,
+                    source_relation=source_relation,
+                    slots_by_id=slots_by_id,
+                    source_model=source_model,
+                    bundle=bundle,
+                    aliases_by_slot_id=aliases_by_slot_id,
+                )
+            # DEV-1825 — prepend the regroup producer CTEs (the base FROM reads
+            # from them). ``assemble_with_chain`` owns the WITH clause.
+            if regroup_ctes:
+                final_select = assemble_with_chain(
+                    entries=regroup_ctes, final=final_select,
+                )
+            return final_select.sql(dialect=self.dialect, pretty=True)
 
         # 7b.10 — transform layers present. Build the CTE chain. Bodies stay
         # ``exp.Select`` from renderer to assembler (D8): this chain carries
@@ -1927,18 +2008,13 @@ class SQLGenerator:
         that subtracts them needs its own step CTE. Same shape covers
         ``change_pct`` and any future POST-phase non-transform slot.
         """
-        from slayer.core.keys import (
-            ArithmeticKey as _ArithKey,
-            ScalarCallKey as _ScalarKey,
-            TransformKey as _TKey,
-        )
         unmaterialised: List[Any] = []
         for cslot in planned_query.combined_expression_slots:
-            if isinstance(cslot.key, _TKey):
+            if isinstance(cslot.key, TransformKey):
                 continue
             if cslot.id in aliases_by_slot_id:
                 continue
-            if isinstance(cslot.key, (_ArithKey, _ScalarKey)):
+            if isinstance(cslot.key, (ArithmeticKey, ScalarCallKey)):
                 unmaterialised.append(cslot)
         return unmaterialised
 
@@ -2158,17 +2234,6 @@ class SQLGenerator:
           rejected with a ``composite-input transforms`` marker so the
           test suite's per-op composite assertions pin a unified message.
         """
-        from slayer.core.keys import (
-            AggregateKey,
-            ArithmeticKey,
-            BetweenKey,
-            ColumnKey,
-            ColumnSqlKey,
-            InKey,
-            ScalarCallKey,
-            TimeTruncKey,
-            TransformKey,
-        )
 
         # 7b.11 lifted these — placeholder set for future slices.
         deferred: set = set()
@@ -2283,8 +2348,6 @@ class SQLGenerator:
         are owned by the combined SELECT instead, which resolves each operand
         to its CTE-qualified column.
         """
-        from slayer.core.keys import AggregateKey as _AggKey
-        from slayer.engine.binding import walk_value_keys
 
         remote_slot_ids = {
             p.aggregate_slot_id
@@ -2294,7 +2357,7 @@ class SQLGenerator:
             for p in planned_query.windowed_aggregate_plans
         }
         for node in walk_value_keys(key):
-            if not isinstance(node, _AggKey):
+            if not isinstance(node, AggregateKey):
                 continue
             if getattr(node.source, "path", ()):
                 return True  # cross-model source, even without a plan yet
@@ -2332,18 +2395,6 @@ class SQLGenerator:
         BY and silently change query grain). Composites still recurse so
         their AggregateKey operands surface.
         """
-        from slayer.core.keys import (
-            AggregateKey,
-            ArithmeticKey,
-            BetweenKey,
-            ColumnKey,
-            ColumnSqlKey,
-            InKey,
-            Phase,
-            ScalarCallKey,
-            TimeTruncKey,
-            TransformKey,
-        )
 
         if aggregates_only:
             base_kinds: Tuple[type, ...] = (AggregateKey,)
@@ -2382,8 +2433,8 @@ class SQLGenerator:
                         a,
                         (
                             TransformKey, ArithmeticKey, ScalarCallKey,
-                            BetweenKey, InKey, ColumnKey, ColumnSqlKey,
-                            TimeTruncKey, AggregateKey,
+                            BetweenKey, InKey, ColumnKey,
+                            ColumnSqlKey, TimeTruncKey, AggregateKey,
                         ),
                     ):
                         _collect_from(a)
@@ -2485,17 +2536,6 @@ class SQLGenerator:
         reference (``input`` + ``partition_keys`` + ``time_key``) has
         an alias materialised in a prior CTE.
         """
-        from slayer.core.keys import (
-            AggregateKey,
-            ArithmeticKey,
-            BetweenKey,
-            ColumnKey,
-            ColumnSqlKey,
-            InKey,
-            ScalarCallKey,
-            TimeTruncKey,
-            TransformKey,
-        )
 
         slotted_kinds = (
             ColumnKey, ColumnSqlKey, TimeTruncKey, AggregateKey, TransformKey,
@@ -2588,14 +2628,6 @@ class SQLGenerator:
         sub-pass: their inputs are owned by the per-plan ``_cm_*`` CTE
         (Stage 4 / DEV-1708). Recurses into composite AGGREGATE keys.
         """
-        from slayer.core.keys import (
-            AggregateKey,
-            ArithmeticKey,
-            ColumnKey,
-            ColumnSqlKey,
-            Phase,
-            ScalarCallKey,
-        )
 
         resolved: "Dict[Any, Dict[str, ResolvedAggKwarg]]" = {}
 
@@ -2665,9 +2697,17 @@ class SQLGenerator:
             # do (the widened Law-3 trigger isolates on them, and the CTE
             # sub-render lands here). Shared with the ``_cm_*`` CTE path so the
             # two cannot drift apart again (DEV-1745 W2).
-            self._register_fragment_kwarg_joins(
+            #
+            # DEV-1743: keep the RESOLVED (alias-rewritten) fragment per name so
+            # the render embeds it (a multi-hop dotted fragment must become its
+            # ``__`` join alias, not stay dotted-unbound).
+            frags = self._register_fragment_kwarg_joins(
                 key=key, scope=scope, model=scope.root_model,
             )
+            if frags:
+                bucket = resolved.setdefault(key, {})
+                for name, ast in frags.items():
+                    bucket.setdefault(name, ResolvedAggKwarg(kind="expr", value=ast))
 
         def _resolve_first_last_time_arg(key) -> None:
             # DEV-1710 Stage 6 — a first/last explicit ranking-time arg
@@ -2694,12 +2734,17 @@ class SQLGenerator:
         _for_each_local_agg(_resolve_first_last_time_arg)
         return resolved
 
-    def _throwaway_frame(self, *, model, relation: str, bundle) -> ScopeFrame:
+    def _throwaway_frame(
+        self, *, model, relation: str, bundle, attached_columns=None,
+    ) -> ScopeFrame:
         """A target-rooted ``ScopeFrame`` built purely to reproduce an anchored
         expression. Its ``join_paths`` are inert — join discovery is owned by a
         separate pass — so every caller discards them; only the re-anchored SQL
         is used. A fresh allocator per frame keeps its scope id generation-local.
-        """
+
+        ``attached_columns`` (DEV-1825) seeds the regroup placeholder registry so
+        a WHERE/HAVING predicate over a computed dimension resolves its
+        partitioned aggregate to the attached producer column."""
         allocator = self._new_allocator()
         return ScopeFrame(
             scope_id=allocator.next_scope_id(relation),
@@ -2708,7 +2753,57 @@ class SQLGenerator:
             bundle=bundle,
             dialect=self._dialect,
             allocator=allocator,
+            attached_columns=dict(attached_columns or {}),
         )
+
+    def _render_computed_dims_via_scope(
+        self, *, base_render_order, slots_by_id, scope,
+    ) -> Dict[str, exp.Expression]:
+        """Render ROW-phase computed (expression) dimensions through the HOST
+        scope BEFORE the FROM is built, so a join the expression crosses
+        registers into ``scope.join_paths`` (DEV-1740). Returns the rendered
+        expr per slot id; the base-SELECT branch reads it instead of
+        re-rendering."""
+
+        out: Dict[str, exp.Expression] = {}
+        for sid in base_render_order:
+            slot = slots_by_id[sid]
+            if (
+                slot.phase == Phase.ROW
+                and slot.is_dimension
+                and isinstance(slot.key, (ScalarCallKey, ArithmeticKey))
+            ):
+                out[sid] = render_value_key(
+                    key=slot.key,
+                    ctx=RenderContext(scope=scope, dialect=self._dialect),
+                )
+        return out
+
+    def _resolve_regroup_attach_conditions(
+        self, *, regroup_join_specs, scope,
+    ) -> List[Tuple[str, Optional[exp.Expression]]]:
+        """One ``(cte_name, condition)`` per regroup producer. Each host
+        partition key renders through ``scope`` (registering any join it crosses)
+        and pairs null-safely (P-I) with the producer's grain column.
+        ``condition`` is ``None`` for a grand-total producer — an empty grain the
+        caller attaches as a CROSS JOIN."""
+        out: List[Tuple[str, Optional[exp.Expression]]] = []
+        for cte_name, pairs in (regroup_join_specs or []):
+            operands = [
+                (
+                    render_value_key(
+                        key=host_key,
+                        ctx=RenderContext(scope=scope, dialect=self._dialect),
+                    ),
+                    grain_alias_column(alias=producer_alias, table=cte_name),
+                )
+                for host_key, producer_alias in pairs
+            ]
+            out.append((
+                cte_name,
+                build_grain_joinback_condition(pairs=operands, dialect=self._dialect),
+            ))
+        return out
 
     def _resolve_agg_kwargs_for_key(
         self, *, key, source_model, source_relation: str, bundle,
@@ -2725,7 +2820,6 @@ class SQLGenerator:
         (the HAVING aggregate is also a ``base_render_order`` slot), so the
         throwaway scope's own ``join_paths`` are intentionally discarded.
         """
-        from slayer.core.keys import ColumnKey, ColumnSqlKey
 
         kwargs = getattr(key, "kwargs", None)
         if bundle is None or not kwargs:
@@ -2751,6 +2845,8 @@ class SQLGenerator:
         slots_by_id: Dict[str, Any],
         skip_cross_model_aggs: bool = False,
         skip_filter_ids: Optional[Set[str]] = None,
+        regroup_env: Optional[Dict[Any, exp.Expression]] = None,
+        regroup_join_specs: Optional[List[Tuple[str, List[Tuple[Any, str]]]]] = None,
     ):
         """Build the base SELECT (sqlglot ``Select``) for ``generate_from_planned``.
 
@@ -2769,16 +2865,6 @@ class SQLGenerator:
         cross-model orchestrator so the ``_base`` CTE omits AGGREGATE
         slots that live in a per-plan ``_cm_*`` CTE.
         """
-        from slayer.core.enums import TimeGranularity
-        from slayer.core.keys import (
-            AggregateKey,
-            ArithmeticKey,
-            ColumnKey,
-            ColumnSqlKey,
-            Phase,
-            ScalarCallKey,
-            TimeTruncKey,
-        )
 
         # DEV-1706 Stage 2: the host base is a single scope; every join-crossing
         # ref registers its path into ``host_scope.join_paths`` as a side effect
@@ -2807,6 +2893,7 @@ class SQLGenerator:
         host_scope = self._scope_frame(
             model=source_model, relation=source_relation,
             bundle=bundle, allocator=host_allocator,
+            attached_columns=regroup_env,
         )
         # Pre-expand derived (ColumnSqlKey) ROW + TIME dimensions: inline
         # sibling/joined derived refs (DEV-1333 / DEV-1410) and register any
@@ -2817,6 +2904,22 @@ class SQLGenerator:
             source_relation=source_relation, source_model=source_model,
             bundle=bundle, scope=host_scope,
             order_slot_ids=[e.slot_id for e in planned_query.order],
+        )
+        # DEV-1740: pre-render computed (expression) dimensions through the
+        # HOST scope (position 2.5) so a join their expression crosses is
+        # registered before the FROM is built — a throwaway frame here dropped
+        # the customers join for ``upper(customers.tier)``.
+        computed_dim_expr_by_sid = self._render_computed_dims_via_scope(
+            base_render_order=base_render_order,
+            slots_by_id=slots_by_id,
+            scope=host_scope,
+        )
+        # DEV-1825 (position 2.6) — resolve each regroup producer's host-side
+        # partition keys through the scope so any join they cross (e.g.
+        # partition_by=customers.region_id) is registered before the FROM is
+        # built. The rendered host expressions become the attach join ON operands.
+        regroup_attach_conditions = self._resolve_regroup_attach_conditions(
+            regroup_join_specs=regroup_join_specs, scope=host_scope,
         )
         # WHERE-phase filters referencing joined columns (direct, derived, or
         # Mode-A ``__`` paths) register their joins into the scope too (position
@@ -2923,17 +3026,25 @@ class SQLGenerator:
                     select_columns.append(col_expr.copy().as_(full_alias))
                     group_by_keys.setdefault(sid, col_expr)
                     _record_alias(sid, full_alias)
+                elif isinstance(key, (ScalarCallKey, ArithmeticKey)) and slot.is_dimension:
+                    # DEV-1740: a computed (expression) dimension — rendered
+                    # through the host scope in the pre-pass above (so a
+                    # crossed join reached the FROM); GROUP BY the expression.
+                    dim_expr = computed_dim_expr_by_sid[sid]
+                    select_columns.append(dim_expr.copy().as_(full_alias))
+                    group_by_keys.setdefault(sid, dim_expr)
+                    _record_alias(sid, full_alias)
                 elif isinstance(key, (ScalarCallKey, ArithmeticKey)):
                     # DEV-1576 / DEV-1717: a ROW-phase composite here is a
                     # non-aggregating measure expression (a bare column, or
                     # arithmetic / scalar-call over bare columns such as
                     # ``round(amount, 2)`` / ``abs(amount)`` / ``amount + 1``).
-                    # Dimensions are ColumnKey / TimeTruncKey / ColumnSqlKey,
-                    # already handled above; the only way to reach here with a
-                    # composite key is a measure that never aggregates. Raise
-                    # the same actionable "Bare measure name" error the
-                    # enrich_query path raises rather than leaking an internal
-                    # NotImplementedError.
+                    # Dimensions are ColumnKey / TimeTruncKey / ColumnSqlKey /
+                    # a computed dimension (handled above); the only way to reach
+                    # here with a composite key is a measure that never
+                    # aggregates. Raise the same actionable "Bare measure name"
+                    # error the enrich_query path raises rather than leaking an
+                    # internal NotImplementedError.
                     bare = _first_bare_column_name(key) or full_alias
                     raise ValueError(
                         f"'{bare}' needs an aggregation inside an expression. "
@@ -3027,6 +3138,19 @@ class SQLGenerator:
             base_select = base_select.select(col)
         base_select = base_select.from_(from_clause)
         base_select = _apply_joins(select=base_select, joins=base_joins)
+        # DEV-1825 — attach each regroup producer CTE on its partition grain
+        # (null-safe LEFT JOIN, or a single-row CROSS JOIN for a grand-total
+        # producer). Cardinality-preserving: the producer is grouped by exactly
+        # these keys, so at most one row joins per null-safe key tuple.
+        for cte_name, condition in regroup_attach_conditions:
+            if condition is None:
+                base_select = base_select.join(
+                    exp.to_identifier(cte_name), join_type="CROSS",
+                )
+            else:
+                base_select = base_select.join(
+                    exp.to_identifier(cte_name), on=condition, join_type="LEFT",
+                )
         return (
             base_select, aliases_by_slot_id, has_aggregation, group_by_keys,
         )
@@ -3045,7 +3169,6 @@ class SQLGenerator:
         of any other type (first/last never takes a leading non-column
         positional).
         """
-        from slayer.core.keys import ColumnKey, ColumnSqlKey
 
         if key.agg not in ("first", "last"):
             return None
@@ -3107,7 +3230,6 @@ class SQLGenerator:
         is grouped at the host grain and LEFT-JOINed back to ``_base`` by the
         caller. Returns ``(cte_sql, grain_aliases)``.
         """
-        from slayer.core.keys import AggregateKey
 
         key = agg_slot.key
         assert isinstance(key, AggregateKey)
@@ -3315,8 +3437,6 @@ class SQLGenerator:
         effect here rather than a separate pass (Law 1), so the CTE's FROM can
         never be missing one.
         """
-        from slayer.core.enums import TimeGranularity
-        from slayer.core.keys import ColumnKey, ColumnSqlKey, TimeTruncKey
 
         def _register(expr: exp.Expression, path: Tuple[str, ...]) -> None:
             if path:
@@ -3374,7 +3494,6 @@ class SQLGenerator:
         decide — and would keep the residual-path raise alive on a path that no
         longer has the limitation it describes.
         """
-        from slayer.core.keys import ColumnKey, ColumnSqlKey, StarKey
 
         source = key.source
         if isinstance(source, StarKey):
@@ -3437,7 +3556,6 @@ class SQLGenerator:
         rn-suffix scheme that used to disambiguate several rankings sharing one
         scope has nothing left to disambiguate.
         """
-        from slayer.core.keys import AggregateKey, reroot_aggregate_key
 
         key = agg_slot.key
         if not isinstance(key, AggregateKey):
@@ -3701,8 +3819,6 @@ class SQLGenerator:
         mode is loud. Most acceptance / parity tests don't exercise that
         combination.
         """
-        from slayer.core.keys import AggregateKey, Phase
-        from slayer.engine.binding import walk_value_keys
 
         source_model = bundle.source_model
         source_relation = planned_query.source_relation
@@ -3737,7 +3853,6 @@ class SQLGenerator:
         ranked_slot_ids = {
             p.aggregate_slot_id for p in planned_query.ranked_aggregate_plans
         }
-        isolated_slot_ids = cma_slot_ids | windowed_slot_ids | ranked_slot_ids
 
         # DEV-1503 / DEV-1745 (P-D) — the outer combined-SELECT WHERE wrapper is
         # routed by the PLANNER (``_plan_outer_where_filters``), which knows
@@ -3746,6 +3861,25 @@ class SQLGenerator:
         # ``filters_by_phase`` here to rediscover it would be routing policy
         # chosen during emission, and the two could disagree.
         slot_by_key = {s.key: s for s in slots_by_id.values()}
+
+        # DEV-1829 — combined regroup producers. Rendered here as ``_cm_`` CTEs
+        # and joined back at the combined SELECT, substituting for the DEV-1739
+        # partitioned-measure ``CrossModelAggregatePlan``. Their placeholder
+        # slots are excluded from ``_base`` (like isolated aggregate slots) and
+        # projected from the producer column instead.
+        (
+            cm_regroup_ctes,
+            regroup_placeholder_to_cm,
+            regroup_placeholder_slot_ids,
+            regroup_joinbacks,
+        ) = self._prepare_combined_regroup_attaches(
+            planned_query=planned_query, bundle=bundle,
+            source_relation=source_relation, slot_by_key=slot_by_key,
+        )
+        isolated_slot_ids = (
+            cma_slot_ids | windowed_slot_ids | ranked_slot_ids
+            | regroup_placeholder_slot_ids
+        )
         outer_where_filter_ids: Set[str] = set(
             planned_query.outer_where_filter_ids,
         )
@@ -3769,11 +3903,7 @@ class SQLGenerator:
         # adjacent composites). Walk both, but skip pure-leaf
         # ``AggregateKey`` slots — those have their own routing via
         # ``cma_slot_ids`` and ``_cm_*`` CTEs.
-        from slayer.core.keys import (
-            ArithmeticKey as _ArithKey,
-            ScalarCallKey as _ScalarKey,
-        )
-        composite_kinds = (_ArithKey, _ScalarKey)
+        composite_kinds = (ArithmeticKey, ScalarCallKey)
         outer_composite_slot_ids: Set[str] = set()
         # A composite slot routes to the outer combined SELECT when it is
         # referenced by EITHER the public projection OR an ORDER BY entry —
@@ -3793,6 +3923,12 @@ class SQLGenerator:
             if not isinstance(slot.key, composite_kinds):
                 continue
             for k in walk_value_keys(slot.key):
+                # DEV-1829 — a combined regroup placeholder operand routes the
+                # composite outward like a cross-model one: its value lives in a
+                # ``_cm_`` producer joined back to ``_base``.
+                if isinstance(k, ColumnKey) and k in regroup_placeholder_to_cm:
+                    outer_composite_slot_ids.add(slot.id)
+                    break
                 if isinstance(k, AggregateKey):
                     s = slot_by_key.get(k)
                     # DEV-1733: a WINDOWED operand routes the composite outward
@@ -4348,6 +4484,13 @@ class SQLGenerator:
                     rk_cte_name_for_plan[plan.aggregate_slot_id],
                     rk_agg_col_for_plan[plan.aggregate_slot_id],
                 )
+            # DEV-1829 — a combined regroup placeholder resolves to its producer
+            # column exactly like a cross-model aggregate does, keyed by the
+            # placeholder slot's id so the outer-wrapper facility resolves it.
+            for _ph_key, _cm in regroup_placeholder_to_cm.items():
+                _ph_slot = slot_by_key.get(_ph_key)
+                if _ph_slot is not None:
+                    outer_composite_cm_map[_ph_slot.id] = _cm
 
             def _render_outer_composite(cslot) -> exp.Expression:
                 rendered = render_value_key(
@@ -4461,6 +4604,32 @@ class SQLGenerator:
             combined_aliases_by_slot_id[plan.aggregate_slot_id] = list(
                 public_aliases,
             )
+
+        # DEV-1829 — regroup side: a directly-projected combined placeholder
+        # (a partitioned measure) surfaces the producer's aggregate column under
+        # the consumer's public alias(es), remapping ``AS`` for extra names
+        # (C13). A hidden order-only placeholder is trimmed — its ``_cm_`` CTE is
+        # still joined below and its ORDER BY reference resolves CTE-qualified.
+        for _ph_key, (_cte_name, _agg_col) in regroup_placeholder_to_cm.items():
+            ph_slot = slot_by_key.get(_ph_key)
+            if ph_slot is None or ph_slot.id not in regroup_placeholder_slot_ids:
+                continue
+            public_aliases = (
+                []
+                if ph_slot.hidden
+                else self._public_aliases_for_cross_model_agg(
+                    slot=ph_slot,
+                    source_relation=source_relation,
+                    canonical_alias=_agg_col,
+                )
+            )
+            for pub in public_aliases:
+                col = grain_alias_column(alias=_agg_col, table=_cte_name)
+                _emit(
+                    ph_slot.id,
+                    col if pub == _agg_col else col.as_(pub, quoted=True),
+                )
+            combined_aliases_by_slot_id[ph_slot.id] = list(public_aliases)
 
         # DEV-1714 Stage 10 — windowed side: project each ``_wm_`` CTE's
         # aggregate column. Codex#2: one occurrence per declared user alias (C13
@@ -4600,7 +4769,7 @@ class SQLGenerator:
                 rk_joinback_pairs_for_plan.get(plan.aggregate_slot_id, []),
             )
             for plan in planned_query.ranked_aggregate_plans
-        ]
+        ] + regroup_joinbacks  # DEV-1829 — combined regroup producers
         for cte_name, joinback_pairs in joinback_specs:
             if cte_name in joined_cte_names:
                 continue
@@ -4742,6 +4911,12 @@ class SQLGenerator:
         cte_entries += [
             CteEntry(name=name, query=query) for name, query in cm_ctes
         ]
+        # DEV-1829 — combined regroup producers are host-rooted single SELECTs
+        # (``FROM <host>``), rooted at a real relation like a ``_cm_`` CTE, so
+        # they declare no ``_base`` dependency.
+        cte_entries += [
+            CteEntry(name=name, query=query) for name, query in cm_regroup_ctes
+        ]
         cte_entries += [
             CteEntry(name=name, query=query, depends_on=["_base"])
             for name, query in wm_ctes
@@ -4782,6 +4957,15 @@ class SQLGenerator:
                 alias=rk_agg_col_for_plan[plan.aggregate_slot_id],
                 table=rk_cte_name_for_plan[plan.aggregate_slot_id],
             )
+        # DEV-1829 — an ORDER BY over a combined regroup placeholder resolves to
+        # its producer column, exactly like a cross-model aggregate (the planner
+        # classifies it CROSS_MODEL_CTE).
+        for _ph_key, (_cte_name, _agg_col) in regroup_placeholder_to_cm.items():
+            _ph_slot = slot_by_key.get(_ph_key)
+            if _ph_slot is not None:
+                order_env.cross_model_cte[_ph_slot.id] = grain_alias_column(
+                    alias=_agg_col, table=_cte_name,
+                )
         # A PROJECTED outer composite orders on its combined-SELECT alias; an
         # order-only one has no alias and renders INLINE, so no synthetic
         # column leaks into the public projection.
@@ -4845,7 +5029,6 @@ class SQLGenerator:
         sets it to the host name). A local inner (no plan) or host-rooted inner
         renders; ``consecutive_periods`` never re-aggregates and is exempt.
         """
-        from slayer.core.keys import TransformKey
 
         target_rooted_agg_slot_ids = {
             p.aggregate_slot_id
@@ -5200,6 +5383,179 @@ class SQLGenerator:
         )
         return cte_sql, joinback_pairs, agg_col_alias
 
+    def _prepare_combined_regroup_attaches(  # NOSONAR(S3776) — one cohesive combined-attach render (producer CTE → placeholder env → join-back); the phases share local state and reads clearer inline.
+        self, *, planned_query, bundle, source_relation, slot_by_key,
+    ):
+        """Render each DEV-1829 combined regroup producer as a ``_cm_*`` CTE.
+
+        The combined attach substitutes for the DEV-1739 partitioned-measure
+        ``CrossModelAggregatePlan``, so its producer renders through the SAME
+        machinery: a host-rooted single SELECT with dotted output aliases and
+        public / canonical aggregate names, joined back at the combined SELECT.
+
+        Returns ``(ctes, placeholder_to_cm, placeholder_slot_ids, joinbacks)``:
+        * ``ctes`` — ``(cte_name, parsed_body)`` per producer;
+        * ``placeholder_to_cm`` — placeholder ``ColumnKey`` → ``(cte_name,
+          agg_col_alias)`` for combined-scope resolution (projection / composite
+          / order);
+        * ``placeholder_slot_ids`` — consumer slot ids whose key is a combined
+          placeholder (excluded from ``_base``, projected from the producer);
+        * ``joinbacks`` — ``(cte_name, [(host_base_alias, producer_grain_alias)])``
+          per producer; an empty pair list attaches as a single-row CROSS JOIN.
+        """
+        ctes: List[Tuple[str, exp.Expression]] = []
+        placeholder_to_cm: Dict[Any, Tuple[str, str]] = {}
+        placeholder_slot_ids: Set[str] = set()
+        joinbacks: List[Tuple[str, List[Tuple[str, str]]]] = []
+        allocator = self._gen_allocator or self._new_allocator()
+        for attach in planned_query.regroup_attach_plans:
+            if attach.attach_phase != "combined":
+                continue
+            producer = attach.producer_plan
+            sub_slots = {
+                s.id: s
+                for s in (
+                    list(producer.row_slots)
+                    + list(producer.aggregate_slots)
+                    + list(producer.combined_expression_slots)
+                )
+            }
+            # CTE name from the canonical (host-prefixed) alias of the first
+            # consumed aggregate — reproduces the DEV-1739 ``_cm_`` seed.
+            seed_key = attach.substitutions[0].original_key
+            cte_name = cte_name_from_alias(
+                prefix="_cm_",
+                alias=self._canonical_cross_model_alias(
+                    source_relation=source_relation, key=seed_key,
+                ),
+                allocator=allocator, dialect=self.dialect,
+                limit=self._dialect.max_identifier_bytes,
+            )
+            producer_sql = self.generate_from_planned(
+                planned_query=producer, bundle=bundle, as_cte_body=True,
+            )
+            ctes.append((cte_name, self._parse_cte_body(producer_sql)))
+            producer_relation = producer.source_relation
+            for sub in attach.substitutions:
+                agg_slot = sub_slots.get(sub.producer_slot_id)
+                if agg_slot is None:
+                    raise RuntimeError(
+                        f"Combined regroup producer is missing aggregate slot "
+                        f"{sub.producer_slot_id!r}.",
+                    )
+                agg_col = self._full_alias_for_slot(
+                    slot=agg_slot, source_relation=producer_relation, alias_index={},
+                )
+                placeholder_to_cm[sub.placeholder] = (cte_name, agg_col)
+                ph_slot = slot_by_key.get(sub.placeholder)
+                if ph_slot is not None:
+                    placeholder_slot_ids.add(ph_slot.id)
+            pairs: List[Tuple[str, str]] = []
+            for host_key, producer_slot_id in attach.join_pairs:
+                grain_slot = sub_slots.get(producer_slot_id)
+                host_slot = slot_by_key.get(host_key)
+                if grain_slot is None or host_slot is None:
+                    raise RuntimeError(
+                        "Combined regroup attach is missing a host / producer "
+                        "grain slot for its join-back.",
+                    )
+                host_alias = self._full_alias_for_slot(
+                    slot=host_slot, source_relation=source_relation, alias_index={},
+                )
+                grain_alias = self._full_alias_for_slot(
+                    slot=grain_slot, source_relation=producer_relation, alias_index={},
+                )
+                pairs.append((host_alias, grain_alias))
+            joinbacks.append((cte_name, pairs))
+        return ctes, placeholder_to_cm, placeholder_slot_ids, joinbacks
+
+    def _prepare_regroup_attaches(self, *, planned_query, bundle):
+        """Render each DEV-1825 regroup producer as a ``_cm_*`` CTE.
+
+        Returns ``(ctes, attached_env, join_specs)``:
+        * ``ctes`` — one ``CteEntry`` per producer, parsed from its rendered
+          single-SELECT body (the producer is guarded to carry no WITH);
+        * ``attached_env`` — placeholder ``ColumnKey`` → its producer-CTE column,
+          seeded into the base scope so the computed dimension resolves;
+        * ``join_specs`` — ``(cte_name, [(host_partition_key, producer_alias)])``
+          per producer; an empty pair list attaches as a single-row CROSS JOIN.
+
+        The PARENT allocator mints the ``_cm_`` name before the recursive
+        producer render (which installs and restores its own allocator), so
+        naming is parent-owned and the producer render is allocator-isolated.
+        """
+        ctes: List[CteEntry] = []
+        attached_env: Dict[Any, exp.Expression] = {}
+        join_specs: List[Tuple[str, List[Tuple[Any, str]]]] = []
+        allocator = self._gen_allocator or self._new_allocator()
+        for attach in planned_query.regroup_attach_plans:
+            # ROW attaches only — a combined attach renders through
+            # ``_render_with_cross_model_plans``. Explicit so a future DEV-1824
+            # row+combined query can't double-render a combined producer here.
+            if attach.attach_phase != "row":
+                continue
+            cte_name = cte_name_from_alias(
+                prefix="_cm_", alias=attach.alias_hint, allocator=allocator,
+                dialect=self.dialect, limit=self._dialect.max_identifier_bytes,
+            )
+            producer = attach.producer_plan
+            relation = producer.source_relation
+            sub_slots = {
+                s.id: s
+                for s in (
+                    list(producer.row_slots)
+                    + list(producer.aggregate_slots)
+                    + list(producer.combined_expression_slots)
+                )
+            }
+            # Flatten each producer output column (``orders.amount_sum`` ->
+            # ``amount_sum``) so the CTE exposes DOT-FREE names. A dotted alias
+            # inside a WHERE predicate is stringified and re-parsed
+            # (``_build_where_having_from_planned``), and a dialect that treats
+            # dots as path separators (BigQuery) then mis-splits it — the flat
+            # rename is the same fix the user-stage CTEs use.
+            def _flat(slot) -> str:
+                dotted = self._full_alias_for_slot(
+                    slot=slot, source_relation=relation, alias_index={},
+                )
+                prefix = f"{relation}."
+                stripped = dotted[len(prefix):] if dotted.startswith(prefix) else dotted
+                return stripped.replace(".", "__")
+
+            producer_sql = self.generate_from_planned(
+                planned_query=producer, bundle=bundle, as_cte_body=True,
+            )
+            expected = [
+                _flat(sub_slots[sid]) for sid in producer.projection
+                if sid in sub_slots
+            ]
+            wrapped = build_flat_rename_wrapper(
+                source_relation=relation, stage_sql=producer_sql,
+                expected_columns=expected, dialect=self.dialect,
+            )
+            ctes.append(CteEntry(name=cte_name, query=wrapped))
+            for sub in attach.substitutions:
+                agg_slot = sub_slots.get(sub.producer_slot_id)
+                if agg_slot is None:
+                    raise RuntimeError(
+                        f"Regroup producer is missing aggregate slot "
+                        f"{sub.producer_slot_id!r}.",
+                    )
+                attached_env[sub.placeholder] = grain_alias_column(
+                    alias=_flat(agg_slot), table=cte_name,
+                )
+            pairs: List[Tuple[Any, str]] = []
+            for host_key, producer_slot_id in attach.join_pairs:
+                grain_slot = sub_slots.get(producer_slot_id)
+                if grain_slot is None:
+                    raise RuntimeError(
+                        f"Regroup producer is missing grain slot "
+                        f"{producer_slot_id!r}.",
+                    )
+                pairs.append((host_key, _flat(grain_slot)))
+            join_specs.append((cte_name, pairs))
+        return ctes, attached_env, join_specs
+
     def _render_cross_model_cte(  # NOSONAR(S3776) — single conceptual unit: shared-grain projection + GROUP BY classification + aggregate reroot (source / args / kwargs) + first/last ranked-subquery wrap + target-model-filter qualification + WHERE/HAVING routing. Each block is interdependent state for the same CTE; splitting forces the same cross-cutting state through helpers without simplifying anything.
         self,
         *,
@@ -5228,13 +5584,6 @@ class SQLGenerator:
         ``plan.having_filter_ids`` / ``plan.target_model_filters`` so
         the CTE renders each route without re-classifying.
         """
-        from slayer.core.enums import TimeGranularity
-        from slayer.core.keys import (
-            ColumnKey,
-            ColumnSqlKey,
-            Phase,
-            TimeTruncKey,
-        )
 
         target_model_name = plan.target_model
         target_model = bundle.get_referenced_model(target_model_name)
@@ -5321,10 +5670,9 @@ class SQLGenerator:
             # the target relation. A derived (ColumnSqlKey) column — base dim
             # or time dimension — expands its Column.sql rooted at the target;
             # a base column emits the bare ``target.leaf``.
-            from slayer.core.keys import ColumnSqlKey as _ColumnSqlKey
 
             grain_column = key.column if isinstance(key, TimeTruncKey) else key
-            if isinstance(grain_column, _ColumnSqlKey):
+            if isinstance(grain_column, ColumnSqlKey):
                 # DEV-1728: a derived (ColumnSqlKey) grain — plain dimension OR
                 # time dimension — expands its Column.sql rooted at the target and
                 # renders here. (The DEV-1708 raise for a PLAIN derived grain is
@@ -5453,6 +5801,20 @@ class SQLGenerator:
                 cte_resolved_kwargs[_kname] = ResolvedAggKwarg(
                     kind="expr", value=cte_scope.resolve(_kval),
                 )
+        # DEV-1745 (W2) + DEV-1743: the aggregation's template FRAGMENTS — string
+        # kwargs plus non-overridden ``AggregationParam.sql`` defaults — substitute
+        # into the CTE's aggregate expression, so the joins they cross belong in
+        # this CTE's FROM AND their alias-rewritten form must be embedded (a
+        # multi-hop dotted fragment ``customers.regions.weight`` becomes the
+        # ``customers__regions`` alias, not a dotted-unbound ``regions``). Resolve
+        # them here — BEFORE the spec is built — through the same door the host
+        # path uses, so the two cannot drift apart again.
+        for _fname, _fast in self._register_fragment_kwarg_joins(
+            key=local_agg_key, scope=cte_scope, model=target_model,
+        ).items():
+            cte_resolved_kwargs.setdefault(
+                _fname, ResolvedAggKwarg(kind="expr", value=_fast),
+            )
 
         synth = self._build_agg_render_spec_from_planned(
             slot=local_slot,
@@ -5495,18 +5857,9 @@ class SQLGenerator:
         if local_agg_key.column_filter_key is not None:
             _register_filter_join_paths(local_agg_key.column_filter_key.canonical_sql)
 
-        # DEV-1745 (W2): the aggregation's template FRAGMENTS — string kwargs
-        # plus the non-overridden ``AggregationParam.sql`` defaults — substitute
-        # verbatim into the CTE's aggregate expression, so the joins they cross
-        # belong in this CTE's FROM. The host path has always registered them;
-        # this path never did, which is why a default like ``w='regions.weight'``
-        # emitted ``SUM(customers.spend * regions.weight) FROM customers`` with
-        # no join to regions. Routing the fragments through the door makes the
-        # registration a side effect of resolving them, so the two paths cannot
-        # drift apart again.
-        self._register_fragment_kwarg_joins(
-            key=local_agg_key, scope=cte_scope, model=target_model,
-        )
+        # The aggregation's template fragments are resolved (and their joins
+        # registered into ``cte_scope``) ABOVE, before the render spec is built,
+        # so the resolved fragment can be embedded into it (DEV-1743).
 
         where_parts: List[exp.Expression] = []
         for filter_text in plan.target_model_filters:
@@ -5627,15 +5980,6 @@ class SQLGenerator:
         the path it crosses; free-SQL ``column_filter`` predicates keep the
         quote-tolerant dual-scan of the Mode-A door (``ScopeFrame.enter_predicate``).
         """
-        from slayer.core.keys import (
-            AggregateKey,
-            ArithmeticKey,
-            BetweenKey,
-            ColumnKey,
-            ColumnSqlKey,
-            InKey,
-            ScalarCallKey,
-        )
 
         if not filter_ids:
             return
@@ -5688,7 +6032,6 @@ class SQLGenerator:
         elsewhere and had its refs resolved in the wrong namespace. Now the
         scope is the only namespace, and the question cannot arise.
         """
-        from slayer.core.keys import ColumnKey, ColumnSqlKey
 
         cross_model_path = getattr(agg_key.source, "path", ())
         local_agg = reroot_aggregate_key(agg_key, target_path=cross_model_path)
@@ -5718,7 +6061,6 @@ class SQLGenerator:
         guard is unreachable for binder keys (``model == path[-1]``,
         ``target_relation == target_model.name``) so it fails closed on
         inconsistent hand-built / deserialized ones."""
-        from slayer.core.keys import ColumnKey, ColumnSqlKey
 
         if isinstance(key, ColumnKey):
             if key.path and key.path[-1] != target_relation:
@@ -5756,12 +6098,6 @@ class SQLGenerator:
         Column leaves reroot via :meth:`_reroot_routed_leaf`; composites rebuild
         with rerooted children. ``AggregateKey`` leaves are left intact — the
         HAVING seam reroots them via ``reroot_aggregate_key``."""
-        from slayer.core.keys import (
-            ArithmeticKey,
-            BetweenKey,
-            InKey,
-            ScalarCallKey,
-        )
 
         leaf = self._reroot_routed_leaf(
             key, target_relation=target_relation, target_model=target_model,
@@ -5822,11 +6158,10 @@ class SQLGenerator:
         the first/last variant stays on the legacy renderer (escape hatch)."""
 
         def build(agg_key, _slot, _having_full_alias) -> exp.Expression:
-            from slayer.engine.planned import ValueSlot as _Slot
 
             cross_model_path = getattr(agg_key.source, "path", ())
             local_agg = reroot_aggregate_key(agg_key, target_path=cross_model_path)
-            tmp_slot = _Slot(
+            tmp_slot = ValueSlot(
                 id="_cte_having_tmp", key=local_agg, declared_name="_having_agg",
                 phase=agg_key.phase, type=None,
             )
@@ -5922,14 +6257,6 @@ class SQLGenerator:
         the single owner of the dotted form; response_meta mirrors this
         via the same builder so the two producers cannot drift.
         """
-        from slayer.core.keys import (
-            ColumnKey,
-            ColumnSqlKey,
-            Phase,
-            TimeTruncKey,
-            column_leaf,
-            column_path,
-        )
 
         if slot.phase == Phase.ROW:
             key = slot.key
@@ -5984,7 +6311,6 @@ class SQLGenerator:
         ORDER BY emits still needs its join bound in the base FROM — Law 1
         applies to a sort key exactly as it does to a filter ref.
         """
-        from slayer.core.keys import ColumnKey, Phase, TimeTruncKey
 
         seen: set = set()
         ordered: List[Tuple[str, ...]] = []
@@ -6059,9 +6385,8 @@ class SQLGenerator:
                     raise ValueError(
                         f"Join target {hop!r} not in resolved source bundle.",
                     )
-                next_alias = (
-                    hop if hop_idx == 0
-                    else f"{current_alias}__{hop}"
+                next_alias = self._join_alias(
+                    root=source_relation, path=path[: hop_idx + 1],
                 )
                 if next_alias not in emitted_aliases:
                     join_on_parts = []
@@ -6136,9 +6461,8 @@ class SQLGenerator:
         current_alias = source_relation
         current_model = source_model
         for hop_idx, hop in enumerate(path):
-            target_alias = (
-                hop if hop_idx == 0
-                else f"{current_alias}__{hop}"
+            target_alias = self._join_alias(
+                root=source_relation, path=path[: hop_idx + 1],
             )
             current_alias = target_alias
             target_model = bundle.get_referenced_model(hop)
@@ -6206,11 +6530,6 @@ class SQLGenerator:
         only`` (NOT time dimensions) for non-rank ops; rank-family defaults to
         no PARTITION BY.
         """
-        from slayer.core.keys import (
-            ColumnKey,
-            Phase,
-            TransformKey,
-        )
 
         key = slot.key
         if not isinstance(key, TransformKey):
@@ -6227,12 +6546,8 @@ class SQLGenerator:
         # aliases — the Kahn readiness check (``_transform_layer_deps_ready``
         # → ``_ready(tk.input)``) guarantees every operand slot is in a
         # prior CTE before this layer runs, so no extra inner CTE is needed.
-        from slayer.core.keys import (
-            ArithmeticKey as _ArithKey,
-            ScalarCallKey as _ScalarKey,
-        )
 
-        if isinstance(key.input, (_ArithKey, _ScalarKey)):
+        if isinstance(key.input, (ArithmeticKey, ScalarCallKey)):
             measure = render_value_key(
                 key=key.input,
                 ctx=self._alias_render_ctx(
@@ -6347,7 +6662,6 @@ class SQLGenerator:
             """Reject bool / non-integral periods; accept int / integral
             Decimal. Mirrors the strict validation the binder applies to
             ``ntile.n`` and ``time_shift.periods``."""
-            from decimal import Decimal
             if isinstance(raw, bool):
                 raise ValueError(
                     f"transform {op!r} kwarg {kw!r} must be an integer; "
@@ -6443,7 +6757,6 @@ class SQLGenerator:
         composition uses the same operator dispatch as the WHERE
         renderer in ``render_value_key``.
         """
-        from slayer.core.keys import Phase
 
         out: List[str] = []
         for fp in planned_query.filters_by_phase:
@@ -6578,7 +6891,6 @@ class SQLGenerator:
         needs is emitted. Filters over the same join set the base already
         applies keep population parity between ``_base`` and the shifted CTE.
         """
-        from slayer.core.keys import Phase
 
         out: List[str] = []
         crossed_paths: List[Tuple[str, ...]] = []
@@ -6729,14 +7041,6 @@ class SQLGenerator:
         source_relation = chain.source_relation
         planned_query = render.planned_query
         bundle = render.bundle
-        from slayer.core.enums import TimeGranularity
-        from slayer.core.keys import (
-            AggregateKey,
-            ColumnKey,
-            ColumnSqlKey,
-            TimeTruncKey,
-            TransformKey,
-        )
 
         key = slot.key
         if not isinstance(key, TransformKey) or key.op != "time_shift":
@@ -6768,7 +7072,6 @@ class SQLGenerator:
                 f"time_shift requires 'periods' kwarg; planner gap "
                 f"(slot id={slot.id!r}).",
             )
-        from decimal import Decimal
         if isinstance(periods_raw, bool):
             raise ValueError(
                 f"time_shift periods must be an integer; got bool {periods_raw!r}",
@@ -6833,7 +7136,6 @@ class SQLGenerator:
         # (a second time dim, distinct from the shift axis) — plus any explicit
         # ``partition_keys`` (C6). The shift axis itself is the time-join
         # column, excluded by slot id.
-        from slayer.core.keys import Phase as _Phase
         partition_specs: list[tuple[str, str, exp.Expression]] = []
         # entries: (slot_id, base_alias, resolved_expr_for_select_and_group_by)
         seen_partition_sids: set = set()
@@ -6851,10 +7153,19 @@ class SQLGenerator:
                 )
             if isinstance(pk_obj, (ColumnKey, ColumnSqlKey)):
                 return shifted_scope.resolve(pk_obj)
+            if isinstance(pk_obj, (ScalarCallKey, ArithmeticKey)):
+                # DEV-1740: a computed (expression) dimension — render through
+                # the shifted scope so its leaf columns resolve (and any
+                # crossed join registers) inside the shifted CTE.
+                return render_value_key(
+                    key=pk_obj,
+                    ctx=RenderContext(scope=shifted_scope, dialect=self._dialect),
+                )
             raise NotImplementedError(
                 f"time_shift partition on {type(pk_obj).__name__} is not "
-                f"supported (only column / derived-column / time-dimension "
-                f"partitions render in the shifted CTE). slot id={slot.id!r}.",
+                f"supported (only column / derived-column / time-dimension / "
+                f"computed-dimension partitions render in the shifted CTE). "
+                f"slot id={slot.id!r}.",
             )
 
         def _add_partition(pk_obj, *, where: str) -> None:
@@ -6871,13 +7182,18 @@ class SQLGenerator:
             partition_specs.append((pk_sid, pk_alias, _resolve_partition_expr(pk_obj)))
             seen_partition_sids.add(pk_sid)
 
-        # Auto-include EVERY projected row dimension (column, derived column, or
-        # secondary time dimension); the shift axis is skipped by slot id above.
+        # Auto-include EVERY projected row dimension (column, derived column,
+        # secondary time dimension, or DEV-1740 computed dimension); the shift
+        # axis is skipped by slot id above.
         for sid in planned_query.projection:
             dim_slot = slots_by_id.get(sid)
-            if dim_slot is None or dim_slot.phase != _Phase.ROW:
+            if dim_slot is None or dim_slot.phase != Phase.ROW:
                 continue
-            if not isinstance(dim_slot.key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+            plain = isinstance(dim_slot.key, (ColumnKey, ColumnSqlKey, TimeTruncKey))
+            computed = dim_slot.is_dimension and isinstance(
+                dim_slot.key, (ScalarCallKey, ArithmeticKey),
+            )
+            if not (plain or computed):
                 continue
             _add_partition(dim_slot.key, where="query dimension")
 
@@ -6891,6 +7207,7 @@ class SQLGenerator:
         # base SELECT (``_resolve_agg_inputs_via_scope``) and the ``_cm_`` CTE do
         # — otherwise a crossing default param (``w='customers__regions.weight'``)
         # re-aggregates with no join to regions, which no database binds.
+        shifted_frag_kwargs: "Dict[str, ResolvedAggKwarg]" = {}
         if isinstance(inner_key, AggregateKey):
             # source: derived (crosses inside Column.sql) or path-bearing.
             if isinstance(inner_key.source, ColumnSqlKey) or getattr(
@@ -6909,9 +7226,15 @@ class SQLGenerator:
                     shifted_scope.resolve(_kval)
             # template fragments + non-overridden default AggregationParam.sql —
             # the one door shared with the host + ``_cm_`` paths (DEV-1745 W2).
-            self._register_fragment_kwarg_joins(
+            # DEV-1743: keep the resolved (alias-rewritten) fragments so the
+            # shifted re-aggregation spec embeds them (multi-hop dotted →
+            # ``__`` alias), not the raw dotted text.
+            for _fname, _fast in self._register_fragment_kwarg_joins(
                 key=inner_key, scope=shifted_scope, model=source_model,
-            )
+            ).items():
+                shifted_frag_kwargs.setdefault(
+                    _fname, ResolvedAggKwarg(kind="expr", value=_fast),
+                )
             if (
                 inner_key.column_filter_key is not None
                 and inner_key.column_filter_key.canonical_sql
@@ -7016,6 +7339,7 @@ class SQLGenerator:
                 source_relation=source_relation,
                 full_alias=input_alias,
                 bundle=bundle,
+                resolved_agg_kwargs=shifted_frag_kwargs or None,
             )
             agg_expr, _ = self._build_agg(synth)
             agg_expr = _wrap_cast_for_type(agg_expr, inner_slot.type)
@@ -7195,15 +7519,6 @@ class SQLGenerator:
         aliases_by_slot_id = chain.aliases_by_slot_id
         source_relation = chain.source_relation
         planned_query = render.planned_query
-        from slayer.core.keys import (
-            AggregateKey,
-            ArithmeticKey,
-            ColumnKey,
-            ColumnSqlKey,
-            Phase,
-            TimeTruncKey,
-            TransformKey,
-        )
 
         key = slot.key
         if not isinstance(key, TransformKey) or key.op != "consecutive_periods":
@@ -7514,27 +7829,28 @@ class SQLGenerator:
 
     def _register_fragment_kwarg_joins(
         self, *, key, scope: ScopeFrame, model,
-    ) -> None:
-        """Register the joins an aggregation's template FRAGMENTS cross.
+    ) -> "Dict[str, exp.Expression]":
+        """Resolve an aggregation's template FRAGMENTS through the Mode-A door,
+        registering the joins they cross AND returning the alias-rewritten AST
+        keyed by param name.
 
         The sources are the aggregate's string kwargs plus the non-overridden
         ``AggregationParam.sql`` defaults of the aggregation named by
-        ``key.agg`` on ``model``. Both substitute verbatim into the rendered
-        aggregate expression, so whatever they reach has to be in the FROM.
+        ``key.agg`` on ``model``. Both substitute into the rendered aggregate
+        expression, so whatever they reach has to be in the FROM.
 
-        Shared by the host base SELECT and the ``_cm_*`` cross-model CTE. The
-        host path always did this; the CTE path did not, and emitted
-        ``SUM(customers.spend * regions.weight) FROM customers`` — SQL no
-        database accepts. One implementation, entered through the one door, is
-        what stops that from recurring (DEV-1745 W2).
+        DEV-1743: the resolved AST is RETURNED (not discarded) so the render
+        path embeds it. A multi-hop dotted fragment (``customers.regions.weight``)
+        must be rewritten to its internal join alias (``customers__regions.weight``)
+        exactly like ``Column.sql`` is — re-parsing the raw dotted text would
+        emit an unbound ``regions`` qualifier. (A single-hop fragment already
+        happened to work because the alias IS the bare target name.)
 
-        Only values the aggregation's formula actually SUBSTITUTES are treated
-        as SQL. A string kwarg whose ``{name}`` never appears in the template is
-        a marker, not a fragment — ``revenue:sum(window='90d')`` being the
-        standing example — and handing it to a SQL parser is meaningless. It
-        was harmless while the scan swallowed parse errors; now that the door
-        raises, a marker that does not happen to parse would take the query
-        down with it.
+        Shared by the host base SELECT and the ``_cm_*`` cross-model CTE. Only
+        values the aggregation's formula actually SUBSTITUTES are treated as SQL:
+        a string kwarg whose ``{name}`` never appears in the template is a
+        marker, not a fragment (``revenue:sum(window='90d')``), and handing it
+        to a SQL parser is meaningless.
         """
         agg_def = next(
             (a for a in (model.aggregations or []) if a.name == key.agg), None,
@@ -7542,25 +7858,27 @@ class SQLGenerator:
         if agg_def is None:
             # A built-in aggregation has no template, so no kwarg of it is a
             # SQL fragment.
-            return
+            return {}
         formula = agg_def.formula or ""
         overridden = {name for name, _ in key.kwargs}
-        fragments = [
-            v for name, v in key.kwargs
+        named_fragments: List[Tuple[str, str]] = [
+            (name, v) for name, v in key.kwargs
             if isinstance(v, str) and f"{{{name}}}" in formula
         ]
-        fragments.extend(
-            p.sql for p in (agg_def.params or [])
+        named_fragments.extend(
+            (p.name, p.sql) for p in (agg_def.params or [])
             if p.name not in overridden and p.sql
         )
-        for frag in fragments:
-            self._enter_mode_a_expression(
+        resolved: "Dict[str, exp.Expression]" = {}
+        for name, frag in named_fragments:
+            resolved[name] = self._enter_mode_a_expression(
                 sql=frag, scope=scope,
                 location=(
                     f"aggregation {key.agg!r} template fragment on model "
                     f"{model.name!r}"
                 ),
             )
+        return resolved
 
     def _expand_derived_row_dims(  # NOSONAR(S3776) — one cohesive per-slot pass expanding derived ROW/TIME dimensions and registering the joins they cross.
         self, *, base_render_order, slots_by_id, source_relation: str,
@@ -7584,7 +7902,6 @@ class SQLGenerator:
         has already rewritten its sort key to an aggregate wrap, which is
         isolated rather than pulled (DEV-1735 / D9).
         """
-        from slayer.core.keys import ColumnSqlKey, Phase, TimeTruncKey
 
         def _add(path: Tuple[str, ...]) -> None:
             if path:
@@ -7628,23 +7945,26 @@ class SQLGenerator:
             # rooted at the ``__``-path alias of the owning joined model, with
             # ``is_root=False`` so a further-joined ref carries the full prefix
             # (``B`` reaching ``C`` → ``B__C``).
+            crossed: Set[Tuple[str, ...]] = set()
             expr = self._derived_column_expr(
                 key=key, source_model=source_model,
                 source_relation=source_relation, bundle=bundle,
+                crossed_paths=crossed,
             )
             if expr is None:
                 continue
             derived_expr_by_sid[sid] = expr
             _add(key.path)  # the join to the owning model itself (cross-model)
-            for p in self._joined_paths_in_sql(
-                sql_expr=expr, source_relation=source_relation,
-                source_model=source_model, bundle=bundle,
-            ):
+            # DEV-1743: register the joins the derived column crosses
+            # STRUCTURALLY (a chain leaf and a literal ``__``-named model must
+            # not collapse onto one path when re-scanning the internal alias).
+            for p in sorted(crossed, key=lambda t: (len(t), t)):
                 _add(p)
         return derived_expr_by_sid
 
     def _derived_column_expr(
         self, *, key, source_model, source_relation: str, bundle,
+        crossed_paths: "Optional[Set[Tuple[str, ...]]]" = None,
     ) -> "Optional[exp.Expression]":
         """The rendered expression for a derived (``ColumnSqlKey``) column.
 
@@ -7670,7 +7990,9 @@ class SQLGenerator:
             owner_relation = source_relation
         expanded_sql = self._expand_derived_column_sql(
             source_model=owner_model, source_relation=owner_relation,
-            column_name=key.column_name, bundle=bundle, is_root=not key.path,
+            column_name=key.column_name, bundle=bundle,
+            owner_path=tuple(key.path), root_relation=source_relation,
+            crossed_paths=crossed_paths,
         )
         col = next(
             (c for c in owner_model.columns if c.name == key.column_name), None,
@@ -7759,7 +8081,6 @@ class SQLGenerator:
           relation for a local derived column, or at the ``__``-path alias
           for a joined one. The DATE_TRUNC is applied by the caller.
         """
-        from slayer.core.keys import ColumnKey, ColumnSqlKey
 
         if isinstance(time_column, ColumnKey):
             return self._joined_or_local_dim_expr(
@@ -7793,7 +8114,7 @@ class SQLGenerator:
                     source_relation="__".join(time_column.path),
                     column_name=time_column.column_name,
                     bundle=bundle,
-                    is_root=False,
+                    owner_path=tuple(time_column.path),
                 )
             else:
                 expanded_sql = self._expand_derived_column_sql(
@@ -7809,7 +8130,9 @@ class SQLGenerator:
 
     def _expand_derived_column_sql(
         self, *, source_model, source_relation: str, column_name: str, bundle,
-        is_root: bool = True,
+        owner_path: Tuple[str, ...] = (),
+        root_relation: "Optional[str]" = None,
+        crossed_paths: "Optional[Set[Tuple[str, ...]]]" = None,
     ) -> str:
         """Expand a derived ``Column.sql`` (a ``ColumnSqlKey`` target) into a
         fully-qualified SQL string, recursively inlining references to other
@@ -7817,11 +8140,13 @@ class SQLGenerator:
         DEV-1410). Bare identifiers qualify to ``source_relation``; joined
         refs qualify to their ``__``-canonical path alias.
 
-        ``is_root`` is ``False`` when the derived column lives on a JOINED
-        model (a cross-model derived dimension, ``source_relation`` being the
-        ``__``-path alias). A further-joined reference inside that column's
-        sql then resolves to the full path (``B`` reaching ``C`` →
-        ``B__C``), not the bare child alias.
+        ``owner_path`` is the ROOT-relative join path of ``source_model`` (empty
+        when the derived column is local to the query root; the ``__``-path
+        tuple when it lives on a JOINED model). A further-joined reference
+        inside the column's sql then resolves to the full path. When
+        ``crossed_paths`` is supplied, every join the fragment (recursively)
+        crosses is added to it STRUCTURALLY (DEV-1743) — the caller no longer
+        re-scans the internal-alias output.
 
         Synchronous: resolves join targets through ``bundle.get_referenced_
         model`` (every model is already loaded — P11). Returns the column's
@@ -7837,13 +8162,16 @@ class SQLGenerator:
             )
         if col.sql is None:
             return col.name
+        resolver_root = root_relation if root_relation is not None else source_relation
         expanded = expand_derived_refs_sync(
             sql=col.sql,
             model=source_model,
             alias_path=source_relation,
             resolve_model=bundle.get_referenced_model,
             dialect=self.dialect,
-            is_root=is_root,
+            owner_path=owner_path,
+            alias_resolver=self._join_alias_resolver(resolver_root),
+            crossed_paths=crossed_paths,
         )
         return expanded if expanded is not None else col.sql
 
@@ -7905,7 +8233,6 @@ class SQLGenerator:
         the windowed ``_src`` scope passes the SAME rewritten list it renders, so
         discovery and rendering can never disagree about what the CTE contains.
         """
-        from slayer.core.keys import Phase
 
         skip = skip_filter_ids or set()
         filters = (
@@ -7948,14 +8275,6 @@ class SQLGenerator:
         already emits path prefixes, and ``ColumnKey.path`` prefixes are
         expanded here.
         """
-        from slayer.core.keys import (
-            ArithmeticKey,
-            BetweenKey,
-            ColumnKey,
-            ColumnSqlKey,
-            InKey,
-            ScalarCallKey,
-        )
 
         out: List[Tuple[str, ...]] = []
 
@@ -7965,19 +8284,20 @@ class SQLGenerator:
                 if prefix and prefix not in out:
                     out.append(prefix)
 
-        def _scan(parsed: exp.Expression) -> None:
-            for p in self._joined_paths_in_sql(
-                sql_expr=parsed, source_relation=source_relation,
-                source_model=source_model, bundle=bundle,
-            ):
+        def _derived_paths(*, model, relation, column_name, owner_path) -> None:
+            # DEV-1743: collect the joins the derived column crosses
+            # STRUCTURALLY as it expands, rather than re-scanning the
+            # internal-alias output (which cannot tell a chain alias from a
+            # literal ``__``-named model once serialized).
+            crossed: Set[Tuple[str, ...]] = set()
+            self._expand_derived_column_sql(
+                source_model=model, source_relation=relation,
+                column_name=column_name, bundle=bundle, owner_path=owner_path,
+                crossed_paths=crossed,
+            )
+            for p in sorted(crossed, key=lambda t: (len(t), t)):
                 if p not in out:
                     out.append(p)
-
-        def _derived_paths(*, model, relation, column_name, is_root: bool) -> None:
-            _scan(self._parse(self._expand_derived_column_sql(
-                source_model=model, source_relation=relation,
-                column_name=column_name, bundle=bundle, is_root=is_root,
-            )))
 
         def _walk(k) -> None:
             if isinstance(k, ColumnKey):
@@ -7990,18 +8310,15 @@ class SQLGenerator:
                     else source_model
                 )
                 if model is not None:
-                    # ``is_root=False`` for a JOINED derived column: a further
-                    # -joined ref inside its ``sql`` must resolve to the full
-                    # path (``customers_v2`` reaching ``regions`` →
-                    # ``customers_v2__regions``). Rooting it here instead left
-                    # the ref bare, so the scan found no path and the hop was
-                    # never joined — the filter then referenced a table that
-                    # is not in the FROM.
+                    # A JOINED derived column (``k.path`` non-empty) roots its
+                    # inner refs at its own ``__``-path alias so a further-joined
+                    # ref resolves to the full path; a local one roots at the
+                    # query root.
                     _derived_paths(
                         model=model,
                         relation="__".join(k.path) if k.path else source_relation,
                         column_name=k.column_name,
-                        is_root=not k.path,
+                        owner_path=tuple(k.path),
                     )
             elif isinstance(k, ArithmeticKey):
                 for o in k.operands:
@@ -8078,7 +8395,6 @@ class SQLGenerator:
         (``ColumnKey``) and derived-column (``ColumnSqlKey``) kwarg
         refs go through this gate (CodeRabbit fold-in on PR #144).
         """
-        from slayer.core.keys import ColumnKey, ColumnSqlKey
 
         if not source.path:
             return
@@ -8129,7 +8445,6 @@ class SQLGenerator:
         source) and ``COUNT(col)`` (ColumnKey source with sql=None on a bare
         column) take their distinct branches inside ``_build_agg``.
         """
-        from slayer.core.keys import ColumnKey, ColumnSqlKey, StarKey
 
         # ``slot`` may be ``None`` when this spec is built for a HAVING term
         # whose aggregate isn't a declared projection slot; the result type is
@@ -8166,13 +8481,22 @@ class SQLGenerator:
             # that join's FROM alias. Re-anchor before the lookup below; the
             # join itself is already in this scope's FROM, registered by the
             # aggregate-input scope pass.
+            host_grain_root: Optional[str] = None
             if source.path and _is_host_grain(key) and bundle is not None:
                 terminal = self._walk_join_path_model(
                     source_model=source_model, path=source.path, bundle=bundle,
                 )
                 if terminal is not None:
                     source_model = terminal
-                    source_relation = _host_grain_join_alias(source.path)
+                    # Qualify through the generation AliasAllocator (NOT a raw
+                    # "__".join) so the alias matches the one _build_from_and_
+                    # joins() emitted — the allocator uniquifies a chain leaf vs
+                    # a literal __-named model (D4). Retain the query root for
+                    # derived-ref expansion below.
+                    host_grain_root = source_relation
+                    source_relation = self._join_alias(
+                        root=source_relation, path=source.path,
+                    )
             # ColumnKey is a bare / trivial column (``sql`` None or a bare
             # identifier remap); ColumnSqlKey is a derived column (``Column.sql``
             # set to a non-trivial expression — ``amount * 2``). Both resolve
@@ -8218,6 +8542,11 @@ class SQLGenerator:
                     source_relation=source_relation,
                     column_name=col.name,
                     bundle=bundle,
+                    # Host-grain re-anchor: expand the inner refs in the
+                    # allocator namespace of the EMITTED joins (the query root),
+                    # not the re-anchored terminal alias.
+                    owner_path=source.path if host_grain_root is not None else (),
+                    root_relation=host_grain_root,
                 )
             else:
                 sql_text = col.sql if col.sql else col.name
@@ -8234,6 +8563,15 @@ class SQLGenerator:
                 k: (resolved_kw[k] if k in resolved_kw else agg_kwarg_canonical_str(v))
                 for k, v in key.kwargs
             }
+            # DEV-1743: a non-overridden model-default ``AggregationParam.sql``
+            # fragment is not a ``key.kwargs`` entry, so its resolved
+            # (alias-rewritten) form is surfaced here under the param name — the
+            # render's ``if name in spec.agg_kwargs`` branch then embeds it
+            # instead of re-parsing the raw dotted ``param.sql``.
+            key_kwarg_names = {k for k, _ in key.kwargs}
+            for _name, _resolved in resolved_kw.items():
+                if _name not in key_kwarg_names:
+                    agg_kwargs_str.setdefault(_name, _resolved)
             # DEV-1450 stage 7b.12: propagate ``AggregateKey.column_filter_key``
             # into ``AggRenderSpec.filter_sql`` so ``_build_agg`` wraps the
             # aggregate argument as ``SUM(CASE WHEN <filter> THEN col END)``.
@@ -8279,10 +8617,11 @@ class SQLGenerator:
         skip_filter_ids: Optional[Set[str]] = None,
         aliases_by_slot_id: Optional[Dict[str, List[str]]] = None,
         filters_override: "Optional[List[Any]]" = None,
+        regroup_env: Optional[Dict[Any, exp.Expression]] = None,
     ):
         """``filters_override`` (DEV-1732) replaces ``filters_by_phase`` as the
-        list being rendered — see ``_effective_src_filters``."""
-        from slayer.core.keys import Phase
+        list being rendered — see ``_effective_src_filters``. ``regroup_env``
+        (DEV-1825) resolves computed-dimension placeholders in a predicate."""
 
         skip = skip_filter_ids or set()
         # key -> slot map so a HAVING term's local AggregateKey renders as the
@@ -8355,6 +8694,7 @@ class SQLGenerator:
                         bundle=bundle,
                         slot_by_key=slot_by_key,
                         aliases_by_slot_id=aliases_by_slot_id,
+                        regroup_env=regroup_env,
                     ),
                 )
                 # Match the legacy DSL parser, which wraps top-level
@@ -8438,15 +8778,17 @@ class SQLGenerator:
 
     def _filter_render_context(
         self, *, source_model, source_relation: str, bundle,
-        slot_by_key=None, aliases_by_slot_id=None,
+        slot_by_key=None, aliases_by_slot_id=None, regroup_env=None,
     ) -> RenderContext:
         """A ``RenderContext`` for the WHERE/HAVING filter family, over a
         render-scoped host ``ScopeFrame`` from ``_throwaway_frame`` (the crossed
         joins are pulled into the FROM by a separate pass, so this scope's
         ``join_paths`` are inert). Carries the filter-side CAST policy and the
-        DEV-1539 comparison grouping."""
+        DEV-1539 comparison grouping. ``regroup_env`` (DEV-1825) seeds the
+        placeholder registry so a WHERE over a computed dimension resolves."""
         scope = self._throwaway_frame(
             model=source_model, relation=source_relation, bundle=bundle,
+            attached_columns=regroup_env,
         )
         return RenderContext(
             scope=scope,
@@ -8506,15 +8848,6 @@ class SQLGenerator:
         ungrouped row column. The walk stops at ``AggregateKey`` /
         ``TransformKey`` (their inner columns are aggregated, not grouped).
         """
-        from slayer.core.keys import (
-            AggregateKey,
-            ArithmeticKey,
-            BetweenKey,
-            ColumnKey,
-            InKey,
-            ScalarCallKey,
-            TransformKey,
-        )
 
         out: List[Any] = []
 
@@ -8543,7 +8876,7 @@ class SQLGenerator:
         _walk(key)
         return out
 
-    def _build_outer_trim_wrap_sql(
+    def _build_outer_trim_wrap_select(
         self,
         *,
         base_select: exp.Select,
@@ -8552,7 +8885,7 @@ class SQLGenerator:
         aliases_by_slot_id: Dict[str, List[str]],
         slots_by_id: Dict[str, Any],
         bundle,
-    ) -> str:
+    ) -> exp.Select:
         """DEV-1501 — wrap a no-transform base SELECT in an outer SELECT
         that projects ONLY the public projection slots (trimming hidden
         materialised aggregates from the result), then moves ORDER BY /
@@ -8597,7 +8930,7 @@ class SQLGenerator:
             source_model=None,
             bundle=bundle,
             aliases_by_slot_id=aliases_by_slot_id,
-        ).sql(dialect=self.dialect, pretty=True)
+        )
 
     def _apply_planned_order_limit(
         self,
@@ -8689,15 +9022,6 @@ class SQLGenerator:
         (its expansion, provided it crosses no join — a hidden derived column
         never had its join pulled into the base FROM).
         """
-        from slayer.core.keys import (
-            AggregateKey,
-            ArithmeticKey,
-            ColumnKey,
-            ColumnSqlKey,
-            ScalarCallKey,
-            TimeTruncKey,
-            TransformKey,
-        )
 
         # DEV-1733: the EXACT set of hidden key kinds that resolve to a
         # materialised alias. Deliberately enumerated rather than "any hidden

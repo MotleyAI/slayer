@@ -131,6 +131,13 @@ class AliasAllocator(BaseModel):
     _val_seq: int = PrivateAttr(default=0)  # NOSONAR(S5890)
     # Monotonic scope-id cursor.
     _scope_seq: int = PrivateAttr(default=0)  # NOSONAR(S5890)
+    # DEV-1743 join-alias registry. Memoized by (root_relation, path-tuple) so
+    # every emitted-alias site — the JOIN clause, the dim-column qualifier, the
+    # scope anchor — agrees on one alias per path. ``_join_alias_used`` is keyed
+    # by root so each SELECT scope's alias space is independent (byte-stable
+    # golden SQL); uniquification only fires WITHIN a root.
+    _join_alias_memo: dict[Tuple[str, Tuple[str, ...]], str] = PrivateAttr(default_factory=dict)  # NOSONAR(S5890)
+    _join_alias_used: dict[str, set[str]] = PrivateAttr(default_factory=dict)  # NOSONAR(S5890)
 
     def _fold(self, name: str) -> str:
         """The comparison key: ``str.lower()`` when folding, else identity."""
@@ -166,6 +173,44 @@ class AliasAllocator(BaseModel):
     def allocate_cte(self, preferred: str) -> str:
         """Return a collision-safe CTE name (same walk as :meth:`allocate`)."""
         return self.allocate(preferred)
+
+    def alias_for(
+        self, *, root: str, path: Tuple[str, ...], limit: Optional[int] = None,
+    ) -> str:
+        """Mint the internal JOIN alias for cumulative ``path`` under ``root``.
+
+        Memoized by ``(root, path)`` so the JOIN clause, the dim-column
+        qualifier and the scope anchor all resolve to ONE alias per path. The
+        preferred spelling is byte-identical to the legacy per-hop ``__``-join
+        (``customers`` / ``customers__regions``), so golden SQL is unchanged
+        when nothing collides; it is then length-fitted (:func:`fit_identifier`)
+        and uniquified WITHIN the root's own namespace, in case-fold space.
+
+        This is what makes a chain leaf (path ``("a", "b")`` → ``a__b``) and a
+        directly-joined model literally named ``a__b`` (path ``("a__b",)``) mint
+        DISTINCT aliases instead of silently sharing one (DEV-1743 D4). Empty
+        ``path`` is the host itself, whose alias is ``root``.
+        """
+        if not path:
+            return root
+        key = (root, path)
+        cached = self._join_alias_memo.get(key)
+        if cached is not None:
+            return cached
+        if len(path) == 1:
+            base = path[0]
+        else:
+            parent = self.alias_for(root=root, path=path[:-1], limit=limit)
+            base = f"{parent}__{path[-1]}"
+        used = self._join_alias_used.setdefault(root, set())
+        candidate = fit_identifier(name=base, limit=limit)
+        suffix = 2
+        while self._fold(candidate) in used:
+            candidate = fit_identifier(name=f"{base}_{suffix}", limit=limit)
+            suffix += 1
+        used.add(self._fold(candidate))
+        self._join_alias_memo[key] = candidate
+        return candidate
 
     def next_scope_id(self, root_relation: str) -> str:
         """Return a generation-local ``ScopeFrame`` id, ``<root>#<seq>``.

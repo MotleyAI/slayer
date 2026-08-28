@@ -111,7 +111,7 @@ class TestJoinOrderParity:
                 Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
                 Column(name="warehouse_id", sql="warehouse_id", type=DataType.DOUBLE),
                 Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="wh_pop", sql="warehouses__regions.population",
+                Column(name="wh_pop", sql="warehouses.regions.population",
                        type=DataType.DOUBLE),
             ],
             joins=[

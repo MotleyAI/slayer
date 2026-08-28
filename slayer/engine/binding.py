@@ -13,9 +13,9 @@ Public surface:
 Two scope kinds (P5):
 
 * ``ModelScope``: joins exist; dotted refs walk the join graph rooted
-  at ``source_model``. ``__``-bearing refs raise
-  ``IllegalScopeReferenceError`` unless they exact-match a column on
-  the model. I2: ``source_model is not None`` is asserted.
+  at ``source_model``. ``__``-bearing refs resolve by ordinary exact-match
+  against a column on the model (DEV-1743). I2: ``source_model is not None``
+  is asserted.
 * ``StageSchema``: flat namespace; dotted refs raise
   ``IllegalScopeReferenceError``; flat names with ``__`` are legal.
 
@@ -584,23 +584,10 @@ def _resolve_ref(
         )
     model = scope.source_model
 
-    if "__" in name:
-        # The Mode-B parser already rejects `__` for user input; this
-        # branch is reached only via direct ParsedExpr.Ref construction
-        # (e.g., downstream binders for StageSchema flat columns). The
-        # `__` is legal iff it exact-matches a column literally named
-        # that way on the model (legacy persisted query-backed columns).
-        if any(c.name == name for c in model.columns):
-            return ColumnKey(path=(), leaf=name)
-        raise IllegalScopeReferenceError(
-            name=name,
-            scope_kind="ModelScope",
-            reason=(
-                "`__` is reserved for internal join-path aliases. "
-                "Use single-dot DSL paths in queries."
-            ),
-        )
-
+    # DEV-1743: a ``__``-bearing name is no longer special — it resolves by the
+    # ordinary exact-match below. A flat query-backed column literally named
+    # ``stores__name`` (D5) binds when it exists; otherwise the normal
+    # unknown-reference error fires.
     col = next((c for c in model.columns if c.name == name), None)
     if col is None:
         # Try ModelMeasure as a fallback for bare measure refs.

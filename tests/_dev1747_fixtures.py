@@ -199,7 +199,7 @@ def _orders_model(*, data_source: str = "test") -> SlayerModel:
             # ``customers.regions.name`` resolves ungrouped (DEV-1703 Phase 1).
             Column(
                 name="cust_region", type=DataType.TEXT,
-                sql="customers__regions.name",
+                sql="customers.regions.name",
             ),
             # A NON-crossing derived column — the control. Ordering by it must
             # keep working exactly as it does today.

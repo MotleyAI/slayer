@@ -745,6 +745,8 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
         return render_arithmetic(op=op, operands=operands)
 
     if isinstance(key, ScalarCallKey):
+        if key.name == "iif":
+            return _render_iif_case(key=key, ctx=ctx)
         args = [
             render_value_key(key=a, ctx=ctx)
             if isinstance(a, _VALUE_KEY_TYPES)
@@ -807,6 +809,28 @@ _VALUE_KEY_TYPES: Tuple[type, ...] = (
     ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey, LiteralKey, AggregateKey,
     TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey, InKey,
 )
+
+
+def _render_iif_case(*, key: ScalarCallKey, ctx: "RenderContext") -> exp.Case:
+    """Render an ``iif`` chain as ONE multi-WHEN CASE, flattening nested
+    ``iif`` in the otherwise position (multi-WHEN CASE lowers to that)."""
+    def _part(a):
+        return (
+            render_value_key(key=a, ctx=ctx)
+            if isinstance(a, _VALUE_KEY_TYPES) else _literal(a)
+        )
+
+    ifs: List[exp.If] = []
+    node = key
+    while isinstance(node, ScalarCallKey) and node.name == "iif":
+        # Fail-closed arity backstop (mirrors render_scalar_call): a directly
+        # constructed malformed key must not surface an opaque IndexError.
+        arity_error = check_scalar_arity(name="iif", argc=len(node.args))
+        if arity_error is not None:
+            raise NotImplementedError(arity_error)
+        ifs.append(exp.If(this=_part(node.args[0]), true=_part(node.args[1])))
+        node = node.args[2]
+    return exp.Case(ifs=ifs, default=_part(node))
 
 
 def contains_aggregate(key: ValueKey) -> bool:
