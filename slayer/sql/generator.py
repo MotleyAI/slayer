@@ -5432,7 +5432,7 @@ class SQLGenerator:
                 limit=self._dialect.max_identifier_bytes,
             )
             producer_sql = self.generate_from_planned(
-                producer, bundle=bundle, as_cte_body=True,
+                planned_query=producer, bundle=bundle, as_cte_body=True,
             )
             ctes.append((cte_name, self._parse_cte_body(producer_sql)))
             producer_relation = producer.source_relation
@@ -5523,7 +5523,7 @@ class SQLGenerator:
                 return stripped.replace(".", "__")
 
             producer_sql = self.generate_from_planned(
-                producer, bundle=bundle, as_cte_body=True,
+                planned_query=producer, bundle=bundle, as_cte_body=True,
             )
             expected = [
                 _flat(sub_slots[sid]) for sid in producer.projection
