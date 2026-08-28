@@ -39,6 +39,7 @@ from slayer.engine.schema_drift import (
     RemoveSpec,
     WholeModelDelete,
     _resolve_live_table,
+    _sql_model_source_refs,
     _strip_ident_quotes,
     compute_datasource_drops,
     data_type_bucket,
@@ -365,7 +366,7 @@ class TestDiffSqlModel:
         )
         assert isinstance(entry, WholeModelDelete)
         assert entry.cause == "invalid_sql"
-        assert "source tables exist" in entry.reasons[0].reason
+        assert "source tables and referenced columns exist" in entry.reasons[0].reason
         assert dropped == {c.name for c in model.columns}
 
     def test_trial_execute_bucket_mismatch_drops_column(self) -> None:
@@ -400,23 +401,32 @@ class TestDiffSqlModel:
         assert entry is None
 
 
-class TestSqlModelSourceTables:
-    def test_aliases_stripped_and_ctes_excluded(self) -> None:
-        from slayer.engine.schema_drift import _sql_model_source_tables
-
+class TestSqlModelSourceRefs:
+    def test_aliases_attributed_and_ctes_excluded(self) -> None:
         sql = """
         WITH recent AS (SELECT * FROM orders AS o WHERE o.ts > '2024-01-01')
         SELECT r.id, s.name
         FROM recent AS r
         JOIN analytics.stores AS s ON r.store_id = s.id
         """
-        tables = _sql_model_source_tables(sql=sql, dialect="postgres")
-        assert set(tables) == {"orders", "analytics.stores"}
+        refs = _sql_model_source_refs(sql=sql, dialect="postgres")
+        assert refs == {
+            "orders": {"ts"},
+            "analytics.stores": {"name", "id"},
+        }
 
-    def test_unparseable_sql_returns_empty(self) -> None:
-        from slayer.engine.schema_drift import _sql_model_source_tables
+    def test_bare_columns_attributed_to_single_table(self) -> None:
+        refs = _sql_model_source_refs(
+            sql="SELECT id, amount FROM orders", dialect="postgres"
+        )
+        assert refs == {"orders": {"id", "amount"}}
 
-        assert _sql_model_source_tables(sql="SELECT FROM FROM", dialect="postgres") == []
+    def test_ambiguous_bare_column_returns_none(self) -> None:
+        sql = "SELECT amount FROM orders AS o JOIN stores AS s ON o.sid = s.id"
+        assert _sql_model_source_refs(sql=sql, dialect="postgres") is None
+
+    def test_unparseable_sql_returns_none(self) -> None:
+        assert _sql_model_source_refs(sql="SELECT FROM FROM", dialect="postgres") is None
 
 
 # ---------------------------------------------------------------------------

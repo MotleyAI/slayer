@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy.exc import SQLAlchemyError
 
 from slayer.core.enums import DataType
 from slayer.core.errors import SchemaDriftError
@@ -136,12 +137,12 @@ class TestSchemaDriftErrorWrap:
     async def test_dbapi_error_without_drift_re_raises_original(
         self, workspace: Path
     ) -> None:
-        """A model whose own SQL is broken (source tables intact) is not
-        drift — the original DBAPI error must reach the caller."""
+        """A model whose own SQL is broken (source tables and columns intact)
+        is not drift — the original DBAPI error must reach the caller."""
         engine, _ = await _setup(workspace)
         broken_model = SlayerModel(
             name="broken",
-            sql="SELECT id, this_col_does_not_exist AS amount FROM orders",
+            sql="SELECT id, NO_SUCH_FUNCTION(amount) AS amount FROM orders",
             data_source="ds",
             columns=[
                 Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
@@ -157,12 +158,10 @@ class TestSchemaDriftErrorWrap:
         # Original SQLAlchemy/DBAPI error should bubble up — NOT
         # SchemaDriftError. Assert on the original error class so a
         # regression that re-wraps as something else still fails here.
-        from sqlalchemy.exc import SQLAlchemyError
-
         with pytest.raises(SQLAlchemyError) as exc:
             await engine.execute(q)
         assert not isinstance(exc.value, SchemaDriftError)
-        assert "this_col_does_not_exist" in str(exc.value)
+        assert "no_such_function" in str(exc.value).lower()
 
     async def test_broken_sql_model_reported_as_invalid_sql(
         self, workspace: Path
@@ -171,7 +170,7 @@ class TestSchemaDriftErrorWrap:
         await engine.storage.save_model(
             SlayerModel(
                 name="broken",
-                sql="SELECT id, this_col_does_not_exist AS amount FROM orders",
+                sql="SELECT id, NO_SUCH_FUNCTION(amount) AS amount FROM orders",
                 data_source="ds",
                 columns=[
                     Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
@@ -184,7 +183,36 @@ class TestSchemaDriftErrorWrap:
         assert len(broken) == 1
         assert isinstance(broken[0], WholeModelDelete)
         assert broken[0].cause == "invalid_sql"
-        assert "source tables exist" in broken[0].reasons[0].reason
+        assert "source tables and referenced columns exist" in broken[0].reasons[0].reason
+
+    async def test_sql_model_on_dropped_column_still_wraps_as_drift(
+        self, workspace: Path
+    ) -> None:
+        """A dropped source COLUMN (table intact) is real drift, not invalid SQL."""
+        engine, db_path = await _setup(workspace)
+        await engine.storage.save_model(
+            SlayerModel(
+                name="orders_view",
+                sql="SELECT id, amount FROM orders",
+                data_source="ds",
+                columns=[
+                    Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                    Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                ],
+            )
+        )
+        conn = sqlite3.connect(db_path)
+        conn.execute("ALTER TABLE orders DROP COLUMN amount")
+        conn.commit()
+        conn.close()
+
+        q = SlayerQuery(
+            source_model="orders_view",
+            measures=[{"formula": "amount:sum", "name": "total"}],
+        )
+        with pytest.raises(SchemaDriftError) as exc:
+            await engine.execute(q)
+        assert "orders_view" in exc.value.models
 
     async def test_sql_model_on_dropped_table_still_wraps_as_drift(
         self, workspace: Path

@@ -66,6 +66,7 @@ from slayer.engine.syntax import (
     walk_parsed_refs,
 )
 from slayer.sql.client import SlayerSQLClient
+from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.engine_factory import EngineCacheKey
 
 logger = logging.getLogger(__name__)
@@ -110,7 +111,8 @@ class WholeModelDelete(BaseModel):
     model_name: str
     data_source: str
     reasons: list[DeleteReason] = Field(default_factory=list)
-    # "invalid_sql": the model's own SQL fails while its source tables exist.
+    # "invalid_sql": the model's own SQL fails while its source tables and
+    # referenced columns exist.
     cause: Literal["schema_drift", "invalid_sql"] = "schema_drift"
 
 
@@ -466,14 +468,14 @@ def diff_sql_model(
 
     ``live_columns is None`` ⇒ trial-execute failed ⇒ ``WholeModelDelete``.
     ``invalid_sql=True`` marks that failure as the model's own SQL being
-    broken (its source tables still exist) rather than schema drift.
+    broken (its source tables and columns still exist) rather than drift.
     """
     if live_columns is None:
         if invalid_sql:
             reason = (
                 "Trial-execute on model.sql failed although its source "
-                "tables exist; the SQL itself does not execute against "
-                "this datasource"
+                "tables and referenced columns exist; the SQL itself does "
+                "not execute against this datasource"
             )
         else:
             reason = (
@@ -2037,18 +2039,21 @@ async def _live_columns_for_sql_model(
     }
 
 
-def _sql_model_source_tables(*, sql: str, dialect: str) -> list[str]:
-    """Source tables referenced by a sql-mode model, CTE names excluded.
+def _sql_model_source_refs(*, sql: str, dialect: str) -> "dict[str, set[str]] | None":
+    """Map each source table of a sql-mode model to the columns it references.
 
-    Best-effort: returns ``[]`` when the SQL does not parse.
+    Keys are rendered table references (alias stripped, CTE names excluded);
+    values are rendered column identifiers. Returns ``None`` when the SQL does
+    not parse or a bare column cannot be attributed to a single source table.
+    Refs qualified by a non-source alias (derived subqueries) are skipped.
     """
     try:
         parsed = sqlglot.parse_one(sql, read=dialect)
     except Exception:
-        return []
+        return None
     cte_names = {cte.alias_or_name for cte in parsed.find_all(exp.CTE)}
-    out: list[str] = []
-    seen: set[str] = set()
+    refs: dict[str, set[str]] = {}
+    table_by_qualifier: dict[str, str] = {}
     for table in parsed.find_all(exp.Table):
         if not table.name:
             continue
@@ -2057,32 +2062,48 @@ def _sql_model_source_tables(*, sql: str, dialect: str) -> list[str]:
         bare = table.copy()
         bare.set("alias", None)
         rendered = bare.sql(dialect=dialect)
-        if rendered not in seen:
-            seen.add(rendered)
-            out.append(rendered)
-    return out
+        refs.setdefault(rendered, set())
+        for qualifier in {table.alias_or_name, table.name}:
+            table_by_qualifier[qualifier] = rendered
+    for col in parsed.find_all(exp.Column):
+        if not isinstance(col.this, exp.Identifier):
+            continue
+        rendered_col = exp.Column(this=col.this.copy()).sql(dialect=dialect)
+        qualifier = col.table
+        if qualifier:
+            if qualifier in cte_names:
+                continue
+            target = table_by_qualifier.get(qualifier)
+            if target is not None:
+                refs[target].add(rendered_col)
+        elif len(refs) == 1:
+            refs[next(iter(refs))].add(rendered_col)
+        else:
+            # A bare column over several source tables cannot be attributed.
+            return None
+    return refs
 
 
 async def _source_tables_resolve(
     *, model: SlayerModel, client: SlayerSQLClient
 ) -> bool:
-    """Whether every table referenced by ``model.sql`` accepts a 0-row probe.
+    """Whether every table AND column referenced by ``model.sql`` accepts a
+    0-row probe.
 
     ``True`` means the trial-execute failure was NOT caused by a missing
-    table — the model's own SQL is broken. Any probe failure (missing
-    table, transient error, unparseable SQL) returns ``False``, keeping
-    the schema-drift classification.
+    table or column — the model's own SQL is broken. Any probe failure
+    (missing object, transient error, unparseable or ambiguous SQL) returns
+    ``False``, keeping the schema-drift classification.
     """
-    from slayer.sql.dialects import dialect_for_ds_type
-
     dialect = dialect_for_ds_type(client.datasource.type).sqlglot_name
-    tables = _sql_model_source_tables(sql=model.sql or "", dialect=dialect)
-    if not tables:
+    refs = _sql_model_source_refs(sql=model.sql or "", dialect=dialect)
+    if not refs:
         return False
-    for table in tables:
+    for table, columns in refs.items():
+        select_list = ", ".join(sorted(columns)) or "*"
         try:
             await client.get_column_types(
-                f"SELECT * FROM {table} AS _sd_probe WHERE 1=0"
+                f"SELECT {select_list} FROM {table} AS _sd_probe WHERE 1=0"
             )
         except Exception:
             return False
