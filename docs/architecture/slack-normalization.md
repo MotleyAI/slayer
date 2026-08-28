@@ -13,7 +13,7 @@ This is how SLayer stays tolerant of the natural things agents type
 tolerance leak into the resolution logic — the parser, binder, and planner never
 have to know that `sum(revenue)` is even a thing.
 
-## The three rules
+## The two rules
 
 ```mermaid
 flowchart LR
@@ -23,16 +23,20 @@ flowchart LR
     subgraph "Query shape"
         m["MISPLACED_MEASURE<br/>bare column in query.measures<br/>→ moved to query.dimensions"]
     end
-    subgraph "Mode A (SQL fields)"
-        d["DOT_PATH_IN_SQL<br/>customers.regions.name<br/>→ customers__regions.name"]
-    end
 ```
 
 | Rule | Mode | Detects | Rewrites to |
 | --- | --- | --- | --- |
 | `FUNC_STYLE_AGG` | Mode B | `sum(col)`, `count(*)`, `percentile(amount, p=0.5)` | colon form (`col:sum`, `*:count`, `amount:percentile(p=0.5)`) |
 | `MISPLACED_MEASURE` | query shape | a bare (no colon, no call) entry in `query.measures` that names a column | moved to `query.dimensions` |
-| `DOT_PATH_IN_SQL` | Mode A | a root-scope dotted ref whose leading segment is a known join target | the `__` alias form |
+
+> **DEV-1743 — the `DOT_PATH_IN_SQL` rule is RETIRED.** Mode-A free SQL is now
+> dotted-canonical: a dotted join path (`customers.regions.name`) is the
+> canonical form and is left untouched by normalization; the legacy `__`
+> split-alias input form (`customers__regions.name`) is no longer produced by a
+> rewrite — it is a hard error (`LegacyDunderAliasError`) raised by the shared
+> resolver in `column_expansion.py` at generation time and by the save-time door
+> in `query_engine.py`. See below.
 
 ### `FUNC_STYLE_AGG`
 
@@ -58,32 +62,25 @@ is left for the downstream resolver to error on. It is a no-op when the stage ha
 no resolved model (a sibling-sourced stage), because column classification needs
 the model's column names.
 
-### `DOT_PATH_IN_SQL`
+### `DOT_PATH_IN_SQL` (retired — DEV-1743)
 
-The subtle one. It rewrites `customers.regions.name` → `customers__regions.name`
-in Mode-A SQL (`Column.sql`, `Column.filter`, `SlayerModel.filters`), but only
-when the leading segment is a real join target on the host model — and it is
-**AST-based and scope-aware**, not a regex:
+Historically this rule rewrote a dotted Mode-A join path
+(`customers.regions.name`) into the `__` split-alias form
+(`customers__regions.name`) at the `engine.execute` / `engine.save_model`
+boundary. DEV-1743 makes dots the **canonical** Mode-A separator, so there is
+nothing to rewrite: a dotted path stays dotted, and resolution to the internal
+`__` JOIN alias happens structurally in the shared resolver
+(`column_expansion.expand_derived_refs_sync`), not by a textual normalization.
 
-- It parses with sqlglot and identifies the **root-scope** `Column` nodes by
-  walking lexical ancestors (`_dot_path_root_scope_analysis`), *not* by trusting
-  `Scope.columns` (which would pull in correlated subquery refs). Refs inside
-  subqueries, CTE bodies, and set-op branches are left alone.
-- It collects shadow names — CTE definitions, explicit `AS` aliases,
-  Subquery/CTE sources, and schema/catalog qualifiers on FROM tables — and a ref
-  whose leading segment matches both a join target and a shadow is flagged
-  *ambiguous*: no rewrite, a warning carrying
-  `normalized="(ambiguous: …)"`.
-
-The scope-guard reuses the `column_expansion.py` precedent from DEV-1410. Why
-AST and not the old construction-time regex: the rewrite needs the model's join
-graph to know whether the first segment is a join target (vs. a
-catalog/schema-qualified name like `mydb.customers.x`), which a `Column.sql`
-field validator has no access to. So multi-dot normalization is **boundary-only,
-by design** — it runs in the slack pass at `engine.execute` / `engine.save_model`,
-not at Pydantic construction. A consequence to state honestly: a `SlayerModel`
-built in memory and read back without crossing execute/save shows the raw
-multi-dot form; `save_model` canonicalizes before persisting.
+The inverse is now a **hard error** rather than a rewrite target. A legacy `__`
+split-alias qualifier that does not name a real (exact) join target but whose
+naive split would walk the graph raises `LegacyDunderAliasError` at two doors:
+generation time (the resolver runs during SQL generation) and save time
+(`SlayerQueryEngine._validate_mode_a_join_paths` in `save_model`). A `__` token
+that IS an exact directly-joined model name resolves normally — `__` is a legal
+identifier character now, matched exactly, never split. Stored pre-v9 models
+carrying the old split-alias form are migrated to dotted on load by the v9
+storage migration.
 
 ## Warning shape and dual surfacing
 
@@ -112,12 +109,11 @@ engine code.
 
 - `normalize_query(query, *, model, custom_agg_names)` — runs `FUNC_STYLE_AGG`
   over Mode-B fields and `MISPLACED_MEASURE` over the query shape, returning a
-  `NormalizationResult(query, warnings)`. (The query-side `DOT_PATH_IN_SQL`
-  wiring is present but a no-op — Mode-A on a query is rare; most Mode-A lives on
-  the model.)
-- `normalize_model(model)` — runs `FUNC_STYLE_AGG` over `ModelMeasure.formula`
-  and `DOT_PATH_IN_SQL` over `Column.sql` / `Column.filter` /
-  `SlayerModel.filters`, returning `NormalizationResult(model, warnings)`.
+  `NormalizationResult(query, warnings)`.
+- `normalize_model(model)` — runs `FUNC_STYLE_AGG` over `ModelMeasure.formula`,
+  returning `NormalizationResult(model, warnings)`. (Since DEV-1743 it no longer
+  rewrites Mode-A `Column.sql` / `Column.filter` / `SlayerModel.filters` — those
+  are dotted-canonical and pass through untouched.)
 
 These are invoked at the engine boundaries: `engine.execute` (per stage, via
 `_normalize_stage`) and `engine.save_model`. CLI / REST / MCP go through those
@@ -134,11 +130,6 @@ for the call sites.
   driving them) need to *see* that their input was rewritten, structurally, so
   they can learn the canonical form. A log line is invisible to them; the
   `rule_doc_url` points at the canonical-form documentation.
-- **Why AST for `DOT_PATH_IN_SQL`?** The old construction-time regex blindly
-  rewrote any `a.b.c`, including `mydb.customers.x` — a latent bug. Being
-  scope-aware and join-graph-aware is only possible at a boundary that has the
-  model in hand.
-
 The reference page for the rules (with the `#func-style-agg` /
-`#dot-path-in-sql` / `#misplaced-measure` anchors that `rule_doc_url` points at)
-is `docs/agent_input_slack.md`, authored as part of the user-facing docs update.
+`#misplaced-measure` anchors that `rule_doc_url` points at) is
+`docs/agent_input_slack.md`, authored as part of the user-facing docs update.

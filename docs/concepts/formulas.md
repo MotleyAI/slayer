@@ -159,11 +159,18 @@ query's row-level filters — `having`-phase filters and pagination change which
 rows you see, never the parent total. NULL-valued partition dimensions keep their
 group.
 
+A `partition_by` aggregate can also drive a
+[computed dimension](queries.md#grouping-by-an-expression-over-an-aggregate) —
+grouping by a value derived from an aggregate at a finer grain than the query.
+There, the `partition_by` grain is unconstrained (it may be finer than the query
+dimensions), since it defines the grain of a synthesized internal stage.
+
 These shapes raise a clear error rather than returning wrong numbers, and are
 planned follow-ups: `partition_by` combined with `window=`; on `first`/`last`;
 nested inside a transform (`cumsum(revenue:sum(partition_by=region))`); or
-referenced in a filter. A `partition_by` column that is not a query dimension
-(or, cross-model, not expressible at the aggregate's root) errors at plan time.
+referenced in a filter. As a query MEASURE, a `partition_by` column that is not
+a query dimension (or, cross-model, not expressible at the aggregate's root)
+errors at plan time.
 
 ---
 

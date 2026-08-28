@@ -62,11 +62,23 @@ class _SubstringRule:
             )
 
 
-_NO_DUNDER = _SubstringRule(
-    substring="__",
-    reason="double underscores are reserved for join path aliases in "
-           "generated SQL.",
-)
+# DEV-1743: ``__`` is no longer banned in model/query/column/measure names
+# (the dotted-canonical flip made join-path ambiguity structurally
+# impossible). The only reserved substring left is the ``__slayer_`` prefix,
+# which the colon-agg preprocessor mints internally — user input must not spoof
+# it.
+_RESERVED_NAME_PREFIX = "__slayer_"
+
+
+def _reject_reserved_prefix(name: str, label: str) -> None:
+    """Reject the SLayer-internal ``__slayer_`` name prefix (P3)."""
+    if name.startswith(_RESERVED_NAME_PREFIX):
+        raise ValueError(
+            f"{label} '{name}' must not start with {_RESERVED_NAME_PREFIX!r}; "
+            f"that prefix is reserved for SLayer-internal identifiers."
+        )
+
+
 _NO_DOT = _SubstringRule(
     substring=".",
     reason="dots are the canonical-id namespace delimiter "
@@ -108,11 +120,12 @@ def _require_non_empty_trimmed(v: str, context: str) -> None:
 
 
 def _validate_model_name(name: str, context: str) -> str:
-    """Reject model/query names containing ``__``, ``.``, or ``:``."""
+    """Reject model/query names containing ``.`` or ``:``, or the reserved
+    ``__slayer_`` prefix. ``__`` elsewhere is allowed (DEV-1743)."""
     label = f"{context} name"
-    _NO_DUNDER.check(name=name, context=label)
     _NO_DOT.check(name=name, context=label)
     _NO_COLON.check(name=name, context=label)
+    _reject_reserved_prefix(name, label)
     return name
 
 
@@ -120,11 +133,14 @@ _DUNDER_RUN_RE = re.compile(r"_{2,}")
 
 
 def sanitize_model_name(name: str) -> str:
-    """Collapse runs of 2+ underscores so ``name`` passes ``_NO_DUNDER``.
+    """Collapse runs of 2+ underscores to a single underscore.
 
     Regex, not ``replace("__", "_")``: ``str.replace`` is non-overlapping, so
-    ``"a___b"`` would become ``"a__b"`` and still fail. Dotted names aren't
-    handled here (ambiguous with schema qualification) — the caller skips them.
+    ``"a___b"`` would become ``"a__b"``. Used by ingestion's re-ingest fallback
+    matching (D3): ``__`` in names is no longer rejected, but the sanitized
+    spelling is still the fallback key for matching a stored model to a freshly
+    scanned one. Dotted names aren't handled here (ambiguous with schema
+    qualification) — the caller skips them.
     """
     return _DUNDER_RUN_RE.sub("_", name)
 
@@ -138,6 +154,7 @@ def _validate_column_name(name: str, context: str) -> str:
     label = f"{context} name"
     _NO_DOT.check(name=name, context=label)
     _NO_COLON.check(name=name, context=label)
+    _reject_reserved_prefix(name, label)
     return name
 
 
@@ -248,6 +265,8 @@ class ModelMeasure(BaseModel):
                 f"Invalid name '{v}': must contain only letters, digits, "
                 f"and underscores, and start with a letter or underscore"
             )
+        if v is not None:
+            _reject_reserved_prefix(v, "ModelMeasure name")
         return v
 
     @field_validator("name")
@@ -432,7 +451,7 @@ class ModelJoin(BaseModel):
 
 
 class SlayerModel(BaseModel):
-    version: int = 8
+    version: int = 9  # DEV-1743: v9 = ``__`` ban lift + legacy-alias load rewrite
     name: str
     sql_table: str | None = None
     # What kind of database object ``sql_table`` names; only auto-ingestion sets

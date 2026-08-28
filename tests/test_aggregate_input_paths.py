@@ -77,11 +77,11 @@ def _orders() -> SlayerModel:
             Column(name="customer_id", type=DataType.INT),
             Column(name="amount", type=DataType.DOUBLE),
             Column(name="created_at", type=DataType.TIMESTAMP),
-            Column(name="region_pay", sql="customers__regions.payment_amount",
+            Column(name="region_pay", sql="customers.regions.payment_amount",
                    type=DataType.DOUBLE),
             Column(name="cust_weight_d", sql="customers.weight",
                    type=DataType.DOUBLE),
-            Column(name="pop_helper", sql="customers__regions.payment_amount",
+            Column(name="pop_helper", sql="customers.regions.payment_amount",
                    type=DataType.DOUBLE),
             Column(name="doubled_pop", sql="pop_helper * 2",
                    type=DataType.DOUBLE),
@@ -104,7 +104,7 @@ def _orders() -> SlayerModel:
             Aggregation(
                 name="wscaled_sum", formula="SUM({value} * {w})",
                 params=[AggregationParam(
-                    name="w", sql="customers__regions.weight",
+                    name="w", sql="customers.regions.weight",
                 )],
             ),
         ],
@@ -189,7 +189,7 @@ class TestCrossingArgsAndKwargs:
 
 class TestTemplateFragmentKwargs:
     def test_user_fragment_crossing(self):
-        paths = _paths("amount:scaled_sum(scale='customers__regions.weight')")
+        paths = _paths("amount:scaled_sum(scale='customers.regions.weight')")
         assert ("customers", "regions") in paths, paths
 
     def test_model_default_fragment_crossing(self):

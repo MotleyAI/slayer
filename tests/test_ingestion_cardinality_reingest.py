@@ -130,13 +130,14 @@ class TestAdditiveContract:
 
 
 class TestLegacyJoinTargetNormalisation:
-    """A join persisted with the live object name self-heals on re-ingest.
-
-    Model names cannot contain ``__``, so such a target can never resolve —
-    it is repaired rather than kept alongside the corrected join.
+    """DEV-1743: a ``__`` join target is a LEGAL model name now, so a join to a
+    faithfully-named ``__`` model is preserved across re-ingest — never rewritten
+    to a sanitized spelling. (Genuine old-world healing — a raw target with no
+    model but a sanitized one that does — is handled by the [C2] adopt-stored-name
+    pre-pass in ``ingest_datasource_idempotent`` plus ``_repair_legacy_join_targets``.)
     """
 
-    async def test_legacy_double_underscore_target_is_rewritten(
+    async def test_dunder_join_target_is_preserved_across_reingest(
         self, workspace: Path
     ) -> None:
         import sqlite3
@@ -163,15 +164,14 @@ class TestLegacyJoinTargetNormalisation:
         await storage.save_datasource(ds)
         await ingest_datasource_idempotent(datasource=ds, storage=storage)
 
-        # Rewind to the pre-fix state: the join names the live object.
+        # The faithful target is what fresh ingest already wrote.
         visits = await storage.get_model("visits", data_source="ds")
-        visits.joins[0].target_model = "reports__patient__drug"
-        await storage.save_model(visits)
+        assert [j.target_model for j in visits.joins] == ["reports__patient__drug"]
 
         await ingest_datasource_idempotent(datasource=ds, storage=storage)
 
         reloaded = await storage.get_model("visits", data_source="ds")
-        assert [j.target_model for j in reloaded.joins] == ["reports_patient_drug"]
+        assert [j.target_model for j in reloaded.joins] == ["reports__patient__drug"]
 
     async def test_colliding_legacy_targets_do_not_break_reingest(
         self, workspace: Path

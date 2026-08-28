@@ -24,12 +24,24 @@ from __future__ import annotations
 
 from decimal import Decimal
 from enum import IntEnum
-from typing import Literal, Optional, Tuple, TypeVar, Union, cast
+from typing import Literal, Mapping, Optional, Tuple, TypeVar, Union, cast
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat
+
+
+# ---------------------------------------------------------------------------
+# Reserved placeholder leaf (DEV-1825)
+# ---------------------------------------------------------------------------
+
+# A regroup producer's consumed aggregate is substituted by a ``ColumnKey``
+# with this leaf prefix (``__regroup__<n>__<canonical>``). The render-time
+# scope resolves such a leaf from its attach registry; a miss is fail-closed.
+# A source model may not declare a real column with this prefix while a regroup
+# is active (guarded at plan time).
+REGROUP_LEAF_PREFIX = "__regroup__"
 
 
 # ---------------------------------------------------------------------------
@@ -970,6 +982,92 @@ def reroot_value_key(
         f"is total over ValueKey by design: add an explicit case rather than "
         f"letting an unrerooted key through, which the SQL generator cannot "
         f"distinguish from a correctly-local one."
+    )
+
+
+# ---------------------------------------------------------------------------
+# The total substitution visitor (DEV-1825)
+# ---------------------------------------------------------------------------
+
+
+def substitute_value_keys(
+    key: _RerootableT, mapping: Mapping["ValueKey", "ValueKey"],
+) -> _RerootableT:
+    """Replace whole sub-keys named in ``mapping`` by identity, structurally.
+
+    The regroup desugar swaps each partitioned ``AggregateKey`` for a
+    reserved-leaf ``ColumnKey`` placeholder. Two properties, mirroring
+    :func:`reroot_value_key`:
+
+    **Match-before-recurse.** A key equal to a ``mapping`` entry is replaced
+    ATOMICALLY — its children are never traversed, so the swap is "by key
+    identity, never text" and a matched aggregate's own internals (source,
+    partition keys) do not leak into the result.
+
+    **Total & fail-closed.** Every union member has an explicit case; an
+    unhandled kind raises ``TypeError`` rather than riding through unrewritten.
+
+    ``AggregateKey.column_filter_key`` is NOT traversed — it is a Mode-A
+    ``SqlExprKey``, not a ``ValueKey`` (the same asymmetry
+    :func:`reroot_value_key` documents). ``TimeTruncKey.column`` IS, so a
+    column-to-column mapping reaches a time bucket's wrapped column.
+    """
+    def _recurse(value):
+        return substitute_value_keys(key=value, mapping=mapping)
+
+    # Scalars ride through untouched (ScalarCallKey args, AggregateKey kwargs).
+    if key is None or isinstance(key, (Decimal, str, bool, int, float)):
+        return key
+
+    # Whole-key match wins before any structural descent.
+    if key in mapping:
+        return cast(_RerootableT, mapping[key])
+
+    # --- leaves ---------------------------------------------------------
+    if isinstance(key, (ColumnKey, ColumnSqlKey, StarKey, LiteralKey, SqlExprKey)):
+        return key
+    if isinstance(key, TimeTruncKey):
+        return key.model_copy(update={"column": _recurse(key.column)})
+
+    # --- composites -----------------------------------------------------
+    if isinstance(key, AggregateKey):
+        return key.model_copy(update={
+            "source": _recurse(key.source),
+            "args": tuple(_recurse(a) for a in key.args),
+            "kwargs": tuple((n, _recurse(v)) for n, v in key.kwargs),
+            "partition_keys": (
+                None if key.partition_keys is None
+                else frozenset(_recurse(p) for p in key.partition_keys)
+            ),
+        })
+    if isinstance(key, TransformKey):
+        return key.model_copy(update={
+            "input": _recurse(key.input),
+            "partition_keys": frozenset(_recurse(p) for p in key.partition_keys),
+            "time_key": None if key.time_key is None else _recurse(key.time_key),
+        })
+    if isinstance(key, ArithmeticKey):
+        return key.model_copy(update={
+            "operands": tuple(_recurse(o) for o in key.operands),
+        })
+    if isinstance(key, ScalarCallKey):
+        return key.model_copy(update={"args": tuple(_recurse(a) for a in key.args)})
+    if isinstance(key, BetweenKey):
+        return key.model_copy(update={
+            "column": _recurse(key.column),
+            "low": _recurse(key.low),
+            "high": _recurse(key.high),
+        })
+    if isinstance(key, InKey):
+        return key.model_copy(update={
+            "column": _recurse(key.column),
+            "values": tuple(_recurse(v) for v in key.values),
+        })
+
+    raise TypeError(
+        f"substitute_value_keys has no case for {type(key).__name__!r}. The "
+        f"visitor is total over ValueKey by design: add an explicit case rather "
+        f"than letting a key ride through unrewritten."
     )
 
 

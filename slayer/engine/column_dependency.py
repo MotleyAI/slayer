@@ -21,11 +21,15 @@ from collections import deque
 from typing import TYPE_CHECKING
 
 import sqlglot
-from sqlglot import exp
 
 from slayer.core.errors import ColumnCycleError
 from slayer.core.models import Column, SlayerModel
-from slayer.engine.column_expansion import _is_trivial_base, _root_scope_column_ids
+from slayer.engine.column_expansion import (
+    _is_trivial_base,
+    _reference_sites,
+    _root_scope_column_ids,
+    resolve_ref_target,
+)
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 
 if TYPE_CHECKING:
@@ -37,80 +41,6 @@ if TYPE_CHECKING:
 # columns appear in the AST. Using sqlglot's default keeps the validator
 # independent of the model's runtime datasource dialect.
 _DEPENDENCY_DIALECT: str | None = None
-
-
-def _resolve_target_for_ref(
-    *,
-    table_alias: str | None,
-    host: SlayerModel,
-    reachable: dict[str, SlayerModel],
-) -> SlayerModel | None:
-    """Return the model that a column reference resolves to, or ``None``.
-
-    Mirrors the runtime alias resolution in
-    :func:`slayer.engine.column_expansion._walk_path_to_target_sync` so the
-    save-time validator and the compile-time expander agree on which
-    references count. ``table_alias`` may be:
-
-    - ``None``: bare identifier → resolves to ``host``.
-    - The host's own name: resolves to ``host``.
-    - A single-hop join target name (``"B"``): resolves to
-      ``reachable["B"]`` iff ``host`` has a direct join to ``B``.
-    - A canonical ``__``-delimited path (``"B__C"``): walks each hop
-      through the chain of joins, requiring a direct join at every step.
-
-    Anything that doesn't resolve through this strict walk is out of
-    scope (CTE alias, external table, indirect-but-not-joined target).
-    Returns ``None`` to signal "leave alone".
-    """
-    if table_alias is None or table_alias == host.name:
-        return host
-    parts = (
-        table_alias.split("__") if "__" in table_alias else [table_alias]
-    )
-    current = host
-    for hop in parts:
-        join = next(
-            (j for j in current.joins if j.target_model == hop), None,
-        )
-        if join is None:
-            return None
-        nxt = reachable.get(hop)
-        if nxt is None:
-            return None
-        current = nxt
-    return current
-
-
-def _resolve_single_column(
-    *,
-    node: exp.Column,
-    host: SlayerModel,
-    reachable: dict[str, SlayerModel],
-    root_ids: set[int],
-) -> tuple[str, str] | None:
-    """Resolve one ``exp.Column`` node to a (model_name, column_name) dep,
-    or ``None`` if the node is out of scope.
-
-    Filters applied: non-root-scope nodes, multi-part qualifiers
-    (``catalog.db.table.col``), aliases that don't resolve through the
-    host's join chain, and targets whose column is missing or trivial-base.
-    """
-    if id(node) not in root_ids:
-        return None
-    if node.args.get("db") or node.args.get("catalog"):
-        return None
-    table_id = node.args.get("table")
-    table_alias = table_id.name if table_id is not None else None
-    target = _resolve_target_for_ref(
-        table_alias=table_alias, host=host, reachable=reachable,
-    )
-    if target is None:
-        return None
-    target_col = target.get_column(node.name)
-    if target_col is None or _is_trivial_base(column=target_col):
-        return None
-    return (target.name, target_col.name)
 
 
 def _column_dependencies(
@@ -125,6 +55,12 @@ def _column_dependencies(
     pointing at columns that exist in ``reachable`` AND are themselves
     derived (non-trivial sql). Base, unknown, and external refs are
     silently dropped: they cannot participate in a derived-column cycle.
+
+    DEV-1743: each reference is resolved through the shared
+    :func:`slayer.engine.column_expansion.resolve_ref_target` — exact-name-first
+    (a ``__``-named DIRECT join target stays whole) then a dotted chain of exact
+    hops (``customers.regions.label`` walks host→customers→regions), never
+    ``__``-splitting. Opaque / physical refs simply fail to resolve and drop out.
     """
     if column.sql is None or _is_trivial_base(column=column):
         return []
@@ -143,12 +79,16 @@ def _column_dependencies(
         return []
     root_ids = _root_scope_column_ids(parsed=parsed)
     deps: list[tuple[str, str]] = []
-    for node in parsed.find_all(exp.Column):
-        resolved = _resolve_single_column(
-            node=node, host=host, reachable=reachable, root_ids=root_ids,
+    for _node, quals, leaf in _reference_sites(parsed, root_ids):
+        target = resolve_ref_target(
+            qualifiers=quals, source_model=host, resolve_model=reachable.get,
         )
-        if resolved is not None:
-            deps.append(resolved)
+        if target is None:
+            continue
+        target_col = target.get_column(leaf)
+        if target_col is None or _is_trivial_base(column=target_col):
+            continue
+        deps.append((target.name, target_col.name))
     return deps
 
 

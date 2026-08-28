@@ -152,9 +152,12 @@ class TestPersistence:
 
 
 class TestMigration:
-    def test_current_version_is_8(self) -> None:
-        assert CURRENT_VERSIONS["SlayerModel"] == 8
-        assert SlayerModel(name="m", sql_table="t", data_source="ds").version == 8
+    def test_current_version_is_at_least_8(self) -> None:
+        current = CURRENT_VERSIONS["SlayerModel"]
+        assert current >= 8  # v8 added source_kind; DEV-1743 bumped to 9
+        assert SlayerModel(
+            name="m", sql_table="t", data_source="ds"
+        ).version == current
 
     def test_v7_payload_migrates_without_raising(self) -> None:
         """migrate() raises when a step has no converter, so v8_migration.py is mandatory."""
@@ -166,7 +169,7 @@ class TestMigration:
             "columns": [],
         }
         migrated = migrate("SlayerModel", payload)
-        assert migrated["version"] == 8
+        assert migrated["version"] == CURRENT_VERSIONS["SlayerModel"]
 
     def test_v7_payload_loads_with_unknown_source_kind(self) -> None:
         """A pre-existing model cannot know what backed it — None is correct."""
@@ -180,12 +183,12 @@ class TestMigration:
             }
         )
         assert model.source_kind is None
-        assert model.version == 8
+        assert model.version == CURRENT_VERSIONS["SlayerModel"]
 
     def test_migration_chain_walks_from_v1(self) -> None:
         """no gap anywhere in the chain."""
         payload = {"name": "orders", "data_source": "ds", "version": 1}
-        assert migrate("SlayerModel", payload)["version"] == 8
+        assert migrate("SlayerModel", payload)["version"] == CURRENT_VERSIONS["SlayerModel"]
 
 
 # ---------------------------------------------------------------------------

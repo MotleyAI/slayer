@@ -116,16 +116,17 @@ mistaken for one whose table was dropped.
 
 #### Unmodellable objects
 
-Model names cannot contain `__` — it is reserved for join-path aliases in
-generated SQL. An object whose name contains it (dlt writes nested-JSON child
-tables like `reports__patient__drug`) is modelled under a sanitized name
-(`reports_patient_drug`) while `sql_table` keeps the real name, so queries
-still resolve.
+`__` is legal in a model name, so an object whose name contains it (dlt writes
+nested-JSON child tables like `reports__patient__drug`) is modelled under its
+**faithful** name — `reports__patient__drug`, with `sql_table` matching. A
+re-ingest still matches a pre-existing stored model that was sanitized under the
+old rules (`reports_patient_drug`) to the same live object, so it is updated in
+place rather than duplicated (stored name wins).
 
-Objects that cannot be modelled at all — a sanitized name that collides with an
-existing object, a name containing `.`, `:`, `/` or `\`, or one that fails
-introspection — are listed under `Skipped` and the rest of the ingest proceeds.
-Use `--exclude <name>` to accept a skip permanently.
+Objects that cannot be modelled at all — a name containing `.`, `:`, `/` or `\`,
+one using the reserved `__slayer_` prefix, a cross-schema collision on the same
+raw name, or one that fails introspection — are listed under `Skipped` and the
+rest of the ingest proceeds. Use `--exclude <name>` to accept a skip permanently.
 
 #### Recognised internals
 
@@ -145,8 +146,9 @@ by construction — every dlt-loaded database has its own `_dlt_loads`, so a bar
 `edit_model("_dlt_loads", hidden=false)` resolves by [datasource
 priority](../concepts/models.md) and can un-hide the wrong one.
 
-A `__`-sanitized table also shows the model name it was given, since that is
-what `edit_model` takes: `- _dlt_loads__x (model: _dlt_loads_x): dlt`.
+When a model's name differs from the live object it points at, the listing shows
+the model name too, since that is what `edit_model` takes: `- analytics._dlt_loads
+(model: _dlt_loads): dlt`.
 
 Hidden, not skipped. The model still exists, is still queryable by name, and is
 still a valid join target — it is only absent from `models list`, MCP
@@ -155,8 +157,10 @@ That keeps a deliberate use working (`_dlt_loads` answers "when did this last
 load?") while keeping the agent-facing model list free of junk that costs tokens
 in every session and invites an agent to aggregate or join it by mistake.
 
-Matching is case-insensitive and applies to the **live object name**, so a
-`__`-sanitized model is matched on the table it really points at.
+Matching is case-insensitive and applies to the **live object name**
+(`sql_table`), not the model name, so an internal is still recognised when its
+model name differs from the table it points at (e.g. an old-world sanitized name
+kept for re-ingest matching, or a schema-qualified `sql_table`).
 
 | Rule | Matches | Tool |
 |------|---------|------|
