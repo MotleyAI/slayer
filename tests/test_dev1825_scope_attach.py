@@ -61,7 +61,7 @@ class TestAttachedColumnAnchor:
     def test_unregistered_prefixed_leaf_raises(self) -> None:
         scope = _scope(attached={PLACEHOLDER: exp.column("x", table="_cm_x")})
         missing = ColumnKey(path=(), leaf="__regroup__9__not_registered")
-        with pytest.raises(Exception, match=r"__regroup__"):
+        with pytest.raises(ValueError, match=r"__regroup__"):
             scope.resolve(missing)
 
     def test_prefixed_leaf_without_active_regroup_anchors_normally(self) -> None:
