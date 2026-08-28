@@ -1492,13 +1492,16 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     # aggregate left in the dimension / its filters) pass its filter guard,
     # while a genuine partitioned MEASURE still reaches its DEV-1739 path.
     regroup_attach_plans: List[RegroupAttachPlan] = []
+    if isinstance(query.source_model, str):
+        producer_source_model = query.source_model
+    elif render_source_model is not None:
+        producer_source_model = render_source_model.name
+    else:
+        producer_source_model = None
     regroup_result = _plan_dimension_regroups(
         prebound=prebound, scope=scope, bundle=bundle,
         cross_model_planner=cross_model_planner, stage_schemas=stage_schemas,
-        producer_source_model=(
-            query.source_model if isinstance(query.source_model, str)
-            else (render_source_model.name if render_source_model is not None else None)
-        ),
+        producer_source_model=producer_source_model,
     )
     if regroup_result is not None:
         prebound, regroup_attach_plans = regroup_result

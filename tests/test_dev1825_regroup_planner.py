@@ -83,7 +83,9 @@ class TestPlaceholderRegistry:
     def test_same_key_mints_one_placeholder(self) -> None:
         plain, _ = self._keys()
         reg = RegroupPlaceholderRegistry()
-        assert reg.placeholder_for(plain) == reg.placeholder_for(plain)
+        first = reg.placeholder_for(plain)
+        second = reg.placeholder_for(plain)
+        assert first == second
 
     def test_minting_is_deterministic_across_registries(self) -> None:
         plain, filtered = self._keys()
@@ -134,20 +136,22 @@ class TestFilterClassifier:
         assert "5000" not in cm_cte_bodies(sql)
 
     async def test_mixed_and_in_one_filter_raises_directive(self) -> None:
+        query = _q(
+            dimensions=["region", {"expression": BAND, "name": "band"}],
+            filters=["band == 1 and status == 'ok'"],
+            measures=[ModelMeasure(formula="amount:sum", name="s")],
+        )
         with pytest.raises(NotImplementedError, match=r"separate filters"):
-            await gen(_q(
-                dimensions=["region", {"expression": BAND, "name": "band"}],
-                filters=["band == 1 and status == 'ok'"],
-                measures=[ModelMeasure(formula="amount:sum", name="s")],
-            ))
+            await gen(query)
 
     async def test_mixed_or_in_one_filter_raises_directive(self) -> None:
+        query = _q(
+            dimensions=["region", {"expression": BAND, "name": "band"}],
+            filters=["band == 1 or status == 'ok'"],
+            measures=[ModelMeasure(formula="amount:sum", name="s")],
+        )
         with pytest.raises(NotImplementedError, match=r"separate filters"):
-            await gen(_q(
-                dimensions=["region", {"expression": BAND, "name": "band"}],
-                filters=["band == 1 or status == 'ok'"],
-                measures=[ModelMeasure(formula="amount:sum", name="s")],
-            ))
+            await gen(query)
 
     async def test_scalar_call_row_filter_copies_into_producer(self) -> None:
         sql = await gen(_q(

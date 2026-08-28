@@ -117,7 +117,7 @@ def dimension_partitioned_aggregates(declared_measures) -> List[AggregateKey]:
 _REF_LEAVES = (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey, AggregateKey)
 
 
-def _top_level_refs(
+def _top_level_refs(  # NOSONAR(S3776) — one flat structural walk over the ValueKey union (arithmetic / scalar-call / between / in / transform / leaves); each arm is independently trivial and splitting would fragment a single recursive dispatch
     vk: ValueKey, dim_agg_set: frozenset,
 ) -> Tuple[List[AggregateKey], List[ValueKey]]:
     """Split ``vk``'s references into (discovered dim-aggregates, other
