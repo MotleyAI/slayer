@@ -146,8 +146,8 @@ when **any** of its inputs crosses a join (Law 3, DEV-1703 D1/D2):
   case (`loss_payment_amt:sum` with `filter="loss_payment.has_flag = 1"`),
   read from the bind-time `column_filter_key.referenced_join_paths`;
 - its **source `Column.sql`** crosses a join (`region_pay` with
-  `sql="customers__regions.payment_amount"`, single-dot forms, and sibling
-  derived chains);
+  `sql="customers.regions.payment_amount"` — dotted-canonical since DEV-1743 —
+  and sibling derived chains);
 - a **positional arg** crosses — including the explicit first/last time arg
   (`amount:last(customers.signup_at)` and derived variants);
 - a **kwarg** crosses — a column ref (`weighted_avg(weight=customers.w)` or
@@ -328,7 +328,7 @@ null-safe form retains it.
   aggregate that coexists with a cross-model aggregate (DEV-1750). The
   cross-model transform chain gained the same shifted / cp CTE emitters the local
   chain uses, so a crossing template fragment (`amount:wscaled_sum` with a
-  default `w='customers__regions.weight'`) pulls its join into the shifted CTE.
+  default `w='customers.regions.weight'`) pulls its join into the shifted CTE.
   Two shapes stay guarded, loudly: a `time_shift` whose inner aggregate is
   **target-grain** cross-model (`cte_root_model is None` — host-rooted
   re-aggregation would multiply target rows through the 1:N join), and a
