@@ -404,16 +404,23 @@ class TestDiffSqlModel:
 class TestSqlModelSourceRefs:
     def test_aliases_attributed_and_ctes_excluded(self) -> None:
         sql = """
-        WITH recent AS (SELECT * FROM orders AS o WHERE o.ts > '2024-01-01')
+        WITH recent AS (
+            SELECT o.id, o.store_id FROM orders AS o WHERE o.ts > '2024-01-01'
+        )
         SELECT r.id, s.name
         FROM recent AS r
         JOIN analytics.stores AS s ON r.store_id = s.id
         """
         refs = _sql_model_source_refs(sql=sql, dialect="postgres")
         assert refs == {
-            "orders": {"ts"},
+            "orders": {"id", "store_id", "ts"},
             "analytics.stores": {"name", "id"},
         }
+
+    def test_star_behind_derived_ref_returns_none(self) -> None:
+        # ``*`` may hide the physical column behind ``src.amount``.
+        sql = "WITH src AS (SELECT * FROM orders) SELECT src.amount FROM src"
+        assert _sql_model_source_refs(sql=sql, dialect="postgres") is None
 
     def test_bare_columns_attributed_to_single_table(self) -> None:
         refs = _sql_model_source_refs(

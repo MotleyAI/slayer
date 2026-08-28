@@ -2039,13 +2039,26 @@ async def _live_columns_for_sql_model(
     }
 
 
+def _has_star_projection(parsed: exp.Expression) -> bool:
+    """Whether any SELECT in the statement projects ``*`` or ``t.*``."""
+    for select in parsed.find_all(exp.Select):
+        for proj in select.expressions:
+            if isinstance(proj, exp.Star):
+                return True
+            if isinstance(proj, exp.Column) and isinstance(proj.this, exp.Star):
+                return True
+    return False
+
+
 def _sql_model_source_refs(*, sql: str, dialect: str) -> "dict[str, set[str]] | None":
     """Map each source table of a sql-mode model to the columns it references.
 
     Keys are rendered table references (alias stripped, CTE names excluded);
-    values are rendered column identifiers. Returns ``None`` when the SQL does
-    not parse or a bare column cannot be attributed to a single source table.
-    Refs qualified by a non-source alias (derived subqueries) are skipped.
+    values are rendered column identifiers. Returns ``None`` (cannot verify)
+    when the SQL does not parse, a bare column cannot be attributed to a
+    single source table, or a CTE / derived-table ref coexists with a ``*``
+    projection. Without a ``*``, a CTE or derived-table ref is only a rename
+    of explicit refs that are all collected here, so it is safe to skip.
     """
     try:
         parsed = sqlglot.parse_one(sql, read=dialect)
@@ -2065,22 +2078,26 @@ def _sql_model_source_refs(*, sql: str, dialect: str) -> "dict[str, set[str]] | 
         refs.setdefault(rendered, set())
         for qualifier in {table.alias_or_name, table.name}:
             table_by_qualifier[qualifier] = rendered
+    has_derived_ref = False
     for col in parsed.find_all(exp.Column):
         if not isinstance(col.this, exp.Identifier):
             continue
         rendered_col = exp.Column(this=col.this.copy()).sql(dialect=dialect)
         qualifier = col.table
         if qualifier:
-            if qualifier in cte_names:
-                continue
-            target = table_by_qualifier.get(qualifier)
+            target = None if qualifier in cte_names else table_by_qualifier.get(qualifier)
             if target is not None:
                 refs[target].add(rendered_col)
+            else:
+                has_derived_ref = True
         elif len(refs) == 1:
             refs[next(iter(refs))].add(rendered_col)
         else:
             # A bare column over several source tables cannot be attributed.
             return None
+    if has_derived_ref and _has_star_projection(parsed):
+        # A ``*`` may hide the physical column behind the derived ref.
+        return None
     return refs
 
 

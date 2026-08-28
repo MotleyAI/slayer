@@ -214,6 +214,39 @@ class TestSchemaDriftErrorWrap:
             await engine.execute(q)
         assert "orders_view" in exc.value.models
 
+    async def test_dropped_column_behind_star_cte_still_wraps_as_drift(
+        self, workspace: Path
+    ) -> None:
+        """``SELECT *`` in a CTE hides the physical column from the probe, so
+        the failure must stay classified as drift."""
+        engine, db_path = await _setup(workspace)
+        await engine.storage.save_model(
+            SlayerModel(
+                name="orders_cte",
+                sql=(
+                    "WITH src AS (SELECT * FROM orders) "
+                    "SELECT src.id, src.amount FROM src"
+                ),
+                data_source="ds",
+                columns=[
+                    Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                    Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                ],
+            )
+        )
+        conn = sqlite3.connect(db_path)
+        conn.execute("ALTER TABLE orders DROP COLUMN amount")
+        conn.commit()
+        conn.close()
+
+        q = SlayerQuery(
+            source_model="orders_cte",
+            measures=[{"formula": "amount:sum", "name": "total"}],
+        )
+        with pytest.raises(SchemaDriftError) as exc:
+            await engine.execute(q)
+        assert "orders_cte" in exc.value.models
+
     async def test_sql_model_on_dropped_table_still_wraps_as_drift(
         self, workspace: Path
     ) -> None:
