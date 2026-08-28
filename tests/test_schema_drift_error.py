@@ -136,13 +136,9 @@ class TestSchemaDriftErrorWrap:
     async def test_dbapi_error_without_drift_re_raises_original(
         self, workspace: Path
     ) -> None:
+        """A model whose own SQL is broken (source tables intact) is not
+        drift — the original DBAPI error must reach the caller."""
         engine, _ = await _setup(workspace)
-        # Force a SQL syntax error that's NOT schema drift by injecting
-        # invalid SQL into a model — but our control here is to query a
-        # nonexistent column via a synthetic enriched failure. Easiest:
-        # patch validate_models to return no drift, then invoke a query
-        # that fails for a non-drift reason (use a hand-crafted broken
-        # column expression).
         broken_model = SlayerModel(
             name="broken",
             sql="SELECT id, this_col_does_not_exist AS amount FROM orders",
@@ -154,24 +150,71 @@ class TestSchemaDriftErrorWrap:
         )
         await engine.storage.save_model(broken_model)
 
-        # Force validate_models to attribute no drift to the broken model.
-        async def _no_drift(*args, **kwargs):  # NOSONAR(S7503) — must be a coroutine for the awaited side_effect
-            return []
+        q = SlayerQuery(
+            source_model="broken",
+            measures=[{"formula": "amount:sum", "name": "total"}],
+        )
+        # Original SQLAlchemy/DBAPI error should bubble up — NOT
+        # SchemaDriftError. Assert on the original error class so a
+        # regression that re-wraps as something else still fails here.
+        from sqlalchemy.exc import SQLAlchemyError
 
-        with patch.object(engine, "validate_models", side_effect=_no_drift):
-            q = SlayerQuery(
-                source_model="broken",
-                measures=[{"formula": "amount:sum", "name": "total"}],
+        with pytest.raises(SQLAlchemyError) as exc:
+            await engine.execute(q)
+        assert not isinstance(exc.value, SchemaDriftError)
+        assert "this_col_does_not_exist" in str(exc.value)
+
+    async def test_broken_sql_model_reported_as_invalid_sql(
+        self, workspace: Path
+    ) -> None:
+        engine, _ = await _setup(workspace)
+        await engine.storage.save_model(
+            SlayerModel(
+                name="broken",
+                sql="SELECT id, this_col_does_not_exist AS amount FROM orders",
+                data_source="ds",
+                columns=[
+                    Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                    Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                ],
             )
-            # Original SQLAlchemy/DBAPI error should bubble up — NOT
-            # SchemaDriftError. Assert on the original error class so a
-            # regression that re-wraps as something else still fails here.
-            from sqlalchemy.exc import SQLAlchemyError
+        )
+        entries = await engine.validate_models(data_source="ds")
+        broken = [e for e in entries if e.model_name == "broken"]
+        assert len(broken) == 1
+        assert isinstance(broken[0], WholeModelDelete)
+        assert broken[0].cause == "invalid_sql"
+        assert "source tables exist" in broken[0].reasons[0].reason
 
-            with pytest.raises(SQLAlchemyError) as exc:
-                await engine.execute(q)
-            assert not isinstance(exc.value, SchemaDriftError)
-            assert "this_col_does_not_exist" in str(exc.value)
+    async def test_sql_model_on_dropped_table_still_wraps_as_drift(
+        self, workspace: Path
+    ) -> None:
+        engine, db_path = await _setup(workspace)
+        await engine.storage.save_model(
+            SlayerModel(
+                name="orders_view",
+                sql="SELECT id, amount FROM orders",
+                data_source="ds",
+                columns=[
+                    Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                    Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                ],
+            )
+        )
+        conn = sqlite3.connect(db_path)
+        conn.execute("DROP TABLE orders")
+        conn.commit()
+        conn.close()
+
+        q = SlayerQuery(
+            source_model="orders_view",
+            measures=[{"formula": "amount:sum", "name": "total"}],
+        )
+        with pytest.raises(SchemaDriftError) as exc:
+            await engine.execute(q)
+        assert "orders_view" in exc.value.models
+        # The message carries the underlying DB error for the caller.
+        assert "Original error:" in str(exc.value)
 
     async def test_validate_models_attribution_failure_re_raises_original(
         self, workspace: Path

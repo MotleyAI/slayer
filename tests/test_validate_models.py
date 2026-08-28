@@ -347,6 +347,25 @@ class TestDiffSqlModel:
         entry, dropped = diff_sql_model(model=model, live_columns=None)
         assert isinstance(entry, WholeModelDelete)
         assert entry.model_name == "archived_orders"
+        assert entry.cause == "schema_drift"
+        assert dropped == {c.name for c in model.columns}
+
+    def test_trial_execute_failure_with_live_tables_marks_invalid_sql(self) -> None:
+        model = SlayerModel(
+            name="archived_orders",
+            sql="SELECT id, amount FROM orders",
+            data_source="ds",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            ],
+        )
+        entry, dropped = diff_sql_model(
+            model=model, live_columns=None, invalid_sql=True
+        )
+        assert isinstance(entry, WholeModelDelete)
+        assert entry.cause == "invalid_sql"
+        assert "source tables exist" in entry.reasons[0].reason
         assert dropped == {c.name for c in model.columns}
 
     def test_trial_execute_bucket_mismatch_drops_column(self) -> None:
@@ -379,6 +398,25 @@ class TestDiffSqlModel:
         entry, _ = diff_sql_model(model=model, live_columns=live)
         # validate_models reports deletes only — additions are out of scope
         assert entry is None
+
+
+class TestSqlModelSourceTables:
+    def test_aliases_stripped_and_ctes_excluded(self) -> None:
+        from slayer.engine.schema_drift import _sql_model_source_tables
+
+        sql = """
+        WITH recent AS (SELECT * FROM orders AS o WHERE o.ts > '2024-01-01')
+        SELECT r.id, s.name
+        FROM recent AS r
+        JOIN analytics.stores AS s ON r.store_id = s.id
+        """
+        tables = _sql_model_source_tables(sql=sql, dialect="postgres")
+        assert set(tables) == {"orders", "analytics.stores"}
+
+    def test_unparseable_sql_returns_empty(self) -> None:
+        from slayer.engine.schema_drift import _sql_model_source_tables
+
+        assert _sql_model_source_tables(sql="SELECT FROM FROM", dialect="postgres") == []
 
 
 # ---------------------------------------------------------------------------

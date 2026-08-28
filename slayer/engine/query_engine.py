@@ -1831,8 +1831,13 @@ class SlayerQueryEngine:
                     )
                     continue
                 collected.extend(entries)
+            # An "invalid_sql" entry is not drift evidence — it restates the
+            # query failure itself, so the original error must propagate.
             filtered = [
-                e for e in collected if getattr(e, "model_name", None) in touched
+                e
+                for e in collected
+                if getattr(e, "model_name", None) in touched
+                and getattr(e, "cause", "schema_drift") != "invalid_sql"
             ]
             if filtered:
                 raise SchemaDriftError(

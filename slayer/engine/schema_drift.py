@@ -110,6 +110,8 @@ class WholeModelDelete(BaseModel):
     model_name: str
     data_source: str
     reasons: list[DeleteReason] = Field(default_factory=list)
+    # "invalid_sql": the model's own SQL fails while its source tables exist.
+    cause: Literal["schema_drift", "invalid_sql"] = "schema_drift"
 
 
 ToDeleteEntry = Annotated[
@@ -458,25 +460,33 @@ def diff_sql_model(
     *,
     model: SlayerModel,
     live_columns: dict[str, DataType] | None,
+    invalid_sql: bool = False,
 ) -> tuple[ToDeleteEntry | None, set[str]]:
     """Diff a sql-mode model against trial-execute cursor metadata.
 
     ``live_columns is None`` ⇒ trial-execute failed ⇒ ``WholeModelDelete``.
+    ``invalid_sql=True`` marks that failure as the model's own SQL being
+    broken (its source tables still exist) rather than schema drift.
     """
     if live_columns is None:
+        if invalid_sql:
+            reason = (
+                "Trial-execute on model.sql failed although its source "
+                "tables exist; the SQL itself does not execute against "
+                "this datasource"
+            )
+        else:
+            reason = (
+                "Trial-execute on model.sql failed; the SQL no longer "
+                "parses or executes against the live datasource"
+            )
         return (
             WholeModelDelete(
                 model_name=model.name,
                 data_source=model.data_source,
+                cause="invalid_sql" if invalid_sql else "schema_drift",
                 reasons=[
-                    DeleteReason(
-                        target=f"model:{model.name}",
-                        reason=(
-                            "Trial-execute on model.sql failed; the SQL no "
-                            "longer parses or executes against the live "
-                            "datasource"
-                        ),
-                    )
+                    DeleteReason(target=f"model:{model.name}", reason=reason)
                 ],
             ),
             {c.name for c in model.columns},
@@ -2027,6 +2037,58 @@ async def _live_columns_for_sql_model(
     }
 
 
+def _sql_model_source_tables(*, sql: str, dialect: str) -> list[str]:
+    """Source tables referenced by a sql-mode model, CTE names excluded.
+
+    Best-effort: returns ``[]`` when the SQL does not parse.
+    """
+    try:
+        parsed = sqlglot.parse_one(sql, read=dialect)
+    except Exception:
+        return []
+    cte_names = {cte.alias_or_name for cte in parsed.find_all(exp.CTE)}
+    out: list[str] = []
+    seen: set[str] = set()
+    for table in parsed.find_all(exp.Table):
+        if not table.name:
+            continue
+        if not table.db and table.name in cte_names:
+            continue
+        bare = table.copy()
+        bare.set("alias", None)
+        rendered = bare.sql(dialect=dialect)
+        if rendered not in seen:
+            seen.add(rendered)
+            out.append(rendered)
+    return out
+
+
+async def _source_tables_resolve(
+    *, model: SlayerModel, client: SlayerSQLClient
+) -> bool:
+    """Whether every table referenced by ``model.sql`` accepts a 0-row probe.
+
+    ``True`` means the trial-execute failure was NOT caused by a missing
+    table — the model's own SQL is broken. Any probe failure (missing
+    table, transient error, unparseable SQL) returns ``False``, keeping
+    the schema-drift classification.
+    """
+    from slayer.sql.dialects import dialect_for_ds_type
+
+    dialect = dialect_for_ds_type(client.datasource.type).sqlglot_name
+    tables = _sql_model_source_tables(sql=model.sql or "", dialect=dialect)
+    if not tables:
+        return False
+    for table in tables:
+        try:
+            await client.get_column_types(
+                f"SELECT * FROM {table} AS _sd_probe WHERE 1=0"
+            )
+        except Exception:
+            return False
+    return True
+
+
 # ===========================================================================
 # Datasource-level orchestrator
 # ===========================================================================
@@ -2354,7 +2416,12 @@ async def _collect_sql_diffs(
 
     async def _diff_one(model: SlayerModel) -> None:
         live_cols = await _live_columns_for_sql_model(model=model, client=client)
-        out[model.name] = diff_sql_model(model=model, live_columns=live_cols)
+        invalid_sql = live_cols is None and await _source_tables_resolve(
+            model=model, client=client
+        )
+        out[model.name] = diff_sql_model(
+            model=model, live_columns=live_cols, invalid_sql=invalid_sql
+        )
 
     await asyncio.gather(*(_diff_one(m) for m in sql_models))
     return out
