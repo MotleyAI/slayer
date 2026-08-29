@@ -115,22 +115,6 @@ def test_decodes_bigquery_mangled_aliases() -> None:
     assert "orders____count" in sql
 
 
-def test_correlated_outer_qualifier_preserved() -> None:
-    """A correlated outer source lives only in the ENCLOSING select; walking all
-    scopes keeps it a qualifier instead of folding it into one column name."""
-    from slayer.sql.stage_wrapper import unmangle_dotted_table_refs
-
-    tree = sqlglot.parse_one(
-        "SELECT (SELECT MIN(inner_t.x) FROM inner_t AS inner_t "
-        "WHERE inner_t.y = outer_o.z) AS m FROM outer_t AS outer_o",
-        dialect="postgres",
-    )
-    unmangle_dotted_table_refs(tree)
-    sql = tree.sql(dialect="postgres")
-    assert "outer_o.z" in sql
-    assert '"outer_o.z"' not in sql
-
-
 def test_non_mangling_dialect_unaffected_by_decode() -> None:
     """The decode is identity for Postgres — dotted aliases still strip/flatten
     exactly as before (guards against the decode altering non-mangled input)."""

@@ -1380,17 +1380,23 @@ def _find_regroup_slot(slots: List[ValueSlot], key: ValueKey, *, role: str) -> S
     )
 
 
+def _producer_grain_slot_ids(producer_plan) -> set:
+    """The planned producer's actual grouping grain: its PROJECTED row slots.
+    An aggregating producer can only project a grouped column, and its grain dims
+    are public, so this excludes filter-only row slots (which are hidden)."""
+    projected = set(producer_plan.projection)
+    return {slot.id for slot in producer_plan.row_slots if slot.id in projected}
+
+
 def _assert_attach_covers_producer_grain(
-    *, join_pairs: List[Tuple[ValueKey, SlotId]], producer_grain_keys: List[ValueKey],
+    *, joined_slot_ids: set, producer_grain_slot_ids: set,
 ) -> None:
     """D8 — the attach MUST join on the producer's COMPLETE grouping grain; a
     coarser join multiplies rows. Keyless (``partition_by=[]``) has an empty
-    grain, so its aggregating producer is provably single-row. Both directions
-    are one set-equality over the grain KEYS (not the producer's other row slots,
-    which include filter-referenced columns)."""
-    joined = {key for key, _ in join_pairs}
-    grain = set(producer_grain_keys)
-    if joined != grain:
+    grain, so its aggregating producer is provably single-row. The grain is taken
+    from the planned producer (``_producer_grain_slot_ids``), independent of the
+    join's own key list, so a planner-added or dropped grouping key is caught."""
+    if joined_slot_ids != producer_grain_slot_ids:
         raise ValueError(
             "Regroup attach join keys do not match the producer's grouping grain; "
             "the join must cover the complete grain or it changes cardinality "
@@ -1634,13 +1640,9 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
                 )
                 for pk in ordered_pks
             ]
-            n_grain = producer_prebound.n_dims + producer_prebound.n_time_dimensions
             _assert_attach_covers_producer_grain(
-                join_pairs=join_pairs,
-                producer_grain_keys=[
-                    dm.bound.value_key
-                    for dm in producer_prebound.declared_measures[:n_grain]
-                ],
+                joined_slot_ids={slot_id for _, slot_id in join_pairs},
+                producer_grain_slot_ids=_producer_grain_slot_ids(producer_plan),
             )
             attaches.append(RegroupAttachPlan(
                 producer_plan=producer_plan,

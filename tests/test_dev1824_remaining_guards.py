@@ -15,7 +15,6 @@ import re
 
 import pytest
 
-from slayer.core.keys import ColumnKey
 from slayer.engine.stage_planner import _assert_attach_covers_producer_grain
 from tests._dev1824_fixtures import ModelMeasure, gen, month_td, q
 
@@ -161,30 +160,27 @@ class TestDimensionGrainSelfContainment:
 
 
 class TestAttachGrainCoverage:
-    """D8 structural check: the attach join keys must match the producer's
-    COMPLETE grouping grain; keyless (empty grain) is provably single-row."""
+    """D8 structural check: the attach join keys must equal the producer's
+    grouping-grain slot ids; keyless (empty grain) is provably single-row."""
 
     def test_complete_cover_passes(self) -> None:
-        region = ColumnKey(path=(), leaf="region")
         _assert_attach_covers_producer_grain(
-            join_pairs=[(region, "g_region")], producer_grain_keys=[region],
+            joined_slot_ids={"s1"}, producer_grain_slot_ids={"s1"},
         )
 
     def test_coarser_join_than_grain_raises(self) -> None:
-        region = ColumnKey(path=(), leaf="region")
-        city = ColumnKey(path=(), leaf="city")
         with pytest.raises(ValueError, match=r"complete grain"):
             _assert_attach_covers_producer_grain(
-                join_pairs=[(region, "g_region")],
-                producer_grain_keys=[region, city],
+                joined_slot_ids={"s1"}, producer_grain_slot_ids={"s1", "s3"},
             )
 
     def test_keyless_empty_grain_passes(self) -> None:
-        _assert_attach_covers_producer_grain(join_pairs=[], producer_grain_keys=[])
+        _assert_attach_covers_producer_grain(
+            joined_slot_ids=set(), producer_grain_slot_ids=set(),
+        )
 
     def test_keyless_with_producer_grain_raises(self) -> None:
-        region = ColumnKey(path=(), leaf="region")
         with pytest.raises(ValueError, match=r"complete grain"):
             _assert_attach_covers_producer_grain(
-                join_pairs=[], producer_grain_keys=[region],
+                joined_slot_ids=set(), producer_grain_slot_ids={"s1"},
             )
