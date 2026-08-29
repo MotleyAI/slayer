@@ -5547,7 +5547,7 @@ class SQLGenerator:
     _unmangle_dotted_table_refs = staticmethod(unmangle_dotted_table_refs)
 
     @staticmethod
-    def _uniquify_producer_base_ctes(*, with_node, allocator) -> None:
+    def _uniquify_producer_base_ctes(*, with_node, allocator) -> None:  # NOSONAR(S3776) — one rename pass; the collect / table-ref / column-qualifier / cte-alias rewrites share the rename map.
         """Rename a hoisted producer's hardcoded base CTE(s) (``_base``/``base``)
         to fresh allocator-minted names, rewriting every table / column-qualifier
         / CTE-alias reference so the hoisted CTEs remain self-consistent."""

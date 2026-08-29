@@ -15,6 +15,8 @@ import re
 
 import pytest
 
+from slayer.core.keys import ColumnKey
+from slayer.engine.stage_planner import _assert_attach_covers_producer_grain
 from tests._dev1824_fixtures import ModelMeasure, gen, month_td, q
 
 
@@ -145,3 +147,44 @@ class TestDimensionGrainSelfContainment:
         with pytest.raises((NotImplementedError, ValueError)) as ei:
             await gen(query)
         assert "partition_by" in str(ei.value)
+
+    async def test_transform_over_mixed_grain_aggregates_rejected(self) -> None:
+        # Two grains in one transform: the producer has one grain, so it would
+        # misgrain the others — reject rather than compute wrong values.
+        band = "rank(amount:sum(partition_by=region) - amount:sum(partition_by=city))"
+        query = q(
+            dimensions=["region", "city", {"expression": band, "name": "rk"}],
+            measures=[ModelMeasure(formula="amount:sum", name="s")],
+        )
+        with pytest.raises(NotImplementedError, match=r"different partition_by grains"):
+            await gen(query)
+
+
+class TestAttachGrainCoverage:
+    """D8 structural check: the attach join keys must match the producer's
+    COMPLETE grouping grain; keyless (empty grain) is provably single-row."""
+
+    def test_complete_cover_passes(self) -> None:
+        region = ColumnKey(path=(), leaf="region")
+        _assert_attach_covers_producer_grain(
+            join_pairs=[(region, "g_region")], producer_grain_keys=[region],
+        )
+
+    def test_coarser_join_than_grain_raises(self) -> None:
+        region = ColumnKey(path=(), leaf="region")
+        city = ColumnKey(path=(), leaf="city")
+        with pytest.raises(ValueError, match=r"complete grain"):
+            _assert_attach_covers_producer_grain(
+                join_pairs=[(region, "g_region")],
+                producer_grain_keys=[region, city],
+            )
+
+    def test_keyless_empty_grain_passes(self) -> None:
+        _assert_attach_covers_producer_grain(join_pairs=[], producer_grain_keys=[])
+
+    def test_keyless_with_producer_grain_raises(self) -> None:
+        region = ColumnKey(path=(), leaf="region")
+        with pytest.raises(ValueError, match=r"complete grain"):
+            _assert_attach_covers_producer_grain(
+                join_pairs=[], producer_grain_keys=[region],
+            )

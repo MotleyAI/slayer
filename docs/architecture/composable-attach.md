@@ -16,9 +16,11 @@ special cases:
    (`__regroup__<n>__<seed>`) that resolves to the producer's output column at
    render time.
 
-This is the generalization of the DEV-1739 partitioned-aggregate join-back onto a
-recursive node: a producer is a full plan, so the same three steps compose to any
-depth.
+This generalizes the DEV-1739 partitioned-aggregate join-back onto a recursive
+node: a producer is a full plan, so the three steps compose across the supported
+local shapes (windowed, first/last, transform-nested, filtered). A *nested*
+attach — an aggregate over an attached value, or `partition_by=` on a computed
+dimension — is not yet expressible and fails closed (DEV-1824).
 
 ## Two attach phases
 

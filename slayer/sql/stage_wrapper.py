@@ -44,10 +44,15 @@ def unmangle_dotted_table_refs(node: exp.Expression) -> None:
     this=region`` and a CTE-qualified ``_base.\\`orders.region\\``` becomes
     ``db=_base, table=orders, this=region``. Generated table references are never
     schema-qualified and always name a real FROM source, so this repairs any
-    column whose leading qualifier part is NOT a source in the enclosing SELECT:
-    that part (and the ones after it) are really dotted column-name segments.
-    When the leading part IS a real source, only the parts after it fold back
-    into the column. A no-op for every correctly-parsed AST."""
+    column whose leading qualifier part is NOT a source in ANY enclosing SELECT
+    (a correlated outer source counts): that part (and the ones after it) are
+    really dotted column-name segments. When the leading part IS a real source,
+    only the parts after it fold back into the column. A no-op for every
+    correctly-parsed AST.
+
+    Limitation: a schema-qualified ``Column.sql`` (``schema.tbl.col`` whose
+    ``schema`` is a real DB schema, not a FROM source) would be folded into one
+    name — out of scope, which only sees generated SQL."""
     for col in node.find_all(exp.Column):
         prefix = [
             p for p in (col.args.get(k) for k in ("catalog", "db", "table"))
@@ -55,8 +60,11 @@ def unmangle_dotted_table_refs(node: exp.Expression) -> None:
         ]
         if not prefix or not isinstance(col.this, exp.Identifier):
             continue
-        select = col.parent_select
-        sources = _select_source_names(select) if select is not None else set()
+        sources: set = set()
+        scope = col.parent_select
+        while scope is not None:
+            sources |= _select_source_names(scope)
+            scope = scope.parent_select
         if prefix[0].name in sources:
             segments = [p.name for p in prefix[1:]] + [col.this.name]
             if len(segments) == 1:

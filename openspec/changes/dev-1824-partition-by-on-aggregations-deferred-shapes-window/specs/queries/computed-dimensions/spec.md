@@ -5,7 +5,7 @@ Defines computed (expression) dimensions: which expressions are legal as dimensi
 ## ADDED Requirements
 
 ### Requirement: Measure-dimension symmetry with grain self-containment
-Any measure-legal expression SHALL be legal as a computed dimension provided it is grain-self-contained: every aggregate in it carries an explicit `partition_by=`, and every transform in it applies within such an explicitly-grained subexpression. Once declared, a computed dimension behaves everywhere as a plain dimension: it can be grouped by, banded, filtered on, ordered by, and used as a transform partition.
+Any measure-legal expression SHALL be legal as a computed dimension provided it is grain-self-contained: every aggregate in it is local to the query's source (not a cross-join source) and carries an explicit `partition_by=`, and every transform in it applies within such an explicitly-grained subexpression. Once declared, a computed dimension behaves everywhere as a plain dimension: it can be grouped by, banded, filtered on, ordered by, and used as a transform partition.
 
 #### Scenario: Banded partitioned aggregate as a dimension
 - WHEN a query declares the dimension `CASE WHEN amount:sum(partition_by=city) > 5000 THEN 'high' ELSE 'low' END`

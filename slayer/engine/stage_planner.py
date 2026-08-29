@@ -1262,7 +1262,7 @@ def _regroup_partition_order(pks: FrozenSet[ValueKey]) -> List[ValueKey]:
     )
 
 
-def _regroup_producer_prebound(
+def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound assembly; the grain / aggregate / inherited-filter / order arms share the prebound under construction.
     *,
     pks: FrozenSet[ValueKey],
     aggs: List[AggregateKey],
@@ -1378,6 +1378,24 @@ def _find_regroup_slot(slots: List[ValueSlot], key: ValueKey, *, role: str) -> S
         f"Regroup producer plan is missing the {role} slot for "
         f"{type(key).__name__}; synthesis and planning disagree on its grain.",
     )
+
+
+def _assert_attach_covers_producer_grain(
+    *, join_pairs: List[Tuple[ValueKey, SlotId]], producer_grain_keys: List[ValueKey],
+) -> None:
+    """D8 — the attach MUST join on the producer's COMPLETE grouping grain; a
+    coarser join multiplies rows. Keyless (``partition_by=[]``) has an empty
+    grain, so its aggregating producer is provably single-row. Both directions
+    are one set-equality over the grain KEYS (not the producer's other row slots,
+    which include filter-referenced columns)."""
+    joined = {key for key, _ in join_pairs}
+    grain = set(producer_grain_keys)
+    if joined != grain:
+        raise ValueError(
+            "Regroup attach join keys do not match the producer's grouping grain; "
+            "the join must cover the complete grain or it changes cardinality "
+            "(DEV-1824)."
+        )
 
 
 def _is_local_partitioned_agg(k: ValueKey) -> bool:
@@ -1616,6 +1634,14 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
                 )
                 for pk in ordered_pks
             ]
+            n_grain = producer_prebound.n_dims + producer_prebound.n_time_dimensions
+            _assert_attach_covers_producer_grain(
+                join_pairs=join_pairs,
+                producer_grain_keys=[
+                    dm.bound.value_key
+                    for dm in producer_prebound.declared_measures[:n_grain]
+                ],
+            )
             attaches.append(RegroupAttachPlan(
                 producer_plan=producer_plan,
                 alias_hint=(
@@ -2960,6 +2986,15 @@ def _guard_computed_dimension(*, d: ComputedDimension, bound, query: SlayerQuery
                 f"A transform inside computed dimension {d.name!r} must wrap an "
                 f"explicitly-grained aggregate — declare partition_by= on the "
                 f"aggregate it transforms (DEV-1824)."
+            )
+        # The transform's row-attach producer evaluates at ONE grain (D4); mixed
+        # inner grains would silently compute the others at the wrong grain.
+        if len({a.partition_keys for a in inner_aggs}) > 1:
+            raise NotImplementedError(
+                f"A transform inside computed dimension {d.name!r} combines "
+                f"aggregates at different partition_by grains, which its producer "
+                f"cannot evaluate at one grain — use a single partition_by= grain "
+                f"per transform (DEV-1824)."
             )
     # DEV-1824 (task 3.7 / D4) — a grain-self-contained transform-in-dimension is
     # lifted: its row-attach producer computes the transform at the producer grain.
