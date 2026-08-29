@@ -31,6 +31,7 @@ from typing import Any, List, Optional, Sequence, Tuple
 
 from slayer.core.enums import DataType
 from slayer.core.keys import (
+    REGROUP_LEAF_PREFIX,
     AggregateKey,
     ColumnKey,
     ColumnSqlKey,
@@ -247,6 +248,14 @@ def _host_grain(*, row_slots: Sequence[ValueSlot]) -> List[RankedGrainMember]:
         RankedGrainMember(host_slot_id=slot.id, ranked_key=slot.key)
         for slot in row_slots
         if not slot.hidden
+        # DEV-1824 — a combined regroup placeholder (a partitioned MEASURE
+        # attached at the combined SELECT) is a ColumnKey ROW slot by
+        # substitution but is an aggregate value, not a query dimension: it is
+        # not in the ranked ``_rk_`` scope and must not partition the ranking.
+        and not (
+            isinstance(slot.key, ColumnKey)
+            and slot.key.leaf.startswith(REGROUP_LEAF_PREFIX)
+        )
     ]
 
 

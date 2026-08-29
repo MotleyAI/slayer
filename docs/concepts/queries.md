@@ -92,9 +92,14 @@ groupable key: a query dimension, a finer local column (`city`), a joined path
 filter (`status == 'ok'`) also constrains the partition aggregate; a filter on
 the computed dimension name (`band == 1`) applies after regrouping.
 
-Deferred shapes (raise a clear error citing the follow-up): the partitioned
-aggregate combined with `window=`, on `first` / `last`, over a cross-model
-source, or nested inside a transform.
+A dimension expression may band a windowed partitioned aggregate
+(`amount:sum(window='90d', partition_by=region)`), a `first` / `last`, or a
+transform over a grained aggregate — `rank(revenue:sum(partition_by=region))` as
+a DIMENSION ranks the partitions (it evaluates at the producer grain), whereas
+the same expression as a MEASURE ranks the result rows (query grain). Deferred
+shapes (raise a clear error citing the follow-up): a cross-model aggregate source
+inside a dimension expression, a bare aggregate without `partition_by=`, and an
+aggregate partitioned by another computed dimension (a nested attach).
 
 ### Dim-only queries deduplicate
 

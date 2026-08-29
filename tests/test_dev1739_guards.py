@@ -65,7 +65,10 @@ class TestGrainGuards:
 
 
 class TestDeferredShapeGuards:
-    async def test_window_plus_partition_raises(self) -> None:
+    async def test_window_plus_partition_lifted(self) -> None:
+        # DEV-1824 (task 3.3) — a LOCAL window=+partition_by measure renders: its
+        # producer is a windowed aggregate at the (partition ∪ active-TD) grain
+        # (D5). (Executed values: test_dev1824_partitioned_execution.py.)
         q = _q(
             dimensions=["region"],
             time_dimensions=month_td(),
@@ -73,19 +76,25 @@ class TestDeferredShapeGuards:
                 ModelMeasure(formula="amount:sum(window='90d', partition_by=region)"),
             ],
         )
-        with pytest.raises(NotImplementedError, match=r"DEV-1824"):
-            await gen(q)
+        assert "__regroup__" not in await gen(q)
 
     @pytest.mark.parametrize("agg", ["first", "last"])
-    async def test_first_last_plus_partition_raises(self, agg: str) -> None:
+    async def test_first_last_plus_partition_lifted(self, agg: str) -> None:
+        # DEV-1824 (task 3.4) lifts the LOCAL shape — the producer computes the
+        # ranked pick at the partition grain and attaches (executed values in
+        # tests/test_dev1824_partitioned_execution.py); cross-model stays deferred.
         q = _q(
             dimensions=["region", "city"],
             measures=[ModelMeasure(formula=f"amount:{agg}(partition_by=region)")],
         )
-        with pytest.raises(NotImplementedError, match=r"DEV-1824"):
-            await gen(q)
+        assert "__regroup__" not in await gen(q)
 
-    async def test_partitioned_aggregate_nested_in_transform_raises(self) -> None:
+    async def test_partitioned_aggregate_nested_in_transform_lifted(self) -> None:
+        # DEV-1824 (task 3.5) lifts the LOCAL shape: it desugars into a combined
+        # regroup producer and the transform runs at the query grain over the
+        # attached value. Executed-value coverage lives in
+        # tests/test_dev1824_partitioned_execution.py::TestTransformOverPartitioned;
+        # a cross-model source stays deferred (test_dev1824_remaining_guards.py).
         q = _q(
             dimensions=["region"],
             time_dimensions=month_td(),
@@ -93,17 +102,18 @@ class TestDeferredShapeGuards:
                 ModelMeasure(formula="cumsum(amount:sum(partition_by=region))"),
             ],
         )
-        with pytest.raises(NotImplementedError, match=r"DEV-1824"):
-            await gen(q)
+        assert "__regroup__" not in await gen(q)
 
-    async def test_partitioned_aggregate_in_filter_raises(self) -> None:
+    async def test_partitioned_aggregate_in_filter_lifted(self) -> None:
+        # DEV-1824 (task 3.6) — a LOCAL partitioned aggregate in a query filter
+        # renders: it routes to a combined producer + outer WHERE. (Executed
+        # values: tests/test_dev1824_partitioned_execution.py::TestFilterOnPartitioned.)
         q = _q(
             dimensions=["region", "city"],
             filters=["amount:sum(partition_by=region) > 50"],
             measures=[ModelMeasure(formula="amount:sum")],
         )
-        with pytest.raises(NotImplementedError, match=r"DEV-1824"):
-            await gen(q)
+        assert "__regroup__" not in await gen(q)
 
 
 _NON_RANK_FORMULAS = {
