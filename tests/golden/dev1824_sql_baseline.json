@@ -21,23 +21,23 @@
   },
   "guard/dim_cross_model_source::bigquery": {
     "error": "NotImplementedError",
-    "message": "A cross-model aggregate source inside a computed dimension (e.g. 'customers.spend:sum(partition_by=...)') is not yet supported (DEV-1824); the partitioned aggregate must be local to the query's source."
+    "message": "A cross-model aggregate source inside a computed dimension (e.g. 'customers.spend:sum(partition_by=...)') is not yet supported (DEV-1836); the partitioned aggregate must be local to the query's source."
   },
   "guard/dim_cross_model_source::duckdb": {
     "error": "NotImplementedError",
-    "message": "A cross-model aggregate source inside a computed dimension (e.g. 'customers.spend:sum(partition_by=...)') is not yet supported (DEV-1824); the partitioned aggregate must be local to the query's source."
+    "message": "A cross-model aggregate source inside a computed dimension (e.g. 'customers.spend:sum(partition_by=...)') is not yet supported (DEV-1836); the partitioned aggregate must be local to the query's source."
   },
   "guard/dim_cross_model_source::postgres": {
     "error": "NotImplementedError",
-    "message": "A cross-model aggregate source inside a computed dimension (e.g. 'customers.spend:sum(partition_by=...)') is not yet supported (DEV-1824); the partitioned aggregate must be local to the query's source."
+    "message": "A cross-model aggregate source inside a computed dimension (e.g. 'customers.spend:sum(partition_by=...)') is not yet supported (DEV-1836); the partitioned aggregate must be local to the query's source."
   },
   "guard/dim_cross_model_source::sqlite": {
     "error": "NotImplementedError",
-    "message": "A cross-model aggregate source inside a computed dimension (e.g. 'customers.spend:sum(partition_by=...)') is not yet supported (DEV-1824); the partitioned aggregate must be local to the query's source."
+    "message": "A cross-model aggregate source inside a computed dimension (e.g. 'customers.spend:sum(partition_by=...)') is not yet supported (DEV-1836); the partitioned aggregate must be local to the query's source."
   },
   "guard/dim_cross_model_source::tsql": {
     "error": "NotImplementedError",
-    "message": "A cross-model aggregate source inside a computed dimension (e.g. 'customers.spend:sum(partition_by=...)') is not yet supported (DEV-1824); the partitioned aggregate must be local to the query's source."
+    "message": "A cross-model aggregate source inside a computed dimension (e.g. 'customers.spend:sum(partition_by=...)') is not yet supported (DEV-1836); the partitioned aggregate must be local to the query's source."
   },
   "guard/filter_no_common_scope::bigquery": {
     "error": "ValueError",

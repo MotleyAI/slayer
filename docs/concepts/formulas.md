@@ -262,9 +262,14 @@ Functions apply window operations to measures:
 
 **Time dimension requirement:** All time-ordered transforms (`cumsum`, `time_shift`, `change`, `change_pct`, `first`, `last`, `lag`, `lead`, `consecutive_periods`) require an explicit `time_dimensions` entry in the query. With a single entry, it's used automatically. With 2+ time dimensions, specify the query's `main_time_dimension` to disambiguate, or the model's `default_time_dimension` is used if it's among the query's time dimensions. The rank-family transforms (`rank`, `percent_rank`, `dense_rank`, `ntile`) do not need a time dimension.
 
-Time-ordered window transforms partition by the query's non-time dimensions.
-For example, `cumsum(revenue:sum)` grouped by `status` computes one running
-total per status, not one running total across the whole result set. An explicit
+Time-ordered window transforms partition by **every** projected non-time
+dimension — plain columns, joined and derived columns, and
+[computed (expression) dimensions](queries.md#grouping-by-an-expression-over-an-aggregate),
+aggregation-derived ones included. For example, `cumsum(revenue:sum)` grouped
+by `status` computes one running total per status, not one running total
+across the whole result set; grouped by a computed `band`, one per
+`(…, band)` group. An attached `partition_by=` *measure* value never joins the
+partition (it is a value, not a grouping dimension). An explicit
 `partition_by=` is accepted only on the rank family; on other transforms it
 errors (their partition is fixed to the query's dimensions). To coarsen the
 *measure* itself, put `partition_by=` on the aggregation
