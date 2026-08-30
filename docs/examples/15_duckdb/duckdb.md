@@ -12,10 +12,9 @@ Tho show just how simple and powerful that pattern is, I've put together example
 
 Each notebook shows, from scratch, how to define a view over a remote file in DuckDB, then to connect SLayer to that view, and to execute a deceptively simple query, containing:
 
-- a **calculated dimension over an aggregate** — band each month as *rainy* or
-  *dry* by whether its total rainfall crosses a threshold, computed with the
-  [queries-as-models](../06_multistage_queries/multistage_queries.md) two-stage
-  form; and
+- a **band computed from an aggregate** — tag each month *rainy* or *dry* by
+  whether its total rainfall crosses a threshold, with a query-time
+  `CASE WHEN precipitation:sum > 100 …` measure; and
 - a **change-versus-same-month-last-year** measure — monthly rainfall
   minus its value twelve months back, via the calendar-aware
   [`time_shift`](../../concepts/formulas.md) transform.
