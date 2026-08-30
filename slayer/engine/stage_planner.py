@@ -2967,13 +2967,13 @@ def _reject_computed_dim_name_collision(
 
 
 def _guard_computed_dimension(*, d: ComputedDimension, bound, query: SlayerQuery) -> None:
-    """Enforce the DEV-1740 rules on a computed dimension's bound expression.
+    """Grain-self-containment rules for a computed dimension (DEV-1740/1824).
 
-    A transform is deferred (DEV-1824). An aggregate inside the expression must
-    carry ``partition_by=`` (else the group key is a pure function of the query's
-    own dimensions and adds no grouping); ``first``/``last`` and ``window=`` are
-    deferred; and an aggregate-referencing dimension is incompatible with the
-    raw-rows mode.
+    Every aggregate must carry ``partition_by=`` (else the group key is a pure
+    function of the query's own dimensions and adds no grouping); transforms,
+    ``first``/``last`` and ``window=`` are LIFTED when so grained (DEV-1824), each
+    over a single grain. Still fail closed: a transform over mixed grains
+    (DEV-1839), and an aggregate-referencing dimension with raw-rows mode.
     """
     all_keys = list(walk_value_keys(bound.value_key))
     transforms = [k for k in all_keys if isinstance(k, TransformKey)]
