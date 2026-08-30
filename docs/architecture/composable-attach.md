@@ -120,7 +120,7 @@ The end state is a closure axiom: **any grain-legal dimension composes with any
 legal measure**. Every fail-closed coexistence guard is a temporary migration
 artifact with an issue attached, never a permanent boundary.
 
-- **Stage 1 (this change)** — the full local `partition_by` surface on the
+- **Stage 1 (DEV-1824)** — the full local `partition_by` surface on the
   generalized primitive: windowed / first-last / transform-nested / filtered
   aggregates, row+combined coexistence, the measure ⇔ dimension symmetry, and the
   CTE-hoist.

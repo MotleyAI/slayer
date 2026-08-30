@@ -119,64 +119,69 @@ class TestLiftedDirection:
 
 class TestRemainingArmsExactMessages:
     async def test_windowed_measure_arm(self) -> None:
+        query = q(
+            dimensions=["region", BAND],
+            time_dimensions=month_td(),
+            measures=[
+                ModelMeasure(formula="amount:sum", name="m"),
+                ModelMeasure(formula="amount:sum(window='1y')", name="w"),
+            ],
+        )
         with pytest.raises(NotImplementedError) as ei:
-            await gen(q(
-                dimensions=["region", BAND],
-                time_dimensions=month_td(),
-                measures=[
-                    ModelMeasure(formula="amount:sum", name="m"),
-                    ModelMeasure(formula="amount:sum(window='1y')", name="w"),
-                ],
-            ))
+            await gen(query)
         assert str(ei.value) == ARM_WINDOWED_RANKED
 
     async def test_ranked_measure_arm(self) -> None:
+        query = q(
+            dimensions=["region", BAND],
+            measures=[
+                ModelMeasure(formula="amount:sum", name="m"),
+                ModelMeasure(formula="amount:last", name="l"),
+            ],
+        )
         with pytest.raises(NotImplementedError) as ei:
-            await gen(q(
-                dimensions=["region", BAND],
-                measures=[
-                    ModelMeasure(formula="amount:sum", name="m"),
-                    ModelMeasure(formula="amount:last", name="l"),
-                ],
-            ))
+            await gen(query)
         assert str(ei.value) == ARM_WINDOWED_RANKED
 
     async def test_cross_model_measure_arm(self) -> None:
+        query = q(
+            dimensions=["region", BAND],
+            measures=[
+                ModelMeasure(formula="amount:sum", name="m"),
+                ModelMeasure(formula="customers.spend:sum", name="cm"),
+            ],
+        )
         with pytest.raises(NotImplementedError) as ei:
-            await gen(q(
-                dimensions=["region", BAND],
-                measures=[
-                    ModelMeasure(formula="amount:sum", name="m"),
-                    ModelMeasure(formula="customers.spend:sum", name="cm"),
-                ],
-            ))
+            await gen(query)
         assert str(ei.value) == ARM_CROSS_MODEL
 
 
 class TestCteBodyArms:
     def test_row_attach_in_cte_body_arm(self) -> None:
+        bundle = _bundle()
         planned = plan_query(query=q(
             dimensions=["region", BAND],
             measures=[ModelMeasure(formula="amount:sum", name="m")],
-        ), bundle=_bundle())
+        ), bundle=bundle)
         generator = SQLGenerator(dialect="postgres")
         with pytest.raises(NotImplementedError) as ei:
             generator.generate_from_planned(
-                planned, bundle=_bundle(), as_cte_body=True,
+                planned, bundle=bundle, as_cte_body=True,
             )
         assert str(ei.value) == ARM_ROW_CTE_BODY
 
     def test_combined_attach_in_cte_body_arm(self) -> None:
+        bundle = _bundle()
         planned = plan_query(query=q(
             dimensions=["region"],
             measures=[
                 ModelMeasure(formula="amount:sum(partition_by=region)", name="rt"),
             ],
-        ), bundle=_bundle())
+        ), bundle=bundle)
         generator = SQLGenerator(dialect="postgres")
         with pytest.raises(NotImplementedError) as ei:
             generator.generate_from_planned(
-                planned, bundle=_bundle(), as_cte_body=True,
+                planned, bundle=bundle, as_cte_body=True,
             )
         assert str(ei.value) == ARM_COMBINED_CTE_BODY
 
@@ -197,13 +202,14 @@ class TestStalePlannerRefsRepointed:
             "CASE WHEN customers.spend:sum(partition_by=region) > 100 "
             "THEN 1 ELSE 0 END"
         )
+        query = q(
+            dimensions=["region", {"expression": cband, "name": "cband"}],
+            measures=[ModelMeasure(formula="amount:sum", name="m")],
+        )
         with pytest.raises(
             NotImplementedError,
             match=r"cross-model aggregate source inside a computed dimension",
         ) as ei:
-            await gen(q(
-                dimensions=["region", {"expression": cband, "name": "cband"}],
-                measures=[ModelMeasure(formula="amount:sum", name="m")],
-            ))
+            await gen(query)
         assert "DEV-1836" in str(ei.value)
         assert "DEV-1824" not in str(ei.value)

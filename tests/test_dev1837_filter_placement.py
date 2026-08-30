@@ -121,13 +121,14 @@ class TestConjunctionSplits:
     async def test_mixed_or_still_fails_closed(self, exec_engine) -> None:
         """An OR across phases has no common scope — the split-the-filter
         directive survives the AND lift."""
+        query = q(
+            dimensions=[BAND],
+            time_dimensions=month_td(),
+            filters=["band == 1 or change(amount:sum) > 0"],
+            measures=[ModelMeasure(formula="change(amount:sum)", name="c")],
+        )
         with pytest.raises(NotImplementedError, match=r"separate filters"):
-            await exec_engine.execute(q(
-                dimensions=[BAND],
-                time_dimensions=month_td(),
-                filters=["band == 1 or change(amount:sum) > 0"],
-                measures=[ModelMeasure(formula="change(amount:sum)", name="c")],
-            ))
+            await exec_engine.execute(query)
 
 
 class TestShiftedCteRegroupAwareness:

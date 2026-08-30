@@ -337,7 +337,8 @@ class TestPartitionedShiftFix:
         assert any("region" in g for g in group_sqls), group_sqls
         assert any("ordered_at" in g for g in group_sqls), group_sqls
         for g in group_sqls:
-            assert "amount" not in g and "_cm_" not in g, group_sqls
+            assert "amount" not in g, group_sqls
+            assert "_cm_" not in g, group_sqls
 
 
 class TestCardinalityNeutrality:
