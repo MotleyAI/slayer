@@ -127,6 +127,7 @@ nav = [
     { "Planning" = "architecture/planning.md" },
     { "Cross-model aggregates" = "architecture/cross-model-aggregates.md" },
     { "Ranked aggregates" = "architecture/ranked-aggregates.md" },
+    { "Composable attach" = "architecture/composable-attach.md" },
     { "Stage planning" = "architecture/stage-planning.md" },
     { "SQL generation" = "architecture/sql-generation.md" },
     { "Errors & warnings" = "architecture/errors-and-warnings.md" },

@@ -23,6 +23,65 @@ from slayer.sql.dialects import get_dialect
 from slayer.sql.naming import STAGE_INNER_ALIAS, flat_name
 
 
+def _select_source_names(select: exp.Select) -> set:
+    """The relation names in ``select``'s own FROM / JOINs (not nested ones)."""
+    names: set = set()
+    # sqlglot stores the FROM clause under ``from`` or ``from_`` by version.
+    frm = select.args.get("from") or select.args.get("from_")
+    if frm is not None and frm.this is not None:
+        names.add(frm.this.alias_or_name)
+    for join in select.args.get("joins") or []:
+        if join.this is not None:
+            names.add(join.this.alias_or_name)
+    return names
+
+
+def unmangle_dotted_table_refs(node: exp.Expression) -> None:
+    """Undo a BigQuery / T-SQL round-trip mis-parse (DEV-1824 hoist).
+
+    Re-parsing a dotted result-key column splits its dots across the column's
+    qualifier slots: a bare ``\\`orders.region\\``` becomes ``table=orders,
+    this=region`` and a CTE-qualified ``_base.\\`orders.region\\``` becomes
+    ``db=_base, table=orders, this=region``. Generated table references are never
+    schema-qualified and always name a real FROM source in the column's OWN
+    SELECT, so this repairs any column whose leading qualifier part is NOT such a
+    source: that part (and the ones after it) are really dotted column-name
+    segments. When the leading part IS a real source, only the parts after it
+    fold back into the column. A no-op for every correctly-parsed AST.
+
+    Scoped to the column's own SELECT deliberately: a wider scope would fold a
+    dotted result key like ``\\`orders.region\\``` back into its qualifier
+    whenever some OUTER query happens to have an ``orders`` source. Generated SQL
+    has neither correlated outer references nor schema-qualified ``Column.sql``,
+    so the two shapes that own-scope resolution would mishandle never arise; if
+    one ever did, its qualifier would be folded into the column name."""
+    for col in node.find_all(exp.Column):
+        prefix = [
+            p for p in (col.args.get(k) for k in ("catalog", "db", "table"))
+            if isinstance(p, exp.Identifier)
+        ]
+        if not prefix or not isinstance(col.this, exp.Identifier):
+            continue
+        select = col.parent_select
+        sources = _select_source_names(select) if select is not None else set()
+        if prefix[0].name in sources:
+            segments = [p.name for p in prefix[1:]] + [col.this.name]
+            if len(segments) == 1:
+                continue  # a plain <source>.<col> — nothing was split
+            real_table: exp.Identifier | None = prefix[0]
+        else:
+            segments = [p.name for p in prefix] + [col.this.name]
+            real_table = None
+        # Replace the node wholesale: clearing an existing column's ``table`` slot
+        # leaves a dangling empty qualifier (`` ``.col ``) in this sqlglot.
+        new_col = exp.Column(this=exp.to_identifier(".".join(segments), quoted=True))
+        if real_table is not None:
+            new_col.set(
+                "table", exp.to_identifier(real_table.name, quoted=real_table.quoted),
+            )
+        col.replace(new_col)
+
+
 def build_flat_rename_wrapper(
     *,
     source_relation: str,
@@ -57,6 +116,9 @@ def build_flat_rename_wrapper(
     """
     inner_alias = STAGE_INNER_ALIAS
     body = sqlglot.parse_one(stage_sql, dialect=dialect)
+    # DEV-1824 — repair a BigQuery / T-SQL dotted-alias re-parse before wrapping,
+    # so a hoisted producer's ``_base.`orders.region``` references stay bound.
+    unmangle_dotted_table_refs(body)
     dialect_obj = get_dialect(dialect)
     raw_names = body.named_selects
     # DEV-1716: on BigQuery / T-SQL the rendered stage SQL carries alias-mangled

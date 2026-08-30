@@ -142,6 +142,21 @@ def _filter_cast_type(dt: Optional[DataType]) -> Optional[DataType]:
     return dt
 
 
+def _ranked_value_cast_type(dt: Optional[DataType]) -> Optional[DataType]:
+    """The CAST target for a ``first`` / ``last`` (ranked) VALUE (DEV-1824).
+
+    A first/last value IS the raw picked column (``MAX(CASE WHEN rn = 1 THEN
+    col)``), so a temporal (``DATE`` / ``TIMESTAMP``) cast is redundant and, on
+    SQLite, gives it NUMERIC affinity — truncating a string date to its leading
+    year and tying every value to that year. Suppressed here, matching a bare
+    temporal column (which ``_wrap_cast_for_type`` also leaves uncast). A
+    non-temporal type keeps its enforcing cast (``avg`` etc. legitimately change
+    the value's type)."""
+    if dt in (DataType.DATE, DataType.TIMESTAMP):
+        return None
+    return dt
+
+
 class FilterFacilities(BaseModel):
     """What WHERE / HAVING rendering needs beyond the scope.
 

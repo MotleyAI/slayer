@@ -8,15 +8,16 @@ partitioned measure through ``CrossModelAggregatePlan``):
   and NO ``CrossModelAggregatePlan``; its producer is a host-rooted single SELECT;
   the consumer keeps no partitioned aggregate slot (substituted to a placeholder);
 * same-partition-set interning — N distinct aggregates share ONE producer;
-* dispatch deferrals (DEV-1824): combined attach + a cross-model measure, and
-  row+combined coexistence, both raise ``NotImplementedError``.
+* combined-attach coexistence with an isolated family (cross-model / windowed /
+  ranked / transform measure) plans and renders (lifted by DEV-1824);
+* row+combined coexistence (a computed dimension over one partition set plus a
+  partitioned measure over another) plans both attach phases and renders
+  (lifted by DEV-1824 task 3.2).
 """
 
 from __future__ import annotations
 
 import re
-
-import pytest
 
 from slayer.core.keys import REGROUP_LEAF_PREFIX, AggregateKey, ColumnKey
 from slayer.core.query import ModelMeasure, SlayerQuery
@@ -213,10 +214,17 @@ class TestSamePartitionSetInterning:
         assert len(displays) == 2  # distinct grains, distinct producers
 
 
-class TestDispatchDeferrals:
-    async def test_combined_attach_plus_cross_model_measure_raises(self) -> None:
+class TestCoexistenceWithIsolatedFamilies:
+    """DEV-1824 (D11 / task 3.8) lifts the combined-attach coexistence guards:
+    a partitioned MEASURE (combined regroup attach) now composes with a
+    cross-model / windowed / ranked / transform measure through the shared
+    ``_render_with_cross_model_plans`` join-back belt (executed-value coverage
+    lives in ``tests/test_dev1824_partitioned_execution.py``). Row+combined
+    coexistence stays deferred."""
+
+    async def test_combined_attach_plus_cross_model_measure(self) -> None:
         # Combined regroup attach (local partition) + a genuine cross-model
-        # measure (its own _cm_ CTE) — composition deferred to DEV-1824.
+        # measure (its own _cm_ CTE) — both are combined-SELECT join-backs.
         q = _q(
             dimensions=["region", "city"],
             measures=[
@@ -224,10 +232,12 @@ class TestDispatchDeferrals:
                 ModelMeasure(formula="customers.spend:sum", name="cm"),
             ],
         )
-        with pytest.raises(NotImplementedError, match=r"DEV-1824"):
-            await gen(q)
+        planned = plan_query(query=q, bundle=_bundle())
+        assert len(planned.regroup_attach_plans) == 1
+        assert len(planned.cross_model_aggregate_plans) == 1
+        assert "__regroup__" not in await gen(q)
 
-    async def test_combined_attach_plus_windowed_measure_raises(self) -> None:
+    async def test_combined_attach_plus_windowed_measure(self) -> None:
         q = _q(
             dimensions=["region"], time_dimensions=month_td(),
             measures=[
@@ -235,10 +245,12 @@ class TestDispatchDeferrals:
                 ModelMeasure(formula="amount:sum(window='90d')", name="w"),
             ],
         )
-        with pytest.raises(NotImplementedError, match=r"DEV-1824"):
-            await gen(q)
+        planned = plan_query(query=q, bundle=_bundle())
+        assert len(planned.regroup_attach_plans) == 1
+        assert len(planned.windowed_aggregate_plans) == 1
+        assert "__regroup__" not in await gen(q)
 
-    async def test_combined_attach_plus_ranked_measure_raises(self) -> None:
+    async def test_combined_attach_plus_ranked_measure(self) -> None:
         q = _q(
             dimensions=["region", "city"], time_dimensions=month_td(),
             measures=[
@@ -246,10 +258,12 @@ class TestDispatchDeferrals:
                 ModelMeasure(formula="amount:last", name="lst"),
             ],
         )
-        with pytest.raises(NotImplementedError, match=r"DEV-1824"):
-            await gen(q)
+        planned = plan_query(query=q, bundle=_bundle())
+        assert len(planned.regroup_attach_plans) == 1
+        assert len(planned.ranked_aggregate_plans) == 1
+        assert "__regroup__" not in await gen(q)
 
-    async def test_combined_attach_plus_transform_measure_raises(self) -> None:
+    async def test_combined_attach_plus_transform_measure(self) -> None:
         q = _q(
             dimensions=["region"], time_dimensions=month_td(),
             measures=[
@@ -257,13 +271,16 @@ class TestDispatchDeferrals:
                 ModelMeasure(formula="cumsum(amount:sum)", name="cs"),
             ],
         )
-        with pytest.raises(NotImplementedError, match=r"DEV-1824"):
-            await gen(q)
+        planned = plan_query(query=q, bundle=_bundle())
+        assert len(planned.regroup_attach_plans) == 1
+        assert len(planned.transform_layers) == 1
+        assert "__regroup__" not in await gen(q)
 
-    async def test_row_and_combined_attach_coexistence_raises(self) -> None:
-        # A computed dimension over one partition set (row attach) plus a
-        # partitioned MEASURE over another (combined attach) — coexistence
-        # of both phases in one query is deferred to DEV-1824.
+    async def test_row_and_combined_attach_coexistence(self) -> None:
+        # DEV-1824 (task 3.2) — a computed dimension over one partition set (row
+        # attach) plus a partitioned MEASURE over another (combined attach)
+        # coexist: the row producer joins into ``_base``, the combined producer at
+        # the combined SELECT. (Executed values: test_dev1824_partitioned_execution.)
         q = _q(
             dimensions=[
                 "region", "city",
@@ -274,5 +291,7 @@ class TestDispatchDeferrals:
                 formula="amount:sum(partition_by=region)", name="region_rev",
             )],
         )
-        with pytest.raises(NotImplementedError, match=r"DEV-1824"):
-            await gen(q)
+        planned = plan_query(query=q, bundle=_bundle())
+        phases = {rap.attach_phase for rap in planned.regroup_attach_plans}
+        assert phases == {"row", "combined"}
+        assert "__regroup__" not in await gen(q)
