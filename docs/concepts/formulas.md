@@ -177,6 +177,12 @@ errors at plan time. Cross-model `partition_by` sources in these composed shapes
 remain a planned follow-up and raise a clear error rather than returning wrong
 numbers.
 
+Combining aggregates at **different** grains in one expression is well-defined:
+`amount:sum(partition_by=region) - amount:sum(partition_by=city)` (as a measure,
+a computed dimension, a filter, or wrapped in a transform such as
+`rank(...)`) unions the two grains and broadcasts each aggregate to the union —
+never an error. See [grain-union broadcasting](queries.md#grouping-by-an-expression-over-an-aggregate).
+
 ---
 
 ## Field Formulas

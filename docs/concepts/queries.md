@@ -104,14 +104,25 @@ An aggregation-derived dimension combines with transform measures: alongside
 with or without plain and `partition_by=` measures in the same query. Every
 transform treats the computed dimension as an ordinary grouping dimension (a
 running total accumulates within each `(region, band)` group; a time shift
-compares each group only against itself). Deferred shapes (raise a clear error
-citing the follow-up): a cross-model aggregate source inside a dimension
-expression, a bare aggregate without `partition_by=`, an aggregate partitioned
-by another computed dimension (a nested attach), a computed dimension
-combined with a bare windowed (`window=` without `partition_by=`), `first` /
-`last`, or cross-model measure, and a transform over aggregates at *different*
-partition grains — which will union the grains and broadcast each aggregate
-rather than error, once that lands.
+compares each group only against itself).
+
+A transform over aggregates at **different** partition grains unions the grains
+and broadcasts each aggregate to the union — `rank(amount:sum(partition_by=region)
+- amount:sum(partition_by=city))` ranks the `(region, city)` rows, each region
+total broadcast across its cities and each city total against its region. The
+same holds as a bare measure (`a:sum(partition_by=region) - b:sum(partition_by=city)`
+evaluated at the query grain) and recursively for a nested transform, which
+accumulates within its **own** grain before broadcasting into the outer union.
+
+Deferred shapes (raise a clear error citing the follow-up): a cross-model
+aggregate source inside a dimension expression, a bare aggregate without
+`partition_by=`, an aggregate partitioned by another computed dimension (a nested
+attach), a computed dimension combined with a bare windowed (`window=` without
+`partition_by=`), `first` / `last`, or cross-model measure, a **mixed-grain**
+transform any of whose inner aggregates is windowed or `first` / `last` (its
+union would need the synthesized time bucket), and a time-ordered transform
+(`cumsum`, `lag`, …) whose evaluation grain lacks its time-ordering key — include
+that key in `partition_by=` so the transform accumulates within its own grain.
 
 ### Dim-only queries deduplicate
 

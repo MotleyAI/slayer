@@ -12,6 +12,9 @@ D-expr  ``region, lower(city) AS lc``                       (scalar expression)
 D-band  ``region, BAND35 AS band``                          (banded row attach)
 D-bare  ``region, amount:sum(partition_by=city) AS ct``     (bare row attach)
 D-rank  ``region, rank(amount:sum(partition_by=region)) AS rr``  (transform root)
+D-mixed ``region, city, MIXED_DIM AS mr``  (union-grain transform root, DEV-1839:
+        rank(region_total - city_total) → (N,CityA)=1 (N,CityB)=3 (N,NULL)=1
+        (S,CityC)=4 (NULL,CityD)=4; monthly series per group = D-expr's)
 
 Group grains (m = ``amount:sum``, from the DEV-1739 rows)
 ---------------------------------------------------------
@@ -73,6 +76,7 @@ dev1837_models = dev1824_models
 
 RANK_DIM = "rank(amount:sum(partition_by=region))"
 BARE_DIM = "amount:sum(partition_by=city)"
+MIXED_DIM = "rank(amount:sum(partition_by=region) - amount:sum(partition_by=city))"
 CP_PRED = "consecutive_periods(amount:sum > 28)"
 
 #: Dimension-family query dimensions, in projection order.
@@ -82,6 +86,7 @@ DIM_FAMILY_DIMS = {
     "band": ["region", {"expression": BAND35, "name": "band"}],
     "bare": ["region", {"expression": BARE_DIM, "name": "ct"}],
     "rank": ["region", {"expression": RANK_DIM, "name": "rr"}],
+    "mixed": ["region", "city", {"expression": MIXED_DIM, "name": "mr"}],
 }
 
 #: Transform-measure formulas, keyed by op (the M-transform family).
@@ -111,6 +116,11 @@ GROUP_M = {
         ("South", 50.0): 50.0, (None, 60.0): 60.0,
     },
     "rank": {("North", 1): 100.0, ("South", 3): 50.0, (None, 2): 60.0},
+    "mixed": {
+        ("North", "CityA", 1): 30.0, ("North", "CityB", 3): 40.0,
+        ("North", None, 1): 30.0, ("South", "CityC", 4): 50.0,
+        (None, "CityD", 4): 60.0,
+    },
 }
 
 #: ``amount:sum`` per group WITH the month time dimension appended to the key.
@@ -139,6 +149,14 @@ GROUP_M_MONTH = {
         ("North", 1, "2024-01"): 30.0, ("North", 1, "2024-02"): 70.0,
         ("South", 3, "2024-01"): 25.0, ("South", 3, "2024-03"): 25.0,
         (None, 2, "2024-03"): 60.0,
+    },
+    "mixed": {
+        ("North", "CityA", 1, "2024-01"): 30.0,
+        ("North", "CityB", 3, "2024-02"): 40.0,
+        ("North", None, 1, "2024-02"): 30.0,
+        ("South", "CityC", 4, "2024-01"): 25.0,
+        ("South", "CityC", 4, "2024-03"): 25.0,
+        (None, "CityD", 4, "2024-03"): 60.0,
     },
 }
 
@@ -235,6 +253,33 @@ TRANSFORM_X = {
         (None, 2, "2024-03"): 1,
     },
     ("rank", "rank"): {("North", 1): 1, (None, 2): 2, ("South", 3): 3},
+
+    ("mixed", "time_shift"): {},
+    ("mixed", "lag"): {("South", "CityC", 4, "2024-03"): 25.0},
+    ("mixed", "lead"): {("South", "CityC", 4, "2024-01"): 25.0},
+    ("mixed", "change"): {},
+    ("mixed", "change_pct"): {},
+    ("mixed", "cumsum"): {
+        ("North", "CityA", 1, "2024-01"): 30.0,
+        ("North", "CityB", 3, "2024-02"): 40.0,
+        ("North", None, 1, "2024-02"): 30.0,
+        ("South", "CityC", 4, "2024-01"): 25.0,
+        ("South", "CityC", 4, "2024-03"): 50.0,
+        (None, "CityD", 4, "2024-03"): 60.0,
+    },
+    ("mixed", "consecutive_periods"): {
+        ("North", "CityA", 1, "2024-01"): 1,
+        ("North", "CityB", 3, "2024-02"): 1,
+        ("North", None, 1, "2024-02"): 1,
+        ("South", "CityC", 4, "2024-01"): 0,
+        ("South", "CityC", 4, "2024-03"): 0,
+        (None, "CityD", 4, "2024-03"): 1,
+    },
+    ("mixed", "rank"): {
+        (None, "CityD", 4): 1, ("South", "CityC", 4): 2,
+        ("North", "CityB", 3): 3, ("North", "CityA", 1): 4,
+        ("North", None, 1): 4,
+    },
 }
 
 #: Bare ``amount:sum(window='1y')`` at the D-col grain — running region totals.
@@ -262,6 +307,8 @@ def dim_key(row: dict, *, family: str, with_month: bool):
         key += (float(row["orders.ct"]),)
     elif family == "rank":
         key += (int(row["orders.rr"]),)
+    elif family == "mixed":
+        key += (row["orders.city"], int(row["orders.mr"]))
     if with_month:
         key += (month_key(row["orders.ordered_at"]),)
     return key
@@ -270,7 +317,8 @@ def dim_key(row: dict, *, family: str, with_month: bool):
 __all__ = [
     "BAND35", "BAND35_OF", "BARE_DIM", "CITY_TOTAL", "CM_TOTAL", "COL_WM",
     "CP_PRED", "ColumnRef", "DIM_FAMILY_DIMS", "GRAND_TOTAL", "GROUP_M",
-    "GROUP_M_MONTH", "ModelMeasure", "RANK_DIM", "REGION_LAST", "REGION_TOTAL",
+    "GROUP_M_MONTH", "MIXED_DIM", "ModelMeasure", "RANK_DIM", "REGION_LAST",
+    "REGION_TOTAL",
     "SlayerQuery", "TD_TRANSFORM_OPS", "TRAILING_90D_REGION", "TRANSFORM_FORMULAS",
     "TRANSFORM_X", "TimeDimension", "TimeGranularity", "dev1837_models", "dim_key",
     "gen", "make_exec_engine", "month_key", "month_td", "q", "rows_by", "with_nulls",

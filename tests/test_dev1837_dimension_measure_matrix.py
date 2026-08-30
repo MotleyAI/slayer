@@ -11,6 +11,7 @@ Scenario coverage map (spec: openspec …/specs/queries/computed-dimensions):
   Banded dimension with a running total .............. band-cumsum
   Bare partitioned aggregate as dim + transform ...... bare-* transform cells
   Transform-root dimension with a transform measure .. rank-* transform cells
+  Union-grain (mixed) dimension family (DEV-1839) .... mixed-* cells
   Alongside a partitioned measure .................... TestCoexistenceTriples
   Adding a transform measure is cardinality-neutral .. TestCardinalityNeutrality
   Running total partitions by a computed dimension ... expr-cumsum
@@ -81,6 +82,9 @@ XFAIL_CELLS = {
     ("rank", "cm"): "DEV-1836: row attach × cross-model measure",
     ("expr", "wm"): "DEV-1835: ScalarCallKey in the windowed grain anchoring",
     ("expr", "rk"): "DEV-1835: ScalarCallKey in the ranked-CTE anchoring",
+    ("mixed", "wm"): "DEV-1835: row attach × bare windowed measure",
+    ("mixed", "rk"): "DEV-1835: row attach × bare first/last measure",
+    ("mixed", "cm"): "DEV-1836: row attach × cross-model measure",
 }
 
 DIM_FAMILIES = tuple(DIM_FAMILY_DIMS)

@@ -128,12 +128,16 @@ def _grained_inner_aggregates(vk: ValueKey) -> List[AggregateKey]:
 
 
 def regroup_root_grain(root: ValueKey) -> frozenset:
-    """The producer grain of a row-attach root (DEV-1824 D4): a transform over a
-    grained aggregate evaluates at that aggregate's partition grain; a bare
-    partitioned aggregate at its own."""
+    """The producer grain of a row-attach root (DEV-1839 D1): a transform over
+    grained aggregates evaluates at the set-union of ALL its inner aggregates'
+    partition grains (any nesting depth; keyless contributes ∅); a bare
+    partitioned aggregate at its own grain. When all inner aggregates share one
+    grain the union degenerates to that grain (DEV-1824 behaviour unchanged)."""
     if isinstance(root, TransformKey):
-        inner = _grained_inner_aggregates(root.input)
-        return (inner[0].partition_keys or frozenset()) if inner else frozenset()
+        grain: set = set()
+        for inner in _grained_inner_aggregates(root.input):
+            grain |= (inner.partition_keys or frozenset())
+        return frozenset(grain)
     return getattr(root, "partition_keys", None) or frozenset()
 
 
