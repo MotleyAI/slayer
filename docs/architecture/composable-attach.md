@@ -153,7 +153,7 @@ artifact with an issue attached, never a permanent boundary.
   generalized primitive: windowed / first-last / transform-nested / filtered
   aggregates, row+combined coexistence, the measure ⇔ dimension symmetry, and the
   CTE-hoist.
-- **Stage 1a (DEV-1837, this change)** — computed dimensions coexist with
+- **Stage 1a (DEV-1837)** — computed dimensions coexist with
   transform-chain measures (`time_shift`, `change`, `cumsum`,
   rank-of-a-measure) in both render chains, under the shared step-layer grain
   rule above. Transform measures are *steps over the query-grain result*, not

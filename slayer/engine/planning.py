@@ -745,7 +745,7 @@ class ProjectionPlanner:
                 phase=key.phase,
             )
 
-    def plan(
+    def plan(  # NOSONAR(S3776) — one sequential allocation pass (reserve names → intern measures → filter/order deps) sharing the same registry + hidden-slot rule; splitting the loops scatters that shared mutation invariant.
         self,
         *,
         measures: List[DeclaredMeasure],
