@@ -16,9 +16,11 @@ special cases:
    (`__regroup__<n>__<seed>`) that resolves to the producer's output column at
    render time.
 
-This is the generalization of the DEV-1739 partitioned-aggregate join-back onto a
-recursive node: a producer is a full plan, so the same three steps compose to any
-depth.
+This generalizes the DEV-1739 partitioned-aggregate join-back onto a recursive
+node: a producer is a full plan, so the three steps compose across the supported
+local shapes (windowed, first/last, transform-nested, filtered). A *nested*
+attach — an aggregate over an attached value, or `partition_by=` on a computed
+dimension — is not yet expressible and fails closed (DEV-1824).
 
 ## Two attach phases
 
@@ -96,17 +98,30 @@ name collisions on any dialect.
   aggregate over an attached value, no-common-scope filter) raises a clear error,
   never wrong numbers.
 
-## Three-stage roadmap
+## Roadmap
 
 This is **stage 1** of unifying SLayer's isolation families onto one mechanism.
+The end state is a closure axiom: **any grain-legal dimension composes with any
+legal measure**. Every fail-closed coexistence guard is a temporary migration
+artifact with an issue attached, never a permanent boundary.
 
 - **Stage 1 (this change)** — the full local `partition_by` surface on the
   generalized primitive: windowed / first-last / transform-nested / filtered
   aggregates, row+combined coexistence, the measure ⇔ dimension symmetry, and the
   CTE-hoist.
+- **Stage 1a (DEV-1837)** — computed dimensions coexist with transform-chain
+  measures (`time_shift`, `change`, `cumsum`, rank-of-a-measure). Transform
+  measures are *steps over the query-grain result*, not attaches, so no family
+  migration dissolves this pair; it lifts directly, and a dimension-family ×
+  measure-family compatibility matrix becomes the migration's tracked definition
+  of done.
 - **Stage 2 (DEV-1835)** — migrate the local `_wm_` (windowed) and `_rk_`
   (ranked) renderer arms onto the primitive and delete them; a general
   cross-phase attach-dedup pass subsumes duplicate producers.
 - **Stage 3 (DEV-1836)** — migrate the cross-model `_cm_` family via target-rooted
   producers; cross-model sources become legal in the composed shapes and in
   dimension expressions; `classify_isolation` dispatch retires.
+- **Stage 4 (DEV-1838)** — node discipline: the query renders as a chain of
+  nodes (base → aggregate → combined → steps → post), each consuming only the
+  previous node's schema; the CTE-body deferrals lift via the CTE-hoist; exit
+  criterion — the guard list is empty and the matrix has no xfails.

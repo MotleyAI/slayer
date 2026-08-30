@@ -109,13 +109,14 @@ class TestWindowPlusPartition:
             )
 
     async def test_requires_resolvable_time_dimension(self, exec_engine) -> None:
+        query = q(
+            dimensions=["region"],
+            measures=[ModelMeasure(
+                formula="amount:sum(window='1y', partition_by=region)", name="w",
+            )],
+        )
         with pytest.raises(ValueError, match=r"resolve its time dimension"):
-            await exec_engine.execute(q(
-                dimensions=["region"],
-                measures=[ModelMeasure(
-                    formula="amount:sum(window='1y', partition_by=region)", name="w",
-                )],
-            ))
+            await exec_engine.execute(query)
 
 
 class TestFirstLastPartition:
@@ -261,12 +262,13 @@ class TestFilterOnPartitioned:
     async def test_no_common_scope_fails_closed(self, exec_engine) -> None:
         # `status` resolves only before aggregation; the partitioned aggregate
         # only after attachment — an OR spanning both has no home.
+        query = q(
+            dimensions=["region", "city"],
+            filters=["amount:sum(partition_by=region) > 50 or status == 'ok'"],
+            measures=[ModelMeasure(formula="amount:sum", name="s")],
+        )
         with pytest.raises((ValueError, NotImplementedError)) as ei:
-            await exec_engine.execute(q(
-                dimensions=["region", "city"],
-                filters=["amount:sum(partition_by=region) > 50 or status == 'ok'"],
-                measures=[ModelMeasure(formula="amount:sum", name="s")],
-            ))
+            await exec_engine.execute(query)
         message = str(ei.value).lower()
         assert "split" in message
         # A permanent semantic error (design D7), not a deferred-shape guard.
@@ -362,14 +364,15 @@ class TestRowCombinedCoexistence:
         # The issue-comment shape: city is NOT a query dimension, so the
         # combined attach for the order target has no host slot — a clean grain
         # error, never the leaked-placeholder ValueError.
+        query = q(
+            dimensions=["region", {"expression": BAND35, "name": "band"}],
+            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            order=[{
+                "column": "amount:sum(partition_by=city)", "direction": "asc",
+            }],
+        )
         with pytest.raises(ValueError, match=r"not a query dimension") as ei:
-            await exec_engine.execute(q(
-                dimensions=["region", {"expression": BAND35, "name": "band"}],
-                measures=[ModelMeasure(formula="amount:sum", name="s")],
-                order=[{
-                    "column": "amount:sum(partition_by=city)", "direction": "asc",
-                }],
-            ))
+            await exec_engine.execute(query)
         assert "__regroup__" not in str(ei.value)
 
 

@@ -43,11 +43,18 @@ def unmangle_dotted_table_refs(node: exp.Expression) -> None:
     qualifier slots: a bare ``\\`orders.region\\``` becomes ``table=orders,
     this=region`` and a CTE-qualified ``_base.\\`orders.region\\``` becomes
     ``db=_base, table=orders, this=region``. Generated table references are never
-    schema-qualified and always name a real FROM source, so this repairs any
-    column whose leading qualifier part is NOT a source in the enclosing SELECT:
-    that part (and the ones after it) are really dotted column-name segments.
-    When the leading part IS a real source, only the parts after it fold back
-    into the column. A no-op for every correctly-parsed AST."""
+    schema-qualified and always name a real FROM source in the column's OWN
+    SELECT, so this repairs any column whose leading qualifier part is NOT such a
+    source: that part (and the ones after it) are really dotted column-name
+    segments. When the leading part IS a real source, only the parts after it
+    fold back into the column. A no-op for every correctly-parsed AST.
+
+    Scoped to the column's own SELECT deliberately: a wider scope would fold a
+    dotted result key like ``\\`orders.region\\``` back into its qualifier
+    whenever some OUTER query happens to have an ``orders`` source. Generated SQL
+    has neither correlated outer references nor schema-qualified ``Column.sql``,
+    so the two shapes that own-scope resolution would mishandle never arise; if
+    one ever did, its qualifier would be folded into the column name."""
     for col in node.find_all(exp.Column):
         prefix = [
             p for p in (col.args.get(k) for k in ("catalog", "db", "table"))

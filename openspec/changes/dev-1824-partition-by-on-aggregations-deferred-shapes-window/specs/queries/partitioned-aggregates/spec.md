@@ -54,7 +54,7 @@ Query filters SHALL be able to reference partitioned aggregates. Such predicates
 
 #### Scenario: No common scope fails closed
 - WHEN a single OR predicate mixes a partitioned-aggregate reference with a reference resolvable only before aggregation
-- THEN the query fails with a clear error telling the user to split the filter, not with an internal error
+- THEN the query fails with a clear error stating the predicate cannot resolve in one scope and must be rewritten so each top-level AND conjunct's references resolve together (an OR across the two scopes cannot be split into separate filters without changing its meaning), not with an internal error
 
 ### Requirement: Row and combined attachment coexistence
 A query SHALL support partitioned aggregates consumed inside computed dimensions and as measures simultaneously, whether they share the same partition set, use independent partition sets, or are the very same aggregate in both roles.

@@ -181,60 +181,65 @@ class TestWindowInDimension:
         }
 
     async def test_fails_cleanly_without_time_dimension(self, exec_engine) -> None:
+        query = q(
+            dimensions=["region", {"expression": self.WBAND, "name": "wband"}],
+            measures=[ModelMeasure(formula="amount:sum", name="s")],
+        )
         with pytest.raises(ValueError, match=r"resolve its time dimension"):
-            await exec_engine.execute(q(
-                dimensions=["region", {"expression": self.WBAND, "name": "wband"}],
-                measures=[ModelMeasure(formula="amount:sum", name="s")],
-            ))
+            await exec_engine.execute(query)
 
 
 class TestDimensionErrorSurface:
     async def test_bare_aggregate_rejected_with_directive(self, exec_engine) -> None:
+        query = q(
+            dimensions=[
+                "region",
+                {"expression": "CASE WHEN amount:sum > 50 THEN 1 ELSE 0 END",
+                 "name": "b"},
+            ],
+            measures=[ModelMeasure(formula="amount:sum", name="s")],
+        )
         with pytest.raises(ValueError, match=r"partition_by=") as ei:
-            await exec_engine.execute(q(
-                dimensions=[
-                    "region",
-                    {"expression": "CASE WHEN amount:sum > 50 THEN 1 ELSE 0 END",
-                     "name": "b"},
-                ],
-                measures=[ModelMeasure(formula="amount:sum", name="s")],
-            ))
+            await exec_engine.execute(query)
         assert "__regroup__" not in str(ei.value)
 
     async def test_aggregate_over_attached_value_rejected(self, exec_engine) -> None:
         # `b2` aggregates at the grain of `band`, whose own value needs a row
         # attach first — the requires_nested_attach shape fails closed.
+        query = q(
+            dimensions=[
+                {"expression": BAND35, "name": "band"},
+                {"expression": "amount:sum(partition_by=band)", "name": "b2"},
+            ],
+            measures=[ModelMeasure(formula="amount:sum", name="s")],
+        )
         with pytest.raises((NotImplementedError, ValueError)) as ei:
-            await exec_engine.execute(q(
-                dimensions=[
-                    {"expression": BAND35, "name": "band"},
-                    {"expression": "amount:sum(partition_by=band)", "name": "b2"},
-                ],
-                measures=[ModelMeasure(formula="amount:sum", name="s")],
-            ))
+            await exec_engine.execute(query)
         assert "not yet supported" in str(ei.value).lower()
         assert "__regroup__" not in str(ei.value)
 
     async def test_measure_partitioned_by_computed_dimension_rejected(
         self, exec_engine,
     ) -> None:
+        query = q(
+            dimensions=[{"expression": BAND35, "name": "band"}],
+            measures=[ModelMeasure(
+                formula="amount:sum(partition_by=band)", name="bt",
+            )],
+        )
         with pytest.raises((NotImplementedError, ValueError)) as ei:
-            await exec_engine.execute(q(
-                dimensions=[{"expression": BAND35, "name": "band"}],
-                measures=[ModelMeasure(
-                    formula="amount:sum(partition_by=band)", name="bt",
-                )],
-            ))
+            await exec_engine.execute(query)
         assert "not yet supported" in str(ei.value).lower()
         assert "__regroup__" not in str(ei.value)
 
     async def test_grain_circular_dimension_rejected(self, exec_engine) -> None:
         circular = "CASE WHEN amount:sum(partition_by=selfband) > 10 THEN 1 ELSE 0 END"
+        query = q(
+            dimensions=["region", {"expression": circular, "name": "selfband"}],
+            measures=[ModelMeasure(formula="amount:sum", name="s")],
+        )
         with pytest.raises((NotImplementedError, ValueError)) as ei:
-            await exec_engine.execute(q(
-                dimensions=["region", {"expression": circular, "name": "selfband"}],
-                measures=[ModelMeasure(formula="amount:sum", name="s")],
-            ))
+            await exec_engine.execute(query)
         assert "selfband" in str(ei.value)
         assert "__regroup__" not in str(ei.value)
 
@@ -243,11 +248,12 @@ class TestDimensionErrorSurface:
             "CASE WHEN customers.spend:sum(partition_by=region) > 100 "
             "THEN 1 ELSE 0 END"
         )
+        query = q(
+            dimensions=["region", {"expression": cband, "name": "cband"}],
+            measures=[ModelMeasure(formula="amount:sum", name="s")],
+        )
         with pytest.raises(
             NotImplementedError,
             match=r"cross-model aggregate source inside a computed dimension",
         ):
-            await exec_engine.execute(q(
-                dimensions=["region", {"expression": cband, "name": "cband"}],
-                measures=[ModelMeasure(formula="amount:sum", name="s")],
-            ))
+            await exec_engine.execute(query)

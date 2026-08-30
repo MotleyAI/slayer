@@ -41,23 +41,23 @@
   },
   "guard/filter_no_common_scope::bigquery": {
     "error": "ValueError",
-    "message": "A single filter mixes a partition_by aggregate (available only after aggregation and attachment) with a row-level reference (available only before aggregation); they have no common scope. Split the filter into separate predicates."
+    "message": "A single filter predicate mixes a partition_by aggregate (available only after aggregation and attachment) with a row-level reference (available only before aggregation); they have no common scope. Rewrite so each top-level AND conjunct's references resolve in one scope \u2014 an OR across the two cannot be split without changing meaning."
   },
   "guard/filter_no_common_scope::duckdb": {
     "error": "ValueError",
-    "message": "A single filter mixes a partition_by aggregate (available only after aggregation and attachment) with a row-level reference (available only before aggregation); they have no common scope. Split the filter into separate predicates."
+    "message": "A single filter predicate mixes a partition_by aggregate (available only after aggregation and attachment) with a row-level reference (available only before aggregation); they have no common scope. Rewrite so each top-level AND conjunct's references resolve in one scope \u2014 an OR across the two cannot be split without changing meaning."
   },
   "guard/filter_no_common_scope::postgres": {
     "error": "ValueError",
-    "message": "A single filter mixes a partition_by aggregate (available only after aggregation and attachment) with a row-level reference (available only before aggregation); they have no common scope. Split the filter into separate predicates."
+    "message": "A single filter predicate mixes a partition_by aggregate (available only after aggregation and attachment) with a row-level reference (available only before aggregation); they have no common scope. Rewrite so each top-level AND conjunct's references resolve in one scope \u2014 an OR across the two cannot be split without changing meaning."
   },
   "guard/filter_no_common_scope::sqlite": {
     "error": "ValueError",
-    "message": "A single filter mixes a partition_by aggregate (available only after aggregation and attachment) with a row-level reference (available only before aggregation); they have no common scope. Split the filter into separate predicates."
+    "message": "A single filter predicate mixes a partition_by aggregate (available only after aggregation and attachment) with a row-level reference (available only before aggregation); they have no common scope. Rewrite so each top-level AND conjunct's references resolve in one scope \u2014 an OR across the two cannot be split without changing meaning."
   },
   "guard/filter_no_common_scope::tsql": {
     "error": "ValueError",
-    "message": "A single filter mixes a partition_by aggregate (available only after aggregation and attachment) with a row-level reference (available only before aggregation); they have no common scope. Split the filter into separate predicates."
+    "message": "A single filter predicate mixes a partition_by aggregate (available only after aggregation and attachment) with a row-level reference (available only before aggregation); they have no common scope. Rewrite so each top-level AND conjunct's references resolve in one scope \u2014 an OR across the two cannot be split without changing meaning."
   },
   "guard/nested_attach::bigquery": {
     "error": "NotImplementedError",

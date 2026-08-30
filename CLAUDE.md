@@ -98,10 +98,3 @@ Every page under `docs/` must be linked from the `nav` block in `zensical.toml` 
 root) — add or update the entry in the same commit as the page. Otherwise the page is
 still published, but as an orphan users cannot reach through site navigation.
 Intentional exceptions: `docs/CLAUDE.md` and `docs/api_gaps.md`.
-
-## Design Decisions
-
-`DECISIONS.md` (repo root) is the append-only dated log of design decisions and their
-rationale, with issue refs. Consult it before changing established behavior. When you
-make an important design decision in a session, append one entry at the bottom in the
-existing format.

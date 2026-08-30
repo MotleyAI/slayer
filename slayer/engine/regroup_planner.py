@@ -137,7 +137,7 @@ def regroup_root_grain(root: ValueKey) -> frozenset:
     return getattr(root, "partition_keys", None) or frozenset()
 
 
-def dimension_regroup_roots(declared_measures) -> List[ValueKey]:
+def dimension_regroup_roots(declared_measures) -> List[ValueKey]:  # NOSONAR(S3776) — one discovery walk; the transform-root and bare-aggregate arms share the seen/covered state, so splitting scatters it.
     """Row-attach producer ROOTS inside computed dimensions (DEV-1824 D3/D4).
 
     A transform whose input is an explicitly-grained aggregate is a
@@ -340,10 +340,11 @@ def conjunct_scope(
     ]
     if base_row_only:
         raise ValueError(
-            "A single filter mixes a partition_by aggregate (available only after "
-            "aggregation and attachment) with a row-level reference (available "
-            "only before aggregation); they have no common scope. Split the filter "
-            "into separate predicates."
+            "A single filter predicate mixes a partition_by aggregate (available "
+            "only after aggregation and attachment) with a row-level reference "
+            "(available only before aggregation); they have no common scope. "
+            "Rewrite so each top-level AND conjunct's references resolve in one "
+            "scope — an OR across the two cannot be split without changing meaning."
         )
     return "combined"
 
