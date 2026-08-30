@@ -49,6 +49,34 @@ transform then evaluates at the grain of its *containing context*:
   compiled *inside the producer*, at the producer grain, because the query would
   otherwise have to group by a value that depends on its own grouping.
 
+## Grain-union broadcasting
+
+Within an expression tree, **every node's output grain is the union of its
+children's grains**, and each combination point broadcasts every operand to that
+union: an aggregate contributes its own `partition_by` set (`partition_by=[]` is
+the empty grain), a transform the union of its input's grains, and
+arithmetic/scalar/CASE the union of its operands'. Combining aggregates at
+different grains is therefore never, by itself, an error — the union is the one
+grain at which every operand is defined without further aggregation. Consuming at
+a finer grain broadcasts further (as a measure, to the query grain); a coarser
+consumer stays illegal.
+
+The producer for a mixed-grain transform-in-dimension is synthesized at that
+union grain **recursively**: aggregates *at* the union grain compile inline (a
+plain grouped aggregate), while each strict-subset operand — a coarser aggregate,
+or a nested transform at its own grain (e.g. an inner `cumsum` over months within
+a region) — becomes a nested **combined attach** inside the producer, its own
+producer built by the same rule. Discovery inside a producer excludes roots at
+exactly the producer's grain, so grains strictly decrease and the recursion is
+bounded. The producer's internal `WITH` (the nested attaches plus its own
+transform steps) hoists into the one flat chain (see [The CTE-hoist](#the-cte-hoist)).
+
+Two cases still fail closed: a mixed-grain transform any of whose inner
+aggregates is windowed or `first`/`last` (the union would need the synthesized
+time bucket — stage 2, DEV-1835), and a time-ordered transform (`cumsum`, `lag`,
+…) whose evaluation grain lacks its time-ordering key — which would duplicate
+result rows, so the author is told to include the time key in `partition_by`.
+
 ## Producer synthesis
 
 - **Windowed** (`window=` + `partition_by=`) — the producer synthesizes the
@@ -125,7 +153,7 @@ artifact with an issue attached, never a permanent boundary.
   generalized primitive: windowed / first-last / transform-nested / filtered
   aggregates, row+combined coexistence, the measure ⇔ dimension symmetry, and the
   CTE-hoist.
-- **Stage 1a (DEV-1837, this change)** — computed dimensions coexist with
+- **Stage 1a (DEV-1837)** — computed dimensions coexist with
   transform-chain measures (`time_shift`, `change`, `cumsum`,
   rank-of-a-measure) in both render chains, under the shared step-layer grain
   rule above. Transform measures are *steps over the query-grain result*, not
@@ -135,6 +163,13 @@ artifact with an issue attached, never a permanent boundary.
   longer leaks its placeholder into the shifted CTE. The dimension-family ×
   measure-family compatibility matrix becomes the migration's tracked
   definition of done.
+- **Stage 1b (DEV-1839, this change)** — grain-union broadcasting: a
+  different-grain arithmetic nested inside a transform-in-dimension unions the
+  grains and broadcasts recursively (strict-subset operands become nested
+  combined attaches inside the union-grain producer); bare composite arithmetic
+  over two-plus partitioned aggregates lifts as a measure. Windowed/`first`-`last`
+  mixed grains defer to stage 2; a time-ordered transform whose grain lacks its
+  time axis fails closed instead of duplicating rows.
 - **Stage 2 (DEV-1835)** — migrate the local `_wm_` (windowed) and `_rk_`
   (ranked) renderer arms onto the primitive and delete them; a general
   cross-phase attach-dedup pass subsumes duplicate producers.

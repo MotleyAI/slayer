@@ -45,6 +45,7 @@ from slayer.core.keys import (
     InKey,
     LiteralKey,
     Phase,
+    REGROUP_LEAF_PREFIX,
     ScalarCallKey,
     StarKey,
     TimeTruncKey,
@@ -700,6 +701,29 @@ def _iter_slot_deps(key: ValueKey):
     # StarKey, LiteralKey — never slottable on their own.
 
 
+def _regroup_substituted_composite_phase(value_key: ValueKey) -> Optional[Phase]:
+    """DEV-1839 D10 — the AGGREGATE phase of a composite (arithmetic / scalar-
+    call / desugared CASE) EVERY materialisable leaf of which is a combined
+    regroup placeholder, else ``None``.
+
+    Such a composite reads only post-attachment ``_cm_`` values (its operands are
+    partitioned aggregates broadcast to the query grain), so it is semantically
+    an AGGREGATE-phase expression rendered at the combined SELECT — not the ROW
+    phase its bare-ColumnKey leaves would otherwise give it (which routes it into
+    ``_base`` and raises "needs an aggregation"). A composite mixing a plain
+    aggregate with a placeholder is already AGGREGATE-phase and unaffected."""
+    if not isinstance(value_key, (ArithmeticKey, ScalarCallKey)):
+        return None
+    deps = list(_iter_slot_deps(value_key))
+    if not deps:
+        return None
+    for dep in deps:
+        if not (isinstance(dep, ColumnKey)
+                and dep.leaf.startswith(REGROUP_LEAF_PREFIX)):
+            return None
+    return Phase.AGGREGATE
+
+
 class ProjectionPlanner:
     """Allocate slots for declared measures + hidden slots for refs only
     used in order/filter."""
@@ -721,7 +745,7 @@ class ProjectionPlanner:
                 phase=key.phase,
             )
 
-    def plan(
+    def plan(  # NOSONAR(S3776) — one sequential allocation pass (reserve names → intern measures → filter/order deps) sharing the same registry + hidden-slot rule; splitting the loops scatters that shared mutation invariant.
         self,
         *,
         measures: List[DeclaredMeasure],
@@ -745,12 +769,23 @@ class ProjectionPlanner:
         )
         public_projection: List[SlotId] = []
         for m in measures:
+            # DEV-1839 D10 — an all-placeholder regroup composite MEASURE is
+            # AGGREGATE-phase (rendered at the combined SELECT over its ``_cm_``
+            # operands), not the ROW phase its bare-ColumnKey leaves imply. A
+            # computed DIMENSION over a row placeholder is a genuine ROW attach
+            # (grouped in ``_base``) and is excluded.
+            phase = m.bound.phase
+            if not m.is_dimension:
+                phase = (
+                    _regroup_substituted_composite_phase(m.bound.value_key)
+                    or phase
+                )
             sid = registry.intern(
                 key=m.bound.value_key,
                 declared_name=m.declared_name,
                 public_name=m.public_name,
                 canonical_alias=m.canonical_alias,
-                phase=m.bound.phase,
+                phase=phase,
                 label=m.label,
                 type=m.type,
                 format=m.format,

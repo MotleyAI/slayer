@@ -298,6 +298,34 @@ def _find_unresolved_time_needing_op(key: ValueKey) -> Optional[str]:
     return None
 
 
+def _guard_dimension_temporal_axis(declared_measures) -> None:
+    """DEV-1839 D9 — a time-ordered transform inside a dimension expression must
+    have its resolved time-ordering key inside its evaluation grain (the union of
+    its inner aggregates' grains). Otherwise the producer accumulates per
+    time-bucket rows and joins back on the coarser grain, DUPLICATING result rows
+    (a live defect for the single-grain form). Fail closed, directing the author
+    to include the time key in ``partition_by``. Runs after ``time_key`` is
+    attached and partition keys are rewritten to their time buckets."""
+    for dm in declared_measures:
+        if not dm.is_dimension:
+            continue
+        for tk in walk_value_keys(dm.bound.value_key):
+            if not isinstance(tk, TransformKey):
+                continue
+            if tk.op not in TIME_TRANSFORMS or tk.time_key is None:
+                continue
+            if tk.time_key not in regroup_root_grain(tk):
+                axis = _partition_key_display(tk.time_key)
+                raise NotImplementedError(
+                    f"A time-ordered transform '{tk.op}' inside a computed "
+                    f"dimension evaluates at a grain that does not contain its "
+                    f"time axis '{axis}'; a producer bucketed by time joined back "
+                    f"on the coarser grain would duplicate result rows. Include "
+                    f"the time key in the aggregate's partition_by= so the "
+                    f"transform accumulates within its own grain (DEV-1839)."
+                )
+
+
 # ---------------------------------------------------------------------------
 # DEV-1714 Stage 10 — duration-windowed measures (``window='90d'``).
 # ---------------------------------------------------------------------------
@@ -1228,6 +1256,10 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         order_specs=order_specs,
     )
 
+    # DEV-1839 D9 — temporal-axis containment for time-ordered transforms in
+    # dimensions, once time_key is attached and partition keys are bucket-rewritten.
+    _guard_dimension_temporal_axis(declared_measures)
+
     return PreboundQuery(
         declared_measures=declared_measures,
         bound_filters=bound_filters,
@@ -1382,6 +1414,25 @@ def _find_regroup_slot(slots: List[ValueSlot], key: ValueKey, *, role: str) -> S
     )
 
 
+def _regroup_answer_slot_id(
+    *, value_slots: List[ValueSlot], key: ValueKey, fallback: Optional[SlotId],
+) -> SlotId:
+    """The producer slot that answers a regroup root. Matches by structural
+    identity first (a bare aggregate / single-grain transform root, byte-stable);
+    DEV-1839 — a union-grain producer that desugared its own inner aggregates no
+    longer carries the pre-desugar key, so fall back to the producer's public
+    projection position (``fallback``)."""
+    for slot in value_slots:
+        if slot.key == key:
+            return slot.id
+    if fallback is not None:
+        return fallback
+    raise ValueError(
+        f"Regroup producer plan is missing the answer slot for "
+        f"{type(key).__name__}; synthesis and planning disagree on its grain.",
+    )
+
+
 def _producer_grain_slot_ids(producer_plan) -> set:
     """The planned producer's actual grouping grain: its PROJECTED row slots.
     An aggregating producer can only project a grouped column, and its grain dims
@@ -1404,6 +1455,37 @@ def _assert_attach_covers_producer_grain(
             "the join must cover the complete grain or it changes cardinality "
             "(DEV-1824)."
         )
+
+
+def _validate_nested_producer_plan(
+    *, producer_plan, producer_grain: FrozenSet[ValueKey],
+) -> None:
+    """DEV-1839 D4 — a union-grain producer MAY carry nested COMBINED regroup
+    attaches (its strict-subset inner aggregates broadcast into the union). Admit
+    only well-formed ones; anything else fails closed. Each nested attach must be
+    combined-phase (no row attaches inside a producer), local (no cross-model),
+    carry no deeper regroup / cross-model CTE of its own (own-grain exclusion
+    terminates the recursion), and join on a STRICT subset of the producer's
+    grain (a coarser aggregate broadcast to the finer union rows)."""
+    for attach in producer_plan.regroup_attach_plans:
+        if attach.attach_phase != "combined":
+            raise NotImplementedError(
+                "A union-grain producer carries a non-combined (row) nested "
+                "attach, which is not supported (DEV-1839)."
+            )
+        nested = attach.producer_plan
+        if nested.cross_model_aggregate_plans or nested.regroup_attach_plans:
+            raise NotImplementedError(
+                "A union-grain producer's nested attach itself needs a further "
+                "cross-model or regroup CTE, which is not supported (DEV-1839)."
+            )
+        grain = frozenset(host_key for host_key, _ in attach.join_pairs)
+        if not grain < producer_grain:
+            raise NotImplementedError(
+                "A union-grain producer's nested attach grain is not a strict "
+                "subset of the producer grain; only strict-subset inner grains "
+                "broadcast (DEV-1839)."
+            )
 
 
 def _is_local_partitioned_agg(k: ValueKey) -> bool:
@@ -1484,6 +1566,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
     cross_model_planner: CrossModelPlanner,
     stage_schemas: Dict[str, StageSchema],
     producer_source_model: Optional[str],
+    in_producer: bool = False,
 ) -> Optional[Tuple[PreboundQuery, List[RegroupAttachPlan]]]:
     """Discover partitioned aggregates and desugar them into synthesized producer
     stages + reserved-leaf placeholders (DEV-1825 / DEV-1829).
@@ -1505,6 +1588,24 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
         row_agg_set=frozenset(row_inner_aggs),
         bound_filters=prebound.bound_filters,
     )
+    # DEV-1839 D2 — inside a union-grain producer, an aggregate / root at EXACTLY
+    # the producer's own grain compiles inline (a plain grouped aggregate, as it
+    # did pre-DEV-1839 when the producer skipped desugaring entirely); only
+    # STRICT-subset grains become nested combined attaches. Excluding own-grain
+    # roots terminates the recursion — grains strictly decrease at every level.
+    if in_producer:
+        producer_dim_dms, producer_td_dms, _ = partition_declared_measures(
+            declared_measures=prebound.declared_measures,
+            n_dims=prebound.n_dims,
+            n_time_dimensions=prebound.n_time_dimensions,
+        )
+        own_grain = frozenset(
+            dm.bound.value_key for dm in [*producer_dim_dms, *producer_td_dms]
+        )
+        combined_aggs = [
+            k for k in combined_aggs if regroup_root_grain(k) != own_grain
+        ]
+        row_aggs = [k for k in row_aggs if regroup_root_grain(k) != own_grain]
     if not row_aggs and not combined_aggs:
         return None
     # DEV-1824 (task 3.2) — a row attach (computed dimension) and a combined
@@ -1602,38 +1703,53 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
                 cross_model_planner=cross_model_planner,
                 stage_schemas=stage_schemas,
                 disable_host_rooted_isolation=True,
+                # DEV-1839 — a WINDOWED producer synthesizes the active TD into
+                # its grain (D5), so its aggregate's ``partition_keys`` never
+                # equal the producer grain and own-grain exclusion could not
+                # terminate; a windowed aggregate is always its producer's own
+                # answer (a mixed windowed transform is D6-deferred), so it needs
+                # no nested regroups. Enable them only for non-windowed producers.
+                enable_producer_regroups=not windowed,
                 prebound=producer_prebound,
             )
             # DEV-1824 (task 3.1 hoist) — a producer that itself needs an internal
             # WITH (a ranked first/last, a windowed producer at the synthesized
             # active-TD grain (D5), or a transform-at-producer-grain (D4)) renders
             # its WITH, which the generator hoists into the one flat WITH with
-            # allocator-uniquified base names. Cross-model / nested-regroup
-            # producers are stage 3 — they stay deferred and fail closed.
-            if (
-                producer_plan.cross_model_aggregate_plans
-                or producer_plan.regroup_attach_plans
-            ):
+            # allocator-uniquified base names. A cross-model producer is stage 3
+            # and fails closed. DEV-1839 D4 — a union-grain producer MAY carry
+            # nested COMBINED attaches (its strict-subset inner aggregates); those
+            # are admitted after structural validation, anything else fails closed.
+            if producer_plan.cross_model_aggregate_plans:
                 raise NotImplementedError(
                     "A partitioned aggregate whose producer itself needs a "
-                    "cross-model or nested-regroup CTE is not yet supported "
-                    "(DEV-1836)."
+                    "cross-model CTE is not yet supported (DEV-1836)."
                 )
+            _validate_nested_producer_plan(
+                producer_plan=producer_plan, producer_grain=pks,
+            )
             # A bare aggregate root resolves to an aggregate slot; a transform
             # root (D4) resolves to the producer's combined-expression slot.
             producer_value_slots = [
                 *producer_plan.aggregate_slots,
                 *producer_plan.combined_expression_slots,
             ]
+            # DEV-1839 — a union-grain producer desugars its OWN inner aggregates
+            # to placeholders, so a transform root's producer slot key no longer
+            # equals the pre-desugar ``agg``. Fall back to the producer's public
+            # projection position: answers follow the grain, in ``aggs`` order.
+            producer_answer_ids = list(producer_plan.projection)[len(ordered_pks):]
             substitutions = [
                 RegroupSubstitution(
                     placeholder=mapping[agg],
-                    producer_slot_id=_find_regroup_slot(
-                        producer_value_slots, agg, role="aggregate",
+                    producer_slot_id=_regroup_answer_slot_id(
+                        value_slots=producer_value_slots, key=agg,
+                        fallback=producer_answer_ids[i]
+                        if i < len(producer_answer_ids) else None,
                     ),
                     original_key=agg,
                 )
-                for agg in aggs
+                for i, agg in enumerate(aggs)
             ]
             join_pairs = [
                 (
@@ -1661,11 +1777,23 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
                 partition_display=[_regroup_grain_name(pk) for pk in ordered_pks],
             ))
 
+    # DEV-1839 — the ROW substitution (a transform root / bare aggregate → its
+    # row placeholder, at the union grain) applies ONLY to computed DIMENSIONS.
+    # A NON-dimension measure structurally equal to a row root (the dual-role
+    # case: the same ``rank(...)`` as both a dimension and a measure) must keep
+    # its query-grain evaluation — its INNER aggregates desugar to COMBINED
+    # placeholders instead, so it is never rewritten to the union-grain producer.
+    combined_mapping: Dict[ValueKey, ValueKey] = {
+        agg: mapping[agg] for agg in combined_aggs
+    }
     rewritten = PreboundQuery(
         declared_measures=[
             DeclaredMeasure(
                 bound=BinderBoundExpr(
-                    value_key=substitute_value_keys(dm.bound.value_key, mapping),
+                    value_key=substitute_value_keys(
+                        dm.bound.value_key,
+                        mapping if dm.is_dimension else combined_mapping,
+                    ),
                 ),
                 declared_name=dm.declared_name,
                 public_name=dm.public_name,
@@ -1710,6 +1838,7 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     cross_model_planner: Optional[CrossModelPlanner] = None,
     stage_schemas: Optional[Dict[str, StageSchema]] = None,
     disable_host_rooted_isolation: bool = False,
+    enable_producer_regroups: bool = False,
     prebound: Optional[PreboundQuery] = None,
 ) -> PlannedQuery:
     """Compile one query into a typed ``PlannedQuery``.
@@ -1808,6 +1937,12 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     # (``disable_host_rooted_isolation``): there the partitioned aggregate IS the
     # producer's own answer and renders inline as a plain grouped aggregate — a
     # recursive desugar would re-discover it and synthesize a producer forever.
+    #
+    # DEV-1839 D3 — a UNION-grain producer re-enables regroup discovery
+    # (``enable_producer_regroups``) so its strict-subset inner aggregates desugar
+    # into nested combined attaches; host-rooted isolation stays OFF. Own-grain
+    # exclusion (``in_producer``) keeps aggregates AT the producer grain inline
+    # and terminates the recursion (grains strictly decrease).
     regroup_attach_plans: List[RegroupAttachPlan] = []
     if isinstance(query.source_model, str):
         _producer_source_model = query.source_model
@@ -1816,11 +1951,14 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     else:
         _producer_source_model = None
     regroup_result = (
-        None if disable_host_rooted_isolation else _plan_regroups(
+        _plan_regroups(
             prebound=prebound, scope=scope, bundle=bundle,
             cross_model_planner=cross_model_planner, stage_schemas=stage_schemas,
             producer_source_model=_producer_source_model,
+            in_producer=enable_producer_regroups,
         )
+        if (not disable_host_rooted_isolation or enable_producer_regroups)
+        else None
     )
     if regroup_result is not None:
         prebound, regroup_attach_plans = regroup_result
@@ -2968,15 +3106,18 @@ def _reject_computed_dim_name_collision(
             )
 
 
-def _guard_computed_dimension(*, d: ComputedDimension, bound, query: SlayerQuery) -> None:
+def _guard_computed_dimension(*, d: ComputedDimension, bound, query: SlayerQuery) -> None:  # NOSONAR(S3776) — sequential fail-closed guard checks over one shared walk (all_keys / transforms / inner_aggs); each arm raises its own contract error, and extracting them scatters the shared state and the ordered narrative.
     """Grain-self-containment rules for a computed dimension (DEV-1740/1824).
 
     Every aggregate must carry ``partition_by=`` (else the group key is a pure
     function of the query's own dimensions and adds no grouping); LOCAL
     transforms, ``first``/``last`` and ``window=`` are LIFTED when so grained
-    (DEV-1824), each over a single grain. Still fail closed: a cross-model
-    aggregate source, a transform over mixed grains (DEV-1839), and an
-    aggregate-referencing dimension with raw-rows mode.
+    (DEV-1824). A transform over aggregates at DIFFERENT grains unions the grains
+    and broadcasts each to the union (DEV-1839 D1). Still fail closed: a
+    cross-model aggregate source, a MIXED-grain transform any of whose inner
+    aggregates is windowed / ``first`` / ``last`` (DEV-1835 D6), and an
+    aggregate-referencing dimension with raw-rows mode. The temporal-axis
+    containment rule (D9) runs later, once ``time_key`` is attached.
     """
     all_keys = list(walk_value_keys(bound.value_key))
     transforms = [k for k in all_keys if isinstance(k, TransformKey)]
@@ -2992,15 +3133,34 @@ def _guard_computed_dimension(*, d: ComputedDimension, bound, query: SlayerQuery
                 f"explicitly-grained aggregate — declare partition_by= on the "
                 f"aggregate it transforms (DEV-1824)."
             )
-        # The transform's row-attach producer evaluates at ONE grain (D4), so
-        # different inner grains would silently misgrain all but the first.
-        # The principled lift is to union the grains and broadcast each aggregate
-        # to the union (DEV-1839); deferred here, fail-closed meanwhile.
-        if len({a.partition_keys for a in inner_aggs}) > 1:
+        # DEV-1835 D6 — a MIXED-grain transform (>1 distinct effective grain)
+        # any of whose inner aggregates is windowed / first / last is deferred:
+        # its union would need the synthesized time-bucket grain (stage 2). The
+        # grain count is established FIRST so a single-grain windowed / first-last
+        # transform input (lifted in DEV-1824) is untouched. A windowed /
+        # first-last aggregate carries the active time bucket into its effective
+        # grain, so it never shares a grain with a plain sibling.
+        def _effective_grain(a: AggregateKey) -> frozenset:
+            g: set = set(a.partition_keys or ())
+            if _window_kwarg_of(a) is not None or a.agg in ("first", "last"):
+                g.add("__time_axis__")
+            return frozenset(g)
+
+        has_windowed_or_ranked = any(
+            _window_kwarg_of(a) is not None or a.agg in ("first", "last")
+            for a in inner_aggs
+        )
+        if len({_effective_grain(a) for a in inner_aggs}) > 1 and (
+            has_windowed_or_ranked
+        ):
+            family = "window=" if any(
+                _window_kwarg_of(a) is not None for a in inner_aggs
+            ) else "first/last"
             raise NotImplementedError(
                 f"A transform inside computed dimension {d.name!r} combines "
-                f"aggregates at different partition_by grains; broadcasting each "
-                f"to the union grain is not yet supported (DEV-1839)."
+                f"aggregates at different grains where one carries {family}; "
+                f"broadcasting a windowed / first / last aggregate across the "
+                f"union grain is not yet supported (DEV-1835)."
             )
     # DEV-1824 (task 3.7 / D4) — a grain-self-contained transform-in-dimension is
     # lifted: its row-attach producer computes the transform at the producer grain.
