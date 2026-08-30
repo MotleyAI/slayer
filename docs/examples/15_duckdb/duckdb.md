@@ -12,12 +12,13 @@ Tho show just how simple and powerful that pattern is, I've put together example
 
 Each notebook shows, from scratch, how to define a view over a remote file in DuckDB, then to connect SLayer to that view, and to execute a deceptively simple query, containing:
 
-- a **band computed from an aggregate** — tag each month *rainy* or *dry* by
-  whether its total rainfall crosses a threshold, with a query-time
-  `CASE WHEN precipitation:sum > 100 …` measure; and
-- a **change-versus-same-month-last-year** measure — monthly rainfall
-  minus its value twelve months back, via the calendar-aware
-  [`time_shift`](../../concepts/formulas.md) transform.
+- a **dimension computed from an aggregate** — group each month *warm* or
+  *cool* by its average high temperature, a
+  `CASE WHEN temp_max:avg(partition_by=date) …` band used as a grouping
+  dimension; and
+- a **ranking transform in a measure** — `rank(precipitation:sum)` to order the
+  months by rainfall, one of SLayer's query-time
+  [transforms](../../concepts/formulas.md).
 
 Both of these are defined at query time, showing how SLayer frees you from having to pre-configure every little thing you want to query.
 
