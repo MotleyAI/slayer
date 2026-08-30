@@ -1,0 +1,30 @@
+# Tasks — dev-1835 Stage 2
+
+## 1. Tests first (TDD — land before implementation)
+
+- [ ] 1.1 `tests/_dev1835_fixtures.py`: hand-computed oracles on the DEV-1739/1824 dataset for the desugared families (bare `wm`/`rk` at RC/RCM grains incl. NULL region/city), the guard-dissolution shapes (transform/composite/filter over bare `wm`/`rk`, `time_shift(amount:last, -1)`), `change`/`change_pct` over attached inputs, and the union-grain broadcasts (mixed windowed/first-last inner grains); verify two oracles by hand in review
+- [ ] 1.2 Matrix flips in `tests/test_dev1837_dimension_measure_matrix.py`: the 9 DEV-1835 cells move from strict-xfail to supported (oracle or solo-equality + no `__regroup__` + `assert_scope_closed` + cardinality neutrality), on SQLite and DuckDB; verify: cells fail for the right reason pre-implementation (NotImplementedError, not setup)
+- [ ] 1.3 `tests/test_dev1835_desugar.py`: bare-vs-explicit twin equivalence (values identical; combined query renders ONE shared producer), migrated-family executed-value pins, keyless/no-dims edge (single-row CROSS JOIN), order-only and filter-only bare references (hidden producers), filtered measure beside unfiltered companions (cardinality + companion values unchanged), D10 dual-role aggregate alongside a bare windowed measure; SQLite + DuckDB; verify: fail-for-the-right-reason
+- [ ] 1.4 `tests/test_dev1835_guard_dissolution.py`: executed values for G4/G5/G6/G7 shapes (+ post-projection twin) and `time_shift`-over-ranked; `change`/`change_pct`-over-attached fix (fails today with `RenderContextMissingFacilityError`); mixed OR keeps the no-common-scope directive; AND conjuncts split (filter-only + row predicate; windowed + plain aggregate); verify: fail-for-the-right-reason
+- [ ] 1.5 `tests/test_dev1835_dedup.py`: same-aggregate-both-roles → one producer relation in SQL; bare+explicit twin → one; negative cases (differing window duration / measure filter / explicit ranking arg → separate producers, each correct); verify: fails pre-implementation (two producers today)
+- [ ] 1.6 `tests/test_dev1835_union_grain.py` (D9, DEV-1839 lift): windowed-inner + plain sibling at same declared grain → (region, bucket) union broadcast; first/last-inner + different-grain sibling; unresolvable-TD failure message; verify: strict-xfail or fail-for-the-right-reason until task 3.7
+- [ ] 1.7 Guard tests updated in `tests/test_dev1837_guards.py` + a `tests/test_dev1835_guards.py`: deleted arms/messages asserted absent package-wide (windowed/ranked coexistence arm, G4/G5/G6/G7, `time_shift`-over-ranked); G1/G8/G2 + ranked no-ranking-column pinned verbatim; G3 + cross-model partition messages re-pointed to DEV-1836; verify by running the files
+- [ ] 1.8 `tests/test_dev1835_golden_sql.py` + `tests/golden/dev1835_sql_baseline.json`: flagship shapes (bare wm, bare rk, band×wm, dedup dual-role, cumsum-over-bare-wm) plus generation-smoke on tsql/bigquery/one case-folding dialect (parses, single flat WITH, scope-closed); verify: harness runs (baselines blessed during implementation)
+- [ ] 1.9 DEV-1732 frame-bound and explicit-ranking-time semantics as executed-value tests (surviving the SQL-shape rewrite); verify: pass today AND post-migration
+
+## 2. Implementation — desugar, producers, deletion, dedup
+
+- [ ] 2.1 Desugar pass (design D1): bare windowed/ranked measure/order/filter refs become combined-attach roots at the full projected grain (slot provenance per D5, active TD via the D5 bucket); G1/G8/G2 validate on the desugar path; verify: 1.3 twin-equivalence and matrix `col`× cells pass
+- [ ] 2.2 Producer synthesis from original expressions + nested LOCAL row attaches (design D4): narrow `stage_planner.py:1613-1621` to cross-model; recursion-depth guard; regroup-aware windowed `_src` / ranked inner select; grain slots for arbitrary dimension keys; verify: band/bare/rank × wm/rk and expr × wm/rk matrix cells pass
+- [ ] 2.3 Windowed collapse + uniform `_cm_` naming (design D3); verify: 1.8 goldens show single-CTE producers for simple shapes; hoist collision tests still pass
+- [ ] 2.4 Consumer-level deletion (design D2): generator wiring, isolation branches/enum members, OrderScope/OrderEnv pairs, the DEV-1835 arm, the G4 belt, `time_shift`-over-ranked guard; relocated producer-planning dispatch; verify: 1.7 no-residue scans pass, full suite green
+- [ ] 2.5 Plan-time dedup (design D6): producer table + attach records IR; canonical-prebound identity; combined-phase naming for dual-phase producers; verify: 1.5 passes; row-only/combined-only goldens byte-identical
+- [ ] 2.6 Guard dissolution + `change`/`change_pct` fix (design D7); verify: 1.4 passes
+- [ ] 2.7 Full non-integration suite green; enumerate golden divergences with before/after SQL → batch approval → re-bless; SQL-shape suites rewritten preserving intent (user-approved protocol); verify: `poetry run pytest -m "not integration"` clean
+
+## 3. DEV-1839 lift + wrap-up
+
+- [ ] 3.7 Effective-grain union + broadcast for windowed/first-last inner aggregates (design D9): re-baseline the MODIFIED transform requirement against the post-1839 corpus, extend `regroup_root_grain`/grouping to effective grains, delete the residual guard; verify: 1.6 passes, `openspec validate --strict` green
+- [ ] 3.8 Perf corpus re-recorded; regressions reported in the PR description; verify: `tests/perf/compare` results committed
+- [ ] 3.9 Docs: `docs/architecture/composable-attach.md` (stage-2 section + roadmap tick), `docs/concepts/formulas.md`, `docs/concepts/queries.md`, `.claude/skills/slayer-query.md`; grep docs + skills for stale can't-combine claims; verify: grep clean
+- [ ] 3.10 `openspec validate dev-1835-stage-2-local-family-unification-attach-dedup-on-the-regroup --strict` green; `poetry run ruff check slayer/ tests/` clean
