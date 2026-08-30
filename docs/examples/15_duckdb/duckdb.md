@@ -8,7 +8,7 @@ and then turns its simple yet powerful query syntax into the correct SQL.
 
 Put them together and a semantic layer over a remote dataset is a handful of lines.
 
-Tho show just how simple and powerful that pattern is, I've put together example notebooks, one for CLI, one for Python. 
+To show just how simple and powerful that pattern is, I've put together example notebooks, one for CLI, one for Python. 
 
 Each notebook shows, from scratch, how to define a view over a remote file in DuckDB, then to connect SLayer to that view, and to execute a deceptively simple query, containing:
 

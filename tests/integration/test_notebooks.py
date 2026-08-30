@@ -230,7 +230,12 @@ def _duckdb_failure_text(nb) -> str:
         for out in outputs:
             if out.get("output_type") == "stream":
                 parts.append(out.get("text", ""))
-            elif out.get("output_type") == "error":
+            elif out.get("output_type") == "error" and out.get("ename") != "CalledProcessError":
+                # A %%bash failure's CalledProcessError embeds the cell SOURCE
+                # (which carries the remote URLs), so a deterministic error like
+                # "timed out" would spuriously satisfy the host+signature gate.
+                # Classify %%bash cells from their stderr stream only; a real
+                # Python exception carries the actual error in evalue/traceback.
                 parts.append(out.get("evalue", ""))
                 parts.append("\n".join(out.get("traceback", [])))
     return "\n".join(parts)
@@ -272,6 +277,13 @@ def test_notebook_runs_without_errors(notebook_path, request):
     )
     try:
         client.execute()
+    except nbclient.exceptions.CellTimeoutError as exc:
+        # The DuckDB notebooks normally finish in ~15s; a 600s timeout means a
+        # network hang (stalled CDN, installer, or extension download), not a
+        # code bug. Other notebooks still fail loudly on timeout.
+        if is_duckdb:
+            pytest.skip(f"DuckDB notebook timed out (likely a network hang): {exc}")
+        raise
     except nbclient.exceptions.CellExecutionError as exc:
         # A failing `git fetch` (or a stale/partial cache) surfaces as
         # MetricFlowDemoError mid-run. Skip — rather than report a bootstrap
