@@ -176,17 +176,17 @@ class TestDimensionGrainSelfContainment:
             await gen(query)
         assert "partition_by" in str(ei.value)
 
-    async def test_transform_over_mixed_grain_aggregates_deferred(self) -> None:
-        # Two grains in one transform fail closed until the grain-union broadcast
-        # lands (DEV-1839) — fail-closed beats the silent misgrain, but the shape
-        # is a deferred extension, not a permanent one-grain-per-transform rule.
+    async def test_transform_over_mixed_grain_aggregates_lifted(self) -> None:
+        # Two grains in one transform union and broadcast (DEV-1839) — the
+        # former fail-closed guard is gone. Executed ground truth lives in
+        # tests/test_dev1839_union_dim_execution.py.
         band = "rank(amount:sum(partition_by=region) - amount:sum(partition_by=city))"
         query = q(
             dimensions=["region", "city", {"expression": band, "name": "rk"}],
             measures=[ModelMeasure(formula="amount:sum", name="s")],
         )
-        with pytest.raises(NotImplementedError, match=r"union grain.*DEV-1839"):
-            await gen(query)
+        sql = await gen(query)  # must not raise
+        assert "__regroup__" not in sql
 
 
 class TestAttachGrainCoverage:

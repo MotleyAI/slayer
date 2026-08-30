@@ -1459,6 +1459,7 @@ class SQLGenerator:
     def generate_from_planned(
         self, planned_query, *, bundle, as_cte_body: bool = False,
         reuse_allocator: bool = False, as_ast: bool = False,
+        as_hoistable_producer: bool = False,
     ):
         """Render a typed ``PlannedQuery`` to SQL (public entry).
 
@@ -1488,7 +1489,7 @@ class SQLGenerator:
         if reuse_allocator and self._gen_allocator is not None:
             result = self._generate_from_planned_impl(
                 planned_query, bundle=bundle, as_cte_body=as_cte_body,
-                as_ast=as_ast,
+                as_ast=as_ast, as_hoistable_producer=as_hoistable_producer,
             )
         else:
             prev_allocator = getattr(self, "_gen_allocator", None)
@@ -1496,7 +1497,7 @@ class SQLGenerator:
             try:
                 result = self._generate_from_planned_impl(
                     planned_query, bundle=bundle, as_cte_body=as_cte_body,
-                    as_ast=as_ast,
+                    as_ast=as_ast, as_hoistable_producer=as_hoistable_producer,
                 )
             finally:
                 self._gen_allocator = prev_allocator
@@ -1548,6 +1549,7 @@ class SQLGenerator:
         bundle,
         as_cte_body: bool = False,
         as_ast: bool = False,
+        as_hoistable_producer: bool = False,
     ):
         """Render a typed ``PlannedQuery`` to SQL.
 
@@ -1647,7 +1649,13 @@ class SQLGenerator:
                 "A row regroup attach (computed dimension) nested in a CTE body "
                 "is not yet supported (DEV-1838)."
             )
-        if _combined_attaches and as_cte_body:
+        if _combined_attaches and as_cte_body and not as_hoistable_producer:
+            # DEV-1839 D5 — a GENUINELY non-hoistable CTE body (a re-rooted
+            # cross-model sub-plan spliced into a CTE, SQL Server's nested-WITH
+            # restriction) still fails closed. A union-grain PRODUCER body whose
+            # internal WITH is about to be hoisted by ``_render_producer_split``
+            # is exempt (``as_hoistable_producer``): its combined attaches render
+            # and hoist into the one flat WITH.
             raise NotImplementedError(
                 "A partitioned-aggregate regroup attach nested in a CTE body is "
                 "not yet supported (DEV-1838)."
@@ -1841,7 +1849,12 @@ class SQLGenerator:
         # ``sjoin_`` pairs would otherwise share a name (duplicate WITH). Every
         # CTE name is reserved/allocated through this one allocator so the
         # ``step`` / ``shifted_`` / ``sjoin_`` / ``cp_`` families never collide.
-        cte_allocator = self._new_allocator()
+        # DEV-1839 — share the generation-wide allocator when one is installed
+        # (a hoisted producer render, ``reuse_allocator``) so a nested transform
+        # producer's ``step`` names never collide with the parent chain's once
+        # both hoist into one flat WITH. A fresh allocator otherwise (top level),
+        # byte-identical since ``step`` names are unused before this point.
+        cte_allocator = self._gen_allocator or self._new_allocator()
         cte_allocator.reserve(*(entry.name for entry in ctes))
         # Codex (PR #269): also reserve every already-projected column alias's
         # BARE form so a hidden transform alias minted below
@@ -2438,9 +2451,9 @@ class SQLGenerator:
         slots_by_id: Dict[str, Any],
         include_order: bool = True,
         aggregates_only: bool = False,
-    ) -> Set[str]:
+    ) -> List[str]:
         """Return slot ids the base CTE must project beyond the public
-        projection.
+        projection, in deterministic (walk) order (DEV-1839).
 
         Walks every ``TransformKey`` in ``transform_layers`` for its
         ``input`` / ``partition_keys`` / ``time_key`` deps; walks every
@@ -2464,13 +2477,25 @@ class SQLGenerator:
             base_kinds: Tuple[type, ...] = (AggregateKey,)
         else:
             base_kinds = (ColumnKey, ColumnSqlKey, TimeTruncKey, AggregateKey)
-        out: Set[str] = set()
+        # DEV-1839 — insertion-ordered dedup (the ``_collect_from`` walk visits
+        # operands in a deterministic order), NOT a set: two same-grain inner
+        # aggregates of one transform (``rank(a:sum(pby=x) + b:sum(pby=x))``)
+        # would otherwise surface in hash-seed order, making the emitted SQL
+        # non-deterministic across processes. Callers only iterate / membership-
+        # test against OTHER sets, never set-algebra this result.
+        out: List[str] = []
+        seen: Set[str] = set()
+
+        def _add(sid: str) -> None:
+            if sid not in seen:
+                seen.add(sid)
+                out.append(sid)
 
         def _collect_from(key) -> None:
             if isinstance(key, base_kinds):
                 sid = slot_id_by_key.get(key)
                 if sid is not None:
-                    out.add(sid)
+                    _add(sid)
                 return
             # ``aggregates_only`` mode: still SKIP non-aggregate row leaves
             # at the leaf level — but the composite/walker branches below
@@ -2584,7 +2609,7 @@ class SQLGenerator:
                         slot_id_by_key=slot_id_by_key,
                         planned_query=planned_query,
                     ):
-                        out.add(oe.slot_id)
+                        _add(oe.slot_id)
 
         return out
 
@@ -5548,7 +5573,7 @@ class SQLGenerator:
         """
         producer_sql = self.generate_from_planned(
             planned_query=producer, bundle=bundle, as_cte_body=True,
-            reuse_allocator=True,
+            reuse_allocator=True, as_hoistable_producer=True,
         )
         parsed = sqlglot.parse_one(producer_sql, dialect=self.dialect)
         self._unmangle_dotted_table_refs(parsed)
