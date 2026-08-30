@@ -38,9 +38,10 @@ Both phases coexist in one query, in one flat `WITH` chain.
 ## Context grain (measure ⇔ dimension symmetry)
 
 Any measure-legal expression is legal as a computed dimension provided it is
-**grain-self-contained**: every aggregate carries an explicit `partition_by=`,
-and every transform wraps such a grained aggregate. A transform then evaluates at
-the grain of its *containing context*:
+**grain-self-contained**: every aggregate is local to the query's source (not a
+cross-join source — cross-model aggregates stay deferred, stage 3) and carries an
+explicit `partition_by=`, and every transform wraps such a grained aggregate. A
+transform then evaluates at the grain of its *containing context*:
 
 - As a **measure**, `rank(revenue:sum(partition_by=region))` ranks the result
   rows at the query grain (over the attached, broadcast region total).

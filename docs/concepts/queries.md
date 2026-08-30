@@ -107,9 +107,11 @@ running total accumulates within each `(region, band)` group; a time shift
 compares each group only against itself). Deferred shapes (raise a clear error
 citing the follow-up): a cross-model aggregate source inside a dimension
 expression, a bare aggregate without `partition_by=`, an aggregate partitioned
-by another computed dimension (a nested attach), and a computed dimension
+by another computed dimension (a nested attach), a computed dimension
 combined with a bare windowed (`window=` without `partition_by=`), `first` /
-`last`, or cross-model measure.
+`last`, or cross-model measure, and a transform over aggregates at *different*
+partition grains — which will union the grains and broadcast each aggregate
+rather than error, once that lands.
 
 ### Dim-only queries deduplicate
 

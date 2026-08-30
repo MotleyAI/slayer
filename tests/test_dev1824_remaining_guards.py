@@ -109,6 +109,35 @@ class TestMeasureGrainRulePreserved:
         with pytest.raises(ValueError, match=r"not a query dimension"):
             await gen(query)
 
+    async def test_dual_role_aggregate_is_validated_strictly(self) -> None:
+        # CR — the SAME aggregate as a computed-dimension row attach AND a bare
+        # measure: the finer-grain leniency must not carry into the combined
+        # measure role, or the join-back fails with an internal RuntimeError.
+        # It must raise the clean "not a query dimension" error instead.
+        band = "CASE WHEN amount:sum(partition_by=city) > 50 THEN 1 ELSE 0 END"
+        query = q(
+            dimensions=["region", {"expression": band, "name": "band"}],
+            measures=[
+                ModelMeasure(formula="amount:sum", name="s"),
+                ModelMeasure(formula="amount:sum(partition_by=city)", name="ct"),
+            ],
+        )
+        with pytest.raises(ValueError, match=r"not a query dimension"):
+            await gen(query)
+
+    async def test_dual_role_via_filter_routes_through_row_attach(self) -> None:
+        # CR — a filter on the computed dimension's OWN aggregate references the
+        # row attach, not a combined consumer, so a finer-than-query grain is
+        # legal and must render cleanly (no combined join-back, no internal error).
+        band = "CASE WHEN amount:sum(partition_by=city) > 50 THEN 1 ELSE 0 END"
+        query = q(
+            dimensions=["region", {"expression": band, "name": "band"}],
+            filters=["amount:sum(partition_by=city) > 100"],
+            measures=[ModelMeasure(formula="amount:sum", name="s")],
+        )
+        sql = await gen(query)  # must not raise
+        assert "__regroup__" not in sql
+
 
 class TestDimensionGrainSelfContainment:
     """Inside a dimension expression the lift is CONDITIONAL on an explicit
@@ -147,15 +176,16 @@ class TestDimensionGrainSelfContainment:
             await gen(query)
         assert "partition_by" in str(ei.value)
 
-    async def test_transform_over_mixed_grain_aggregates_rejected(self) -> None:
-        # Two grains in one transform: the producer has one grain, so it would
-        # misgrain the others — reject rather than compute wrong values.
+    async def test_transform_over_mixed_grain_aggregates_deferred(self) -> None:
+        # Two grains in one transform fail closed until the grain-union broadcast
+        # lands (DEV-1839) — fail-closed beats the silent misgrain, but the shape
+        # is a deferred extension, not a permanent one-grain-per-transform rule.
         band = "rank(amount:sum(partition_by=region) - amount:sum(partition_by=city))"
         query = q(
             dimensions=["region", "city", {"expression": band, "name": "rk"}],
             measures=[ModelMeasure(formula="amount:sum", name="s")],
         )
-        with pytest.raises(NotImplementedError, match=r"different partition_by grains"):
+        with pytest.raises(NotImplementedError, match=r"union grain.*DEV-1839"):
             await gen(query)
 
 
