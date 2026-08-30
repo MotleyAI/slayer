@@ -61,6 +61,21 @@ transform then evaluates at the grain of its *containing context*:
 - **Transform-at-producer-grain** (a transform in a dimension) — the transform
   is a producer measure, rendered as a step CTE over the grained aggregate.
 
+## Step-layer grain rule (stage 1a)
+
+By the time the transform-chain step CTEs render, a computed dimension is an
+ordinary dimension slot. One shared rule defines every transform's auto-grain —
+the window-family `PARTITION BY`, the `time_shift` shifted-CTE re-aggregation
+grain, and the `consecutive_periods` grouping: **every projected dimension
+slot** (plain and derived columns, computed dimensions, bare row-attach
+placeholder dimensions), **excluding time buckets** (the transform's ordering
+axis) **and combined-attach placeholder slots** (an attached measure value must
+never widen a grain). Placeholder roles are read structurally from the attach
+plans, never from leaf text. The shifted CTE re-aggregates the source with the
+row producers joined in, so a computed dimension in its grain — and a
+row-lowered predicate over it — resolves to the producer column, keeping the
+shifted row population at parity with `base`.
+
 ## Filter placement
 
 A filter's top-level `AND` conjuncts route **independently**, decided
@@ -106,16 +121,20 @@ The end state is a closure axiom: **any grain-legal dimension composes with any
 legal measure**. Every fail-closed coexistence guard is a temporary migration
 artifact with an issue attached, never a permanent boundary.
 
-- **Stage 1 (this change)** — the full local `partition_by` surface on the
+- **Stage 1 (DEV-1824)** — the full local `partition_by` surface on the
   generalized primitive: windowed / first-last / transform-nested / filtered
   aggregates, row+combined coexistence, the measure ⇔ dimension symmetry, and the
   CTE-hoist.
-- **Stage 1a (DEV-1837)** — computed dimensions coexist with transform-chain
-  measures (`time_shift`, `change`, `cumsum`, rank-of-a-measure). Transform
-  measures are *steps over the query-grain result*, not attaches, so no family
-  migration dissolves this pair; it lifts directly, and a dimension-family ×
-  measure-family compatibility matrix becomes the migration's tracked definition
-  of done.
+- **Stage 1a (DEV-1837, this change)** — computed dimensions coexist with
+  transform-chain measures (`time_shift`, `change`, `cumsum`,
+  rank-of-a-measure) in both render chains, under the shared step-layer grain
+  rule above. Transform measures are *steps over the query-grain result*, not
+  attaches, so no family migration dissolves this pair; it lifts directly.
+  Also: the per-conjunct filter `AND` split generalizes to row-attach
+  references, and a partitioned measure combined with a temporal transform no
+  longer leaks its placeholder into the shifted CTE. The dimension-family ×
+  measure-family compatibility matrix becomes the migration's tracked
+  definition of done.
 - **Stage 2 (DEV-1835)** — migrate the local `_wm_` (windowed) and `_rk_`
   (ranked) renderer arms onto the primitive and delete them; a general
   cross-phase attach-dedup pass subsumes duplicate producers.

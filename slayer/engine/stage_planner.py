@@ -1426,27 +1426,27 @@ def _bound_filter_from_key(vk: ValueKey) -> BoundFilter:
 def _split_partitioned_filter_conjuncts(
     prebound: PreboundQuery,
 ) -> Tuple[PreboundQuery, List[int]]:
-    """DEV-1824 (D7) — split each top-level AND conjunct of any filter that
-    references a LOCAL partitioned aggregate into its own predicate, deciding
-    placement on the ORIGINAL (pre-substitution) tree. Returns the rebuilt
-    prebound and the indices (into its new ``bound_filters``) whose conjunct
-    routes to the COMBINED scope (rendered at the outer WHERE after attachment).
+    """DEV-1824 (D7) / DEV-1837 (D9) — split each top-level AND conjunct of any
+    filter that references a LOCAL partitioned aggregate (combined OR consumed
+    by a computed dimension) into its own predicate, deciding placement on the
+    ORIGINAL (pre-substitution) tree. Each conjunct then routes to its own
+    phase — a row-attach conjunct through ``classify_regroup_filter``, a
+    combined one to the outer WHERE. Returns the rebuilt prebound and the
+    indices (into its new ``bound_filters``) whose conjunct routes to the
+    COMBINED scope (rendered at the outer WHERE after attachment).
     """
     old = list(prebound.bound_filters)
-    # A partitioned aggregate consumed by a computed dimension is a ROW attach
-    # (handled by ``classify_regroup_filter``); only COMBINED partitioned
-    # aggregates (measures / bare filter refs) route through D7.
+    # ``conjunct_scope`` routes only COMBINED partitioned aggregates; a
+    # partitioned aggregate consumed by a computed dimension is a ROW attach
+    # whose conjuncts ``classify_regroup_filter`` classifies individually (D9).
     row_agg_set = frozenset(
         dimension_partitioned_aggregates(prebound.declared_measures),
     )
 
-    def _has_combined_part(vk: ValueKey) -> bool:
-        return any(
-            _is_local_partitioned_agg(k) and k not in row_agg_set
-            for k in walk_value_keys(vk)
-        )
+    def _has_partitioned_ref(vk: ValueKey) -> bool:
+        return any(_is_local_partitioned_agg(k) for k in walk_value_keys(vk))
 
-    if not any(_has_combined_part(bf.value_key) for bf in old):
+    if not any(_has_partitioned_ref(bf.value_key) for bf in old):
         return prebound, []
     dim_keys = frozenset(
         dm.bound.value_key
@@ -1459,7 +1459,7 @@ def _split_partitioned_filter_conjuncts(
     new_texts: List[Optional[str]] = []
     combined_idx: List[int] = []
     for i, bf in enumerate(old):
-        if not _has_combined_part(bf.value_key):
+        if not _has_partitioned_ref(bf.value_key):
             new_filters.append(bf)
             new_texts.append(texts[i])
             continue
@@ -1527,15 +1527,15 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
             f"collides with the regroup primitive's placeholders. Rename them."
         )
     # Codex F1 — a joined aggregate SOURCE inside a computed dimension would need
-    # a target-rooted producer (its own nested WITH); deferred with the DEV-1824
-    # combos. Combined-phase cross-model sources never reach here — they stay on
-    # the DEV-1739 cross-model narrow path (D2).
+    # a target-rooted producer (its own nested WITH); stage 3 unifies the
+    # cross-model producers. Combined-phase cross-model sources never reach here
+    # — they stay on the DEV-1739 cross-model narrow path (D2).
     for agg in row_inner_aggs:
         if getattr(agg.source, "path", ()):
             raise NotImplementedError(
                 "A cross-model aggregate source inside a computed dimension "
                 "(e.g. 'customers.spend:sum(partition_by=...)') is not yet "
-                "supported (DEV-1824); the partitioned aggregate must be local "
+                "supported (DEV-1836); the partitioned aggregate must be local "
                 "to the query's source."
             )
     registry = RegroupPlaceholderRegistry()
@@ -1617,7 +1617,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
                 raise NotImplementedError(
                     "A partitioned aggregate whose producer itself needs a "
                     "cross-model or nested-regroup CTE is not yet supported "
-                    "(DEV-1824)."
+                    "(DEV-1836)."
                 )
             # A bare aggregate root resolves to an aggregate slot; a transform
             # root (D4) resolves to the producer's combined-expression slot.
