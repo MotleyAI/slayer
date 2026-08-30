@@ -1174,16 +1174,18 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     # groupable key (a finer grain than the query), not only a query dimension.
     # The time-bucket rewrite and multi-granularity guard still apply.
     _dim_agg_keys = frozenset(dimension_partitioned_aggregates(declared_measures))
-    # DEV-1824 D9 — a RAW partitioned aggregate as an ORDER target takes a
-    # COMBINED attach (its partition keys must be query dimensions), even when the
-    # same key is also a computed-dimension aggregate that would otherwise be
-    # lenient. The combined role wins: validate it strictly.
-    _order_combined_keys = frozenset(
-        sp.bound.value_key
-        for sp in order_specs
-        if isinstance(sp.bound.value_key, AggregateKey)
-        and sp.bound.value_key.partition_keys is not None
-        and not getattr(sp.bound.value_key.source, "path", ())
+    # DEV-1824 D9 / CR — a partitioned aggregate consumed in a COMBINED position
+    # (a non-dimension measure, composite, filter, or raw ORDER target) must have
+    # query-dimension partition keys so the join-back finds its host slots. The
+    # lenient (finer-grain) exemption is safe ONLY for a key used exclusively as a
+    # computed-dimension row attach; a key ALSO used as a combined consumer is
+    # validated strictly, so a non-dimension grain raises the clean error rather
+    # than an internal join-back failure.
+    _combined_consumer_keys = frozenset(
+        combined_partitioned_aggregates(
+            declared_measures, order_specs,
+            row_agg_set=_dim_agg_keys, bound_filters=bound_filters,
+        )[0]
     )
 
     def _validate_partition_keys(key: ValueKey) -> frozenset:
@@ -1191,7 +1193,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
             f"Transform '{key.op}'" if isinstance(key, TransformKey)
             else f"Aggregation '{key.agg}'"
         )
-        lenient = key in _dim_agg_keys and key not in _order_combined_keys
+        lenient = key in _dim_agg_keys and key not in _combined_consumer_keys
         new_pks = []
         for pk in key.partition_keys or ():
             if pk in _dim_key_set or pk in _td_key_set:
@@ -2970,10 +2972,11 @@ def _guard_computed_dimension(*, d: ComputedDimension, bound, query: SlayerQuery
     """Grain-self-containment rules for a computed dimension (DEV-1740/1824).
 
     Every aggregate must carry ``partition_by=`` (else the group key is a pure
-    function of the query's own dimensions and adds no grouping); transforms,
-    ``first``/``last`` and ``window=`` are LIFTED when so grained (DEV-1824), each
-    over a single grain. Still fail closed: a transform over mixed grains
-    (DEV-1839), and an aggregate-referencing dimension with raw-rows mode.
+    function of the query's own dimensions and adds no grouping); LOCAL
+    transforms, ``first``/``last`` and ``window=`` are LIFTED when so grained
+    (DEV-1824), each over a single grain. Still fail closed: a cross-model
+    aggregate source, a transform over mixed grains (DEV-1839), and an
+    aggregate-referencing dimension with raw-rows mode.
     """
     all_keys = list(walk_value_keys(bound.value_key))
     transforms = [k for k in all_keys if isinstance(k, TransformKey)]
