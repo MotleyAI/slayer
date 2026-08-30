@@ -118,6 +118,7 @@ from slayer.sql.render.value_expr import (
     CompositeFacilities,
     FilterFacilities,
     RenderContext,
+    _ranked_value_cast_type,
     _wrap_cast_for_type,
     contains_aggregate,
     render_value_key,
@@ -126,7 +127,10 @@ from slayer.sql.render.value_expr import (
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 from slayer.sql.scope import ScopeFrame
 from slayer.sql.scope_check import maybe_validate_scopes
-from slayer.sql.stage_wrapper import build_flat_rename_wrapper
+from slayer.sql.stage_wrapper import (
+    build_flat_rename_wrapper,
+    unmangle_dotted_table_refs,
+)
 
 
 
@@ -616,12 +620,19 @@ def _cycle_public_aliases_in_projection_order(
 class RenderState(BaseModel):
     """Frozen per-render constants threaded through the transform-chain emitters
     (DEV-1817). ``planned_query`` / ``bundle`` never change within one
-    ``generate_from_planned`` call. Held by reference (``Any`` fields, no copy)."""
+    ``generate_from_planned`` call. Held by reference (``Any`` fields, no copy).
+
+    ``regroup_env`` / ``regroup_join_specs`` (DEV-1837 D3) carry the ROW
+    regroup producers' placeholder registry and grain-join specs into the
+    shifted-CTE emitter, so a computed dimension in the shifted grain resolves
+    to its producer column and the shifted FROM carries the producer join."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
 
     planned_query: Any
     bundle: Any
+    regroup_env: Any = None
+    regroup_join_specs: Any = None
 
 
 class ChainState(BaseModel):
@@ -676,7 +687,13 @@ class SQLGenerator:
         never collide after the backend folds them. The ONLY construction
         site in this module — pinned by test_dev1726_cte_case_folding — so a
         new allocation path cannot silently lose dialect awareness."""
-        return AliasAllocator(folds_case=dialect_folds_case(self.dialect))
+        allocator = AliasAllocator(folds_case=dialect_folds_case(self.dialect))
+        # DEV-1824 — the base CTE literals (``_base`` cross-model path, ``base``
+        # transform path) are hardcoded, not minted here; reserve them so a
+        # hoisted producer's own base (renamed via ``allocate_cte`` in
+        # ``_render_producer_split``) never lands back on the consumer's ``_base``.
+        allocator.reserve("_base", "base")
+        return allocator
 
     def _join_alias(self, *, root: str, path: Tuple[str, ...]) -> str:
         """Mint the internal JOIN alias for cumulative ``path`` under ``root``
@@ -908,7 +925,11 @@ class SQLGenerator:
         freshly-emitted output, so it needs no prequoting or derived-ref
         expansion — only structure.
         """
-        return sqlglot.parse_one(sql, dialect=self.dialect)
+        parsed = sqlglot.parse_one(sql, dialect=self.dialect)
+        # DEV-1824 — repair a BigQuery / T-SQL dotted-alias re-parse so a hoisted
+        # producer's ``_base.`orders.region``` references stay bound.
+        unmangle_dotted_table_refs(parsed)
+        return parsed
 
     @staticmethod
     def _carry_aliases_in_plan_order(
@@ -1437,7 +1458,8 @@ class SQLGenerator:
 
     def generate_from_planned(
         self, planned_query, *, bundle, as_cte_body: bool = False,
-    ) -> str:
+        reuse_allocator: bool = False, as_ast: bool = False,
+    ):
         """Render a typed ``PlannedQuery`` to SQL (public entry).
 
         DEV-1708 (D-E): installs a fresh generation-wide ``AliasAllocator`` for
@@ -1448,6 +1470,14 @@ class SQLGenerator:
         ``generate_from_planned``) is a self-contained statement and gets its
         own allocator, with the parent's restored afterwards.
 
+        ``reuse_allocator`` (DEV-1824 / D2) renders against THIS generation's
+        allocator instead of a fresh one, so a nested regroup producer's own
+        base / step / ``_cm_`` names are globally unique with the parent's — the
+        precondition for hoisting the producer's internal CTEs into one flat
+        WITH. Byte-identity holds for a producer that mints no names (a plain
+        grouped aggregate has no projection boundary and crosses no join), which
+        is every pre-DEV-1824 producer.
+
         ``as_cte_body`` says the result is about to become a CTE DEFINITION
         rather than a statement, which forbids a ``WITH`` of its own (SQL Server
         rejects a nested one outright). Only the caller knows that, so only the
@@ -1455,14 +1485,29 @@ class SQLGenerator:
         shape that currently needs it.
         """
         self._assert_projection_is_public(planned_query)
-        prev_allocator = getattr(self, "_gen_allocator", None)
-        self._gen_allocator = self._new_allocator()
-        try:
-            return self._generate_from_planned_impl(
+        if reuse_allocator and self._gen_allocator is not None:
+            result = self._generate_from_planned_impl(
                 planned_query, bundle=bundle, as_cte_body=as_cte_body,
+                as_ast=as_ast,
             )
-        finally:
-            self._gen_allocator = prev_allocator
+        else:
+            prev_allocator = getattr(self, "_gen_allocator", None)
+            self._gen_allocator = self._new_allocator()
+            try:
+                result = self._generate_from_planned_impl(
+                    planned_query, bundle=bundle, as_cte_body=as_cte_body,
+                    as_ast=as_ast,
+                )
+            finally:
+                self._gen_allocator = prev_allocator
+        # DEV-1824 — the hoist wants the producer AST, not re-parsed SQL text (a
+        # round-trip mis-binds a dotted result-key column on BigQuery / T-SQL).
+        # Paths that already return an AST hand it back verbatim; a string path
+        # is parsed here and repaired defensively.
+        if as_ast and not isinstance(result, exp.Expression):
+            result = sqlglot.parse_one(result, dialect=self.dialect)
+            unmangle_dotted_table_refs(result)
+        return result
 
     @staticmethod
     def _assert_projection_is_public(planned_query) -> None:
@@ -1502,7 +1547,8 @@ class SQLGenerator:
         *,
         bundle,
         as_cte_body: bool = False,
-    ) -> str:
+        as_ast: bool = False,
+    ):
         """Render a typed ``PlannedQuery`` to SQL.
 
         NOTE (DEV-1716): this is a STAGE renderer — its output feeds
@@ -1569,10 +1615,7 @@ class SQLGenerator:
         # DEV-1825 / DEV-1829 — a ROW regroup attach (computed dimension) renders
         # in the plain base path; a COMBINED regroup attach (partitioned measure)
         # renders through ``_render_with_cross_model_plans`` (the position the
-        # DEV-1739 ``CrossModelAggregatePlan`` occupied). Either one composing
-        # with an isolated-CTE feature (cross-model / windowed / ranked /
-        # transform measure), or nested as a CTE body, is deferred to DEV-1824 —
-        # raise loudly rather than silently drop the attach.
+        # DEV-1739 ``CrossModelAggregatePlan`` occupied).
         _row_attaches = [
             r for r in planned_query.regroup_attach_plans
             if r.attach_phase == "row"
@@ -1581,27 +1624,33 @@ class SQLGenerator:
             r for r in planned_query.regroup_attach_plans
             if r.attach_phase == "combined"
         ]
-        _has_isolated_feature = (
-            planned_query.cross_model_aggregate_plans
-            or planned_query.windowed_aggregate_plans
+        # DEV-1837 (stage 1a) — a ROW attach composes with transform measures in
+        # both chains: the plain path joins the producers into ``base``, the
+        # cross-model path into ``_base`` (task 3.2), and the step CTEs layer
+        # above either. The remaining coexistence deferrals fail closed, each
+        # owned by its stage.
+        if _row_attaches and (
+            planned_query.windowed_aggregate_plans
             or planned_query.ranked_aggregate_plans
-            or planned_query.transform_layers
-        )
-        if (_row_attaches or _combined_attaches) and (
-            _has_isolated_feature or as_cte_body
         ):
             raise NotImplementedError(
-                "A partitioned-aggregate regroup attach combined with a "
-                "cross-model / windowed / ranked / transform measure (or nested "
-                "in a CTE body) is not yet supported (DEV-1824)."
+                "A row regroup attach (computed dimension) combined with a "
+                "windowed or ranked measure is not yet supported (DEV-1835)."
             )
-        # A row and a combined attach in one query is deferred (the planner
-        # already raises; this is the render-side belt).
-        if _row_attaches and _combined_attaches:
+        if _row_attaches and planned_query.cross_model_aggregate_plans:
             raise NotImplementedError(
-                "A row regroup attach (computed dimension) and a combined regroup "
-                "attach (partitioned measure) in one query is not yet supported "
-                "(DEV-1824)."
+                "A row regroup attach (computed dimension) combined with a "
+                "cross-model measure is not yet supported (DEV-1836)."
+            )
+        if _row_attaches and as_cte_body:
+            raise NotImplementedError(
+                "A row regroup attach (computed dimension) nested in a CTE body "
+                "is not yet supported (DEV-1838)."
+            )
+        if _combined_attaches and as_cte_body:
+            raise NotImplementedError(
+                "A partitioned-aggregate regroup attach nested in a CTE body is "
+                "not yet supported (DEV-1838)."
             )
 
         if (
@@ -1767,14 +1816,25 @@ class SQLGenerator:
                 final_select = assemble_with_chain(
                     entries=regroup_ctes, final=final_select,
                 )
-            return final_select.sql(dialect=self.dialect, pretty=True)
+            return final_select if as_ast else final_select.sql(
+                dialect=self.dialect, pretty=True,
+            )
 
         # 7b.10 — transform layers present. Build the CTE chain. Bodies stay
         # ``exp.Select`` from renderer to assembler (D8): this chain carries
         # dotted ``<relation>.<alias>`` names throughout, and a render-to-text-
         # and-re-parse seam re-reads one as a multi-part reference on any
         # dialect that mangles dots at emission.
-        ctes: List[CteEntry] = [CteEntry(name="base", query=base_select)]
+        # DEV-1837 (D4) — ROW regroup producers (and their hoisted internals)
+        # join into ``base``, so they enter the chain as real ``CteEntry``s
+        # ahead of it and ``base`` declares them as dependencies.
+        ctes: List[CteEntry] = [
+            *regroup_ctes,
+            CteEntry(
+                name="base", query=base_select,
+                depends_on=[e.name for e in regroup_ctes],
+            ),
+        ]
         # DEV-1692: collision-safe CTE-name allocator for the whole transform
         # chain. The hoisted time_shift slot alias (``_time_shift_inner``)
         # repeats across arithmetic-wrapped shifts, so two ``shifted_`` /
@@ -1812,7 +1872,10 @@ class SQLGenerator:
             source_model=source_model,
             source_relation=source_relation,
         )
-        render_state = RenderState(planned_query=planned_query, bundle=bundle)
+        render_state = RenderState(
+            planned_query=planned_query, bundle=bundle,
+            regroup_env=regroup_env, regroup_join_specs=regroup_join_specs,
+        )
 
         pending_layers = list(planned_query.transform_layers)
         step_num = 0
@@ -1827,6 +1890,7 @@ class SQLGenerator:
                 source_relation=source_relation,
                 source_model=source_model,
                 bundle=bundle,
+                regroup_env=regroup_env,
             )
         )
         # Explicit chain tail: the CTE the next transform step reads from,
@@ -2985,13 +3049,22 @@ class SQLGenerator:
             if slot.phase == Phase.ROW:
                 key = slot.key
                 if isinstance(key, ColumnKey):
-                    col_expr = self._joined_or_local_dim_expr(
-                        path=key.path,
-                        leaf=key.leaf,
-                        source_model=source_model,
-                        source_relation=source_relation,
-                        bundle=bundle,
-                    )
+                    # DEV-1824 — a bare partitioned aggregate used as a computed
+                    # dimension (``amount:last(partition_by=region)``) substitutes
+                    # to a bare placeholder ColumnKey ROW slot; it resolves to its
+                    # row-attach producer column (``regroup_env``), not a model
+                    # column, and the query GROUPs BY that attached value.
+                    attached = regroup_env.get(key) if regroup_env else None
+                    if attached is not None:
+                        col_expr = attached.copy()
+                    else:
+                        col_expr = self._joined_or_local_dim_expr(
+                            path=key.path,
+                            leaf=key.leaf,
+                            source_model=source_model,
+                            source_relation=source_relation,
+                            bundle=bundle,
+                        )
                     select_columns.append(col_expr.copy().as_(full_alias))
                     group_by_keys.setdefault(sid, col_expr)
                     _record_alias(sid, full_alias)
@@ -3671,8 +3744,13 @@ class SQLGenerator:
                 exp.and_(*where_parts) if len(where_parts) > 1 else where_parts[0],
             )
 
+        # DEV-1824 — a first/last VALUE is the raw picked column, so its declared
+        # temporal type needs no CAST (which SQLite would give numeric affinity,
+        # truncating a date to its year); ``_ranked_value_cast_type`` suppresses
+        # it while keeping the enforcing cast for a type-changing aggregate.
         pick = _wrap_cast_for_type(
-            build_ranked_pick(value_ref=value_ref), agg_slot.type,
+            build_ranked_pick(value_ref=value_ref),
+            _ranked_value_cast_type(agg_slot.type),
         )
         return build_ranked_cte_select(
             inner=inner, grain=grain, pick=pick, agg_alias=full_agg_alias,
@@ -3814,10 +3892,9 @@ class SQLGenerator:
           public alias projection to exactly ``planned_query.projection``
           order.
 
-        Transform layers + cross-model plans together are out of this
-        slice — the renderer rejects with a stage marker so the failure
-        mode is loud. Most acceptance / parity tests don't exercise that
-        combination.
+        Transform layers over the combined result render via
+        ``_render_cross_model_transform_chain`` (the combined SELECT becomes
+        the chain's ``base``).
         """
 
         source_model = bundle.source_model
@@ -3861,6 +3938,17 @@ class SQLGenerator:
         # ``filters_by_phase`` here to rediscover it would be routing policy
         # chosen during emission, and the two could disagree.
         slot_by_key = {s.key: s for s in slots_by_id.values()}
+
+        # DEV-1824 (task 3.2) — ROW regroup producers (computed dimensions) join
+        # into ``_base`` BEFORE aggregation, so their ``_cm_`` CTEs, placeholder
+        # env, and grain-join specs are prepared here and threaded into the base
+        # build (like the plain-base path does). ``[]/{}/[]`` when the query has
+        # no row attach, keeping the pure-combined path unchanged.
+        row_regroup_ctes, row_regroup_env, row_regroup_join_specs = (
+            self._prepare_regroup_attaches(planned_query=planned_query, bundle=bundle)
+            if any(r.attach_phase == "row" for r in planned_query.regroup_attach_plans)
+            else ([], {}, [])
+        )
 
         # DEV-1829 — combined regroup producers. Rendered here as ``_cm_`` CTEs
         # and joined back at the combined SELECT, substituting for the DEV-1739
@@ -4191,6 +4279,8 @@ class SQLGenerator:
                 slots_by_id=slots_by_id,
                 skip_cross_model_aggs=True,
                 skip_filter_ids=routed_ids,
+                regroup_env=row_regroup_env,
+                regroup_join_specs=row_regroup_join_specs,
             )
 
             base_where, base_having = self._build_where_having_from_planned(
@@ -4200,6 +4290,7 @@ class SQLGenerator:
                 bundle=bundle,
                 skip_filter_ids=routed_ids,
                 aliases_by_slot_id=aliases_by_slot_id,
+                regroup_env=row_regroup_env,
             )
             if base_where is not None:
                 base_select = base_select.where(base_where)
@@ -4614,6 +4705,22 @@ class SQLGenerator:
             ph_slot = slot_by_key.get(_ph_key)
             if ph_slot is None or ph_slot.id not in regroup_placeholder_slot_ids:
                 continue
+            # DEV-1824 — a hidden placeholder is the INPUT of a transform layer
+            # (``cumsum(amount:sum(partition_by=…))``): with a transform chain on
+            # top it must stay projected under its canonical ``_cm_`` column so the
+            # step CTE can read it (mirrors the windowed side below). Without a
+            # transform chain a hidden placeholder is order-only and trims to
+            # nothing — its ``_cm_`` CTE is still joined and ORDER BY resolves
+            # CTE-qualified.
+            if ph_slot.hidden and planned_query.transform_layers:
+                _emit(
+                    ph_slot.id,
+                    grain_alias_column(alias=_agg_col, table=_cte_name).as_(
+                        _agg_col, quoted=True,
+                    ),
+                )
+                combined_aliases_by_slot_id[ph_slot.id] = [_agg_col]
+                continue
             public_aliases = (
                 []
                 if ph_slot.hidden
@@ -4825,6 +4932,14 @@ class SQLGenerator:
                     rk_cte_name_for_plan[plan.aggregate_slot_id],
                     rk_agg_col_for_plan[plan.aggregate_slot_id],
                 )
+            # DEV-1824 — a filter referencing a combined regroup placeholder
+            # (a partitioned aggregate in a query filter) resolves to its
+            # producer column exactly like a cross-model aggregate, keyed by the
+            # placeholder slot's id.
+            for _ph_key, _cm in regroup_placeholder_to_cm.items():
+                _ph_slot = slot_by_key.get(_ph_key)
+                if _ph_slot is not None:
+                    cross_model_agg_slot_to_cm[_ph_slot.id] = _cm
             for fp in outer_where_filters:
                 rendered = render_value_key(
                     key=fp.expression.value_key,
@@ -4891,8 +5006,24 @@ class SQLGenerator:
                 # ``_rk_`` CTEs join into the combined SELECT, which becomes the
                 # chain's base, so they belong in the prelude alongside the
                 # ``_cm_`` ones. Like those they are rooted at a real relation
-                # and depend on nothing.
-                prelude_ctes=[("_base", base_select), *cm_ctes, *rk_ctes],
+                # and depend on nothing. DEV-1824 — the combined regroup
+                # producers (``cm_regroup_ctes``) join into that same combined
+                # SELECT, so they belong in the prelude too; omitting them left
+                # the SELECT referencing an undefined ``_cm_`` producer.
+                # DEV-1837 (D4) — real ``CteEntry``s, not ``(name, query)``
+                # tuples: the ROW producers' hoisted internals keep their
+                # dependency edges, and ``_base`` declares the producers it
+                # LEFT JOINs.
+                prelude_ctes=[
+                    *row_regroup_ctes,
+                    CteEntry(
+                        name="_base", query=base_select,
+                        depends_on=[e.name for e in row_regroup_ctes],
+                    ),
+                    *[CteEntry(name=n, query=q) for n, q in cm_ctes],
+                    *[CteEntry(name=n, query=q) for n, q in cm_regroup_ctes],
+                    *[CteEntry(name=n, query=q) for n, q in rk_ctes],
+                ],
                 combined_select=combined_select,
                 planned_query=planned_query,
                 slots_by_id=slots_by_id,
@@ -4900,6 +5031,8 @@ class SQLGenerator:
                 source_relation=source_relation,
                 source_model=source_model,
                 bundle=bundle,
+                regroup_env=row_regroup_env,
+                regroup_join_specs=row_regroup_join_specs,
             )
 
         # Assemble the WITH chain (§5.6). Dependencies are DECLARED, not
@@ -4907,7 +5040,16 @@ class SQLGenerator:
         # FROM ``_base``, the cross-model CTEs are rooted at their own targets
         # and depend on nothing. The assembler emits a stable topological order
         # with declaration order as the tiebreak.
-        cte_entries = [CteEntry(name="_base", query=base_select)]
+        # DEV-1824 (task 3.2) — ROW regroup producers join INTO ``_base`` (before
+        # aggregation), so ``_base`` declares them as dependencies and they emit
+        # ahead of it.
+        cte_entries = [
+            CteEntry(
+                name="_base", query=base_select,
+                depends_on=[e.name for e in row_regroup_ctes],
+            ),
+            *row_regroup_ctes,
+        ]
         cte_entries += [
             CteEntry(name=name, query=query) for name, query in cm_ctes
         ]
@@ -5060,7 +5202,7 @@ class SQLGenerator:
     def _render_cross_model_transform_chain(  # NOSONAR(S3776) — pre-existing complexity in the window-layer chain; this PR only threaded the CTE-name allocator through it, which re-attributed the function as new code. The chain is rebuilt as sqlglot AST in the scope-assembly PR, where the layering is what gets simplified.
         self,
         *,
-        prelude_ctes: List[Tuple[str, exp.Expression]],
+        prelude_ctes: List["CteEntry"],
         combined_select: exp.Select,
         planned_query,
         slots_by_id: Dict[str, Any],
@@ -5068,6 +5210,8 @@ class SQLGenerator:
         source_relation: str,
         source_model,
         bundle,
+        regroup_env: Optional[Dict[Any, exp.Expression]] = None,
+        regroup_join_specs: Optional[List[Tuple[str, List[Tuple[Any, str]]]]] = None,
     ) -> str:
         """Render transform layers over a cross-model combined result.
 
@@ -5088,15 +5232,16 @@ class SQLGenerator:
         """
 
         ctes: List[CteEntry] = [
-            CteEntry(name=name, query=query) for name, query in prelude_ctes
-        ] + [CteEntry(
-            name="base",
-            query=combined_select,
-            # The combined SELECT reads ``_base`` and every ``_cm_`` CTE the
-            # prelude carries; declaring that is what keeps the assembler from
-            # emitting it before them.
-            depends_on=[name for name, _ in prelude_ctes],
-        )]
+            *prelude_ctes,
+            CteEntry(
+                name="base",
+                query=combined_select,
+                # The combined SELECT reads ``_base`` and every ``_cm_`` CTE the
+                # prelude carries; declaring that is what keeps the assembler
+                # from emitting it before them.
+                depends_on=[e.name for e in prelude_ctes],
+            ),
+        ]
         # P-F: this chain previously minted ``step<n>`` names with a
         # bare f-string and held no allocator at all, so nothing connected its
         # names to the ``_cm_*`` CTEs already in ``prelude_ctes`` or to the
@@ -5126,7 +5271,10 @@ class SQLGenerator:
             source_model=source_model,
             source_relation=source_relation,
         )
-        render_state = RenderState(planned_query=planned_query, bundle=bundle)
+        render_state = RenderState(
+            planned_query=planned_query, bundle=bundle,
+            regroup_env=regroup_env, regroup_join_specs=regroup_join_specs,
+        )
 
         # DEV-1750 narrowed 7b.15e guard — runs before the emitter loop so a
         # guarded shape never reaches the shifted CTE.
@@ -5149,6 +5297,7 @@ class SQLGenerator:
                     source_relation=source_relation,
                     source_model=source_model,
                     bundle=bundle,
+                    regroup_env=regroup_env,
                 )
             )
         else:
@@ -5383,6 +5532,87 @@ class SQLGenerator:
         )
         return cte_sql, joinback_pairs, agg_col_alias
 
+    def _render_producer_split(
+        self, *, producer, bundle,
+    ) -> Tuple[List[Tuple[str, exp.Expression]], str]:
+        """Render a regroup producer, split into (hoisted CTEs, body SQL) — D2.
+
+        The producer shares THIS generation's allocator (``reuse_allocator``) so
+        its own base / step / ``_cm_`` names are globally unique with the parent
+        and its internal CTEs can be hoisted into one flat WITH. When the
+        producer carries an internal WITH (a windowed / ranked / transform
+        producer), those CTEs are returned as ``(name, ast)`` pairs to hoist and
+        the body SQL is the bare final SELECT; a producer with no internal WITH
+        returns ``([], its verbatim SQL)`` — byte-identical to the pre-hoist
+        single-SELECT render.
+        """
+        producer_sql = self.generate_from_planned(
+            planned_query=producer, bundle=bundle, as_cte_body=True,
+            reuse_allocator=True,
+        )
+        parsed = sqlglot.parse_one(producer_sql, dialect=self.dialect)
+        self._unmangle_dotted_table_refs(parsed)
+        # A producer's internal WITH may be top-level (windowed / ranked path) or
+        # nested inside an outer projection-trim SELECT (transform path). Hoist
+        # every WITH block into the flat outer chain, leaving the de-WITHed body.
+        with_nodes = list(parsed.find_all(exp.With))
+        if not with_nodes:
+            return [], producer_sql
+        # DEV-1824 — the producer's hardcoded base CTE (``_base``/``base``) is not
+        # allocator-minted, so hoisting two producers (or a producer + the
+        # consumer's own ``_base``) would collide. Rename it to a fresh
+        # allocator-minted name (reserved in ``_new_allocator``) and rewrite every
+        # reference; the ``_cm_``/``_wm_``/``_rk_``/``step`` names are already
+        # globally unique via ``reuse_allocator``.
+        allocator = self._gen_allocator or self._new_allocator()
+        hoisted: List[Tuple[str, exp.Expression]] = []
+        for with_node in with_nodes:
+            self._uniquify_producer_base_ctes(with_node=with_node, allocator=allocator)
+            hoisted.extend(
+                (cte.alias_or_name, cte.this.copy()) for cte in with_node.expressions
+            )
+            with_node.pop()
+        return hoisted, parsed.sql(dialect=self.dialect, pretty=True)
+
+    _unmangle_dotted_table_refs = staticmethod(unmangle_dotted_table_refs)
+
+    @staticmethod
+    def _uniquify_producer_base_ctes(*, with_node, allocator) -> None:  # NOSONAR(S3776) — one rename pass; the collect / table-ref / column-qualifier / cte-alias rewrites share the rename map.
+        """Rename a hoisted producer's hardcoded base CTE(s) (``_base``/``base``)
+        to fresh allocator-minted names, rewriting every table / column-qualifier
+        / CTE-alias reference so the hoisted CTEs remain self-consistent."""
+        parsed = with_node.parent
+        rename: Dict[str, str] = {}
+        for cte in with_node.expressions:
+            name = cte.alias_or_name
+            if name in ("_base", "base") and name not in rename:
+                rename[name] = allocator.allocate_cte(name)
+        if not rename:
+            return
+        for tbl in parsed.find_all(exp.Table):
+            ident = tbl.this
+            if (
+                isinstance(ident, exp.Identifier)
+                and tbl.name in rename
+                and tbl.args.get("db") is None
+            ):
+                tbl.set("this", exp.to_identifier(
+                    rename[tbl.name], quoted=ident.quoted,
+                ))
+        for col in parsed.find_all(exp.Column):
+            tref = col.args.get("table")
+            if isinstance(tref, exp.Identifier) and tref.name in rename:
+                col.set("table", exp.to_identifier(
+                    rename[tref.name], quoted=tref.quoted,
+                ))
+        for cte in with_node.expressions:
+            alias = cte.args.get("alias")
+            ident = alias.this if isinstance(alias, exp.TableAlias) else None
+            if isinstance(ident, exp.Identifier) and ident.name in rename:
+                alias.set("this", exp.to_identifier(
+                    rename[ident.name], quoted=ident.quoted,
+                ))
+
     def _prepare_combined_regroup_attaches(  # NOSONAR(S3776) — one cohesive combined-attach render (producer CTE → placeholder env → join-back); the phases share local state and reads clearer inline.
         self, *, planned_query, bundle, source_relation, slot_by_key,
     ):
@@ -5431,10 +5661,11 @@ class SQLGenerator:
                 allocator=allocator, dialect=self.dialect,
                 limit=self._dialect.max_identifier_bytes,
             )
-            producer_sql = self.generate_from_planned(
-                producer, bundle=bundle, as_cte_body=True,
+            producer_hoisted, producer_body_sql = self._render_producer_split(
+                producer=producer, bundle=bundle,
             )
-            ctes.append((cte_name, self._parse_cte_body(producer_sql)))
+            ctes.extend(producer_hoisted)
+            ctes.append((cte_name, self._parse_cte_body(producer_body_sql)))
             producer_relation = producer.source_relation
             for sub in attach.substitutions:
                 agg_slot = sub_slots.get(sub.producer_slot_id)
@@ -5522,18 +5753,26 @@ class SQLGenerator:
                 stripped = dotted[len(prefix):] if dotted.startswith(prefix) else dotted
                 return stripped.replace(".", "__")
 
-            producer_sql = self.generate_from_planned(
-                producer, bundle=bundle, as_cte_body=True,
+            producer_hoisted, producer_body_sql = self._render_producer_split(
+                producer=producer, bundle=bundle,
             )
             expected = [
                 _flat(sub_slots[sid]) for sid in producer.projection
                 if sid in sub_slots
             ]
             wrapped = build_flat_rename_wrapper(
-                source_relation=relation, stage_sql=producer_sql,
+                source_relation=relation, stage_sql=producer_body_sql,
                 expected_columns=expected, dialect=self.dialect,
             )
-            ctes.append(CteEntry(name=cte_name, query=wrapped))
+            # D2 — the producer's own internal CTEs hoist to the flat WITH before
+            # its wrapper (which reads them). Empty for a plain grouped-aggregate
+            # producer, so the byte-stable single-SELECT case is unchanged.
+            for hoisted_name, hoisted_body in producer_hoisted:
+                ctes.append(CteEntry(name=hoisted_name, query=hoisted_body))
+            ctes.append(CteEntry(
+                name=cte_name, query=wrapped,
+                depends_on=[name for name, _ in producer_hoisted],
+            ))
             for sub in attach.substitutions:
                 agg_slot = sub_slots.get(sub.producer_slot_id)
                 if agg_slot is None:
@@ -6509,6 +6748,32 @@ class SQLGenerator:
             args["desc"] = True
         return exp.Ordered(**args)
 
+    @staticmethod
+    def _transform_grain_slot_ids(*, planned_query, slots_by_id) -> List[str]:
+        """The transform auto-grain (DEV-1837 D1/D2, Option A): every projected
+        ROW-phase dimension slot — plain / derived columns, computed dims, and
+        row-attach placeholder dims — excluding time buckets (the ordering axis)
+        and combined-attach placeholder slots (an attached measure value must
+        never widen a grain). Placeholder roles are read structurally from the
+        attach plans' substitutions, never from leaf text."""
+        combined_placeholders = {
+            sub.placeholder
+            for plan in planned_query.regroup_attach_plans
+            if plan.attach_phase == "combined"
+            for sub in plan.substitutions
+        }
+        out: List[str] = []
+        for sid in planned_query.projection:
+            slot = slots_by_id.get(sid)
+            if slot is None or slot.phase != Phase.ROW:
+                continue
+            key = slot.key
+            if isinstance(key, TimeTruncKey) or key in combined_placeholders:
+                continue
+            if isinstance(key, (ColumnKey, ColumnSqlKey)) or slot.is_dimension:
+                out.append(sid)
+        return out
+
     def _render_window_transform_sql(  # NOSONAR(S3776) — one per-op dispatch over the window-transform vocabulary, sharing the resolved measure / frame / partition state every arm reads. Each arm is one line; splitting the dispatch scatters that state without simplifying it.
         self,
         *,
@@ -6526,9 +6791,9 @@ class SQLGenerator:
         before reaching the assembler, and on a dialect that mangles dots at
         emission a re-parse reads such an alias as a multi-part reference.
 
-        Auto-partition matches legacy: ``partition_aliases = query dimensions
-        only`` (NOT time dimensions) for non-rank ops; rank-family defaults to
-        no PARTITION BY.
+        Auto-partition is the shared transform grain
+        (``_transform_grain_slot_ids``) for non-rank ops; rank-family defaults
+        to no PARTITION BY.
         """
 
         key = slot.key
@@ -6604,14 +6869,9 @@ class SQLGenerator:
             partition_aliases = []
         else:
             partition_aliases = []
-            for sid in planned_query.projection:
-                row_slot = slots_by_id.get(sid)
-                if row_slot is None or row_slot.phase != Phase.ROW:
-                    continue
-                if not isinstance(row_slot.key, ColumnKey):
-                    # Skip TimeTruncKey row slots — matches legacy
-                    # ``[d.alias for d in dimensions]``.
-                    continue
+            for sid in self._transform_grain_slot_ids(
+                planned_query=planned_query, slots_by_id=slots_by_id,
+            ):
                 alias = available_alias_by_slot_id.get(sid)
                 if alias is not None:
                     partition_aliases.append(alias)
@@ -6866,6 +7126,7 @@ class SQLGenerator:
         source_relation: str,
         source_model,
         bundle,
+        regroup_env: Optional[Dict[Any, exp.Expression]] = None,
     ) -> Tuple[List[str], List[Tuple[str, ...]]]:
         """Build the WHERE clauses for the shifted CTE that re-aggregates
         the source relation, plus the join paths those clauses cross.
@@ -6904,7 +7165,7 @@ class SQLGenerator:
             rendered = self._shifted_where_part(
                 fp=fp, source_relation=source_relation,
                 source_model=source_model, bundle=bundle,
-                time_columns=time_cols,
+                time_columns=time_cols, regroup_env=regroup_env,
             )
             if rendered is None:
                 continue
@@ -6918,6 +7179,7 @@ class SQLGenerator:
     def _shifted_where_part(
         self, *, fp, source_relation: str, source_model, bundle,
         time_columns: "AbstractSet[Any]",
+        regroup_env: Optional[Dict[Any, exp.Expression]] = None,
     ) -> "Optional[Tuple[str, List[Tuple[str, ...]]]]":
         """Render one ROW-phase filter for the shifted CTE, returning its SQL
         plus the join paths it crosses — or ``None`` to omit it entirely.
@@ -6962,6 +7224,7 @@ class SQLGenerator:
                     source_model=source_model,
                     source_relation=source_relation,
                     bundle=bundle,
+                    regroup_env=regroup_env,
                 ),
             )
             if isinstance(rendered, (exp.And, exp.Or)):
@@ -7119,9 +7382,13 @@ class SQLGenerator:
         # generation-wide allocator so any ``_val_<n>`` names stay unique
         # across the base and every CTE.
         shifted_allocator = self._gen_allocator or self._new_allocator()
+        # DEV-1837 (D3): seed the ROW regroup placeholder registry so a computed
+        # dimension in the shifted grain — and a row-lowered predicate over it —
+        # resolves to the producer column, exactly as in ``base``.
         shifted_scope = self._scope_frame(
             model=source_model, relation=source_relation,
             bundle=bundle, allocator=shifted_allocator,
+            attached_columns=render.regroup_env,
         )
 
         # 3. partition_keys (DEV-1450 C6) + auto-include query dimensions.
@@ -7182,20 +7449,20 @@ class SQLGenerator:
             partition_specs.append((pk_sid, pk_alias, _resolve_partition_expr(pk_obj)))
             seen_partition_sids.add(pk_sid)
 
-        # Auto-include EVERY projected row dimension (column, derived column,
-        # secondary time dimension, or DEV-1740 computed dimension); the shift
-        # axis is skipped by slot id above.
+        # Auto-include the shared transform grain (DEV-1837 D1 — plain /
+        # derived / computed / row-placeholder dims, combined placeholders
+        # excluded so an attached measure value never widens the shifted
+        # grain) plus any SECONDARY time dimension; the shift axis is skipped
+        # by slot id above.
+        grain_sids = set(self._transform_grain_slot_ids(
+            planned_query=planned_query, slots_by_id=slots_by_id,
+        ))
         for sid in planned_query.projection:
             dim_slot = slots_by_id.get(sid)
             if dim_slot is None or dim_slot.phase != Phase.ROW:
                 continue
-            plain = isinstance(dim_slot.key, (ColumnKey, ColumnSqlKey, TimeTruncKey))
-            computed = dim_slot.is_dimension and isinstance(
-                dim_slot.key, (ScalarCallKey, ArithmeticKey),
-            )
-            if not (plain or computed):
-                continue
-            _add_partition(dim_slot.key, where="query dimension")
+            if sid in grain_sids or isinstance(dim_slot.key, TimeTruncKey):
+                _add_partition(dim_slot.key, where="query dimension")
 
         # Explicit partition_keys (DEV-1450 C6) may add more (deduped by slot id
         # against the auto-included dims — see the DEV-1711 dedup test).
@@ -7356,6 +7623,14 @@ class SQLGenerator:
             )
             shifted_group_by.append(col_expr.copy())
 
+        # DEV-1837 (D3): resolve the ROW regroup attach conditions through the
+        # shifted scope BEFORE the FROM is built (a host partition key may cross
+        # a join), mirroring the base build's position 2.6. The producer LEFT
+        # JOINs are applied below, keeping the shifted row population at parity
+        # with ``base``.
+        regroup_attach_conditions = self._resolve_regroup_attach_conditions(
+            regroup_join_specs=render.regroup_join_specs, scope=shifted_scope,
+        )
         # DEV-1711: register the join paths the shifted WHERE filters cross
         # (computed once by ``_build_shifted_cte_where_parts``) so a joined-column
         # ROW filter (``stores.name = 'North'``) pulls its LEFT JOIN into this
@@ -7382,6 +7657,15 @@ class SQLGenerator:
             from_clause,
         )
         shifted_select = _apply_joins(select=shifted_select, joins=shifted_joins)
+        for _cte_name, _condition in regroup_attach_conditions:
+            if _condition is None:
+                shifted_select = shifted_select.join(
+                    exp.to_identifier(_cte_name), join_type="CROSS",
+                )
+            else:
+                shifted_select = shifted_select.join(
+                    exp.to_identifier(_cte_name), on=_condition, join_type="LEFT",
+                )
         # ``shifted_where_parts`` is the one text input left on this path: the
         # WHERE builder renders Mode-A predicates to SQL. Parsed once here
         # rather than concatenated into a body string, so the surrounding CTE
@@ -7423,9 +7707,12 @@ class SQLGenerator:
             prefix="sjoin_", alias=cte_name_alias, **_fit_kw,
         )
 
-        # The shifted CTE reads the SOURCE table, not the chain, so it declares
-        # no dependency; the assembler keeps it in declaration order.
-        ctes.append(CteEntry(name=shifted_cte_name, query=shifted_select))
+        # The shifted CTE reads the SOURCE table, not the chain; its only CTE
+        # dependencies are the ROW regroup producers it LEFT JOINs (D3).
+        ctes.append(CteEntry(
+            name=shifted_cte_name, query=shifted_select,
+            depends_on=[name for name, _ in regroup_attach_conditions],
+        ))
 
         # Build the sjoin CTE: LEFT JOIN prev_cte + shifted on time +
         # partition equalities. Carry every prev_cte alias forward,
@@ -7596,15 +7883,11 @@ class SQLGenerator:
         else:
             pred_in_case = predicate
 
-        # Auto-partition by query dimensions (ColumnKey row-phase slots
-        # only — NOT TimeTruncKey, matching legacy).
+        # Auto-partition by the shared transform grain (DEV-1837 D1).
         partition_aliases: list[str] = []
-        for sid in planned_query.projection:
-            row_slot = slots_by_id.get(sid)
-            if row_slot is None or row_slot.phase != Phase.ROW:
-                continue
-            if not isinstance(row_slot.key, ColumnKey):
-                continue
+        for sid in self._transform_grain_slot_ids(
+            planned_query=planned_query, slots_by_id=slots_by_id,
+        ):
             alias = available_alias_by_slot_id.get(sid)
             if alias is not None:
                 partition_aliases.append(alias)

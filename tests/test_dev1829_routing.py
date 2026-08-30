@@ -104,16 +104,17 @@ class TestOrderOnlyPartitionedAggregate:
 
 
 class TestInFilterOverComposite:
-    async def test_filter_over_partitioned_composite_raises(self) -> None:
-        # An aggregate/post filter over a composite that contains a partitioned
-        # aggregate is the deferred in-filter shape → DEV-1824.
+    async def test_filter_over_partitioned_composite_lifted(self) -> None:
+        # DEV-1824 (task 3.6 / D7) — a single predicate combining a plain
+        # aggregate with a partitioned one resolves entirely at the combined
+        # scope (both after aggregation + attachment); it renders at the outer
+        # WHERE with no placeholder leak.
         q = _q(
             dimensions=["region", "city"],
             filters=["amount:sum / amount:sum(partition_by=region) > 0.5"],
             measures=[ModelMeasure(formula="amount:sum", name="cell")],
         )
-        with pytest.raises(NotImplementedError, match=r"DEV-1824"):
-            await gen(q)
+        assert "__regroup__" not in await gen(q)
 
 
 class TestDuplicateAliases:

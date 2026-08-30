@@ -165,12 +165,17 @@ grouping by a value derived from an aggregate at a finer grain than the query.
 There, the `partition_by` grain is unconstrained (it may be finer than the query
 dimensions), since it defines the grain of a synthesized internal stage.
 
-These shapes raise a clear error rather than returning wrong numbers, and are
-planned follow-ups: `partition_by` combined with `window=`; on `first`/`last`;
-nested inside a transform (`cumsum(revenue:sum(partition_by=region))`); or
-referenced in a filter. As a query MEASURE, a `partition_by` column that is not
+A local `partition_by` aggregate composes with the rest of the query: combined
+with `window=` (a rolling total at the partition grain), on `first`/`last`,
+nested inside a transform (`cumsum(revenue:sum(partition_by=region))`), and
+referenced in a filter (`revenue:sum(partition_by=region) > 5000`) — a filter's
+top-level `AND` conjuncts route independently to the earliest scope where their
+references resolve, and a predicate whose references share no scope raises a
+"split the filter" error. As a query MEASURE, a `partition_by` column that is not
 a query dimension (or, cross-model, not expressible at the aggregate's root)
-errors at plan time.
+errors at plan time. Cross-model `partition_by` sources in these composed shapes
+remain a planned follow-up and raise a clear error rather than returning wrong
+numbers.
 
 ---
 
@@ -257,9 +262,14 @@ Functions apply window operations to measures:
 
 **Time dimension requirement:** All time-ordered transforms (`cumsum`, `time_shift`, `change`, `change_pct`, `first`, `last`, `lag`, `lead`, `consecutive_periods`) require an explicit `time_dimensions` entry in the query. With a single entry, it's used automatically. With 2+ time dimensions, specify the query's `main_time_dimension` to disambiguate, or the model's `default_time_dimension` is used if it's among the query's time dimensions. The rank-family transforms (`rank`, `percent_rank`, `dense_rank`, `ntile`) do not need a time dimension.
 
-Time-ordered window transforms partition by the query's non-time dimensions.
-For example, `cumsum(revenue:sum)` grouped by `status` computes one running
-total per status, not one running total across the whole result set. An explicit
+Time-ordered window transforms partition by **every** projected non-time
+dimension — plain columns, joined and derived columns, and
+[computed (expression) dimensions](queries.md#grouping-by-an-expression-over-an-aggregate),
+aggregation-derived ones included. For example, `cumsum(revenue:sum)` grouped
+by `status` computes one running total per status, not one running total
+across the whole result set; grouped by a computed `band`, one per
+`(…, band)` group. An attached `partition_by=` *measure* value never joins the
+partition (it is a value, not a grouping dimension). An explicit
 `partition_by=` is accepted only on the rank family; on other transforms it
 errors (their partition is fixed to the query's dimensions). To coarsen the
 *measure* itself, put `partition_by=` on the aggregation

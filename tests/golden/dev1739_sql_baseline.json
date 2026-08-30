@@ -34,86 +34,6 @@
     "error": "ValueError",
     "message": "Aggregation partition_by column 'region' is not expressible at this cross-model aggregate's grain. Choose one of: customers.tier."
   },
-  "guard/first::bigquery": {
-    "error": "NotImplementedError",
-    "message": "partition_by on first/last aggregations is not yet supported (DEV-1824)."
-  },
-  "guard/first::duckdb": {
-    "error": "NotImplementedError",
-    "message": "partition_by on first/last aggregations is not yet supported (DEV-1824)."
-  },
-  "guard/first::postgres": {
-    "error": "NotImplementedError",
-    "message": "partition_by on first/last aggregations is not yet supported (DEV-1824)."
-  },
-  "guard/first::sqlite": {
-    "error": "NotImplementedError",
-    "message": "partition_by on first/last aggregations is not yet supported (DEV-1824)."
-  },
-  "guard/first::tsql": {
-    "error": "NotImplementedError",
-    "message": "partition_by on first/last aggregations is not yet supported (DEV-1824)."
-  },
-  "guard/in_filter::bigquery": {
-    "error": "NotImplementedError",
-    "message": "Filtering on a partition_by aggregate is not yet supported (DEV-1824)."
-  },
-  "guard/in_filter::duckdb": {
-    "error": "NotImplementedError",
-    "message": "Filtering on a partition_by aggregate is not yet supported (DEV-1824)."
-  },
-  "guard/in_filter::postgres": {
-    "error": "NotImplementedError",
-    "message": "Filtering on a partition_by aggregate is not yet supported (DEV-1824)."
-  },
-  "guard/in_filter::sqlite": {
-    "error": "NotImplementedError",
-    "message": "Filtering on a partition_by aggregate is not yet supported (DEV-1824)."
-  },
-  "guard/in_filter::tsql": {
-    "error": "NotImplementedError",
-    "message": "Filtering on a partition_by aggregate is not yet supported (DEV-1824)."
-  },
-  "guard/last::bigquery": {
-    "error": "NotImplementedError",
-    "message": "partition_by on first/last aggregations is not yet supported (DEV-1824)."
-  },
-  "guard/last::duckdb": {
-    "error": "NotImplementedError",
-    "message": "partition_by on first/last aggregations is not yet supported (DEV-1824)."
-  },
-  "guard/last::postgres": {
-    "error": "NotImplementedError",
-    "message": "partition_by on first/last aggregations is not yet supported (DEV-1824)."
-  },
-  "guard/last::sqlite": {
-    "error": "NotImplementedError",
-    "message": "partition_by on first/last aggregations is not yet supported (DEV-1824)."
-  },
-  "guard/last::tsql": {
-    "error": "NotImplementedError",
-    "message": "partition_by on first/last aggregations is not yet supported (DEV-1824)."
-  },
-  "guard/nested_transform::bigquery": {
-    "error": "NotImplementedError",
-    "message": "A partition_by aggregate nested inside a transform is not yet supported (DEV-1824)."
-  },
-  "guard/nested_transform::duckdb": {
-    "error": "NotImplementedError",
-    "message": "A partition_by aggregate nested inside a transform is not yet supported (DEV-1824)."
-  },
-  "guard/nested_transform::postgres": {
-    "error": "NotImplementedError",
-    "message": "A partition_by aggregate nested inside a transform is not yet supported (DEV-1824)."
-  },
-  "guard/nested_transform::sqlite": {
-    "error": "NotImplementedError",
-    "message": "A partition_by aggregate nested inside a transform is not yet supported (DEV-1824)."
-  },
-  "guard/nested_transform::tsql": {
-    "error": "NotImplementedError",
-    "message": "A partition_by aggregate nested inside a transform is not yet supported (DEV-1824)."
-  },
   "guard/non_dimension::bigquery": {
     "error": "ValueError",
     "message": "Aggregation 'sum': partition_by column 'city' is not a query dimension. Add it to dimensions/time_dimensions, or choose one of: region."
@@ -133,26 +53,6 @@
   "guard/non_dimension::tsql": {
     "error": "ValueError",
     "message": "Aggregation 'sum': partition_by column 'city' is not a query dimension. Add it to dimensions/time_dimensions, or choose one of: region."
-  },
-  "guard/window_plus_partition::bigquery": {
-    "error": "NotImplementedError",
-    "message": "partition_by combined with window= on one aggregate is not yet supported (DEV-1824)."
-  },
-  "guard/window_plus_partition::duckdb": {
-    "error": "NotImplementedError",
-    "message": "partition_by combined with window= on one aggregate is not yet supported (DEV-1824)."
-  },
-  "guard/window_plus_partition::postgres": {
-    "error": "NotImplementedError",
-    "message": "partition_by combined with window= on one aggregate is not yet supported (DEV-1824)."
-  },
-  "guard/window_plus_partition::sqlite": {
-    "error": "NotImplementedError",
-    "message": "partition_by combined with window= on one aggregate is not yet supported (DEV-1824)."
-  },
-  "guard/window_plus_partition::tsql": {
-    "error": "NotImplementedError",
-    "message": "partition_by combined with window= on one aggregate is not yet supported (DEV-1824)."
   },
   "local/filtered::bigquery": "WITH _base AS (\n  SELECT\n    orders.region AS `orders___region`,\n    orders.city AS `orders___city`\n  FROM orders AS orders\n  GROUP BY\n    orders.region,\n    orders.city\n), _cm_orders__ok_amount_sum_partition_by_region AS (\n  SELECT\n    orders.region AS `orders___region`,\n    CAST(SUM(CASE WHEN orders.status = 'ok' THEN orders.amount END) AS FLOAT64) AS `orders___o`\n  FROM orders AS orders\n  GROUP BY\n    orders.region\n)\nSELECT\n  _base.`orders___region`,\n  _base.`orders___city`,\n  _cm_orders__ok_amount_sum_partition_by_region.`orders___o`\nFROM _base\nLEFT JOIN _cm_orders__ok_amount_sum_partition_by_region\n  ON _base.`orders___region` IS NOT DISTINCT FROM _cm_orders__ok_amount_sum_partition_by_region.`orders___region`",
   "local/filtered::duckdb": "WITH _base AS (\n  SELECT\n    orders.region AS \"orders.region\",\n    orders.city AS \"orders.city\"\n  FROM orders AS orders\n  GROUP BY\n    orders.region,\n    orders.city\n), _cm_orders__ok_amount_sum_partition_by_region AS (\n  SELECT\n    orders.region AS \"orders.region\",\n    CAST(SUM(CASE WHEN orders.status = 'ok' THEN orders.amount END) AS DOUBLE) AS \"orders.o\"\n  FROM orders AS orders\n  GROUP BY\n    orders.region\n)\nSELECT\n  _base.\"orders.region\",\n  _base.\"orders.city\",\n  _cm_orders__ok_amount_sum_partition_by_region.\"orders.o\"\nFROM _base\nLEFT JOIN _cm_orders__ok_amount_sum_partition_by_region\n  ON _base.\"orders.region\" IS NOT DISTINCT FROM _cm_orders__ok_amount_sum_partition_by_region.\"orders.region\"",

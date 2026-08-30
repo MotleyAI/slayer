@@ -135,14 +135,20 @@ class TestFilterClassifier:
         ))
         assert "5000" not in cm_cte_bodies(sql)
 
-    async def test_mixed_and_in_one_filter_raises_directive(self) -> None:
-        query = _q(
+    async def test_mixed_and_in_one_filter_splits_per_conjunct(self) -> None:
+        """DEV-1837 (D9) — top-level AND conjuncts route independently: the
+        one-string form renders identically to the separate-filters form."""
+        base_kwargs = dict(
             dimensions=["region", {"expression": BAND, "name": "band"}],
-            filters=["band == 1 and status == 'ok'"],
             measures=[ModelMeasure(formula="amount:sum", name="s")],
         )
-        with pytest.raises(NotImplementedError, match=r"separate filters"):
-            await gen(query)
+        anded = await gen(_q(
+            filters=["band == 1 and status == 'ok'"], **base_kwargs,
+        ))
+        separate = await gen(_q(
+            filters=["band == 1", "status == 'ok'"], **base_kwargs,
+        ))
+        assert anded == separate
 
     async def test_mixed_or_in_one_filter_raises_directive(self) -> None:
         query = _q(
@@ -189,9 +195,9 @@ class TestFilterClassifier:
 # Discovery guards.
 # --------------------------------------------------------------------------- #
 class TestDiscoveryGuards:
-    async def test_joined_aggregate_source_raises_dev1824(self) -> None:
+    async def test_joined_aggregate_source_raises_stage_three(self) -> None:
         # The SOURCE crosses a join (would need a target-rooted producer —
-        # Codex F1); distinct from the supported joined PARTITION KEY.
+        # Codex F1, stage 3); distinct from the supported joined PARTITION KEY.
         q = _q(
             dimensions=[
                 "region",
@@ -200,7 +206,7 @@ class TestDiscoveryGuards:
             ],
             measures=[ModelMeasure(formula="amount:sum", name="s")],
         )
-        with pytest.raises(NotImplementedError, match=r"DEV-1824"):
+        with pytest.raises(NotImplementedError, match=r"DEV-1836"):
             await gen(q)
 
     async def test_reserved_prefix_column_rejected_when_regroup_active(self) -> None:

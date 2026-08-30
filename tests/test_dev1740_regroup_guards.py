@@ -66,7 +66,10 @@ class TestDeferredShapesRaiseDev1824:
         with pytest.raises(NotImplementedError, match=r"DEV-1824"):
             await gen(q)
 
-    async def test_window_plus_partition_in_dimension_expression(self) -> None:
+    async def test_window_plus_partition_in_dimension_expression_lifted(self) -> None:
+        # DEV-1824 (task 3.7 / D5) — window=+partition_by inside a dimension is
+        # lifted: the row-attach producer synthesizes the active-TD grain.
+        # (Executed values: test_dev1824_computed_dim_execution.py::TestWindowInDimension.)
         q = _q(
             dimensions=[
                 "region",
@@ -76,11 +79,16 @@ class TestDeferredShapesRaiseDev1824:
             time_dimensions=month_td(),
             measures=[ModelMeasure(formula="amount:sum", name="t")],
         )
-        with pytest.raises(NotImplementedError, match=r"DEV-1824"):
-            await gen(q)
+        assert "__regroup__" not in await gen(q)
 
     @pytest.mark.parametrize("agg", ["first", "last"])
-    async def test_first_last_partition_in_dimension_expression(self, agg: str) -> None:
+    async def test_first_last_partition_in_dimension_expression_lifted(
+        self, agg: str,
+    ) -> None:
+        # DEV-1824 (task 3.7) — a LOCAL first/last with partition_by inside a
+        # dimension expression renders (measure⇔dimension symmetry): the
+        # row-attach producer collapses to a ranked CTE at the partition grain.
+        # (Executed values: test_dev1824_computed_dim_execution.py.)
         q = _q(
             dimensions=[
                 "region",
@@ -89,8 +97,7 @@ class TestDeferredShapesRaiseDev1824:
             ],
             measures=[ModelMeasure(formula="amount:sum", name="t")],
         )
-        with pytest.raises(NotImplementedError, match=r"DEV-1824"):
-            await gen(q)
+        assert "__regroup__" not in await gen(q)
 
 
 class TestDistinctDimensionValuesRejection:
