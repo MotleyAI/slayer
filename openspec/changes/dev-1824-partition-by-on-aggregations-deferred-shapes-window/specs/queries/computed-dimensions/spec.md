@@ -16,7 +16,7 @@ Any measure-legal expression SHALL be legal as a computed dimension provided it 
 - THEN each aggregate is computed at its own declared grain and the expression is evaluated per row over the two attached values
 
 ### Requirement: Transforms inside dimension expressions
-A transform whose input is an explicitly-grained aggregate SHALL be legal inside a dimension expression and SHALL evaluate at that input's declared grain (the grain of its containing context), unlike the same expression used as a measure, which evaluates at the query grain.
+A transform inside a dimension expression whose inner aggregates all share ONE explicit partition grain SHALL be legal and SHALL evaluate at that grain (the grain of its containing context), unlike the same expression used as a measure, which evaluates at the query grain. When a transform's inner aggregates declare DIFFERENT grains, the semantics is to union the grains and broadcast each aggregate to the union — a deferred extension (DEV-1839) that fails closed until it lands, never a permanent one-grain-per-transform restriction and never silently misgrained values.
 
 #### Scenario: Rank of partitions as a bandable dimension
 - WHEN a query declares the dimension `rank(revenue:sum(partition_by=region))`
@@ -25,6 +25,10 @@ A transform whose input is an explicitly-grained aggregate SHALL be legal inside
 #### Scenario: Context grain distinguishes dimension use from measure use
 - WHEN `rank(revenue:sum(partition_by=region))` is used once as a dimension and once as a measure in otherwise identical queries
 - THEN the dimension form ranks regions at region grain while the measure form ranks result rows at query grain
+
+#### Scenario: Different grains in one transform are deferred, not misgrained
+- WHEN a dimension expression applies a transform over an arithmetic of two aggregates at different partition grains (e.g. `rank(a:sum(partition_by=region) - b:sum(partition_by=city))`)
+- THEN the query fails with a clear not-yet-supported error naming the grain-union broadcast as deferred (DEV-1839), rather than evaluating either aggregate at the wrong grain
 
 ### Requirement: First and last inside dimension expressions
 `first`/`last` aggregations with `partition_by=` SHALL be legal inside dimension expressions.

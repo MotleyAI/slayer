@@ -98,8 +98,10 @@ transform over a grained aggregate — `rank(revenue:sum(partition_by=region))` 
 a DIMENSION ranks the partitions (it evaluates at the producer grain), whereas
 the same expression as a MEASURE ranks the result rows (query grain). Deferred
 shapes (raise a clear error citing the follow-up): a cross-model aggregate source
-inside a dimension expression, a bare aggregate without `partition_by=`, and an
-aggregate partitioned by another computed dimension (a nested attach).
+inside a dimension expression, a bare aggregate without `partition_by=`, an
+aggregate partitioned by another computed dimension (a nested attach), and a
+transform over aggregates at *different* partition grains — which will union the
+grains and broadcast each aggregate rather than error, once that lands.
 
 ### Dim-only queries deduplicate
 

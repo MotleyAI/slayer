@@ -2989,14 +2989,15 @@ def _guard_computed_dimension(*, d: ComputedDimension, bound, query: SlayerQuery
                 f"explicitly-grained aggregate — declare partition_by= on the "
                 f"aggregate it transforms (DEV-1824)."
             )
-        # The transform's row-attach producer evaluates at ONE grain (D4); mixed
-        # inner grains would silently compute the others at the wrong grain.
+        # The transform's row-attach producer evaluates at ONE grain (D4), so
+        # different inner grains would silently misgrain all but the first.
+        # The principled lift is to union the grains and broadcast each aggregate
+        # to the union (DEV-1839); deferred here, fail-closed meanwhile.
         if len({a.partition_keys for a in inner_aggs}) > 1:
             raise NotImplementedError(
                 f"A transform inside computed dimension {d.name!r} combines "
-                f"aggregates at different partition_by grains, which its producer "
-                f"cannot evaluate at one grain — use a single partition_by= grain "
-                f"per transform (DEV-1824)."
+                f"aggregates at different partition_by grains; broadcasting each "
+                f"to the union grain is not yet supported (DEV-1839)."
             )
     # DEV-1824 (task 3.7 / D4) — a grain-self-contained transform-in-dimension is
     # lifted: its row-attach producer computes the transform at the producer grain.
