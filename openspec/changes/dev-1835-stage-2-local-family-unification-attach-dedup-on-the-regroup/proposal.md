@@ -28,6 +28,6 @@ None.
 ## Impact
 
 - `slayer/engine/stage_planner.py` (desugar, producer synthesis, dedup, guard rework), `slayer/engine/isolation.py`, `slayer/engine/ranked_planner.py`, `slayer/engine/planned.py` (producer/attach IR split), `slayer/engine/regroup_planner.py` (effective grains), `slayer/sql/generator.py` (consumer-arm deletion, regroup-aware kernels, windowed collapse), `slayer/sql/render/order_terms.py`.
-- Tests: 9 matrix cells flip; guard tests reverse direction; `_wm_`/`_rk_` SQL-shape suites rewritten preserving intent; golden baselines re-blessed per approved batch; perf corpus re-recorded.
+- Tests: 10 matrix cells flip (incl. the DEV-1839-added `mixed` family's wm/rk); guard tests reverse direction; `_wm_`/`_rk_` SQL-shape suites rewritten preserving intent; golden baselines re-blessed per approved batch; perf corpus re-recorded.
 - Docs: `docs/architecture/composable-attach.md`, `docs/concepts/formulas.md`, `docs/concepts/queries.md`, `.claude/skills/slayer-query.md`.
 - Depends on DEV-1839 (merged before implementation); cross-model families remain DEV-1836.
