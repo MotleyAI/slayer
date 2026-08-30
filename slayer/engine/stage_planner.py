@@ -3106,7 +3106,7 @@ def _reject_computed_dim_name_collision(
             )
 
 
-def _guard_computed_dimension(*, d: ComputedDimension, bound, query: SlayerQuery) -> None:
+def _guard_computed_dimension(*, d: ComputedDimension, bound, query: SlayerQuery) -> None:  # NOSONAR(S3776) — sequential fail-closed guard checks over one shared walk (all_keys / transforms / inner_aggs); each arm raises its own contract error, and extracting them scatters the shared state and the ordered narrative.
     """Grain-self-containment rules for a computed dimension (DEV-1740/1824).
 
     Every aggregate must carry ``partition_by=`` (else the group key is a pure

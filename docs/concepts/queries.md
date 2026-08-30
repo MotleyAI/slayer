@@ -107,8 +107,9 @@ running total accumulates within each `(region, band)` group; a time shift
 compares each group only against itself).
 
 A transform over aggregates at **different** partition grains unions the grains
-and broadcasts each aggregate to the union — `rank(amount:sum(partition_by=region)
-- amount:sum(partition_by=city))` ranks the `(region, city)` rows, each region
+and broadcasts each aggregate to the union —
+`rank(amount:sum(partition_by=region) - amount:sum(partition_by=city))` ranks
+the `(region, city)` rows, each region
 total broadcast across its cities and each city total against its region. The
 same holds as a bare measure (`a:sum(partition_by=region) - b:sum(partition_by=city)`
 evaluated at the query grain) and recursively for a nested transform, which
