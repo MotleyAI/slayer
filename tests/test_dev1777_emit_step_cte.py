@@ -40,7 +40,7 @@ def _base_ctes() -> list[CteEntry]:
 
 
 def _slot(name: str, *, type_=None) -> SimpleNamespace:
-    return SimpleNamespace(public_aliases=[name], declared_name=name, type=type_)
+    return SimpleNamespace(public_aliases=[name], declared_name=name, type=type_, cast_type=type_)
 
 
 def test_single_slot_emits_step_cte_and_advances_chain() -> None:

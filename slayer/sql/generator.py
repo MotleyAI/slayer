@@ -2057,7 +2057,7 @@ class SQLGenerator:
             names = list(slot.public_aliases) or [slot.declared_name]
             rendered = render(slot)
             if slot.type is not None:
-                rendered = _wrap_cast_for_type(expr=rendered, dt=slot.type)
+                rendered = _wrap_cast_for_type(expr=rendered, dt=slot.cast_type)
             # One column per declared name (C13, DEV-1798); the first stays
             # the canonical handle. ``as_`` copies its child, so the rendered
             # node is safely reused.
@@ -3183,7 +3183,7 @@ class SQLGenerator:
                         ),
                     )
                     if contains_aggregate(key):
-                        composite = _wrap_cast_for_type(composite, slot.type)
+                        composite = _wrap_cast_for_type(composite, slot.cast_type)
                         has_aggregation = True
                     select_columns.append(composite.copy().as_(full_alias))
                     _record_alias(sid, full_alias)
@@ -3222,7 +3222,7 @@ class SQLGenerator:
                 )
                 agg_expr, is_agg = self._build_agg(synth)
                 if is_agg:
-                    agg_expr = _wrap_cast_for_type(agg_expr, slot.type)
+                    agg_expr = _wrap_cast_for_type(agg_expr, slot.cast_type)
                     has_aggregation = True
                 select_columns.append(agg_expr.copy().as_(full_alias))
                 _record_alias(sid, full_alias)
@@ -3490,7 +3490,7 @@ class SQLGenerator:
         # stayed wrong. Now it raises.
         agg_cls = window_agg_class(plan.agg)
         agg_expr = _wrap_cast_for_type(
-            agg_cls(this=_src_col("_w_value")), agg_slot.type,
+            agg_cls(this=_src_col("_w_value")), agg_slot.cast_type,
         )
 
         outer = exp.Select()
@@ -3775,7 +3775,7 @@ class SQLGenerator:
         # it while keeping the enforcing cast for a type-changing aggregate.
         pick = _wrap_cast_for_type(
             build_ranked_pick(value_ref=value_ref),
-            _ranked_value_cast_type(agg_slot.type),
+            _ranked_value_cast_type(agg_slot.cast_type),
         )
         return build_ranked_cte_select(
             inner=inner, grain=grain, pick=pick, agg_alias=full_agg_alias,
@@ -4618,7 +4618,7 @@ class SQLGenerator:
                     ),
                 )
                 if cslot.type is not None:
-                    rendered = _wrap_cast_for_type(rendered, cslot.type)
+                    rendered = _wrap_cast_for_type(rendered, cslot.cast_type)
                 return rendered
 
             # Projected outer composites: cycle through ``public_aliases``
@@ -6195,7 +6195,7 @@ class SQLGenerator:
             cte_base_joins = []
         agg_expr, is_agg = self._build_agg(synth)
         if is_agg:
-            agg_expr = _wrap_cast_for_type(agg_expr, agg_slot.type)
+            agg_expr = _wrap_cast_for_type(agg_expr, agg_slot.cast_type)
         cte_select_columns.append(agg_expr.copy().as_(full_agg_alias))
 
         # Assemble the CTE Select now that every projected column (shared
@@ -7634,7 +7634,7 @@ class SQLGenerator:
                 resolved_agg_kwargs=shifted_frag_kwargs or None,
             )
             agg_expr, _ = self._build_agg(synth)
-            agg_expr = _wrap_cast_for_type(agg_expr, inner_slot.type)
+            agg_expr = _wrap_cast_for_type(agg_expr, inner_slot.cast_type)
             shifted_select_parts.append(
                 agg_expr.as_(input_alias, quoted=True),
             )
