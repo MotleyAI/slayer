@@ -26,8 +26,9 @@ import tempfile
 import traceback
 
 # argv: <out_json> <db_dir> [code_root]. A code_root (an old worktree) is
-# prepended to sys.path so ``slayer`` / ``tests`` resolve to THAT tree.
-if len(sys.argv) > 3 and sys.argv[3]:
+# prepended to sys.path so ``slayer`` / ``tests`` resolve to THAT tree. Guarded
+# to direct script invocation so importing this module never mutates sys.path.
+if sys.argv and sys.argv[0].endswith("_dev1836_equiv_driver.py") and len(sys.argv) > 3 and sys.argv[3]:
     sys.path.insert(0, sys.argv[3])
 
 from slayer.async_utils import run_sync
