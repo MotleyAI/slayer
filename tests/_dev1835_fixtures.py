@@ -230,7 +230,10 @@ def cte_aliases(sql: str, prefix: str, *, dialect: str = "sqlite") -> List[str]:
     nested WITHs are excluded deliberately (Codex F2), so a producer-internal
     CTE can never inflate a dedup count."""
     tree = sqlglot.parse_one(sql, read=dialect)
-    with_node = tree.args.get("with")
+    # sqlglot 30.x stores a Select's top-level CTE block under ``with_``; older
+    # builds used ``with``. Read both so the top-level-only intent survives the
+    # version (a bare ``args.get("with")`` silently returns None on 30.x).
+    with_node = tree.args.get("with_") or tree.args.get("with")
     ctes = with_node.expressions if isinstance(with_node, exp.With) else []
     return sorted(cte.alias for cte in ctes if cte.alias.startswith(prefix))
 

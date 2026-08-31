@@ -258,6 +258,44 @@ def _strip_declared_cast(expr: exp.Expression) -> exp.Expression:
     return expr.this if isinstance(expr, exp.Cast) else expr
 
 
+def _collapses_to_windowed_cte(planned_query) -> bool:
+    """Whether this whole plan IS one windowed CTE (DEV-1835 D3).
+
+    The windowed mirror of :func:`_collapses_to_ranked_cte`: True when the only
+    thing the plan computes is one duration-windowed aggregate at exactly the
+    grain it groups by, with nothing layered on top. A regroup producer for a
+    bare or partitioned windowed measure meets this, so it renders as one
+    self-contained ``_cm_`` CTE (its grain rows derived inline) instead of a
+    ``_base`` + ``_wm_`` + wrapper trio — eliding the deleted ``_wm_`` relation.
+    """
+    plans = planned_query.windowed_aggregate_plans
+    if len(plans) != 1:
+        return False
+    if (
+        planned_query.cross_model_aggregate_plans
+        or planned_query.ranked_aggregate_plans
+        or planned_query.regroup_attach_plans
+        or planned_query.combined_expression_slots
+        or planned_query.transform_layers
+        or planned_query.outer_where_filter_ids
+        or planned_query.order
+        or planned_query.limit is not None
+        or planned_query.offset is not None
+    ):
+        return False
+    plan = plans[0]
+    if plan.hidden:
+        return False
+    if len(planned_query.aggregate_slots) != 1:
+        return False
+    visible_row_ids = {s.id for s in planned_query.row_slots if not s.hidden}
+    if set(plan.grain_slot_ids) != visible_row_ids:
+        return False
+    return set(planned_query.projection) == {
+        *plan.grain_slot_ids, plan.aggregate_slot_id,
+    }
+
+
 def _collapses_to_ranked_cte(planned_query) -> bool:
     """Whether this whole plan IS one ranked CTE (DEV-1748 D9).
 
@@ -1598,6 +1636,14 @@ class SQLGenerator:
             return self._render_collapsed_ranked_plan(
                 planned_query=planned_query, bundle=bundle,
             )
+        if as_cte_body and _collapses_to_windowed_cte(planned_query):
+            # DEV-1835 D3 — the windowed mirror of the ranked collapse: a bare /
+            # partitioned windowed producer renders as one self-contained ``_cm_``
+            # CTE (its grain rows derived inline) instead of a ``_base`` + ``_wm_``
+            # + wrapper trio, so no ``_wm_`` relation survives.
+            return self._render_collapsed_windowed_plan(
+                planned_query=planned_query, bundle=bundle,
+            )
         if as_cte_body and planned_query.ranked_aggregate_plans:
             # The residual, made loud. Anything a ranked sub-plan cannot collapse
             # would go through ``_render_with_cross_model_plans`` and emit its own
@@ -1631,20 +1677,22 @@ class SQLGenerator:
         # cross-model path into ``_base`` (task 3.2), and the step CTEs layer
         # above either. The remaining coexistence deferrals fail closed, each
         # owned by its stage.
-        if _row_attaches and (
-            planned_query.windowed_aggregate_plans
-            or planned_query.ranked_aggregate_plans
-        ):
-            raise NotImplementedError(
-                "A row regroup attach (computed dimension) combined with a "
-                "windowed or ranked measure is not yet supported (DEV-1835)."
-            )
+        # DEV-1835 — the row-attach × windowed/ranked coexistence deferral lifted:
+        # a bare windowed / first-last measure desugars onto the regroup primitive
+        # (its own combined producer), so the top-level windowed/ranked plan lists
+        # are empty and a computed dimension coexists with it in one flat WITH.
         if _row_attaches and planned_query.cross_model_aggregate_plans:
             raise NotImplementedError(
                 "A row regroup attach (computed dimension) combined with a "
                 "cross-model measure is not yet supported (DEV-1836)."
             )
-        if _row_attaches and as_cte_body:
+        if _row_attaches and as_cte_body and not as_hoistable_producer:
+            # DEV-1835 D4 — a windowed / ranked producer whose GRAIN is a computed
+            # dimension (a band / scalar-expr / rank) carries a nested ROW attach
+            # (the dimension's own aggregate) and renders as a hoistable producer
+            # body, its internal WITH hoisted into the one flat chain. A genuinely
+            # non-hoistable CTE body (a re-rooted cross-model sub-plan) still fails
+            # closed (DEV-1838).
             raise NotImplementedError(
                 "A row regroup attach (computed dimension) nested in a CTE body "
                 "is not yet supported (DEV-1838)."
@@ -3316,8 +3364,14 @@ class SQLGenerator:
         slots_by_id: Dict[str, Any],
         aliases_by_slot_id: Dict[str, List[str]],
         full_agg_alias: str,
+        base_relation: Optional[exp.Expression] = None,
     ) -> Tuple[exp.Select, List[str]]:
-        """Render one ``_wm_`` duration-windowed-measure CTE (DEV-1714 Stage 10).
+        """Render one duration-windowed-measure CTE (DEV-1714 Stage 10).
+
+        ``base_relation`` (DEV-1835 D3) supplies the grain-rows relation aliased
+        ``_base`` — a self-contained producer collapse passes its own grain
+        subquery so no separate ``_base`` / ``_wm_`` CTE pair is emitted; the
+        default ``exp.Table('_base')`` is the pre-migration host-rooted form.
 
         The CTE is host-rooted: ``FROM _base LEFT JOIN (<_src>) AS _src`` where
         ``_src`` self-selects the host rows (dims → ``_w_dim_<n>``, other time
@@ -3497,7 +3551,10 @@ class SQLGenerator:
         for ga in grain_aliases:
             outer = outer.select(_base_col(ga))
         outer = outer.select(agg_expr.as_(exp.to_identifier(full_agg_alias, quoted=True)))
-        outer = outer.from_(exp.Table(this=exp.to_identifier("_base")))
+        if base_relation is not None:
+            outer = outer.from_(base_relation)
+        else:
+            outer = outer.from_(exp.Table(this=exp.to_identifier("_base")))
         outer = outer.join(src_subq, on=on_range, join_type="LEFT")
         for ga in grain_aliases:
             outer = outer.group_by(_base_col(ga))
@@ -3888,6 +3945,105 @@ class SQLGenerator:
             ),
         )
         return cte_query.sql(dialect=self.dialect, pretty=True)
+
+    def _build_windowed_grain_base(
+        self, *, planned_query, plan, slots_by_id, aliases_by_slot_id,
+        source_model, source_relation, bundle,
+    ) -> exp.Select:
+        """The grain-rows relation for a collapsed windowed producer (DEV-1835
+        D3): ``SELECT <grain> FROM source [joins] [WHERE row filters] GROUP BY
+        <grain>`` aliased ``_base``. Derives the visible grain directly from the
+        source (all ROW filters, frame bounds included) instead of referencing a
+        separate ``_base`` CTE."""
+        allocator = self._gen_allocator or self._new_allocator()
+        scope = self._scope_frame(
+            model=source_model, relation=source_relation,
+            bundle=bundle, allocator=allocator,
+        )
+        cols: List[exp.Expression] = []
+        group: List[exp.Expression] = []
+
+        def _emit(slot, expr: exp.Expression) -> None:
+            alias = aliases_by_slot_id[slot.id][0]
+            cols.append(expr.copy().as_(exp.to_identifier(alias, quoted=True)))
+            group.append(expr.copy())
+
+        for sid in plan.dimension_slot_ids:
+            dslot = slots_by_id[sid]
+            _emit(dslot, scope.resolve(dslot.key))
+        for sid in (*plan.other_time_dimension_slot_ids,
+                    plan.window_time_dimension_slot_id):
+            tslot = slots_by_id[sid]
+            scope.resolve(tslot.key.column)
+            raw = self._raw_time_col_expr_for_planned(
+                time_column=tslot.key.column, source_model=source_model,
+                source_relation=source_relation, bundle=bundle,
+            )
+            _emit(tslot, self._build_date_trunc(
+                col_expr=raw, granularity=TimeGranularity(tslot.key.granularity),
+            ))
+        # All ROW filters gate the visible grain (frame bounds define which
+        # buckets exist); the trailing window in the ``_src`` join reaches rows
+        # before them via ``plan.where_filter_ids`` (a strict subset).
+        self._resolve_where_filter_joins_via_scope(
+            planned_query=planned_query, scope=scope, skip_filter_ids=set(),
+        )
+        where, _having = self._build_where_having_from_planned(
+            planned_query=planned_query, source_relation=source_relation,
+            source_model=source_model, bundle=bundle, skip_filter_ids=set(),
+        )
+        from_expr, joins = self._build_from_and_joins(
+            source_model=source_model, source_relation=source_relation,
+            joined_paths=scope.join_paths.as_list(), bundle=bundle,
+        )
+        base = exp.Select().select(*cols).from_(from_expr)
+        base = _apply_joins(select=base, joins=joins)
+        if where is not None:
+            base = base.where(where)
+        for g in group:
+            base = base.group_by(g)
+        return base
+
+    def _render_collapsed_windowed_plan(self, *, planned_query, bundle) -> str:
+        """Emit a whole plan AS one self-contained windowed CTE body (DEV-1835
+        D3) — the windowed mirror of :func:`_render_collapsed_ranked_plan`. The
+        grain rows are derived inline (:meth:`_build_windowed_grain_base`), so no
+        separate ``_base`` / ``_wm_`` pair is emitted. Precondition:
+        :func:`_collapses_to_windowed_cte`."""
+        source_model = bundle.source_model
+        source_relation = planned_query.source_relation
+        plan = planned_query.windowed_aggregate_plans[0]
+        slots_by_id = {
+            s.id: s
+            for s in (list(planned_query.row_slots)
+                      + list(planned_query.aggregate_slots))
+        }
+        agg_slot = slots_by_id[plan.aggregate_slot_id]
+        aliases_by_slot_id = {
+            s.id: [self._full_alias_for_slot(
+                slot=s, source_relation=source_relation, alias_index={},
+            )]
+            for s in slots_by_id.values()
+        }
+        grain_base = self._build_windowed_grain_base(
+            planned_query=planned_query, plan=plan, slots_by_id=slots_by_id,
+            aliases_by_slot_id=aliases_by_slot_id, source_model=source_model,
+            source_relation=source_relation, bundle=bundle,
+        )
+        base_subq = exp.Subquery(
+            this=grain_base, alias=exp.TableAlias(this=exp.to_identifier("_base")),
+        )
+        outer, _ = self._render_window_measure_cte_from_planned(
+            plan=plan, agg_slot=agg_slot, source_model=source_model,
+            source_relation=source_relation, bundle=bundle,
+            planned_query=planned_query, slots_by_id=slots_by_id,
+            aliases_by_slot_id=aliases_by_slot_id,
+            full_agg_alias=self._full_alias_for_slot(
+                slot=agg_slot, source_relation=source_relation, alias_index={},
+            ),
+            base_relation=base_subq,
+        )
+        return outer.sql(dialect=self.dialect, pretty=True)
 
     def _render_with_cross_model_plans(  # NOSONAR(S3776) — orchestration of host ``_base`` CTE + per-plan ``_cm_*`` CTEs + combined SELECT + transform-chain step CTEs + outer ORDER BY/LIMIT wrap. Each block is a coherent compilation stage sharing planned_query / slots_by_id / cma_slot_ids / seen_base_ids state; extracting per-stage helpers would scatter the cross-cutting state.
         self,
@@ -7603,17 +7759,10 @@ class SQLGenerator:
         # Aggregate: re-emit the AggregateKey using the same synth /
         # _build_agg dance the base CTE uses.
         if isinstance(inner_key, AggregateKey):
-            # DEV-1750: a first/last inner ranks via a ROW_NUMBER subquery, not
-            # the flat ``_build_agg`` re-aggregation the shifted CTE performs —
-            # fail loudly rather than let ``_build_agg`` hit a null node_class.
-            if inner_key.agg in ("first", "last"):
-                raise NotImplementedError(
-                    f"DEV-1450 stage 7b.15e: time_shift over a ranked "
-                    f"{inner_key.agg!r} aggregate is not yet rendered — the "
-                    f"shifted CTE re-aggregates flatly and cannot reproduce the "
-                    f"ROW_NUMBER ranking. Factor the temporal transform into an "
-                    f"earlier stage. (slot id={slot.id!r})",
-                )
+            # DEV-1835 — the time_shift-over-ranked guard dissolved: a local bare
+            # first/last is a combined regroup placeholder by the time the shifted
+            # CTE renders (the ranking happens inside its producer), so no ranked
+            # AggregateKey reaches this flat re-aggregation.
             # Build a synth ``AggRenderSpec`` for _build_agg.
             #
             # The renderer needs a slot-like input with declared_name +

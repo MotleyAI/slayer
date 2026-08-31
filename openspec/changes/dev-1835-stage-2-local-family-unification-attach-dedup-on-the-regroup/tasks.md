@@ -14,17 +14,20 @@
 
 ## 2. Implementation — desugar, producers, deletion, dedup
 
-- [ ] 2.1 Desugar pass (design D1): bare windowed/ranked measure/order/filter refs become combined-attach roots at the full projected grain (slot provenance per D5, active TD via the D5 bucket); G1/G8/G2 validate on the desugar path; verify: 1.3 twin-equivalence and matrix `col`× cells pass
-- [ ] 2.2 Producer synthesis from original expressions + nested LOCAL row attaches (design D4): narrow `stage_planner.py:1613-1621` to cross-model; recursion-depth guard (unit-test it directly — no user-expressible cycle exists, Codex F5); regroup-aware windowed `_src` / ranked inner select; grain slots for arbitrary dimension keys; verify: band/bare/rank/mixed × wm/rk and expr × wm/rk matrix cells pass
-- [ ] 2.3 Windowed collapse + uniform `_cm_` naming (design D3); verify: 1.8 goldens show single-CTE producers for simple shapes; hoist collision tests still pass
-- [ ] 2.4 Consumer-level deletion (design D2): generator wiring, isolation branches/enum members, OrderScope/OrderEnv pairs, the DEV-1835 arm, the G4 belt, `time_shift`-over-ranked guard; relocated producer-planning dispatch; verify: 1.7 no-residue scans pass, full suite green
-- [ ] 2.5 Plan-time dedup (design D6): producer table + attach records IR; canonical-prebound identity; combined-phase naming for dual-phase producers; verify: 1.5 passes; row-only/combined-only goldens byte-identical
-- [ ] 2.6 Guard dissolution + `change`/`change_pct` fix (design D7); verify: 1.4 passes
-- [ ] 2.7 Full non-integration suite green; enumerate golden divergences with before/after SQL → batch approval → re-bless; SQL-shape suites rewritten preserving intent (user-approved protocol); verify: `poetry run pytest -m "not integration"` clean
+> Progress markers: `[x]` done, `[~]` partial (see HANDOVER.md), `[ ]` not started.
+> No executed-value regressions in DEV-1824/1839/1748-execution.
+
+- [x] 2.1 Desugar pass (design D1): bare windowed/ranked measure/order/filter refs become combined-attach roots at the full projected grain (slot provenance per D5, active TD via the D5 bucket); G1/G8/G2 validate on the desugar path; verify: 1.3 twin-equivalence and matrix `col`× cells pass — DONE (order-only-windowed binding still pending, task D in HANDOVER)
+- [~] 2.2 Producer synthesis from original expressions + nested LOCAL row attaches (design D4): PLANNING done (grain dims `is_dimension`, full-grain own-grain exclusion, nested row attaches admitted, position-fallback join-pairs, hoistable CTE-body exemption). RENDERING pending — the windowed `_src` / ranked inner select must go regroup-aware (resolve computed-dim grain keys via `render_value_key`, join nested producers); fails today on `ScalarCallKey`. Blocks the matrix wm/rk cells.
+- [~] 2.3 Windowed collapse + uniform `_cm_` naming (design D3) — DONE (`_collapses_to_windowed_cte` / `_render_collapsed_windowed_plan`; ranked internals renamed off `_rk_`).
+- [~] 2.4 Consumer-level deletion (design D2): the DEV-1835 coexistence arm, G4/G5/G6/G7, post-projection twin, `time_shift`-over-ranked are DELETED and G3 re-pointed. The isolation enum members / OrderScope-OrderEnv pair cleanup is NOT yet done (the top-level windowed/ranked plan lists are empty post-desugar, so those arms are already dead code — a tidy-up, not a correctness gap).
+- [~] 2.5 Plan-time dedup (design D6): identity grouping + partition-free producer-measure dedup DONE (twins→1, negatives→2). Cross-phase D10 dedup (dual-role row+combined → 1 producer) pending — task C in HANDOVER.
+- [~] 2.6 Guard dissolution + `change`/`change_pct` fix (design D7): guards dissolved. The `change`/`change_pct`/`time_shift`-over-attached render fix pending — task B in HANDOVER.
+- [ ] 2.7 Full non-integration suite green; enumerate golden divergences with before/after SQL → batch approval → re-bless; SQL-shape suites rewritten preserving intent (user-approved protocol); verify: `poetry run pytest -m "not integration"` clean — task F in HANDOVER
 
 ## 3. DEV-1839 lift + wrap-up
 
-- [ ] 3.7 Effective-grain union + broadcast for windowed/first-last inner aggregates (design D9): re-baseline the MODIFIED transform requirement against the post-1839 corpus, extend `regroup_root_grain`/grouping to effective grains, delete the residual guard; verify: 1.6 passes, `openspec validate --strict` green
+- [~] 3.7 Effective-grain union + broadcast for windowed/first-last inner aggregates (design D9): the MODIFIED transform requirement IS re-baselined against the post-1839 corpus (`validate --strict` green). The engine lift (effective grains, delete residual guard) is pending — task E in HANDOVER; verify: 1.6 passes
 - [ ] 3.8 Perf corpus re-recorded; regressions reported in the PR description; verify: `tests/perf/compare` results committed
 - [ ] 3.9 Docs: `docs/architecture/composable-attach.md` (stage-2 section + roadmap tick), `docs/concepts/formulas.md`, `docs/concepts/queries.md`, `.claude/skills/slayer-query.md`; grep docs + skills for stale can't-combine claims; verify: grep clean
 - [ ] 3.10 `openspec validate dev-1835-stage-2-local-family-unification-attach-dedup-on-the-regroup --strict` green; `poetry run ruff check slayer/ tests/` clean
