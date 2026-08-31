@@ -131,7 +131,11 @@ class TestScopeClassification:
         ))
         assert entry.scope is OrderScope.CROSS_MODEL_CTE
 
-    def test_windowed_measure_is_windowed_cte(self) -> None:
+    def test_windowed_measure_is_cross_model_cte(self) -> None:
+        """MIGRATED (DEV-1835): a LOCAL windowed measure is desugared into a
+        regroup producer that renders as a ``_cm_`` CTE, so its ordered value
+        now resolves in the cross-model / regroup scope rather than a dedicated
+        ``_wm_`` windowed CTE."""
         entry = _sole_entry(SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
@@ -141,7 +145,7 @@ class TestScopeClassification:
             measures=[{"formula": "amount:sum(window='90d')", "name": "w"}],
             order=[OrderItem(column=ColumnRef(name="w"), direction="desc")],
         ))
-        assert entry.scope is OrderScope.WINDOWED_CTE
+        assert entry.scope is OrderScope.CROSS_MODEL_CTE
 
     def test_transform_measure_is_transform_step(self) -> None:
         entry = _sole_entry(SlayerQuery(

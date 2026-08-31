@@ -46,12 +46,37 @@ __all__ = [
     "dimension_regroup_roots",
     "regroup_root_grain",
     "combined_partitioned_aggregates",
+    "is_local_combined_regroup_ref",
     "split_top_level_and",
     "conjunct_scope",
     "classify_regroup_filter",
     "substitute_in_bound_filter",
     "reserved_prefix_columns",
 ]
+
+#: The aggregations that rank (kept in step with ``ranked_planner``); a bare
+#: ``first``/``last`` attaches at the combined SELECT like a windowed one.
+_RANKED_AGGS = ("first", "last")
+
+
+def is_local_combined_regroup_ref(
+    k: ValueKey, *, row_agg_set: frozenset = frozenset(),
+) -> bool:
+    """A LOCAL aggregate the regroup primitive attaches at the COMBINED SELECT:
+    an explicit ``partition_by=`` (DEV-1829) or a bare windowed / ``first`` /
+    ``last`` measure (DEV-1835 D1). A computed-dimension row-attach aggregate is
+    excluded via ``row_agg_set`` — it resolves through the base scope, not the
+    combined one."""
+    return (
+        isinstance(k, AggregateKey)
+        and not getattr(k.source, "path", ())
+        and k not in row_agg_set
+        and (
+            k.partition_keys is not None
+            or any(kw == "window" for kw, _ in k.kwargs)
+            or k.agg in _RANKED_AGGS
+        )
+    )
 
 
 def reserved_prefix_columns(model) -> list:
@@ -330,10 +355,7 @@ def conjunct_scope(
     _, refs = _top_level_refs(vk=vk, dim_agg_set=frozenset())
     partitioned = [
         k for k in refs
-        if isinstance(k, AggregateKey)
-        and k.partition_keys is not None
-        and not getattr(k.source, "path", ())
-        and k not in row_agg_set
+        if is_local_combined_regroup_ref(k, row_agg_set=row_agg_set)
     ]
     if not partitioned:
         return "other"

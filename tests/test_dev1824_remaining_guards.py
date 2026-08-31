@@ -1,8 +1,9 @@
 """DEV-1824 guard preservation — the error surface that REMAINS after the
 stage-1 lifts (design Non-Goals): cross-model partitioned aggregates in the
-lifted shapes (stage 3), DEV-1504 G4/G5 for plain ``window=`` measures
-(stage 2), the measure-side grain rule, and the grain-self-containment boundary
-inside dimension expressions.
+lifted shapes (stage 3), the measure-side grain rule, and the
+grain-self-containment boundary inside dimension expressions. The DEV-1504
+G4/G5 pins for plain ``window=`` measures moved to the lifted direction with
+DEV-1835 (tests/test_dev1835_guard_dissolution.py).
 
 The lifted-direction tests live in tests/test_dev1824_partitioned_execution.py
 and tests/test_dev1824_computed_dim_execution.py; the reserved-prefix and
@@ -70,32 +71,6 @@ class TestCrossModelPartitionedStillGuarded:
             await gen(query)
         assert re.search(r"(?i)cross-model|partition", str(ei.value))
         assert "__regroup__" not in str(ei.value)
-
-
-class TestWindowedCompositeGuardsPreserved:
-    """DEV-1504 G4/G5 stay: a PLAIN windowed measure still rejects transform
-    and composite nesting (only the partition_by-bearing forms were lifted)."""
-
-    async def test_transform_over_plain_windowed_measure_raises(self) -> None:
-        query = q(
-            dimensions=["region"], time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="cumsum(amount:sum(window='1y'))", name="c")],
-        )
-        with pytest.raises(
-            NotImplementedError, match=r"combined with transforms.*DEV-1504",
-        ):
-            await gen(query)
-
-    async def test_plain_windowed_measure_in_composite_raises(self) -> None:
-        query = q(
-            dimensions=["region"], time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="amount:sum(window='1y') / 2", name="h")],
-        )
-        with pytest.raises(
-            NotImplementedError,
-            match=r"arithmetic / composite / scalar expressions.*DEV-1504",
-        ):
-            await gen(query)
 
 
 class TestMeasureGrainRulePreserved:

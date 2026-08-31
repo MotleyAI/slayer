@@ -81,7 +81,9 @@ def _cases() -> dict:
             dimensions=["region", {"expression": SAMEGRAIN_RANK, "name": "gr"}],
             measures=[s],
         ),
-        "guard/dim_mixed_windowed": q(
+        # DEV-1835 stage-2 lifts the windowed / first-last mixed-grain union
+        # (design D9): these render now instead of raising the residual guard.
+        "lift/dim_mixed_windowed": q(
             dimensions=[
                 "region", "city",
                 {"expression": "rank(amount:sum(window='90d', partition_by=region)"
@@ -90,7 +92,7 @@ def _cases() -> dict:
             time_dimensions=month_td(),
             measures=[s],
         ),
-        "guard/dim_mixed_first_last": q(
+        "lift/dim_mixed_first_last": q(
             dimensions=[
                 "region", "city",
                 {"expression": "rank(amount:last(partition_by=region) - "

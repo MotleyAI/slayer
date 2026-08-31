@@ -123,7 +123,12 @@ def _key_for(formula: str) -> AggregateKey:
         measures=[{"formula": formula, "name": "m0"}],
     )
     planned = plan_query(query=q, bundle=_bundle())
-    for slot in planned.aggregate_slots:
+    # DEV-1835: a local first/last desugars into a regroup producer, so its
+    # AggregateKey slot can live inside a producer_plan, not at top level.
+    candidates = list(planned.aggregate_slots)
+    for attach in planned.regroup_attach_plans:
+        candidates.extend(attach.producer_plan.aggregate_slots)
+    for slot in candidates:
         if isinstance(slot.key, AggregateKey):
             return slot.key
     raise AssertionError(f"no AggregateKey slot for formula {formula!r}")
