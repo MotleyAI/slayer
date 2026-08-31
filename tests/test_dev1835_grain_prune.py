@@ -9,7 +9,13 @@ descend a ``TransformKey``'s input, a discriminating column inside e.g.
 wrongly pruned, collapsing the producer to ``region`` alone.
 """
 
-from slayer.core.keys import AggregateKey, ArithmeticKey, ColumnKey, TransformKey
+from slayer.core.keys import (
+    AggregateKey,
+    ArithmeticKey,
+    ColumnKey,
+    ScalarCallKey,
+    TransformKey,
+)
 from slayer.engine.stage_planner import (
     _prune_functionally_determined_grain,
     _scalar_free_columns,
@@ -27,12 +33,21 @@ RANK_WITH_FREE_CITY = TransformKey(
 )
 # rank(amount:sum(partition_by=region)) — fully determined by region.
 RANK_DETERMINED = TransformKey(op="rank", input=SUM_BY_REGION)
+# abs(rank(...+ city)) — the transform is nested inside a scalar call arg.
+SCALAR_CALL_OVER_RANK = ScalarCallKey(name="abs", args=(RANK_WITH_FREE_CITY,))
 
 
 def test_scalar_free_columns_descends_transform_input():
     out: set = set()
-    _scalar_free_columns(RANK_WITH_FREE_CITY, out)
+    _scalar_free_columns(node=RANK_WITH_FREE_CITY, out=out)
     assert CITY in out, "the free column inside the transform input was missed"
+    assert REGION not in out, "aggregate internals must stay opaque"
+
+
+def test_scalar_free_columns_descends_transform_inside_scalar_call():
+    out: set = set()
+    _scalar_free_columns(node=SCALAR_CALL_OVER_RANK, out=out)
+    assert CITY in out, "free column inside a transform nested in a scalar call was missed"
     assert REGION not in out, "aggregate internals must stay opaque"
 
 

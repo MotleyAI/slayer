@@ -1654,13 +1654,13 @@ def _scalar_free_columns(node: ValueKey, out: set) -> None:
         out.add(node)
     elif isinstance(node, ArithmeticKey):
         for op in node.operands:
-            _scalar_free_columns(op, out)
+            _scalar_free_columns(node=op, out=out)
     elif isinstance(node, ScalarCallKey):
         for arg in node.args:
-            if isinstance(arg, (ColumnKey, ArithmeticKey, ScalarCallKey)):
-                _scalar_free_columns(arg, out)
+            if isinstance(arg, (ColumnKey, ArithmeticKey, ScalarCallKey, TransformKey)):
+                _scalar_free_columns(node=arg, out=out)
     elif isinstance(node, TransformKey):
-        _scalar_free_columns(node.input, out)
+        _scalar_free_columns(node=node.input, out=out)
 
 
 def _prune_functionally_determined_grain(

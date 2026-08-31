@@ -1,6 +1,6 @@
 """DEV-1714 Stage 10 — integration VALUE tests for duration-windowed measures.
 
-These exercise the ``_wm_`` range-join primitive against real in-process
+These exercise the windowed range-join primitive against real in-process
 databases (DuckDB + SQLite, no Docker) and assert hand-computed rolling-90d
 VALUES — the class of coverage that catches the DEV-1496 "silent wrong
 results" failure mode that SQL-shape assertions alone cannot.
@@ -226,7 +226,7 @@ class TestWindowedMeasureValues:
         """A base group whose dimension is NULL receives its REAL windowed value.
 
         This used to come back NULL, and was pinned as a documented consequence:
-        the ``_src`` join-back inside the ``_wm_`` CTE compared the grain with a
+        the ``_src`` join-back inside the windowed producer CTE compared the grain with a
         plain ``=``, and ``NULL = NULL`` is not TRUE, so the group matched no
         rows. The outer join-back and the cross-model join-back were already
         null-safe, so the answer depended on which isolation shape a measure
@@ -403,7 +403,7 @@ class TestHiddenOrderOnlyWindowedValues(object):
         self, windowed_engine: SlayerQueryEngine,
     ) -> None:
         """A declared windowed measure plus a DIFFERENT order-only windowed
-        one — two ``_wm_`` CTEs, one projected and one trimmed, both correct."""
+        one — two windowed producer CTEs, one projected and one trimmed, both correct."""
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
@@ -458,8 +458,9 @@ class TestHiddenOrderOnlyWindowedValues(object):
         )
         order_at = sql.rfind("ORDER BY")
         assert order_at != -1, sql
-        assert "window_90d" in sql[order_at:], (
-            f"the ORDER BY does not reference the windowed CTE:\n{sql}"
+        order_tail = sql[order_at:]
+        assert "_cm_" in order_tail and "window_90d" in order_tail, (
+            f"the ORDER BY does not reference the windowed producer CTE:\n{sql}"
         )
 
         result = await windowed_engine.execute(query=query)

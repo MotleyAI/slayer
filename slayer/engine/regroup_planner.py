@@ -357,7 +357,7 @@ def conjunct_scope(
     _, refs = _top_level_refs(vk=vk, dim_agg_set=frozenset())
     partitioned = [
         k for k in refs
-        if is_local_combined_regroup_ref(k, row_agg_set=row_agg_set)
+        if is_local_combined_regroup_ref(k=k, row_agg_set=row_agg_set)
     ]
     if not partitioned:
         return "other"
