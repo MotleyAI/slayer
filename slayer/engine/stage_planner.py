@@ -522,6 +522,7 @@ def _windowed_grain_partition(
     *,
     row_slots: list,
     active_td_slot_id,
+    combined_placeholder_keys: FrozenSet[ValueKey] = frozenset(),
 ) -> Tuple[list, list, list]:
     """Split the PROJECTED (non-hidden) ROW slots into the ``_wm_`` grain roles.
 
@@ -539,13 +540,15 @@ def _windowed_grain_partition(
     for rs in row_slots:
         if rs.hidden:
             continue
-        if isinstance(rs.key, ColumnKey) and rs.key.leaf.startswith(
-            REGROUP_LEAF_PREFIX,
-        ):
-            # DEV-1824 — a combined regroup placeholder (a partitioned MEASURE
+        if rs.key in combined_placeholder_keys:
+            # DEV-1824 — a COMBINED regroup placeholder (a partitioned MEASURE
             # attached at the combined SELECT) is a ColumnKey ROW slot by
             # substitution but is an aggregate value, not a query dimension: it
             # must not widen the windowed ``_wm_`` grain (nor is it in ``_base``).
+            # DEV-1835 D4 — a ROW-attach placeholder (a computed dimension, e.g. a
+            # bare ``amount:sum(partition_by=city)`` consumed AS a dimension) IS a
+            # grain member (it is in ``_base``'s GROUP BY), so only the combined
+            # set is excluded, not every ``__regroup__`` leaf.
             continue
         if isinstance(rs.key, TimeTruncKey):
             if rs.id != active_td_slot_id:
@@ -567,6 +570,7 @@ def _build_windowed_plans(
     row_slots: list,
     active_td_key,
     active_td_slot_id,
+    combined_placeholder_keys: FrozenSet[ValueKey] = frozenset(),
 ) -> Tuple[list, set]:
     """Build one ``WindowedAggregatePlan`` per selected windowed measure and
     return ``(plans, windowed_slot_ids)``. The window time dimension is the
@@ -591,6 +595,7 @@ def _build_windowed_plans(
 
     dim_slot_ids, other_td_slot_ids, grain_slot_ids = _windowed_grain_partition(
         row_slots=row_slots, active_td_slot_id=active_td_slot_id,
+        combined_placeholder_keys=combined_placeholder_keys,
     )
 
     for key, is_hidden in selected_windowed.items():
@@ -1001,13 +1006,21 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         # partition and sorting by the finer per-row total. The structural check
         # (after a cheap ``partition_by`` prefilter) confirms it really is a
         # partitioned aggregate before preferring the raw form.
-        if o.raw_formula and "partition_by" in o.raw_formula:
+        # DEV-1835 D1 — the same collision drops a bare ``window=``: an order-only
+        # ``amount:sum(window='90d')`` canonicalises to ``amount_sum`` and binds
+        # to the plain measure, so ``_bare_combined_roots`` never sees the window
+        # in the order role. Preserve the raw form for a windowed order ref too.
+        if o.raw_formula and (
+            "partition_by" in o.raw_formula or "window" in o.raw_formula
+        ):
             _part_bound = bind_expr(
                 parsed=parse_expr(o.raw_formula),
                 scope=scope, bundle=bundle,
             )
             if any(
-                isinstance(k, AggregateKey) and k.partition_keys is not None
+                isinstance(k, AggregateKey) and (
+                    k.partition_keys is not None or _window_kwarg_of(k) is not None
+                )
                 for k in walk_value_keys(_part_bound.value_key)
             ):
                 order_specs.append(OrderSpec(
@@ -1828,15 +1841,19 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
                 stage_schemas=stage_schemas,
                 disable_host_rooted_isolation=True,
                 # A producer re-runs regroup discovery for its own STRICT-subset
-                # inner aggregates (DEV-1839 union grain) and for a computed
-                # dimension in its grain (DEV-1835 D4: a band / scalar-expr / rank
-                # grain key needs a nested row attach). A windowed producer's own
-                # windowed measure is at the producer's FULL grain (its active TD
-                # folded in by ``_root_grain``), so own-grain exclusion drops it —
-                # enabling discovery there is a no-op unless the grain is computed.
+                # inner aggregates (DEV-1839 union grain) and for a computed OR
+                # bare-partitioned-aggregate dimension in its grain (DEV-1835 D4:
+                # a band / scalar-expr / rank grain key, or a bare
+                # ``amount:sum(partition_by=city)`` consumed AS a dimension, needs
+                # a nested row attach so the producer can group by its value). A
+                # windowed producer's own windowed measure is at the producer's
+                # FULL grain (its active TD folded in by ``_root_grain``), so
+                # own-grain exclusion drops it — enabling discovery there is a
+                # no-op unless the grain carries such a dimension.
                 enable_producer_regroups=(
                     (not windowed) or any(
                         isinstance(pk, (ScalarCallKey, ArithmeticKey, TransformKey))
+                        or _is_local_partitioned_agg(pk)
                         for pk in pks
                     )
                 ),
@@ -2181,12 +2198,22 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         if active_td_key is not None
         else None
     )
+    # DEV-1835 D4 — only COMBINED-attach placeholders (partitioned MEASURES) are
+    # excluded from the windowed grain; a ROW-attach placeholder is a computed
+    # dimension the producer groups by, so it stays a grain member.
+    combined_placeholder_keys = frozenset(
+        sub.placeholder
+        for rap in regroup_attach_plans
+        if rap.attach_phase == "combined"
+        for sub in rap.substitutions
+    )
     windowed_plans, windowed_slot_ids = _build_windowed_plans(
         selected_windowed=selected_windowed,
         registry=projection.registry,
         row_slots=row_slots,
         active_td_key=active_td_key,
         active_td_slot_id=active_td_slot_id,
+        combined_placeholder_keys=combined_placeholder_keys,
     )
 
     # DEV-1835 — the post-projection windowed-mixed-filter guard (the DEV-1504 G7
@@ -2457,6 +2484,7 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
                 source_model=reachability_anchor_model,
                 bundle=bundle,
                 where_filter_ids=row_phase_filter_ids,
+                combined_placeholder_keys=combined_placeholder_keys,
             ))
             continue
         key = slot.key

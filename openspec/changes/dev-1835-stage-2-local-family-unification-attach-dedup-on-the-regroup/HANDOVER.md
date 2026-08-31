@@ -1,141 +1,118 @@
-# DEV-1835 Stage 2 — implementation handover
+# DEV-1835 Stage 2 — implementation handover (mid-implementation, session 2)
 
-Resume state for a fresh session. The plan lives in this change folder
+Resume state for a fresh session. Plan lives in this change folder
 (`proposal.md`, `design.md`, `tasks.md`, `specs/`); read those first, then this.
 Branch: `egor/dev-1835-stage-2-local-family-unification-attach-dedup-on-the-regroup`.
 
-`origin/main` is merged (DEV-1839 archived into the corpus). The MODIFIED
-"Transforms inside dimension expressions" requirement in
-`specs/queries/computed-dimensions/spec.md` is already re-baselined against the
-post-1839 corpus (task 3.7 spec part); `openspec validate <change> --strict` is
-green.
+## What is DONE this session (A, B, D complete; C mostly)
 
-## State of the tree
+All in `slayer/sql/generator.py` unless noted.
 
-**Zero executed-value regressions** — DEV-1824/1839 execution and
-DEV-1748 first/last execution suites are all green. The failing suites are the
-un-implemented DEV-1835 features below plus the SQL-shape suites the migration
-rewrites (D10).
+### Task A — D4 regroup-aware windowed/ranked KERNELS (DONE; all 32 matrix wm/rk cells pass)
+- `_render_window_measure_cte_from_planned` + `_render_ranked_cte_from_planned`
+  take `regroup_env` / `regroup_join_specs`: computed-dim grain keys render via
+  `render_value_key` (placeholder → producer column), nested ROW producers LEFT
+  JOIN into `_src` / the ranked inner. Ranked also routes a bare `__regroup__`
+  ColumnKey grain through `render_value_key`.
+- `_prepare_combined_regroup_attaches`: host_key of a computed-dim combined-attach
+  grain is DESUGARED (row-attach substitution map + `substitute_value_keys`) so
+  `slot_by_key` matches the desugared host slot.
+- `stage_planner.py`: `enable_producer_regroups` also fires for a bare
+  partitioned-aggregate grain (`_is_local_partitioned_agg`); `_windowed_grain_partition`
+  / `ranked_planner._host_grain` exclude ONLY combined placeholders (a ROW-attach
+  placeholder is a real grain dim) via a new `combined_placeholder_keys` param.
+- **Collapse now folds row attaches (no `_wm_`/`_rk_` surfaces):**
+  `_collapses_to_windowed_cte` / `_collapses_to_ranked_cte` allow ROW attaches;
+  `_render_collapsed_windowed_plan` / `_render_collapsed_ranked_plan` prepare the
+  nested producers and emit them as a WITH prelude (`assemble_with_chain`) that
+  `_render_producer_split` hoists flat. `_build_windowed_grain_base` is
+  regroup-aware too.
 
-Verify the baseline quickly:
-```
-poetry run pytest tests/test_dev1835_desugar.py tests/test_dev1835_dedup.py \
-  tests/test_dev1835_guards.py tests/test_dev1824_partitioned_execution.py \
-  tests/test_dev1839_measure_execution.py tests/test_dev1748_first_last_matrix.py \
-  -q -p no:cacheprovider
-```
+### Task B — D7 transform over an attached placeholder (DONE; 14 guard_dissolution pass)
+- Composite routing (`_render_with_cross_model_plans`): a composite wrapping a
+  transform (`change`/`change_pct` → `x - time_shift(x)`) over a LOCAL combined
+  placeholder skips the inline outer-composite path → the transform chain owns it.
+  **Narrowed to require a combined placeholder** so `change(amount:wscaled_sum)`
+  (cross-model) still raises `RenderContextMissingFacilityError` (DEV-1836).
+- `_prepare_combined_regroup_attaches` returns a 5th value `shift_specs`
+  (`(cte, [(host_KEY, grain_alias)])`); the transform chain merges combined
+  placeholders into `regroup_env` and combined `shift_specs` into
+  `regroup_join_specs` so the shifted CTE joins the combined producer.
 
-## What is implemented (files + symbols)
+### Task C — D10 dedup (PARTIAL)
+- Simple dual-role DONE: `_prepare_regroup_attaches` takes `dedup_producers`
+  (built from combined attaches, keyed by `_regroup_attach_identity`); a ROW attach
+  matching a COMBINED producer reuses its CTE (env + join redirected, no twin
+  emitted, `_base` depends on the reused CTE). `test_dual_role_aggregate_shares_one_producer` passes.
+- **STILL FAILING (2):** `test_dual_role_beside_bare_windowed_is_two_producers`
+  (sqlite+duckdb). VALUES correct; the count is off by one — the windowed producer
+  `w` has its OWN nested `rband` producer that is a structural twin of the
+  top-level `rt` producer but is NOT deduped (cross-producer boundary). Needs
+  either (a) cross-level dedup: thread the parent combined dedup index into
+  `_render_producer_split` → producer render (mint combined CTE names + build the
+  index BEFORE rendering producers, pass index-minus-self), or (b) functional-
+  dependence grain exclusion in the planner (drop a computed-dim grain key whose
+  inner aggregate partitions on a subset of the other grain dims — `rband=f(region)`,
+  region in grain → redundant; `band=f(city)`, city not in grain → keep).
 
-All in `slayer/engine/stage_planner.py` unless noted.
+### Task D — order-only bare windowed binding (DONE)
+- `stage_planner.py` order-spec bind: preserve the `raw_formula` when it carries
+  `window` (not just `partition_by`) so `_bare_combined_roots` sees the window in
+  the order role. `TestOrderOnlyHiddenProducers` passes.
 
-1. **Desugar (2.1)** — `_bare_combined_roots`, `_is_bare_local_regroup_root`,
-   `_effective_root_grain`, `_windowed_or_ranked_identity`,
-   `_partition_free_identity`. Bare windowed / first-last measures join the
-   COMBINED roots in `_plan_regroups`; grouping key is
-   `(effective_grain, windowed_or_ranked_identity)` so twins collapse and
-   different window/filter/ranking stay separate. Producer measures are deduped
-   by partition-free identity (twin → one shared column).
-2. **Filter routing (D8)** — `regroup_planner.is_local_combined_regroup_ref`
-   broadens `conjunct_scope` and `_split_partitioned_filter_conjuncts` to bare
-   wm/rk.
-3. **Empty-base fix** — `_plan_empty_base_grain` now counts combined regroup
-   placeholder slots as isolated (`regroup_combined_slot_ids`), so a keyless
-   bare-ranked query alone no longer emits an empty `_base`.
-4. **D3 naming** — `generator._collapses_to_windowed_cte` +
-   `_render_collapsed_windowed_plan` + `_build_windowed_grain_base` render a
-   windowed producer as one self-contained `_cm_` CTE (grain rows inlined via a
-   `base_relation` arg on `_render_window_measure_cte_from_planned`). Ranked
-   internals renamed in `sql/render/ranked.py` (`RANK_COLUMN`/`RANKED_SOURCE_ALIAS`
-   → `_ranked_rn`/`_ranked_src`) so no `_rk_` substring survives.
-5. **Guard dissolution (2.6, partial)** — deleted G4/G5/G6/G7 (in
-   `_guard_windowed_measures`), the post-projection twin (in `plan_query`), the
-   coexistence arm and time_shift-over-ranked (both in `generator.py`);
-   re-pointed G3 → DEV-1836. STILL PRESENT (delete in 3.7): the residual union
-   guard (`_guard_computed_dimension`, message "broadcasting a windowed / first /
-   last aggregate across the union grain … DEV-1835").
-6. **D4 planning** — windowed/ranked producers build nested ROW attaches for
-   computed-dim grains: grain dims marked `is_dimension=True` in
-   `_regroup_producer_prebound`; own-grain exclusion uses the FULL grain
-   (`_root_grain` folds the active bucket back in); `enable_producer_regroups`
-   turned on when the grain has a `ScalarCallKey`/`ArithmeticKey`/`TransformKey`;
-   `_validate_nested_producer_plan` skips row attaches; join-pairs fall back to
-   projection POSITION when a computed grain key was desugared inside the
-   producer; the DEV-1838 CTE-body row-attach guard exempts hoistable producers.
-7. **Test helper bug fix** — `tests/_dev1835_fixtures.py::cte_aliases` read
-   `args.get("with")`; sqlglot 30.x stores it under `with_`. Fixed to read both.
-   (Assertions unchanged — the helper was silently returning `[]`.)
+## What REMAINS
 
-## What remains (priority order, with the concrete next step)
+### C. Cross-level dual-role dedup — see above (2 tests).
 
-### A. D4-rendering — the windowed/ranked KERNELS must go regroup-aware
-The deepest piece. Planning succeeds for band/expr/rank/mixed grains, but
-rendering fails: `ScopeFrame.resolve does not yet handle ref type ScalarCallKey`
-(`sql/scope.py:403`), raised from `_render_window_measure_cte_from_planned`'s
-grain resolution (`src_scope.resolve(dslot.key)`) and the analogous ranked
-`_ranked_scope_expr`.
+### E. Union-lift (task 3.7) — NOT STARTED
+Delete the residual guard (`stage_planner.py` ~line 3319, message "broadcasting a
+windowed / first / last aggregate across the union grain … DEV-1835") AND extend
+`regroup_planner.regroup_root_grain` / the union-grain producer to EFFECTIVE grains
+for windowed / first-last inner aggregates (windowed = partition_by ∪ {active
+bucket}; first/last = partition_by), with the synthesized bucket = the query's
+bucketed TD (design D9). `regroup_root_grain` currently unions only `partition_keys`
+(misses the window bucket). Unblocks `test_dev1835_union_grain.py` (strict-xfail
+today — remove the `LIFT_XFAIL` marks) and `test_dev1835_guards.py[residual-union-guard]`.
+Fixtures: `UNION_WM_DIM`/`UNION_RK_DIM`, `UNION_WM_RANK`/`UNION_RK_RANK`.
 
-The windowed `_src` subquery and the collapse's `_build_windowed_grain_base`
-(and the ranked inner select) must:
-- resolve computed-dim grain keys via the full value-key renderer
-  (`render_value_key` with a `RenderContext` carrying the producer's
-  `regroup_env` / join specs), not the bare `src_scope.resolve`; and
-- JOIN the producer's nested row producers so a placeholder grain key
-  (a band's city total) resolves to its producer column — the stage-1a D3
-  pattern already used by the shifted-CTE emitter (see `RenderState.regroup_env`
-  / `regroup_join_specs` and `_prepare_regroup_attaches`).
-
-Unblocks the 32 `test_dev1837_dimension_measure_matrix.py` cells, the 2
-`test_dev1837_guards.py` arm-renders, and the dual_role desugar/dedup cells.
-Oracles: `WM_X`/`RK_X` in `tests/_dev1835_fixtures.py`.
-
-### B. D7 — transform over an attached placeholder
-`change`/`change_pct`/`time_shift` over a partitioned/bare wm/rk placeholder.
-`cumsum`/`rank` already work; the `time_shift` shifted-CTE path fails with
-`RenderContextMissingFacilityError` (the transform isn't materialised because
-the shifted CTE re-aggregates the source and the placeholder isn't joined in).
-Fix: join the combined producer into the shifted CTE so the placeholder resolves
-(analogous to A). Unblocks 12 `test_dev1835_guard_dissolution.py`.
-
-### C. D10 cross-phase dedup — dual-role
-The same `amount:sum(partition_by=region)` used as a computed dimension (row
-attach) AND a measure (combined attach) currently ships two producers; should be
-one, serving both attaches. Needs the producer identity to be shared across
-phases (design D6 IR split, or a render-time producer-CTE dedup by canonical
-identity). Unblocks `test_dev1835_dedup.py::test_dual_role_aggregate_shares_one_producer`
-and the two `dual_role_beside_bare_windowed` cases (which also need A).
-
-### D. order-only bare windowed (binding)
-`order=[{"column":"amount:sum(window='90d')"}]` binds to the plain `amount:sum`
-(canonical-name collision drops the window). The order binding must preserve the
-window so `_bare_combined_roots` discovers it in the order role.
-`test_dev1835_desugar.py::TestOrderOnlyHiddenProducers` (the windowed one;
-the last/filter ones pass).
-
-### E. union-lift (3.7)
-Delete the residual union guard (`_guard_computed_dimension`) and extend
-`regroup_root_grain`/grouping to effective grains for windowed/first-last inner
-aggregates. Then `test_dev1835_union_grain.py` (strict-xfail today) flips to
-pass and `test_dev1835_guards.py[residual-union-guard]` passes.
-
-### F. SQL-shape suite rewrites + golden rebless (D10 — needs batch approval)
-The migration changes emitted SQL for every bare-windowed / ranked shape.
-Rewrite preserving intent: `test_dev1748_ranked_plan.py` (~31, `_rk_` shape),
-`test_dev1732_frame_bound_filters.py` (~20, asserts `_wm_` presence),
-DEV-1824/1837 golden baselines, and bless `tests/golden/dev1835_sql_baseline.json`
-(`SLAYER_UPDATE_GOLDEN=1`). Per design D10, enumerate divergences with
-before/after SQL and get batch approval BEFORE re-blessing. Do this LAST, after
-A–E, so the shape is final.
+### F. SQL-shape suites + golden rebless (D10 — NEEDS BATCH APPROVAL, do LAST)
+~450 full-suite failures are the EXPECTED migration: bare/partitioned windowed &
+ranked producers now render as one `_cm_` CTE (no `_wm_`/`_rk_` relation), and
+band/computed-dim producers collapse the same way. VALUES are unchanged (execution
+suites green). Suites to rewrite preserving intent / rebless:
+`test_dev1748_golden_sql` (~175), `test_sql_generator` (~76),
+`test_dev1824_golden_sql` (~55), `test_dev1748_ranked_plan` (~31, `_rk_` shape),
+`test_dev1732_frame_bound_filters` (~20, asserts `_wm_`), the `*_golden_sql`
+baselines, `test_dev1476_first_last_explicit_time`, `test_dev1733_order_only_transform_composite`,
+`test_dev1746_*` / `test_dev1750_*` / `test_carrier_scope_matrix` shape pins, and
+`tests/golden/dev1835_sql_baseline.json` (`SLAYER_UPDATE_GOLDEN=1`). Enumerate
+divergences with before/after SQL → batch approval BEFORE re-blessing. **Do this
+LAST, after C+E, so the shape is final.** The one REAL regression found (cross-model
+`change`/`change_pct` scope) is already fixed.
 
 ### G. Wrap-up (3.8/3.9/3.10)
 Perf corpus re-record; docs (`docs/architecture/composable-attach.md`,
 `docs/concepts/formulas.md`, `docs/concepts/queries.md`,
-`.claude/skills/slayer-query.md`); `ruff check` + `validate --strict`.
+`.claude/skills/slayer-query.md`); `poetry run ruff check slayer/ tests/` +
+`openspec validate <change> --strict`.
+
+## Verify the DEV-1835 feature core is green (all pass except the 3 noted)
+```
+poetry run pytest tests/test_dev1835_desugar.py tests/test_dev1835_dedup.py \
+  tests/test_dev1835_guards.py tests/test_dev1835_guard_dissolution.py \
+  tests/test_dev1835_semantic_pins.py tests/test_dev1837_dimension_measure_matrix.py \
+  tests/test_dev1837_guards.py tests/test_dev1750_execution.py \
+  -q -p no:cacheprovider
+```
+Expected residual failures: 2 × `test_dual_role_beside_bare_windowed_is_two_producers`
+(Task C cross-level), 1 × `test_deleted_message_has_no_remaining_references[residual-union-guard]`
+(Task E). Everything else in these files passes.
 
 ## Gotchas
-- Run the FULL non-integration suite before declaring done and fix real
-  failures; SQL-shape suites (F) are rewrites, not fixes — keep them separate.
-- Producers render via `_render_producer_split` with `as_cte_body=True,
-  as_hoistable_producer=True`; their internal WITH is hoisted flat.
-- Never let `__regroup__` leak into emitted SQL or `_wm_`/`_rk_` into a producer
-  relation name (`assert_scope_closed`, the golden no-prefix check).
+- Producers render via `_render_producer_split(as_cte_body=True, as_hoistable_producer=True)`;
+  internal WITH is hoisted flat. Never let `__regroup__` leak or `_wm_`/`_rk_` name
+  a producer relation (`assert_scope_closed`, golden no-prefix check).
+- Files touched this session: `slayer/sql/generator.py`, `slayer/engine/stage_planner.py`,
+  `slayer/engine/ranked_planner.py`. No new files created.
+- Do NOT delete this HANDOVER.md until E+F+G are done and the full non-integration
+  suite is green (per the original `delete once done implementing` instruction).
