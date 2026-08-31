@@ -43,6 +43,7 @@ from slayer.engine.isolation import (
 from slayer.engine.planned import PlannedQuery
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import plan_query
+from slayer.sql.scope import ScopeFrame
 
 from tests._cross_model_chain import (
     _countries,
@@ -359,7 +360,6 @@ class TestMayInlineSeam:
         boundary; this module's seam guards whole aggregates at plan time. Both
         are ``False``; they are pinned together so neither is mistaken for the
         other when DEV-1688 lands."""
-        from slayer.sql.scope import ScopeFrame
 
         assert ScopeFrame.may_inline(
             ScopeFrame.__new__(ScopeFrame), [("customers_v2",)],

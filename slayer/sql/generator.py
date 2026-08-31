@@ -3750,7 +3750,7 @@ class SQLGenerator:
             scope.join_paths.add(p)
         return expr
 
-    def _render_ranked_cte_from_planned(
+    def _render_ranked_cte_from_planned(  # NOSONAR(S3776) — single linear ranked-CTE assembly (src → ROW_NUMBER → collapse); the branches are sequential dialect/shape guards, not nested logic
         self,
         *,
         plan,
@@ -6163,7 +6163,7 @@ class SQLGenerator:
             frozenset(host_key for host_key, _ in attach.join_pairs),
         )
 
-    def _prepare_regroup_attaches(
+    def _prepare_regroup_attaches(  # NOSONAR(S3776) — one linear pass over the planned regroup producers (dedup → render → hoist); splitting would thread the CTE registry through every helper
         self, *, planned_query, bundle, dedup_producers=None,
     ):
         """Render each DEV-1825 regroup producer as a ``_cm_*`` CTE.

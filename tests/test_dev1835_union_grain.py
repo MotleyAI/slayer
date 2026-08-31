@@ -104,8 +104,9 @@ class TestUnionGrainBroadcast:
         """No resolvable time dimension → the same clear time-resolution error
         as windowed measures (today: the residual union-grain guard instead)."""
         _, engine = exec_backend
+        query = q(
+            dimensions=["region", {"expression": UNION_WM_DIM, "name": "ur"}],
+            measures=[ModelMeasure(formula="amount:sum", name="m")],
+        )
         with pytest.raises(ValueError, match="could not resolve its time dimension"):
-            await engine.execute(q(
-                dimensions=["region", {"expression": UNION_WM_DIM, "name": "ur"}],
-                measures=[ModelMeasure(formula="amount:sum", name="m")],
-            ))
+            await engine.execute(query)

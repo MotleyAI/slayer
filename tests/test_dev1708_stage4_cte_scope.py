@@ -43,6 +43,9 @@ from typing import AsyncIterator
 
 import pytest
 
+from sqlglot import exp
+
+import slayer.sql.dialects as dialects_mod
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.errors import UnknownReferenceError
 from slayer.core.models import (
@@ -589,8 +592,6 @@ class TestNullSafeDialectStrategy:
 
     @pytest.mark.parametrize("cls_name,marker", sorted(_NULLSAFE_STRATEGY.items()))
     def test_strategy_null_safe_form(self, cls_name: str, marker: str) -> None:
-        import slayer.sql.dialects as dialects_mod
-        from sqlglot import exp
 
         cls = getattr(dialects_mod, cls_name)
         dialect = cls()

@@ -438,8 +438,9 @@ class TestHiddenOrderOnlyWindowedValues(object):
 
         The discrimination is therefore structural as well: the ORDER BY must
         reference the windowed CTE's column. A plain-``SUM`` regression (the
-        DEV-1733 defect, where the window was silently dropped) emits no ``_wm_``
-        CTE at all, so it cannot satisfy that no matter how the rows tie.
+        DEV-1733 defect, where the window was silently dropped) emits no windowed
+        range-join (``_w_value``) at all, so it cannot satisfy that no matter how
+        the rows tie.
         """
         query = SlayerQuery(
             source_model="orders",
@@ -451,13 +452,13 @@ class TestHiddenOrderOnlyWindowedValues(object):
             order=[{"column": "revenue:sum(window='90d')", "direction": "desc"}],
         )
         sql = (await windowed_engine.execute(query=query, dry_run=True)).sql or ""
-        assert "_wm_" in sql, (
+        assert "_w_value" in sql, (
             f"no windowed CTE was emitted — the window was dropped and the "
             f"ORDER BY is over a plain SUM:\n{sql}"
         )
         order_at = sql.rfind("ORDER BY")
         assert order_at != -1, sql
-        assert "_wm_" in sql[order_at:], (
+        assert "window_90d" in sql[order_at:], (
             f"the ORDER BY does not reference the windowed CTE:\n{sql}"
         )
 

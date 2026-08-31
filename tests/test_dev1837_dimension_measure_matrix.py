@@ -350,8 +350,8 @@ class TestCardinalityNeutrality:
     ) -> None:
         _, engine = exec_backend
         with_month = _needs_td(meas)
-        base = await engine.execute(_cell_query(family, meas, include_x=False))
-        plus = await engine.execute(_cell_query(family, meas))
+        base = await engine.execute(_cell_query(family=family, meas=meas, include_x=False))
+        plus = await engine.execute(_cell_query(family=family, meas=meas))
         base_m = _keyed(base, family=family, with_month=with_month, cols=("m",))
         plus_m = _keyed(plus, family=family, with_month=with_month, cols=("m",))
         assert set(base_m) == set(plus_m)

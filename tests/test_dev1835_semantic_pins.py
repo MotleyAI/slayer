@@ -87,8 +87,8 @@ class TestFrameBoundExecuted:
             )],
             measures=[w],
         ))
-        _assert_map(_by_region_month(bounded, "w"), BOUNDED_W90)
-        _assert_map(_by_region_month(ranged, "w"), BOUNDED_W90)
+        _assert_map(got=_by_region_month(resp=bounded, col="w"), expected=BOUNDED_W90)
+        _assert_map(got=_by_region_month(resp=ranged, col="w"), expected=BOUNDED_W90)
 
     async def test_explicit_bound_equals_date_range_for_time_shift(
         self, exec_backend,
@@ -141,8 +141,8 @@ class TestExplicitRankingTime:
             dimensions=["region"],
             measures=[ModelMeasure(formula="amount:last(ordered_at)", name="l")],
         ))
-        _assert_map(_by_region(bare, "l"), LAST_BY_ORDERED)
-        _assert_map(_by_region(explicit, "l"), LAST_BY_ORDERED)
+        _assert_map(got=_by_region(resp=bare, col="l"), expected=LAST_BY_ORDERED)
+        _assert_map(got=_by_region(resp=explicit, col="l"), expected=LAST_BY_ORDERED)
 
     async def test_explicit_ranking_column_wins(self, shipped_backend) -> None:
         """North's latest shipment is its earliest-amount row (10 ≠ 30)."""

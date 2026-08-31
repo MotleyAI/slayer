@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import os
 import re
+import sqlite3
 import tempfile
 from typing import Iterator, List
 
@@ -37,14 +38,17 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.keys import Phase
-from slayer.core.models import Column, SlayerModel
+from slayer.core.keys import ColumnKey, Phase
+from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.isolation import IsolationKind, classify_isolation
 from slayer.engine.planned import OrderScope, RankedAggregatePlan
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import plan_query
+from slayer.sql.generator import SQLGenerator
 from slayer.sql.naming import assert_unique_cte_names
+from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._dev1748_fixtures import (
     BIG_AMOUNT_THRESHOLD,
@@ -418,7 +422,6 @@ class TestThePlanNode:
                 Column(name="amount", type=DataType.DOUBLE),
             ],
         )
-        from slayer.engine.source_bundle import ResolvedSourceBundle
         bundle = ResolvedSourceBundle(source_model=model, referenced_models=[])
         query = SlayerQuery(
             source_model="untimed", dimensions=["status"],
@@ -593,8 +596,6 @@ class TestThePlanNode:
         """Constructibility as a contract, not just field presence: a required
         field added without a default would break every planner call site, and
         this says so in one line."""
-        from slayer.core.keys import ColumnKey
-
         plan = RankedAggregatePlan(
             aggregate_slot_id="s1", agg="last", root_model="orders",
             datasource="test", ranking_time_key=ColumnKey(leaf="created_at"),
@@ -1100,8 +1101,6 @@ class TestCrossModelAndRerooting:
         plan that cannot collapse to a single ``_cm_`` CTE trips the matching
         nested-CTE-body guard on the regroup attach path instead — same loud
         failure, one route over."""
-        from slayer.sql.generator import SQLGenerator
-
         planned = _plan(_q(
             dimensions=["status"],
             measures=[{"formula": "amount:last", "name": "l"}],
@@ -1183,8 +1182,6 @@ class TestNamingIsPrivate:
             ],
         )
         with tempfile.TemporaryDirectory() as d:
-            import sqlite3
-
             db_path = os.path.join(d, "collide.db")
             con = sqlite3.connect(db_path)
             con.execute(
@@ -1204,9 +1201,6 @@ class TestNamingIsPrivate:
             )
             con.commit()
             con.close()
-
-            from slayer.core.models import DatasourceConfig
-            from slayer.storage.yaml_storage import YAMLStorage
 
             storage = YAMLStorage(base_dir=d)
             await storage.save_datasource(
@@ -1255,8 +1249,6 @@ class TestTheNewShapeExecutes:
         sibling. This lifts the generated ``_rk_`` CTE out of the statement and
         counts its rows directly, over a grain that crosses a 1:N join so a
         failure to collapse would really produce duplicates."""
-        import sqlite3
-
         response = await engine.execute(
             SlayerQuery(
                 source_model="orders", dimensions=["order_tags.name"],

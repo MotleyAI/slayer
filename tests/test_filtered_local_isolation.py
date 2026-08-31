@@ -24,6 +24,8 @@ These complement the generator-shape tests in
 
 from __future__ import annotations
 
+import importlib
+
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
@@ -36,6 +38,7 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.engine.column_filter_paths import compute_column_filter_join_paths
 from slayer.engine.planned import CrossModelAggregatePlan
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import plan_query
@@ -200,9 +203,6 @@ class TestSqlExprKeyReferencedJoinPaths:
         join leak into ``_base`` and silently corrupt the aggregate
         (Codex round 7).
         """
-        from slayer.engine.column_filter_paths import (
-            compute_column_filter_join_paths,
-        )
         host = _claim_amount()
         bundle = _bundle(host)
         # Backtick-quoted (MySQL/T-SQL style) joined alias ref.
@@ -225,9 +225,6 @@ class TestSqlExprKeyReferencedJoinPaths:
         on backtick SQL would silently fail under hard-coded Postgres,
         dropping the join path (Codex round 9).
         """
-        from slayer.engine.column_filter_paths import (
-            compute_column_filter_join_paths,
-        )
         host = SlayerModel(
             name="orders", data_source="test", sql_table="Orders",
             columns=[
@@ -868,12 +865,10 @@ def _assert_single_host_rooted(plans) -> CrossModelAggregatePlan:
 
 
 def test_aggregate_input_paths_module_exists():
-    """Canary for the ``pytest.importorskip`` staging in
-    ``tests/test_aggregate_input_paths.py``: that file self-skips while the
-    helper module is missing (so suite collection survives the tests-first
-    phase), but the module's absence must still surface as a FAILURE
-    somewhere — here. Codex test-review finding #1."""
-    import importlib
+    """Canary: ``tests/test_aggregate_input_paths.py`` now hard-imports the
+    DEV-1709 helper at module top, so its absence surfaces as a loud collection
+    error there. This keeps that absence explicit here too. Codex test-review
+    finding #1."""
 
     importlib.import_module("slayer.engine.aggregate_input_paths")
 
