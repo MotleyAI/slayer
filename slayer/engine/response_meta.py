@@ -21,7 +21,7 @@ unchanged.
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import sqlglot
 from pydantic import BaseModel, Field as PydanticField
@@ -319,10 +319,29 @@ def build_response_metadata(  # NOSONAR(S3776) — flat per-slot metadata classi
     dim_meta: Dict[str, FieldMetadata] = {}
     measure_meta: Dict[str, FieldMetadata] = {}
 
+    # DEV-1836 — a combined regroup attach substitutes each consumed aggregate
+    # for a reserved-leaf placeholder; map it back to the ORIGINAL aggregate key
+    # so its measure label/format resolve against the aggregated column.
+    placeholder_original: Dict[Any, Any] = {
+        sub.placeholder: sub.original_key
+        for attach in root_planned.regroup_attach_plans
+        if attach.attach_phase == "combined"
+        for sub in attach.substitutions
+    }
+
     for slot in candidate_slots:
         if slot.hidden or slot.id not in projection_ids:
             continue
-        is_dim = slot.phase == Phase.ROW
+        # A combined regroup attach (a partitioned or cross-model MEASURE) is
+        # substituted to a reserved-leaf ``ColumnKey`` placeholder, which is
+        # ROW-phase — but it is a measure, not a dimension (DEV-1836).
+        original = placeholder_original.get(slot.key)
+        is_combined_placeholder = original is not None
+        measure_slot = (
+            slot.model_copy(update={"key": original})
+            if is_combined_placeholder else slot
+        )
+        is_dim = slot.phase == Phase.ROW and not is_combined_placeholder
         for rk in _slot_result_keys(slot=slot, source_relation=source_relation):
             if rk not in public_keys:
                 continue
@@ -341,8 +360,8 @@ def build_response_metadata(  # NOSONAR(S3776) — flat per-slot metadata classi
                 if label or fmt:
                     dim_meta[rk] = FieldMetadata(label=label, format=fmt)
             else:
-                fmt = _measure_format(slot=slot, bundle=bundle)
-                label = _measure_label(slot=slot, bundle=bundle)
+                fmt = _measure_format(slot=measure_slot, bundle=bundle)
+                label = _measure_label(slot=measure_slot, bundle=bundle)
                 if label or fmt:
                     measure_meta[rk] = FieldMetadata(label=label, format=fmt)
 

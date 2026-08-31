@@ -92,11 +92,15 @@ Cross-model aggregates SHALL be legal wherever local aggregates are: in arithmet
 - THEN both are correct by executed values in one result, replacing the former fail-closed guard
 
 ### Requirement: Producer filter inheritance
-A ROW-phase filter conjunct whose references are all attributable from an aggregate's root SHALL apply inside that aggregate's computation. A conjunct that is unreachable from the root, or reachable only across unproven hops, SHALL be excluded from that aggregate's computation — reported through the established dropped-filter warning (and erroring under strict) — while still applying to the result rows. Aggregate-phase filter routing is unchanged.
+A ROW-phase filter conjunct whose references are all attributable from an aggregate's root SHALL apply inside that aggregate's computation. A conjunct that is unreachable from the root, or reachable only across unproven hops, SHALL be excluded from that aggregate's computation — reported through the established dropped-filter warning (and erroring under strict) — while still applying to the result rows. AGGREGATE-phase predicates keep aggregate-filter semantics uniform with local aggregates: they restrict the result rows by the aggregate's attached value, including when the aggregate appears only in the filter.
 
 #### Scenario: Attributable filter restricts the metric
 - WHEN a query rooted at `orders` filters on a customer-level predicate and selects `customers.spend:sum`
 - THEN the metric is computed over only the customers passing the predicate
+
+#### Scenario: Aggregate-phase filter restricts result rows uniformly
+- WHEN a query rooted at `orders` groups by a customer-level dimension and filters on `customers.spend:sum > 100`
+- THEN only groups passing the predicate remain in the result — exactly as a local aggregate filter behaves — whether or not the aggregate is also selected
 
 #### Scenario: Unsafe filter no longer fans out the producer
 - WHEN a query rooted at `orders` filters on an orders-level predicate and selects `customers.spend:sum`

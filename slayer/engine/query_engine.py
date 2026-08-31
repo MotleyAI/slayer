@@ -79,6 +79,7 @@ from slayer.engine.cache import (
 )
 from slayer.engine.agg_registry import collect_reachable_agg_names
 from slayer.engine.normalization import normalize_model, normalize_query
+from slayer.core.keys import REGROUP_LEAF_PREFIX
 from slayer.engine.planned import PlannedQuery
 from slayer.engine.response_meta import (
     FieldMetadata as FieldMetadata,  # re-export for slayer_client / tests
@@ -3054,9 +3055,13 @@ class SlayerQueryEngine:
         stamp_grain = bool(root_planned.aggregate_slots) or (
             final_stage.distinct_dimension_values
         )
+        # A combined regroup attach (a partitioned or cross-model MEASURE) is a
+        # reserved-leaf ``ColumnKey`` placeholder, ROW-phase but not part of the
+        # grain — exclude it so its column is never stamped as a key (DEV-1836).
         grain_public_names = {
             s.public_name for s in root_planned.row_slots
             if s.public_name is not None
+            and not str(getattr(s.key, "leaf", "")).startswith(REGROUP_LEAF_PREFIX)
         }
         cols = [
             Column(

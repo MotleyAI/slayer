@@ -45,11 +45,15 @@ Expressions that are not grain-self-contained SHALL fail with clear errors namin
 - THEN the query fails with a clear error naming the key and the remedy
 
 ### Requirement: Coexistence deferrals after cross-model unification
-An aggregation-derived dimension combined with a windowed (`window=` without `partition_by=`) or ranked (`first`/`last` without `partition_by=`) measure, or nested where the query must render as a single CTE body, SHALL fail with a clear not-yet-supported error naming the unsupported combination — never with wrong numbers or invalid SQL. Cross-model measures are no longer in this list.
+A row regroup attach (computed dimension) or a partitioned-aggregate combined attach nested where the query must render as a single CTE body SHALL fail with a clear not-yet-supported error naming the unsupported combination — never with wrong numbers or invalid SQL. Cross-model measures are no longer in the deferral list (this change), and the windowed/ranked coexistence deferral was lifted by the stage-2 local unification. Shapes that rendered inside CTE bodies before this change — a plain cross-model aggregate measure in particular — MUST continue to render there after migrating onto the primitive.
 
-#### Scenario: Windowed and ranked measures still guarded
-- WHEN a query combines an aggregation-derived dimension with a bare `window=` or bare `first`/`last` measure
-- THEN the query fails with the exact windowed/ranked-coexistence error
+#### Scenario: CTE-body nesting still guarded
+- WHEN a query whose plan carries a computed-dimension row attach or a partitioned-aggregate combined attach must render as a single CTE body
+- THEN rendering fails with the exact CTE-body deferral error, never with invalid SQL
+
+#### Scenario: Migrated cross-model measure still renders in a CTE body
+- WHEN a query with a plain cross-model aggregate measure renders as a CTE body (a non-final stage)
+- THEN the SQL renders as before the migration — the measure's producer never triggers the CTE-body deferral
 
 #### Scenario: The lifted cross-model guard leaves no residue
 - WHEN the package sources are scanned for the former cross-model-coexistence error
