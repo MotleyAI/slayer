@@ -5994,19 +5994,39 @@ class SQLGenerator:
                 rename[name] = allocator.allocate_cte(name)
         if not rename:
             return
+        # DEV-1835 D9 — a nested windowed producer renders its own grain base as an
+        # inline subquery aliased ``_base`` (the collapse form), which SHADOWS a
+        # same-named hoisted CTE inside its SELECT. Its ``_base.col`` refs resolve
+        # to that local subquery, so the CTE rename must skip them — else the
+        # inline alias stays ``_base`` while its refs point at the renamed CTE, an
+        # out-of-scope reference. Track the SELECTs that locally define a name.
+        shadow: Dict[str, set] = {name: set() for name in rename}
+        for subq in parsed.find_all(exp.Subquery):
+            if subq.alias in rename and subq.parent_select is not None:
+                shadow[subq.alias].add(id(subq.parent_select))
+
+        def _shadowed(node, name: str) -> bool:
+            sel = node.parent_select
+            return sel is not None and id(sel) in shadow[name]
+
         for tbl in parsed.find_all(exp.Table):
             ident = tbl.this
             if (
                 isinstance(ident, exp.Identifier)
                 and tbl.name in rename
                 and tbl.args.get("db") is None
+                and not _shadowed(tbl, tbl.name)
             ):
                 tbl.set("this", exp.to_identifier(
                     rename[tbl.name], quoted=ident.quoted,
                 ))
         for col in parsed.find_all(exp.Column):
             tref = col.args.get("table")
-            if isinstance(tref, exp.Identifier) and tref.name in rename:
+            if (
+                isinstance(tref, exp.Identifier)
+                and tref.name in rename
+                and not _shadowed(col, tref.name)
+            ):
                 col.set("table", exp.to_identifier(
                     rename[tref.name], quoted=tref.quoted,
                 ))

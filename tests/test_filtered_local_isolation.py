@@ -698,14 +698,19 @@ class TestFirstLastNoNestedCmaPlans:
         )
         planned = plan_query(query=q, bundle=_bundle(host))
         assert planned.cross_model_aggregate_plans == []
-        assert len(planned.ranked_aggregate_plans) == 1
-        plan = planned.ranked_aggregate_plans[0]
+        # DEV-1835: the local ranked first/last desugars into a regroup
+        # producer; the ranked plan lives inside it, not at top level.
+        assert planned.ranked_aggregate_plans == []
+        assert len(planned.regroup_attach_plans) == 1
+        producer = planned.regroup_attach_plans[0].producer_plan
+        assert len(producer.ranked_aggregate_plans) == 1
+        plan = producer.ranked_aggregate_plans[0]
         assert plan.root_model == "claim_amount"
         assert plan.target_path == ()
         # The measure's crossing ``Column.filter`` rides on the aggregate's own
         # key, which this plan names — nothing about it needs a second plan.
         slot = next(
-            s for s in planned.aggregate_slots if s.id == plan.aggregate_slot_id
+            s for s in producer.aggregate_slots if s.id == plan.aggregate_slot_id
         )
         assert slot.key.column_filter_key is not None
 
@@ -805,25 +810,42 @@ def _s5_plans(formula: str, *, dimensions=None, **plan_kwargs):
     return planned, planned.cross_model_aggregate_plans
 
 
-def _assert_single_ranked_host(planned) -> None:
-    """A first/last isolates through the RANKED route (DEV-1748).
+def _assert_single_ranked_host(planned):
+    """A first/last isolates through the RANKED route (DEV-1748), now DESUGARED
+    into a regroup producer (DEV-1835).
 
     Its crossing input still triggers isolation — the widened Law-3 verdict is
     unchanged — but the kind is ranked, because needing its own ROW ORDERING is
-    the stronger reason and subsumes the crossing one. Asserted flatly: there is
-    no nested sub-plan on this route, so there is nothing to recurse into.
+    the stronger reason and subsumes the crossing one. The ranked plan now lives
+    inside the single regroup-attach producer; top-level ranked/cross-model
+    plans are empty. Asserted flatly: the producer carries no nested cross-model
+    plan, so there is nothing to recurse into. Returns the ranked plan.
     """
     assert planned.cross_model_aggregate_plans == [], (
         f"a ranked aggregate must not ALSO produce a cross-model plan; "
         f"got {planned.cross_model_aggregate_plans}"
     )
-    assert len(planned.ranked_aggregate_plans) == 1, (
-        f"Expected exactly one ranked isolation plan; "
-        f"got {planned.ranked_aggregate_plans}"
+    assert planned.ranked_aggregate_plans == [], (
+        f"DEV-1835: a local ranked first/last desugars into a regroup producer, "
+        f"leaving no top-level ranked plan; got {planned.ranked_aggregate_plans}"
     )
-    plan = planned.ranked_aggregate_plans[0]
+    assert len(planned.regroup_attach_plans) == 1, (
+        f"Expected exactly one regroup-attach producer; "
+        f"got {planned.regroup_attach_plans}"
+    )
+    producer = planned.regroup_attach_plans[0].producer_plan
+    assert producer.cross_model_aggregate_plans == [], (
+        f"the ranked producer must not ALSO produce a cross-model plan; "
+        f"got {producer.cross_model_aggregate_plans}"
+    )
+    assert len(producer.ranked_aggregate_plans) == 1, (
+        f"Expected exactly one ranked isolation plan in the producer; "
+        f"got {producer.ranked_aggregate_plans}"
+    )
+    plan = producer.ranked_aggregate_plans[0]
     assert plan.root_model == "orders", plan
     assert plan.target_path == (), plan
+    return plan
 
 
 def _assert_single_host_rooted(plans) -> CrossModelAggregatePlan:
@@ -878,13 +900,11 @@ class TestCrossingFirstLastStaysRanked:
 
     def test_structural_time_arg_stays_ranked(self):
         planned, _ = _s5_plans("amount:last(customers.signup_at)")
-        _assert_single_ranked_host(planned)
+        plan = _assert_single_ranked_host(planned)
         # The one plan-level handle the crossing surfaces on: the ranking key
         # reaches through the customers join. A non-crossing time arg has path
         # ``()``, so this is what makes the case discriminate crossing at all.
-        assert planned.ranked_aggregate_plans[0].ranking_time_key.path == (
-            "customers",
-        )
+        assert plan.ranking_time_key.path == ("customers",)
 
     def test_derived_time_arg_stays_ranked(self):
         planned, _ = _s5_plans("amount:last(cross_time)")

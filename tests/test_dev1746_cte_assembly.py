@@ -242,20 +242,28 @@ class TestAssembledChainForRealQueries:
         assert names.index("_base") < names.index(cm[0]), names
 
     async def test_windowed_cte_follows_the_base_it_reads(self) -> None:
-        """``_wm_`` selects FROM ``_base``, so the dependency is real: emitting
-        it first would be invalid SQL, not merely untidy."""
+        """MIGRATED (DEV-1835): a local windowed measure is desugared into a
+        regroup producer that renders as a self-contained ``_cm_`` CTE (it
+        inlines its own base subquery rather than reading the outer ``_base``).
+        It still emits after ``_base`` via the assembler's insertion-order
+        tiebreak."""
         sql = await _gen(_windowed_query(), dialect="postgres")
         names = cte_names_in_order(sql)
-        wm = [n for n in names if n.startswith("_wm_")]
-        assert wm, f"no _wm_ CTE in {names}"
+        wm = [n for n in names if n.startswith("_cm_") and "window" in n]
+        assert wm, f"no windowed _cm_ producer in {names}"
         assert names.index("_base") < names.index(wm[0]), names
 
     async def test_mixed_cross_model_and_windowed_chain_is_ordered(self) -> None:
+        """MIGRATED (DEV-1835): the windowed measure is desugared and now renders
+        as a ``_cm_`` producer alongside the genuine cross-model ``_cm_`` CTE, so
+        the chain carries both producers after ``_base`` (distinguished by
+        name)."""
         sql = await _gen(_mixed_query(), dialect="postgres")
         names = cte_names_in_order(sql)
         assert names[0] == "_base", names
-        assert any(n.startswith("_cm_") for n in names), names
-        assert any(n.startswith("_wm_") for n in names), names
+        cm = [n for n in names if n.startswith("_cm_")]
+        assert any("window" in n for n in cm), names        # desugared windowed
+        assert any("lifetime_value" in n for n in cm), names  # cross-model
 
     async def test_two_independent_cross_model_ctes_follow_declaration_order(
         self,
@@ -332,11 +340,19 @@ class TestAssembledChainForRealQueries:
             f"assembler — the f-string splice is still in use:\n{sql}"
         )
         entries = calls[-1]
-        names = {e.name for e in entries}
-        assert any(n.startswith("_wm_") for n in names), names
-        # The windowed CTE reads _base, so its dependency must be DECLARED.
-        wm_entries = [e for e in entries if e.name.startswith("_wm_")]
-        assert all("_base" in e.depends_on for e in wm_entries), (
-            "a _wm_ CTE selects FROM _base but did not declare that "
-            f"dependency: {[(e.name, e.depends_on) for e in wm_entries]}"
+        # The assembler is fed structured CteEntry metadata objects (each with a
+        # declared ``depends_on`` list), not the bare ``(name, sql)`` list the
+        # legacy f-string splice sorted itself (Codex D3).
+        assert all(isinstance(e, CteEntry) for e in entries), (
+            f"the assembler was handed non-CteEntry items: {entries}"
         )
+        assert all(isinstance(e.depends_on, list) for e in entries), entries
+        names = {e.name for e in entries}
+        # MIGRATED (DEV-1835): the windowed measure is desugared into a regroup
+        # producer that renders as a self-contained ``_cm_`` CTE, so it arrives
+        # as a ``_cm_`` entry (it inlines its own base and declares no ``_base``
+        # dependency — earlier the ``_wm_`` CTE read ``_base`` and declared it).
+        windowed = [
+            e for e in entries if e.name.startswith("_cm_") and "window" in e.name
+        ]
+        assert windowed, names

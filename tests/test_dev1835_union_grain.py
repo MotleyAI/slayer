@@ -46,7 +46,6 @@ async def exec_backend(request):
 
 
 class TestUnionGrainBroadcast:
-    @LIFT_XFAIL
     async def test_windowed_inner_contributes_the_time_bucket(
         self, exec_backend,
     ) -> None:
@@ -74,7 +73,6 @@ class TestUnionGrainBroadcast:
         assert "__regroup__" not in dry.sql
         assert_scope_closed(dry.sql, dialect=dialect)
 
-    @LIFT_XFAIL
     async def test_first_last_inner_with_different_grain_sibling(
         self, exec_backend,
     ) -> None:
@@ -100,7 +98,6 @@ class TestUnionGrainBroadcast:
         assert "__regroup__" not in dry.sql
         assert_scope_closed(dry.sql, dialect=dialect)
 
-    @LIFT_XFAIL
     async def test_windowed_inner_no_td_fails_with_time_resolution_error(
         self, exec_backend,
     ) -> None:

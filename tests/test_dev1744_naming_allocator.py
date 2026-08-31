@@ -589,15 +589,14 @@ class TestAllocatorRouting:
     async def test_windowed_cte_names_use_the_shared_helper(
         self, tmp_path,
     ) -> None:
-        """``_wm_`` names go through the same sanitise-and-allocate primitive as
-        ``_cm_``, so both CTE families behave identically under a case-only
-        collision rather than one being retrofitted and the other not.
+        """DEV-1835: windowed producers now render under the unified ``_cm_``
+        producer naming, so they go through the same sanitise-and-allocate
+        primitive as every other ``_cm_`` CTE.
 
         Both measures aggregate the SAME column (``amount``) over different
         windows; the case-only pair is in their declared names, ``Wm`` and
-        ``wm``. Those names reach the CTE name, so without the allocator the
-        two would fold together on a folding dialect — the exact shape that
-        broke ``_cm_``.
+        ``wm``. The two windows yield two distinct ``_cm_`` producer CTEs that
+        the shared allocator keeps unfolded on a folding dialect.
         """
         engine = await _hostile_engine(
             column="revx2", base_dir=str(tmp_path),
@@ -621,7 +620,7 @@ class TestAllocatorRouting:
         for scope_names in _cte_names_by_scope(resp.sql):
             folded = [n.lower() for n in scope_names]
             assert len(folded) == len(set(folded)), scope_names
-        wm_names = [n for n in _cte_names(resp.sql) if n.startswith("_wm_")]
+        wm_names = [n for n in _cte_names(resp.sql) if n.startswith("_cm_")]
         assert len(wm_names) == 2, wm_names
 
     def test_no_raw_step_cte_names_in_the_generator(self) -> None:

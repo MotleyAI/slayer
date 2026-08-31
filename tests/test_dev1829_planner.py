@@ -246,8 +246,15 @@ class TestCoexistenceWithIsolatedFamilies:
             ],
         )
         planned = plan_query(query=q, bundle=_bundle())
-        assert len(planned.regroup_attach_plans) == 1
-        assert len(planned.windowed_aggregate_plans) == 1
+        # DEV-1835: the windowed family desugars into its own regroup producer,
+        # so it coexists as a SECOND combined attach (its windowed plan lives
+        # inside that producer), not as a top-level windowed plan.
+        assert len(planned.regroup_attach_plans) == 2
+        assert planned.windowed_aggregate_plans == []
+        assert sum(
+            len(rap.producer_plan.windowed_aggregate_plans)
+            for rap in planned.regroup_attach_plans
+        ) == 1
         assert "__regroup__" not in await gen(q)
 
     async def test_combined_attach_plus_ranked_measure(self) -> None:
@@ -259,8 +266,15 @@ class TestCoexistenceWithIsolatedFamilies:
             ],
         )
         planned = plan_query(query=q, bundle=_bundle())
-        assert len(planned.regroup_attach_plans) == 1
-        assert len(planned.ranked_aggregate_plans) == 1
+        # DEV-1835: the ranked (first/last) family desugars into its own regroup
+        # producer, so it coexists as a SECOND combined attach (its ranked plan
+        # lives inside that producer), not as a top-level ranked plan.
+        assert len(planned.regroup_attach_plans) == 2
+        assert planned.ranked_aggregate_plans == []
+        assert sum(
+            len(rap.producer_plan.ranked_aggregate_plans)
+            for rap in planned.regroup_attach_plans
+        ) == 1
         assert "__regroup__" not in await gen(q)
 
     async def test_combined_attach_plus_transform_measure(self) -> None:

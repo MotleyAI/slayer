@@ -168,11 +168,17 @@ artifact with an issue attached, never a permanent boundary.
   grains and broadcasts recursively (strict-subset operands become nested
   combined attaches inside the union-grain producer); bare composite arithmetic
   over two-plus partitioned aggregates lifts as a measure. Windowed/`first`-`last`
-  mixed grains defer to stage 2; a time-ordered transform whose grain lacks its
-  time axis fails closed instead of duplicating rows.
-- **Stage 2 (DEV-1835)** — migrate the local `_wm_` (windowed) and `_rk_`
-  (ranked) renderer arms onto the primitive and delete them; a general
-  cross-phase attach-dedup pass subsumes duplicate producers.
+  mixed grains defer to stage 2 (lifted there); a time-ordered transform whose
+  grain lacks its time axis fails closed instead of duplicating rows.
+- **Stage 2 (DEV-1835, this change)** — migrate the local `_wm_` (windowed) and
+  `_rk_` (ranked) renderer arms onto the primitive and delete them, unifying every
+  local family under `_cm_` producer naming; a general cross-phase attach-dedup
+  pass subsumes duplicate producers (a computed-dim grain key functionally
+  determined by the rest of the grain is pruned, so it needs no twin producer);
+  the DEV-1504 G4–G7 / windowed-ranked coexistence / `time_shift`-over-ranked
+  guards dissolve; and the stage-1b windowed/`first`-`last` mixed-grain union
+  broadcast lifts — a windowed inner contributes the query's synthesized time
+  bucket, `first`/`last` is timeless.
 - **Stage 3 (DEV-1836)** — migrate the cross-model `_cm_` family via target-rooted
   producers; cross-model sources become legal in the composed shapes and in
   dimension expressions; `classify_isolation` dispatch retires.
