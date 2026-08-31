@@ -21,9 +21,11 @@ from tests._dev1835_fixtures import (
     TimeGranularity,
     make_exec_engine,
     make_shipped_exec_engine,
-    month_key,
     month_td,
     q,
+    _by_region,
+    _by_region_month,
+    _assert_map,
 )
 
 
@@ -37,27 +39,6 @@ async def exec_backend(request):
 async def shipped_backend(request):
     async for engine in make_shipped_exec_engine(request):
         yield request.param, engine
-
-
-def _by_region(resp, col: str) -> dict:
-    return {r["orders.region"]: r[f"orders.{col}"] for r in resp.data}
-
-
-def _by_region_month(resp, col: str) -> dict:
-    return {
-        (r["orders.region"], month_key(r["orders.ordered_at"])): r[f"orders.{col}"]
-        for r in resp.data
-    }
-
-
-def _assert_map(got: dict, expected: dict) -> None:
-    assert set(got) == set(expected), sorted(map(str, got))
-    for key, value in expected.items():
-        if value is None:
-            assert got[key] is None, f"{key}"
-        else:
-            assert got[key] is not None, f"{key}: expected {value}, got NULL"
-            assert float(got[key]) == pytest.approx(value), f"{key}"
 
 
 #: Visible buckets under a >= 2024-02-01 frame bound; the windowed values must
