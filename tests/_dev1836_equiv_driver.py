@@ -69,7 +69,7 @@ def _physical_columns(model: SlayerModel):
     return out
 
 
-def _rand_value(dtype, rng: random.Random, idx: int):
+def _rand_value(dtype, rng: random.Random):
     if dtype == DataType.INT:
         return rng.randint(0, 50)
     if dtype in (DataType.DOUBLE,):
@@ -103,7 +103,6 @@ def _topo(models):
 
 def seed_sqlite(models, db_path, *, seed=20240501, n_rows=9):
     rng = random.Random(seed)
-    by = {m.name: m for m in models}
     con = sqlite3.connect(db_path)
     pk_values: dict[str, dict[str, list]] = {}
     for m in _topo(models):
@@ -132,7 +131,7 @@ def seed_sqlite(models, db_path, *, seed=20240501, n_rows=9):
                 elif c.primary_key or c.unique:
                     row[c.name] = (i + 1) if c.type == DataType.INT else f"{c.name[:3]}{i + 1}"
                 else:
-                    row[c.name] = _rand_value(c.type, rng, i)
+                    row[c.name] = _rand_value(c.type, rng)
             rows.append(row)
         placeholders = ", ".join("?" for _ in cols)
         con.executemany(
