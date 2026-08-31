@@ -329,14 +329,18 @@ async def make_shipped_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
 # shipped_backend fixtures stay inline in each module — pytest fixture imports
 # trip F811 where the fixture name shadows the test-method parameter).
 def _by_region(resp, col: str) -> dict:
-    return {r["orders.region"]: r[f"orders.{col}"] for r in resp.data}
+    mapping = {r["orders.region"]: r[f"orders.{col}"] for r in resp.data}
+    assert len(mapping) == len(resp.data), f"duplicate region rows: {resp.data}"
+    return mapping
 
 
 def _by_region_month(resp, col: str) -> dict:
-    return {
+    mapping = {
         (r["orders.region"], month_key(r["orders.ordered_at"])): r[f"orders.{col}"]
         for r in resp.data
     }
+    assert len(mapping) == len(resp.data), f"duplicate (region, month) rows: {resp.data}"
+    return mapping
 
 
 def _assert_map(got: dict, expected: dict) -> None:

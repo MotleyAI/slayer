@@ -459,8 +459,9 @@ class TestHiddenOrderOnlyWindowedValues(object):
         order_at = sql.rfind("ORDER BY")
         assert order_at != -1, sql
         order_tail = sql[order_at:]
-        assert "_cm_" in order_tail and "window_90d" in order_tail, (
-            f"the ORDER BY does not reference the windowed producer CTE:\n{sql}"
+        assert "_cm_" in order_tail, f"ORDER BY does not reference a _cm_ producer:\n{sql}"
+        assert "window_90d" in order_tail, (
+            f"the ORDER BY does not reference the windowed column:\n{sql}"
         )
 
         result = await windowed_engine.execute(query=query)
