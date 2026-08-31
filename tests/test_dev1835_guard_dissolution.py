@@ -174,12 +174,13 @@ class TestWindowedFilters:
         """An OR spanning the post-attach and row scopes cannot be split
         without changing meaning — the existing directive stays."""
         _, engine = exec_backend
+        query = q(
+            dimensions=["region"], time_dimensions=month_td(),
+            filters=["amount:sum(window='90d') > 40 or status = 'ok'"],
+            measures=[ModelMeasure(formula="amount:sum", name="m")],
+        )
         with pytest.raises((ValueError, NotImplementedError), match="no common scope"):
-            await engine.execute(q(
-                dimensions=["region"], time_dimensions=month_td(),
-                filters=["amount:sum(window='90d') > 40 or status = 'ok'"],
-                measures=[ModelMeasure(formula="amount:sum", name="m")],
-            ))
+            await engine.execute(query)
 
 
 class TestTemporalOverRanked:

@@ -56,7 +56,10 @@ from slayer.core.errors import (
 )
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.keys import ColumnKey, Phase
+from slayer.engine.planned import OrderEntry, OrderScope, PlannedQuery, ValueSlot
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.sql.generator import SQLGenerator
 from slayer.sql.scope_check import assert_scope_closed
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -1164,11 +1167,6 @@ class TestStillGuarded:
         silently emit ``ORDER BY "orders.status"`` instead — a row column that
         is not in the GROUP BY.
         """
-        from slayer.core.keys import ColumnKey, Phase
-        from slayer.engine.planned import (
-            OrderEntry, OrderScope, PlannedQuery, ValueSlot,
-        )
-        from slayer.sql.generator import SQLGenerator
 
         slot = ValueSlot(
             id="s0",

@@ -37,6 +37,7 @@ from slayer.core.keys import (
     substitute_value_keys,
 )
 from slayer.engine.binding import BoundFilter, walk_value_keys
+from slayer.engine.ranked_planner import RANKED_AGGREGATIONS
 from slayer.sql.naming import canonical_aggregate_alias
 
 __all__ = [
@@ -54,9 +55,10 @@ __all__ = [
     "reserved_prefix_columns",
 ]
 
-#: The aggregations that rank (kept in step with ``ranked_planner``); a bare
-#: ``first``/``last`` attaches at the combined SELECT like a windowed one.
-_RANKED_AGGS = ("first", "last")
+#: The aggregations that rank (reused from ``ranked_planner`` so they stay in
+#: step); a bare ``first``/``last`` attaches at the combined SELECT like a
+#: windowed one.
+_RANKED_AGGS = RANKED_AGGREGATIONS
 
 
 def is_local_combined_regroup_ref(
@@ -355,7 +357,7 @@ def conjunct_scope(
     _, refs = _top_level_refs(vk=vk, dim_agg_set=frozenset())
     partitioned = [
         k for k in refs
-        if is_local_combined_regroup_ref(k, row_agg_set=row_agg_set)
+        if is_local_combined_regroup_ref(k=k, row_agg_set=row_agg_set)
     ]
     if not partitioned:
         return "other"

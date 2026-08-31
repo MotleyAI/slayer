@@ -71,11 +71,12 @@ exactly the producer's grain, so grains strictly decrease and the recursion is
 bounded. The producer's internal `WITH` (the nested attaches plus its own
 transform steps) hoists into the one flat chain (see [The CTE-hoist](#the-cte-hoist)).
 
-Two cases still fail closed: a mixed-grain transform any of whose inner
-aggregates is windowed or `first`/`last` (the union would need the synthesized
-time bucket — stage 2, DEV-1835), and a time-ordered transform (`cumsum`, `lag`,
-…) whose evaluation grain lacks its time-ordering key — which would duplicate
-result rows, so the author is told to include the time key in `partition_by`.
+One case still fails closed: a time-ordered transform (`cumsum`, `lag`, …) whose
+evaluation grain lacks its time-ordering key — which would duplicate result rows,
+so the author is told to include the time key in `partition_by`. (A mixed-grain
+transform whose inner aggregate is windowed or `first`/`last` no longer fails
+here — DEV-1835 lifts it onto the union grain, folding in the synthesized time
+bucket.)
 
 ## Producer synthesis
 
@@ -125,7 +126,7 @@ raises a clear "split the filter" error rather than an internal one.
 A producer that itself needs intermediate relations (a rolling window, a ranking,
 transform steps) renders its own internal `WITH`. To keep one flat chain, that
 `WITH` is **hoisted**: nested renders share the parent's `AliasAllocator`, so
-`_cm_` / `_wm_` / `_rk_` / `step` names are globally unique by construction; the
+`_cm_` / `step` names are globally unique by construction; the
 literal `_base` / `base` names are reserved in the allocator and renamed
 per-producer. Several complex producers therefore coexist in one query with no
 name collisions on any dialect.

@@ -21,9 +21,11 @@ from tests._dev1835_fixtures import (
     TimeGranularity,
     make_exec_engine,
     make_shipped_exec_engine,
-    month_key,
     month_td,
     q,
+    _by_region,
+    _by_region_month,
+    _assert_map,
 )
 
 
@@ -37,27 +39,6 @@ async def exec_backend(request):
 async def shipped_backend(request):
     async for engine in make_shipped_exec_engine(request):
         yield request.param, engine
-
-
-def _by_region(resp, col: str) -> dict:
-    return {r["orders.region"]: r[f"orders.{col}"] for r in resp.data}
-
-
-def _by_region_month(resp, col: str) -> dict:
-    return {
-        (r["orders.region"], month_key(r["orders.ordered_at"])): r[f"orders.{col}"]
-        for r in resp.data
-    }
-
-
-def _assert_map(got: dict, expected: dict) -> None:
-    assert set(got) == set(expected), sorted(map(str, got))
-    for key, value in expected.items():
-        if value is None:
-            assert got[key] is None, f"{key}"
-        else:
-            assert got[key] is not None, f"{key}: expected {value}, got NULL"
-            assert float(got[key]) == pytest.approx(value), f"{key}"
 
 
 #: Visible buckets under a >= 2024-02-01 frame bound; the windowed values must
@@ -87,8 +68,8 @@ class TestFrameBoundExecuted:
             )],
             measures=[w],
         ))
-        _assert_map(_by_region_month(bounded, "w"), BOUNDED_W90)
-        _assert_map(_by_region_month(ranged, "w"), BOUNDED_W90)
+        _assert_map(got=_by_region_month(resp=bounded, col="w"), expected=BOUNDED_W90)
+        _assert_map(got=_by_region_month(resp=ranged, col="w"), expected=BOUNDED_W90)
 
     async def test_explicit_bound_equals_date_range_for_time_shift(
         self, exec_backend,
@@ -141,8 +122,8 @@ class TestExplicitRankingTime:
             dimensions=["region"],
             measures=[ModelMeasure(formula="amount:last(ordered_at)", name="l")],
         ))
-        _assert_map(_by_region(bare, "l"), LAST_BY_ORDERED)
-        _assert_map(_by_region(explicit, "l"), LAST_BY_ORDERED)
+        _assert_map(got=_by_region(resp=bare, col="l"), expected=LAST_BY_ORDERED)
+        _assert_map(got=_by_region(resp=explicit, col="l"), expected=LAST_BY_ORDERED)
 
     async def test_explicit_ranking_column_wins(self, shipped_backend) -> None:
         """North's latest shipment is its earliest-amount row (10 ≠ 30)."""

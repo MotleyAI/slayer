@@ -43,6 +43,7 @@ from slayer.core.keys import (
     LiteralKey,
     ScalarCallKey,
 )
+from slayer.core.keys import TimeTruncKey
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import ColumnRef, ModelMeasure, SlayerQuery, TimeDimension
 from slayer.core.time_bounds import is_frame_bound, is_temporal_literal, strip_frame_bounds
@@ -807,7 +808,6 @@ class TestFrameBoundColumnSet:
         leave that axis wholly unconstrained — an unbounded over-count — so the
         set must contain only columns of NON-hidden time-dimension slots.
         """
-        from slayer.core.keys import TimeTruncKey
 
         plan = await _plan(
             _windowed_query(

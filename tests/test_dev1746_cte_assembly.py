@@ -36,6 +36,7 @@ from sqlglot import exp
 from slayer.core.enums import TimeGranularity
 from slayer.core.models import ModelMeasure
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.sql import generator as generator_mod
 from slayer.sql.naming import assert_unique_cte_names
 from slayer.sql.render.cte_assembly import CteEntry, assemble_with_chain
 
@@ -318,7 +319,6 @@ class TestAssembledChainForRealQueries:
         it receives EXPLICIT dependency metadata (Codex D3) rather than being
         handed a bare list to sort by itself.
         """
-        from slayer.sql import generator as generator_mod
 
         calls: list = []
         original = generator_mod.assemble_with_chain

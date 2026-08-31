@@ -8,8 +8,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import sqlglot
 import sqlglot.errors
+from pydantic import ValidationError as PydanticValidationError
 
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.formula import parse_filter
 from slayer.core.models import Aggregation, AggregationParam, Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -7765,8 +7767,6 @@ class TestDev1501BroadTriggerAndGuards:
 
         Full behaviour: ``tests/test_dev1733_order_only_transform_composite.py``.
         """
-        from pydantic import ValidationError as PydanticValidationError
-
         item = OrderItem(column="revenue:sum - cost:sum", direction="desc")
         assert item.column.name == "_expr_pending"
         assert item.raw_formula == "revenue:sum - cost:sum"
@@ -11472,8 +11472,6 @@ class TestFilterOuterParenWrapDev1539:
         short-circuit to the complete operator; everything else falls
         through to the standard ``<op> <rhs>`` emission.
         """
-        from slayer.core.formula import parse_filter
-
         pf = parse_filter(formula)
         assert pf.sql == expected_sql, (
             f"parse_filter({formula!r}).sql == {pf.sql!r}, expected "
@@ -11487,8 +11485,6 @@ class TestFilterOuterParenWrapDev1539:
         must reject chained comparisons with a clear, actionable error
         rather than silently emit subtly wrong SQL.
         """
-        from slayer.core.formula import parse_filter
-
         with pytest.raises(ValueError, match=r"[Cc]hained comparison") as excinfo:
             parse_filter("a < b < c")
         # The error must point at the actionable alternative.
@@ -11759,8 +11755,6 @@ class TestFilterOuterParenWrapDev1539:
         both emit as ``(a + b * c) > 10`` — semantically distinct
         inputs collapse to the same output, silently changing results.
         """
-        from slayer.core.formula import parse_filter
-
         pf = parse_filter(formula)
         assert pf.sql == expected_sql, (
             f"parse_filter({formula!r}).sql == {pf.sql!r}, expected "
@@ -11941,11 +11935,10 @@ class TestFilterOuterParenWrapDev1539:
         HAVING branches both have — a 2-hop col_name mis-substitutes as
         a prefix of a 3-hop ref, mangling the emitted SQL.
         """
-        import re as _re_mod
         col_name = "customers.score"
-        pattern = r"(?<!\.)(?<!\w)\b" + _re_mod.escape(col_name) + r"\b(?!\.)"
+        pattern = r"(?<!\.)(?<!\w)\b" + _re.escape(col_name) + r"\b(?!\.)"
         having_sql = "customers.score > 7 AND customers.score.extra > 0"
-        result = _re_mod.sub(pattern, lambda _m: "EXPANDED", having_sql)
+        result = _re.sub(pattern, lambda _m: "EXPANDED", having_sql)
         # Only the standalone 2-hop ref is rewritten; the 3-hop ref is
         # left intact for its own (later) substitution.
         assert result == "EXPANDED > 7 AND customers.score.extra > 0", (
@@ -11974,14 +11967,13 @@ class TestFilterOuterParenWrapDev1539:
         # multi-stage / cross-model paths where post-DSL substitutions
         # leave dotted refs in `having_sql`. This test checks the regex
         # behaviour directly.
-        import re as _re_mod
         col_name = "foo"
         agg_sql = "SUM(amount)"
         # CURRENT (buggy): no trailing `(?!\.)` guard
-        pattern_with_fix = rf"(?<!\.)(?<!\w)\b{_re_mod.escape(col_name)}\b(?!\.)"
+        pattern_with_fix = rf"(?<!\.)(?<!\w)\b{_re.escape(col_name)}\b(?!\.)"
         # AFTER fix: the dotted continuation must NOT be substituted
         having_sql = "foo > 100 AND foo.bar > 5"
-        result = _re_mod.sub(pattern_with_fix, lambda _: agg_sql, having_sql)
+        result = _re.sub(pattern_with_fix, lambda _: agg_sql, having_sql)
         assert result == "SUM(amount) > 100 AND foo.bar > 5", (
             f"Post-fix HAVING regex must skip dotted continuations; "
             f"got: {result!r}"

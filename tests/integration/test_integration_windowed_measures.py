@@ -1,6 +1,6 @@
 """DEV-1714 Stage 10 — integration VALUE tests for duration-windowed measures.
 
-These exercise the ``_wm_`` range-join primitive against real in-process
+These exercise the windowed range-join primitive against real in-process
 databases (DuckDB + SQLite, no Docker) and assert hand-computed rolling-90d
 VALUES — the class of coverage that catches the DEV-1496 "silent wrong
 results" failure mode that SQL-shape assertions alone cannot.
@@ -226,7 +226,7 @@ class TestWindowedMeasureValues:
         """A base group whose dimension is NULL receives its REAL windowed value.
 
         This used to come back NULL, and was pinned as a documented consequence:
-        the ``_src`` join-back inside the ``_wm_`` CTE compared the grain with a
+        the ``_src`` join-back inside the windowed producer CTE compared the grain with a
         plain ``=``, and ``NULL = NULL`` is not TRUE, so the group matched no
         rows. The outer join-back and the cross-model join-back were already
         null-safe, so the answer depended on which isolation shape a measure
@@ -403,7 +403,7 @@ class TestHiddenOrderOnlyWindowedValues(object):
         self, windowed_engine: SlayerQueryEngine,
     ) -> None:
         """A declared windowed measure plus a DIFFERENT order-only windowed
-        one — two ``_wm_`` CTEs, one projected and one trimmed, both correct."""
+        one — two windowed producer CTEs, one projected and one trimmed, both correct."""
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
@@ -438,8 +438,9 @@ class TestHiddenOrderOnlyWindowedValues(object):
 
         The discrimination is therefore structural as well: the ORDER BY must
         reference the windowed CTE's column. A plain-``SUM`` regression (the
-        DEV-1733 defect, where the window was silently dropped) emits no ``_wm_``
-        CTE at all, so it cannot satisfy that no matter how the rows tie.
+        DEV-1733 defect, where the window was silently dropped) emits no windowed
+        range-join (``_w_value``) at all, so it cannot satisfy that no matter how
+        the rows tie.
         """
         query = SlayerQuery(
             source_model="orders",
@@ -451,14 +452,15 @@ class TestHiddenOrderOnlyWindowedValues(object):
             order=[{"column": "revenue:sum(window='90d')", "direction": "desc"}],
         )
         sql = (await windowed_engine.execute(query=query, dry_run=True)).sql or ""
-        assert "_wm_" in sql, (
+        assert "_w_value" in sql, (
             f"no windowed CTE was emitted — the window was dropped and the "
             f"ORDER BY is over a plain SUM:\n{sql}"
         )
         order_at = sql.rfind("ORDER BY")
         assert order_at != -1, sql
-        assert "_wm_" in sql[order_at:], (
-            f"the ORDER BY does not reference the windowed CTE:\n{sql}"
+        order_tail = sql[order_at:]
+        assert "_cm_" in order_tail and "window_90d" in order_tail, (
+            f"the ORDER BY does not reference the windowed producer CTE:\n{sql}"
         )
 
         result = await windowed_engine.execute(query=query)

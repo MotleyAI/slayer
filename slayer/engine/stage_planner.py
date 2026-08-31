@@ -1593,7 +1593,7 @@ def _is_bare_local_regroup_root(k: ValueKey) -> bool:
     )
 
 
-def _bare_combined_roots(
+def _bare_combined_roots(  # NOSONAR(S3776) — straight-line discovery walk over projected slots + filters collecting bare regroup roots; each branch is independently simple
     prebound: PreboundQuery,
 ) -> Tuple[List[AggregateKey], Dict[AggregateKey, str]]:
     """Bare windowed / first-last aggregates reachable from a NON-dimension
@@ -1671,11 +1671,13 @@ def _scalar_free_columns(node: ValueKey, out: set) -> None:
         out.add(node)
     elif isinstance(node, ArithmeticKey):
         for op in node.operands:
-            _scalar_free_columns(op, out)
+            _scalar_free_columns(node=op, out=out)
     elif isinstance(node, ScalarCallKey):
         for arg in node.args:
-            if isinstance(arg, (ColumnKey, ArithmeticKey, ScalarCallKey)):
-                _scalar_free_columns(arg, out)
+            if isinstance(arg, (ColumnKey, ArithmeticKey, ScalarCallKey, TransformKey)):
+                _scalar_free_columns(node=arg, out=out)
+    elif isinstance(node, TransformKey):
+        _scalar_free_columns(node=node.input, out=out)
 
 
 def _prune_functionally_determined_grain(
@@ -1725,7 +1727,7 @@ def _windowed_or_ranked_identity(agg: ValueKey):
     )
 
 
-def _partition_free_identity(agg: ValueKey):
+def _partition_free_identity(agg: ValueKey):  # NOSONAR(S8495) — distinct-shape identity tuples are intentional dict keys: a plain aggregate's 5-field identity and an "other" 2-tuple never collide (different lengths compare unequal)
     """A hashable identity ignoring ``partition_keys`` (DEV-1835 D6). Two
     aggregates that differ ONLY in partition (a bare form and an explicit
     ``partition_by=`` twin, already grouped at the same grain) share one producer
