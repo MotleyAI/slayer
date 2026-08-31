@@ -55,6 +55,7 @@ from slayer.engine.ingestion import (
     _sa_type_is_float,
     _sa_type_to_data_type,
 )
+from slayer.engine.column_expansion import resolve_ref_target
 from slayer.engine.normalization import func_style_agg_to_colon
 from slayer.engine.syntax import (
     AggCall,
@@ -536,12 +537,14 @@ def diff_sql_model(
 
 
 def _extract_column_refs_from_sql(sql: str) -> list[tuple[str | None, str]]:
-    """Return all ``(table_alias, column_name)`` refs in a SQL expression.
+    """Return all ``(qualifier, column_name)`` refs in a SQL expression.
 
-    ``table_alias`` is ``None`` for bare identifiers, the raw alias string
-    for qualified ones (e.g. ``customers.region`` → ``("customers",
-    "region")``; ``customers__regions.name`` → ``("customers__regions",
-    "name")``).
+    ``qualifier`` is ``None`` for bare identifiers, else the full dotted
+    qualifier string (DEV-1743: dots are the canonical join-path delimiter, so
+    a multi-hop ``customers.regions.name`` yields ``("customers.regions",
+    "name")``; a ``__``-named DIRECT target ``customer__region.label`` yields
+    ``("customer__region", "label")`` — the ``__`` is part of the name, never
+    split). The qualifier is resolved downstream by :func:`resolve_ref_target`.
     """
     try:
         parsed = sqlglot.parse_one(sql)
@@ -549,11 +552,9 @@ def _extract_column_refs_from_sql(sql: str) -> list[tuple[str | None, str]]:
         return []
     refs: list[tuple[str | None, str]] = []
     for col in parsed.find_all(exp.Column):
-        if col.args.get("db") or col.args.get("catalog"):
-            continue
-        table_id = col.args.get("table")
-        table_alias = table_id.name if table_id else None
-        refs.append((table_alias, col.name))
+        parts = [p.name for p in col.parts]
+        qualifier = ".".join(parts[:-1]) if len(parts) > 1 else None
+        refs.append((qualifier, parts[-1]))
     return refs
 
 
@@ -659,22 +660,19 @@ def _walk_alias_to_target_model(
     table_alias: str,
     models_by_name: dict[str, SlayerModel],
 ) -> SlayerModel | None:
-    """Resolve a ``__``-delimited path alias starting from ``source_model``
-    to the terminal joined model. Returns None if any hop fails.
+    """Resolve a Mode-A qualifier to its terminal joined model (DEV-1743).
+
+    ``table_alias`` is exact-matched first (a directly-joined model MAY contain
+    ``__``), then walked as a dotted chain of exact hops — never ``__``-split.
+    Returns ``None`` if any hop fails.
     """
     if table_alias in (source_model.name, ""):
         return source_model
-    parts = table_alias.split("__") if "__" in table_alias else [table_alias]
-    current = source_model
-    for hop in parts:
-        join = next((j for j in current.joins if j.target_model == hop), None)
-        if join is None:
-            return None
-        nxt = models_by_name.get(hop)
-        if nxt is None:
-            return None
-        current = nxt
-    return current
+    return resolve_ref_target(
+        qualifiers=tuple(table_alias.split(".")),
+        source_model=source_model,
+        resolve_model=models_by_name.get,
+    )
 
 
 def _resolve_dotted_ref_to_model(
@@ -686,14 +684,16 @@ def _resolve_dotted_ref_to_model(
     """Resolve a dotted measure/column ref like ``customers.region`` or
     ``customers.regions.name`` to ``(target_model, leaf_name)``.
 
-    Same-model bare refs (no dot) return ``(source_model, ref)``.
+    Same-model bare refs (no dot) return ``(source_model, ref)``. The dotted
+    prefix is passed through verbatim (DEV-1743: dots are the canonical join
+    delimiter — no ``__`` conversion).
     """
     if "." not in dotted_ref:
         return source_model, dotted_ref
     prefix, leaf = dotted_ref.rsplit(".", 1)
     target = _walk_alias_to_target_model(
         source_model=source_model,
-        table_alias=prefix.replace(".", "__"),
+        table_alias=prefix,
         models_by_name=models_by_name,
     )
     return target, leaf

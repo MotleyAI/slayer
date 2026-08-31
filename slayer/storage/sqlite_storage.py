@@ -288,6 +288,18 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
             name=name, data=data, data_source=data_source,
         )
 
+    async def _load_raw_model_dict(
+        self, *, name: str, data_source: str,
+    ) -> dict | None:
+        """DEV-1743 v9: read the stored JSON verbatim (no migration / no
+        validation) for sibling-hop resolution during the legacy-``__``
+        rewrite. Returns ``None`` when the row is absent or not a mapping."""
+        raw = await asyncio.to_thread(self._get_model_sync, data_source, name)
+        if not raw:
+            return None
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else None
+
     async def _delete_model_row(
         self, *, data_source: str, name: str,
     ) -> bool:

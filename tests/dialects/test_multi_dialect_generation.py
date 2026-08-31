@@ -278,10 +278,11 @@ class TestMultiDialectGeneration:
             f"Multi-unit Postgres-shape INTERVAL literal is invalid on {dialect}.\n"
             f"sql:\n{sql}"
         )
-        # Per-unit INTERVAL clauses must each be present (sqlglot transpiles
-        # exp.Interval per dialect; MySQL + ClickHouse both render as
-        # `INTERVAL N UNIT` for these AST nodes).
-        for piece in ("INTERVAL 1 YEAR", "INTERVAL 2 MONTH", "INTERVAL 3 DAY"):
+        # Per-unit INTERVAL clauses must each be present, still one-unit-per-clause
+        # (never a single combined literal). DEV-1835's regroup producer renders
+        # through a sqlglot parse/serialize round-trip, which quotes the amount —
+        # `INTERVAL 'N' UNIT` — a valid per-dialect form on MySQL + ClickHouse.
+        for piece in ("INTERVAL '1' YEAR", "INTERVAL '2' MONTH", "INTERVAL '3' DAY"):
             assert piece in norm, (
                 f"Expected dialect-correct '{piece}' in {dialect} output.\n"
                 f"sql:\n{sql}"
@@ -291,12 +292,11 @@ class TestMultiDialectGeneration:
     async def test_window_measure_single_unit_interval_dialect_correct(
         self, dialect: str, orders_model: SlayerModel,
     ) -> None:
-        """Even single-unit windows must render unquoted on MySQL/ClickHouse.
-
-        The pre-refactor code emits `INTERVAL '7 day'` for single-unit windows
-        on every non-SQLite dialect, which is invalid MySQL syntax (MySQL wants
-        `INTERVAL 7 DAY`). After the AST refactor, sqlglot's per-dialect
-        transpiler emits the canonical form for each dialect.
+        """Single-unit windows must render as a per-unit clause, never the
+        combined `INTERVAL '7 day'` string that is invalid MySQL syntax. sqlglot's
+        per-dialect transpiler emits `INTERVAL '7' DAY` (amount quoted, unit bare)
+        for MySQL/ClickHouse after DEV-1835's producer round-trip — a valid form,
+        distinct from the combined-string bug this guards against.
         """
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
@@ -314,8 +314,8 @@ class TestMultiDialectGeneration:
             f"Quoted single-unit INTERVAL literal is invalid on {dialect}.\n"
             f"sql:\n{sql}"
         )
-        assert "INTERVAL 7 DAY" in norm, (
-            f"Expected dialect-correct 'INTERVAL 7 DAY' in {dialect} output.\n"
+        assert "INTERVAL '7' DAY" in norm, (
+            f"Expected dialect-correct \"INTERVAL '7' DAY\" in {dialect} output.\n"
             f"sql:\n{sql}"
         )
 

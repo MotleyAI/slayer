@@ -159,11 +159,29 @@ query's row-level filters — `having`-phase filters and pagination change which
 rows you see, never the parent total. NULL-valued partition dimensions keep their
 group.
 
-These shapes raise a clear error rather than returning wrong numbers, and are
-planned follow-ups: `partition_by` combined with `window=`; on `first`/`last`;
-nested inside a transform (`cumsum(revenue:sum(partition_by=region))`); or
-referenced in a filter. A `partition_by` column that is not a query dimension
-(or, cross-model, not expressible at the aggregate's root) errors at plan time.
+A `partition_by` aggregate can also drive a
+[computed dimension](queries.md#grouping-by-an-expression-over-an-aggregate) —
+grouping by a value derived from an aggregate at a finer grain than the query.
+There, the `partition_by` grain is unconstrained (it may be finer than the query
+dimensions), since it defines the grain of a synthesized internal stage.
+
+A local `partition_by` aggregate composes with the rest of the query: combined
+with `window=` (a rolling total at the partition grain), on `first`/`last`,
+nested inside a transform (`cumsum(revenue:sum(partition_by=region))`), and
+referenced in a filter (`revenue:sum(partition_by=region) > 5000`) — a filter's
+top-level `AND` conjuncts route independently to the earliest scope where their
+references resolve, and a predicate whose references share no scope raises a
+"split the filter" error. As a query MEASURE, a `partition_by` column that is not
+a query dimension (or, cross-model, not expressible at the aggregate's root)
+errors at plan time. Cross-model `partition_by` sources in these composed shapes
+remain a planned follow-up and raise a clear error rather than returning wrong
+numbers.
+
+Combining aggregates at **different** grains in one expression is well-defined:
+`amount:sum(partition_by=region) - amount:sum(partition_by=city)` (as a measure,
+a computed dimension, a filter, or wrapped in a transform such as
+`rank(...)`) unions the two grains and broadcasts each aggregate to the union —
+never an error. See [grain-union broadcasting](queries.md#grouping-by-an-expression-over-an-aggregate).
 
 ---
 
@@ -250,9 +268,14 @@ Functions apply window operations to measures:
 
 **Time dimension requirement:** All time-ordered transforms (`cumsum`, `time_shift`, `change`, `change_pct`, `first`, `last`, `lag`, `lead`, `consecutive_periods`) require an explicit `time_dimensions` entry in the query. With a single entry, it's used automatically. With 2+ time dimensions, specify the query's `main_time_dimension` to disambiguate, or the model's `default_time_dimension` is used if it's among the query's time dimensions. The rank-family transforms (`rank`, `percent_rank`, `dense_rank`, `ntile`) do not need a time dimension.
 
-Time-ordered window transforms partition by the query's non-time dimensions.
-For example, `cumsum(revenue:sum)` grouped by `status` computes one running
-total per status, not one running total across the whole result set. An explicit
+Time-ordered window transforms partition by **every** projected non-time
+dimension — plain columns, joined and derived columns, and
+[computed (expression) dimensions](queries.md#grouping-by-an-expression-over-an-aggregate),
+aggregation-derived ones included. For example, `cumsum(revenue:sum)` grouped
+by `status` computes one running total per status, not one running total
+across the whole result set; grouped by a computed `band`, one per
+`(…, band)` group. An attached `partition_by=` *measure* value never joins the
+partition (it is a value, not a grouping dimension). An explicit
 `partition_by=` is accepted only on the rank family; on other transforms it
 errors (their partition is fixed to the query's dimensions). To coarsen the
 *measure* itself, put `partition_by=` on the aggregation
@@ -416,6 +439,29 @@ The single-arg aliases `log10(x)` and `log2(x)` round-trip verbatim in emitted S
 Column(name="ln_amount", sql="ln(amount)", type=DataType.DOUBLE)
 Column(name="rms", sql="sqrt(pow(x, 2) + pow(y, 2))", type=DataType.DOUBLE)
 ```
+
+## Conditionals (`CASE WHEN` / `iif`)
+
+Any formula, filter, or field expression can branch with SQL `CASE`:
+
+```json
+{"formula": "CASE WHEN revenue:sum >= 10000 THEN 1 ELSE 0 END", "name": "big"}
+```
+
+- **Searched** (`CASE WHEN c1 THEN v1 [WHEN c2 THEN v2 …] [ELSE d] END`) and
+  **simple** (`CASE x WHEN v1 THEN r1 … END`, lowered to `x = v1`) forms are both
+  accepted; keywords are case-insensitive and CASE nests anywhere.
+- A missing `ELSE` yields `NULL`. `iif(cond, then, otherwise)` is an equivalent
+  spelling — an allowlisted scalar function taking exactly three arguments.
+  Everything renders to a portable SQL `CASE` on every Tier-1 dialect.
+- Inside a `WHEN` condition you may use SQL operators (`=`, `<>`, `AND`, `OR`,
+  `NOT`, `LIKE`) even in a measure formula; `THEN` / `ELSE` values are taken
+  as-is (a string literal like `'a AND b'` is never rewritten).
+- The result **type is the join of the branches** (Postgres semantics):
+  identical types pass through, a numeric mix widens to `DOUBLE`, a `NULL`
+  branch is absorbed by the other, and any other mix is a plan-time error
+  naming both types. The Python conditional `x if c else y` is not supported —
+  use `CASE` / `iif`.
 
 ---
 

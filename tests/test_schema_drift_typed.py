@@ -215,10 +215,11 @@ class TestMeasureFormulaRefs:
     def test_malformed_returns_empty(self) -> None:
         assert _measure_formula_refs("this is not ) valid (") == set()
 
-    def test_bare_dunder_identifier_returns_empty(self) -> None:
-        # parse_expr rejects ``__`` in a bare AST identifier; best-effort
-        # extraction swallows the error and returns the empty set.
-        assert _measure_formula_refs("robot__details") == set()
+    def test_bare_dunder_identifier_is_extracted(self) -> None:
+        # DEV-1743: parse_expr no longer rejects ``__`` in a bare identifier,
+        # so a bare ``robot__details`` ref is extracted like any other
+        # (matching the colon-agg source case below).
+        assert _measure_formula_refs("robot__details") == {"robot__details"}
 
     def test_colon_agg_dunder_source_is_extracted(self) -> None:
         # ``__`` inside a colon-agg SOURCE is captured pre-AST (not a bare

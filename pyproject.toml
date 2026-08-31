@@ -1,6 +1,6 @@
 [project]
 name = "motley-slayer"
-version = "0.9.12"
+version = "0.10.0"
 description = "A lightweight, agent-first semantic layer for AI agents"
 requires-python = ">=3.11"
 license = "MIT"
@@ -31,6 +31,7 @@ Discord = "https://discord.gg/egWxMctHCA"
 python = "^3.11"
 sqlglot = {version = ">=30.17", extras = ["c"]}
 sqlalchemy = ">=2.0"
+greenlet = ">=1"
 pydantic = ">=2.0"
 python-dateutil = ">=2.8"
 pyyaml = ">=6.0"

@@ -36,7 +36,7 @@ or `<ds>.<model>.<leaf>` — see
 each memory's stored entity tags via `BM25Plus`. Memories with zero
 overlap are excluded.
 
-**Implicit self-references (DEV-1513).** Channel 1 contributes to BOTH
+**Implicit self-references.** Channel 1 contributes to BOTH
 the memory ranking AND the entity ranking via a single unifying model:
 every doc is conceptually tagged with an implicit reference to itself.
 
@@ -152,9 +152,9 @@ score(d) = Σ_r 1 / (k + rank_r(d))
 
 Entity rankings from channels 1, 2, and 3 are RRF-fused the same way.
 Channel 1's entity ranking is the user-supplied canonical refs in
-supplied order (DEV-1513); channels 2 and 3 contribute fuzzy hits.
+supplied order; channels 2 and 3 contribute fuzzy hits.
 
-### Ranking stability (DEV-1414)
+### Ranking stability
 
 Each channel produces a **full per-kind ranking** — channel 2 runs as
 two kind-filtered tantivy queries (one over memory docs only, one over
@@ -211,7 +211,7 @@ render — useful when drilling into a single memory:
 {"entities": ["memory:42"], "max_results": 1, "compact": false}
 ```
 
-### `datasource` filter (DEV-1409)
+### `datasource` filter
 
 All four surfaces accept an optional `datasource: Optional[str] = None`
 argument. When set, every channel pre-filters its corpus to that one
@@ -222,7 +222,7 @@ datasource:
   match (`<ds>`) or strict dotted-path descendant (`<ds>.<model>`,
   `<ds>.<model>.<leaf>`). Character-prefix matches do NOT qualify, so
   `datasource="prod"` excludes a sibling datasource named `prod_v2`.
-  Channel 1 (DEV-1513) drops a user-supplied `entities=` ref that
+  Channel 1 drops a user-supplied `entities=` ref that
   isn't rooted at the requested datasource with a warning rather than
   silently surfacing it.
 - **Memory hits** (channels 1, 2, 3, and the recency fallback) include
@@ -243,11 +243,11 @@ surface fast.
 
 `canonical_id` rooting uses `slayer.memories.resolver.canonical_id_rooted_at`,
 which encodes the same dotted-namespace rule the embedding cascade-delete
-already enforces (DEV-1405). Datasource names cannot contain `.` (rejected
+already enforces. Datasource names cannot contain `.` (rejected
 by `DatasourceConfig.name` + `SlayerModel.data_source` validators), so the
 prefix match is unambiguous.
 
-### `cypher_filter` graph pre-filter (DEV-1464)
+### `cypher_filter` graph pre-filter
 
 All four surfaces accept an optional `cypher_filter: Optional[str] = None`
 argument. When set, an openCypher `MATCH … RETURN … AS id` query is run
@@ -333,7 +333,7 @@ RETURN c.id AS id
 | `entities`/`query` | `question` | Result |
 |---|---|---|
 | set | set | All eligible channels run. Memories and entities are RRF-fused across all active channels. Channel 3 is skipped with a warning when the `advanced_search` extra is missing. |
-| set | unset/empty | Channel 1 only. Memory hits ranked by entity-tag overlap; entity hits = the named refs themselves (DEV-1513). |
+| set | unset/empty | Channel 1 only. Memory hits ranked by entity-tag overlap; entity hits = the named refs themselves. |
 | unset/empty | set | Channels 2 and 3 (when eligible). Memories and entities RRF-fused. |
 | unset/empty | unset/empty | Recency fallback: newest memories (any kind) capped at `max_results`, with a warning. |
 
@@ -355,7 +355,7 @@ class SearchHit(BaseModel):
                                   # entity hits with descriptions; populated
                                   # for memory hits in compact mode)
     matched_entities: List[str]   # channel-1 overlap (memory hits only;
-                                  # stale tags filtered, DEV-1428)
+                                  # stale tags filtered)
     query: Optional[SlayerQuery]  # set on query-bearing memory hits
 
 class SearchResponse(BaseModel):
@@ -364,167 +364,85 @@ class SearchResponse(BaseModel):
     warnings: List[str]
 ```
 
-### Lenient input validation (DEV-1428)
+### Lenient input validation
 
 Unresolved entity / memory references in `search(entities=...)` and
-`search(query=...)` are demoted to warnings rather than raising. The
-dropped token does not appear in `resolved_input_entities`, but the
-search proceeds against whatever did resolve. Examples:
-
-- `entities=["mydb.orders.amount", "memory:nonexistent"]` returns a
-  normal response; `warnings` includes
-  `entity 'memory:nonexistent' dropped: No memory with id 'nonexistent'.`
-- A stale entity tag inside a saved memory does not contribute to
-  channel-1 BM25 ranking, and is excluded from any hit's
-  `matched_entities` list.
-- A query-bearing memory hit whose attached `Memory.query` references a
-  vanished column gets the warning
-  `example_query memory:<id>: attached query has stale references (...); re-save to clean.`
-  but is still surfaced with its stored query intact.
-
-`memory:<id>` is also accepted in `entities` (cross-memory linking) —
-the resolver checks the memory exists and the canonical form
-round-trips as-is.
+`search(query=...)` are demoted to warnings, not raised: the dropped token is
+omitted from `resolved_input_entities` and search proceeds against whatever
+resolved (e.g. `entities=["mydb.orders.amount", "memory:nonexistent"]` returns a
+normal response plus a `... dropped: No memory with id ...` warning). Stale
+entity tags in a saved memory don't contribute to channel-1 BM25 and are excluded
+from `matched_entities`; a query-bearing memory with stale query references is
+still surfaced (with a warning), its stored query intact. `memory:<id>` is also
+accepted in `entities` for cross-memory linking.
 
 ## Sample-value cache
 
-For richer search results, every column carries three optional
-sample-value fields:
+Every column carries three optional sample-value fields for richer results:
 
-- `Column.sampled` — a formatted text snapshot. For categorical columns,
-  the top-20 most-common values comma-joined; for high-cardinality
-  categoricals (> 50 distinct), the top-20 plus a `... (50+ distinct)`
-  overflow marker (the exact total is not computed — one scan only). For
-  numeric / temporal columns, the `min .. max` range.
-- `Column.sampled_values` (DEV-1480) — the structured top-50-by-frequency
-  list for categorical columns. Stays `None` for numeric / temporal
-  columns. Consumers comparing predicate literals against actual stored
-  values should read this field directly — text-split on `sampled` is
-  ambiguous for values that themselves contain commas
-  (e.g. `"R$ 1,000–3,000"`).
-- `Column.distinct_count` (DEV-1480) — the exact distinct count when the
-  column has ≤ 50 distinct values. On overflow (> 50 distinct) it is
-  `None`: profiling uses a **single** full-table scan for the top-50 by
-  frequency and does not fire a second `count_distinct` scan for the exact
-  total. Also `None` for numeric / temporal columns.
+- `Column.sampled` — formatted text: top-20 most-common values (comma-joined) for
+  categoricals, `min .. max` range for numeric/temporal. High-cardinality
+  categoricals (> 50 distinct) get a `... (50+ distinct)` marker.
+- `Column.sampled_values` — structured top-50-by-frequency list for categoricals
+  (`None` for numeric/temporal). Read this rather than splitting `sampled` on
+  commas — values may themselves contain commas (e.g. `"R$ 1,000–3,000"`).
+- `Column.distinct_count` — exact count when ≤ 50; `None` on overflow or for
+  numeric/temporal (a single top-50 scan, no second `count_distinct`).
 
-Profiling is **not** run at ingest time — a per-column full-table scan
-would dominate ingest wall-clock on wide datasources. Samples are
-populated **lazily, on the first `inspect` of a column** (synchronous,
-per-column), and additionally:
-
-- on `slayer search refresh-samples [--data-source X] [--model M ...]`;
-- on `edit_model` (column edits → that column; model-level filter / sql /
-  source-query body change → every column);
-- lazily on `inspect_model` when the cached value is missing (write-back
-  best-effort);
-- lazily inside `search()` itself for any column hit whose persisted
-  `sampled_values` is stale (DEV-1516). The post-fusion column-hit hook
-  groups hits by `(data_source, model_name)` — refreshes within a model
-  serialise (the storage write is a model-level read-modify-write);
-  refreshes across different models run concurrently via
-  `asyncio.gather`. When `search()` is constructed without an engine
-  (storage-only contexts), the hook is a silent no-op;
-- lazily on the single-entity `inspect` point-lookup (DEV-1615) — an
-  `entity_type="column"` read at `compact=False` back-fills the column's
-  sample before rendering, so `inspect` matches the `inspect_model` /
-  `search` reads it replaced. `compact=True` stays description-only and
-  DB-free (no refresh); engine-guarded (no-op without an engine).
-
-Cache validity for categorical columns requires `sampled_values is not None` —
-v6 (legacy `sampled` only) models re-profile on the next `inspect_model`,
-`search()` column hit, or `inspect` (column, `compact=False`) so the
-structured field gets populated. As of DEV-1615 the shared
-`ensure_column_sample_fresh` helper also back-fills genuinely-unsampled
-numeric / temporal columns (min/max range), not just categorical ones.
-
-sql-mode and query-backed models are silently skipped in v1.
+Profiling is lazy, never run at ingest (a per-column full scan would dominate
+ingest wall-clock). Samples populate on first `inspect` of a column, and also on:
+`slayer search refresh-samples`, `edit_model` (edited column, or every column on a
+model-level change), `inspect_model` (missing values), `search()` column hits
+(stale values — grouped per model, same-model refreshes serialise while
+cross-model run concurrently; no-op without an engine), and single-entity
+`inspect` at `compact=False`. Legacy models carrying only `sampled` re-profile on
+the next such touch. sql-mode and query-backed models are skipped.
 
 ### How sample values surface in search results
 
-The per-column doc rendered by `slayer/search/render.py:render_column_text`
-prefers the structured `sampled_values` list (full top-50) over the
-20-truncated `sampled` text. When `sampled_values` is populated:
+`render_column_text` prefers the structured `sampled_values` list over the
+20-truncated `sampled` text, rendering it as a JSON array so comma-bearing values
+survive unambiguously:
 
 ```text
 Column: warehouse.orders.status
 Type: TEXT
 Description: Order status.
-Sample values: ["paid", "refunded", "cancelled", "pending", …]  ← JSON-encoded, top 50
+Sample values: ["paid", "refunded", "cancelled", "pending", …]
 ```
 
-The list is rendered as a JSON array (not comma-joined) so values that
-themselves contain commas — `"R$ 1,000–3,000"`, locale-formatted numbers,
-multi-clause labels — survive unambiguously to the consumer. This is why
-DEV-1480 introduced the structured `sampled_values` field in the first
-place; comma-joining it back to a flat string would re-introduce the
-exact ambiguity it was meant to solve.
+When `sampled_values` is `None` (numeric/temporal, legacy data) the renderer
+falls back to `sampled`; an empty `[]` is authoritative-empty (line skipped, no
+fallback). The same renderer feeds both the search index doc and `EntityHit.text`.
+`inspect_model`'s markdown `## Columns` table keeps the 20-truncated `sampled` for
+readability; its JSON output carries the full list.
 
-When `sampled_values` is `None` (numeric / temporal columns, or legacy
-v6 data), the renderer falls back to the persisted `sampled` text. For
-overflow categorical columns `sampled_values` is populated (top-50) and
-the text carries a `... (50+ distinct)` marker; `distinct_count` stays
-`None`, so no `Distinct count` line is emitted. An empty `sampled_values=[]` list is
-authoritative-empty: the line is skipped entirely (no fallback to stale
-`sampled`).
-
-This same text feeds both the per-column search index doc AND
-`EntityHit.text` returned by `search()` — single renderer, single
-source of truth. `inspect_model`'s markdown `## Columns` table is the
-**all-columns-at-once** surface and continues to show the 20-truncated
-`sampled` text per column for readability on wide models. JSON
-`inspect_model` output already carries the full `sampled_values` list.
-
-**Known limitation.** The refresh hook runs **after** RRF fusion, on the
-top-K hits being returned. Ranking (BM25 / tantivy / embeddings) still
-operates on whatever the corpus held at index-build time. A query whose
-only match against a column is a newly-revealed value in positions 21-50
-may still fail to surface that column. The text the agent sees IS
-refreshed; tantivy / embeddings will catch up on the next
-`slayer ingest` content-hash pass.
+**Known limitation.** The refresh hook runs *after* RRF fusion, on the returned
+top-K hits — ranking still uses the corpus as of index-build time, so a match on a
+newly-revealed value in positions 21-50 may not surface. The returned text is
+refreshed; tantivy/embeddings catch up on the next `slayer ingest`.
 
 ## Index design notes
 
-- The tantivy index is built **fresh on every search call** in v1 (no
-  persistence, no invalidation logic). For typical SLayer setups (tens
-  to low-hundreds of models, tens to low-thousands of memories) this is
-  fast; persistent on-disk indexing is a future follow-up.
-- `meta` is **excluded** from indexed text — arbitrary user JSON.
-- Hidden models and hidden columns are skipped entirely from the index.
-- Each tantivy doc has four schema fields: `id` (raw), `kind` (raw),
-  `canonical` (raw, exact-match), `text` (en-stemmed + tokenised).
+- The tantivy index is rebuilt fresh per call (no persistence/invalidation) —
+  fast at SLayer's scale; on-disk indexing is a future follow-up.
+- `meta` (arbitrary user JSON) is excluded; hidden models/columns are skipped.
+- Each doc has four fields: `id`, `kind`, `canonical` (exact-match), `text`
+  (en-stemmed + tokenised).
 
 ## Embedding sidecar design notes
 
-- **Stored**, not rebuilt per call. Rows live in an indexed `embeddings`
-  SQLite table — in the main `.db` file for `SQLiteStorage`, or at
-  `<base_dir>/embeddings.db` for `YAMLStorage` (DEV-1405). Keyed by
-  `(canonical_id, embedding_model_name)`. Both backends share the same
-  SQL through a `SidecarEmbeddingStore` helper. Search loads the corpus
-  matrix fresh per call and runs cosine similarity in numpy.
-- Same render pipeline as tantivy (`slayer/search/render.py`) — every
-  doc that goes into the tantivy index also feeds the embedding text.
-- Refresh is **inline** on the same write-side edges as
-  `Column.sampled`: ingest, `edit_model`, `save_memory`. SHA256 content
-  hash makes idempotent re-runs cheap. The hot path
-  (`EmbeddingService._apply_pending`) issues one batched
-  `get_embeddings_for_canonical_ids` for the hash-skip filter and one
-  batched `save_embeddings` for the persist step (DEV-1405) — refresh
-  cost is independent of subtree size. **Memories** are included in the
-  `slayer ingest` / `--ingest-on-startup` per-datasource refresh
-  (DEV-1416), filtered to memories with at least one canonical entity
-  rooted at the current datasource — so `embeddings.db` can be repaired
-  by re-running ingest, no separate `slayer embeddings refresh` step
-  required.
-- **Cascade** semantics (DEV-1405 fix): `delete_embeddings_for_canonical`
-  matches the canonical id exactly OR as a strict dotted-path descendant
-  (`<root>.<...>`) — never as a character prefix. So `delete_memory(4)`
-  removes only `memory:4` (not `memory:42`, `memory:43`, …);
-  `delete_datasource("orders")` does not touch a sibling datasource
-  named `orders_archive`; `delete_model("orders", "customers")` does not
-  touch a sibling `customers_v2`.
-- Optional pip extra: `pip install motley-slayer[advanced_search]`
-  installs `litellm` + `numpy`. When omitted, the embedding channel
-  emits a one-line warning and contributes nothing.
-- **Storage shape**: embeddings are stored as JSON lists of floats —
-  portable, debuggable, dialect-neutral. ~6 KB per 1536-dim row.
+- **Stored**, not rebuilt per call — rows live in an indexed `embeddings` table
+  (the main `.db` for `SQLiteStorage`, `<base_dir>/embeddings.db` for
+  `YAMLStorage`), keyed by `(canonical_id, embedding_model_name)` via a shared
+  `SidecarEmbeddingStore`. Search loads the matrix fresh and runs cosine in numpy.
+- Same render pipeline as tantivy — one text per doc feeds both.
+- Refresh is inline on the same edges as `Column.sampled` (ingest, `edit_model`,
+  `save_memory`), skipped by SHA256 content hash. Memories are refreshed by `slayer ingest`
+  (filtered to those rooted at the current datasource), so `embeddings.db` is
+  repairable by re-running ingest — no separate refresh step.
+- **Cascade delete** matches the canonical id exactly or as a strict dotted-path
+  descendant, never a character prefix — `delete_memory(4)` spares `memory:42`,
+  `delete_datasource("orders")` spares `orders_archive`.
+- Optional extra: `pip install motley-slayer[advanced_search]` (litellm + numpy);
+  without it the embedding channel just warns.

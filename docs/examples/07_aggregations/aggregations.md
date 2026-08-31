@@ -222,9 +222,17 @@ Cross-model:
 {"formula": "cumsum(customers.*:count)"}
 ```
 
+Conditionals — `CASE WHEN` (or `iif(cond, then, otherwise)`) can branch on an aggregated value; the branch runs after grouping:
+
+```json
+{"formula": "CASE WHEN revenue:sum >= 10000 THEN 'high' ELSE 'standard' END", "name": "tier"}
+```
+
+See [Formulas — Conditionals](../../concepts/formulas.md#conditionals-case-when-iif) for branch-typing rules, and [Queries — Expression dimensions](../../concepts/queries.md) for grouping by a computed expression.
+
 ## Share of parent (`partition_by`)
 
-Most aggregations take an optional `partition_by=` to compute over a subset of the query's dimensions, repeated across the finer rows — `SUM(x) OVER (PARTITION BY …)` (not yet supported with `window=`, on `first`/`last`, nested in a transform, or in a filter — see the restriction note below):
+Most aggregations take an optional `partition_by=` to compute over a subset of the query's dimensions, repeated across the finer rows — `SUM(x) OVER (PARTITION BY …)`:
 
 ```json
 {
@@ -239,7 +247,7 @@ Most aggregations take an optional `partition_by=` to compute over a subset of t
 
 `partition_by=region` is the region total on every city row (so `share_of_region` sums to 1.0 per region); `partition_by=[]` is the grand total; a list (`[region, channel]`) or dotted path also work. The total is computed over rows passing row-level filters — filters on the measure (`having`) and pagination never change it.
 
-`partition_by` is not yet supported combined with `window=`, on `first`/`last`, nested inside a transform, or referenced in a filter — each raises a clear error rather than returning wrong numbers.
+A local `partition_by` aggregate also composes with the rest of the query: combined with `window=` (a rolling total at the partition grain, per the query's time bucket), on `first`/`last`, nested inside a transform (`cumsum(revenue:sum(partition_by=region))`), and referenced in a filter (`revenue:sum(partition_by=region) > 5000`). A filter's top-level `AND` conjuncts route independently; a single predicate whose references share no scope (e.g. a partitioned aggregate OR-ed with a raw row column) raises a "split the filter" error. Cross-model `partition_by` sources in these composed shapes are not yet supported and raise a clear error rather than returning wrong numbers.
 
 ## Result column naming
 

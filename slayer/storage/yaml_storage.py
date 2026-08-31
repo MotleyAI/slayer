@@ -339,6 +339,22 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             entry_name=f"{name}.yaml",
         )
 
+    async def _load_raw_model_dict(
+        self, *, name: str, data_source: str,
+    ) -> dict | None:
+        """DEV-1743 v9: read the on-disk YAML verbatim (no migration / no
+        validation) for sibling-hop resolution during the legacy-``__``
+        rewrite. Returns ``None`` when the file is absent or not a mapping."""
+        if not self._model_entry_exists(data_source=data_source, name=name):
+            return None
+        path = self._model_path(data_source, name)
+        try:
+            with open(path) as f:  # NOSONAR(S7493) — local read
+                raw = yaml.safe_load(f)
+        except (FileNotFoundError, yaml.YAMLError):
+            return None
+        return raw if isinstance(raw, dict) else None
+
     # ---- model CRUD --------------------------------------------------------
 
     async def _save_model_impl(self, model: SlayerModel) -> None:

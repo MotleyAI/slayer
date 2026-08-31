@@ -48,10 +48,13 @@ __all__ = [
 
 #: CTE-name prefix, alongside ``_cm_`` (cross-model) and ``_wm_`` (windowed).
 RANKED_CTE_PREFIX = "_rk_"
-#: Alias of the inner ranked subquery.
-RANKED_SOURCE_ALIAS = "_rk_src"
+#: Alias of the inner ranked subquery. DEV-1835 — ranked computation kernels now
+#: render producer-internal under the uniform ``_cm_`` producer naming, so their
+#: private aliases carry no ``_rk_`` prefix (the migrated families' emitted SQL
+#: must be free of the deleted ``_wm_`` / ``_rk_`` relation prefixes).
+RANKED_SOURCE_ALIAS = "_ranked_src"
 #: The ``ROW_NUMBER`` column the outer SELECT picks rank 1 from.
-RANK_COLUMN = "_rk_rn"
+RANK_COLUMN = "_ranked_rn"
 
 
 class RankedGrainProjection(BaseModel):

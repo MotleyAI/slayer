@@ -206,7 +206,7 @@ class TestDev1527KwargExpansion:
         # column crossing a join → its expansion is embedded as the second CORR
         # operand AND the join is registered (base-pulled).
         orders = _orders(extra=[
-            Column(name="region_weight", sql="customers__regions.weight",
+            Column(name="region_weight", sql="customers.regions.weight",
                    type=DataType.DOUBLE),
         ])
         query = SlayerQuery(
@@ -229,7 +229,7 @@ class TestDev1527KwargExpansion:
         # weight operand is the expanded joined ref — not the bare, non-existent
         # ``orders.region_weight`` (Codex finding on the ROW-collector fold PR).
         orders = _orders(extra=[
-            Column(name="region_weight", sql="customers__regions.weight",
+            Column(name="region_weight", sql="customers.regions.weight",
                    type=DataType.DOUBLE),
         ])
         query = SlayerQuery(
@@ -255,7 +255,7 @@ class TestDev1527KwargExpansion:
         # kwarg (customers__regions.weight) renders inside the CTE; the bare
         # non-existent orders.region_weight never appears.
         orders = _orders(extra=[
-            Column(name="region_weight", sql="customers__regions.weight",
+            Column(name="region_weight", sql="customers.regions.weight",
                    type=DataType.DOUBLE),
         ])
         query = SlayerQuery(
@@ -352,7 +352,7 @@ class TestDev1527F1BasePull:
         # N:1 control (region_weight): isolates identically — the trigger is
         # structural (any crossing input), not cardinality-driven.
         orders = _orders(extra=[
-            Column(name="region_weight", sql="customers__regions.weight",
+            Column(name="region_weight", sql="customers.regions.weight",
                    type=DataType.DOUBLE),
         ])
         query = SlayerQuery(

@@ -1372,16 +1372,20 @@ def _resolve_scanned_collisions(
 ]:
     """Pick one winning object per model name across every scanned schema.
 
-    Model names may not contain ``__`` (the SQL generator reads it as a join
-    path, so ``a__b`` would query ``a -> b``), so each object's candidate model
-    name is its sanitized form. Returns ``(winners, skipped)``: ``winners`` maps
-    a model name to its winning ``(ref, object)``; ``skipped`` records every
-    loser, its label qualified by schema only when more than one schema was
-    scanned (a single-schema collision keeps a bare label, unchanged).
+    DEV-1743: ``__`` is a legal model-name character now, so each object's
+    candidate model name is its FAITHFUL live name (``a__b`` stays ``a__b``,
+    distinct from ``a_b``). A genuine collision is therefore two objects sharing
+    one raw name across different schemas — resolved by schema priority.
+    ``sanitize_model_name`` is kept only as the re-ingest fallback-matching
+    spelling (see :func:`ingest_datasource_idempotent`). Returns
+    ``(winners, skipped)``: ``winners`` maps a model name to its winning
+    ``(ref, object)``; ``skipped`` records every loser, its label qualified by
+    schema only when more than one schema was scanned (a single-schema collision
+    keeps a bare label, unchanged).
     """
     groups: dict[str, list[tuple[SchemaRef, IngestableObject]]] = defaultdict(list)
     for ref, obj in scanned:
-        groups[sanitize_model_name(obj.name)].append((ref, obj))
+        groups[obj.name].append((ref, obj))
 
     winners: dict[str, tuple[SchemaRef, IngestableObject]] = {}
     skipped: list[SkippedTable] = []
@@ -2265,6 +2269,115 @@ def _bare_table_name(sql_table: str) -> str:
     return sql_table.split(".", 1)[1] if "." in sql_table else sql_table
 
 
+def _sql_table_identity(
+    sql_table: str | None, *, default_schema: str | None,
+) -> tuple[str | None, str] | None:
+    """Normalised ``(schema, object)`` identity of a ``sql_table`` (DEV-1743
+    [C2]): the schema falls back to the datasource default when unqualified, so
+    two spellings that name the SAME live object compare equal — a bare-name
+    match alone is NOT sufficient to adopt a stored spelling."""
+    if not sql_table:
+        return None
+    schema, obj = split_sql_table(sql_table)
+    return (schema if schema is not None else default_schema, obj)
+
+
+async def _stored_sanitized_identity_map(
+    *,
+    storage: StorageBackend,
+    datasource: DatasourceConfig,
+    default_schema: str | None,
+) -> tuple[set[str], dict[str, tuple[str | None, str] | None]]:
+    """Stored model names for ``datasource`` plus each one's live-object identity
+    (used by the same-object guard in :func:`_adopt_stored_sanitized_names`)."""
+    identities = await storage._list_all_model_identities()
+    stored_names = {n for d, n in identities if d == datasource.name}
+    stored_identity: dict[str, tuple[str | None, str] | None] = {}
+    for name in stored_names:
+        stored = await storage.get_model(name, data_source=datasource.name)
+        if stored is not None:
+            stored_identity[name] = _sql_table_identity(
+                stored.sql_table, default_schema=default_schema,
+            )
+    return stored_names, stored_identity
+
+
+def _sanitized_rename_map(
+    *,
+    fresh_by_name: dict[str, "SlayerModel"],
+    stored_names: set[str],
+    stored_identity: dict[str, tuple[str | None, str] | None],
+    default_schema: str | None,
+) -> dict[str, str]:
+    """Map each faithful fresh name onto a stored sanitized spelling that models
+    the SAME live object (stored-name-wins). Skips exact stored matches, a name
+    whose sanitized form is itself a distinct live object this run (would collapse
+    two tables), and twins whose live-object identities differ."""
+    rename_map: dict[str, str] = {}
+    for name, fresh in fresh_by_name.items():
+        if name in stored_names:
+            continue  # exact stored model — additive pass matches it directly
+        sanitized = sanitize_model_name(name)
+        if sanitized == name or sanitized not in stored_names:
+            continue
+        if sanitized in fresh_by_name:
+            continue  # sanitized spelling is a distinct live object — don't collapse
+        fresh_identity = _sql_table_identity(
+            fresh.sql_table, default_schema=default_schema,
+        )
+        if fresh_identity is not None and stored_identity.get(sanitized) == fresh_identity:
+            rename_map[name] = sanitized
+    return rename_map
+
+
+async def _adopt_stored_sanitized_names(
+    *,
+    fresh_by_name: dict[str, "SlayerModel"],
+    storage: StorageBackend,
+    datasource: DatasourceConfig,
+    default_schema: str | None,
+) -> tuple[dict[str, "SlayerModel"], dict[str, str]]:
+    """DEV-1743 [C2] re-ingest matching pre-pass (D3): stored-name-wins.
+
+    A faithful fresh model (``a__b``) whose live object is ALREADY modelled by a
+    stored model under the sanitized fallback spelling (``a_b``, ``sql_table``
+    pointing at the SAME live object) adopts that stored name — so an old-world
+    store is not duplicated under the newly-legal ``__`` spelling. Exact matches
+    (a stored ``a__b``) are left untouched; a sanitized stored twin pointing at a
+    DIFFERENT object never matches (the identity guard). Renames cascade over
+    every fresh model's ``ModelJoin.target_model`` so joins keep resolving.
+
+    Returns ``(adopted_models, rename_map)`` — the ``original → stored`` name map
+    so the caller can also re-point ``InternalTable.model_name`` entries (else a
+    hidden-internal lookup by the stale faithful name silently drops it).
+    """
+    stored_names, stored_identity = await _stored_sanitized_identity_map(
+        storage=storage, datasource=datasource, default_schema=default_schema,
+    )
+    rename_map = _sanitized_rename_map(
+        fresh_by_name=fresh_by_name, stored_names=stored_names,
+        stored_identity=stored_identity, default_schema=default_schema,
+    )
+    if not rename_map:
+        return fresh_by_name, {}
+
+    adopted: dict[str, "SlayerModel"] = {}
+    for name, fresh in fresh_by_name.items():
+        new_name = rename_map.get(name, name)
+        joins = [
+            j.model_copy(update={"target_model": rename_map[j.target_model]})
+            if j.target_model in rename_map else j
+            for j in fresh.joins
+        ]
+        updates: dict = {}
+        if new_name != name:
+            updates["name"] = new_name
+        if joins != fresh.joins:
+            updates["joins"] = joins
+        adopted[new_name] = fresh.model_copy(update=updates) if updates else fresh
+    return adopted, rename_map
+
+
 async def _scoped_models_for_validation(
     *,
     storage: StorageBackend,
@@ -2463,6 +2576,25 @@ async def ingest_datasource_idempotent(
     )
     fresh_models = scan.models
     fresh_by_name = {m.name: m for m in fresh_models}
+    # DEV-1743 [C2] D3: a faithful fresh ``a__b`` whose live object is already
+    # modelled by a stored sanitized ``a_b`` adopts the stored name (no
+    # duplicate), guarded by same-live-object identity.
+    fresh_by_name, adopted_renames = await _adopt_stored_sanitized_names(
+        fresh_by_name=fresh_by_name,
+        storage=storage,
+        datasource=datasource,
+        default_schema=default_schema_name,
+    )
+    fresh_models = list(fresh_by_name.values())
+    # A stored-name adoption also renames the model an internal-table entry
+    # points at; re-point them so the hidden-internal re-check (keyed on
+    # ``model_name``) doesn't miss an adopted internal and drop it from the report.
+    if adopted_renames:
+        scan.internal_tables = [
+            e.model_copy(update={"model_name": adopted_renames[e.model_name]})
+            if e.model_name in adopted_renames else e
+            for e in scan.internal_tables
+        ]
     # Keyed on the live object name, not the model name: validation scoping
     # compares against ``_bare_table_name(m.sql_table)``, so any model whose
     # name differs from its table (``__``-sanitized or dbt/OSI hidden) would

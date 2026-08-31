@@ -117,17 +117,33 @@ class TestEveryIsolationKindIsClassified:
         assert IsolationKind.TARGET_ROOTED in kinds.values(), kinds
         assert len(planned.cross_model_aggregate_plans) == 1
 
-    def test_a_windowed_aggregate_is_classified(self) -> None:
-        kinds, planned = _classify_all(SlayerQuery(
-            source_model="orders_x",
-            dimensions=[ColumnRef(name="status")],
-            time_dimensions=list(_MONTH),
-            measures=[ModelMeasure(
-                formula="amount:sum(window='90d')", name="w",
-            )],
-        ))
-        assert IsolationKind.WINDOWED in kinds.values(), kinds
-        assert len(planned.windowed_aggregate_plans) == 1
+    def test_a_windowed_aggregate_is_desugared_into_a_regroup_producer(
+        self,
+    ) -> None:
+        """MIGRATED (DEV-1835): a LOCAL windowed measure is DESUGARED into a
+        regroup producer BEFORE isolation classification, so it no longer
+        reaches ``classify_isolation`` as WINDOWED. The windowed work moves into
+        a ``regroup_attach_plans`` producer (rendered as a ``_cm_`` CTE) whose
+        nested plan carries the windowed plan; the top-level plan has no
+        windowed plan and no cross-model plan for it."""
+        planned = plan_query(
+            query=SlayerQuery(
+                source_model="orders_x",
+                dimensions=[ColumnRef(name="status")],
+                time_dimensions=list(_MONTH),
+                measures=[ModelMeasure(
+                    formula="amount:sum(window='90d')", name="w",
+                )],
+            ),
+            bundle=_bundle(),
+        )
+        assert not planned.windowed_aggregate_plans
+        assert not planned.cross_model_aggregate_plans
+        assert len(planned.regroup_attach_plans) == 1, planned.regroup_attach_plans
+        producer = planned.regroup_attach_plans[0].producer_plan
+        assert producer.windowed_aggregate_plans, (
+            "the desugared producer must carry the windowed plan"
+        )
 
     def test_a_local_aggregate_with_a_crossing_filter_is_host_rooted(
         self,
@@ -163,8 +179,12 @@ class TestOrderingBetweenTheOldPredicates:
     def test_a_windowed_measure_with_a_crossing_filter_stays_windowed(
         self,
     ) -> None:
-        """The windowed skip came FIRST for a reason: this shape would trip the
-        crossing-input trigger and be isolated twice."""
+        """MIGRATED (DEV-1835): the windowed skip still comes first. A crossing
+        ``Column.filter`` windowed measure is DESUGARED into a regroup producer,
+        and inside that producer's nested plan it renders as a windowed plan —
+        NOT additionally isolated into a cross-model ``_cm_`` plan. The 'isolated
+        twice' hazard the original predicate ordering guarded against stays
+        guarded, one level down."""
         bundle = _crossing_bundle()
         planned = plan_query(
             query=SlayerQuery(
@@ -176,18 +196,17 @@ class TestOrderingBetweenTheOldPredicates:
             ),
             bundle=bundle,
         )
-        windowed_ids = {
-            p.aggregate_slot_id for p in planned.windowed_aggregate_plans
-        }
-        assert windowed_ids, "expected a windowed plan"
-        for slot in planned.aggregate_slots:
-            if slot.id not in windowed_ids:
-                continue
-            assert classify_isolation(
-                slot=slot, windowed_slot_ids=windowed_ids, bundle=bundle,
-            ) is IsolationKind.WINDOWED
-        assert not planned.cross_model_aggregate_plans, (
-            "the windowed measure was ALSO isolated into a _cm_ CTE"
+        assert not planned.windowed_aggregate_plans
+        assert not planned.cross_model_aggregate_plans
+        assert len(planned.regroup_attach_plans) == 1, planned.regroup_attach_plans
+        producer = planned.regroup_attach_plans[0].producer_plan
+        assert producer.windowed_aggregate_plans, (
+            "the crossing-filter windowed measure must render as a windowed plan "
+            "inside the producer"
+        )
+        assert not producer.cross_model_aggregate_plans, (
+            "the windowed measure was ALSO isolated into a _cm_ cross-model "
+            "plan — the windowed skip no longer comes first"
         )
 
     def test_suppressing_host_rooted_isolation_yields_none(self) -> None:

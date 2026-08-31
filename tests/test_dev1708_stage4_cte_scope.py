@@ -263,7 +263,7 @@ class TestDev1702B2ForwardMaterialization:
         # the ranked subquery alias), not the crossing ref.
         assert _re.search(r"regions\.population AS _val_\d+", inner), inner
         assert _re.search(
-            r"MAX\(CASE WHEN _rk_rn = 1 THEN (?:\w+\.)?_val_\d+", outer), outer
+            r"MAX\(CASE WHEN _ranked_rn = 1 THEN (?:\w+\.)?_val_\d+", outer), outer
         assert "regions.population" not in outer, outer
 
     async def test_forward_last_crossing_time_arg_registers_join(self) -> None:
@@ -299,7 +299,7 @@ class TestDev1702B2ForwardMaterialization:
         join unregistered."""
         customers_extra = [Column(
             name="deep_pop_flt", sql="regions.population", type=DataType.DOUBLE,
-            filter="regions__countries.gdp > 5")]
+            filter="regions.countries.gdp > 5")]
         query = SlayerQuery(
             source_model="orders_x",
             measures=[ModelMeasure(

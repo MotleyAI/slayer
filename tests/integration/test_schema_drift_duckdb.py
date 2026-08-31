@@ -8,10 +8,6 @@ from __future__ import annotations
 
 import pytest
 
-pytest.importorskip("duckdb")
-
-import duckdb
-
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
 from slayer.core.models import (
@@ -24,6 +20,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.schema_drift import EditModelDelete, WholeModelDelete
 from slayer.storage.yaml_storage import YAMLStorage
 
+duckdb = pytest.importorskip("duckdb")
 
 pytestmark = pytest.mark.integration
 
@@ -153,6 +150,33 @@ def _find(name: str, entries):
 async def test_no_drift_returns_empty(duckdb_drift_env) -> None:
     engine, _ = duckdb_drift_env
     result = await engine.validate_models(data_source="dduckdb")
+    assert result == []
+
+
+async def test_sql_model_typed_columns_do_not_report_false_drift(
+    duckdb_drift_env,
+) -> None:
+    engine, _ = duckdb_drift_env
+    await engine.storage.save_model(
+        SlayerModel(
+            name="typed_sql",
+            data_source="dduckdb",
+            sql=(
+                "SELECT 7::INTEGER AS qty, TRUE AS active, "
+                "TIMESTAMP '2026-01-02 03:04:05' AS occurred_at, "
+                "'ok'::VARCHAR AS label"
+            ),
+            columns=[
+                Column(name="qty", type=DataType.INT),
+                Column(name="active", type=DataType.BOOLEAN),
+                Column(name="occurred_at", type=DataType.TIMESTAMP),
+                Column(name="label", type=DataType.TEXT),
+            ],
+        )
+    )
+
+    result = await engine.validate_models(data_source="dduckdb")
+
     assert result == []
 
 

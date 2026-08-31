@@ -77,11 +77,11 @@ def _orders() -> SlayerModel:
             Column(name="customer_id", type=DataType.INT),
             Column(name="amount", type=DataType.DOUBLE),
             Column(name="created_at", type=DataType.TIMESTAMP),
-            Column(name="region_pay", sql="customers__regions.payment_amount",
+            Column(name="region_pay", sql="customers.regions.payment_amount",
                    type=DataType.DOUBLE),
             Column(name="cust_weight_d", sql="customers.weight",
                    type=DataType.DOUBLE),
-            Column(name="pop_helper", sql="customers__regions.payment_amount",
+            Column(name="pop_helper", sql="customers.regions.payment_amount",
                    type=DataType.DOUBLE),
             Column(name="doubled_pop", sql="pop_helper * 2",
                    type=DataType.DOUBLE),
@@ -104,7 +104,7 @@ def _orders() -> SlayerModel:
             Aggregation(
                 name="wscaled_sum", formula="SUM({value} * {w})",
                 params=[AggregationParam(
-                    name="w", sql="customers__regions.weight",
+                    name="w", sql="customers.regions.weight",
                 )],
             ),
         ],
@@ -123,7 +123,12 @@ def _key_for(formula: str) -> AggregateKey:
         measures=[{"formula": formula, "name": "m0"}],
     )
     planned = plan_query(query=q, bundle=_bundle())
-    for slot in planned.aggregate_slots:
+    # DEV-1835: a local first/last desugars into a regroup producer, so its
+    # AggregateKey slot can live inside a producer_plan, not at top level.
+    candidates = list(planned.aggregate_slots)
+    for attach in planned.regroup_attach_plans:
+        candidates.extend(attach.producer_plan.aggregate_slots)
+    for slot in candidates:
         if isinstance(slot.key, AggregateKey):
             return slot.key
     raise AssertionError(f"no AggregateKey slot for formula {formula!r}")
@@ -189,7 +194,7 @@ class TestCrossingArgsAndKwargs:
 
 class TestTemplateFragmentKwargs:
     def test_user_fragment_crossing(self):
-        paths = _paths("amount:scaled_sum(scale='customers__regions.weight')")
+        paths = _paths("amount:scaled_sum(scale='customers.regions.weight')")
         assert ("customers", "regions") in paths, paths
 
     def test_model_default_fragment_crossing(self):

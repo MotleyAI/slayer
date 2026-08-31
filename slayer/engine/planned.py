@@ -71,6 +71,8 @@ __all__ = [
     "PlannedQuery",
     "RankedAggregatePlan",
     "RankedGrainMember",
+    "RegroupAttachPlan",
+    "RegroupSubstitution",
     "SlotId",
     "TransformLayer",
     "ValueSlot",
@@ -110,6 +112,9 @@ class ValueSlot(BaseModel):
     phase: Phase
     label: Optional[str] = None
     type: Optional[DataType] = None
+    # DEV-1740: True for a computed (expression) dimension — a ROW-phase
+    # composite that projects AND groups, distinct from a bare-measure mistake.
+    is_dimension: bool = False
     expression: Optional[BoundExpr] = None
     # DEV-1452 Stage B decision #8 — typed format / description propagated
     # by the planner from the source ``ModelMeasure`` / ``Column`` and
@@ -570,6 +575,62 @@ class EmptyBaseGrainPlan(BaseModel):
     host_filter_ids: List[BoundFilterId] = Field(default_factory=list)
 
 
+# ---------------------------------------------------------------------------
+# RegroupAttachPlan — DEV-1825
+# ---------------------------------------------------------------------------
+
+
+class RegroupSubstitution(BaseModel):
+    """One partitioned aggregate consumed from a regroup producer.
+
+    ``placeholder`` is the reserved-leaf ``ColumnKey`` the discovery pass
+    substituted for the ``original_key`` (a partitioned ``AggregateKey``)
+    everywhere it appeared in dimension / filter / order trees.
+    ``producer_slot_id`` names the aggregate slot INSIDE ``producer_plan``
+    whose rendered column the placeholder resolves to at attach time.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    placeholder: ValueKey
+    producer_slot_id: SlotId
+    original_key: ValueKey
+
+
+class RegroupAttachPlan(BaseModel):
+    """A planner-synthesized producer stage attached on its partition grain.
+
+    An aggregate-then-consume node (DEV-1825): ``producer_plan`` is a full
+    nested ``PlannedQuery`` computing one or more aggregates at
+    ``partition_display``'s grain (finer than / disjoint from the consumer's
+    query grain). It renders as an isolated ``_cm_*`` CTE and attaches into the
+    consumer through the P-I null-safe grain join, so the consumed values are
+    visible to the consumer's expressions without changing its cardinality.
+
+    ``attach_phase`` selects WHERE the join lands. ``"row"`` (the first
+    consumer — DEV-1740 B2 aggregation-based dimensions) joins into the base
+    FROM BEFORE aggregation, so a computed dimension over the value groups the
+    raw rows once. ``"combined"`` (reserved for the DEV-1739 measure migration,
+    DEV-1829) joins at the combined SELECT after aggregation, the position the
+    per-aggregate ``_cm_`` CTEs occupy today.
+
+    ``join_pairs`` pairs each host-coordinate partition key (rendered in the
+    CONSUMER scope) with the producer's matching grain slot; an empty list is a
+    grand-total producer and attaches as a single-row CROSS JOIN.
+    ``substitutions`` is one entry per distinct consumed aggregate — several may
+    share one producer (one partition set, N aggregates).
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    producer_plan: "PlannedQuery"
+    alias_hint: str
+    attach_phase: Literal["row", "combined"] = "row"
+    join_pairs: List[Tuple[ValueKey, SlotId]] = Field(default_factory=list)
+    substitutions: List[RegroupSubstitution] = Field(default_factory=list)
+    partition_display: List[str] = Field(default_factory=list)
+
+
 class PlannedQuery(BaseModel):
     """The fully typed plan for one query stage (P7).
 
@@ -597,6 +658,10 @@ class PlannedQuery(BaseModel):
     # ``CrossModelAggregatePlan``, whose nested sub-plan carries the ranked plan
     # instead, in the sub-plan's own coordinate system.
     ranked_aggregate_plans: List["RankedAggregatePlan"] = Field(default_factory=list)
+    # DEV-1825 — planner-synthesized regroup producers attached on their
+    # partition grain (aggregation-based dimensions, and later the migrated
+    # partitioned-measure join-backs). One per distinct partition-key set.
+    regroup_attach_plans: List["RegroupAttachPlan"] = Field(default_factory=list)
     combined_expression_slots: List[ValueSlot] = Field(default_factory=list)
     transform_layers: List[TransformLayer] = Field(default_factory=list)
     filters_by_phase: List[FilterPhase] = Field(default_factory=list)
@@ -720,3 +785,5 @@ CrossModelAggregatePlan.model_rebuild()
 # ``WindowedAggregatePlan.src_filter_rewrites`` forward-references
 # ``SrcFilterRewrite``, declared just after it (DEV-1732).
 WindowedAggregatePlan.model_rebuild()
+# ``RegroupAttachPlan.producer_plan`` forward-references ``PlannedQuery`` (DEV-1825).
+RegroupAttachPlan.model_rebuild()

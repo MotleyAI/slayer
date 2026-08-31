@@ -107,7 +107,7 @@ def _customers_v2(*, extra_columns=None) -> SlayerModel:
         Column(name="deep_pop_x2", sql="regions.population * 2", type=DataType.DOUBLE),
         Column(name="deep_weight", sql="regions.weight", type=DataType.DOUBLE),
         # Derived, TWO-hop crossing (customers_v2 → regions → countries):
-        Column(name="deep_gdp", sql="regions__countries.gdp", type=DataType.DOUBLE),
+        Column(name="deep_gdp", sql="regions.countries.gdp", type=DataType.DOUBLE),
         # Derived TIME dim whose sql crosses a further join (DEV-1701):
         Column(name="region_opened_eff",
                sql="coalesce(regions.opened_at, signup_at)",

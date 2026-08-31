@@ -47,10 +47,10 @@ data dir, override with `$SLAYER_STORAGE`.
 - SQL generation uses sqlglot AST building, not string concatenation
 - Async-first: engine and storage methods are async; `execute_sync()` / `run_sync()` bridge for CLI/scripts
 - Core principle: adding a measure/field must never change result cardinality or other fields' values
-- Two expression layers — Mode A: free SQL in `Column.sql` / model `filters` (`__`-delimited join paths); Mode B: Python-AST DSL in formulas and query fields (dotted paths, colon aggregations, scalar-allowlist functions only). Rules: `docs/concepts/references.md`
+- Two expression layers — Mode A: free SQL in `Column.sql` / model `filters` (dotted join paths); Mode B: Python-AST DSL in formulas and query fields (dotted paths, colon aggregations, scalar-allowlist functions only). Rules: `docs/concepts/references.md`
 - Aggregations are query-time, colon syntax: `revenue:sum`, `*:count` for COUNT(*), `price:percentile(p=0.9)`
 - Result column keys are `model.column`: `revenue:sum` → `orders.revenue_sum`, `*:count` → `orders._count`; joined dimensions keep the full path (`orders.customers.regions.name`)
-- Dots denote join paths in queries (`customers.regions.name`); `__` denotes path aliases in model SQL (`customers__regions.name`)
+- Dots denote join paths in BOTH queries and model SQL (`customers.regions.name`, dotted-canonical); the legacy `__` split-alias input form is a hard error. `__` stays only as an internal generated-SQL join alias, and is a legal (exact-match) character in model/query/column names (`__slayer_` prefix reserved)
 - Models are keyed by `(data_source, name)`; joins resolve within the parent model's datasource
 - Models/queries/datasource configs carry a `version` field; storage migrations run automatically on load (`slayer/storage/migrations.py`)
 - Filters support `{variable}` placeholders from `query.variables` (scalars, plus lists → auto-quoted `IN`-list body: `region IN ({regions})`). Values are trusted input; string escaping IS dialect-aware (DEV-1727) but only applies to *quoted* literals. Datasource configs support `${ENV_VAR}`
@@ -98,10 +98,3 @@ Every page under `docs/` must be linked from the `nav` block in `zensical.toml` 
 root) — add or update the entry in the same commit as the page. Otherwise the page is
 still published, but as an orphan users cannot reach through site navigation.
 Intentional exceptions: `docs/CLAUDE.md` and `docs/api_gaps.md`.
-
-## Design Decisions
-
-`DECISIONS.md` (repo root) is the append-only dated log of design decisions and their
-rationale, with issue refs. Consult it before changing established behavior. When you
-make an important design decision in a session, append one entry at the bottom in the
-existing format.

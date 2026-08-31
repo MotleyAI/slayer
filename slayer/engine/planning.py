@@ -45,6 +45,7 @@ from slayer.core.keys import (
     InKey,
     LiteralKey,
     Phase,
+    REGROUP_LEAF_PREFIX,
     ScalarCallKey,
     StarKey,
     TimeTruncKey,
@@ -223,11 +224,24 @@ class ValueRegistry:
             and isinstance(getattr(key, "source", None), StarKey)
             and canonical_alias is None
         )
+        # DEV-1743 [D5]: a JOINED/pathed column ref (``customers.region``) only
+        # flattens to a ``__`` name at a stage / query-backed boundary. If that
+        # flattened name coincides with a source column (``customers__region``,
+        # the C11 carve-out), it is a FLATTEN collision — owned by the stage-
+        # schema guard (``stage_planner._emit_stage_schema``, "Stage column name
+        # collision"), not a measure-shadows-column. Exempt it here so the
+        # clearer stage message fires instead of preempting with this one. In a
+        # regular (non-stage) query the public name stays dotted and can never be
+        # a source column, so this exemption is a no-op there.
+        is_pathed_projection = (
+            isinstance(key, (ColumnKey, ColumnSqlKey)) and key.path != ()
+        )
         if (
             public_name is not None
             and public_name in self._source_columns
             and not is_self_named_dimension
             and not is_unnamed_star_agg
+            and not is_pathed_projection
         ):
             raise MeasureNameCollidesWithColumnError(
                 name=public_name, model=self._host_model_name,
@@ -256,6 +270,7 @@ class ValueRegistry:
         expression: Optional["BoundExpr"] = None,
         format: Optional[NumberFormat] = None,
         description: Optional[str] = None,
+        is_dimension: bool = False,
     ) -> SlotId:
         self._validate_alias_collisions(
             key=key,
@@ -309,6 +324,7 @@ class ValueRegistry:
             phase=phase,
             label=label,
             type=type,
+            is_dimension=is_dimension,
             expression=expression if expression is not None else BoundExpr(value_key=key),
             format=format,
             description=description,
@@ -589,6 +605,10 @@ class DeclaredMeasure(BaseModel):
     type: Optional[DataType] = None
     format: Optional[NumberFormat] = None
     description: Optional[str] = None
+    # DEV-1740: a computed (expression) dimension is a ROW-phase composite that
+    # must be projected AND grouped, unlike a bare-measure expression (which is
+    # a user error). The flag tells the generator which one it is.
+    is_dimension: bool = False
 
 
 class OrderSpec(BaseModel):
@@ -659,7 +679,8 @@ def _iter_slot_deps(key: ValueKey):
         for arg in key.args:
             if isinstance(
                 arg,
-                _SLOTTABLE_KIND + (ArithmeticKey, ScalarCallKey, BetweenKey),
+                _SLOTTABLE_KIND
+                + (ArithmeticKey, ScalarCallKey, BetweenKey),
             ):
                 yield from _iter_slot_deps(arg)
         return
@@ -678,6 +699,29 @@ def _iter_slot_deps(key: ValueKey):
         # RHS values are never slottable.
         yield from _iter_slot_deps(key.column)
     # StarKey, LiteralKey — never slottable on their own.
+
+
+def _regroup_substituted_composite_phase(value_key: ValueKey) -> Optional[Phase]:
+    """DEV-1839 D10 — the AGGREGATE phase of a composite (arithmetic / scalar-
+    call / desugared CASE) EVERY materialisable leaf of which is a combined
+    regroup placeholder, else ``None``.
+
+    Such a composite reads only post-attachment ``_cm_`` values (its operands are
+    partitioned aggregates broadcast to the query grain), so it is semantically
+    an AGGREGATE-phase expression rendered at the combined SELECT — not the ROW
+    phase its bare-ColumnKey leaves would otherwise give it (which routes it into
+    ``_base`` and raises "needs an aggregation"). A composite mixing a plain
+    aggregate with a placeholder is already AGGREGATE-phase and unaffected."""
+    if not isinstance(value_key, (ArithmeticKey, ScalarCallKey)):
+        return None
+    deps = list(_iter_slot_deps(value_key))
+    if not deps:
+        return None
+    for dep in deps:
+        if not (isinstance(dep, ColumnKey)
+                and dep.leaf.startswith(REGROUP_LEAF_PREFIX)):
+            return None
+    return Phase.AGGREGATE
 
 
 class ProjectionPlanner:
@@ -701,7 +745,7 @@ class ProjectionPlanner:
                 phase=key.phase,
             )
 
-    def plan(
+    def plan(  # NOSONAR(S3776) — one sequential allocation pass (reserve names → intern measures → filter/order deps) sharing the same registry + hidden-slot rule; splitting the loops scatters that shared mutation invariant.
         self,
         *,
         measures: List[DeclaredMeasure],
@@ -725,16 +769,28 @@ class ProjectionPlanner:
         )
         public_projection: List[SlotId] = []
         for m in measures:
+            # DEV-1839 D10 — an all-placeholder regroup composite MEASURE is
+            # AGGREGATE-phase (rendered at the combined SELECT over its ``_cm_``
+            # operands), not the ROW phase its bare-ColumnKey leaves imply. A
+            # computed DIMENSION over a row placeholder is a genuine ROW attach
+            # (grouped in ``_base``) and is excluded.
+            phase = m.bound.phase
+            if not m.is_dimension:
+                phase = (
+                    _regroup_substituted_composite_phase(m.bound.value_key)
+                    or phase
+                )
             sid = registry.intern(
                 key=m.bound.value_key,
                 declared_name=m.declared_name,
                 public_name=m.public_name,
                 canonical_alias=m.canonical_alias,
-                phase=m.bound.phase,
+                phase=phase,
                 label=m.label,
                 type=m.type,
                 format=m.format,
                 description=m.description,
+                is_dimension=m.is_dimension,
             )
             public_projection.append(sid)
             # Materialise any auxiliary slot-worthy deps of the measure

@@ -33,7 +33,7 @@ Each model gets one join entry per foreign key **on its own table** — never mu
 Each join stores the source/target column pair from the table's own FK. Multi-hop paths (e.g., `customers.regions.name` queried from `orders`) are resolved at query time by walking each intermediate model's joins.
 
 - **Dotted column references**: `customers.name`, `customers.id`, `customers.regions.name`, `customers.regions.id` are reachable from `orders` via the join graph at query time — they live as columns on the target models, not on `orders`.
-- **Path-based SQL**: At query time, column SQL uses `__`-delimited table aliases (e.g., `customers__regions.name`) to disambiguate joined tables. Each joined table gets a path-based alias (e.g., `LEFT JOIN regions AS customers__regions`).
+- **Path-based SQL**: You reference joined columns with dotted paths (`customers.regions.name`); at query time SLayer emits them with `__`-delimited internal table aliases to disambiguate joined tables (e.g., `LEFT JOIN regions AS customers__regions`). The `__` alias is a generated-SQL detail, not something you write.
 
 Tables with no FK references use their plain table name with no joins.
 
@@ -118,13 +118,17 @@ schemas, pass their names or ask for all of them:
   rejected by the REST `IngestRequest` as a 422 and by the MCP tools as an
   error string).
 
-When the same table name exists in more than one scanned schema, exactly one
-wins the model name — an exact name beats a `__`-sanitized one, the default
-schema beats a non-default one, then the lower schema name, then the lower
-object name — and the losers are reported under `skipped` (labelled
-`schema.table` when more than one schema was scanned). Columns, primary keys,
-and comments are always read from the winning table's own schema, never unioned
-across same-named twins.
+Object names with `__` are preserved as faithful model names — `a__b` and `a_b`
+are distinct models, and neither is sanitized. A name collision therefore only
+happens when two objects share the **same raw name** across different scanned
+schemas; exactly one wins the model name — the default schema beats a non-default
+one, then the lower schema name, then the lower object name — and the losers are
+reported under `skipped` (labelled `schema.table` when more than one schema was
+scanned). Columns, primary keys, and comments are always read from the winning
+table's own schema, never unioned across same-named twins. `sanitize_model_name`
+survives only as a re-ingest fallback-matching spelling: a stored old-world
+sanitized model (`a_b`) whose `sql_table` points at the live `a__b` is still
+matched to it, so re-ingest updates it in place (stored name wins).
 
 `datasources create --schema X` persists `X` as the datasource's
 `schema_name`, so later bare `slayer ingest` runs keep using it; `--all-schemas`

@@ -76,6 +76,39 @@ def _plan(query: SlayerQuery):
     return plan_query(query=query, bundle=dev1748_bundle())
 
 
+def _ranked_plans(planned) -> List[RankedAggregatePlan]:
+    """Every ranked plan in a query, in either coordinate system.
+
+    DEV-1835: a LOCAL first/last is desugared into a regroup producer BEFORE
+    isolation, so its ranked plan lives in the producer sub-plan rather than at
+    the top level. A cross-model first/last still carries a top-level ranked
+    plan. This gathers both so the plan-level assertions read the plan wherever
+    the desugar put it.
+    """
+    return [
+        rp
+        for rap in planned.regroup_attach_plans
+        for rp in rap.producer_plan.ranked_aggregate_plans
+    ] + list(planned.ranked_aggregate_plans)
+
+
+def _sole_producer(planned):
+    """The single regroup producer sub-plan a LOCAL first/last desugars into."""
+    assert len(planned.regroup_attach_plans) == 1, planned.regroup_attach_plans
+    return planned.regroup_attach_plans[0].producer_plan
+
+
+def _placeholder_slot(planned, rap):
+    """The consumer row slot a regroup producer's aggregate is consumed through.
+
+    DEV-1835 replaces the partitioned aggregate with a reserved-leaf placeholder
+    in the consumer's dimension / order / projection trees; this finds the slot
+    that placeholder resolves to.
+    """
+    placeholder = rap.substitutions[0].placeholder
+    return next(s for s in planned.row_slots if s.key == placeholder)
+
+
 async def _sql(query: SlayerQuery, *, dialect: str = "postgres") -> str:
     models = dev1748_models()
     return await _engine_generate(
@@ -112,7 +145,18 @@ def _cte_body(sql: str, name: str, *, dialect: str = "postgres") -> exp.Expressi
 
 
 def _ranked_cte_names(sql: str, *, dialect: str = "postgres") -> List[str]:
-    return [n for n in _cte_names(sql, dialect=dialect) if n.startswith("_rk_")]
+    # DEV-1835: a first/last CTE is identified by the ROW_NUMBER ranking it
+    # carries, not by a name prefix. A LOCAL ranked measure now desugars into a
+    # regroup producer that renders as a ``_cm_`` CTE, while a cross-model one
+    # keeps its ``_rk_`` name — both carry the ranking window, and nothing else
+    # (plain ``_base`` / ``_cm_`` / ``_wm_`` aggregates) does.
+    return [
+        cte.alias_or_name
+        for cte in _ctes(sql, dialect=dialect)
+        if any(
+            isinstance(w.this, exp.RowNumber) for w in cte.this.find_all(exp.Window)
+        )
+    ]
 
 
 def _the_ranked_body(sql: str, *, dialect: str = "postgres") -> exp.Expression:
@@ -187,12 +231,17 @@ class TestIsolationClassification:
     def test_a_local_first_last_is_classified_host_rooted_ranked(self) -> None:
         """A first/last needs its own ROW ORDERING, so it isolates even when
         every one of its inputs is local — the trigger the pre-B9 classifier had
-        no case for."""
+        no case for.
+
+        DEV-1835: the local first/last is desugared into a regroup producer
+        before isolation, so the classified slot now lives in the producer
+        sub-plan; the classifier's verdict on it is unchanged."""
         planned = _plan(_q(
             dimensions=["status"],
             measures=[{"formula": "amount:last", "name": "l"}],
         ))
-        slot = next(s for s in planned.aggregate_slots if not s.hidden)
+        producer = _sole_producer(planned)
+        slot = next(s for s in producer.aggregate_slots if not s.hidden)
         assert classify_isolation(
             slot=slot, windowed_slot_ids=set(), bundle=dev1748_bundle(),
         ) is IsolationKind.RANKED_HOST
@@ -236,12 +285,15 @@ class TestIsolationClassification:
         aggregate isolating forever inside its own sub-plan. A ranked aggregate
         is different: it is rendered, never re-planned, and inside a sub-plan it
         still needs its own row ordering. So the guard must not suppress it —
-        otherwise a re-rooted first/last would have no ranking at all."""
+        otherwise a re-rooted first/last would have no ranking at all.
+
+        DEV-1835: the classified slot lives in the desugared regroup producer."""
         planned = _plan(_q(
             dimensions=["status"],
             measures=[{"formula": "amount:last", "name": "l"}],
         ))
-        slot = next(s for s in planned.aggregate_slots if not s.hidden)
+        producer = _sole_producer(planned)
+        slot = next(s for s in producer.aggregate_slots if not s.hidden)
         assert classify_isolation(
             slot=slot, windowed_slot_ids=set(), bundle=dev1748_bundle(),
             disable_host_rooted_isolation=True,
@@ -257,8 +309,11 @@ class TestThePlanNode:
     def test_each_plan_is_bound_to_its_own_aggregate_slot(self) -> None:
         """``first`` and ``last`` over one column are two aggregates, so two
         plans and two CTEs — the same one-per-aggregate rule ``_cm_`` and
-        ``_wm_`` already follow. Asserted by slot IDENTITY rather than by
-        count, so two plans attached to the same slot would fail."""
+        ``_wm_`` already follow. Each plan is bound to its OWN aggregate slot.
+
+        DEV-1835: the two local ranked measures desugar into two regroup
+        producers, one ranked plan each, each bound to a slot in its own
+        producer's coordinate system."""
         planned = _plan(_q(
             dimensions=["status"],
             measures=[
@@ -266,19 +321,27 @@ class TestThePlanNode:
                 {"formula": "amount:last", "name": "l"},
             ],
         ))
-        plans = planned.ranked_aggregate_plans
-        by_slot = {p.aggregate_slot_id: p.agg for p in plans}
+        producers = planned.regroup_attach_plans
+        assert len(producers) == 2
 
-        assert len(plans) == 2
-        assert len(by_slot) == 2, "two plans share one aggregate slot"
-        slots = {s.id: s.key.agg for s in planned.aggregate_slots}
-        for sid, agg in by_slot.items():
-            assert slots[sid] == agg
+        aggs = set()
+        for rap in producers:
+            pp = rap.producer_plan
+            assert len(pp.ranked_aggregate_plans) == 1, pp.ranked_aggregate_plans
+            plan = pp.ranked_aggregate_plans[0]
+            slots = {s.id: s.key.agg for s in pp.aggregate_slots}
+            assert slots[plan.aggregate_slot_id] == plan.agg
+            aggs.add(plan.agg)
+        assert aggs == {"first", "last"}
 
     def test_a_repeated_structural_key_shares_one_plan_and_both_names(self) -> None:
         """C13: one key declared under two names is ONE aggregate, so it must
         not produce two CTEs computing the same thing — and BOTH names must
-        still be projected from the one it produces."""
+        still be projected from the one it produces.
+
+        DEV-1835: the shared key desugars into ONE regroup producer (one ranked
+        plan, one CTE), consumed through a single placeholder slot that the
+        consumer projects once per declared name."""
         query = _q(
             dimensions=["status"],
             measures=[
@@ -287,10 +350,12 @@ class TestThePlanNode:
             ],
         )
         planned = _plan(query)
-        assert len(planned.ranked_aggregate_plans) == 1
+        assert len(planned.regroup_attach_plans) == 1
+        rap = planned.regroup_attach_plans[0]
+        assert len(rap.producer_plan.ranked_aggregate_plans) == 1
 
-        slot_id = planned.ranked_aggregate_plans[0].aggregate_slot_id
-        assert planned.projection.count(slot_id) == 2, (
+        placeholder_id = _placeholder_slot(planned, rap).id
+        assert planned.projection.count(placeholder_id) == 2, (
             "the shared key must be projected once per declared name"
         )
 
@@ -302,7 +367,7 @@ class TestThePlanNode:
             measures=[{"formula": "amount:last(shipped_at)", "name": "l"}],
         ))
         assert getattr(
-            planned.ranked_aggregate_plans[0].ranking_time_key, "leaf", None,
+            _ranked_plans(planned)[0].ranking_time_key, "leaf", None,
         ) == "shipped_at"
 
     def test_a_temporal_dimension_outranks_the_model_default(self) -> None:
@@ -315,7 +380,7 @@ class TestThePlanNode:
             measures=[{"formula": "amount:last", "name": "l"}],
         ))
         assert getattr(
-            planned.ranked_aggregate_plans[0].ranking_time_key, "leaf", None,
+            _ranked_plans(planned)[0].ranking_time_key, "leaf", None,
         ) == "shipped_at"
 
     def test_a_time_dimension_supplies_its_raw_column(self) -> None:
@@ -327,7 +392,7 @@ class TestThePlanNode:
             measures=[{"formula": "amount:last", "name": "l"}],
         ))
         assert getattr(
-            planned.ranked_aggregate_plans[0].ranking_time_key, "leaf", None,
+            _ranked_plans(planned)[0].ranking_time_key, "leaf", None,
         ) == "shipped_at"
 
     def test_the_model_default_is_the_last_resort(self) -> None:
@@ -338,7 +403,7 @@ class TestThePlanNode:
             measures=[{"formula": "amount:last", "name": "l"}],
         ))
         assert getattr(
-            planned.ranked_aggregate_plans[0].ranking_time_key, "leaf", None,
+            _ranked_plans(planned)[0].ranking_time_key, "leaf", None,
         ) == "created_at"
 
     def test_no_resolvable_ranking_column_raises_the_host_message(self) -> None:
@@ -410,8 +475,11 @@ class TestThePlanNode:
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
             measures=[{"formula": "amount:last", "name": "l"}],
         ))
-        plan = planned.ranked_aggregate_plans[0]
-        row_slot_ids = {s.id for s in planned.row_slots}
+        # DEV-1835: the grain members are anchored in the desugared producer's
+        # own row slots, so both plan and slots are read from the producer.
+        producer = _sole_producer(planned)
+        plan = producer.ranked_aggregate_plans[0]
+        row_slot_ids = {s.id for s in producer.row_slots}
 
         assert len(plan.grain) == 2, plan.grain
         assert {m.host_slot_id for m in plan.grain} <= row_slot_ids
@@ -422,7 +490,7 @@ class TestThePlanNode:
         CROSS JOINed, which is only sound because it still returns exactly one
         row."""
         planned = _plan(_q(measures=[{"formula": "amount:last", "name": "l"}]))
-        assert planned.ranked_aggregate_plans[0].grain == []
+        assert _ranked_plans(planned)[0].grain == []
 
     def test_a_measure_filter_is_carried_as_plan_data(self) -> None:
         """B9: "filtered variants are plan data, not sentinel-alias lookups".
@@ -433,9 +501,10 @@ class TestThePlanNode:
             dimensions=["status"],
             measures=[{"formula": "big_amount:last", "name": "l"}],
         ))
-        plan = planned.ranked_aggregate_plans[0]
+        producer = _sole_producer(planned)
+        plan = producer.ranked_aggregate_plans[0]
         slot = next(
-            s for s in planned.aggregate_slots if s.id == plan.aggregate_slot_id
+            s for s in producer.aggregate_slots if s.id == plan.aggregate_slot_id
         )
         assert slot.key.column_filter_key is not None
 
@@ -445,49 +514,64 @@ class TestThePlanNode:
         host row carrying NULL — the DEV-1503 failure. It has to be an outer
         WHERE on the combined SELECT.
 
-        Asserted as the EXACT id, and as that id being absent from the ranked
-        plan's own routing, so "some filter went somewhere" cannot pass."""
+        DEV-1835: comparing a first/last consumes it through a regroup
+        placeholder, so the filter is now bound as a ROW-phase predicate — but
+        the routing contract is unchanged: it lands on the outer combined SELECT
+        and never inside the ranked CTE. Asserted as the EXACT id being present
+        in the outer WHERE and absent from the ranked producer, so "some filter
+        went somewhere" cannot pass."""
         planned = _plan(_q(
             dimensions=["status"],
             measures=[{"formula": "amount:last", "name": "l"}],
             filters=[f"amount:last > {BIG_AMOUNT_THRESHOLD}"],
         ))
-        agg_filter_ids = [
-            fp.id for fp in planned.filters_by_phase
-            if fp.phase is Phase.AGGREGATE
-        ]
-        assert agg_filter_ids, "no aggregate-phase filter was bound"
-        assert set(agg_filter_ids) <= set(planned.outer_where_filter_ids)
+        bound_ids = [fp.id for fp in planned.filters_by_phase]
+        assert bound_ids, "no filter was bound"
+        assert set(bound_ids) <= set(planned.outer_where_filter_ids)
 
-        plan = planned.ranked_aggregate_plans[0]
-        assert not (set(agg_filter_ids) & set(plan.having_filter_ids))
-        assert not (set(agg_filter_ids) & set(plan.where_filter_ids))
+        producer = _sole_producer(planned)
+        plan = producer.ranked_aggregate_plans[0]
+        assert not (set(bound_ids) & set(plan.having_filter_ids))
+        assert not (set(bound_ids) & set(plan.where_filter_ids))
+        # the ranked producer never evaluates the comparison at all
+        assert not producer.filters_by_phase
 
     def test_an_order_only_ranked_measure_gets_a_hidden_plan(self) -> None:
         """An order-only first/last is materialised but never projected. It
         still needs its own CTE — and the plan must say so, or the renderer
-        would project it and change the emitted column list."""
+        would project it and change the emitted column list.
+
+        DEV-1835: it is materialised by a regroup producer and consumed through
+        a HIDDEN placeholder slot that the projection omits and the order sorts
+        by — the "materialised but not surfaced" contract, one hop over."""
         planned = _plan(_q(
             dimensions=["status"],
             measures=[{"formula": "amount:sum", "name": "s"}],
             order=[{"column": "amount:last", "direction": "desc"}],
         ))
-        plans = planned.ranked_aggregate_plans
-        assert len(plans) == 1
-        assert plans[0].hidden is True
-        assert plans[0].public_alias is None
-        assert plans[0].aggregate_slot_id not in planned.projection
+        assert len(planned.regroup_attach_plans) == 1
+        rap = planned.regroup_attach_plans[0]
+        assert len(rap.producer_plan.ranked_aggregate_plans) == 1
+
+        ph = _placeholder_slot(planned, rap)
+        assert ph.hidden is True
+        assert ph.public_name is None
+        assert ph.id not in planned.projection
+        assert any(e.slot_id == ph.id for e in planned.order)
 
     def test_an_order_entry_targeting_a_ranked_measure_names_its_scope(self) -> None:
         """P-D again: the order resolver dispatches on the plan-assigned scope
         with no fallback, so a ranked sort target must carry its own scope
-        rather than borrowing the cross-model one."""
+        rather than falling through to a default.
+
+        DEV-1835: a LOCAL first/last is consumed from its regroup producer's
+        ``_cm_`` CTE, so the sort term's scope is that producing CTE."""
         planned = _plan(_q(
             dimensions=["status"],
             measures=[{"formula": "amount:last", "name": "l"}],
             order=[{"column": "l", "direction": "desc"}],
         ))
-        assert [e.scope for e in planned.order] == [OrderScope.RANKED_CTE]
+        assert [e.scope for e in planned.order] == [OrderScope.CROSS_MODEL_CTE]
 
     def test_a_rerooted_cross_model_first_last_stays_a_cross_model_plan(self) -> None:
         """D1's exception. A re-rooted cross-model aggregate keeps its
@@ -609,7 +693,7 @@ class TestTheIsolatedCte:
         partition = _partition_exprs(body, dialect="postgres")
         assert len(partition) == 2, partition
 
-        pairs = _null_safe_pairs(_join_onto(sql, "_rk_"))
+        pairs = _null_safe_pairs(_join_onto(sql, _ranked_cte_names(sql)[0]))
         assert len(pairs) == 2, pairs
 
     async def test_the_join_back_is_null_safe(self) -> None:
@@ -619,7 +703,7 @@ class TestTheIsolatedCte:
             dimensions=["status"],
             measures=[{"formula": "amount:last", "name": "l"}],
         ))
-        join = _join_onto(sql, "_rk_")
+        join = _join_onto(sql, _ranked_cte_names(sql)[0])
         on_sql = join.args["on"].sql(dialect="postgres").upper()
 
         assert join.args.get("side", "").upper() == "LEFT", join.sql(dialect="postgres")
@@ -772,7 +856,7 @@ class TestTheIsolatedCte:
         assert body.args.get("where") is None, body.sql(dialect="postgres")
         assert list(body.find_all(exp.Max)), body.sql(dialect="postgres")
 
-        join = _join_onto(sql, "_rk_")
+        join = _join_onto(sql, _ranked_cte_names(sql)[0])
         assert join.args.get("on") is None, join.sql(dialect="postgres")
         assert join.args.get("kind", "").upper() == "CROSS", (
             join.sql(dialect="postgres")
@@ -1010,7 +1094,12 @@ class TestCrossModelAndRerooting:
         turns it into a duplicate ``_base`` instead. Every shape reachable today
         collapses (a 192-shape sweep found none that does not), so this guard is
         a belt. It is a raise rather than a best-effort render because the
-        alternative is invalid SQL that no unit test reads."""
+        alternative is invalid SQL that no unit test reads.
+
+        DEV-1835: the local first/last now desugars into a regroup attach, so a
+        plan that cannot collapse to a single ``_cm_`` CTE trips the matching
+        nested-CTE-body guard on the regroup attach path instead — same loud
+        failure, one route over."""
         from slayer.sql.generator import SQLGenerator
 
         planned = _plan(_q(
@@ -1024,7 +1113,7 @@ class TestCrossModelAndRerooting:
         # inside ``pytest.raises`` is the one under test (Sonar S5778).
         gen = SQLGenerator(dialect="tsql")
         bundle = dev1748_bundle()
-        with pytest.raises(NotImplementedError, match="cannot carry a WITH"):
+        with pytest.raises(NotImplementedError, match="regroup attach nested in a CTE body"):
             gen.generate_from_planned(planned, bundle=bundle, as_cte_body=True)
 
     async def test_the_rerooted_cte_body_is_the_ranking_itself(self) -> None:

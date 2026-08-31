@@ -436,9 +436,15 @@ class TestSlayerModel:
         meas = Column(name="total", sql="orders.amount", type=DataType.DOUBLE)
         assert meas.sql == "orders.amount"
 
-    def test_model_name_rejects_double_underscore(self) -> None:
-        with pytest.raises(ValueError, match="must not contain '__'"):
-            SlayerModel(name="my__model", sql_table="t", data_source="test")
+    def test_model_name_allows_double_underscore(self) -> None:
+        # DEV-1743: `__` is legal in model names (the dotted-canonical flip
+        # made join-path ambiguity structurally impossible).
+        model = SlayerModel(name="my__model", sql_table="t", data_source="test")
+        assert model.name == "my__model"
+
+    def test_model_name_rejects_reserved_slayer_prefix(self) -> None:
+        with pytest.raises(ValueError, match="__slayer_"):
+            SlayerModel(name="__slayer_x", sql_table="t", data_source="test")
 
     def test_dimension_name_allows_double_underscore(self) -> None:
         """__ is allowed in dimension names — used for flattened join paths in virtual models."""
@@ -450,9 +456,14 @@ class TestSlayerModel:
         meas = Column(name="stores__tax_rate_sum", sql="tax_rate", type=DataType.DOUBLE)
         assert meas.name == "stores__tax_rate_sum"
 
-    def test_query_name_rejects_double_underscore(self) -> None:
-        with pytest.raises(ValueError, match="must not contain '__'"):
-            SlayerQuery(name="my__query", source_model="orders")
+    def test_query_name_allows_double_underscore(self) -> None:
+        # DEV-1743: `__` is legal in query names.
+        q = SlayerQuery(name="my__query", source_model="orders")
+        assert q.name == "my__query"
+
+    def test_query_name_rejects_reserved_slayer_prefix(self) -> None:
+        with pytest.raises(ValueError, match="__slayer_"):
+            SlayerQuery(name="__slayer_x", source_model="orders")
 
     def test_model_name_single_underscore_allowed(self) -> None:
         model = SlayerModel(name="my_model", sql_table="t", data_source="test")
@@ -2256,12 +2267,14 @@ class TestColumnSampledValuesAndDistinctCount:
 
 
 class TestSlayerModelVersionBump:
-    """SlayerModel.version bumps from 7 to 8. v7→v8 is a no-op forward
-    migration; the bump is purely about the new optional ``source_kind``
-    field."""
+    """SlayerModel.version tracks ``CURRENT_VERSIONS['SlayerModel']`` — v8 added
+    the optional ``source_kind`` field; DEV-1743 bumped to v9 (the ``__`` ban
+    lift + legacy-alias load-path rewrite). Both forward steps are no-op
+    converters."""
 
-    def test_slayer_model_version_is_8(self) -> None:
+    def test_slayer_model_version_matches_current(self) -> None:
         from slayer.core.models import SlayerModel
+        from slayer.storage.migrations import CURRENT_VERSIONS
 
         m = SlayerModel(name="orders", sql_table="orders", data_source="ds")
-        assert m.version == 8
+        assert m.version == CURRENT_VERSIONS["SlayerModel"]

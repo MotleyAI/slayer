@@ -93,31 +93,11 @@ def _cases() -> dict:
             dimensions=["region"],
             measures=[{"formula": "amount:sum(partition_by=city)", "name": "x"}],
         ),
-        "guard/window_plus_partition": _q(
-            dimensions=["region"], time_dimensions=month_td(),
-            measures=[
-                {"formula": "amount:sum(window='90d', partition_by=region)", "name": "x"},
-            ],
-        ),
-        "guard/first": _q(
-            dimensions=["region", "city"],
-            measures=[{"formula": "amount:first(partition_by=region)", "name": "x"}],
-        ),
-        "guard/last": _q(
-            dimensions=["region", "city"],
-            measures=[{"formula": "amount:last(partition_by=region)", "name": "x"}],
-        ),
-        "guard/nested_transform": _q(
-            dimensions=["region"], time_dimensions=month_td(),
-            measures=[
-                {"formula": "cumsum(amount:sum(partition_by=region))", "name": "x"},
-            ],
-        ),
-        "guard/in_filter": _q(
-            dimensions=["region", "city"],
-            filters=["amount:sum(partition_by=region) > 50"],
-            measures=[{"formula": "amount:sum", "name": "x"}],
-        ),
+        # guard/first, guard/last, guard/nested_transform, guard/in_filter,
+        # guard/window_plus_partition removed — DEV-1824 (tasks 3.3/3.4/3.5/3.6)
+        # lifts these LOCAL shapes; their goldens now live in
+        # tests/test_dev1824_golden_sql.py (lift/first_last_partition,
+        # lift/cumsum_partitioned, lift/filter_partitioned, lift/window_partition).
         "guard/cross_model_outside_grain": _q(
             dimensions=["region", "customers.tier"],
             measures=[
