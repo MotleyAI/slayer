@@ -49,15 +49,13 @@ _BASIC_QUERY = SlayerQuery(
 @pytest.mark.parametrize(
     "dialect,expected",
     [
-        # The typed pipeline wraps every aggregate in a per-dialect
-        # result-type CAST, so ``COUNT(*)`` / ``SUM(...)`` carry the
-        # measure's declared type (``*:count`` -> integer,
-        # ``revenue:sum`` -> the DOUBLE column's float type).
+        # Inferred integer results retain native range; the DOUBLE source
+        # still drives the existing floating-point result cast.
         (
             "postgres",
             'SELECT\n'
             '  orders.status AS "orders.status",\n'
-            '  CAST(COUNT(*) AS INT) AS "orders._count",\n'
+            '  COUNT(*) AS "orders._count",\n'
             '  CAST(SUM(orders.amount) AS DOUBLE PRECISION) AS "orders.revenue_sum"\n'
             'FROM public.orders AS orders\n'
             'GROUP BY\n'
@@ -67,7 +65,7 @@ _BASIC_QUERY = SlayerQuery(
             "sqlite",
             'SELECT\n'
             '  orders.status AS "orders.status",\n'
-            '  CAST(COUNT(*) AS INTEGER) AS "orders._count",\n'
+            '  COUNT(*) AS "orders._count",\n'
             '  CAST(SUM(orders.amount) AS REAL) AS "orders.revenue_sum"\n'
             'FROM public.orders AS orders\n'
             'GROUP BY\n'
@@ -77,7 +75,7 @@ _BASIC_QUERY = SlayerQuery(
             "duckdb",
             'SELECT\n'
             '  orders.status AS "orders.status",\n'
-            '  CAST(COUNT(*) AS INT) AS "orders._count",\n'
+            '  COUNT(*) AS "orders._count",\n'
             '  CAST(SUM(orders.amount) AS DOUBLE) AS "orders.revenue_sum"\n'
             'FROM public.orders AS orders\n'
             'GROUP BY\n'
@@ -87,7 +85,7 @@ _BASIC_QUERY = SlayerQuery(
             "clickhouse",
             'SELECT\n'
             '  orders.status AS "orders.status",\n'
-            '  CAST(COUNT(*) AS Nullable(Int32)) AS "orders._count",\n'
+            '  COUNT(*) AS "orders._count",\n'
             '  CAST(SUM(orders.amount) AS Nullable(Float64)) AS "orders.revenue_sum"\n'
             'FROM public.orders AS orders\n'
             'GROUP BY\n'
@@ -97,7 +95,7 @@ _BASIC_QUERY = SlayerQuery(
             "mysql",
             "SELECT\n"
             "  orders.status AS `orders.status`,\n"
-            "  CAST(COUNT(*) AS SIGNED) AS `orders._count`,\n"
+            "  COUNT(*) AS `orders._count`,\n"
             "  CAST(SUM(orders.amount) AS DOUBLE) AS `orders.revenue_sum`\n"
             "FROM public.orders AS orders\n"
             "GROUP BY\n"
@@ -114,7 +112,7 @@ _BASIC_QUERY = SlayerQuery(
             "tsql",
             "SELECT\n"
             "  orders.status AS [orders___status],\n"
-            "  CAST(COUNT(*) AS INTEGER) AS [orders____count],\n"
+            "  COUNT(*) AS [orders____count],\n"
             "  CAST(SUM(orders.amount) AS FLOAT) AS [orders___revenue_sum]\n"
             "FROM public.orders AS orders\n"
             "GROUP BY\n"

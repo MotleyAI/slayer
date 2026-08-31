@@ -131,7 +131,7 @@ def test_joined_integer_aggregate_preserves_cast_intent(integer_orders, explicit
             with pytest.raises(duckdb.ConversionException, match="out of range"):
                 connection.execute(sql)
         else:
-            assert connection.execute(sql).fetchone()[-1] == 4_000_000_000
+            assert [row[-1] for row in connection.execute(sql).fetchall()] == [4_000_000_000]
 
 
 @pytest.mark.parametrize("explicit", [False, True])
@@ -148,3 +148,19 @@ def test_partitioned_integer_aggregate_preserves_cast_intent(integer_orders, exp
                 connection.execute(sql)
         else:
             assert [row[-1] for row in connection.execute(sql).fetchall()] == [4_000_000_000, 4_000_000_000]
+
+
+@pytest.mark.parametrize("values,expected", [([], None), ([None], None), ([None, 4_000_000_001], 4_000_000_001)])
+def test_inferred_integer_sum_preserves_null_and_empty_semantics(integer_orders, values, expected):
+    sql, _ = _sql(model=integer_orders, measures=["amount:sum"])
+    with duckdb.connect() as connection:
+        connection.execute("CREATE TABLE orders (amount BIGINT)")
+        for value in values:
+            connection.execute("INSERT INTO orders VALUES (?)", [value])
+        assert connection.execute(sql).fetchall() == [(expected,)]
+
+
+def test_query_type_override_wins_over_saved_integer_type(integer_orders):
+    sql, planned = _sql(model=integer_orders, measures=[{"formula": "as_int", "type": "DOUBLE"}])
+    assert planned.aggregate_slots[0].type is DataType.DOUBLE
+    assert "CAST(SUM(orders.amount) AS DOUBLE)" in sql
