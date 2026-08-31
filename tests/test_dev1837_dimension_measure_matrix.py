@@ -12,8 +12,12 @@ Scenario coverage map (spec: openspec …/specs/queries/computed-dimensions):
   Bare partitioned aggregate as dim + transform ...... bare-* transform cells
   Transform-root dimension with a transform measure .. rank-* transform cells
   Union-grain (mixed) dimension family (DEV-1839) .... mixed-* cells
+  Banded dimension with a bare windowed measure ...... band-wm (DEV-1835)
+  Bare partitioned aggregate as dim + bare last ...... bare-rk (DEV-1835)
+  Transform-root dim + bare windowed / ranked ........ rank-wm / rank-rk
+  Scalar-expression dim + bare windowed / last ....... expr-wm / expr-rk
   Alongside a partitioned measure .................... TestCoexistenceTriples
-  Adding a transform measure is cardinality-neutral .. TestCardinalityNeutrality
+  Adding a transform/wm/rk measure is card-neutral ... TestCardinalityNeutrality
   Running total partitions by a computed dimension ... expr-cumsum
   Attached value never widens the grain .............. TestPartitionedShiftFix
   Explicit partition_by on the transform wins ........ TestExplicitTransformPartition
@@ -30,9 +34,9 @@ from sqlglot import exp
 
 from slayer.sql.scope_check import assert_scope_closed
 
+from tests._dev1835_fixtures import RK_X, WM_X
 from tests._dev1837_fixtures import (
     CM_TOTAL,
-    COL_WM,
     DIM_FAMILY_DIMS,
     GROUP_M,
     GROUP_M_MONTH,
@@ -69,21 +73,12 @@ ATTACH_MEASURES = {
 }
 TD_ATTACH = frozenset({"win_part", "wm"})
 
-#: Still-guarded cells → the stage issue their strict-xfail points at.
+#: Still-guarded cells → the stage issue their strict-xfail points at (the
+#: DEV-1835 wm/rk column flipped to supported with the stage-2 migration).
 XFAIL_CELLS = {
-    ("band", "wm"): "DEV-1835: row attach × bare windowed measure",
-    ("band", "rk"): "DEV-1835: row attach × bare first/last measure",
     ("band", "cm"): "DEV-1836: row attach × cross-model measure",
-    ("bare", "wm"): "DEV-1835: row attach × bare windowed measure",
-    ("bare", "rk"): "DEV-1835: row attach × bare first/last measure",
     ("bare", "cm"): "DEV-1836: row attach × cross-model measure",
-    ("rank", "wm"): "DEV-1835: row attach × bare windowed measure",
-    ("rank", "rk"): "DEV-1835: row attach × bare first/last measure",
     ("rank", "cm"): "DEV-1836: row attach × cross-model measure",
-    ("expr", "wm"): "DEV-1835: ScalarCallKey in the windowed grain anchoring",
-    ("expr", "rk"): "DEV-1835: ScalarCallKey in the ranked-CTE anchoring",
-    ("mixed", "wm"): "DEV-1835: row attach × bare windowed measure",
-    ("mixed", "rk"): "DEV-1835: row attach × bare first/last measure",
     ("mixed", "cm"): "DEV-1836: row attach × cross-model measure",
 }
 
@@ -124,11 +119,9 @@ def _expected_maps(family: str, meas: str):
     elif meas == "last_part":
         x_map = {k: REGION_LAST[k[0]] for k in keys}
     elif meas == "wm":
-        assert family == "col", "bare-window oracle derived for D-col only"
-        x_map = dict(COL_WM)
+        x_map = dict(WM_X[family])
     elif meas == "rk":
-        assert family == "col", "bare-last oracle derived for D-col only"
-        x_map = {k: REGION_LAST[k[0]] for k in keys}
+        x_map = dict(RK_X[family])
     else:
         assert meas == "cm"
         x_map = {k: CM_TOTAL for k in keys}
@@ -346,18 +339,21 @@ class TestPartitionedShiftFix:
 
 
 class TestCardinalityNeutrality:
-    """Codex F7 — adding a transform measure must not move the result grain of
-    an aggregation-derived dimension (band, bare, AND transform-root)."""
+    """Codex F7 — adding a transform, bare windowed, or bare first/last
+    measure must not move the result grain of an aggregation-derived
+    dimension (band, bare, AND transform-root)."""
 
     @pytest.mark.parametrize("family", ["band", "bare", "rank"])
-    async def test_adding_transform_is_cardinality_neutral(
-        self, exec_backend, family: str,
+    @pytest.mark.parametrize("meas", ["cumsum", "wm", "rk"])
+    async def test_adding_measure_is_cardinality_neutral(
+        self, exec_backend, family: str, meas: str,
     ) -> None:
         _, engine = exec_backend
-        base = await engine.execute(_cell_query(family, "cumsum", include_x=False))
-        plus = await engine.execute(_cell_query(family, "cumsum"))
-        base_m = _keyed(base, family=family, with_month=True, cols=("m",))
-        plus_m = _keyed(plus, family=family, with_month=True, cols=("m",))
+        with_month = _needs_td(meas)
+        base = await engine.execute(_cell_query(family=family, meas=meas, include_x=False))
+        plus = await engine.execute(_cell_query(family=family, meas=meas))
+        base_m = _keyed(base, family=family, with_month=with_month, cols=("m",))
+        plus_m = _keyed(plus, family=family, with_month=with_month, cols=("m",))
         assert set(base_m) == set(plus_m)
         for key, (m_actual,) in plus_m.items():
             assert float(m_actual) == pytest.approx(float(base_m[key][0]))

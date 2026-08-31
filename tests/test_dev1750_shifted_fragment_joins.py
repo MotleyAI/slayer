@@ -20,6 +20,7 @@ import pytest
 
 from slayer.core.keys import AggregateKey, ColumnKey
 from slayer.sql.generator import SQLGenerator
+from slayer.sql.scope_check import assert_scope_closed
 
 from tests._dev1750_fixtures import (
     ModelMeasure,
@@ -30,6 +31,7 @@ from tests._dev1750_fixtures import (
     orders_model,
     shifted_cte_body,
 )
+from tests._engine_helpers import _extract_cte_body
 
 
 def _q(*, measures) -> SlayerQuery:
@@ -131,11 +133,12 @@ class TestShiftedCtePositionalArgRegistration:
     ``for _arg in local_agg_key.args`` loop — a first/last explicit time arg is
     the standing case.
 
-    First/last over ``time_shift`` is not renderable through the shifted
-    re-aggregation seam (it needs a ranked subquery), so end-to-end this shape
-    raises a loud error rather than emitting wrong SQL. The contract pinned here
-    is: NO silent scope leak / unbound alias — either the join is present, or a
-    specific NotImplementedError is raised."""
+    DEV-1835 lift: the first/last now DESUGARS into a ``_cm_`` producer that
+    owns the crossing join and the ranked subquery, so end-to-end this shape now
+    RENDERS (the ranked-in-shifted seam is no longer needed). The contract
+    pinned here is unchanged: NO silent scope leak / unbound alias — the crossing
+    is bound inside the producer the shifted CTE references, never leaked bare
+    into the shifted re-aggregation."""
 
     @pytest.mark.parametrize("agg", ["last", "first"])
     async def test_first_last_crossing_time_arg_no_silent_leak(self, agg: str) -> None:
@@ -146,19 +149,18 @@ class TestShiftedCtePositionalArgRegistration:
                 name="prev",
             ),
         ])
-        try:
-            sql = await gen(q)
-        except NotImplementedError as exc:
-            # A loud deferral is acceptable (the ranked-in-shifted seam does not
-            # exist) — but it must be a SPECIFIC deferral, never the old blanket
-            # op guard, whose wording the lift removes.
-            assert "also has a cross-model aggregate" not in str(exc), str(exc)
-            return
-        # If it DID render, the ranking arg's join must be in the shifted CTE —
-        # never an unbound reference / silent scope leak.
+        sql = await gen(q)  # DEV-1835 lift: renders via the desugared producer
+        assert_scope_closed(sql, dialect="duckdb")
+        assert "__regroup__" not in sql, sql
+        # The crossing does not leak bare into the shifted CTE; the shifted CTE
+        # references the producer's already-computed column instead.
         shifted = shifted_cte_body(sql)
-        assert "customers.signup_at" in shifted, shifted
-        assert "JOIN customers" in shifted, shifted
+        assert "_cm_" in shifted, shifted
+        assert "customers.signup_at" not in shifted, shifted
+        # The ranking arg's crossing join + ORDER BY key live INSIDE the producer.
+        producer = _extract_cte_body(sql, rf"_cm_orders__amount_{agg}\w+")
+        assert "JOIN customers" in producer, producer
+        assert "customers.signup_at" in producer, producer
 
 
 class TestCrossModelHiddenAliasReservation:

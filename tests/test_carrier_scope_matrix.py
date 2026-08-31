@@ -205,7 +205,7 @@ class TestScopeClosureInvariant:
             measures=[ModelMeasure(formula="balance:last(ordered_at)")],
         )
         sql = await _gen(query, _orders())
-        assert "_rk_" in sql  # ranked CTE scope
+        assert "_cm_" in sql  # DEV-1835: ranked producer under uniform _cm_ scope
         assert "ROW_NUMBER()" in sql
         assert "orders.ordered_at" in sql                    # explicit time carrier
         assert_scope_closed(sql)
@@ -360,9 +360,9 @@ class TestRlsIsolationCte:
 # --------------------------------------------------------------------------- #
 class TestScopeDefectPins:
     async def test_windowed_measure_emits_wm_cte(self) -> None:
-        # DEV-1714 (Stage 10) landed: duration-windowed measures now emit the
-        # host-rooted `_wm_` range-join CTE on the typed pipeline, so this
-        # promoted from its strict-xfail pin. Rich coverage lives in
+        # DEV-1714 (Stage 10) landed: duration-windowed measures emit a range-join
+        # producer CTE on the typed pipeline. DEV-1835 unifies its naming under the
+        # `_cm_` producer scope (formerly `_wm_`). Rich coverage lives in
         # tests/test_sql_generator.py (TestFields / TestWindowedMeasureGuards)
         # and tests/integration/test_integration_windowed_measures.py.
         query = SlayerQuery(
@@ -372,7 +372,7 @@ class TestScopeDefectPins:
             measures=[ModelMeasure(formula="amount:sum(window='90d')", name="rev_w")],
         )
         sql = await _gen(query, _orders())
-        assert "_wm_" in sql  # intended Stage-10 windowed CTE scope
+        assert "_cm_" in sql  # DEV-1835: windowed producer under uniform _cm_ scope
 
     async def test_cross_model_source_crosses_further_join(self) -> None:
         customers = _customers(extra=[

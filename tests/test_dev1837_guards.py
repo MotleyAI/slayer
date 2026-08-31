@@ -2,9 +2,10 @@
 
 Lifted direction: a row regroup attach (computed dimension) with a transform
 measure renders in both chains; the old catch-all DEV-1824 arm is gone from the
-source. Remaining deferrals: three narrowed arms with exact messages (windowed/
-ranked → DEV-1835, cross-model → DEV-1836, CTE-body → DEV-1838) plus the
-combined-attach CTE-body arm re-pointed to DEV-1838, and the two stale
+source, and the windowed/ranked arm lifted with DEV-1835 (its absence is
+scanned in tests/test_dev1835_guards.py). Remaining deferrals: the narrowed
+arms with exact messages (cross-model → DEV-1836, CTE-body → DEV-1838) plus
+the combined-attach CTE-body arm re-pointed to DEV-1838, and the two stale
 stage_planner DEV-1824 refs re-pointed (D5).
 """
 
@@ -31,6 +32,8 @@ from tests._dev1837_fixtures import (
 
 BAND = {"expression": BAND35, "name": "band"}
 
+#: The DEV-1835-lifted arm — kept only as the no-residue scan needle
+#: (tests/test_dev1835_guards.py imports it).
 ARM_WINDOWED_RANKED = (
     "A row regroup attach (computed dimension) combined with a windowed or "
     "ranked measure is not yet supported (DEV-1835)."
@@ -118,30 +121,29 @@ class TestLiftedDirection:
 
 
 class TestRemainingArmsExactMessages:
-    async def test_windowed_measure_arm(self) -> None:
-        query = q(
+    async def test_windowed_measure_renders(self) -> None:
+        """DEV-1835 lifted direction: the former windowed-arm shape renders
+        (executed ground truth: the band-wm matrix cell)."""
+        sql = await gen(q(
             dimensions=["region", BAND],
             time_dimensions=month_td(),
             measures=[
                 ModelMeasure(formula="amount:sum", name="m"),
                 ModelMeasure(formula="amount:sum(window='1y')", name="w"),
             ],
-        )
-        with pytest.raises(NotImplementedError) as ei:
-            await gen(query)
-        assert str(ei.value) == ARM_WINDOWED_RANKED
+        ))
+        assert "__regroup__" not in sql, sql
 
-    async def test_ranked_measure_arm(self) -> None:
-        query = q(
+    async def test_ranked_measure_renders(self) -> None:
+        """DEV-1835 lifted direction: the former ranked-arm shape renders."""
+        sql = await gen(q(
             dimensions=["region", BAND],
             measures=[
                 ModelMeasure(formula="amount:sum", name="m"),
                 ModelMeasure(formula="amount:last", name="l"),
             ],
-        )
-        with pytest.raises(NotImplementedError) as ei:
-            await gen(query)
-        assert str(ei.value) == ARM_WINDOWED_RANKED
+        ))
+        assert "__regroup__" not in sql, sql
 
     async def test_cross_model_measure_arm(self) -> None:
         query = q(
