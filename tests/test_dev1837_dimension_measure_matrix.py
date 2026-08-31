@@ -73,14 +73,12 @@ ATTACH_MEASURES = {
 }
 TD_ATTACH = frozenset({"win_part", "wm"})
 
-#: Still-guarded cells → the stage issue their strict-xfail points at (the
-#: DEV-1835 wm/rk column flipped to supported with the stage-2 migration).
-XFAIL_CELLS = {
-    ("band", "cm"): "DEV-1836: row attach × cross-model measure",
-    ("bare", "cm"): "DEV-1836: row attach × cross-model measure",
-    ("rank", "cm"): "DEV-1836: row attach × cross-model measure",
-    ("mixed", "cm"): "DEV-1836: row attach × cross-model measure",
-}
+#: Still-guarded cells → the stage issue their strict-xfail points at. DEV-1835
+#: flipped the wm/rk column; DEV-1836 flips the last column — the four
+#: ``(family, cm)`` cells (row attach × cross-model measure) are now supported
+#: (target-rooted producers), so they move to the supported table with the
+#: broadcast oracle (``x = CM_TOTAL``). Nothing remains guarded here.
+XFAIL_CELLS: dict[tuple[str, str], str] = {}
 
 DIM_FAMILIES = tuple(DIM_FAMILY_DIMS)
 MEASURE_KEYS = tuple(ATTACH_MEASURES) + tuple(TRANSFORM_FORMULAS)
