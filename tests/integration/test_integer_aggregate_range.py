@@ -1,7 +1,9 @@
 """Integer result metadata must not narrow the database's aggregate range (#347)."""
 
-import duckdb
 import pytest
+
+duckdb = pytest.importorskip("duckdb")
+pytestmark = pytest.mark.integration
 
 from slayer.core.enums import DataType
 from slayer.core.models import ModelJoin, SlayerModel
@@ -35,7 +37,7 @@ def _sql(*, model, measures, referenced_models=(), **query_kwargs):
         query=SlayerQuery.model_validate({"source_model": "orders", "measures": measures, **query_kwargs}),
         bundle=bundle,
     )
-    return generate_from_planned(planned, bundle=bundle, dialect="duckdb"), planned
+    return generate_from_planned(planned_query=planned, bundle=bundle, dialect="duckdb"), planned
 
 
 @pytest.mark.parametrize(
@@ -57,8 +59,8 @@ def test_inferred_integer_aggregate_preserves_native_range(integer_orders, sql_t
     with duckdb.connect() as connection:
         connection.execute(f"CREATE TABLE orders (id INT, amount {sql_type}, created_at TIMESTAMP)")
         connection.execute(
-            "INSERT INTO orders VALUES (1, ?, '2024-01-01'), (2, ?, '2024-01-02')",
-            [amount, amount],
+            query="INSERT INTO orders VALUES (1, ?, '2024-01-01'), (2, ?, '2024-01-02')",
+            parameters=[amount, amount],
         )
         value = connection.execute(sql).fetchone()[0]
     assert isinstance(value, int)
@@ -156,7 +158,7 @@ def test_inferred_integer_sum_preserves_null_and_empty_semantics(integer_orders,
     with duckdb.connect() as connection:
         connection.execute("CREATE TABLE orders (amount BIGINT)")
         for value in values:
-            connection.execute("INSERT INTO orders VALUES (?)", [value])
+            connection.execute(query="INSERT INTO orders VALUES (?)", parameters=[value])
         assert connection.execute(sql).fetchall() == [(expected,)]
 
 

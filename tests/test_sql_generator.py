@@ -10780,7 +10780,7 @@ class TestCastEmissionMeasure:
             source_model="orders",
             measures=[ModelMeasure(formula="*:count", name="cnt")],  # type=None default
         )
-        sql = await _generate(gen, query, orders_model)
+        sql = await _generate(generator=gen, query=query, model=orders_model)
         # INT remains the inferred metadata type, but must not narrow the
         # backend's native count result unless the measure explicitly asks.
         assert 'COUNT(*) AS "ORDERS.CNT"' in sql.upper()
