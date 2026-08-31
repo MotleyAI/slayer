@@ -56,8 +56,9 @@ The system SHALL accept the functional spelling in every position that accepts
 colon aggregations: query measures, query filters (both row-level and
 post-aggregation phases), order, model measure formulas (saved via the API and
 hand-authored in YAML storage), model-extension measures, inline source-model
-measures, multi-stage source-query formulas, and inside transform or arithmetic
-expressions.
+measures, multi-stage source-query formulas, computed-dimension expressions,
+and inside transform or arithmetic expressions (including mixed-grain
+arithmetic over partitioned aggregates).
 
 #### Scenario: Query filter routed to HAVING
 - **WHEN** a query filter is written `sum(revenue) > 100`
@@ -86,6 +87,18 @@ expressions.
 #### Scenario: Cross-spelling rename and filter-form matching
 - **WHEN** a measure is declared `{"formula": "sum(revenue)", "name": "rev"}` and a filter references `revenue:sum` (or vice versa)
 - **THEN** the filter resolves to the same measure — spelling never affects matching
+
+#### Scenario: Computed dimension with a functional partitioned aggregate
+- **WHEN** a computed dimension is written with `sum(amount, partition_by=city)` in its expression (bare, banded via CASE, or under a transform) instead of `amount:sum(partition_by=city)`
+- **THEN** the dimension behaves identically to the colon form, including result naming and grouping
+
+#### Scenario: Computed-dimension guards fire for both spellings
+- **WHEN** a computed dimension contains `sum(amount)` with no `partition_by=`
+- **THEN** it fails with the same bare-aggregate-requires-partition_by error as the colon form
+
+#### Scenario: Mixed-grain arithmetic with functional spellings
+- **WHEN** a measure or filter combines aggregates at different partition grains written functionally (e.g. `sum(a, partition_by=region) - sum(b, partition_by=city)`)
+- **THEN** it behaves identically to the colon-form mixed-grain expression
 
 ### Requirement: Aggregation-name healing applies to functional spelling
 The system SHALL apply the same case-insensitive builtin matching and alias

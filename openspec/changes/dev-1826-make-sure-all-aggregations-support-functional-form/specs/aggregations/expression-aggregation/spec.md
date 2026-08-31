@@ -42,17 +42,27 @@ post-aggregation filters, and order.
 - **WHEN** a stage formula in a multi-stage query aggregates an expression over the current stage's output columns
 - **THEN** it succeeds, named within the stage's namespace
 
+#### Scenario: Expression aggregation inside a computed dimension
+- **WHEN** a computed dimension's expression contains `sum(amount - cost, partition_by=region)`
+- **THEN** it behaves like any partitioned aggregate inside a dimension expression, subject to the same grain guards
+
 ### Requirement: Expression result keys are deterministic
-The result-column key for an expression aggregation SHALL be derived from the
-canonical parsed expression — insensitive to whitespace and formatting
-variants — by mapping operators to words, sanitizing remaining punctuation,
-appending the aggregation name and any existing parametric or partition
-suffixes, and capping length with a stable hash tail; an explicit rename
-overrides the derived key.
+The result-column key for an expression aggregation SHALL be derived by the
+same auto-naming rule used for computed dimensions (non-word characters
+collapsed to underscores, digit-leading names prefixed, long names capped with
+a stable hash), followed by the aggregation name and any existing parametric or
+partition suffixes — insensitive to whitespace and formatting variants. An
+explicit rename overrides the derived key. Two distinct expressions whose
+derived keys collide SHALL fail with a clear duplicate-key error advising a
+rename — never silently share a column.
 
 #### Scenario: Derived key
 - **WHEN** a measure on model `orders` is written `sum(amount - cost)`
-- **THEN** its result key is `orders.amount_minus_cost_sum`
+- **THEN** its result key is `orders.amount_cost_sum` (same sanitizer as a computed dimension named from `amount - cost`)
+
+#### Scenario: Colliding derived keys fail loudly
+- **WHEN** one query contains both `sum(amount - cost)` and `sum(amount + cost)` without renames
+- **THEN** it fails with a duplicate-key error naming both expressions and advising a rename
 
 #### Scenario: Formatting-insensitive identity
 - **WHEN** the same expression is written `sum(amount-cost)` and `sum( amount - cost )`

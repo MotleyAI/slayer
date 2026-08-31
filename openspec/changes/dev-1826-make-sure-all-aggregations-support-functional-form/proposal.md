@@ -24,12 +24,18 @@ retiring colon syntax.
   preserves the author's spelling. **BREAKING** for consumers asserting on
   `FUNC_STYLE_AGG` warnings.
 - The legacy importer pipeline (`core/formula.py`) keeps its internal rewriter;
-  schema drift switches to it; order coercion moves to the parser-native path via
-  the existing placeholder + `raw_formula` machinery.
+  the three quiet `func_style_agg_to_colon` call sites (stage planner, schema
+  drift, memories resolver) are deleted as dead once the parser is native; order
+  coercion moves to the parser-native path via the existing placeholder +
+  `raw_formula` machinery.
+- Parity explicitly covers the positions added by DEV-1740/1824/1839: computed
+  dimension expressions (with the same partition_by guards) and mixed-grain
+  arithmetic.
 - Entity-reference surfaces (memories/search resolver, `recommend_root_model`)
   accept functional refs like `sum(orders.revenue)`.
 - New: same-model expression aggregation `sum(amount - cost)` via binder-level
-  desugar, with deterministic auto-generated result keys; cross-model expressions,
+  desugar reusing the DEV-1740 row-level value-key machinery, with result keys
+  auto-named by the same rule as computed dimensions; cross-model expressions,
   filtered-column references, and per-column gates are explicitly bounded.
 - Custom aggregation names colliding with scalar-allowlist functions are rejected
   at validation (mirroring the existing transform-name rejection). **BREAKING**
@@ -52,7 +58,10 @@ retiring colon syntax.
 
 ### Modified Capabilities
 
-(none — first change in this corpus)
+(none — the existing `queries/computed-dimensions` and
+`queries/partitioned-aggregates` requirements are spelling-agnostic; this change
+adds an equivalent spelling and an additive expression capability without
+altering any of their requirements)
 
 ## Impact
 
@@ -65,6 +74,6 @@ retiring colon syntax.
 - Docs: `docs/concepts/{references,formulas,queries}.md`,
   `docs/architecture/{slack-normalization,parsing}.md`,
   `docs/examples/07_aggregations/`, `.claude/skills/slayer-{query,models}.md`,
-  `slayer/memories/help_content/03_aggregations.md`, `DECISIONS.md`.
+  `slayer/memories/help_content/03_aggregations.md`.
 - Follow-up Linear issues: docs flip to functional-primary; legacy
   `core/formula.py` consolidation; cross-model expression aggregation.
