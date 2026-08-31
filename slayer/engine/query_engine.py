@@ -25,8 +25,10 @@ from slayer.async_utils import run_sync
 from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, DataType, JoinCardinality
 from slayer.core.errors import (
     AmbiguousModelError,
+    BroadcastGrainWarning,
     ForcedFilterError,
     SchemaDriftError,
+    SlayerError,
     UnreachableFilterDroppedWarning,
 )
 from slayer.engine.cardinality import (
@@ -56,6 +58,8 @@ from slayer.core.query import (
 )
 from slayer.core.warnings import (
     AnySlayerWarning,
+    BroadcastDimension,
+    BroadcastGrainWarningPayload,
     DroppedFilterWarning,
     NormalizationWarning,
 )
@@ -419,6 +423,19 @@ def _stage_location(stages, index: int) -> str:
     return f"stage {name!r}.filters" if name else f"stages[{index}].filters"
 
 
+def _walk_regroup_attaches(planned):
+    """Every ``RegroupAttachPlan`` on ``planned``, recursively — a producer is
+    itself a full nested plan, so a warning arising inside a nested producer
+    (DEV-1836 D6) surfaces regardless of depth."""
+    for attach in getattr(planned, "regroup_attach_plans", ()) or ():
+        yield attach
+        yield from _walk_regroup_attaches(attach.producer_plan)
+    for plan in getattr(planned, "cross_model_aggregate_plans", ()) or ():
+        nested = getattr(plan, "rerooted_plan", None)
+        if nested is not None:
+            yield from _walk_regroup_attaches(nested)
+
+
 def _collect_dropped_filter_warnings(
     *, planned_list, stages,
 ) -> List[DroppedFilterWarning]:
@@ -426,36 +443,98 @@ def _collect_dropped_filter_warnings(
 
     Identity is ``(location, original filter text)`` — stated in the terms the
     author sees, because the contract is user-facing. The same filter dropped
-    by several cross-model plans is ONE warning.
+    by several producers (or a legacy cross-model plan) is ONE warning.
 
     Reasons for the same filter must AGREE. A disagreement means two plans
     reached different conclusions about one filter, which is a planner
     inconsistency; raising beats silently keeping whichever came first.
     """
     by_identity: "dict[tuple[str, str], DroppedFilterWarning]" = {}
+
+    def _record(w, location: str) -> None:
+        identity = (location, w.filter_text)
+        existing = by_identity.get(identity)
+        if existing is None:
+            by_identity[identity] = DroppedFilterWarning(
+                filter_text=w.filter_text, location=location, reason=w.reason,
+            )
+        elif existing.reason != w.reason:
+            raise ValueError(
+                f"Planner inconsistency: filter {w.filter_text!r} at "
+                f"{location} was dropped for two different reasons — "
+                f"{existing.reason!r} vs {w.reason!r}."
+            )
+
     for index, planned in enumerate(planned_list):
         location = _stage_location(stages, index)
         for plan in _walk_cross_model_plans(planned):
             for w in plan.dropped_filter_warnings or ():
-                identity = (location, w.filter_text)
-                existing = by_identity.get(identity)
-                if existing is None:
-                    by_identity[identity] = DroppedFilterWarning(
-                        filter_text=w.filter_text,
-                        location=location,
-                        reason=w.reason,
-                    )
-                elif existing.reason != w.reason:
-                    raise ValueError(
-                        f"Planner inconsistency: filter {w.filter_text!r} at "
-                        f"{location} was dropped for two different reasons — "
-                        f"{existing.reason!r} vs {w.reason!r}."
-                    )
+                _record(w, location)
+        for attach in _walk_regroup_attaches(planned):
+            for w in attach.dropped_filter_warnings or ():
+                _record(w, location)
     return list(by_identity.values())
 
 
+def _collect_broadcast_warnings(
+    *, planned_list,
+) -> List[BroadcastGrainWarningPayload]:
+    """One broadcast payload per distinct aggregate (DEV-1836 D6): identified by
+    its measure label, roles deduped, dimensions unioned."""
+    dims_by_measure: "dict[str, list[tuple[str, str]]]" = {}
+    order: List[str] = []
+    for planned in planned_list:
+        for attach in _walk_regroup_attaches(planned):
+            measure = attach.broadcast_measure
+            if not measure:
+                continue
+            if measure not in dims_by_measure:
+                dims_by_measure[measure] = []
+                order.append(measure)
+            seen = {d for d, _ in dims_by_measure[measure]}
+            for dim, reason in attach.broadcast_dimensions:
+                if dim not in seen:
+                    dims_by_measure[measure].append((dim, reason))
+                    seen.add(dim)
+    return [
+        BroadcastGrainWarningPayload(
+            measure=measure,
+            dimensions=[
+                BroadcastDimension(dimension=d, reason=r)
+                for d, r in dims_by_measure[measure]
+            ],
+        )
+        for measure in order
+    ]
+
+
+def _raise_on_strict_events(
+    *, broadcasts: List[BroadcastGrainWarningPayload],
+    dropped: List[DroppedFilterWarning],
+) -> None:
+    """DEV-1836 D9 — strict mode turns any silent-semantics event into an error
+    naming the metric/filter and the remedy."""
+    remedy = (
+        "declare join cardinality, a covering unique key, or remove the "
+    )
+    if broadcasts:
+        w = broadcasts[0]
+        dims = ", ".join(d.dimension for d in w.dimensions)
+        reason = w.dimensions[0].reason if w.dimensions else ""
+        raise SlayerError(
+            f"strict mode: metric {w.measure!r} would broadcast across "
+            f"unattributable dimension(s) {dims} ({reason}); {remedy}dimension."
+        )
+    if dropped:
+        d = dropped[0]
+        raise SlayerError(
+            f"strict mode: filter {d.filter_text!r} would be dropped from a "
+            f"producer ({d.reason}); {remedy}filter."
+        )
+
+
 def _emit_dropped_filter_warnings(response) -> None:
-    """Emit one ``UnreachableFilterDroppedWarning`` per dropped user filter.
+    """Emit one Python ``UserWarning`` per dropped filter / broadcast metric.
 
     Called once, at the outermost boundary, AFTER the response is built.
     """
@@ -466,6 +545,12 @@ def _emit_dropped_filter_warnings(response) -> None:
                 UnreachableFilterDroppedWarning(
                     filter_text=w.filter_text, reason=w.reason,
                 ),
+                stacklevel=3,
+            )
+        elif isinstance(w, BroadcastGrainWarningPayload):
+            reason = w.dimensions[0].reason if w.dimensions else ""
+            _warnings_module.warn(
+                BroadcastGrainWarning(measure=w.measure, reason=reason),
                 stacklevel=3,
             )
 
@@ -1152,9 +1237,16 @@ class SlayerQueryEngine:
         # the pipeline (including nested rerooted subplans) and dedup them per
         # user filter. Collection happens here, with the plans in hand; the
         # Python-warnings emission happens later, at the outermost boundary.
-        slack_warnings.extend(_collect_dropped_filter_warnings(
+        dropped_warnings = _collect_dropped_filter_warnings(
             planned_list=planned_list, stages=stages,
-        ))
+        )
+        broadcast_warnings = _collect_broadcast_warnings(planned_list=planned_list)
+        if getattr(query, "strict", False):
+            _raise_on_strict_events(
+                broadcasts=broadcast_warnings, dropped=dropped_warnings,
+            )
+        slack_warnings.extend(dropped_warnings)
+        slack_warnings.extend(broadcast_warnings)
 
         dialect = self._dialect_for_type(datasource.type)
         sql = generate_planned_stages(
@@ -2955,6 +3047,17 @@ class SlayerQueryEngine:
         # ``Column.sql`` carries the length-fitted alias the wrapper emits
         # (identity when under-limit); ``Column.name`` stays canonical.
         fit_map = get_dialect(dialect).alias_rewrite_map(expected)
+        # DEV-1689/D5: stamp the result grain's uniqueness only when the backing
+        # query provably deduplicates it — it aggregates (GROUP BY), or is
+        # dimension-only with ``distinct_dimension_values`` on. A duplicate-
+        # preserving query stamps nothing, so joins onto it stay unproven.
+        stamp_grain = bool(root_planned.aggregate_slots) or (
+            final_stage.distinct_dimension_values
+        )
+        grain_public_names = {
+            s.public_name for s in root_planned.row_slots
+            if s.public_name is not None
+        }
         cols = [
             Column(
                 name=sc.name,
@@ -2963,6 +3066,9 @@ class SlayerQueryEngine:
                 label=sc.label,
                 description=sc.description,
                 format=sc.format,
+                primary_key=(
+                    stamp_grain and sc.public_alias in grain_public_names
+                ),
             )
             for sc in public_cols
         ]

@@ -58,6 +58,9 @@ class QueryRequest(BaseModel):
     # (``None`` here) keeps the v3 SlayerQuery default (``True``). Set
     # ``False`` to emit raw rows.
     distinct_dimension_values: bool | None = None
+    # DEV-1836: error on any silent-semantics event (implicit-grain broadcast /
+    # dropped producer filter) instead of broadcasting + warning.
+    strict: bool | None = None
     dry_run: bool | None = None
     explain: bool | None = None
     variables: dict[str, Any] | None = None

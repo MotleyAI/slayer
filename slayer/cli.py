@@ -1669,6 +1669,36 @@ def _collect_cardinality_report(args, engine):
         sys.exit(1)
 
 
+def _collect_all_models(args, storage) -> list:
+    """Every model in the requested datasource scope (for join-safety audit)."""
+    ds_names = [args.datasource] if args.datasource else run_sync(storage.list_datasources())
+    models: list = []
+    for ds in ds_names:
+        for nm in run_sync(storage.list_models(data_source=ds)):
+            try:
+                m = run_sync(storage.get_model(nm, data_source=ds))
+            except Exception:  # noqa: BLE001 — a broken model must not abort the audit
+                continue
+            if m is not None:
+                models.append(m)
+    return models
+
+
+def _print_join_safety_section(args, storage) -> None:
+    """Flag joins whose arity is neither declared m:1/1:1 nor structurally
+    proven — metrics crossing them broadcast (DEV-1836)."""
+    from slayer.engine.join_safety import audit_join_safety
+
+    findings = audit_join_safety(models=_collect_all_models(args, storage))
+    if getattr(args, "model", None):
+        findings = [f for f in findings if f.model == args.model]
+    if not findings:
+        return
+    print("\nJoin safety")
+    for f in findings:
+        print(f"  {f.model} → {f.target_model}: {f.message}")
+
+
 def _exit_on_scan_failures(report) -> None:
     """A contained scan failure is still work the command did not do."""
     if report is None:
@@ -1765,6 +1795,7 @@ def _run_validate_models(args):
         return
 
     _print_drift_section(entries, headed=wants_cardinality)
+    _print_join_safety_section(args, storage)
     # Clean first: profiling a model we are about to repair is wasted work.
     if bool(getattr(args, "force_clean", False)) and entries:
         _apply_force_clean(args, engine, entries)

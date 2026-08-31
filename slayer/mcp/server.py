@@ -517,6 +517,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         format: str = "markdown",
         variables: dict[str, Any] | None = None,
         distinct_dimension_values: bool = True,
+        strict: bool = False,
     ) -> str:
         """Query data from a semantic model. Call inspect(reference="<ds>.<model>", entity_type="model") first to see available columns and measures.
 
@@ -589,6 +590,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         # DEV-1543: only emit when non-default so tool calls stay compact.
         if distinct_dimension_values is False:
             data["distinct_dimension_values"] = False
+        # DEV-1836: strict = error on any silent broadcast / dropped filter.
+        if strict:
+            data["strict"] = True
         try:
             fmt = format.lower().strip()
             if fmt not in ("json", "csv", "markdown"):

@@ -1707,15 +1707,10 @@ class SQLGenerator:
         # cross-model path into ``_base`` (task 3.2), and the step CTEs layer
         # above either. The remaining coexistence deferrals fail closed, each
         # owned by its stage.
-        # DEV-1835 — the row-attach × windowed/ranked coexistence deferral lifted:
-        # a bare windowed / first-last measure desugars onto the regroup primitive
-        # (its own combined producer), so the top-level windowed/ranked plan lists
-        # are empty and a computed dimension coexists with it in one flat WITH.
-        if _row_attaches and planned_query.cross_model_aggregate_plans:
-            raise NotImplementedError(
-                "A row regroup attach (computed dimension) combined with a "
-                "cross-model measure is not yet supported (DEV-1836)."
-            )
+        # DEV-1835/1836 — the row-attach × windowed/ranked/cross-model
+        # coexistence deferral lifted: a bare windowed / first-last / cross-model
+        # measure desugars onto the regroup primitive (its own producer), so a
+        # computed dimension coexists with it in one flat WITH.
         if _row_attaches and as_cte_body and not as_hoistable_producer:
             # DEV-1835 D4 — a windowed / ranked producer whose GRAIN is a computed
             # dimension (a band / scalar-expr / rank) carries a nested ROW attach
@@ -1727,13 +1722,15 @@ class SQLGenerator:
                 "A row regroup attach (computed dimension) nested in a CTE body "
                 "is not yet supported (DEV-1838)."
             )
-        if _combined_attaches and as_cte_body and not as_hoistable_producer:
+        _local_combined = [a for a in _combined_attaches if not a.producer_root_model]
+        if _local_combined and as_cte_body and not as_hoistable_producer:
             # DEV-1839 D5 — a GENUINELY non-hoistable CTE body (a re-rooted
             # cross-model sub-plan spliced into a CTE, SQL Server's nested-WITH
             # restriction) still fails closed. A union-grain PRODUCER body whose
             # internal WITH is about to be hoisted by ``_render_producer_split``
-            # is exempt (``as_hoistable_producer``): its combined attaches render
-            # and hoist into the one flat WITH.
+            # is exempt (``as_hoistable_producer``). DEV-1836 — a target-rooted
+            # (cross-model) combined attach renders as before the migration (its
+            # producer hoists like the DEV-1739 forward CTE), so it too is exempt.
             raise NotImplementedError(
                 "A partitioned-aggregate regroup attach nested in a CTE body is "
                 "not yet supported (DEV-1838)."
@@ -5937,6 +5934,23 @@ class SQLGenerator:
         )
         return cte_sql, joinback_pairs, agg_col_alias
 
+    @staticmethod
+    def _producer_render_bundle(attach, bundle):
+        """The bundle a producer renders against. DEV-1836 — a target-rooted
+        (cross-model) producer roots its FROM at the aggregate's source model,
+        so its render bundle swaps ``source_model`` to that root; a local
+        producer keeps the consumer's bundle."""
+        root_name = getattr(attach, "producer_root_model", None)
+        if not root_name:
+            return bundle
+        root = bundle.get_referenced_model(root_name)
+        if root is None:
+            raise RuntimeError(
+                f"Target-rooted regroup producer names root model {root_name!r}, "
+                f"absent from the bundle's referenced models."
+            )
+        return bundle.model_copy(update={"source_model": root})
+
     def _render_producer_split(
         self, *, producer, bundle,
     ) -> Tuple[List[Tuple[str, exp.Expression]], str]:
@@ -6093,7 +6107,8 @@ class SQLGenerator:
                 limit=self._dialect.max_identifier_bytes,
             )
             producer_hoisted, producer_body_sql = self._render_producer_split(
-                producer=producer, bundle=bundle,
+                producer=producer,
+                bundle=self._producer_render_bundle(attach, bundle),
             )
             ctes.extend(producer_hoisted)
             ctes.append((cte_name, self._parse_cte_body(producer_body_sql)))
@@ -6242,7 +6257,8 @@ class SQLGenerator:
                 return stripped.replace(".", "__")
 
             producer_hoisted, producer_body_sql = self._render_producer_split(
-                producer=producer, bundle=bundle,
+                producer=producer,
+                bundle=self._producer_render_bundle(attach, bundle),
             )
             expected = [
                 _flat(sub_slots[sid]) for sid in producer.projection

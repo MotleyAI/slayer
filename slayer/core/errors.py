@@ -456,6 +456,23 @@ class UnreachableFilterDroppedWarning(UserWarning):
         )
 
 
+class BroadcastGrainWarning(UserWarning):
+    """A cross-model aggregate's implicit grain lost a dimension to
+    broadcasting: the dimension is not attributable from the aggregate's root
+    (an unproven/fanning join hop, or unreachable from the root), so the
+    aggregate is computed without it and its value broadcast across it. The
+    result grain is unchanged; this is a visibility warning, not an error.
+    """
+
+    def __init__(self, measure: str, reason: str) -> None:
+        self.measure = measure
+        self.reason = reason
+        super().__init__(
+            f"Metric {measure!r} broadcast across an unattributable "
+            f"dimension: {reason}"
+        )
+
+
 class RenderContextMissingFacilityError(SlayerError, ValueError):
     """A ValueKey render needed a facility its render context did not carry.
 
