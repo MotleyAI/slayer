@@ -240,7 +240,7 @@ class TestCrossModelRenameSingleStage:
         )
         # Inner cross-model CTE column stays canonical.
         assert (
-            'SUM(customers.lifetime_revenue) AS "orders.customers.revenue_sum"'
+            'CAST(SUM(customers.lifetime_revenue) AS REAL) AS "customers.revenue_sum"'
             in sql
         ), (
             f"inner cross-model CTE column must stay canonical after the "
@@ -419,7 +419,7 @@ class TestCrossModelRenameNestedDAG:
         )
         # ...it exists only as the cross-model CTE's internal column.
         assert (
-            'SUM(customers.lifetime_revenue) AS "orders.customers.revenue_sum"'
+            'CAST(SUM(customers.lifetime_revenue) AS REAL) AS "customers.revenue_sum"'
             in sql
         ), f"expected the hoisted cross-model aggregate inside a _cm_ CTE:\n{sql}"
         assert any(name.startswith("_cm_") for name in _cte_names(sql)), (
@@ -480,7 +480,7 @@ class TestCrossModelStarAndCountDistinctRename:
             f"cross-model *:count rename must surface as the public key; got "
             f"{aliases!r}\nSQL:\n{sql}"
         )
-        assert 'COUNT(*) AS INTEGER) AS "orders.customers._count"' in sql, (
+        assert 'COUNT(*) AS INTEGER) AS "customers._count"' in sql, (
             f"cross-model *:count CTE column must stay canonical:\n{sql}"
         )
 
@@ -511,7 +511,7 @@ class TestCrossModelStarAndCountDistinctRename:
             f"key; got {aliases!r}\nSQL:\n{sql}"
         )
         assert (
-            'COUNT(DISTINCT customers.id) AS "orders.customers.id_count_distinct"'
+            'COUNT(DISTINCT customers.id) AS INTEGER) AS "customers.id_count_distinct"'
             in sql
         ), f"cross-model count_distinct CTE column must stay canonical:\n{sql}"
 
@@ -607,9 +607,9 @@ class TestCrossModelRenameCollisionGuards:
         assert len(set(cm_ctes)) == 2, (
             f"expected 2 distinct cross-model CTEs, got {cm_ctes!r}\nSQL:\n{sql}"
         )
-        assert 'SUM(customers.lifetime_revenue) AS "orders.customers.revenue_sum"' in sql
+        assert 'CAST(SUM(customers.lifetime_revenue) AS REAL) AS "customers.revenue_sum"' in sql
         assert (
-            'COUNT(DISTINCT customers.id) AS "orders.customers.id_count_distinct"'
+            'COUNT(DISTINCT customers.id) AS INTEGER) AS "customers.id_count_distinct"'
             in sql
         )
 
@@ -770,8 +770,8 @@ class TestCrossModelRenameCollisionGuards:
         )
         # Distinct bodies survived: COUNT(*) for the canonical key, SUM for
         # the renamed one.
-        assert 'COUNT(*) AS INTEGER) AS "orders.customers._count"' in sql, sql
-        assert 'SUM(customers.lifetime_revenue) AS "orders.customers.revenue_sum"' in sql, sql
+        assert 'COUNT(*) AS INTEGER) AS "customers._count"' in sql, sql
+        assert 'CAST(SUM(customers.lifetime_revenue) AS REAL) AS "customers.revenue_sum"' in sql, sql
 
     async def test_cross_model_rename_collides_with_dimension_downstream_short_raises(
         self, orders_customers_engine,
@@ -857,7 +857,7 @@ class TestCrossModelRenameCollisionGuards:
         )
         # The measure key carries the aggregate, the dimension key the raw
         # grouping column — nothing was collapsed onto the other.
-        assert 'SUM(customers.lifetime_revenue) AS "orders.customers.revenue_sum"' in sql, sql
+        assert 'CAST(SUM(customers.lifetime_revenue) AS REAL) AS "customers.revenue_sum"' in sql, sql
 
     async def test_cross_model_rename_vs_arithmetic_mangled_name_stay_distinct(
         self, orders_customers_engine,
@@ -917,7 +917,7 @@ class TestCrossModelRenameCollisionGuards:
         )
         # Distinct bodies: the local division vs the cross-model SUM.
         assert 'SUM(orders.amount) AS REAL) / 100 AS "orders.revenue_sum / 100"' in sql, sql
-        assert 'SUM(customers.lifetime_revenue) AS "orders.customers.revenue_sum"' in sql, sql
+        assert 'CAST(SUM(customers.lifetime_revenue) AS REAL) AS "customers.revenue_sum"' in sql, sql
 
     async def test_two_local_renames_distinct_canonicals_pass(
         self, orders_customers_engine,
@@ -1093,7 +1093,7 @@ class TestCrossModelRenameLabelAndType:
         ], sql
         assert (
             'CAST(SUM(customers.lifetime_revenue) AS INTEGER) '
-            'AS "orders.customers.revenue_sum"' in sql
+            'AS "customers.revenue_sum"' in sql
         ), (
             f"declared type=INT must survive the rename as a CAST on the "
             f"cross-model aggregate:\n{sql}"
@@ -1137,7 +1137,7 @@ class TestCrossModelRenameOrderBy:
         sql = resp.sql or ""
         assert "ORDER BY" in sql, sql
         order_clause = sql.split("ORDER BY", 1)[1]
-        assert '"orders.customers.revenue_sum"' in order_clause, (
+        assert '"customers.revenue_sum"' in order_clause, (
             f"ORDER BY via bare user alias must resolve to the cross-model "
             f"CTE's output column:\n{sql}"
         )
@@ -1147,23 +1147,16 @@ class TestCrossModelRenameOrderBy:
 
 
 class TestCrossModelRenameFilters:
-    async def test_filter_via_user_alias_resolves_to_cross_model_having(
+    async def test_filter_via_user_alias_resolves_to_cross_model_value(
         self, orders_customers_engine,
     ) -> None:
         """Same-stage filter ``"cust_rev > 100"`` referencing a renamed
-        cross-model measure resolves to a HAVING on the cross-model CTE's
-        aggregate.
+        cross-model measure resolves to the cross-model aggregate's value.
 
-        (Was ``test_filter_via_user_alias_raises_until_dev_1445``. On the
-        legacy enrichment stack the SQL generator had no path to route the
-        bare user alias to the cross-model CTE's output column, so strict
-        resolution raised ``ValueError: unknown name 'cust_rev'`` rather
-        than emit broken SQL — and the test pinned that clean-error
-        boundary "so we notice if/when the behaviour changes". The typed
-        pipeline routes it, so the boundary test flips into the coverage
-        test it was written to become: the predicate must land as a HAVING
-        inside the ``_cm_*`` CTE, i.e. on the aggregate, never as a WHERE
-        on a non-existent base-table column.)
+        DEV-1836 routes the aggregate-phase cross-model filter to an outer
+        ``WHERE`` on the producer CTE's output column (a real column), uniform
+        with local aggregate filters — not a HAVING inside a host-rooted CTE and
+        never a WHERE on a non-existent base-table column.
         """
         engine, _ = orders_customers_engine
         query = SlayerQuery(
@@ -1177,9 +1170,12 @@ class TestCrossModelRenameFilters:
         assert _public_projection_aliases(sql) == [
             "orders.status", "orders.cust_rev",
         ], sql
-        assert "HAVING SUM(customers.lifetime_revenue) > 100" in _norm(sql), (
-            f"the bare user alias must resolve to a HAVING on the cross-model "
-            f"aggregate:\n{sql}"
+        assert (
+            '_cm_orders__customers__revenue_sum."customers.revenue_sum" > 100'
+            in _norm(sql)
+        ), (
+            f"the bare user alias must resolve to a WHERE on the cross-model "
+            f"aggregate's value:\n{sql}"
         )
         # Never a WHERE against a column that doesn't exist on the base table.
         assert "orders.cust_rev > 100" not in _norm(sql), (
@@ -1197,16 +1193,12 @@ class TestDeferredCrossModelFilterScope:
         self, orders_customers_engine,
     ) -> None:
         """Colon-form filter ``customers.revenue:sum > 100`` paired with a
-        rename resolves to a HAVING on the cross-model CTE's aggregate,
-        and the measure still projects under the user alias.
+        rename resolves to the cross-model aggregate's value, and the measure
+        still projects under the user alias.
 
-        DEV-1703 migration: this test was ``@pytest.mark.skip``-ped with
-        "flip into a real coverage test when DEV-1445 ships", and its body
-        drove ``engine._enrich`` + ``SQLGenerator.generate(enriched=...)``.
-        Both the skip condition and the entry point are gone: the typed
-        pipeline routes the colon-form filter, so the body is now the
-        coverage the skip reason described (HAVING on the cross-model
-        aggregate + user alias on the projection).
+        DEV-1836 routes the colon-form aggregate-phase filter to an outer
+        ``WHERE`` on the producer CTE's output column (uniform with local
+        aggregate filters).
         """
         engine, _ = orders_customers_engine
         query = SlayerQuery(
@@ -1221,9 +1213,12 @@ class TestDeferredCrossModelFilterScope:
         assert _public_projection_aliases(sql) == [
             "orders.status", "orders.cust_rev",
         ], sql
-        assert "HAVING SUM(customers.lifetime_revenue) > 100" in _norm(sql), (
-            f"colon-form cross-model filter must land as HAVING on the "
-            f"cross-model aggregate:\n{sql}"
+        assert (
+            '_cm_orders__customers__revenue_sum."customers.revenue_sum" > 100'
+            in _norm(sql)
+        ), (
+            f"colon-form cross-model filter must land as a WHERE on the "
+            f"cross-model aggregate's value:\n{sql}"
         )
 
 
@@ -1267,9 +1262,9 @@ class TestCrossModelRenameMultiHopAndCTEUniqueness:
             f"(no __-flattened hops); got {aliases!r}\nSQL:\n{sql}"
         )
         assert (
-            'SUM(regions.population) AS "orders.customers.regions.population_sum"'
+            'CAST(SUM(regions.population) AS REAL) AS "regions.population_sum"'
             in sql
-        ), f"multi-hop CTE column must keep the full hop path:\n{sql}"
+        ), f"multi-hop CTE column stays canonical (target-rooted):\n{sql}"
 
     async def test_renamed_and_unrenamed_cross_model_no_collision(
         self, orders_customers_engine,

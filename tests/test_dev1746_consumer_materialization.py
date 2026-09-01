@@ -45,9 +45,10 @@ projected twice (``_val_0`` and ``_val_1``). ``ScopeFrame`` holds one table per
 scope, so they collapse to one. See
 ``TestDedupParity::test_one_expression_is_materialised_once_per_scope``.
 
-The pinned CTE bodies below are the DEV-1748 ranked (``_rk_``) shape. They were
-the pre-B9 ``_cm_`` bodies when this module landed; the aggregate they describe
-is the same one, compiled by the route P-C requires for it.
+The pinned CTE bodies below are the DEV-1836 target-rooted producer (``_cm_``)
+shape: the ranked subquery is rooted at the target, aliases are canonical
+(``customers_v2.*``), and the producer measure keeps its canonical alias (the
+user name lands on the outer projection via the placeholder substitution).
 """
 
 from __future__ import annotations
@@ -72,8 +73,9 @@ from tests._engine_helpers import _extract_cte_body, _norm
 # --------------------------------------------------------------------------- #
 CROSSING_GRAIN_CTE = _norm(
     """
-    SELECT _val_0 AS "orders_x.customers_v2.deep_pop",
-      MAX(CASE WHEN _ranked_rn = 1 THEN _val_1 END) AS "orders_x.f"
+    SELECT _val_0 AS "customers_v2.deep_pop",
+      CAST(MAX(CASE WHEN _ranked_rn = 1 THEN _val_1 END) AS DOUBLE PRECISION)
+        AS "customers_v2.lifetime_value_first"
     FROM ( SELECT regions.population AS _val_0,
       customers_v2.lifetime_value AS _val_1,
       ROW_NUMBER() OVER (PARTITION BY regions.population
@@ -86,8 +88,9 @@ CROSSING_GRAIN_CTE = _norm(
 
 CROSSING_VALUE_CTE = _norm(
     """
-    SELECT _val_0 AS "orders_x.customers_v2.status",
-      MAX(CASE WHEN _ranked_rn = 1 THEN _val_1 END) AS "orders_x.f"
+    SELECT _val_0 AS "customers_v2.status",
+      CAST(MAX(CASE WHEN _ranked_rn = 1 THEN _val_1 END) AS DOUBLE PRECISION)
+        AS "customers_v2.deep_weight_first"
     FROM ( SELECT customers_v2.status AS _val_0,
       regions.weight AS _val_1,
       ROW_NUMBER() OVER (PARTITION BY customers_v2.status
@@ -270,7 +273,7 @@ class TestMigrationIsBytePreserving:
 
     async def test_crossing_grain_cte_is_unchanged(self) -> None:
         sql = await _gen(_crossing_grain_query(), dialect="postgres")
-        body = _norm(_extract_cte_body(sql, r"_rk_\w+"))
+        body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
         assert body == CROSSING_GRAIN_CTE, (
             "the crossing-grain CTE changed shape. The two materialisers dedup "
             "on the same key (resolved SQL text), so the migration must be "
@@ -280,7 +283,7 @@ class TestMigrationIsBytePreserving:
 
     async def test_crossing_value_cte_is_unchanged(self) -> None:
         sql = await _gen(_crossing_value_query(), dialect="postgres")
-        body = _norm(_extract_cte_body(sql, r"_rk_\w+"))
+        body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
         assert body == CROSSING_VALUE_CTE, (
             f"the crossing-value CTE changed shape.\n\nactual:\n{body}\n\n"
             f"expected:\n{CROSSING_VALUE_CTE}"
@@ -327,7 +330,7 @@ class TestDedupParity:
             )],
         )
         sql = await _gen(query, dialect="postgres")
-        body = _extract_cte_body(sql, r"_rk_\w+")
+        body = _extract_cte_body(sql, r"_cm_\w+")
         assert body.count("regions.weight AS _val_") == 1, (
             "the same crossing expression was materialised more than once in "
             f"one scope — the two materialisers still hold separate dedup "
@@ -350,7 +353,7 @@ class TestDedupParity:
             ],
         )
         sql = await _gen(query, dialect="postgres")
-        for pattern in (r"_rk_\w*a\b", r"_rk_\w*b\b"):
+        for pattern in (r"_cm_\w*first\b", r"_cm_\w*last\b"):
             body = _extract_cte_body(sql, pattern)
             assert body.count("regions.weight AS _val_") == 1, (
                 f"each scope must project its own single materialisation:\n{body}"

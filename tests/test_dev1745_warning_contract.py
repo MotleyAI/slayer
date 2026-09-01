@@ -324,11 +324,15 @@ class TestEmissionIsBoundaryNotRender:
             referenced_models=[_customers(), _warehouses(), _shippers()],
         )
         planned = plan_query(query=_two_plan_query(), bundle=bundle)
-        raw = [
-            w
-            for plan in planned.cross_model_aggregate_plans
-            for w in plan.dropped_filter_warnings
-        ]
+
+        def _raw(attaches: list) -> list:
+            out: list = []
+            for plan in attaches:
+                out.extend(plan.dropped_filter_warnings)
+                out.extend(_raw(plan.producer_plan.regroup_attach_plans))
+            return out
+
+        raw = _raw(planned.regroup_attach_plans)
         assert len(raw) >= 2, (
             f"fixture must produce the multi-plan drop; got {len(raw)}"
         )

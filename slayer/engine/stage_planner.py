@@ -1290,6 +1290,7 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
         [FrozenSet[ValueKey]], List[ValueKey],
     ] = _regroup_partition_order,
     public_alias_by_agg: Optional[Mapping[AggregateKey, str]] = None,
+    declared_type_by_agg: Optional[Mapping[AggregateKey, DataType]] = None,
     grain_name_by_key: Optional[Mapping[ValueKey, str]] = None,
     window_td_key: Optional[ValueKey] = None,
 ) -> Tuple[PreboundQuery, List[ValueKey]]:
@@ -1310,6 +1311,7 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
     key, evaluated per bucket and included verbatim in the attach keys.
     """
     public_alias_by_agg = public_alias_by_agg or {}
+    declared_type_by_agg = declared_type_by_agg or {}
     grain_name_by_key = grain_name_by_key or {}
     ordered = partition_order(pks)
     dims = [pk for pk in ordered if not isinstance(pk, TimeTruncKey)]
@@ -1349,12 +1351,14 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
             or "regroup"
         )
         # A transform root (D4) carries no model-measure metadata — its type is
-        # inferred from the transform.
+        # inferred from the transform. A consumer's DECLARED type (query-field
+        # override) wins over the source-column type, mirroring the local chain.
+        override_type = declared_type_by_agg.get(agg)
         if model is not None and isinstance(agg, AggregateKey):
-            a_type = measure_key_type(model=model, key=agg)
+            a_type = override_type or measure_key_type(model=model, key=agg)
             a_fmt, a_desc = measure_key_format_description(model=model, key=agg)
         else:
-            a_type, a_fmt, a_desc = None, None, None
+            a_type, a_fmt, a_desc = override_type, None, None
         agg_dms.append(DeclaredMeasure(
             bound=BinderBoundExpr(value_key=agg),
             declared_name=canonical, public_name=canonical,
@@ -1990,6 +1994,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     scope: Union[ModelScope, StageSchema],
     cross_model_planner: CrossModelPlanner,
     stage_schemas: Dict[str, StageSchema],
+    declared_type: Optional[DataType] = None,
 ) -> RegroupAttachPlan:
     """Build one target-rooted regroup producer for a cross-model aggregate
     (design D2/D3): root R at the aggregate's source model, compute at the
@@ -2098,6 +2103,9 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     producer_prebound, ordered_pks = _regroup_producer_prebound(
         pks=grain_keys, aggs=[agg_R], model=root_model, bundle=root_bundle,
         inherited=inherited, n_date_range=0, window_td_key=window_td_key,
+        declared_type_by_agg=(
+            {agg_R: declared_type} if declared_type is not None else None
+        ),
     )
     # A computed-dimension grain member (D4) nests its own producer inside this
     # one; a windowed producer runs its own windowed-CTE discovery — either way
@@ -2157,13 +2165,16 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
 
 def _discover_cross_model_combined(
     prebound: PreboundQuery,
-) -> Tuple[List[AggregateKey], Dict[AggregateKey, str]]:
+) -> Tuple[List[AggregateKey], Dict[AggregateKey, str], Dict[AggregateKey, DataType]]:
     """Distinct cross-model aggregates reachable from a non-dimension measure,
     an order spec, or a query filter (the combined-attach roles). First-seen
-    order; a directly-named measure maps to its public alias for naming."""
+    order; a directly-named measure maps to its public alias for naming, and its
+    declared type (when the measure IS the aggregate) so the producer casts to
+    the user-declared type rather than the source column's."""
     seen: set = set()
     out: List[AggregateKey] = []
     alias: Dict[AggregateKey, str] = {}
+    declared_type: Dict[AggregateKey, DataType] = {}
     for dm in prebound.declared_measures:
         if dm.is_dimension:
             continue
@@ -2172,8 +2183,11 @@ def _discover_cross_model_combined(
             if _is_cross_model_agg(k) and k not in seen:
                 seen.add(k)
                 out.append(k)
-        if _is_cross_model_agg(vk) and dm.public_name is not None:
-            alias.setdefault(vk, dm.public_name)
+        if _is_cross_model_agg(vk):
+            if dm.public_name is not None:
+                alias.setdefault(vk, dm.public_name)
+            if dm.type is not None:
+                declared_type.setdefault(vk, dm.type)
     for sp in prebound.order_specs:
         for k in walk_value_keys(sp.bound.value_key):
             if _is_cross_model_agg(k) and k not in seen:
@@ -2184,7 +2198,7 @@ def _discover_cross_model_combined(
             if _is_cross_model_agg(k) and k not in seen:
                 seen.add(k)
                 out.append(k)
-    return out, alias
+    return out, alias, declared_type
 
 
 def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (computed-dim) + combined (measure/order) partitioned aggregates, synthesize one producer per (partition set, phase), and rewrite the prebound to placeholders. The two phases share the registry / inherited-filter / substitution state; splitting scatters it.
@@ -2280,7 +2294,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
     # (which would wrongly root it at the host) and synthesized separately.
     cm_row = [k for k in row_aggs if _is_cross_model_agg(k)]
     row_aggs = [k for k in row_aggs if not _is_cross_model_agg(k)]
-    cm_combined, cm_alias = _discover_cross_model_combined(prebound)
+    cm_combined, cm_alias, cm_type = _discover_cross_model_combined(prebound)
     for agg, name in cm_alias.items():
         public_alias_by_agg.setdefault(agg, name)
     if not row_aggs and not combined_aggs and not cm_combined and not cm_row:
@@ -2507,6 +2521,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
                 projected_td_keys=projected_td_keys,
                 base_filters_with_text=base_filters_with_text, scope=scope,
                 cross_model_planner=cross_model_planner, stage_schemas=stage_schemas,
+                declared_type=cm_type.get(agg),
             ))
 
     # DEV-1839 — the ROW substitution (a transform root / bare aggregate → its
