@@ -16,7 +16,9 @@ from slayer.sql.client import (
     _execute_with_retry_threaded,
     _is_auth_failure,
     _is_transient_db_error,
+    _is_unreachable_db_error,
     _map_type_code,
+    build_sql_model_trial_query,
 )
 
 
@@ -614,3 +616,124 @@ class TestClientDiscardsEngineOnAuthFailure:
         ):
             with pytest.raises(Exception, match="invalid_grant"):
                 await client.execute("SELECT 1")
+
+
+class TestBuildSqlModelTrialQuery:
+    """``build_sql_model_trial_query`` wraps model SQL in the zero-row probe
+    schema drift already ships, stripping a single trailing terminator."""
+
+    def test_wraps_plain_sql(self) -> None:
+        assert build_sql_model_trial_query("SELECT a FROM t") == (
+            "SELECT * FROM (SELECT a FROM t) AS _sd_validate WHERE 1=0"
+        )
+
+    def test_strips_trailing_semicolon(self) -> None:
+        assert build_sql_model_trial_query("SELECT 1;") == (
+            "SELECT * FROM (SELECT 1) AS _sd_validate WHERE 1=0"
+        )
+
+    def test_strips_trailing_whitespace_and_semicolon(self) -> None:
+        assert build_sql_model_trial_query("SELECT 1 ;  \n") == (
+            "SELECT * FROM (SELECT 1) AS _sd_validate WHERE 1=0"
+        )
+
+    def test_strips_only_one_terminator(self) -> None:
+        # A second ';' is left inside the wrapper — only one is stripped.
+        assert build_sql_model_trial_query("SELECT 1;;") == (
+            "SELECT * FROM (SELECT 1;) AS _sd_validate WHERE 1=0"
+        )
+
+
+def _typed_exc(type_name: str, message: str = "boom") -> Exception:
+    """An exception whose class NAME is ``type_name`` (classifier matches on
+    the unqualified name to stay dependency-free)."""
+    return type(type_name, (Exception,), {})(message)
+
+
+class TestIsUnreachableDbError:
+    """``_is_unreachable_db_error`` matches connection-establishment failures
+    only — real rejections (missing object, syntax, permission, 4xx) stay
+    rejectable so the save-time check still blocks them."""
+
+    @pytest.mark.parametrize("orig_message", [
+        "could not connect to server: Connection refused",
+        "connection refused",
+        "could not translate host name \"db\": getaddrinfo failed",
+        "unable to open database file",
+        "connection to server at \"db\" (1.2.3.4), port 5432 failed",
+        "Login timeout expired",
+    ])
+    def test_connection_messages_are_unreachable(self, orig_message: str) -> None:
+        assert _is_unreachable_db_error(_make_op_error(orig_message)) is True
+
+    def test_disconnection_error_is_unreachable(self) -> None:
+        assert _is_unreachable_db_error(
+            sqlalchemy.exc.DisconnectionError("server closed")
+        ) is True
+
+    def test_interface_error_wrapping_connect_failure_is_unreachable(self) -> None:
+        exc = sqlalchemy.exc.InterfaceError(
+            "connect", {}, sqlite3.OperationalError("could not connect to server"),
+        )
+        assert _is_unreachable_db_error(exc) is True
+
+    @pytest.mark.parametrize("type_name", [
+        "ServiceUnavailable",
+        "GatewayTimeout",
+        "TooManyRequests",
+        "DeadlineExceeded",
+        "ConnectionError",
+    ])
+    def test_cloud_type_names_are_unreachable(self, type_name: str) -> None:
+        assert _is_unreachable_db_error(_typed_exc(type_name)) is True
+
+    @pytest.mark.parametrize("orig_message", [
+        "no such table: orders",
+        "syntax error at or near \"FROM\"",
+        "permission denied for table orders",
+    ])
+    def test_reachable_rejections_are_not_unreachable(self, orig_message: str) -> None:
+        assert _is_unreachable_db_error(_make_op_error(orig_message)) is False
+
+    @pytest.mark.parametrize("type_name", ["BadRequest", "Forbidden"])
+    def test_client_error_type_names_are_not_unreachable(self, type_name: str) -> None:
+        assert _is_unreachable_db_error(_typed_exc(type_name)) is False
+
+    def test_bare_timed_out_is_not_unreachable(self) -> None:
+        # A bare "timed out" can be a real slow rejection, so it stays
+        # rejectable — only "login timeout" (connect phase) is unreachable.
+        assert _is_unreachable_db_error(_make_op_error("query timed out")) is False
+
+    def test_plain_value_error_is_not_unreachable(self) -> None:
+        assert _is_unreachable_db_error(ValueError("boom")) is False
+
+
+class TestIsUnreachableDbErrorBoundaries:
+    """Pin the deliberate exclusions: a blanket InterfaceError (by type) and
+    HTTP-status-shaped messages must stay rejectable."""
+
+    def test_bare_interface_error_is_not_unreachable(self) -> None:
+        exc = sqlalchemy.exc.InterfaceError(
+            "stmt", {}, sqlite3.ProgrammingError("cursor already closed"),
+        )
+        assert _is_unreachable_db_error(exc) is False
+
+    @pytest.mark.parametrize("orig_message", ["400 Bad Request", "403 Forbidden"])
+    def test_http_status_messages_are_not_unreachable(self, orig_message: str) -> None:
+        assert _is_unreachable_db_error(_make_op_error(orig_message)) is False
+
+
+class TestUnreachableSeparateFromTransient:
+    """The unreachable classifier is kept apart from the retry classifier so
+    ``execute()`` retry semantics are untouched (design decision)."""
+
+    def test_unreachable_only_signal_is_not_transient(self) -> None:
+        exc = _make_op_error("unable to open database file")
+        assert _is_unreachable_db_error(exc) is True
+        assert _is_transient_db_error(exc) is False
+
+    @pytest.mark.parametrize("orig_message", ["database is locked", "deadlock detected"])
+    def test_transient_only_signal_is_not_unreachable(self, orig_message: str) -> None:
+        exc = _make_op_error(orig_message)
+        assert _is_transient_db_error(exc) is True
+        assert _is_unreachable_db_error(exc) is False

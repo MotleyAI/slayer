@@ -390,6 +390,20 @@ def _build_type_probe_sql(sql: str, db_type: str | None) -> str:
     return f"SELECT * FROM ({sql}) AS _types LIMIT {limit}"
 
 
+def build_sql_model_trial_query(inner_sql: str) -> str:
+    """Wrap a raw-``sql`` model source in the zero-row trial-execute probe.
+
+    Strips trailing whitespace and a single statement terminator (a persisted
+    ``SELECT 1;`` is valid at top level but invalid inside a subquery), then
+    wraps in ``SELECT * FROM (<inner>) AS _sd_validate WHERE 1=0``. Shared by
+    schema-drift's live probe (DEV-1356) and save-time validation (DEV-1843).
+    """
+    inner = inner_sql.rstrip()
+    if inner.endswith(";"):
+        inner = inner[:-1].rstrip()
+    return f"SELECT * FROM ({inner}) AS _sd_validate WHERE 1=0"
+
+
 def _apply_type_probe_timeout(conn, db_type: str | None, timeout_seconds: int) -> None:
     """DEV-1551: apply the dialect's statement-timeout SQL ahead of a
     type-probe execution. Snowflake's ``LIMIT 0`` still compiles and
@@ -751,6 +765,67 @@ def _is_auth_failure(exc: BaseException) -> bool:
             return True
         text = str(current).lower()
         if any(signal in text for signal in _AUTH_ERROR_SIGNALS):
+            return True
+        pending.extend(
+            nested for nested in (
+                getattr(current, "orig", None),
+                current.__cause__,
+                current.__context__,
+            )
+            if isinstance(nested, BaseException)
+        )
+    return False
+
+
+# Connection-ESTABLISHMENT failure signals (DEV-1843). Kept separate from
+# _TRANSIENT_DB_ERROR_SIGNALS so execute() retry semantics are untouched, and
+# deliberately narrow: only phrases raised while a reachable backend could not
+# be dialed at all. A definite rejection from a reached backend (missing
+# object, syntax, permission, 4xx) must stay rejectable so save-time
+# validation still blocks it, hence no "timed out"/"bad request"/"forbidden".
+_UNREACHABLE_DB_ERROR_SIGNALS = (
+    "could not connect",              # libpq / psycopg connect phase
+    "connection refused",
+    "connection to server at",        # libpq host:port dial failure
+    "getaddrinfo",                    # host-name resolution failure
+    "unable to open database file",   # SQLite path unreachable
+    "login timeout",                  # ODBC / SQL Server connect-phase timeout
+)
+
+# Matched by class NAME (dependency-free — cloud SDKs are optional extras).
+# Transport / service-availability failures that mean the backend was never
+# reached. Blanket InterfaceError is excluded on purpose (it also spans real
+# statement rejections); a connect-phase InterfaceError still matches via its
+# wrapped message signal above.
+_UNREACHABLE_DB_ERROR_TYPE_NAMES = frozenset({
+    "ServiceUnavailable",   # google.api_core / neo4j — HTTP 503
+    "GatewayTimeout",       # HTTP 504
+    "TooManyRequests",      # HTTP 429 — backend refusing new work
+    "DeadlineExceeded",     # google.api_core — deadline before a reply
+    "ConnectionError",      # transport-layer dial failure
+})
+
+
+def _is_unreachable_db_error(exc: BaseException) -> bool:
+    """True when the datasource could not be reached at all.
+
+    Walks the cause/context chain plus SQLAlchemy's ``orig`` (like
+    :func:`_is_auth_failure`): the connect-phase signal often surfaces wrapped
+    a layer deep (e.g. an ``InterfaceError`` around a libpq connect failure).
+    """
+    seen: set[int] = set()
+    pending: list[BaseException] = [exc]
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, sqlalchemy.exc.DisconnectionError):
+            return True
+        if type(current).__name__ in _UNREACHABLE_DB_ERROR_TYPE_NAMES:
+            return True
+        text = str(current).lower()
+        if any(signal in text for signal in _UNREACHABLE_DB_ERROR_SIGNALS):
             return True
         pending.extend(
             nested for nested in (

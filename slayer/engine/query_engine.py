@@ -26,6 +26,7 @@ from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, DataType, JoinCardin
 from slayer.core.errors import (
     AmbiguousModelError,
     ForcedFilterError,
+    ModelSqlValidationError,
     SchemaDriftError,
     UnreachableFilterDroppedWarning,
 )
@@ -51,6 +52,7 @@ from slayer.core.query import (
     _contains_block_delimiter,
     coerce_declared_list_variables,
     declares_variables,
+    extract_variable_refs,
     list_valued_variable_names,
     substitute_variables,
 )
@@ -98,7 +100,13 @@ from slayer.memories.resolver import (
     _all_models_in_datasource,
     resolve_entity,
 )
-from slayer.sql.client import SlayerSQLClient
+from slayer.sql.client import (
+    SlayerSQLClient,
+    _is_auth_failure,
+    _is_transient_db_error,
+    _is_unreachable_db_error,
+    build_sql_model_trial_query,
+)
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type, get_dialect
 from slayer.sql import engine_factory
 from slayer.sql.engine_factory import EngineCacheKey
@@ -3241,6 +3249,7 @@ class SlayerQueryEngine:
                 )
             model = await self._validate_and_populate_cache(model)
         await self._validate_mode_a_join_paths(model)
+        await self.validate_sql_model_source(model)
         await self.storage.save_model(model)
         # Clean up the stale storage entry if the cache populator moved a
         # query-backed model to a different datasource.
@@ -3252,6 +3261,62 @@ class SlayerQueryEngine:
                 model.name, data_source=prior_data_source
             )
         return model
+
+    async def validate_sql_model_source(self, model: SlayerModel) -> None:
+        """Trial-execute a raw-``sql`` model's source before it is persisted
+        (DEV-1843).
+
+        Applies only to raw-``sql`` models (not ``sql_table`` / query-backed).
+        Parameterized ``model.sql`` (a ``{var}`` / ``{? ?}`` placeholder) is
+        skipped — a placeholder in identifier position cannot be safely filled.
+        Raises :class:`ModelSqlValidationError` only when a *reachable*
+        datasource rejects the SQL; every inconclusive verdict (unreachable /
+        transient / auth failure / unconfigured datasource) warns and returns,
+        so a valid author is never blocked on an outage.
+        """
+        if not model.sql or model.sql_table or model.source_queries:
+            return
+        bare, blocked = extract_variable_refs(model.sql)
+        if bare or blocked:
+            logger.info(
+                "Skipping save-time SQL validation for model %r: model.sql "
+                "carries %d placeholder(s), which cannot be trial-filled.",
+                model.name, len(bare | blocked),
+            )
+            return
+        ds = (
+            await self.storage.get_datasource(model.data_source)
+            if model.data_source
+            else None
+        )
+        if ds is None:
+            logger.warning(
+                "Skipping save-time SQL validation for model %r: datasource "
+                "%r is unset or not configured.", model.name, model.data_source,
+            )
+            return
+        trial_sql = build_sql_model_trial_query(model.sql)
+        try:
+            await self._client_for(ds).get_column_types(trial_sql)
+        except Exception as exc:
+            if (
+                _is_transient_db_error(exc)
+                or _is_auth_failure(exc)
+                or _is_unreachable_db_error(exc)
+            ):
+                logger.warning(
+                    "Save-time SQL validation for model %r was inconclusive "
+                    "(datasource %r, type %r): %s. Saving anyway.",
+                    model.name, model.data_source, ds.type,
+                    getattr(exc, "orig", exc),
+                )
+                return
+            raise ModelSqlValidationError(
+                model_name=model.name,
+                data_source=model.data_source,
+                ds_type=ds.type,
+                reason=str(getattr(exc, "orig", exc)),
+            ) from exc
 
     async def _validate_mode_a_join_paths(self, model: SlayerModel) -> None:
         """DEV-1743 [C5] — the save-time Mode-A resolution door.

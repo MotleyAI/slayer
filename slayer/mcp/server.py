@@ -1067,7 +1067,15 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             await storage.get_model(name, data_source=model.data_source)
             is not None
         )
-        await storage.save_model(model)
+        # Route through engine.save_model so the model is normalized, its
+        # Mode-A join paths are validated, and a raw-``sql`` source is
+        # trial-executed against its datasource before it persists (DEV-1843).
+        try:
+            await engine.save_model(model)
+        except Exception as e:
+            if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
+                return _friendly_db_error(e)
+            return f"Error creating model '{model.name}': {e}"
         verb = "replaced" if existed else "created"
         return f"Model '{model.name}' {verb}."
 
@@ -1436,14 +1444,17 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             except Exception as exc:
                 return f"Validation error: {exc}"
         else:
+            # Route through engine.save_model (not storage) so the model is
+            # normalized, its Mode-A join paths are validated, and a raw-``sql``
+            # source is trial-executed against its datasource before it
+            # persists (DEV-1843). ``save_model`` does not recompute
+            # ``data_source`` for non-query models, so the atomic-move guard
+            # below still keys off ``saved_model.data_source`` correctly. The
+            # source row is intact on failure because the delete is deferred.
             try:
-                await storage.save_model(validated)
-                saved_model = validated
+                saved_model = await engine.save_model(validated)
             except Exception as exc:
-                # Source row is still intact because we deferred the
-                # delete. Surface the failure as an error string instead
-                # of letting MCP wrap it as a ToolError.
-                return f"Storage error: {exc}"
+                return f"Validation error: {exc}"
 
         # v4 atomic move: only after the new save has succeeded do we
         # remove the source row, and only if the saved model actually

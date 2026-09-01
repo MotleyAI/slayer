@@ -116,6 +116,35 @@ class ColumnCycleError(SlayerError, ValueError):
         super().__init__(f"Circular column reference detected: {chain}")
 
 
+class ModelSqlValidationError(SlayerError, ValueError):
+    """A raw-``sql`` model's source was rejected by its reachable datasource at
+    save time (DEV-1843).
+
+    Multi-inherits ``ValueError`` (like the other save-time errors here) so the
+    REST ``ValueError -> 400`` mapping and ``except ValueError`` callers (CLI /
+    MCP) catch it. The message names the model, its datasource, and the
+    datasource *type* only — never ``repr(ds)`` — so connection secrets never
+    leak into logs or responses.
+    """
+
+    def __init__(
+        self,
+        *,
+        model_name: str,
+        data_source: str,
+        ds_type: str | None,
+        reason: str,
+    ) -> None:
+        self.model_name = model_name
+        self.data_source = data_source
+        self.ds_type = ds_type
+        self.reason = reason
+        super().__init__(
+            f"Model {model_name!r} has invalid SQL for datasource "
+            f"{data_source!r} (type {ds_type!r}): {reason}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # DEV-1450 stage-5 errors — typed, stable str() format.
 #

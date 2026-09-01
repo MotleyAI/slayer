@@ -65,7 +65,7 @@ from slayer.engine.syntax import (
     parse_expr,
     walk_parsed_refs,
 )
-from slayer.sql.client import SlayerSQLClient
+from slayer.sql.client import SlayerSQLClient, build_sql_model_trial_query
 from slayer.sql.engine_factory import EngineCacheKey
 
 logger = logging.getLogger(__name__)
@@ -2003,17 +2003,12 @@ async def _live_columns_for_sql_model(
     """
     if not model.sql:
         return None
-    # Strip trailing whitespace and a single statement terminator before
-    # wrapping — a persisted ``SELECT 1;`` is valid at top level but
-    # invalid inside ``SELECT * FROM (...) AS _sd_validate``. Without the
-    # strip, that bogus syntax error would be attributed to drift and
-    # produce a false WholeModelDelete.
-    inner_sql = model.sql.rstrip()
-    if inner_sql.endswith(";"):
-        inner_sql = inner_sql[:-1].rstrip()
+    # Shared builder strips a trailing terminator before wrapping — a
+    # persisted ``SELECT 1;`` is valid at top level but invalid inside
+    # ``SELECT * FROM (...) AS _sd_validate``; without it that bogus syntax
+    # error would be attributed to drift and produce a false WholeModelDelete.
     try:
-        trial_sql = f"SELECT * FROM ({inner_sql}) AS _sd_validate WHERE 1=0"
-        cats = await client.get_column_types(trial_sql)
+        cats = await client.get_column_types(build_sql_model_trial_query(model.sql))
     except Exception as exc:
         logger.info(
             "validate_models: trial-execute on %r failed: %s",
