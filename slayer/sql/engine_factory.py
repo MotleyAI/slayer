@@ -120,15 +120,31 @@ def _take_evictions_over_limit() -> list[sa.Engine]:
 def _cache_key(datasource: DatasourceConfig, connection_string: str) -> EngineCacheKey:
     """Cache identity: URL + runtime fields + credentials.
 
-    Shared with ``query_engine._sql_client_cache_key`` — if the two diverged, a
-    caller could get a client whose engine was built for other credentials.
-    Only ``get_engine`` snapshots ``datasource`` first; callers that use the key
+    Shared with ``_sql_client_cache_key`` — if the two diverged, a caller
+    could get a client whose engine was built for other credentials. Only
+    ``get_engine`` snapshots ``datasource`` first; callers that use the key
     immediately just miss and rebuild.
     """
     return (
         connection_string,
         _runtime_fingerprint(datasource),
         dialect_for_ds_type(datasource.type).credential_fingerprint(datasource),
+    )
+
+
+def _sql_client_cache_key(datasource: DatasourceConfig) -> EngineCacheKey:
+    """Cache key for ``SlayerQueryEngine._sql_clients``.
+
+    Delegates to :func:`_cache_key` rather than re-deriving it (DEV-1755):
+    each client memoizes the engine it got from the factory, so if the two
+    keys disagreed a caller could be handed a client whose engine was built
+    for different credentials (e.g. a different user's BigQuery OAuth
+    token). Sharing one implementation makes that impossible. Distinct
+    ``connection_name`` / warehouse / role datasources still key apart
+    (DEV-1551).
+    """
+    return _cache_key(
+        datasource=datasource, connection_string=datasource.get_connection_string(),
     )
 
 
