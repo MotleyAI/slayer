@@ -109,14 +109,24 @@ class TestEveryIsolationKindIsClassified:
         assert not planned.cross_model_aggregate_plans
         assert not planned.windowed_aggregate_plans
 
-    def test_a_target_rooted_aggregate_is_classified(self) -> None:
-        kinds, planned = _classify_all(SlayerQuery(
-            source_model="orders_x",
-            dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="customers_v2.lifetime_value:sum")],
-        ))
-        assert IsolationKind.TARGET_ROOTED in kinds.values(), kinds
-        assert len(planned.cross_model_aggregate_plans) == 1
+    def test_a_target_rooted_aggregate_is_desugared_into_a_regroup_producer(
+        self,
+    ) -> None:
+        """DEV-1836: a target-rooted cross-model aggregate is DESUGARED into a
+        target-rooted regroup producer before isolation classification (mirroring
+        the windowed case), so it no longer reaches ``classify_isolation`` as a
+        top-level cross-model plan."""
+        planned = plan_query(
+            query=SlayerQuery(
+                source_model="orders_x",
+                dimensions=[ColumnRef(name="status")],
+                measures=[ModelMeasure(formula="customers_v2.lifetime_value:sum")],
+            ),
+            bundle=_bundle(),
+        )
+        assert not planned.cross_model_aggregate_plans
+        assert len(planned.regroup_attach_plans) == 1
+        assert planned.regroup_attach_plans[0].producer_root_model == "customers_v2"
 
     def test_a_windowed_aggregate_is_desugared_into_a_regroup_producer(
         self,
@@ -235,14 +245,22 @@ class TestOrderingBetweenTheOldPredicates:
         self,
     ) -> None:
         """The crossing trigger only applies to a LOCAL aggregate; a source that
-        already names another model is target-rooted, whatever else it crosses."""
-        kinds, _ = _classify_all(SlayerQuery(
-            source_model="orders_x",
-            dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="customers_v2.deep_pop:sum")],
-        ))
-        assert IsolationKind.TARGET_ROOTED in kinds.values(), kinds
-        assert IsolationKind.HOST_ROOTED not in kinds.values(), kinds
+        already names another model is target-rooted, whatever else it crosses.
+        DEV-1836: it desugars into a producer ROOTED AT THE SOURCE model — never
+        a host-rooted (``orders_x``) one."""
+        planned = plan_query(
+            query=SlayerQuery(
+                source_model="orders_x",
+                dimensions=[ColumnRef(name="status")],
+                measures=[ModelMeasure(formula="customers_v2.deep_pop:sum")],
+            ),
+            bundle=_bundle(),
+        )
+        assert not planned.cross_model_aggregate_plans
+        assert len(planned.regroup_attach_plans) == 1
+        root = planned.regroup_attach_plans[0].producer_root_model
+        assert root == "customers_v2", root
+        assert root != "orders_x"
 
 
 # =========================================================================== #

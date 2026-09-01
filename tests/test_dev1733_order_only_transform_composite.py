@@ -1005,10 +1005,12 @@ class TestWindowedStillGuarded:
             measures=[ModelMeasure(formula="id:count")],
             order=[OrderItem(column="customers.revenue:sum(window='90d')", direction="desc")],
         )
-        with pytest.raises(NotImplementedError) as ei:
+        with pytest.raises(ValueError) as ei:
             await _sql(engine, query)
-        # DEV-1835: cross-model windowed stays guarded, now under DEV-1836.
-        assert "DEV-1836" in str(ei.value), ei.value
+        # DEV-1836: cross-model windowed stays guarded — the host TD is not
+        # attributable from the target root, so the producer refuses the window.
+        assert "Windowed cross-model aggregate" in str(ei.value), ei.value
+        assert "attributable from" in str(ei.value), ei.value
 
     async def test_non_sum_avg_windowed_order_target_still_raises(self, engine) -> None:
         query = SlayerQuery(

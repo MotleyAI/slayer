@@ -626,7 +626,7 @@ class TestLocalAggregateHiddenOrder:
         assert outer == ["orders.created_at", "orders.cs"], (
             f"hidden cross-model agg must not project.\ngot: {outer}\nSQL:\n{sql}"
         )
-        assert _outer_order_by_names(sql) == ["orders.customers.revenue_sum"], sql
+        assert _outer_order_by_names(sql) == ["customers.revenue_sum"], sql
 
     async def test_hidden_local_agg_order_in_change_chain(self, engine) -> None:
         """Same shape-3 contract, but the chain is a time_shift self-join pair

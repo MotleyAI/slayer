@@ -38,7 +38,7 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.keys import ColumnKey, Phase
+from slayer.core.keys import ColumnKey
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.isolation import IsolationKind, classify_isolation
@@ -251,14 +251,19 @@ class TestIsolationClassification:
         ) is IsolationKind.RANKED_HOST
 
     def test_a_cross_model_first_last_is_classified_target_rooted_ranked(self) -> None:
-        """Its rows live at the target, so that is where the CTE is rooted."""
+        """Its rows live at the target, so DEV-1836 desugars it into a
+        TARGET-rooted producer whose nested plan carries the ranked work."""
         planned = _plan(_q(
             measures=[{"formula": "customers.spend:last", "name": "l"}],
         ))
-        slot = next(s for s in planned.aggregate_slots if not s.hidden)
-        assert classify_isolation(
-            slot=slot, windowed_slot_ids=set(), bundle=dev1748_bundle(),
-        ) is IsolationKind.RANKED_TARGET
+        assert not planned.cross_model_aggregate_plans
+        assert not planned.ranked_aggregate_plans
+        assert len(planned.regroup_attach_plans) == 1
+        attach = planned.regroup_attach_plans[0]
+        assert attach.producer_root_model == "customers"
+        assert attach.producer_plan.ranked_aggregate_plans, (
+            "the ranked work must move into the target-rooted producer"
+        )
 
     def test_a_non_ranked_local_aggregate_is_still_not_isolated(self) -> None:
         """The control. Widening the trigger must not sweep ordinary aggregates
@@ -445,7 +450,8 @@ class TestThePlanNode:
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
             measures=[{"formula": "customers.spend:last", "name": "l"}],
         ))
-        plan = planned.ranked_aggregate_plans[0]
+        # DEV-1836: the ranked plan lives in the target-rooted producer.
+        plan = planned.regroup_attach_plans[0].producer_plan.ranked_aggregate_plans[0]
         assert plan.root_model == "customers"
         assert getattr(plan.ranking_time_key, "leaf", None) == "signup_at"
 
@@ -465,8 +471,10 @@ class TestThePlanNode:
         with pytest.raises(ValueError) as excinfo:
             _plan(query)
         message = str(excinfo.value)
-        assert "'created_at'" in message
-        assert "'customers'" in message
+        # DEV-1836 guard-refine: names the offending column and the target root.
+        assert "created_at" in message
+        assert "customers" in message
+        assert "not attributable from" in message
 
     def test_one_grain_list_covers_every_query_dimension(self) -> None:
         """The grain is carried as structural members rather than re-derived at
@@ -577,20 +585,22 @@ class TestThePlanNode:
         assert [e.scope for e in planned.order] == [OrderScope.CROSS_MODEL_CTE]
 
     def test_a_rerooted_cross_model_first_last_stays_a_cross_model_plan(self) -> None:
-        """D1's exception. A re-rooted cross-model aggregate keeps its
-        ``CrossModelAggregatePlan`` — the ranked plan belongs to the nested
-        sub-plan, in the sub-plan's coordinate system, not to this one."""
+        """D1's exception, DEV-1836 shape. A re-rooted cross-model ranked
+        aggregate is a TARGET-rooted producer, and the ranked plan belongs to
+        the nested producer sub-plan — not the top-level plan."""
         planned = _plan(_q(
             dimensions=["customers.regions.name"],
             measures=[{"formula": "customers.spend:last", "name": "l"}],
         ))
-        rerooted = [
-            p for p in planned.cross_model_aggregate_plans
-            if p.rerooted_plan is not None
-        ]
-        assert rerooted, "expected a re-rooted cross-model plan"
-        top_level_slots = {p.aggregate_slot_id for p in planned.ranked_aggregate_plans}
-        assert not any(p.aggregate_slot_id in top_level_slots for p in rerooted)
+        assert not planned.cross_model_aggregate_plans
+        assert not planned.ranked_aggregate_plans  # not at this level
+        attach = next(
+            a for a in planned.regroup_attach_plans
+            if a.producer_root_model == "customers"
+        )
+        assert attach.producer_plan.ranked_aggregate_plans, (
+            "the ranked plan must live in the nested producer sub-plan"
+        )
 
     def test_the_plan_type_validates_a_minimal_instance(self) -> None:
         """Constructibility as a contract, not just field presence: a required
@@ -933,61 +943,44 @@ class TestFilterRouting:
 
 
 class TestNoFilterIsSilentlyDropped:
-    """A ranked CTE emits no HAVING, so a filter the cross-model strategy routes
-    there has to be picked up by another scope or it stops applying — a wrong
-    answer with no error.
-
-    The plan therefore does not carry the instruction at all, and the planner
-    proves the predicate survives. These pin both halves on the shapes that
-    reach the HAVING route: a filter on the ranked aggregate itself, and one on
-    a DIFFERENT aggregate on the same target."""
+    """A ranked CTE emits no HAVING, so a predicate over the ranked value must be
+    picked up by another scope or it stops applying — a wrong answer with no
+    error. DEV-1836 routes an aggregate-ref predicate over a cross-model value to
+    the OUTER SELECT WHERE (pattern #3); these pin that it survives there for
+    both shapes: a filter on the ranked aggregate itself, and one on a DIFFERENT
+    aggregate on the same target."""
 
     @staticmethod
-    def _routing(planned):
-        ranked_having = {
+    def _ranked_having(planned):
+        return {
             i for p in planned.ranked_aggregate_plans for i in p.having_filter_ids
         }
-        covered = set(planned.outer_where_filter_ids)
-        for p in planned.cross_model_aggregate_plans:
-            covered.update(p.having_filter_ids)
-            covered.update(p.where_filter_ids)
-        agg_ids = {
-            fp.id for fp in planned.filters_by_phase if fp.phase is Phase.AGGREGATE
-        }
-        return ranked_having, covered, agg_ids
 
     def test_a_filter_on_the_ranked_aggregate_reaches_the_outer_where(self) -> None:
         planned = _plan(_q(
             measures=[{"formula": "customers.spend:last", "name": "l"}],
             filters=[f"customers.spend:last > {BIG_AMOUNT_THRESHOLD}"],
         ))
-        ranked_having, covered, agg_ids = self._routing(planned)
-        assert agg_ids, "no aggregate-phase filter was bound"
-        assert ranked_having == set(), planned.ranked_aggregate_plans
-        assert agg_ids <= set(planned.outer_where_filter_ids)
-        assert agg_ids <= covered
+        # The predicate is routed to the outer WHERE, never silently dropped and
+        # never a (non-existent) ranked-CTE HAVING.
+        assert planned.outer_where_filter_ids, "the predicate was silently dropped"
+        assert self._ranked_having(planned) == set(), planned.ranked_aggregate_plans
 
     def test_a_filter_on_a_sibling_aggregate_reaches_that_siblings_cte(
         self,
     ) -> None:
-        """The other HAVING-route shape: the predicate names a DIFFERENT
-        aggregate on the same target, which has an isolated CTE of its own and
-        evaluates it there. The ranked plan must claim none of it."""
+        """The other shape: the predicate names a DIFFERENT aggregate on the same
+        target, which gets its OWN target-rooted producer; the predicate is
+        applied at the outer WHERE on that producer's attached value. The ranked
+        plan claims none of it."""
         planned = _plan(_q(
             measures=[{"formula": "customers.spend:last", "name": "l"}],
             filters=[f"customers.spend:sum > {BIG_AMOUNT_THRESHOLD}"],
         ))
-        ranked_having, covered, agg_ids = self._routing(planned)
-        assert agg_ids, "no aggregate-phase filter was bound"
-        assert ranked_having == set(), planned.ranked_aggregate_plans
-        assert agg_ids <= covered
-        cm_having = {
-            i for p in planned.cross_model_aggregate_plans
-            for i in p.having_filter_ids
-        }
-        assert agg_ids <= cm_having, (
-            "the sibling's own CTE must evaluate it"
-        )
+        assert planned.outer_where_filter_ids, "the predicate was silently dropped"
+        assert self._ranked_having(planned) == set(), planned.ranked_aggregate_plans
+        # The sibling sum has its own target-rooted producer (a second attach).
+        assert len(planned.regroup_attach_plans) == 2
 
     async def test_the_predicate_survives_into_the_emitted_sql(self) -> None:
         """The end of the chain: both shapes emit the comparison."""

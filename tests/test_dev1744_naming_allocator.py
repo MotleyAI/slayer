@@ -442,15 +442,26 @@ class TestCrossModelCteNameAllocation:
             dry_run=True,
         )
         assert resp.sql is not None
-        alias_counts = Counter(re.findall(r'AS "([^"]+)"', resp.sql))
-        duplicated = {a: n for a, n in alias_counts.items() if n > 1}
-        assert not duplicated, (
-            f"an output alias is emitted more than once — a cross-model "
-            f"aggregate was projected under another measure's name: "
-            f"{duplicated}\n{resp.sql}"
-        )
+        # DEV-1836: producers are target-rooted, so the hidden CMA's own CTE
+        # names its output canonically (``customers.revenue_sum``) and ``base``
+        # passes it through under that same name — a benign CROSS-scope repeat.
+        # The leaked-alias bug is a WITHIN-scope duplicate (two projections in
+        # ONE SELECT claim the same output name), so check per SELECT node.
+        parsed = sqlglot.parse_one(resp.sql, read="sqlite")
+        for select in parsed.find_all(exp.Select):
+            names = [
+                proj.alias for proj in select.expressions
+                if isinstance(proj, exp.Alias) and proj.alias
+            ]
+            dups = {a: n for a, n in Counter(names).items() if n > 1}
+            assert not dups, (
+                f"an output alias is emitted more than once in one SELECT — a "
+                f"cross-model aggregate was projected under another measure's "
+                f"name: {dups}\n{resp.sql}"
+            )
         # …and the hidden aggregate still carries its own canonical alias.
-        assert "orders.customers.revenue_sum" in alias_counts, alias_counts
+        all_aliases = Counter(re.findall(r'AS "([^"]+)"', resp.sql))
+        assert "customers.revenue_sum" in all_aliases, all_aliases
 
     async def test_same_key_slots_still_share_one_cte(self, engine) -> None:
         """Parity guard for the C13 intent the buggy dedup was meant to serve:

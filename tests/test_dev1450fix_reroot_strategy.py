@@ -124,18 +124,26 @@ def _forward_query() -> SlayerQuery:
 
 class TestRerootStrategyOwnership:
     def test_reroot_case_sets_rerooted_plan(self) -> None:
+        # DEV-1836: the re-root case (dim a hop past the target) is a
+        # TARGET-rooted regroup producer that preserves the re-rooted grain
+        # (a join-back pair), not a scalar CROSS JOIN broadcast.
         planned = plan_query(query=_reroot_query(), bundle=_bundle())
-        assert len(planned.cross_model_aggregate_plans) == 1
-        plan = planned.cross_model_aggregate_plans[0]
-        assert plan.rerooted_plan is not None
-        assert plan.rerooted_grain_pairs  # at least one (host, sub) grain pair
-        assert plan.rerooted_agg_slot_id is not None
+        assert not planned.cross_model_aggregate_plans
+        assert len(planned.regroup_attach_plans) == 1
+        attach = planned.regroup_attach_plans[0]
+        assert attach.producer_root_model == "customers"
+        assert attach.join_pairs  # grain preserved, not a scalar broadcast
 
     def test_forward_case_not_rerooted(self) -> None:
+        # DEV-1836: the forward-path case (dim on the host->target path) is ALSO
+        # a target-rooted producer now — the unification dissolves the separate
+        # forward-CTE path — and still shares grain directly (a join-back pair).
         planned = plan_query(query=_forward_query(), bundle=_bundle())
-        assert len(planned.cross_model_aggregate_plans) == 1
-        plan = planned.cross_model_aggregate_plans[0]
-        assert plan.rerooted_plan is None
+        assert not planned.cross_model_aggregate_plans
+        assert len(planned.regroup_attach_plans) == 1
+        attach = planned.regroup_attach_plans[0]
+        assert attach.producer_root_model == "customers"
+        assert attach.join_pairs
 
     def test_planner_plan_without_kwargs_returns_forward_plan(self) -> None:
         # Back-compat: the ~30 direct ``planner.plan(...)`` call sites pass no

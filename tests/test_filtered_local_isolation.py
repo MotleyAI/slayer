@@ -431,19 +431,12 @@ class TestCrossModelPlannerTriggerPredicate:
             dimensions=["claim.claim_number"],
         )
         planned = plan_query(query=q, bundle=_bundle(host))
-        assert len(planned.cross_model_aggregate_plans) == 1, (
-            f"Cross-model aggregate must still trigger; got {len(planned.cross_model_aggregate_plans)}"
-        )
-        plan = planned.cross_model_aggregate_plans[0]
-        # ``target_model`` is the join target.
-        assert plan.target_model == "loss_payment", (
-            f"Expected target_model='loss_payment' for cross-model agg; got {plan.target_model!r}"
-        )
-        # ``cte_root_model`` stays None for genuine cross-model — the existing
-        # forward / re-rooted rendering path is unchanged.
-        assert plan.cte_root_model is None, (
-            f"Genuine cross-model aggregate must keep cte_root_model=None; got {plan.cte_root_model!r}"
-        )
+        # DEV-1836: a genuine cross-model aggregate desugars into a TARGET-rooted
+        # regroup producer (rooted at the join target ``loss_payment``), not a
+        # host-rooted filtered-local plan.
+        assert not planned.cross_model_aggregate_plans
+        assert len(planned.regroup_attach_plans) == 1
+        assert planned.regroup_attach_plans[0].producer_root_model == "loss_payment"
 
     def test_cross_model_agg_with_target_column_filter_does_not_become_filtered_local(self):
         """DEV-1494's case: a CROSS-MODEL aggregate whose TARGET column has
@@ -497,16 +490,12 @@ class TestCrossModelPlannerTriggerPredicate:
             dimensions=["id"],
         )
         planned = plan_query(query=q, bundle=bundle)
-        assert len(planned.cross_model_aggregate_plans) == 1
-        plan = planned.cross_model_aggregate_plans[0]
-        # Genuine cross-model: target is `customers`, NOT reinterpreted as host-rooted.
-        assert plan.target_model == "customers", (
-            f"Cross-model + target-filter must keep target_model='customers'; got {plan.target_model!r}"
-        )
-        assert plan.cte_root_model is None, (
-            f"Cross-model + target-filter must keep cte_root_model=None (NOT host-rooted); "
-            f"got {plan.cte_root_model!r}"
-        )
+        # DEV-1836: genuine cross-model, desugared into a TARGET-rooted producer
+        # rooted at ``customers`` — NOT reinterpreted as a host-rooted
+        # filtered-local plan (root None would be a local producer).
+        assert not planned.cross_model_aggregate_plans
+        assert len(planned.regroup_attach_plans) == 1
+        assert planned.regroup_attach_plans[0].producer_root_model == "customers"
 
 
 # ---------------------------------------------------------------------------
@@ -1003,11 +992,12 @@ class TestWidenedLaw3TriggerCrossingInputs:
 
     def test_source_path_still_target_rooted(self):
         # A genuine cross-model aggregate keeps target-rooted semantics —
-        # the widened host-rooted branch must not reinterpret it.
-        _, plans = _s5_plans("customers.weight:sum")
-        assert len(plans) == 1
-        assert plans[0].target_model == "customers"
-        assert plans[0].cte_root_model is None
+        # the widened host-rooted branch must not reinterpret it. DEV-1836: it
+        # desugars into a producer rooted at the target ``customers``.
+        planned, cma = _s5_plans("customers.weight:sum")
+        assert cma == []
+        assert len(planned.regroup_attach_plans) == 1
+        assert planned.regroup_attach_plans[0].producer_root_model == "customers"
 
     def test_disable_flag_suppresses_widened_trigger(self):
         _, plans = _s5_plans(

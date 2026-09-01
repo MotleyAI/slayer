@@ -857,23 +857,30 @@ class TestTimeArgJoinDiscovery:
         assert ("customers",) in scope.join_paths.as_list()
 
     def test_cross_model_time_arg_not_registered_on_host(self) -> None:
-        # A CROSS-MODEL first/last (source path non-empty) is owned by its
-        # ``_cm_*`` CTE — the aggregate-input pass skips cross-model aggs
-        # entirely, so it must NOT pull the arg's join into the host ``_base``.
+        # DEV-1836: a CROSS-MODEL first/last is owned by a target-rooted
+        # producer sub-plan — the host slots carry only the reserved-leaf
+        # placeholder, so the host aggregate-input pass never sees the agg and
+        # cannot pull the arg's join into ``_base``.
         query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "customers.amount:last(customers.signup_at)"}],
         )
         bundle = _u_bundle(_u_orders())
         order, slots = _planned_slots(query, bundle)
-        # Confirm the slot IS a cross-model aggregate (source.path non-empty) —
-        # otherwise ``join_paths == []`` could pass because the agg was never a
-        # cross-model one, not because the pass correctly skipped it (Codex).
-        agg = next(
-            s for s in slots.values()
+        # Confirm the agg is a cross-model one now owned by a target-rooted
+        # producer (root == the join target), and that the HOST slots carry NO
+        # AggregateKey — otherwise ``join_paths == []`` could pass vacuously.
+        planned = plan_query(query=query, bundle=bundle)
+        attach = next(
+            a for a in planned.regroup_attach_plans
+            if a.producer_root_model == "customers"
+        )
+        prod_agg = next(
+            s for s in attach.producer_plan.aggregate_slots
             if isinstance(s.key, AggregateKey) and s.key.agg == "last"
         )
-        assert getattr(agg.key.source, "path", ()) == ("customers",), agg.key
+        assert prod_agg.key.grain == "target", prod_agg.key
+        assert not any(isinstance(s.key, AggregateKey) for s in slots.values())
         gen = self._gen()
         scope = _host_scope(gen, source_model=_u_orders(), bundle=bundle)
         # Spy on the resolver: a cross-model agg must never reach ``scope.resolve``
