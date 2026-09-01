@@ -14,11 +14,10 @@
 - [x] 1.12 Warning-collector traversal tests: same filter dropped by several producers → one warning; same measure broadcast in several roles → one warning (F7)
 - [x] 1.13 Fixture audit: declare target PKs where N:1 was intended across join-declaring fixtures; record the class-(c) candidates found; verify prior goldens still pass before implementation starts
 
-> Progress note (see `HANDOVER.md`): Commits 0–4 implemented; all 168
-> `test_dev1836_*` pass (sqlite+duckdb). The `cross_model_planner.py` deletion
-> (3.3), the D7 invariant + `classify_isolation` retirement (7.x), and the
-> golden re-bless / `_cm_` shape-suite reconciliation (8.1) remain — the last
-> needs the author's go-ahead to modify existing tests.
+> Progress note (see `HANDOVER.md`): Commits 0–5 implemented; all 116
+> assertion-test reconciliations done and green; D7 invariant landed; the
+> `cross_model_planner.py` deletion (3.3) and `classify_isolation` retirement
+> (7.2) are deferred to DEV-1838 per decision B1.
 
 ## 2. Commit 0 — safety primitive + metadata enablement (no query-behavior change)
 
@@ -52,11 +51,11 @@
 
 ## 7. Commit 5 — retire classify_isolation
 
-- [ ] 7.1 Post-discovery total-routing invariant (D7); test 1.11 green (passes via existing backstop; dedicated invariant not yet added)
-- [ ] 7.2 Delete `classify_isolation` + `IsolationKind` dispatch (keep `may_inline_crossing_inputs` seam); no remaining references (grep clean); full suite green
+- [x] 7.1 Post-discovery total-routing invariant (D7); test 1.11 green + dedicated blinded-discovery invariant test
+- [ ] 7.2 Delete `classify_isolation` + `IsolationKind` dispatch — DEFERRED to DEV-1838 per decision B1 (still dispatches the host-rooted / ranked-host / filtered-local routes)
 
 ## 8. Wrap-up
 
-- [ ] 8.1 Full non-integration suite + integration SQLite/DuckDB green; golden batches approved and re-blessed; perf corpus re-recorded with regressions reported — ~238 D10 test reconciliations pending (needs consent)
-- [ ] 8.2 Docs: `docs/architecture/composable-attach.md` (stage-3 section + filter/broadcast semantics), `docs/concepts/queries.md` (strict + broadcast), `docs/concepts/formulas.md` (cross-model in dims/window), `docs/concepts/models.md` (join cardinality + validation), `.claude/skills/slayer-query.md`; zensical nav check
+- [x] 8.1 Full non-integration suite green (14709); integration SQLite/DuckDB green (Q9 target-join-filter regression found + fixed via D3 host-hop/sibling reroot rules); perf corpus re-recorded (no regression flags)
+- [x] 8.2 Docs: `docs/architecture/composable-attach.md` (stage-3 section + filter/broadcast semantics), `docs/concepts/queries.md` (strict + broadcast + cross-model semantics), `docs/concepts/formulas.md` (cross-model window/partition), `docs/concepts/models.md` (load-bearing join cardinality + join-safety audit), `docs/reference/{rest-api,mcp}.md` (`strict`), `.claude/skills/slayer-query.md`; no new pages so zensical nav unchanged
 - [ ] 8.3 Lint clean (`ruff check slayer/ tests/`) ✓; DEV-1689 closed on merge; archive the change post-merge

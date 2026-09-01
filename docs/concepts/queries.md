@@ -18,6 +18,7 @@ A `SlayerQuery` specifies what data to retrieve from a model.
 | `limit` | int | No | Maximum rows to return |
 | `offset` | int | No | Number of rows to skip |
 | `whole_periods_only` | bool | No | Snap date filters to time bucket boundaries, exclude the current incomplete time bucket |
+| `strict` | bool | No | Fail instead of warn when a [cross-model measure broadcasts](#cross-model-measures) across an unattributable dimension or a filter is dropped from its producer. Default `false` (warn). |
 
 You can pass a single query or a **list of queries** to `execute()`. When passing a list, earlier queries are named sub-queries that later queries can reference. The last query in the list is the main one whose results are returned. See [Query Lists](#query-lists) for examples.
 
@@ -115,15 +116,20 @@ same holds as a bare measure (`a:sum(partition_by=region) - b:sum(partition_by=c
 evaluated at the query grain) and recursively for a nested transform, which
 accumulates within its **own** grain before broadcasting into the outer union.
 
-Deferred shapes (raise a clear error citing the follow-up): a cross-model
-aggregate source inside a dimension expression, a bare aggregate without
-`partition_by=`, an aggregate partitioned by another computed dimension (a nested
-attach), a computed dimension combined with a bare windowed (`window=` without
-`partition_by=`), `first` / `last`, or cross-model measure, a **mixed-grain**
-transform any of whose inner aggregates is windowed or `first` / `last` (its
-union would need the synthesized time bucket), and a time-ordered transform
-(`cumsum`, `lag`, …) whose evaluation grain lacks its time-ordering key — include
-that key in `partition_by=` so the transform accumulates within its own grain.
+A cross-model aggregate source inside a dimension expression is legal: it
+compiles through the same target-rooted producer as a
+[cross-model measure](#cross-model-measures), with the same exact-grain vs
+broadcast semantics.
+
+Deferred shapes (raise a clear error citing the follow-up): a bare aggregate
+without `partition_by=`, an aggregate partitioned by another computed dimension
+(a nested attach), a computed dimension combined with a bare windowed
+(`window=` without `partition_by=`) or `first` / `last` measure, a
+**mixed-grain** transform any of whose inner aggregates is windowed or `first`
+/ `last` (its union would need the synthesized time bucket), and a time-ordered
+transform (`cumsum`, `lag`, …) whose evaluation grain lacks its time-ordering
+key — include that key in `partition_by=` so the transform accumulates within
+its own grain.
 
 ### Dim-only queries deduplicate
 
@@ -252,6 +258,7 @@ Query results are returned as a `SlayerResponse`:
 | `row_count` | int | Number of rows |
 | `sql` | string | The generated SQL (useful for debugging) |
 | `attributes` | ResponseAttributes | Field metadata split by type: `attributes.dimensions` and `attributes.measures`, each a dict of column alias → FieldMetadata (label, format) |
+| `warnings` | list[SlayerWarning] | Advisories, discriminated by `kind`: input normalizations (`"normalization"`), a [cross-model measure broadcast](#cross-model-measures) (`"broadcast"`), a filter dropped from a cross-model producer (`"unreachable_filter_dropped"`) |
 
 `columns` — and the key order of each row in `data` — follows the order you
 declared fields in the query: dimensions, then time dimensions, then measures,
@@ -359,7 +366,7 @@ Filters can reference names of computed measures — transforms and arithmetic e
 
 When a query measure is renamed via `{"formula": "col:agg", "name": "alias"}`, the filter in the same node may reference EITHER form — the raw colon formula `col:agg` OR the user alias `alias`. Both resolve to the user alias, and a colon-form filter is classified as HAVING on the underlying aggregate. Renaming never changes the legal filter form. Two enrichment-time validations apply: (1) a query measure `name` that collides with a source column on the source model is rejected (alias-form filters would otherwise silently bind to the source column); (2) a rename whose canonical alias literally shadows a source column on the same model is also rejected (the colon-form filter would otherwise be ambiguous).
 
-Renaming also works for *cross-model* aggregated measures (`{"formula": "customers.revenue:sum", "name": "cust_rev"}`). Only the canonical leaf of the dotted path swaps to the user name; the hop path is preserved — same dot-syntax shape every other multi-hop caller-facing key uses. The result-column key becomes `orders.customers.cust_rev` (one-hop) or `orders.customers.regions.region_pop` (multi-hop). In any *downstream* stage of a `query_nested` DAG, the column is exposed under the BARE user name — type `cust_rev:max` (or `region_pop:max`) in stage 2 to consume the value, not the dotted hop-path form. Filters referencing a renamed cross-model measure in the SAME stage are NOT auto-resolved in any form — neither the bare user alias (`filters=["cust_rev > 100"]`) nor the raw colon form (`"customers.revenue:sum > 100"`) resolves to the cross-model CTE's output column. Workaround until DEV-1445 lands: restructure as a multi-stage `source_queries` so the cross-model measure becomes a local measure in the downstream stage, then filter on the bare user name there. ORDER BY via the bare user alias (`order=[{"column": "cust_rev"}]`) DOES resolve to the cross-model CTE's output column and renders as `ORDER BY "orders.customers.cust_rev"`.
+Renaming also works for *cross-model* aggregated measures (`{"formula": "customers.revenue:sum", "name": "cust_rev"}`). Only the canonical leaf of the dotted path swaps to the user name; the hop path is preserved — same dot-syntax shape every other multi-hop caller-facing key uses. The result-column key becomes `orders.customers.cust_rev` (one-hop) or `orders.customers.regions.region_pop` (multi-hop). In any *downstream* stage of a `query_nested` DAG, the column is exposed under the BARE user name — type `cust_rev:max` (or `region_pop:max`) in stage 2 to consume the value, not the dotted hop-path form. Filters referencing a renamed cross-model measure in the SAME stage resolve in both forms — the bare user alias (`filters=["cust_rev > 100"]`) and the raw colon form (`"customers.revenue:sum > 100"`) — and restrict the result rows on the attached value, as does ORDER BY via the bare user alias (`order=[{"column": "cust_rev"}]`).
 
 ```json
 {
@@ -654,7 +661,31 @@ When models have [joins](models.md#joins), you can reference measures from joine
 }
 ```
 
-This generates a sub-query for the joined measure, scoped to shared dimensions, and LEFT JOINs it to the main query — avoiding aggregation errors from row multiplication.
+SLayer computes the joined measure in its own sub-query **rooted at the measure's
+model** (here `customers`) and LEFT JOINs it back to the main query — so the
+aggregate runs over the target's rows once, never through a 1:N join that would
+multiply them.
+
+The sub-query groups by the subset of your dimensions the engine can **prove
+safe** — those reachable from the measure's model over join hops that are
+provably many-to-one (a primary key on the far side, or a declared
+[join `cardinality`](models.md#join-cardinality)). Each remaining dimension gets
+the **broadcast** value (the total over the safe grain, repeated across that
+dimension), and the response carries a `warnings` entry (`kind: "broadcast"`)
+naming the metric and each broadcast dimension with the reason. Likewise, a
+query filter that the sub-query cannot evaluate from its root is applied only to
+the local measures and reported as `kind: "unreachable_filter_dropped"`. Declare
+the missing join cardinality (or primary key) to make such a dimension exact.
+Set `"strict": true` on the query to turn both conditions into errors instead of
+warnings.
+
+A filter **on** the cross-model value itself (`"customers.score:avg > 4"`)
+restricts the result rows, uniformly with local aggregate filters — groups that
+fail the predicate are dropped, not returned with `NULL`.
+
+Cross-model aggregates also work with `window=`, `partition_by=`, `first` /
+`last`, inside [dimension expressions](#expression-dimensions), and as hidden
+[order-only fields](#ordering-by-something-you-dont-project).
 
 A cross-model **parametric** aggregate keeps its kwarg signature in the result key, so two variants on the same target column do not collide:
 

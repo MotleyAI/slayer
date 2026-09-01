@@ -18,6 +18,18 @@ SQL-shape only, (c) deliberate value changes, (d) new errors.
 | Filter-only `customers.spend:sum > 100` (not selected) | silently inert (all rows) | restricts rows like a local aggregate filter |
 | `customers.regions.pop:sum` by `customers.tier` (intermediate hop) | raises NotImplementedError | executes; broadcast 300 + warning |
 
+### Scope narrowing (post-reconciliation): D3 host-hop/sibling reroot rules
+
+The class-(c) flips above apply only where the reverse/sibling hop is NOT
+provably to-one. When the producer's root declares a safe path back to the
+host (or directly to a host-sibling model) — every hop provably many-to-one —
+the grain member re-roots (host-local → prepend host hop; sibling → the root's
+own join) and the value stays EXACT, and reachable filters inherit instead of
+dropping. Found via the Q9 integration regression
+(`test_cross_model_measure_with_target_join_filters`); pinned there plus the
+un-xfailed `test_rerooted_local_filter_remapped_to_source` and the rewritten
+`test_rerooted_cte_includes_reachable_and_sibling_filters`.
+
 ## Class (d) — new errors (today's silently-computed values shown)
 
 | Shape | Today | Pinned (new) |
