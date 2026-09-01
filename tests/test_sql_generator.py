@@ -10778,17 +10778,17 @@ class TestCastEmissionMeasure:
             ],
         )
 
-    async def test_measure_type_none_count_casts_to_integer(self, orders_model) -> None:
+    async def test_measure_type_none_count_preserves_native_range(self, orders_model) -> None:
         gen = SQLGenerator(dialect="sqlite")
         query = SlayerQuery(
             source_model="orders",
             measures=[ModelMeasure(formula="*:count", name="cnt")],  # type=None default
         )
-        sql = await _generate(gen, query, orders_model)
-        # ``*:count`` carries an implicit INT result type, so the typed
-        # pipeline wraps it in CAST(... AS INTEGER) even when
-        # ``ModelMeasure.type`` is unset (DEV-1484: confirmed intended).
-        assert "CAST(COUNT(*) AS INTEGER)" in sql.upper()
+        sql = await _generate(generator=gen, query=query, model=orders_model)
+        # INT remains the inferred metadata type, but must not narrow the
+        # backend's native count result unless the measure explicitly asks.
+        assert 'COUNT(*) AS "ORDERS.CNT"' in sql.upper()
+        assert "CAST(" not in sql.upper()
 
     async def test_measure_type_double_wraps_outer_count(self, orders_model) -> None:
         gen = SQLGenerator(dialect="sqlite")
@@ -12792,4 +12792,3 @@ class TestWindowedMeasureGuards:
         sql = await _engine_generate(query=query, model=orders_model)
         assert_scope_closed(sql, dialect="postgres")
         assert "__regroup__" not in sql
-

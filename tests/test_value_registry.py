@@ -12,6 +12,7 @@ from decimal import Decimal
 
 import pytest
 
+from slayer.core.enums import DataType
 from slayer.core.errors import (
     CanonicalAliasShadowsColumnError,
     DuplicateMeasureNameError,
@@ -104,6 +105,20 @@ class TestInterning:
 
 
 class TestMultiAlias:
+    @pytest.mark.parametrize("explicit_first", [False, True])
+    def test_shared_integer_slot_preserves_explicit_cast_intent(self, explicit_first):
+        r = ValueRegistry()
+        key = AggregateKey(source=ColumnKey(path=(), leaf="amount"), agg="sum")
+        for name, explicit in (("a", explicit_first), ("b", not explicit_first)):
+            sid = r.intern(
+                key=key, declared_name=name, public_name=name,
+                phase=Phase.AGGREGATE, type=DataType.INT, type_is_explicit=explicit,
+            )
+        slot = r.get(sid)
+        assert len(r.slots) == 1
+        assert slot.type_is_explicit is True
+        assert slot.cast_type is DataType.INT
+
     def test_two_names_same_key_share_slot_multi_aliases(self):
         # P4 / C13: same structural key declared with two different names.
         r = ValueRegistry()

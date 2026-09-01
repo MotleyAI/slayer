@@ -801,6 +801,7 @@ def _map_bound_keys(
             label=dm.label,
             canonical_alias=dm.canonical_alias,
             type=dm.type,
+            type_is_explicit=dm.type_is_explicit,
             format=dm.format,
             description=dm.description,
             is_dimension=dm.is_dimension,
@@ -1284,6 +1285,7 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
         [FrozenSet[ValueKey]], List[ValueKey],
     ] = _regroup_partition_order,
     public_alias_by_agg: Optional[Mapping[AggregateKey, str]] = None,
+    explicit_types: Optional[Mapping[ValueKey, DataType]] = None,
     grain_name_by_key: Optional[Mapping[ValueKey, str]] = None,
     window_td_key: Optional[ValueKey] = None,
 ) -> Tuple[PreboundQuery, List[ValueKey]]:
@@ -1304,6 +1306,7 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
     key, evaluated per bucket and included verbatim in the attach keys.
     """
     public_alias_by_agg = public_alias_by_agg or {}
+    explicit_types = explicit_types or {}
     grain_name_by_key = grain_name_by_key or {}
     ordered = partition_order(pks)
     dims = [pk for pk in ordered if not isinstance(pk, TimeTruncKey)]
@@ -1352,7 +1355,8 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
         agg_dms.append(DeclaredMeasure(
             bound=BinderBoundExpr(value_key=agg),
             declared_name=canonical, public_name=canonical,
-            type=a_type, format=a_fmt, description=a_desc,
+            type=explicit_types.get(agg, a_type), format=a_fmt, description=a_desc,
+            type_is_explicit=agg in explicit_types,
         ))
     prebound = PreboundQuery(
         declared_measures=[*grain_dms, *agg_dms],
@@ -1914,6 +1918,11 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
                 pks=pks, aggs=producer_aggs, model=producer_model, bundle=bundle,
                 inherited=inherited, n_date_range=n_inherited_date,
                 partition_order=order_fn, public_alias_by_agg=alias_map,
+                explicit_types={
+                    dm.bound.value_key: dm.type
+                    for dm in prebound.declared_measures
+                    if phase == "combined" and dm.type_is_explicit and dm.type is not None
+                },
                 grain_name_by_key=grain_names,
                 window_td_key=prebound.main_time_key if windowed else None,
             )
@@ -2044,6 +2053,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
                 label=dm.label,
                 canonical_alias=dm.canonical_alias,
                 type=dm.type,
+                type_is_explicit=dm.type_is_explicit,
                 format=dm.format,
                 description=dm.description,
                 is_dimension=dm.is_dimension,
@@ -3596,11 +3606,8 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
         #      source measure's type metadata; re-look-up here.
         #   3. ``_type_for_measure_formula`` — aggregation-aware inference.
         # An explicit type wins over inference at every level of this chain.
-        m_type = (
-            m.type
-            or _saved_model_measure_type(scope=scope, formula=formula)
-            or _type_for_measure_formula(scope=scope, bound=bound)
-        )
+        explicit_type = m.type or _saved_model_measure_type(scope=scope, formula=formula)
+        m_type = explicit_type or _type_for_measure_formula(scope=scope, bound=bound)
         declared.append(DeclaredMeasure(
             bound=bound,
             declared_name=declared_name,
@@ -3611,6 +3618,7 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
             # name) so a colon-form filter / ORDER BY still resolves.
             canonical_alias=canonical if alias_name else None,
             type=m_type,
+            type_is_explicit=explicit_type is not None,
             format=fmt,
             description=desc,
         ))

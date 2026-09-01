@@ -49,6 +49,11 @@ Aggregation is specified at query time with **colon syntax**: `"amount:sum"`, `"
 
 **Column types**: `string`, `number`, `boolean`, `time` (timestamp), `date`
 
+Inferred integer measure types preserve the database's native aggregate range.
+Do not add `"type": "INT"` to a measure merely to describe an integer result:
+it explicitly requests the database's INT cast and may reject a large total.
+Declared derived-column casts and other result-type casts are unchanged.
+
 ## Joins
 
 Models can declare LEFT JOIN relationships to other models:
