@@ -2201,6 +2201,30 @@ def _discover_cross_model_combined(
     return out, alias, declared_type
 
 
+def _assert_total_routing(prebound: PreboundQuery) -> None:
+    """D7 — post-discovery total-routing invariant. After the top-level regroup
+    rewrite, every cross-model or partitioned aggregate leaf must have been
+    disposed (producer substitution or an earlier explicit rejection); a
+    survivor is an unrouted shape and raises here — never a silent drop."""
+    roles: Tuple[Tuple[str, List[ValueKey]], ...] = (
+        ("measure", [dm.bound.value_key for dm in prebound.declared_measures]),
+        ("filter", [bf.value_key for bf in prebound.bound_filters]),
+        ("order", [sp.bound.value_key for sp in prebound.order_specs]),
+    )
+    for role, keys in roles:
+        for vk in keys:
+            for k in walk_value_keys(vk):
+                if _is_cross_model_agg(k) or (
+                    isinstance(k, AggregateKey) and k.partition_keys is not None
+                ):
+                    raise ValueError(
+                        f"Aggregate {_canonical_name(k)!r} in a {role} received "
+                        f"no routing disposition (inline, producer substitution, "
+                        f"or explicit rejection) — the planner cannot compile "
+                        f"this shape."
+                    )
+
+
 def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (computed-dim) + combined (measure/order) partitioned aggregates, synthesize one producer per (partition set, phase), and rewrite the prebound to placeholders. The two phases share the registry / inherited-filter / substitution state; splitting scatters it.
     *,
     prebound: PreboundQuery,
@@ -2718,6 +2742,11 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         n_dims = prebound.n_dims
         n_tds = prebound.n_time_dimensions
         distinct_dimension_values = prebound.distinct_dimension_values
+    # D7 — at the top consumer level every cross-model / partitioned leaf must
+    # now be a placeholder; sub-plans (producers, host-rooted recursion) render
+    # theirs inline by design and are exempt.
+    if not disable_host_rooted_isolation and not enable_producer_regroups:
+        _assert_total_routing(prebound)
 
     # SlayerModel.filters — Mode-A SQL, always-applied WHERE. Scope-derived
     # (see ``bind_query_inputs``), so a pre-bound sub-plan picks up its OWN

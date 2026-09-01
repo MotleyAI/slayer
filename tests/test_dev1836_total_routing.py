@@ -118,6 +118,26 @@ class TestTotalRoutingInvariant:
         message = str(ei.value).lower()
         assert "aggregat" in message or "pt" in message, message
 
+    def test_blinded_cross_model_discovery_hits_the_dedicated_invariant(
+        self, monkeypatch,
+    ):
+        """Task 7.1 — the D7 invariant itself, not a coincidental backstop.
+        Blind the CROSS-MODEL discovery: the un-desugared cross-model aggregate
+        must be caught by ``_assert_total_routing`` with the explicit
+        no-disposition error, not fall through to the legacy dispatch."""
+        import slayer.engine.stage_planner as stage_planner
+
+        monkeypatch.setattr(
+            stage_planner, "_discover_cross_model_combined",
+            lambda prebound: ([], {}, {}),
+        )
+        query = q(
+            dimensions=["status"],
+            measures=[ModelMeasure(formula="customers.spend:sum", name="cm")],
+        )
+        with pytest.raises(ValueError, match="no routing disposition"):
+            plan_query(query=query, bundle=_bundle())
+
 
 class TestNoSilentDrops:
     async def test_every_requested_measure_lands_in_the_result(self, exec_backend):
