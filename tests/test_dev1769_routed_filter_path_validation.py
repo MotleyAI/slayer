@@ -21,12 +21,13 @@ both renderers fail closed on it, SYMMETRICALLY with ``ColumnKey``.
 Two layers of coverage:
 
 * **E2E (existing behaviour, pinned)** — the reachable shapes the planner
-  actually routes, proving both that reachable filters route INTO the CTE and
-  that the pre-existing intermediate-hop / other-model rejections still fire
-  with their exact messages. These pass before and after the fix.
+  actually routes: reachable filters route INTO the CTE, and a filter
+  unreachable from the aggregate's root (intermediate-hop / other-model) is
+  DROPPED from the producer with a warning (DEV-1836 filter inheritance
+  superseded the pre-existing hard rejection at the E2E boundary).
 * **Direct-call (the new guard)** — the binder-unreachable inconsistent key,
   which only a direct call to the live ``_reroot_routed_leaf`` can construct.
-  These are red before the guard lands.
+  The renderer-level guard still fails closed on it.
 
 The aggregate is ``customers_v2.regions.population:sum`` throughout, so the CTE
 target is ``regions`` (a TWO-hop path). That lets a filter path end AT the
@@ -36,9 +37,12 @@ target (``customers_v2.regions.*``) or at the intermediate hop
 
 from __future__ import annotations
 
+import warnings
+
 import pytest
 
 from slayer.core.enums import DataType
+from slayer.core.errors import UnreachableFilterDroppedWarning
 from slayer.core.keys import ColumnKey, ColumnSqlKey
 from slayer.core.models import Column, ModelMeasure
 from slayer.core.query import SlayerQuery
@@ -103,33 +107,51 @@ class TestRoutedFilterPathE2E:
         sql = await _gen(query, regions_extra=_REGIONS_EXTRA)
         _assert_valid_sql(sql)
         cm_body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
-        assert "regions.population * 2 > 5" in cm_body, cm_body
+        assert "CAST(regions.population * 2 AS DOUBLE PRECISION) > 5" in cm_body, cm_body
 
-    async def test_intermediate_hop_plain_column_filter_raises(self) -> None:
-        """A plain-column filter on the INTERMEDIATE hop (``customers_v2.status``
-        — path ends at ``customers_v2``, not the ``regions`` target) routes into
-        the CTE and hits the pre-existing ColumnKey intermediate-hop raise."""
+    async def test_intermediate_hop_plain_column_filter_dropped(self) -> None:
+        """DEV-1836: a plain-column filter on the INTERMEDIATE hop
+        (``customers_v2.status`` — unreachable from the ``regions`` aggregate
+        root) is dropped from the producer with a warning, superseding the
+        pre-existing intermediate-hop rejection."""
         query = SlayerQuery(
             source_model="orders_x",
             measures=[_TWO_HOP_AGG],
             filters=["customers_v2.status = 'x'"],
         )
-        with pytest.raises(NotImplementedError, match=_MSG_COLUMNKEY_INTERMEDIATE):
-            await _gen(query, regions_extra=_REGIONS_EXTRA)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            sql = await _gen(query, regions_extra=_REGIONS_EXTRA)
+        _assert_valid_sql(sql)
+        cm_body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
+        assert "status" not in cm_body, cm_body
+        assert any(
+            issubclass(w.category, UnreachableFilterDroppedWarning)
+            and "customers_v2.status" in str(w.message)
+            for w in caught
+        ), [str(w.message) for w in caught]
 
-    async def test_derived_column_owned_by_other_model_filter_raises(self) -> None:
-        """A DERIVED-column filter owned by the intermediate model
-        (``customers_v2.ltv_x2`` — owned by ``customers_v2``, not the ``regions``
-        target) routes into the CTE and hits the pre-existing ColumnSqlKey
-        model-ownership raise. The model check fires BEFORE the new path guard,
-        so this shape keeps its exact message (ordering the direct tests pin)."""
+    async def test_derived_column_owned_by_other_model_filter_dropped(self) -> None:
+        """DEV-1836: a derived-column filter owned by the intermediate model
+        (``customers_v2.ltv_x2`` — unreachable from the ``regions`` root) is
+        dropped from the producer with a warning, superseding the pre-existing
+        model-ownership rejection."""
         query = SlayerQuery(
             source_model="orders_x",
             measures=[_TWO_HOP_AGG],
             filters=["customers_v2.ltv_x2 > 5"],
         )
-        with pytest.raises(NotImplementedError, match=_MSG_OTHER_MODEL):
-            await _gen(query, regions_extra=_REGIONS_EXTRA)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            sql = await _gen(query, regions_extra=_REGIONS_EXTRA)
+        _assert_valid_sql(sql)
+        cm_body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
+        assert "ltv_x2" not in cm_body, cm_body
+        assert any(
+            issubclass(w.category, UnreachableFilterDroppedWarning)
+            and "customers_v2.ltv_x2" in str(w.message)
+            for w in caught
+        ), [str(w.message) for w in caught]
 
 
 # =========================================================================== #
