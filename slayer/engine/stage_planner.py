@@ -1790,26 +1790,37 @@ def _reroot_from_root(
     models_by_name: Dict[str, SlayerModel], host_name: str,
 ) -> ValueKey:
     """Re-anchor a host-coordinate key into the root's coordinates, per leaf,
-    by the same rule order ``_attributable_from_root`` proves safety with:
-    target-prefix → strip; direct-reachable sibling → unchanged; else prepend
-    the hop back to the host."""
+    by the same rules ``_attributable_from_root`` proves safety with:
+    target-prefix → strip; else prepend the hop back to the host (the exact
+    reproduction of the host's join instance) when that path is provable;
+    else a direct-reachable sibling stays unchanged (the root's own join —
+    legacy star-schema parity, safe-arity but instance-approximate)."""
     tp = tuple(target_path)
     mapping: Dict[ValueKey, ValueKey] = {}
     for r in walk_value_keys(key):
-        if isinstance(r, TimeTruncKey) or not isinstance(
-            r, (ColumnKey, ColumnSqlKey, StarKey),
-        ):
-            continue  # a TimeTruncKey reroots through its walked inner column
-        hp = tuple(getattr(r, "path", ()) or ())
+        # walk_value_keys does NOT descend into TimeTruncKey.column, so the
+        # bucket key is rerooted here as a whole.
+        if not isinstance(r, (ColumnKey, ColumnSqlKey, StarKey, TimeTruncKey)):
+            continue
+        hp = _key_host_path(r)
         if hp[: len(tp)] == tp:
             continue  # reroot_value_key strips the prefix below
         if tp and host_name == tp[0]:
             continue
-        if hp and safe_reachable(
-            root=root_model, path=hp, models_by_name=models_by_name,
+        via_host = (host_name, *hp)
+        if not safe_reachable(
+            root=root_model, path=via_host, models_by_name=models_by_name,
         ):
-            continue  # resolved through the root's own join to the sibling
-        mapping[r] = r.model_copy(update={"path": (host_name, *hp)})
+            if hp and safe_reachable(
+                root=root_model, path=hp, models_by_name=models_by_name,
+            ):
+                continue  # resolved through the root's own join to the sibling
+        if isinstance(r, TimeTruncKey):
+            mapping[r] = r.model_copy(update={
+                "column": r.column.model_copy(update={"path": via_host}),
+            })
+        else:
+            mapping[r] = r.model_copy(update={"path": via_host})
     if mapping:
         key = substitute_value_keys(key, mapping)
     return reroot_value_key(key, target_path=tp)

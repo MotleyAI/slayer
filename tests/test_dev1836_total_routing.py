@@ -138,6 +138,34 @@ class TestTotalRoutingInvariant:
         with pytest.raises(ValueError, match="no routing disposition"):
             plan_query(query=query, bundle=_bundle())
 
+    @pytest.mark.parametrize("role_kwargs", [
+        pytest.param(
+            {"filters": ["customers.spend:sum > 100"]}, id="filter-only",
+        ),
+        pytest.param(
+            {"order": [{"column": "customers.spend:sum", "direction": "desc"}]},
+            id="order-only",
+        ),
+    ])
+    def test_blinded_discovery_catches_filter_and_order_leaves(
+        self, monkeypatch, role_kwargs,
+    ):
+        """The invariant walks filters and orders too — a hidden cross-model
+        leaf in either role must not survive blinded discovery."""
+        import slayer.engine.stage_planner as stage_planner
+
+        monkeypatch.setattr(
+            stage_planner, "_discover_cross_model_combined",
+            lambda prebound: ([], {}, {}),
+        )
+        query = q(
+            dimensions=["status"],
+            measures=[ModelMeasure(formula="amount:sum", name="m")],
+            **role_kwargs,
+        )
+        with pytest.raises(ValueError, match="no routing disposition"):
+            plan_query(query=query, bundle=_bundle())
+
 
 class TestNoSilentDrops:
     async def test_every_requested_measure_lands_in_the_result(self, exec_backend):
