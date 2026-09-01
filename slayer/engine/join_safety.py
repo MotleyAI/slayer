@@ -99,6 +99,7 @@ class JoinSafetyFinding(BaseModel):
     """One validation flag about a join edge — an unproven hop or a
     detection-contradicted declaration."""
 
+    data_source: str
     model: str
     target_model: str
     message: str
@@ -131,6 +132,7 @@ def audit_join_safety(
             if provably_to_one(join=join, target_model=target):
                 continue
             findings.append(JoinSafetyFinding(
+                data_source=model.data_source,
                 model=model.name,
                 target_model=join.target_model,
                 message=(
@@ -143,6 +145,7 @@ def audit_join_safety(
         for finding in detection.findings:
             if finding.verdict is CardinalityVerdict.CONTRADICTS_HARD:
                 findings.append(JoinSafetyFinding(
+                    data_source=finding.data_source,
                     model=finding.model,
                     target_model=finding.target_model,
                     message=(

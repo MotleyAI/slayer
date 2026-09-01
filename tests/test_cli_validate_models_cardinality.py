@@ -242,6 +242,7 @@ def test_json_join_safety_reports_unproven_join(workspace: Path, capsys) -> None
     _run_validate_models(_args(store, format="json"))
     data = json.loads(capsys.readouterr().out)
     (finding,) = data["join_safety"]
+    assert finding["data_source"] == "ds"
     assert finding["model"] == "risky"
     assert finding["target_model"] == "customers"
     assert "unproven" in finding["message"]

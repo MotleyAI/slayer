@@ -377,7 +377,7 @@ examples:
         "--format",
         default="text",
         choices=["text", "json"],
-        help="Output format. json emits one {drift, cardinality} document.",
+        help="Output format. json emits one {drift, join_safety, cardinality} document.",
     )
     validate_parser.add_argument(
         "--force-clean",
@@ -1455,7 +1455,7 @@ def _run_serve(args):
 
     import uvicorn  # ALLOW(import-not-top): boot-path seam — tests inject fakes via sys.modules at call time; keeps uvicorn off non-serve commands
 
-    uvicorn.run(app, host=args.host, port=args.port)
+    uvicorn.run(app=app, host=args.host, port=args.port)
 
 
 def _run_mcp(args):
@@ -1703,7 +1703,7 @@ def _print_join_safety_section(findings) -> None:
         return
     print("\nJoin safety")
     for f in findings:
-        print(f"  {f.model} → {f.target_model}: {f.message}")
+        print(f"  [{f.data_source}] {f.model} → {f.target_model}: {f.message}")
 
 
 def _exit_on_scan_failures(report) -> None:

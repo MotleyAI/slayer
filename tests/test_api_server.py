@@ -639,7 +639,7 @@ class TestOpenAPI400Documentation:
         assert "400" in responses
 
     def test_post_query_run_by_name_dry_run_returns_sql_without_executing(
-        self, client: TestClient, storage: YAMLStorage
+        self, client: TestClient, storage: YAMLStorage, monkeypatch
     ) -> None:
         """``{"name": "m", "dry_run": true}`` must populate ``sql`` in the response
         without ever calling the SQL client.
@@ -670,11 +670,8 @@ class TestOpenAPI400Documentation:
             execute_calls += 1
             return await real_execute(self, *a, **kw)
 
-        SlayerSQLClient.execute = counting_execute  # type: ignore[method-assign]
-        try:
-            resp = client.post("/query", json={"name": "qb_dryrun", "dry_run": True})
-        finally:
-            SlayerSQLClient.execute = real_execute  # type: ignore[method-assign]
+        monkeypatch.setattr(SlayerSQLClient, "execute", counting_execute)
+        resp = client.post("/query", json={"name": "qb_dryrun", "dry_run": True})
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert body.get("sql") is not None

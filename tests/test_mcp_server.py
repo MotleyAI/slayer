@@ -2644,7 +2644,7 @@ class TestRunByNamePlanFlagsMCP:
     without executing the backing query.
     """
     async def test_dry_run_run_by_name_returns_sql_without_executing(
-        self, mcp_server, storage: YAMLStorage
+        self, mcp_server, storage: YAMLStorage, monkeypatch
     ) -> None:
         await storage.save_datasource(DatasourceConfig(
             name="test", type="sqlite", database=":memory:"
@@ -2670,14 +2670,11 @@ class TestRunByNamePlanFlagsMCP:
             execute_calls += 1
             return await real_execute(self, *a, **kw)
 
-        SlayerSQLClient.execute = counting_execute  # type: ignore[method-assign]
-        try:
-            result = await _call(mcp_server, name="query", arguments={
-                "source_model": "qb_dr",
-                "dry_run": True,
-            })
-        finally:
-            SlayerSQLClient.execute = real_execute  # type: ignore[method-assign]
+        monkeypatch.setattr(SlayerSQLClient, "execute", counting_execute)
+        result = await _call(mcp_server, name="query", arguments={
+            "source_model": "qb_dr",
+            "dry_run": True,
+        })
         assert "SQL:" in result
         assert "amount" in result.lower()
         assert execute_calls == 0, "dry_run=True must not execute SQL"

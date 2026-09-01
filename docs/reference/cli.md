@@ -225,7 +225,7 @@ slayer validate-models --datasource jaffle_shop --force-clean --yes
 | `--model M` | all | Limit the whole report — and `--force-clean` — to one model. Resolves across every datasource that has a model of that name. |
 | `--cardinality` | off | Also profile each join's arity from the data. Full-scans both sides of every join, so it is opt-in. |
 | `--persist-cardinality` | off | Write the detected `cardinality` back onto each matching join (identified by target model + key pairs). Implies `--cardinality`. |
-| `--format` | `text` | `text`, or `json` for one `{"drift": [...], "cardinality": {...}}` document. Cannot be combined with `--force-clean`. |
+| `--format` | `text` | `text`, or `json` for one `{"drift": [...], "join_safety": [...], "cardinality": {...}}` document. Cannot be combined with `--force-clean`. |
 | `--force-clean` | off | After printing the diff, prompt to apply each delete. Destructive; opt-in only. |
 | `-y` / `--yes` | off | With `--force-clean`, skip the confirmation prompt. |
 

@@ -53,6 +53,7 @@ class TestExplicitRejections:
         )
         with pytest.raises(Exception, match="partition_by") as ei:  # noqa: B017 — message is the pin
             await engine.execute(query)
+        assert not isinstance(ei.value, AssertionError)
         assert "__regroup__" not in str(ei.value)
 
     async def test_aggregate_over_attached_value_is_rejected(self, exec_backend):

@@ -101,7 +101,7 @@ from slayer.engine.source_bundle import (
     expand_query_backed_models_in_bundle,
 )
 from slayer.engine.stage_ordering import topologically_order_stages
-from slayer.engine.stage_planner import plan_stages
+from slayer.engine.stage_planner import _topo_sort, plan_stages
 from slayer.engine.variables import apply_variables_to_query
 from slayer.engine.introspect_utils import _safe_get_columns
 from slayer.engine.schema_scope import SchemaRef
@@ -1220,11 +1220,14 @@ class SlayerQueryEngine:
         # the pipeline (including nested rerooted subplans) and dedup them per
         # user filter. Collection happens here, with the plans in hand; the
         # Python-warnings emission happens later, at the outermost boundary.
+        # ``plan_stages`` returns plans in TOPO order — align the stage list
+        # the same way so each warning's location names its own stage.
+        ordered_stages = _topo_sort(stages) if len(stages) > 1 else stages
         dropped_warnings = _collect_dropped_filter_warnings(
-            planned_list=planned_list, stages=stages,
+            planned_list=planned_list, stages=ordered_stages,
         )
         broadcast_warnings = _collect_broadcast_warnings(
-            planned_list=planned_list, stages=stages,
+            planned_list=planned_list, stages=ordered_stages,
         )
         if getattr(query, "strict", False):
             _raise_on_strict_events(

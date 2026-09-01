@@ -387,6 +387,28 @@ class TestEmissionIsBoundaryNotRender:
             f"filters; got {len(hits)}"
         )
 
+    async def test_location_survives_topo_reordering(self) -> None:
+        """Stage order in the INPUT list is free (the engine topo-sorts); the
+        warning's location must name the stage that dropped the filter, not
+        whichever stage sits at the same input index."""
+        # Input order [a, b, root]; topo order [b, a, root] — a reads from b.
+        stage_a = SlayerQuery(
+            name="a", source_model="b", measures=[{"formula": "*:count"}],
+        )
+        stage_b = SlayerQuery(
+            name="b",
+            source_model="orders",
+            dimensions=[{"formula": "status", "name": "status"}],
+            measures=[{"formula": "customers.revenue:sum"}],
+            filters=[DROPPED_FILTER],
+        )
+        root = SlayerQuery(source_model="a", measures=[{"formula": "*:count"}])
+        with tempfile.TemporaryDirectory() as d:
+            engine = await _engine(d)
+            resp = await engine.execute([stage_a, stage_b, root], dry_run=True)
+        (payload,) = _dropped(resp)
+        assert payload.location == "stage 'b'.filters", payload.location
+
     async def test_repeated_execution_does_not_accumulate(self) -> None:
         """Per EXECUTE, not per process."""
         with tempfile.TemporaryDirectory() as d:

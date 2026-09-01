@@ -1889,7 +1889,7 @@ def _assert_partition_key_attributable(
         models_by_name=models_by_name,
     )
     raise ValueError(
-        f"{label}: partition_by column '{_regroup_grain_name(pk)}' {reason}; "
+        f"{label}: partition_by column '{_partition_key_display(pk)}' {reason}; "
         f"every partition key must be attributable from the aggregate's root — "
         f"declare join cardinality or a covering unique key on the target."
     )

@@ -558,6 +558,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             offset: Number of rows to skip.
             whole_periods_only: When true, snap date filters to time bucket boundaries based on granularity, exclude the current incomplete time bucket.
             show_sql: When true, include the generated SQL in the response for debugging.
+            strict: Error instead of warn when a cross-model measure would broadcast or a producer filter would be dropped. Rejected with run-by-name execution — declare it on the stored query instead.
             dry_run: When true, generate and return the SQL without executing it.
             explain: When true, run EXPLAIN ANALYZE and return the query plan.
             format: Output format — "markdown" (default, compact and LLM-friendly), "json" (structured), or "csv" (most compact). Case-insensitive.
