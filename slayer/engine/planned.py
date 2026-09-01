@@ -112,6 +112,7 @@ class ValueSlot(BaseModel):
     phase: Phase
     label: Optional[str] = None
     type: Optional[DataType] = None
+    type_is_explicit: bool = False
     # DEV-1740: True for a computed (expression) dimension — a ROW-phase
     # composite that projects AND groups, distinct from a bare-measure mistake.
     is_dimension: bool = False
@@ -124,6 +125,13 @@ class ValueSlot(BaseModel):
     # the legacy enrichment pipeline produced.
     format: Optional[NumberFormat] = None
     description: Optional[str] = None
+
+    @property
+    def cast_type(self) -> Optional[DataType]:
+        """Inferred INT is metadata, not a request to narrow an aggregate (#347)."""
+        if self.type == DataType.INT and not self.type_is_explicit and self.phase != Phase.ROW:
+            return None
+        return self.type
 
     @model_validator(mode="after")
     def _hidden_invariant(self) -> "ValueSlot":

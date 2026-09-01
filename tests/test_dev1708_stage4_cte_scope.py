@@ -43,6 +43,9 @@ from typing import AsyncIterator
 
 import pytest
 
+from sqlglot import exp
+
+import slayer.sql.dialects as dialects_mod
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.errors import UnknownReferenceError
 from slayer.core.models import (
@@ -263,7 +266,7 @@ class TestDev1702B2ForwardMaterialization:
         # the ranked subquery alias), not the crossing ref.
         assert _re.search(r"regions\.population AS _val_\d+", inner), inner
         assert _re.search(
-            r"MAX\(CASE WHEN _rk_rn = 1 THEN (?:\w+\.)?_val_\d+", outer), outer
+            r"MAX\(CASE WHEN _ranked_rn = 1 THEN (?:\w+\.)?_val_\d+", outer), outer
         assert "regions.population" not in outer, outer
 
     async def test_forward_last_crossing_time_arg_registers_join(self) -> None:
@@ -589,8 +592,6 @@ class TestNullSafeDialectStrategy:
 
     @pytest.mark.parametrize("cls_name,marker", sorted(_NULLSAFE_STRATEGY.items()))
     def test_strategy_null_safe_form(self, cls_name: str, marker: str) -> None:
-        import slayer.sql.dialects as dialects_mod
-        from sqlglot import exp
 
         cls = getattr(dialects_mod, cls_name)
         dialect = cls()

@@ -27,11 +27,10 @@ scope's users already see.
 
 from __future__ import annotations
 
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any, FrozenSet, List, Optional, Sequence, Tuple
 
 from slayer.core.enums import DataType
 from slayer.core.keys import (
-    REGROUP_LEAF_PREFIX,
     AggregateKey,
     ColumnKey,
     ColumnSqlKey,
@@ -237,7 +236,11 @@ def ordered_row_keys(
     return ordered
 
 
-def _host_grain(*, row_slots: Sequence[ValueSlot]) -> List[RankedGrainMember]:
+def _host_grain(
+    *,
+    row_slots: Sequence[ValueSlot],
+    combined_placeholder_keys: FrozenSet[ValueKey] = frozenset(),
+) -> List[RankedGrainMember]:
     """The host grain: every VISIBLE row slot, in one coordinate system.
 
     Hidden row slots are excluded for the same reason the windowed plan excludes
@@ -248,14 +251,13 @@ def _host_grain(*, row_slots: Sequence[ValueSlot]) -> List[RankedGrainMember]:
         RankedGrainMember(host_slot_id=slot.id, ranked_key=slot.key)
         for slot in row_slots
         if not slot.hidden
-        # DEV-1824 — a combined regroup placeholder (a partitioned MEASURE
+        # DEV-1824 — a COMBINED regroup placeholder (a partitioned MEASURE
         # attached at the combined SELECT) is a ColumnKey ROW slot by
         # substitution but is an aggregate value, not a query dimension: it is
         # not in the ranked ``_rk_`` scope and must not partition the ranking.
-        and not (
-            isinstance(slot.key, ColumnKey)
-            and slot.key.leaf.startswith(REGROUP_LEAF_PREFIX)
-        )
+        # DEV-1835 D4 — a ROW-attach placeholder is a computed dimension the
+        # producer groups by, so only the combined set is excluded.
+        and slot.key not in combined_placeholder_keys
     ]
 
 
@@ -309,6 +311,7 @@ def build_host_ranked_plan(
     source_model: SlayerModel,
     bundle: ResolvedSourceBundle,
     where_filter_ids: Sequence[str] = (),
+    combined_placeholder_keys: FrozenSet[ValueKey] = frozenset(),
 ) -> RankedAggregatePlan:
     """One host-rooted ranked plan.
 
@@ -336,7 +339,10 @@ def build_host_ranked_plan(
                 row_slots=row_slots, public_projection=public_projection,
             ),
         ),
-        grain=_host_grain(row_slots=row_slots),
+        grain=_host_grain(
+            row_slots=row_slots,
+            combined_placeholder_keys=combined_placeholder_keys,
+        ),
         # The model's own ``filters`` are ROW-phase entries of
         # ``filters_by_phase`` like any other, so they arrive here by id rather
         # than as text — unlike the target-rooted case, where the TARGET's

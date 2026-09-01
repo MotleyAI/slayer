@@ -34,8 +34,8 @@ async def exec_backend(request):
 
 class TestMixedWindowedRankedDeferred:
     """D6 — a mixed-grain transform with a windowed or first/last inner
-    aggregate defers to DEV-1835 (the union would need the synthesized time
-    bucket), never misgrains."""
+    aggregate. DEV-1835 lifts the DEV-1839 deferral: the union-grain shape now
+    renders through the regroup producers instead of failing closed."""
 
     async def test_mixed_windowed_grain_deferred(self) -> None:
         band = (
@@ -47,9 +47,9 @@ class TestMixedWindowedRankedDeferred:
             time_dimensions=month_td(),
             measures=[ModelMeasure(formula="amount:sum", name="s")],
         )
-        with pytest.raises(NotImplementedError, match=r"DEV-1835") as ei:
-            await gen(query)
-        assert re.search(r"(?i)window", str(ei.value))  # names the combination
+        sql = await gen(query)  # DEV-1835 lift: renders, no longer raises
+        assert_scope_closed(sql, dialect="duckdb")
+        assert "__regroup__" not in sql
 
     async def test_mixed_first_last_grain_deferred(self) -> None:
         band = (
@@ -60,9 +60,9 @@ class TestMixedWindowedRankedDeferred:
             dimensions=["region", "city", {"expression": band, "name": "x"}],
             measures=[ModelMeasure(formula="amount:sum", name="s")],
         )
-        with pytest.raises(NotImplementedError, match=r"DEV-1835") as ei:
-            await gen(query)
-        assert re.search(r"(?i)first|last", str(ei.value))  # names the combination
+        sql = await gen(query)  # DEV-1835 lift: renders, no longer raises
+        assert_scope_closed(sql, dialect="duckdb")
+        assert "__regroup__" not in sql
 
 
 class TestTransformKwargAgainstUnion:

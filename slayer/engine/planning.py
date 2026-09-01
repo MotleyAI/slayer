@@ -267,6 +267,7 @@ class ValueRegistry:
         hidden: bool = False,
         label: Optional[str] = None,
         type: Optional[DataType] = None,
+        type_is_explicit: bool = False,
         expression: Optional["BoundExpr"] = None,
         format: Optional[NumberFormat] = None,
         description: Optional[str] = None,
@@ -288,6 +289,7 @@ class ValueRegistry:
                 hidden=hidden,
                 label=label,
                 type=type,
+                type_is_explicit=type_is_explicit,
                 format=format,
                 description=description,
             )
@@ -324,6 +326,7 @@ class ValueRegistry:
             phase=phase,
             label=label,
             type=type,
+            type_is_explicit=type_is_explicit,
             is_dimension=is_dimension,
             expression=expression if expression is not None else BoundExpr(value_key=key),
             format=format,
@@ -344,6 +347,7 @@ class ValueRegistry:
         hidden: bool,
         label: Optional[str] = None,
         type: Optional[DataType] = None,
+        type_is_explicit: bool = False,
         format: Optional[NumberFormat] = None,
         description: Optional[str] = None,
     ) -> SlotId:
@@ -379,6 +383,8 @@ class ValueRegistry:
             format=format,
             description=description,
         )
+        if type_is_explicit and type is not None and slot.type in (None, type):
+            updates["type_is_explicit"] = True
         if updates:
             new_slot = slot.model_copy(update=updates)
             self._slots[existing_sid] = new_slot
@@ -603,6 +609,7 @@ class DeclaredMeasure(BaseModel):
     label: Optional[str] = None
     canonical_alias: Optional[str] = None
     type: Optional[DataType] = None
+    type_is_explicit: bool = False
     format: Optional[NumberFormat] = None
     description: Optional[str] = None
     # DEV-1740: a computed (expression) dimension is a ROW-phase composite that
@@ -788,6 +795,7 @@ class ProjectionPlanner:
                 phase=phase,
                 label=m.label,
                 type=m.type,
+                type_is_explicit=m.type_is_explicit,
                 format=m.format,
                 description=m.description,
                 is_dimension=m.is_dimension,

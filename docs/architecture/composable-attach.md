@@ -71,11 +71,12 @@ exactly the producer's grain, so grains strictly decrease and the recursion is
 bounded. The producer's internal `WITH` (the nested attaches plus its own
 transform steps) hoists into the one flat chain (see [The CTE-hoist](#the-cte-hoist)).
 
-Two cases still fail closed: a mixed-grain transform any of whose inner
-aggregates is windowed or `first`/`last` (the union would need the synthesized
-time bucket — stage 2, DEV-1835), and a time-ordered transform (`cumsum`, `lag`,
-…) whose evaluation grain lacks its time-ordering key — which would duplicate
-result rows, so the author is told to include the time key in `partition_by`.
+One case still fails closed: a time-ordered transform (`cumsum`, `lag`, …) whose
+evaluation grain lacks its time-ordering key — which would duplicate result rows,
+so the author is told to include the time key in `partition_by`. (A mixed-grain
+transform whose inner aggregate is windowed or `first`/`last` no longer fails
+here — DEV-1835 lifts it onto the union grain, folding in the synthesized time
+bucket.)
 
 ## Producer synthesis
 
@@ -125,7 +126,7 @@ raises a clear "split the filter" error rather than an internal one.
 A producer that itself needs intermediate relations (a rolling window, a ranking,
 transform steps) renders its own internal `WITH`. To keep one flat chain, that
 `WITH` is **hoisted**: nested renders share the parent's `AliasAllocator`, so
-`_cm_` / `_wm_` / `_rk_` / `step` names are globally unique by construction; the
+`_cm_` / `step` names are globally unique by construction; the
 literal `_base` / `base` names are reserved in the allocator and renamed
 per-producer. Several complex producers therefore coexist in one query with no
 name collisions on any dialect.
@@ -168,11 +169,17 @@ artifact with an issue attached, never a permanent boundary.
   grains and broadcasts recursively (strict-subset operands become nested
   combined attaches inside the union-grain producer); bare composite arithmetic
   over two-plus partitioned aggregates lifts as a measure. Windowed/`first`-`last`
-  mixed grains defer to stage 2; a time-ordered transform whose grain lacks its
-  time axis fails closed instead of duplicating rows.
-- **Stage 2 (DEV-1835)** — migrate the local `_wm_` (windowed) and `_rk_`
-  (ranked) renderer arms onto the primitive and delete them; a general
-  cross-phase attach-dedup pass subsumes duplicate producers.
+  mixed grains defer to stage 2 (lifted there); a time-ordered transform whose
+  grain lacks its time axis fails closed instead of duplicating rows.
+- **Stage 2 (DEV-1835, this change)** — migrate the local `_wm_` (windowed) and
+  `_rk_` (ranked) renderer arms onto the primitive and delete them, unifying every
+  local family under `_cm_` producer naming; a general cross-phase attach-dedup
+  pass subsumes duplicate producers (a computed-dim grain key functionally
+  determined by the rest of the grain is pruned, so it needs no twin producer);
+  the DEV-1504 G4–G7 / windowed-ranked coexistence / `time_shift`-over-ranked
+  guards dissolve; and the stage-1b windowed/`first`-`last` mixed-grain union
+  broadcast lifts — a windowed inner contributes the query's synthesized time
+  bucket, `first`/`last` is timeless.
 - **Stage 3 (DEV-1836)** — migrate the cross-model `_cm_` family via target-rooted
   producers; cross-model sources become legal in the composed shapes and in
   dimension expressions; `classify_isolation` dispatch retires.

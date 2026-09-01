@@ -480,7 +480,7 @@ class TestCrossModelStarAndCountDistinctRename:
             f"cross-model *:count rename must surface as the public key; got "
             f"{aliases!r}\nSQL:\n{sql}"
         )
-        assert 'COUNT(*) AS INTEGER) AS "orders.customers._count"' in sql, (
+        assert 'COUNT(*) AS "orders.customers._count"' in sql, (
             f"cross-model *:count CTE column must stay canonical:\n{sql}"
         )
 
@@ -770,7 +770,7 @@ class TestCrossModelRenameCollisionGuards:
         )
         # Distinct bodies survived: COUNT(*) for the canonical key, SUM for
         # the renamed one.
-        assert 'COUNT(*) AS INTEGER) AS "orders.customers._count"' in sql, sql
+        assert 'COUNT(*) AS "orders.customers._count"' in sql, sql
         assert 'SUM(customers.lifetime_revenue) AS "orders.customers.revenue_sum"' in sql, sql
 
     async def test_cross_model_rename_collides_with_dimension_downstream_short_raises(
