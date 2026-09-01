@@ -405,7 +405,9 @@ class TestEmissionIsBoundaryNotRender:
         root = SlayerQuery(source_model="a", measures=[{"formula": "*:count"}])
         with tempfile.TemporaryDirectory() as d:
             engine = await _engine(d)
-            resp = await engine.execute([stage_a, stage_b, root], dry_run=True)
+            resp = await engine.execute(
+                query=[stage_a, stage_b, root], dry_run=True,
+            )
         (payload,) = _dropped(resp)
         assert payload.location == "stage 'b'.filters", payload.location
 

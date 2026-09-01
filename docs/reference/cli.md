@@ -229,7 +229,7 @@ slayer validate-models --datasource jaffle_shop --force-clean --yes
 | `--force-clean` | off | After printing the diff, prompt to apply each delete. Destructive; opt-in only. |
 | `-y` / `--yes` | off | With `--force-clean`, skip the confirmation prompt. |
 
-Without a cardinality flag the output is the drift diff alone. With one, the report gains two labelled sections — `Schema drift` and `Join cardinality` — and any `--force-clean` apply happens *between* them, so profiling reads the repaired models.
+Without a cardinality flag the output is the drift diff, plus a `Join safety` section whenever unproven-join findings exist. With one, the report gains labelled `Schema drift` and `Join cardinality` sections (with `Join safety` between them), and any `--force-clean` apply happens *before* profiling, so it reads the repaired models.
 
 Exit code is `0` for any report about the data, including `contradicts_hard` — the command did its job and the answer is unwelcome. It is `1` when the command could not do its job: an unknown datasource or model, a datasource that failed validation (an unscoped run validates each one explicitly rather than silently skipping failures), a profiling failure, any `scan_failed` finding, or residual drift after `--force-clean`. Diagnostics go to stderr, so stdout stays parseable under `--format json`.
 
