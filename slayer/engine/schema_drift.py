@@ -29,6 +29,7 @@ import sqlalchemy as sa
 import sqlglot
 from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
+from sqlglot.optimizer.scope import Scope, traverse_scope
 
 from slayer.core.enums import DataType
 from slayer.core.formula import parse_filter
@@ -50,6 +51,7 @@ from slayer.engine.schema_scope import (
     resolve_ingest_scope,
     split_sql_table,
 )
+from slayer.engine import ingestion
 from slayer.engine.ingestion import (
     _safe_get_pk_constraint,
     _sa_type_is_float,
@@ -65,8 +67,10 @@ from slayer.engine.syntax import (
     parse_expr,
     walk_parsed_refs,
 )
+from slayer.sql import engine_factory, sqlite_introspect
 from slayer.sql.client import SlayerSQLClient
-from slayer.sql.engine_factory import EngineCacheKey
+from slayer.sql.dialects import dialect_for_ds_type
+from slayer.sql.engine_factory import EngineCacheKey, _sql_client_cache_key
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +114,9 @@ class WholeModelDelete(BaseModel):
     model_name: str
     data_source: str
     reasons: list[DeleteReason] = Field(default_factory=list)
+    # "invalid_sql": the model's own SQL fails while its source tables and
+    # referenced columns exist.
+    cause: Literal["schema_drift", "invalid_sql"] = "schema_drift"
 
 
 ToDeleteEntry = Annotated[
@@ -454,34 +461,38 @@ def diff_sql_table_model(
     )
 
 
-def diff_sql_model(
-    *,
-    model: SlayerModel,
-    live_columns: dict[str, DataType] | None,
-) -> tuple[ToDeleteEntry | None, set[str]]:
-    """Diff a sql-mode model against trial-execute cursor metadata.
-
-    ``live_columns is None`` ⇒ trial-execute failed ⇒ ``WholeModelDelete``.
-    """
-    if live_columns is None:
-        return (
-            WholeModelDelete(
-                model_name=model.name,
-                data_source=model.data_source,
-                reasons=[
-                    DeleteReason(
-                        target=f"model:{model.name}",
-                        reason=(
-                            "Trial-execute on model.sql failed; the SQL no "
-                            "longer parses or executes against the live "
-                            "datasource"
-                        ),
-                    )
-                ],
-            ),
-            {c.name for c in model.columns},
+def _sql_trial_failure_delete(
+    *, model: SlayerModel, invalid_sql: bool
+) -> tuple[WholeModelDelete, set[str]]:
+    """``WholeModelDelete`` for a sql-mode model whose trial-execute failed."""
+    if invalid_sql:
+        reason = (
+            "Trial-execute on model.sql failed although its source "
+            "tables and referenced columns exist; the SQL itself does "
+            "not execute against this datasource"
         )
+    else:
+        reason = (
+            "Trial-execute on model.sql failed; the SQL no longer "
+            "parses or executes against the live datasource"
+        )
+    return (
+        WholeModelDelete(
+            model_name=model.name,
+            data_source=model.data_source,
+            cause="invalid_sql" if invalid_sql else "schema_drift",
+            reasons=[
+                DeleteReason(target=f"model:{model.name}", reason=reason)
+            ],
+        ),
+        {c.name for c in model.columns},
+    )
 
+
+def _diff_sql_model_columns(
+    *, model: SlayerModel, live_columns: dict[str, DataType]
+) -> tuple[list[str], list[DeleteReason]]:
+    """Model columns missing from (or type-conflicting with) cursor metadata."""
     dropped_cols: list[str] = []
     reasons: list[DeleteReason] = []
     for col in model.columns:
@@ -517,7 +528,26 @@ def diff_sql_model(
                     ),
                 )
             )
+    return dropped_cols, reasons
 
+
+def diff_sql_model(
+    *,
+    model: SlayerModel,
+    live_columns: dict[str, DataType] | None,
+    invalid_sql: bool = False,
+) -> tuple[ToDeleteEntry | None, set[str]]:
+    """Diff a sql-mode model against trial-execute cursor metadata.
+
+    ``live_columns is None`` ⇒ trial-execute failed ⇒ ``WholeModelDelete``.
+    ``invalid_sql=True`` marks that failure as the model's own SQL being
+    broken (its source tables and columns still exist) rather than drift.
+    """
+    if live_columns is None:
+        return _sql_trial_failure_delete(model=model, invalid_sql=invalid_sql)
+    dropped_cols, reasons = _diff_sql_model_columns(
+        model=model, live_columns=live_columns
+    )
     if not dropped_cols:
         return None, set()
     return (
@@ -1846,14 +1876,14 @@ def _collect_live_tables(
     exposed bare. Returns ``(map, object_count)`` — the count lets the caller
     tell a genuinely empty datasource from a total introspection failure.
     """
-    from slayer.engine.ingestion import list_ingestable_objects
     single = len(refs) == 1
     out: dict[str, LiveTable] = {}
     object_count = 0
     failed: list[str] = []
     for ref in refs:
         try:
-            objs = list_ingestable_objects(
+            # Module-attr call keeps test patches on ``ingestion`` effective.
+            objs = ingestion.list_ingestable_objects(
                 inspector=inspector, ref=ref, include_views=True
             )
         except Exception as exc:  # noqa: BLE001 — one schema's listing failed
@@ -1899,8 +1929,6 @@ def _live_schema_for_datasource(
 
     ``fallback_schema_tokens`` is threaded to :func:`_live_schema_refs` — see there.
     """
-    from slayer.engine.ingestion import _dispose_quietly
-    from slayer.sql import engine_factory
     sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
     try:
         inspector = sa.inspect(sa_engine)
@@ -1930,7 +1958,7 @@ def _live_schema_for_datasource(
         # external direct file access (e.g. ``duckdb.connect(file)``)
         # in the same process isn't blocked. Quiet, so a raising dispose
         # can't replace an in-flight introspection error.
-        _dispose_quietly(sa_engine)
+        ingestion._dispose_quietly(sa_engine)
 
 
 def _introspect_one_table(
@@ -2027,6 +2055,238 @@ async def _live_columns_for_sql_model(
     }
 
 
+def _has_star_projection(parsed: exp.Expression) -> bool:
+    """Whether any SELECT in the statement projects ``*`` or ``t.*``."""
+    for select in parsed.find_all(exp.Select):
+        for proj in select.expressions:
+            if isinstance(proj, exp.Star):
+                return True
+            if isinstance(proj, exp.Column) and isinstance(proj.this, exp.Star):
+                return True
+    return False
+
+
+def _scope_table_sources(*, scope: Scope, dialect: str) -> dict[str, str]:
+    """Alias/name → rendered bare table for the physical tables of one scope.
+
+    CTE and derived-table sources resolve to child ``Scope`` objects and are
+    excluded here.
+    """
+    out: dict[str, str] = {}
+    for name, source in scope.sources.items():
+        if isinstance(source, exp.Table) and source.name:
+            bare = source.copy()
+            bare.set("alias", None)
+            out[name] = bare.sql(dialect=dialect)
+    return out
+
+
+def _add_using_join_columns(
+    *,
+    scope: Scope,
+    local_tables: dict[str, str],
+    refs: dict[str, set[str]],
+    dialect: str,
+) -> bool:
+    """Attribute ``JOIN .. USING (k)`` keys to the join's operand tables.
+
+    ``USING`` identifiers are not ``exp.Column`` nodes, so the column walk
+    misses them. A key is attributed to every physical table joined so far
+    plus the join's own table — which left-side table supplies it is
+    statically unknowable, and over-attribution only fails the probe, which
+    safely keeps the schema-drift classification. Returns True when a USING
+    join has a CTE / derived operand whose key presence cannot be verified.
+    """
+    joins = scope.expression.args.get("joins") or []
+    if not any(join.args.get("using") for join in joins):
+        return False
+    args = scope.expression.args
+    from_expr = args.get("from_") or args.get("from")  # key renamed in sqlglot 30
+    operands = [from_expr.this] if from_expr else []
+    cannot_verify = False
+    for join in joins:
+        operands.append(join.this)
+        using = join.args.get("using") or []
+        if not using:
+            continue
+        physical = [
+            rendered
+            for op in operands
+            if isinstance(op, exp.Table)
+            and (rendered := local_tables.get(op.alias_or_name)) is not None
+        ]
+        if len(physical) < len(operands):
+            cannot_verify = True
+        rendered_keys = [
+            exp.Column(this=ident.copy()).sql(dialect=dialect)
+            for ident in using
+            if isinstance(ident, exp.Identifier)
+        ]
+        for table in physical:
+            refs[table].update(rendered_keys)
+    return cannot_verify
+
+
+def _attribute_qualified_ref(
+    *,
+    qualifier: str,
+    rendered: str,
+    scope: Scope,
+    tables_by_scope: dict[int, dict[str, str]],
+    refs: dict[str, set[str]],
+) -> bool:
+    """Attribute ``qual.col`` in the nearest enclosing scope defining the
+    qualifier. True ⇒ derived / CTE / unknown qualifier (not attributable).
+    """
+    s = scope
+    while s is not None:
+        target = (tables_by_scope.get(id(s)) or {}).get(qualifier)
+        if target is not None:
+            refs[target].add(rendered)
+            return False
+        if qualifier in s.sources:  # CTE / derived-table alias
+            return True
+        s = s.parent
+    return True
+
+
+def _attribute_bare_ref(
+    *,
+    rendered: str,
+    scope: Scope,
+    tables_by_scope: dict[int, dict[str, str]],
+    refs: dict[str, set[str]],
+) -> bool | None:
+    """Attribute a bare column in the nearest enclosing scope with sources.
+
+    True ⇒ skippable derived ref; None ⇒ ambiguous over several sources.
+    """
+    s = scope
+    while s is not None and not s.sources:
+        s = s.parent
+    if s is None:
+        return True
+    if len(s.sources) > 1:
+        # A bare column over several sources cannot be attributed.
+        return None
+    local = tables_by_scope.get(id(s)) or {}
+    if not local:
+        return True  # the single source is a CTE / derived table
+    refs[next(iter(local.values()))].add(rendered)
+    return False
+
+
+def _attribute_scope_columns(
+    *,
+    scope: Scope,
+    tables_by_scope: dict[int, dict[str, str]],
+    refs: dict[str, set[str]],
+    seen: set[int],
+    dialect: str,
+) -> bool | None:
+    """Attribute every yet-unseen column ref of one scope.
+
+    Unresolved refs bubble into the parent scope's ``columns``, so ``seen``
+    (node ids) keeps each ref processed exactly once, at its innermost scope.
+    Returns whether a derived ref was seen, or ``None`` when a bare column
+    cannot be attributed.
+    """
+    derived = False
+    for col in scope.columns:
+        if id(col) in seen or not isinstance(col.this, exp.Identifier):
+            continue
+        seen.add(id(col))
+        rendered = exp.Column(this=col.this.copy()).sql(dialect=dialect)
+        if col.table:
+            verdict = _attribute_qualified_ref(
+                qualifier=col.table, rendered=rendered, scope=scope,
+                tables_by_scope=tables_by_scope, refs=refs,
+            )
+        else:
+            verdict = _attribute_bare_ref(
+                rendered=rendered, scope=scope,
+                tables_by_scope=tables_by_scope, refs=refs,
+            )
+        if verdict is None:
+            return None
+        derived = derived or verdict
+    return derived
+
+
+def _sql_model_source_refs(*, sql: str, dialect: str) -> "dict[str, set[str]] | None":
+    """Map each source table of a sql-mode model to the columns it references.
+
+    Keys are rendered table references (alias stripped, CTE names excluded);
+    values are rendered column identifiers, including JOIN ``USING`` keys.
+    Aliases resolve per scope (an inner alias may shadow an outer one) and a
+    correlated ref binds to the nearest enclosing scope that defines it.
+    Returns ``None`` (cannot verify) when the SQL does not parse, a bare
+    column cannot be attributed to a single source table, or a CTE /
+    derived-table ref coexists with a ``*`` projection. Without a ``*``, a
+    CTE or derived-table ref is only a rename of explicit refs that are all
+    collected here, so it is safe to skip.
+    """
+    try:
+        parsed = sqlglot.parse_one(sql, read=dialect)
+        scopes = traverse_scope(parsed)
+    except Exception:
+        return None
+    if not scopes:
+        return None
+    refs: dict[str, set[str]] = {}
+    tables_by_scope: dict[int, dict[str, str]] = {}
+    has_derived_ref = False
+    for scope in scopes:
+        local = _scope_table_sources(scope=scope, dialect=dialect)
+        tables_by_scope[id(scope)] = local
+        for rendered in local.values():
+            refs.setdefault(rendered, set())
+        if _add_using_join_columns(
+            scope=scope, local_tables=local, refs=refs, dialect=dialect
+        ):
+            has_derived_ref = True
+    seen: set[int] = set()
+    for scope in scopes:  # innermost first — a bare column binds innermost
+        derived = _attribute_scope_columns(
+            scope=scope, tables_by_scope=tables_by_scope, refs=refs,
+            seen=seen, dialect=dialect,
+        )
+        if derived is None:
+            return None
+        has_derived_ref = has_derived_ref or derived
+    if has_derived_ref and _has_star_projection(parsed):
+        # A ``*`` may hide the physical column behind the derived ref.
+        return None
+    return refs
+
+
+async def _source_tables_resolve(
+    *, model: SlayerModel, client: SlayerSQLClient
+) -> bool:
+    """Whether every table AND column referenced by ``model.sql`` accepts a
+    0-row probe.
+
+    ``True`` means the trial-execute failure was NOT caused by a missing
+    table or column — the model's own SQL is broken. Any probe failure
+    (missing object, transient error, unparseable or ambiguous SQL) returns
+    ``False``, keeping the schema-drift classification. Empty refs (a
+    table-less statement) verify vacuously — nothing can have drifted.
+    """
+    dialect = dialect_for_ds_type(client.datasource.type).sqlglot_name
+    refs = _sql_model_source_refs(sql=model.sql or "", dialect=dialect)
+    if refs is None:
+        return False
+    for table, columns in refs.items():
+        select_list = ", ".join(sorted(columns)) or "*"
+        try:
+            await client.get_column_types(
+                f"SELECT {select_list} FROM {table} AS _sd_probe WHERE 1=0"
+            )
+        except Exception:
+            return False
+    return True
+
+
 # ===========================================================================
 # Datasource-level orchestrator
 # ===========================================================================
@@ -2090,9 +2350,9 @@ def _probe_validate_models_column(
     schema_name: str | None,
 ) -> DataType | None:
     """Run the affinity probe for one column in a validate_models pass."""
-    from slayer.sql.sqlite_introspect import probe_sqlite_integer_column
     try:
-        return probe_sqlite_integer_column(
+        # Module-attr call keeps test patches on ``sqlite_introspect`` effective.
+        return sqlite_introspect.probe_sqlite_integer_column(
             conn=conn,
             table=table_name,
             column=col.sql or col.name,
@@ -2182,7 +2442,6 @@ async def _sqlite_probe_drifts_for_models(
         return {m.name: [] for m in sql_table_models}
 
     def _run() -> dict[str, list[tuple[str, DataType, DeleteReason]]]:
-        from slayer.sql import engine_factory
         sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
         try:
             out: dict[str, list[tuple[str, DataType, DeleteReason]]] = {}
@@ -2339,7 +2598,6 @@ async def _collect_sql_diffs(
     # sharing a connection_name but differing in warehouse/role get
     # distinct clients. Mirror that key shape here via the shared
     # ``_sql_client_cache_key`` helper.
-    from slayer.engine.query_engine import _sql_client_cache_key  # noqa: PLC0415
     key = _sql_client_cache_key(datasource)
     client = (sql_clients or {}).get(key)
     if client is None:
@@ -2354,7 +2612,12 @@ async def _collect_sql_diffs(
 
     async def _diff_one(model: SlayerModel) -> None:
         live_cols = await _live_columns_for_sql_model(model=model, client=client)
-        out[model.name] = diff_sql_model(model=model, live_columns=live_cols)
+        invalid_sql = live_cols is None and await _source_tables_resolve(
+            model=model, client=client
+        )
+        out[model.name] = diff_sql_model(
+            model=model, live_columns=live_cols, invalid_sql=invalid_sql
+        )
 
     await asyncio.gather(*(_diff_one(m) for m in sql_models))
     return out

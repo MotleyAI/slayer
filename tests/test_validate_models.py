@@ -19,8 +19,14 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
+
+try:
+    import duckdb
+except ImportError:  # optional dependency — tests importorskip at use sites
+    duckdb = None
 
 from slayer.core.enums import DataType
 from slayer.core.models import (
@@ -39,6 +45,7 @@ from slayer.engine.schema_drift import (
     RemoveSpec,
     WholeModelDelete,
     _resolve_live_table,
+    _sql_model_source_refs,
     _strip_ident_quotes,
     compute_datasource_drops,
     data_type_bucket,
@@ -347,6 +354,25 @@ class TestDiffSqlModel:
         entry, dropped = diff_sql_model(model=model, live_columns=None)
         assert isinstance(entry, WholeModelDelete)
         assert entry.model_name == "archived_orders"
+        assert entry.cause == "schema_drift"
+        assert dropped == {c.name for c in model.columns}
+
+    def test_trial_execute_failure_with_live_tables_marks_invalid_sql(self) -> None:
+        model = SlayerModel(
+            name="archived_orders",
+            sql="SELECT id, amount FROM orders",
+            data_source="ds",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            ],
+        )
+        entry, dropped = diff_sql_model(
+            model=model, live_columns=None, invalid_sql=True
+        )
+        assert isinstance(entry, WholeModelDelete)
+        assert entry.cause == "invalid_sql"
+        assert "source tables and referenced columns exist" in entry.reasons[0].reason
         assert dropped == {c.name for c in model.columns}
 
     def test_trial_execute_bucket_mismatch_drops_column(self) -> None:
@@ -379,6 +405,96 @@ class TestDiffSqlModel:
         entry, _ = diff_sql_model(model=model, live_columns=live)
         # validate_models reports deletes only — additions are out of scope
         assert entry is None
+
+
+class TestSqlModelSourceRefs:
+    def test_aliases_attributed_and_ctes_excluded(self) -> None:
+        sql = """
+        WITH recent AS (
+            SELECT o.id, o.store_id FROM orders AS o WHERE o.ts > '2024-01-01'
+        )
+        SELECT r.id, s.name
+        FROM recent AS r
+        JOIN analytics.stores AS s ON r.store_id = s.id
+        """
+        refs = _sql_model_source_refs(sql=sql, dialect="postgres")
+        assert refs == {
+            "orders": {"id", "store_id", "ts"},
+            "analytics.stores": {"name", "id"},
+        }
+
+    def test_star_behind_derived_ref_returns_none(self) -> None:
+        # ``*`` may hide the physical column behind ``src.amount``.
+        sql = "WITH src AS (SELECT * FROM orders) SELECT src.amount FROM src"
+        assert _sql_model_source_refs(sql=sql, dialect="postgres") is None
+
+    def test_bare_columns_attributed_to_single_table(self) -> None:
+        refs = _sql_model_source_refs(
+            sql="SELECT id, amount FROM orders", dialect="postgres"
+        )
+        assert refs == {"orders": {"id", "amount"}}
+
+    def test_ambiguous_bare_column_returns_none(self) -> None:
+        sql = "SELECT amount FROM orders AS o JOIN stores AS s ON o.sid = s.id"
+        assert _sql_model_source_refs(sql=sql, dialect="postgres") is None
+
+    def test_unparseable_sql_returns_none(self) -> None:
+        assert _sql_model_source_refs(sql="SELECT FROM FROM", dialect="postgres") is None
+
+    def test_using_join_keys_attributed_to_all_tables(self) -> None:
+        # USING identifiers are not exp.Column nodes; a dropped join key must
+        # still be probed on every joined table (Codex review on PR #340).
+        sql = "SELECT o.amount FROM orders AS o JOIN stores AS s USING (store_id)"
+        refs = _sql_model_source_refs(sql=sql, dialect="postgres")
+        assert refs == {
+            "orders": {"amount", "store_id"},
+            "stores": {"store_id"},
+        }
+
+    def test_alias_shadowing_resolved_per_scope(self) -> None:
+        # ``a`` means orders outside and stores inside the subquery.
+        sql = (
+            "SELECT a.amount FROM orders AS a WHERE EXISTS "
+            "(SELECT 1 FROM stores AS a WHERE a.region = 'US')"
+        )
+        refs = _sql_model_source_refs(sql=sql, dialect="postgres")
+        assert refs == {"orders": {"amount"}, "stores": {"region"}}
+
+    def test_correlated_outer_ref_attributed(self) -> None:
+        sql = (
+            "SELECT o.amount FROM orders AS o WHERE EXISTS "
+            "(SELECT 1 FROM stores AS s WHERE s.oid = o.id)"
+        )
+        refs = _sql_model_source_refs(sql=sql, dialect="postgres")
+        assert refs == {"orders": {"amount", "id"}, "stores": {"oid"}}
+
+    def test_using_join_on_cte_with_star_returns_none(self) -> None:
+        # The USING key's presence in the CTE cannot be verified behind ``*``.
+        sql = (
+            "WITH c AS (SELECT * FROM stores) "
+            "SELECT o.amount FROM orders AS o JOIN c USING (store_id)"
+        )
+        assert _sql_model_source_refs(sql=sql, dialect="postgres") is None
+
+    def test_union_bare_columns_attributed_per_branch(self) -> None:
+        sql = "SELECT a FROM t1 UNION ALL SELECT b FROM t2"
+        refs = _sql_model_source_refs(sql=sql, dialect="postgres")
+        assert refs == {"t1": {"a"}, "t2": {"b"}}
+
+    def test_table_less_statement_returns_empty_refs(self) -> None:
+        # {} (verifies vacuously — invalid_sql) is distinct from None
+        # (cannot verify — schema drift).
+        refs = _sql_model_source_refs(
+            sql="SELECT no_such_function(1)", dialect="postgres"
+        )
+        assert refs == {}
+
+    def test_using_keys_not_attributed_to_later_joins(self) -> None:
+        # ``c`` is not an operand of the USING join, so it must not be
+        # probed for ``k``.
+        sql = "SELECT a.x FROM a JOIN b USING (k) JOIN c ON c.id = a.cid"
+        refs = _sql_model_source_refs(sql=sql, dialect="postgres")
+        assert refs == {"a": {"x", "k", "cid"}, "b": {"k"}, "c": {"id"}}
 
 
 # ---------------------------------------------------------------------------
@@ -1143,7 +1259,6 @@ class TestValidateModelsSqliteProbe:
     async def test_non_sqlite_skips_probe(self, workspace: Path) -> None:
         """Non-SQLite datasources never run the probe at validate time."""
         pytest.importorskip("duckdb")
-        import duckdb
 
         db_path = str(workspace / "live.duckdb")
         con = duckdb.connect(db_path)
@@ -1174,7 +1289,6 @@ class TestValidateModelsSqliteProbe:
         )
         engine = SlayerQueryEngine(storage=storage)
 
-        from unittest.mock import patch
         with patch(
             "slayer.sql.sqlite_introspect.probe_sqlite_integer_column",
             side_effect=AssertionError("probe must not fire on non-SQLite"),
@@ -1199,7 +1313,6 @@ class TestValidateModelsSqliteProbe:
                 Column(name="tempstabidx", sql="tempstabidx", type=DataType.INT),
             ],
         )
-        from unittest.mock import patch
         with patch(
             "slayer.sql.sqlite_introspect.probe_sqlite_integer_column",
             return_value=None,
