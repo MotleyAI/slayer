@@ -3,7 +3,7 @@
 SLayer has an optional, in-memory, per-query result cache **local to a single
 `SlayerQueryEngine` instance**. It is opt-in per call via `cache=True`, modelled
 on [Cube's in-memory cache](https://cube.dev/docs/product/caching). This is a
-**Python-API-only** feature — there is no REST / MCP / CLI / Flight / pg-facade
+**Python-API-only** feature — there is no REST / MCP / CLI / Flight / SQL API
 surface, and no `SlayerClient` plumbing.
 
 Two engines with different connection settings keep separate caches, so a cached
@@ -140,5 +140,5 @@ script use.
   (last-writer-wins on store).
 - **Unbounded.** There is no LRU or size cap; manage memory with `evict` /
   `clear_cache`.
-- **Python API only.** No REST / MCP / CLI / Flight / pg-facade / `SlayerClient`
+- **Python API only.** No REST / MCP / CLI / Flight / SQL API / `SlayerClient`
   surface.

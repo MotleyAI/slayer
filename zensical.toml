@@ -46,7 +46,7 @@ nav = [
   ]},
   { "Wire Protocols (BI Tools)" = [
     { "Flight SQL" = "interfaces/flight-sql.md" },
-    { "Postgres Facade" = "interfaces/pg-facade.md" },
+    { "SQL API" = "interfaces/pg-facade.md" },
   ]},
   { "dbt" = [
     { "SLayer vs dbt" = "dbt/slayer_vs_dbt.md" },
