@@ -43,16 +43,21 @@ bug#2 · `4fa148fd` 59 tests + bug#1.
 
 ## Remaining work
 
-1. **Uncommitted right now (commit next, specific adds):** the Q9 reroot fix
-   (`slayer/engine/stage_planner.py`), its test updates
-   (`tests/test_sql_generator.py`), docs (composable-attach, queries,
-   formulas, models, rest-api, mcp, slayer-query skill), change-folder
-   updates (tasks.md, divergences.md, this file).
-2. **Perf RESULTS.md section** after the post-fix `--retime` re-run.
-3. **Step 7 gate:** ask the author to commit/push/PR (PR description includes
+1. **Step 7 gate (NOW):** everything is committed locally through `6126db04`;
+   ask the author to push + PR (PR description includes
    `openspec show <change> --diff`). Hard stop after PR creation; then
    `/process-reviews` loop; archive via Step 8 pre-merge on the author's
    go-ahead. Delete this HANDOVER.md when the whole task is done.
+2. Codex pre-PR review done (session `kpx7lai8`): finding 1 (TimeTruncKey
+   never rerooted — `walk_value_keys` has no TimeTruncKey arm) and finding 2
+   (direct-sibling rule could bind the ROOT's own join instance, not the
+   host's) both fixed in `6126db04` with failing-first coverage
+   (`tests/test_dev1836_reverse_hop_reroot.py`); finding 3 (D7 filter/order
+   blinded coverage) added. Sibling rule now prefers the via-host path
+   (instance-exact) and falls back to the root's own join (legacy star-schema
+   parity) only when via-host is unprovable.
+3. Flag to the author: 2 stale non-strict xfail markers XPASS in integration
+   (`test_notebooks` — DEV-1713 / DEV-1715 reasons) — out of scope here.
 
 ## Key semantics (for reviewers / future stages)
 
