@@ -7975,12 +7975,12 @@ Column(name="total_policy_amount", sql="policy_amount", type=DataType.DOUBLE)],
                 await storage.save_model(m)
             yield SlayerQueryEngine(storage=storage)
 
-    async def test_rerooted_cte_includes_reachable_drops_unreachable_filters(self, generator, _models):
+    async def test_rerooted_cte_includes_reachable_and_sibling_filters(self, generator, _models):
         """DEV-1836 D3: the re-rooted producer includes filters REACHABLE from the
-        target root (``policy_amount.premium.has_premium``, its path starts at the
-        target) and DROPS a host-sibling filter unreachable from it
-        (``agreement_party_role``, reached only via the host), surfacing a
-        dropped-filter warning rather than silently fanning it in."""
+        target root — the target-path filter (``policy_amount.premium.has_premium``)
+        AND the host-sibling filter (``agreement_party_role``): the root's own
+        provably to-one join reaches the sibling, so it inherits instead of
+        dropping (the Q9 shape). Nothing warns."""
         policy, policy_amount, premium, agreement_party_role = _models
         async with self._setup_engine(policy, policy_amount, premium, agreement_party_role) as engine:
             query = SlayerQuery(
@@ -8004,17 +8004,14 @@ Column(name="total_policy_amount", sql="policy_amount", type=DataType.DOUBLE)],
             # The reachable target-path filter rides into the producer with its join.
             assert "premium" in cte_section
             assert "1 = '1'" in cte_section or "1 = 1" in cte_section
-            # The host-sibling filter is dropped from the producer and warned.
-            assert "agreement_party_role" not in cte_section
-            assert "party_role_code" not in cte_section
+            # The host-sibling filter inherits through the root's own join.
+            assert "agreement_party_role" in cte_section
+            assert "party_role_code" in cte_section
             dropped = [
                 w for w in (resp.warnings or [])
                 if getattr(w, "kind", None) == "unreachable_filter_dropped"
             ]
-            assert any(
-                "party_role_code" in (getattr(w, "filter_text", "") or "")
-                for w in dropped
-            ), dropped
+            assert not dropped, dropped
 
     async def test_rerooted_cte_without_filters(self, generator, _models):
         """Cross-model measure with no filters still uses re-rooted CTE."""
@@ -8133,15 +8130,9 @@ Column(name="score", sql="score", type=DataType.DOUBLE)],
             assert "_cm_" in sql
             assert "/" in sql  # Division expression
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1445: cross-model local-filter remap to source is not yet "
-            "implemented on the typed pipeline. Auto-promotes when supported."
-        ),
-    )
     async def test_rerooted_local_filter_remapped_to_source(self, generator, _models):
-        """Unqualified filter on source model is remapped to source.col in CTE."""
+        """Unqualified filter on source model is remapped to source.col in CTE
+        (the producer reaches the host over its provably to-one reverse join)."""
         policy, policy_amount, premium, agreement_party_role = _models
         async with self._setup_engine(policy, policy_amount, premium, agreement_party_role) as engine:
             # policy_amount has a join to policy, so status_code is reachable

@@ -1764,15 +1764,55 @@ def _key_host_path(key: ValueKey) -> Tuple[str, ...]:
 def _attributable_from_root(
     *, host_path: Tuple[str, ...], target_path: Tuple[str, ...],
     root_model: SlayerModel, models_by_name: Dict[str, SlayerModel],
+    host_name: Optional[str] = None,
 ) -> bool:
-    """Is a host-coordinate path attributable from the aggregate's root — under
-    it, over provably many-to-one hops only (design D2)?"""
+    """Is a host-coordinate path attributable from the aggregate's root, over
+    provably many-to-one hops only (design D2)? Three rules (D3): under the
+    target → prefix-strip; with ``host_name`` given, also a sibling path the
+    root's own graph reaches directly, or any host path reached by prepending a
+    provably to-one hop back to the host."""
     tp, hp = tuple(target_path), tuple(host_path)
-    if hp[: len(tp)] != tp:
+    if hp[: len(tp)] == tp:
+        return safe_reachable(
+            root=root_model, path=hp[len(tp):], models_by_name=models_by_name,
+        )
+    if host_name is None or (tp and host_name == tp[0]):
         return False
+    if hp and safe_reachable(root=root_model, path=hp, models_by_name=models_by_name):
+        return True
     return safe_reachable(
-        root=root_model, path=hp[len(tp):], models_by_name=models_by_name,
+        root=root_model, path=(host_name, *hp), models_by_name=models_by_name,
     )
+
+
+def _reroot_from_root(
+    key: ValueKey, *, target_path: Tuple[str, ...], root_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel], host_name: str,
+) -> ValueKey:
+    """Re-anchor a host-coordinate key into the root's coordinates, per leaf,
+    by the same rule order ``_attributable_from_root`` proves safety with:
+    target-prefix → strip; direct-reachable sibling → unchanged; else prepend
+    the hop back to the host."""
+    tp = tuple(target_path)
+    mapping: Dict[ValueKey, ValueKey] = {}
+    for r in walk_value_keys(key):
+        if isinstance(r, TimeTruncKey) or not isinstance(
+            r, (ColumnKey, ColumnSqlKey, StarKey),
+        ):
+            continue  # a TimeTruncKey reroots through its walked inner column
+        hp = tuple(getattr(r, "path", ()) or ())
+        if hp[: len(tp)] == tp:
+            continue  # reroot_value_key strips the prefix below
+        if tp and host_name == tp[0]:
+            continue
+        if hp and safe_reachable(
+            root=root_model, path=hp, models_by_name=models_by_name,
+        ):
+            continue  # resolved through the root's own join to the sibling
+        mapping[r] = r.model_copy(update={"path": (host_name, *hp)})
+    if mapping:
+        key = substitute_value_keys(key, mapping)
+    return reroot_value_key(key, target_path=tp)
 
 
 def _broadcast_reason(
@@ -1814,6 +1854,7 @@ def _assert_partition_key_attributable(
     if _attributable_from_root(
         host_path=hp, target_path=agg_target, root_model=root,
         models_by_name=models_by_name,
+        host_name=host_m.name if agg_target else None,
     ):
         return
     reason = _broadcast_reason(
@@ -1850,11 +1891,13 @@ def _shared_join_key_reroot(
 
 def _grain_member_attributable(
     *, key: ValueKey, target_path: Tuple[str, ...], root_model: SlayerModel,
-    models_by_name: Dict[str, SlayerModel],
+    models_by_name: Dict[str, SlayerModel], host_name: Optional[str] = None,
 ) -> bool:
     """Is a grain member attributable from the aggregate's root? A plain column
-    follows its own path; a computed dimension is attributable iff every column
-    and aggregate it references is (D4 — its producer can nest inside)."""
+    follows its own path (D3 rules, incl. the safe hop back to the host); a
+    computed dimension is attributable iff every column and aggregate it
+    references is (D4 — its producer can nest inside; aggregates stay
+    prefix-only, their producers re-root separately)."""
     saw = False
     for r in walk_value_keys(key):
         if isinstance(r, AggregateKey):
@@ -1869,6 +1912,7 @@ def _grain_member_attributable(
             if not _attributable_from_root(
                 host_path=_key_host_path(r), target_path=target_path,
                 root_model=root_model, models_by_name=models_by_name,
+                host_name=host_name,
             ):
                 return False
     return saw
@@ -1939,7 +1983,7 @@ def _assert_cross_model_inputs_safe(
 def _cross_model_inherited_filters(
     *, base_filters: List[Tuple[BoundFilter, Optional[str]]],
     target_path: Tuple[str, ...], root_model: SlayerModel,
-    models_by_name: Dict[str, SlayerModel],
+    models_by_name: Dict[str, SlayerModel], host_name: Optional[str] = None,
 ) -> Tuple[List[BoundFilter], List[UnreachableFilterDroppedWarning]]:
     """Split base ROW filters into conjuncts; a conjunct all of whose references
     are attributable from the root inherits into the producer (re-rooted); one
@@ -1951,6 +1995,7 @@ def _cross_model_inherited_filters(
         return _attributable_from_root(
             host_path=_key_host_path(r), target_path=target_path,
             root_model=root_model, models_by_name=models_by_name,
+            host_name=host_name,
         )
 
     for bf, text in base_filters:
@@ -1962,9 +2007,15 @@ def _cross_model_inherited_filters(
                 if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey))
             ]
             if all(_attributable(r) for r in refs):
-                inherited.append(_bound_filter_from_key(
-                    reroot_value_key(cj, target_path=target_path),
-                ))
+                rerooted = (
+                    _reroot_from_root(
+                        cj, target_path=target_path, root_model=root_model,
+                        models_by_name=models_by_name, host_name=host_name,
+                    )
+                    if host_name is not None
+                    else reroot_value_key(cj, target_path=target_path)
+                )
+                inherited.append(_bound_filter_from_key(rerooted))
             else:
                 unsafe = next((r for r in refs if not _attributable(r)), None)
                 reason = _broadcast_reason(
@@ -2027,13 +2078,17 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         shared = _shared_join_key_reroot(
             key=g, target_path=target_path, host_model=host_model,
         )
-        if _grain_member_attributable(
-            key=g, target_path=target_path, root_model=root_model,
-            models_by_name=models_by_name,
-        ):
-            safe_pairs.append((g, reroot_value_key(g, target_path=target_path)))
-        elif shared is not None:
+        if shared is not None:
+            # The join-key identity needs no join in the producer at all.
             safe_pairs.append((g, shared))
+        elif _grain_member_attributable(
+            key=g, target_path=target_path, root_model=root_model,
+            models_by_name=models_by_name, host_name=host_model.name,
+        ):
+            safe_pairs.append((g, _reroot_from_root(
+                g, target_path=target_path, root_model=root_model,
+                models_by_name=models_by_name, host_name=host_model.name,
+            )))
         elif explicit:
             reason = _broadcast_reason(
                 host_path=hp, target_path=target_path, root_model=root_model,
@@ -2071,6 +2126,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         if not _attributable_from_root(
             host_path=_key_host_path(active_td), target_path=target_path,
             root_model=root_model, models_by_name=models_by_name,
+            host_name=host_model.name,
         ):
             raise ValueError(
                 f"Windowed cross-model aggregate {alias!r} needs the query's "
@@ -2078,11 +2134,15 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
                 f"attributable from {root_name}, but it crosses a fanning join; "
                 f"declare join cardinality or a covering unique key on the target."
             )
-        window_td_key = reroot_value_key(active_td, target_path=target_path)
+        window_td_key = _reroot_from_root(
+            active_td, target_path=target_path, root_model=root_model,
+            models_by_name=models_by_name, host_name=host_model.name,
+        )
 
     inherited, dropped = _cross_model_inherited_filters(
         base_filters=base_filters_with_text, target_path=target_path,
         root_model=root_model, models_by_name=models_by_name,
+        host_name=host_model.name,
     )
 
     root_bundle = bundle.model_copy(update={"source_model": root_model})
