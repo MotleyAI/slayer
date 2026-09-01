@@ -517,6 +517,54 @@ class TestCrossModelStarAndCountDistinctRename:
 
 
 # ---------------------------------------------------------------------------
+# Group C2 — explicit ``type=`` on a cross-model measure reaches the
+# target-rooted producer (DEV-1836); inferred types never force a cast (#347).
+# ---------------------------------------------------------------------------
+
+
+class TestCrossModelDeclaredTypeCast:
+    async def test_declared_type_casts_producer_column(
+        self, orders_customers_engine,
+    ) -> None:
+        """Explicit INT on a DOUBLE-column sum: the producer CTE must cast to
+        the declared type, not the source column's."""
+        engine, _ = orders_customers_engine
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            measures=[ModelMeasure(
+                formula="customers.revenue:sum", name="cust_rev",
+                type=DataType.INT,
+            )],
+        )
+        resp = await engine.execute(query=query, dry_run=True)
+        sql = resp.sql or ""
+        assert (
+            'CAST(SUM(customers.lifetime_revenue) AS INTEGER)'
+            ' AS "customers.revenue_sum"' in sql
+        ), f"declared type must win over the source column's:\n{sql}"
+
+    async def test_declared_int_count_still_casts(
+        self, orders_customers_engine,
+    ) -> None:
+        """Explicit INT is a real cast request — unlike inferred INT, whose
+        cast is suppressed to preserve COUNT's native range."""
+        engine, _ = orders_customers_engine
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            measures=[ModelMeasure(
+                formula="customers.*:count", name="cust_n", type=DataType.INT,
+            )],
+        )
+        resp = await engine.execute(query=query, dry_run=True)
+        sql = resp.sql or ""
+        assert 'CAST(COUNT(*) AS INTEGER) AS "customers._count"' in sql, (
+            f"explicitly declared INT must still cast:\n{sql}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Group D — Collision guards. Lifted canonical-collision guard must run for
 # both local and cross-model renames symmetrically.
 # ---------------------------------------------------------------------------
