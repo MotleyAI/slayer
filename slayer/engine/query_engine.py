@@ -95,13 +95,6 @@ from slayer.engine.response_meta import (
     projection_result_keys,
 )
 from slayer.engine.column_expansion import expand_derived_refs_sync
-from slayer.engine.schema_drift import (
-    AppliedEntry,
-    ApplyDriftResult,
-    ApplyError,
-    ToDeleteEntry,
-    validate_datasource,
-)
 from slayer.engine.source_bundle import (
     ResolvedSourceBundle,
     build_resolved_source_bundle,
