@@ -4351,10 +4351,20 @@ class SQLGenerator:
         for slot in (
             list(planned_query.combined_expression_slots)
             + list(planned_query.aggregate_slots)
+            # DEV-1836 — an order-only composite whose ONLY aggregates are
+            # cross-model buckets as ROW (its regroup-placeholder operands carry
+            # no AggregateKey), so it must be scanned here too or it falls through
+            # to the base ROW arm and rejects the placeholder as a bare column.
+            + list(planned_query.row_slots)
         ):
             if slot.id not in composite_candidate_ids:
                 continue
             if not isinstance(slot.key, composite_kinds):
+                continue
+            # A computed DIMENSION (its own composite over a regroup placeholder,
+            # e.g. a band) is GROUPED in ``_base`` — it is never an outer
+            # composite. Only measure / order-target composites route outward.
+            if slot.is_dimension:
                 continue
             # DEV-1835 D7 — a composite that WRAPS a transform (``change`` /
             # ``change_pct`` desugar to ``x - time_shift(x)``) over a LOCAL
