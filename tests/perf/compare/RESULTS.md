@@ -217,3 +217,35 @@ dependency-lock artifact, not the typed pipeline.
 Fix: sqlglot floor raised `>=30.0` → `>=30.17` (lock at 30.17.0). Branch DuckDB dry-run
 on the flagged entries: **20.5 ms → 2.7 ms**, parity with SQLite (2.7 ms); full unit
 suite green (12,820 passed).
+
+---
+
+## Addendum (2026-09-01): DEV-1838 stage-4 re-run — no flags
+
+Re-run after the DEV-1835→1838 unification arc (producer interning, kernel
+migration, legacy plan-class/classifier deletion, node fold with one Kahn
+driver, CTE-body lifts + multi-stage flattening), default scales
+(10k / 40k full corpus + 100k subset), sqlite + duckdb, `--retime`.
+
+**Performance: no entries exceeded the regression thresholds** (> 1.3× AND
+> 20 ms, pooled ABBA medians; 0 flagged rows). Median exec ratios
+(branch ÷ 0.9.12) are ≤ 1 at every backend/scale — the branch is faster
+across the board:
+
+| backend | scale | entries | pypi med (ms) | branch med (ms) | median ratio |
+|---|---|---|---|---|---|
+| sqlite | 10k | 100 | 14.7 | 6.2 | 0.43 |
+| sqlite | 40k | 100 | 19.7 | 15.1 | 0.69 |
+| sqlite | 100k (subset) | 18 | 31.3 | 27.8 | 0.90 |
+| duckdb | 10k | 100 | 13.2 | 11.0 | 0.81 |
+| duckdb | 40k | 100 | 13.2 | 12.5 | 0.95 |
+| duckdb | 100k (subset) | 18 | 18.5 | 16.3 | 0.94 |
+
+Correctness profile unchanged from the blessed audit above: every
+oracle-arbitrated disagreement (`join_filtered_local_isolation`,
+`bench_monthly_change`) has the **pypi side wrong**; the remaining
+VALUE_MISMATCH entries are the documented `time_shift` boundary-fix drift;
+PYPI_ONLY_ERROR entries are features 0.9.12 lacked; the one
+BRANCH_ONLY_ERROR (`var_missing`) is the intentional undefined-variable
+fail-closed. Warning drift is the branch's broadcast/normalization warnings,
+which 0.9.12 did not emit.

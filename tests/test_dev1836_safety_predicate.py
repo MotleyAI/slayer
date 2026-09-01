@@ -17,6 +17,7 @@ from tests._dev1836_fixtures import (
     dev1836_models,
     inventory_model,
     orders_model,
+    q,
     regions_model,
     segments_model,
 )
@@ -46,6 +47,34 @@ class TestStructuralProof:
         )
         join = _join("codes", [["c", "code"]])
         assert provably_to_one(join=join, target_model=target)
+
+    def test_physical_spelling_of_a_renamed_pk_proves(self) -> None:
+        # DEV-1838: the join pair names the RAW column while the PK is declared
+        # on its bare-rename model column — same physical column, same proof.
+        target = SlayerModel(
+            name="loss_payment", data_source="test", sql_table="Loss_Payment",
+            columns=[
+                Column(name="id", sql="Claim_Amount_Identifier",
+                       type=DataType.DOUBLE, primary_key=True),
+                Column(name="amount", type=DataType.DOUBLE),
+            ],
+        )
+        join = _join("loss_payment", [["id", "Claim_Amount_Identifier"]])
+        assert provably_to_one(join=join, target_model=target)
+
+    def test_a_derived_pk_sql_does_not_prove_the_raw_spelling(self) -> None:
+        # A NON-bare ``sql`` is an expression, not a rename — no uniqueness
+        # transfer to any raw column it mentions.
+        target = SlayerModel(
+            name="derived", data_source="test", sql_table="derived",
+            columns=[
+                Column(name="id", sql="UPPER(code)", type=DataType.TEXT,
+                       primary_key=True),
+                Column(name="code", type=DataType.TEXT),
+            ],
+        )
+        join = _join("derived", [["c", "code"]])
+        assert not provably_to_one(join=join, target_model=target)
 
     def test_uncovered_target_is_unproven(self) -> None:
         # customers → segments: segments.code carries no PK/unique claim.
@@ -182,4 +211,57 @@ class TestNoSynthesizedTraversal:
         assert not safe_reachable(
             root=orders_model(), path=("regions",),
             models_by_name=_models_by_name(),
+        )
+
+
+class TestMayInlineSeam:
+    """The DEV-1688 seam, relocated here from the retired isolation classifier
+    (DEV-1838 2.5). ``ScopeFrame.may_inline`` guards individual values at the
+    projection boundary and is pinned separately (``test_scope``); this seam
+    guards whole aggregates at plan time."""
+
+    def test_inlining_a_crossing_input_is_refused(self) -> None:
+        """Hardcoded ``False``: a crossing input desugars onto a producer,
+        always. Inlining one is only safe when the crossed join is provably
+        1:N-free for the aggregate — the DEV-1688 cardinality work."""
+        from slayer.engine.join_safety import may_inline_crossing_inputs
+
+        assert may_inline_crossing_inputs([("customers",)]) is False
+        assert may_inline_crossing_inputs([]) is False
+
+    def test_the_seam_is_load_bearing(self, monkeypatch) -> None:
+        """Flipping the seam must change the verdict — otherwise it is
+        decorative, which is exactly what DEV-1688 must not inherit. With it
+        returning ``True`` a crossing-input local aggregate stays inline
+        instead of desugaring onto a host-rooted producer."""
+        from slayer.core.models import Column
+        from slayer.engine import stage_planner
+        from slayer.engine.source_bundle import ResolvedSourceBundle
+        from slayer.engine.stage_planner import plan_query
+
+        host = orders_model()
+        host.columns.append(Column(
+            name="gold_amount", type=DataType.DOUBLE, sql="amount",
+            filter="customers.tier = 'gold'",
+        ))
+        bundle = ResolvedSourceBundle(
+            source_model=host,
+            referenced_models=[host, customers_model(), regions_model(),
+                               segments_model()],
+        )
+        query = q(
+            dimensions=[{"name": "status"}],
+            measures=[{"formula": "gold_amount:sum", "name": "g"}],
+        )
+        planned = plan_query(query=query, bundle=bundle)
+        assert planned.regroup_attach_plans, (
+            "fixture rot: the crossing-input aggregate no longer desugars"
+        )
+        monkeypatch.setattr(
+            stage_planner, "may_inline_crossing_inputs", lambda paths: True,
+        )
+        planned = plan_query(query=query, bundle=bundle)
+        assert not planned.regroup_attach_plans, (
+            "flipping may_inline_crossing_inputs did not change the verdict — "
+            "the seam is not consulted"
         )

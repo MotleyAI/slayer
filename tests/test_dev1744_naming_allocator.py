@@ -24,8 +24,9 @@ and an unfiltered aggregate over the same column share one canonical alias while
 needing two different CTEs.
 
 **The consolidation.** Four copies of canonical-aggregate-alias derivation
-(``generator._canonical_cross_model_alias``, ``cross_model_planner._aggregate_alias``,
-``planning._canonical_name``, ``stage_planner._canonical_alias_for_formula``) that
+(``generator._canonical_cross_model_alias``, the retired cross-model planner's
+``_aggregate_alias``, ``planning._canonical_name``,
+``stage_planner._canonical_alias_for_formula``) that
 have DRIFTED on four axes become one ``naming.canonical_aggregate_alias``
 parameterised by a named profile. The expected-value tables below are frozen
 from the four legacy bodies, so the consolidation is provably behavior-preserving.
@@ -52,7 +53,6 @@ import re
 import sqlite3
 from collections import Counter
 from decimal import Decimal
-from types import SimpleNamespace
 from typing import List
 
 import pytest
@@ -77,9 +77,8 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
-from slayer.engine import cross_model_planner, planning, stage_planner
+from slayer.engine import planning, stage_planner
 from slayer.engine.binding import BoundExpr
-from slayer.engine.cross_model_planner import _aggregate_alias
 from slayer.engine.planning import _canonical_name
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.stage_planner import _canonical_alias_for_formula
@@ -88,7 +87,7 @@ from slayer.sql import naming
 from slayer.sql import stage_wrapper as sw_module
 from slayer.sql.dialects import get_dialect
 from slayer.sql.dialects import tsql as tsql_module
-from slayer.sql.generator import SQLGenerator, _cm_plan_identity
+from slayer.sql.generator import SQLGenerator
 from slayer.sql.naming import AliasAllocator
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -636,14 +635,9 @@ class TestAllocatorRouting:
 
     def test_no_raw_step_cte_names_in_the_generator(self) -> None:
         """P-F, checked structurally because it has no reachable behavioural
-        difference today: the four ``f"step{...}"`` mint sites must all go
-        through the allocator.
-
-        Two live in ``_generate_from_planned_impl`` (the window-batch and the
-        unmaterialised combined-expression step CTEs), sharing the allocator
-        built earlier in the same method; two live in
-        ``_render_cross_model_transform_chain``, which derives its own. They
-        are latently safe today only because no ``_cm_*`` CTE can be named
+        difference today: every ``f"step{...}"`` mint site must go through the
+        allocator (one lives in ``_emit_step_cte``, shared by both pipeline
+        tails). Latently safe today only because no ``_cm_*`` CTE can be named
         ``stepN`` — an invariant nothing enforces.
         """
         src = inspect.getsource(generator_module)
@@ -943,7 +937,7 @@ def _key(source, agg: str, *, args=(), kwargs=()) -> AggregateKey:
 # behavior-preserving rather than merely plausible.
 #
 #   A = generator._canonical_cross_model_alias(source_relation="orders", key=…)
-#   B = cross_model_planner._aggregate_alias(key=…)
+#   B = the retired cross_model_planner._aggregate_alias(key=…)
 #   C = planning._canonical_name(key)
 #   D = stage_planner._canonical_alias_for_formula(text, bound=…)
 #
@@ -1120,7 +1114,6 @@ class TestProductionCallersDelegate:
         assert gen._canonical_cross_model_alias(
             source_relation="orders", key=key,
         ) == expected_a
-        assert _aggregate_alias(key=key) == expected_b
         assert _canonical_name(key) == expected_c
         assert _canonical_alias_for_formula(
             "IGNORED_TEXT", bound=BoundExpr(value_key=key),
@@ -1147,8 +1140,7 @@ class TestProductionCallersDelegate:
         # Each caller imports the function by name, so the spy has to replace
         # the binding in the CALLER's namespace, not just in the naming module.
         for module in (
-            naming, generator_module, cross_model_planner, planning,
-            stage_planner,
+            naming, generator_module, planning, stage_planner,
         ):
             if getattr(module, "canonical_aggregate_alias", None) is not None:
                 monkeypatch.setattr(
@@ -1162,9 +1154,6 @@ class TestProductionCallersDelegate:
         assert calls[-1].get("profile") == "cross_model_cte"
         assert calls[-1].get("source_relation") == "orders"
 
-        cross_model_planner._aggregate_alias(key=key)
-        assert calls[-1].get("profile") == "cte_schema"
-
         planning._canonical_name(key)
         assert calls[-1].get("profile") == "declared_name"
 
@@ -1174,70 +1163,3 @@ class TestProductionCallersDelegate:
         assert calls[-1].get("profile") == "stage_formula"
 
 
-class TestCrossModelDedupIdentity:
-    """What makes two cross-model plans "the same CTE".
-
-    The identity is structural — never the sanitised name — because the
-    canonical alias omits the aggregate's column filter and the name is doubly
-    lossy, so either would merge plans that must render separately.
-
-    It also carries the RENDER SHAPE. The forward and rerooted paths produce
-    different join-back pairs and a different aggregate column alias (forward
-    uses the canonical alias; rerooted uses the sub-plan's), so sharing one CTE
-    across them would join at the wrong grain or read the wrong column. The
-    planner interns each key to one slot and emits one plan per slot, so two
-    plans cannot collide here today — these tests keep that from becoming
-    silently wrong if that ever changes.
-    """
-    def _identity(self, *, rerooted, key=None):
-
-        key = key or AggregateKey(
-            source=ColumnKey(path=("customers",), leaf="revenue"), agg="sum",
-        )
-        return _cm_plan_identity(
-            source_relation="orders",
-            plan=SimpleNamespace(rerooted_plan=object() if rerooted else None),
-            agg_slot=SimpleNamespace(key=key),
-        )
-
-    def test_forward_and_rerooted_are_different_identities(self) -> None:
-        assert self._identity(rerooted=False) != self._identity(rerooted=True)
-
-    def test_same_key_same_shape_shares_one_identity(self) -> None:
-        """Two SEPARATELY CONSTRUCTED but equal keys — which is what two plans
-        carry — collapse to ONE identity. The tuple has to compare equal BY
-        VALUE, since it is used as a dict key.
-
-        This is the unit-level precondition only. That two public names really
-        do end up sharing a single CTE is asserted end-to-end by
-        ``test_same_key_slots_still_share_one_cte`` above; this test cannot see
-        public names at all, because the identity deliberately excludes them.
-        """
-        first = AggregateKey(
-            source=ColumnKey(path=("customers",), leaf="revenue"), agg="sum",
-        )
-        second = AggregateKey(
-            source=ColumnKey(path=("customers",), leaf="revenue"), agg="sum",
-        )
-        assert first is not second
-        assert self._identity(rerooted=False, key=first) == self._identity(
-            rerooted=False, key=second,
-        )
-
-    def test_filtered_and_unfiltered_are_different_identities(self) -> None:
-        """The reason the identity is the typed key and not the alias: these
-        two produce the SAME canonical alias."""
-        source = ColumnKey(path=("customers",), leaf="revenue")
-        plain = AggregateKey(source=source, agg="sum")
-        filtered = AggregateKey(
-            source=source, agg="sum",
-            column_filter_key=SqlExprKey(canonical_sql="region_id = 1"),
-        )
-        assert self._identity(rerooted=False, key=plain) != self._identity(
-            rerooted=False, key=filtered,
-        )
-
-    def test_identity_is_hashable(self) -> None:
-        """It is used as a dict key, so an unhashable member would surface as a
-        TypeError mid-render rather than at import."""
-        assert len({self._identity(rerooted=False), self._identity(rerooted=True)}) == 2

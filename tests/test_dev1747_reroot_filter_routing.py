@@ -16,11 +16,12 @@ then CLEARS ``dropped_filter_warnings`` / ``where_filter_ids`` /
 ``having_filter_ids`` / ``applied_filter_ids``, throwing away the routing the
 decision table had already produced.
 
-B6 (with D6/D7) fixes both: decide reroot-vs-forward FIRST, then run
-``classify_host_filter`` exactly once per host filter in the coordinate system
-of the CTE that will actually exist, and keep the result. Unreachable filters
-warn per §5.5. Binder/planner failures RAISE — they never masquerade as
-expected drops.
+B6 (with D6/D7) fixes both — and DEV-1838 carries the contract onto the
+producer form: the target-rooted producer runs
+``_cross_model_inherited_filters`` exactly once, in the coordinate system of
+the producer that will actually exist, and keeps the result. Unreachable
+filters warn per §5.5. Binder/planner failures RAISE — they never masquerade
+as expected drops.
 
 D7 scopes this to FILTERS. An unreachable rerooted DIMENSION still drops (the
 documented reroot contract), but structurally — not via a swallowed exception.
@@ -58,8 +59,6 @@ from tests._dev1747_fixtures import (
     make_sqlite_engine,
     seed_dev1747_sqlite,
 )
-from slayer.engine import cross_model_planner
-from slayer.engine.cross_model_planner import IsolatedCteCrossModelPlanner
 import inspect
 
 #: A cross-model aggregate PLUS a dimension one hop PAST the target, which is
@@ -108,8 +107,7 @@ def _query(*filters: str) -> SlayerQuery:
 
 def _attaches(*filters: str):
     # DEV-1836: the ``_query`` cross-model aggregate (a hop past its target)
-    # now routes to a TARGET-rooted regroup producer rooted at ``customers``,
-    # not the legacy re-rooted ``CrossModelAggregatePlan``.
+    # routes to a TARGET-rooted regroup producer rooted at ``customers``.
     plan = plan_query(query=_query(*filters), bundle=dev1747_bundle())
     attaches = [
         a for a in plan.regroup_attach_plans
@@ -351,13 +349,11 @@ class TestInternalFailuresRaise:
         broad = {"Exception", "BaseException", "ValueError"}
         checked = 0
         for name in (
-            "_maybe_reroot_cross_model_plan",
-            "_plan_filtered_local",
-            "_route_host_filters",
+            "_cross_model_inherited_filters",
+            "_attributable_from_root",
+            "_reroot_from_root",
         ):
-            target = getattr(cross_model_planner, name, None) or getattr(
-                cross_model_planner.IsolatedCteCrossModelPlanner, name, None,
-            )
+            target = getattr(stage_planner, name, None)
             assert target is not None, (
                 f"{name} is gone — the reroot path was renamed and this guard "
                 f"now checks nothing"
@@ -439,14 +435,11 @@ class TestUnreachableDimensionsStillDrop:
 # Group 5 — D2: the host-rooted dispatch accepts a path-bearing key
 # ---------------------------------------------------------------------------
 class TestFilteredLocalDispatchAccounting:
-    """``_dispatch_filtered_local`` is reached only when ``source.path`` is
-    EMPTY (``if not path:`` in ``IsolatedCteCrossModelPlanner.plan``), and it
-    raises "this is a plain local aggregate" unless it finds a crossing input.
-
-    A ``grain="host"`` wrap has a NON-empty path and no crossing *input* — its
-    crossing IS the path. Both halves therefore have to change together, and
-    each fails in a different way: the first sends the wrap to a target-rooted
-    CTE (silent scalar CROSS JOIN), the second raises. Neither is visible in a
+    """DEV-1838 D5 dispatch accounting: a ``grain="host"`` wrap has a NON-empty
+    path and no crossing *input* — its crossing IS the path, and it must take
+    the HOST-rooted producer route. Sending it to a target-rooted producer is
+    the silent scalar-CROSS-JOIN degeneration (D2); a genuine target-grain
+    measure must keep the target-rooted route. Neither failure is visible in a
     test that only checks the emitted SQL has an ORDER BY.
     """
 
@@ -461,43 +454,29 @@ class TestFilteredLocalDispatchAccounting:
             )],
         )
 
-    def _dispatch_spy(self, monkeypatch) -> list:
-
-        calls: list = []
-        original = IsolatedCteCrossModelPlanner._dispatch_filtered_local
-
-        def _recording(self, **kwargs):
-            calls.append(kwargs["aggregate_key"])
-            return original(self, **kwargs)
-
-        monkeypatch.setattr(
-            IsolatedCteCrossModelPlanner, "_dispatch_filtered_local", _recording,
+    def test_host_grain_wrap_dispatches_to_the_host_rooted_route(self) -> None:
+        # DEV-1838 D5: the host-grain wrap is a HOST-rooted producer attach —
+        # never a target-rooted CTE (the scalar-CROSS-JOIN degeneration, D2).
+        plan = plan_query(
+            query=self._grouped_joined_order(), bundle=dev1747_bundle(),
         )
-        return calls
-
-    def test_host_grain_wrap_dispatches_to_the_host_rooted_route(
-        self, monkeypatch,
-    ) -> None:
-        calls = self._dispatch_spy(monkeypatch)
-        plan_query(query=self._grouped_joined_order(), bundle=dev1747_bundle())
-        assert calls, (
-            "the host-grain wrap never reached _dispatch_filtered_local — it "
-            "was routed to a TARGET-rooted CTE, which degenerates to a scalar "
-            "CROSS JOIN (D2)"
-        )
-        assert calls[0].grain == "host"
-        assert calls[0].source.path == ("customers", "regions"), (
+        (attach,) = [
+            a for a in plan.regroup_attach_plans
+            if a.attach_phase == "combined"
+        ]
+        assert attach.producer_root_model is None
+        (sub,) = attach.substitutions
+        assert sub.original_key.grain == "host"
+        assert sub.original_key.source.path == ("customers", "regions"), (
             "the wrap lost its path on the way to the host-rooted route"
         )
 
-    def test_a_target_grain_aggregate_does_not_take_that_route(
-        self, monkeypatch,
-    ) -> None:
-        """The contrast: a genuine cross-model measure must keep going to the
-        target-rooted CTE. Widening the dispatch to every path-bearing key
-        would move it, and its value would silently become per-host-group."""
-        calls = self._dispatch_spy(monkeypatch)
-        plan_query(
+    def test_a_target_grain_aggregate_does_not_take_that_route(self) -> None:
+        """The contrast: a genuine cross-model measure must keep the
+        TARGET-rooted producer. Widening the host-rooted dispatch to every
+        path-bearing key would move it, and its value would silently become
+        per-host-group."""
+        plan = plan_query(
             query=SlayerQuery(
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
@@ -508,22 +487,23 @@ class TestFilteredLocalDispatchAccounting:
             ),
             bundle=dev1747_bundle(),
         )
-        assert not calls, (
-            f"a target-grain aggregate was routed host-rooted: {calls}"
+        roots = {a.producer_root_model for a in plan.regroup_attach_plans}
+        assert roots == {"customers"}, (
+            f"the target-grain aggregate must plan ONE target-rooted producer; "
+            f"got producer roots {roots}"
         )
 
     def test_the_path_counts_as_the_crossing_input(self) -> None:
-        """The accounting change itself. Without it the dispatch raises
-        ``ValueError('… this is a plain local aggregate')`` — a path-bearing
-        key has no ``column_filter_key`` and no crossing arg to find."""
+        """The accounting itself: the wrap's PATH is its crossing input, so
+        the wrap gets its own host-rooted producer (DEV-1838 D5)."""
         plan = plan_query(
             query=self._grouped_joined_order(), bundle=dev1747_bundle(),
         )
-        assert plan.cross_model_aggregate_plans, "no host-rooted CTE was planned"
-        cma = plan.cross_model_aggregate_plans[0]
-        assert cma.cte_root_model == "orders", (
-            f"the wrap's CTE is rooted at {cma.cte_root_model!r}, not the host"
-        )
+        attaches = [
+            a for a in plan.regroup_attach_plans
+            if a.attach_phase == "combined" and a.producer_root_model is None
+        ]
+        assert attaches, "no host-rooted producer was planned for the wrap"
 
 
 # ---------------------------------------------------------------------------

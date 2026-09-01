@@ -321,9 +321,11 @@ def _extract_cm_body(sql: str) -> str:
 
 
 class TestDev1527F1BasePull:
-    async def test_crossing_kwarg_pulls_plain_left_join_not_isolated(self) -> None:
-        # 1:N: one order → many line_items. ``li_weight`` crosses that join.
-        # DEV-1709: the aggregate isolates; the join lives INSIDE its CTE.
+    async def test_crossing_kwarg_over_unproven_to_many_hop_fails_closed(self) -> None:
+        # 1:N: one order → many line_items. ``li_weight`` crosses that join,
+        # so the fanned SUM is ambiguous — fails closed per role (DEV-1838 D5;
+        # the class-(d) crossed-argument ledger row). The proven-hop control
+        # below pins the still-legal shape.
         orders = _orders(
             extra=[Column(name="li_weight", sql="line_items.qty", type=DataType.DOUBLE)],
             joins_extra=[ModelJoin(
@@ -333,20 +335,13 @@ class TestDev1527F1BasePull:
             source_model="orders",
             measures=[ModelMeasure(formula="amount:weighted_avg(weight=li_weight)")],
         )
-        sql = await _engine_generate(
-            query=query, model=orders, extra_models=[_line_items()],
-        )
-        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
-        cm_body = _extract_cm_body(sql)
-        norm = _norm(cm_body)
-        assert "LEFT JOIN line_items" in cm_body
-        # The crossing kwarg must be the weighted-avg WEIGHT operand, not merely
-        # present: weighted_avg = SUM({value} * {weight}) / NULLIF(SUM({weight}),0).
-        assert "* line_items.qty" in norm                     # in the value*weight product
-        assert "NULLIF(SUM(line_items.qty)" in norm           # in the normaliser
-        # The join never leaks into the host scope.
-        host_part = sql.replace(cm_body, "")
-        assert "LEFT JOIN line_items" not in host_part, sql
+        with pytest.raises(ValueError) as ei:
+            await _engine_generate(
+                query=query, model=orders, extra_models=[_line_items()],
+            )
+        message = str(ei.value)
+        assert "line_items" in message
+        assert any(w in message.lower() for w in ("cardinality", "unique", "declare"))
 
     async def test_ndotn_control_regionweight_still_base_pull(self) -> None:
         # N:1 control (region_weight): isolates identically — the trigger is

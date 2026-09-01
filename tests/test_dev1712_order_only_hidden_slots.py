@@ -844,8 +844,8 @@ class TestCrossModelHiddenOrder:
     async def test_execute_cross_model_hidden_order_stripped(self, exec_engine) -> None:
         """Execution: an order-only cross-model aggregate is absent from the
         response columns, row keys, and attribute metadata — pinning the
-        hidden CrossModelAggregatePlan (hidden=True / public_alias=None) path
-        at the response level, distinct from the local-aggregate path."""
+        hidden order-only producer-placeholder path at the response level,
+        distinct from the local-aggregate path."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],

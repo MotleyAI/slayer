@@ -388,23 +388,6 @@ def _build_explain_sql(dialect: str, sql: str) -> str:
     return get_dialect(dialect).build_explain_sql(sql)
 
 
-def _walk_cross_model_plans(planned):
-    """Every cross-model plan on ``planned``, including nested rerooted plans.
-
-    A nested plan carries its OWN dropped-filter warnings for the same user
-    filter, which is why the old per-plan emission double-fired.
-    """
-    for plan in getattr(planned, "cross_model_aggregate_plans", ()) or ():
-        yield plan
-        nested = getattr(plan, "rerooted_plan", None)
-        if nested is not None:
-            yield from _walk_cross_model_plans(nested)
-    # DEV-1825 — a synthesized regroup producer is a full nested plan; descend so
-    # any cross-model plan it carries surfaces its warnings (total by construction).
-    for attach in getattr(planned, "regroup_attach_plans", ()) or ():
-        yield from _walk_cross_model_plans(attach.producer_plan)
-
-
 def _stage_location(stages, index: int) -> str:
     """Human-readable pointer to the stage a filter came from.
 
@@ -422,10 +405,6 @@ def _walk_regroup_attaches(planned):
     for attach in getattr(planned, "regroup_attach_plans", ()) or ():
         yield attach
         yield from _walk_regroup_attaches(attach.producer_plan)
-    for plan in getattr(planned, "cross_model_aggregate_plans", ()) or ():
-        nested = getattr(plan, "rerooted_plan", None)
-        if nested is not None:
-            yield from _walk_regroup_attaches(nested)
 
 
 def _collect_dropped_filter_warnings(
@@ -459,9 +438,6 @@ def _collect_dropped_filter_warnings(
 
     for index, planned in enumerate(planned_list):
         location = _stage_location(stages, index)
-        for plan in _walk_cross_model_plans(planned):
-            for w in plan.dropped_filter_warnings or ():
-                _record(w, location)
         for attach in _walk_regroup_attaches(planned):
             for w in attach.dropped_filter_warnings or ():
                 _record(w, location)
@@ -1805,15 +1781,16 @@ class SlayerQueryEngine:
         """Names of every model this query touched, for schema-drift attribution.
 
         The bundle's ``referenced_models`` already hold the transitive join
-        walk plus every sibling-stage base; cross-model aggregate targets come
-        off each planned stage; query-backed base names are recovered from the
+        walk plus every sibling-stage base; cross-model producer roots come
+        off each planned stage's regroup attaches; query-backed base names are recovered from the
         pre-expansion source model. ``_maybe_raise_schema_drift`` widens this
         further via ``_expand_join_graph``.
         """
         touched: set[str] = {m.name for m in bundle.referenced_models}
         for pq in planned_list:
-            for cmp in pq.cross_model_aggregate_plans:
-                touched.add(cmp.target_model)
+            for attach in _walk_regroup_attaches(pq):
+                if attach.producer_root_model:
+                    touched.add(attach.producer_root_model)
         if original_source_model is not None and original_source_model.source_queries:
             touched.add(original_source_model.name)
             touched |= self._collect_query_backed_base_names(original_source_model)
@@ -2112,6 +2089,26 @@ class SlayerQueryEngine:
             full = f"{source_relation}.{public}"
             if full in raw_types:
                 result[bare] = raw_types[full]
+        # DEV-1838 D5 — a measure answered by a regroup producer (crossing /
+        # windowed / ranked) surfaces at top level as a placeholder ROW slot;
+        # its source lives on the substitution's original key.
+        slot_by_key = {s.key: s for s in root.row_slots}
+        for attach in root.regroup_attach_plans:
+            for sub in attach.substitutions:
+                ph_slot = slot_by_key.get(sub.placeholder)
+                if ph_slot is None or ph_slot.hidden:
+                    continue
+                src = getattr(sub.original_key, "source", None)
+                bare = (
+                    getattr(src, "leaf", None)
+                    or getattr(src, "column_name", None)
+                )
+                if bare is None or bare in result:
+                    continue
+                public = ph_slot.public_name or ph_slot.declared_name
+                full = f"{source_relation}.{public}"
+                if full in raw_types:
+                    result[bare] = raw_types[full]
         return result
 
     def execute_sync(

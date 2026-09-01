@@ -13,9 +13,8 @@ Identity-bearing structure is in ``slayer/core/keys.py`` (the
 
 The planning logic that produces a ``PlannedQuery`` lives in other
 7a substages — ``planning.py`` (ValueRegistry, TransformLowerer,
-ProjectionPlanner), ``cross_model_planner.py`` (I1 strategy),
-``stage_planner.py`` (multi-stage DAG). This file is the typed
-target.
+ProjectionPlanner) and ``stage_planner.py`` (multi-stage DAG). This
+file is the typed target.
 
 These types are dormant in stage 7a — no engine code consumes them
 yet. Stage 7b's engine cutover routes through them.
@@ -24,12 +23,11 @@ yet. Stage 7b's engine cutover routes through them.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from slayer.core.enums import DataType, JoinType
-from slayer.core.errors import UnreachableFilterDroppedWarning
 from slayer.core.format import NumberFormat
 from slayer.core.keys import Phase, ValueKey
 from slayer.core.models import SlayerModel
@@ -61,22 +59,23 @@ BoundFilterId = str
 __all__ = [
     "BoundExpr",
     "BoundFilterId",
-    "CrossModelAggregatePlan",
     "EmptyBaseGrainPlan",
     "FilterPhase",
     "FilterReachability",
     "JoinRequirement",
     "OrderEntry",
     "OrderScope",
+    "PlainProducerKernel",
     "PlannedQuery",
-    "RankedAggregatePlan",
+    "ProducerKernel",
     "RankedGrainMember",
+    "RankedProducerKernel",
     "RegroupAttachPlan",
     "RegroupSubstitution",
     "SlotId",
+    "TrailingWindowProducerKernel",
     "TransformLayer",
     "ValueSlot",
-    "WindowedAggregatePlan",
 ]
 
 
@@ -182,146 +181,6 @@ class JoinRequirement(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# CrossModelAggregatePlan
-# ---------------------------------------------------------------------------
-
-
-class CrossModelAggregatePlan(BaseModel):
-    """Plan for one cross-model aggregate slot (P3 / I1).
-
-    The strategy that populated this plan (today's isolated-CTE form
-    or a future alternative — see ``cross_model_planner.py``) lives
-    outside this struct; this is the typed result, not the algorithm.
-
-    Filter routing is route-explicit so the SQL generator (stage 7b)
-    can render each route without re-classifying:
-    - ``where_filter_ids`` — host filters propagated to the CTE's WHERE
-      (decision-table rows: host-local-but-targeted, joined-target-path).
-    - ``having_filter_ids`` — host filters propagated as HAVING (decision-
-      table row: cross-model agg-ref on the same target).
-    - ``target_model_filters`` — the target model's own
-      ``SlayerModel.filters`` (always-applied WHERE).
-
-    ``applied_filter_ids`` is the AUDIT: which host filters some scope
-    evaluates. On the forward path that is exactly ``where ∪ having``. On a
-    RE-ROOTED plan the two diverge on purpose — ``rerooted_plan`` carries the
-    filters itself, and there is no forward CTE to route to, so where/having
-    are empty while the audit still records them. The distinction matters
-    because where/having are also an instruction to the host base to SKIP the
-    filter; a re-rooted CTE duplicates a host-evaluable predicate rather than
-    relocating it, so the host must keep applying it (DEV-1747 B6).
-
-    ``hidden=True`` is used for order-only / filter-only refs whose
-    aggregate value is materialised but not surfaced in the public
-    projection; ``public_alias`` is ``None`` in that case.
-    """
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    aggregate_slot_id: SlotId
-    target_model: str
-    datasource: str
-    join_chain: List[JoinRequirement]
-    join_back_pairs: List[Tuple[ValueKey, ValueKey]] = Field(default_factory=list)
-    cte_stage_schema: StageSchema
-    shared_grain_slots: List[SlotId]
-    applied_filter_ids: List[BoundFilterId] = Field(default_factory=list)
-    where_filter_ids: List[BoundFilterId] = Field(default_factory=list)
-    having_filter_ids: List[BoundFilterId] = Field(default_factory=list)
-    target_model_filters: List[str] = Field(default_factory=list)
-    dropped_filter_warnings: List[UnreachableFilterDroppedWarning] = Field(default_factory=list)
-    hidden: bool = False
-    public_alias: Optional[str] = None
-
-    # DEV-1450 stage 7b.15e (C1) — re-rooted sub-plan. When the host query
-    # carries dimensions that are reachable from the target by re-rooting
-    # through the target's join graph (the legacy ``_build_rerooted_enriched``
-    # case), the cross-model CTE is rendered as a full nested ``PlannedQuery``
-    # rooted at the target (FROM target + joins), preserving the host
-    # dimension grain instead of collapsing to a scalar CROSS JOIN. ``None``
-    # keeps the forward-path "FROM bare target" rendering.
-    #
-    # ``rerooted_grain_pairs`` maps (host_dim_slot_id, rerooted_dim_slot_id)
-    # for the combined LEFT JOIN ON; the generator resolves each side's SQL
-    # alias independently (host alias vs sub-plan alias need not match).
-    # ``rerooted_agg_slot_id`` is the sub-plan slot id of the local aggregate;
-    # the combined SELECT projects it ``AS`` the canonical / public alias.
-    rerooted_plan: Optional["PlannedQuery"] = None
-    rerooted_grain_pairs: List[Tuple[SlotId, SlotId]] = Field(default_factory=list)
-    rerooted_agg_slot_id: Optional[SlotId] = None
-
-    # DEV-1503 — host-rooted CTE for a cross-model-FILTERED local measure.
-    # The cross-model planner has two distinct cases that produce a nested
-    # ``rerooted_plan``:
-    #
-    # * Cross-model aggregate re-rooting (``target_model`` is the join target,
-    #   the sub-plan is rooted at the target so the target's own join graph
-    #   reaches host dims that the forward-path CTE collapses): ``cte_root_model``
-    #   stays ``None`` and the renderer uses ``target_model`` for the FROM /
-    #   joins (existing pre-DEV-1503 behaviour).
-    # * Filtered-local isolation (``AggregateKey.source.path`` is empty but the
-    #   measure's ``Column.filter`` crosses a join, so the aggregate must
-    #   evaluate in its own CTE rooted at the HOST + the filter-target join):
-    #   ``cte_root_model`` is set to the HOST model name and the renderer uses
-    #   the sub-plan's own ``source_relation`` / ``render_source_model`` for
-    #   the FROM. ``target_model`` is conventionally set to the host name in
-    #   this case but the renderer reads ``cte_root_model`` to disambiguate.
-    cte_root_model: Optional[str] = None
-
-
-# ---------------------------------------------------------------------------
-# WindowedAggregatePlan
-# ---------------------------------------------------------------------------
-
-
-class WindowedAggregatePlan(BaseModel):
-    """Plan for one duration-windowed aggregate slot (DEV-1714 Stage 10).
-
-    A windowed measure (``revenue:sum(window='90d')``) is a trailing rolling
-    aggregate: for each output bucket, SLayer sums source rows in the trailing
-    ``window`` interval ending at that bucket's end. It renders as a HOST-ROOTED
-    ``_wm_<model>__<measure>`` CTE — an inner ``_src`` self-join subquery joined
-    to ``_base`` on the query grain with an ``INTERVAL`` range predicate — then
-    LEFT-JOINed back to ``_base`` on the shared grain (same join-back machinery
-    as the cross-model ``_cm_*`` CTEs, so adding a windowed measure never
-    changes host cardinality).
-
-    The renderer looks up the aggregate ``ValueSlot`` (source column, ``agg``,
-    result ``type``, ``column_filter_key``) and the grain ``ValueSlot``s by id
-    from the owning ``PlannedQuery``; this plan carries the window duration, the
-    resolved window time-dimension slot + its granularity, the per-role grain
-    slot partition, and the WHERE-phase filter ids inherited into ``_src``.
-
-    Frame bounds are excluded from ``where_filter_ids`` so the trailing window
-    reaches rows before the visible frame starts (DEV-1732). A filter that is
-    only PARTLY a frame bound (``created_at >= X and status = 'paid'``) stays in
-    ``where_filter_ids`` and gets a ``src_filter_rewrites`` entry carrying the
-    residual — the population half — which the renderer substitutes for the
-    host's predicate.
-
-    Scope for Stage 10 is ``sum``/``avg`` local measures only; cross-model,
-    transform-combined, composite, hidden, and mixed-filter windowed shapes are
-    guarded loudly at plan time (DEV-1504 lifts those guards).
-    """
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    aggregate_slot_id: SlotId
-    agg: str
-    window_raw: str
-    window_parts: List[Tuple[int, str]]
-    window_time_dimension_slot_id: SlotId
-    window_granularity: str
-    dimension_slot_ids: List[SlotId] = Field(default_factory=list)
-    other_time_dimension_slot_ids: List[SlotId] = Field(default_factory=list)
-    grain_slot_ids: List[SlotId] = Field(default_factory=list)
-    where_filter_ids: List[BoundFilterId] = Field(default_factory=list)
-    src_filter_rewrites: List["SrcFilterRewrite"] = Field(default_factory=list)
-    public_alias: Optional[str] = None
-    hidden: bool = False
-
-
-# ---------------------------------------------------------------------------
 # SrcFilterRewrite — DEV-1732
 # ---------------------------------------------------------------------------
 
@@ -345,7 +204,7 @@ class SrcFilterRewrite(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# RankedAggregatePlan — DEV-1748
+# RankedGrainMember — DEV-1748
 # ---------------------------------------------------------------------------
 
 
@@ -367,62 +226,6 @@ class RankedGrainMember(BaseModel):
 
     host_slot_id: SlotId
     ranked_key: ValueKey
-
-
-class RankedAggregatePlan(BaseModel):
-    """Plan for one ``first`` / ``last`` aggregate slot (DEV-1748, B9).
-
-    A ranked aggregate needs its OWN ROW ORDERING, which is one of the three
-    things P-C says an aggregate can need its own rows for — so like a crossing
-    aggregate (``_cm_``) and a windowed one (``_wm_``) it compiles to a
-    plan-shaped CTE rooted where its rows live and joined back on the query
-    grain null-safely. The host base keeps only purely-local aggregates, so
-    adding a first/last cannot change host cardinality.
-
-    It replaces a shape that did the opposite: ONE first/last anywhere wrapped
-    the entire host base in a ``ROW_NUMBER`` subquery, so every sibling
-    aggregate in the query was computed over the ranked row set, and several
-    rankings shared one scope — which is what the retired rn-suffix scheme
-    (``_last_rn_2``) and the filtered sentinel columns (``_last_rn_f0`` plus a
-    ``_match_f0`` flag consulted by alias) existed to disambiguate. One
-    aggregate per CTE removes the need for all of it.
-
-    ``ranking_time_key`` is resolved at PLAN time (P-D) and anchored in the
-    ranked scope's coordinates; the renderer emits it and never re-derives the
-    precedence. A measure's ``Column.filter`` is not carried here — it lives on
-    the aggregate's own key, and the renderer applies it as a predicate inside
-    this CTE, which is what "filtered variants are plan data" means.
-
-    Filter routing uses the same vocabulary, and the same audit-versus-
-    instruction distinction, as ``CrossModelAggregatePlan``: ``where`` and
-    ``having`` are instructions about where a filter is EVALUATED, while
-    ``applied_filter_ids`` only records that some scope evaluates it.
-    """
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    aggregate_slot_id: SlotId
-    #: ``first`` ranks ascending, ``last`` descending. The direction is not a
-    #: separate field because it is not a separate decision.
-    agg: Literal["first", "last"]
-    #: The model the ranked rows come FROM — the host for a local aggregate,
-    #: the join target for a cross-model one.
-    root_model: str
-    datasource: str
-    #: The host-relative join path to ``root_model``; empty when host-rooted.
-    target_path: Tuple[str, ...] = ()
-    join_chain: List[JoinRequirement] = Field(default_factory=list)
-    ranking_time_key: ValueKey
-    grain: List[RankedGrainMember] = Field(default_factory=list)
-    where_filter_ids: List[BoundFilterId] = Field(default_factory=list)
-    having_filter_ids: List[BoundFilterId] = Field(default_factory=list)
-    applied_filter_ids: List[BoundFilterId] = Field(default_factory=list)
-    target_model_filters: List[str] = Field(default_factory=list)
-    dropped_filter_warnings: List[UnreachableFilterDroppedWarning] = Field(
-        default_factory=list,
-    )
-    public_alias: Optional[str] = None
-    hidden: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -605,6 +408,51 @@ class RegroupSubstitution(BaseModel):
     original_key: ValueKey
 
 
+class PlainProducerKernel(BaseModel):
+    """DEV-1838 D4 — a grouped-aggregate producer (the default)."""
+
+    kind: Literal["plain"] = "plain"
+
+
+class RankedProducerKernel(BaseModel):
+    """DEV-1838 D4 — a ``first``/``last`` producer: one row per grain group,
+    picked by ranking. Field homes per the task-2.0 inventory
+    (ex-``RankedAggregatePlan``)."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    kind: Literal["ranked"] = "ranked"
+    #: ``first`` ranks ascending, ``last`` descending.
+    agg: Literal["first", "last"]
+    #: The ranking column, resolved at plan time in PRODUCER-scope coordinates.
+    ranking_time_key: ValueKey
+
+
+class TrailingWindowProducerKernel(BaseModel):
+    """DEV-1838 D4 — a trailing-window producer: per output bucket, aggregate
+    source rows in the trailing interval ending at the bucket's end (today's
+    ``_wm_`` interval join). Field homes per the task-2.0 inventory
+    (ex-``WindowedAggregatePlan``)."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    kind: Literal["trailing-window"] = "trailing-window"
+    window_raw: str
+    window_parts: List[Tuple[int, str]]
+    window_granularity: str
+    #: The producer's synthesized active-TD grain slot (the window bucket).
+    bucket_slot_id: SlotId
+    #: ROW filters inherited into ``_src`` — frame bounds excluded (DEV-1732).
+    src_where_filter_ids: List[BoundFilterId] = Field(default_factory=list)
+    #: Partly-frame-bound filters, rewritten to their population half.
+    src_filter_rewrites: List["SrcFilterRewrite"] = Field(default_factory=list)
+
+
+ProducerKernel = Union[
+    PlainProducerKernel, RankedProducerKernel, TrailingWindowProducerKernel,
+]
+
+
 class RegroupAttachPlan(BaseModel):
     """A planner-synthesized producer stage attached on its partition grain.
 
@@ -634,6 +482,13 @@ class RegroupAttachPlan(BaseModel):
     producer_plan: "PlannedQuery"
     alias_hint: str
     attach_phase: Literal["row", "combined"] = "row"
+    # DEV-1838 D4 — the typed producer kernel: how the producer computes its
+    # one row per grain group. ``plain`` is the grouped aggregate;
+    # ``trailing-window`` drives the interval-join emission; ``ranked`` takes
+    # drives the ROW_NUMBER pick emission (ex-RankedAggregatePlan homes).
+    kernel: ProducerKernel = Field(
+        default_factory=PlainProducerKernel, discriminator="kind",
+    )
     join_pairs: List[Tuple[ValueKey, SlotId]] = Field(default_factory=list)
     substitutions: List[RegroupSubstitution] = Field(default_factory=list)
     partition_display: List[str] = Field(default_factory=list)
@@ -669,15 +524,6 @@ class PlannedQuery(BaseModel):
     join_plan: List[JoinRequirement] = Field(default_factory=list)
     row_slots: List[ValueSlot] = Field(default_factory=list)
     aggregate_slots: List[ValueSlot] = Field(default_factory=list)
-    cross_model_aggregate_plans: List[CrossModelAggregatePlan] = Field(default_factory=list)
-    windowed_aggregate_plans: List["WindowedAggregatePlan"] = Field(default_factory=list)
-    # DEV-1748 (B9) — one entry per ``first`` / ``last`` aggregate slot. A
-    # sibling of ``windowed_aggregate_plans``: both name aggregates that need
-    # their own rows and therefore their own CTE, joined back on the query
-    # grain (P-C). A RE-ROOTED cross-model first/last is NOT here — it stays on
-    # ``CrossModelAggregatePlan``, whose nested sub-plan carries the ranked plan
-    # instead, in the sub-plan's own coordinate system.
-    ranked_aggregate_plans: List["RankedAggregatePlan"] = Field(default_factory=list)
     # DEV-1825 — planner-synthesized regroup producers attached on their
     # partition grain (aggregation-based dimensions, and later the migrated
     # partitioned-measure join-backs). One per distinct partition-key set.
@@ -798,12 +644,5 @@ class PlannedQuery(BaseModel):
         return self
 
 
-# ``CrossModelAggregatePlan.rerooted_plan`` is a forward reference to
-# ``PlannedQuery`` (defined above only after the CMA plan). Resolve it now
-# that both classes exist (DEV-1450 stage 7b.15e, C1).
-CrossModelAggregatePlan.model_rebuild()
-# ``WindowedAggregatePlan.src_filter_rewrites`` forward-references
-# ``SrcFilterRewrite``, declared just after it (DEV-1732).
-WindowedAggregatePlan.model_rebuild()
 # ``RegroupAttachPlan.producer_plan`` forward-references ``PlannedQuery`` (DEV-1825).
 RegroupAttachPlan.model_rebuild()

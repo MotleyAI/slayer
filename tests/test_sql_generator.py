@@ -4852,17 +4852,9 @@ class TestDev1709WidenedIsolationShapes:
         )
 
     async def test_ranked_isolation_survives_the_recursion_guard(self) -> None:
-        """With isolation DISABLED — exactly how the recursive sub-plan is
-        built — two same-sql, different-CAST-type crossing first/lasts still get
-        a ranked scope EACH, and each materialises its own type-distinct value.
-
-        This asserted they shared ONE ranked subquery, because the guard
-        suppressed isolation and the host base carried every ranking. The guard
-        exists to stop a CROSSING aggregate re-isolating forever inside its own
-        sub-plan; a ranked aggregate is rendered, never re-planned, and inside a
-        sub-plan it still needs its own row ordering — so it is deliberately not
-        suppressed. The type-distinctness claim is unchanged and is what the
-        two CASTs below still pin."""
+        """Two same-sql, different-CAST-type crossing first/lasts get a ranked
+        producer scope EACH, and each materialises its own type-distinct value
+        (DEV-1838 D4: the kernel form of the DEV-1709 type-distinctness pin)."""
         orders = self._orders_model(extra_columns=[
             Column(name="region_pay_d", sql="customers.regions.population * 2",
                    type=DataType.DOUBLE),
@@ -4880,13 +4872,11 @@ class TestDev1709WidenedIsolationShapes:
                 ModelMeasure(formula="region_pay_i:last(orders.created_at)"),
             ],
         )
-        planned = plan_query(
-            query=query, bundle=bundle, disable_host_rooted_isolation=True,
-        )
+        planned = plan_query(query=query, bundle=bundle)
         gen = SQLGenerator(dialect="postgres")
         sql = gen.generate_from_planned(planned, bundle=bundle)
         norm = _norm(sql)
-        assert len(_re.findall(r"_rk_\w+\s+AS\s*\(", sql)) == 2, sql
+        assert len(_re.findall(r"ROW_NUMBER", sql)) == 2, sql
         assert norm.count(" AS _val") == 2, (
             f"same SQL, different type must materialise two distinct _vals:"
             f"\n{sql}"
@@ -4899,15 +4889,9 @@ class TestDev1709WidenedIsolationShapes:
     async def test_a_ranked_sibling_no_longer_drags_a_kwarg_into_its_scope(
         self,
     ) -> None:
-        """A crossing KWARG next to a first/last, with isolation disabled.
-
-        This asserted the kwarg was materialised as a ``_val`` inside the RANKED
-        subquery — because one first/last used to wrap the whole host base, so
-        every sibling was computed over the ranked row set and any crossing ref
-        it carried had to cross that scope boundary. The ranking has its own
-        scope now, so the guard means exactly what it says: the crossing kwarg
-        renders INLINE in ``_base``, which is legal there, and the ranked CTE
-        neither sees it nor is affected by it."""
+        """A crossing KWARG next to a first/last: the ranking has its own
+        producer scope (DEV-1838 D4), so the crossing kwarg lives in ITS OWN
+        producer and the ranked producer neither sees it nor is affected."""
         orders = self._orders_model(extra_columns=[
             Column(name="region_weight", sql="customers.regions.weight",
                    type=DataType.DOUBLE),
@@ -4923,17 +4907,18 @@ class TestDev1709WidenedIsolationShapes:
                 ModelMeasure(formula="amount:last(orders.created_at)"),
             ],
         )
-        planned = plan_query(
-            query=query, bundle=bundle, disable_host_rooted_isolation=True,
-        )
+        planned = plan_query(query=query, bundle=bundle)
         gen = SQLGenerator(dialect="postgres")
         sql = gen.generate_from_planned(planned, bundle=bundle)
-        base_body = _extract_cte_body(sql, r"_base")
-        assert "customers__regions.weight" in base_body, sql
-        assert "LEFT JOIN regions AS customers__regions" in base_body, sql
-        rk_body = _extract_cte_body(sql, r"_rk_\w+")
-        assert "customers__regions.weight" not in rk_body, sql
+        assert "ROW_NUMBER" in sql, sql
+        # The ranked producer's CTE carries the ranking but not the kwarg.
+        rk_body = _extract_cte_body(sql, r"_cm_orders__amount_last\w*")
         assert "ROW_NUMBER" in rk_body, sql
+        assert "customers__regions.weight" not in rk_body, sql
+        # The crossing kwarg lives in the weighted producer's own CTE.
+        wa_body = _extract_cte_body(sql, r"_cm_orders__amount_weighted_avg\w*")
+        assert "customers__regions.weight" in wa_body, sql
+        assert "LEFT JOIN regions AS customers__regions" in wa_body, sql
 
     # DEV-1835 lift: local first/last now desugar to the unified ``_cm_``
     # regroup producer, so they ISOLATE universally — an implicitly-resolved
@@ -9398,28 +9383,28 @@ class TestIsolatedFilteredMeasureCTEs:
         # Filter literals must both apply.
         assert "1000" in sql
         assert "10" in sql
-        # An unfiltered SUM over the host amount column must appear in _base —
-        # the hidden promotion of the filter-only operand.
+        # DEV-1838 D5 — each conjunct routes to its OWN scope: the local
+        # operand's conjunct stays a HAVING on ``_base`` (its natural scope —
+        # each output row is one ``_base`` group, so this is value-identical
+        # to the former outer-WHERE form), while the isolated aggregate's
+        # conjunct routes to the outer combined WHERE.
         base_body = _extract_cte_body(sql, r"_base")
-        assert _re.search(r"SUM\(\s*claim_amount\.amount\s*\)", base_body), (
-            f"Expected hidden SUM(claim_amount.amount) for filter-only operand in _base:\n{base_body}"
+        assert _re.search(r"SUM\(\s*claim_amount\.amount\s*\)\s*>\s*10", base_body), (
+            f"Expected HAVING SUM(claim_amount.amount) > 10 for the local "
+            f"conjunct in _base:\n{base_body}"
         )
-        # The outer combined SELECT (after all CTEs) must reference BOTH the
-        # isolated aggregate alias (joined-back from _cm_) AND the hidden
-        # operand alias from _base — that's the outer WHERE evaluating both.
+        # The outer combined SELECT (after all CTEs) applies the isolated
+        # aggregate's conjunct against the joined-back ``_cm_`` column.
         last_cte_close = sql.rfind("\n)")
         assert last_cte_close > 0
         outer = sql[last_cte_close + 2:]
         assert "loss_payment_amt_sum" in outer, (
             f"Outer must reference the isolated aggregate alias:\n{outer}"
         )
-        # The hidden operand alias must be REFERENCED in the outer WHERE...
-        assert "total_amount_sum" in outer, (
-            f"Outer must reference the hidden filter operand alias 'total_amount_sum':\n{outer}"
+        assert "1000" in outer, (
+            f"Isolated-aggregate conjunct must apply at the outer WHERE:\n{outer}"
         )
-        # ...but it must NOT surface in the OUTER public projection. Extract
-        # the public SELECT-list (between ``SELECT`` and ``FROM``) and assert
-        # the hidden alias is absent. Use sqlglot to parse robustly.
+        # The filter-only operand must NOT surface in the public projection.
         parsed = sqlglot.parse_one(sql, dialect="postgres")
         named_aliases = {
             sel.alias_or_name for sel in parsed.find(sqlglot.exp.Select).expressions

@@ -154,6 +154,7 @@ def compute_aggregate_input_join_paths(
     anchor_model: Optional[SlayerModel],
     anchor_relation: str,
     bundle: ResolvedSourceBundle,
+    include_source: bool = True,
 ) -> Tuple[Tuple[str, ...], ...]:
     """Ordered, de-duplicated tuple of join-path prefixes crossed by the
     aggregate's explicit inputs (source, positional args, kwargs, and
@@ -161,11 +162,18 @@ def compute_aggregate_input_join_paths(
 
     ``()`` for a purely-local aggregate. ``column_filter_key`` crossing is
     intentionally excluded — read ``referenced_join_paths`` on the key.
+    ``include_source=False`` drops the SOURCE's own crossings (DEV-1838 D5:
+    a source that reads through a join consumes the target's values
+    per-match, which is legal; only filter references and arguments gate).
     """
     if anchor_model is None:
         return ()
     out: _PathList = []
-    refs: List[object] = [key.source, *key.args, *(v for _, v in key.kwargs)]
+    refs: List[object] = [
+        *([key.source] if include_source else []),
+        *key.args,
+        *(v for _, v in key.kwargs),
+    ]
     for ref in refs:
         _collect_ref_paths(
             ref,

@@ -1057,17 +1057,18 @@ class TestDev1709SiblingProtection:
     async def test_crossing_kwarg_multiply_per_match_value(
         self, dev1709_env: SlayerQueryEngine,
     ) -> None:
-        # F1 pin for the newly-isolated crossing-kwarg kind: inside its CTE
-        # the weighted_avg still fans out per matched line item —
-        # (10*2 + 10*3 + 30*5) / (2+3+5) = 200/10 = 20.0.
+        # DEV-1838 D5 (class-(d) crossed-argument ledger row): a kwarg
+        # crossing the unproven 1:N fanned the host operand silently — now a
+        # hard error naming the hop and the remedy.
         query = SlayerQuery(
             source_model="orders",
             measures=[ModelMeasure(formula="amount:weighted_avg(weight=li_qty)")],
         )
-        result = await dev1709_env.execute(query=query)
-        row = result.data[0]
-        wa_key = next(k for k in row if "weighted_avg" in k)
-        assert float(row[wa_key]) == pytest.approx(20.0)
+        with pytest.raises(ValueError) as ei:
+            await dev1709_env.execute(query=query)
+        message = str(ei.value)
+        assert "line_items" in message
+        assert any(w in message.lower() for w in ("cardinality", "unique", "declare"))
 
     async def test_host_row_filter_inherited_into_isolated_scope(
         self, dev1709_env: SlayerQueryEngine,

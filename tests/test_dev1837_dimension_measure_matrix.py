@@ -207,7 +207,7 @@ class TestMatrix:
 
 class TestCoexistenceTriples:
     """Row attach + combined attach + transform in ONE query (the
-    ``_render_with_cross_model_plans`` chain, task 2.5). Each value must also
+    ``_render_with_combined_attaches`` chain, task 2.5). Each value must also
     equal its value when queried alone (Codex F4 — direct solo runs, not just
     the shared oracle tables)."""
 

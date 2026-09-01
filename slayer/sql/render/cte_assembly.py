@@ -28,7 +28,7 @@ WITH scope and case-folds on dialects that fold.
 
 from __future__ import annotations
 
-from typing import Dict, List, Sequence
+from typing import AbstractSet, Dict, List, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
@@ -43,16 +43,21 @@ class CteEntry(BaseModel):
 
     name: str
     query: exp.Expression
-    #: Names of CTEs this one references. Must all be present in the same
-    #: assembly; a dangling name is a wiring bug, not a no-op.
+    #: Names of CTEs this one references. A name absent from this assembly is
+    #: ordered by the ENCLOSING assembly after hoisting (DEV-1838).
     depends_on: List[str] = Field(default_factory=list)
 
 
-def _index_entries(entries: Sequence[CteEntry]) -> Dict[str, CteEntry]:
+def _index_entries(
+    entries: Sequence[CteEntry], *, external_names: AbstractSet[str],
+) -> Dict[str, CteEntry]:
     """Name → entry, rejecting a duplicate name or a dangling dependency.
 
     Both are wiring bugs whose SQL would be invalid or silently wrong, so they
-    fail here rather than at the database.
+    fail here rather than at the database. ``external_names`` (DEV-1838) are
+    the exception: shared producer CTEs that live in the ENCLOSING assembly —
+    a hoistable producer's chain is assembled locally, then hoisted flat, so a
+    dep may legally name one; the enclosing assembly orders that edge.
     """
     by_name: Dict[str, CteEntry] = {}
     for entry in entries:
@@ -62,7 +67,10 @@ def _index_entries(entries: Sequence[CteEntry]) -> Dict[str, CteEntry]:
             )
         by_name[entry.name] = entry
     for entry in entries:
-        unknown = [d for d in entry.depends_on if d not in by_name]
+        unknown = [
+            d for d in entry.depends_on
+            if d not in by_name and d not in external_names
+        ]
         if unknown:
             raise ValueError(
                 f"CTE {entry.name!r} declares unknown dependencies "
@@ -92,7 +100,9 @@ def _topological_order(
             raise ValueError(f"dependency cycle between CTEs: {cycle}")
         visiting.append(entry.name)
         for dep in entry.depends_on:
-            _visit(by_name[dep])
+            target = by_name.get(dep)
+            if target is not None:
+                _visit(target)
         visiting.pop()
         emitted.add(entry.name)
         ordered.append(entry)
@@ -103,7 +113,10 @@ def _topological_order(
 
 
 def assemble_with_chain(
-    *, entries: Sequence[CteEntry], final: exp.Select,
+    *,
+    entries: Sequence[CteEntry],
+    final: exp.Select,
+    external_names: AbstractSet[str] = frozenset(),
 ) -> exp.Select:
     """Attach ``entries`` to ``final`` as a WITH clause in dependency order.
 
@@ -124,7 +137,7 @@ def assemble_with_chain(
     if not entries:
         return final
 
-    by_name = _index_entries(entries)
+    by_name = _index_entries(entries, external_names=external_names)
     ordered = _topological_order(entries=entries, by_name=by_name)
 
     out = final.copy()

@@ -548,26 +548,26 @@ class TestWindowedGrainInvariant:
         the planner always includes the window's time dimension in the grain.
         Pinned at plan level so the render path does not need a special case.
 
-        MIGRATED (DEV-1835): a local windowed measure is desugared into a
-        regroup producer, so the windowed plan now lives inside the producer's
-        nested plan. The grain invariant is unchanged — pinned there."""
+        MIGRATED (DEV-1835/DEV-1838): a local windowed measure is desugared
+        into a regroup producer whose attach carries the trailing-window
+        kernel. The grain invariant is unchanged — pinned on the attach."""
         planned = plan_query(
             query=_windowed_declared_first_query(), bundle=_chain_bundle(),
         )
-        assert not planned.windowed_aggregate_plans
-        windowed_plans = [
-            wm for rp in planned.regroup_attach_plans
-            for wm in rp.producer_plan.windowed_aggregate_plans
+        windowed_attaches = [
+            rp for rp in planned.regroup_attach_plans
+            if rp.kernel.kind == "trailing-window"
         ]
-        assert windowed_plans, "expected a windowed plan inside a regroup producer"
-        for wm in windowed_plans:
-            assert wm.grain_slot_ids, (
-                "a windowed plan has an EMPTY grain — the outer join-back would "
-                "degenerate to a CROSS JOIN and multiply rows."
+        assert windowed_attaches, "expected a trailing-window kernel producer"
+        for attach in windowed_attaches:
+            assert attach.join_pairs, (
+                "a windowed producer has an EMPTY grain — the outer join-back "
+                "would degenerate to a CROSS JOIN and multiply rows."
             )
-            assert wm.window_time_dimension_slot_id in wm.grain_slot_ids, (
-                f"the window time dimension {wm.window_time_dimension_slot_id} "
-                f"is not part of the grain {wm.grain_slot_ids}."
+            grain_slot_ids = {sid for _, sid in attach.join_pairs}
+            assert attach.kernel.bucket_slot_id in grain_slot_ids, (
+                f"the window time dimension {attach.kernel.bucket_slot_id} "
+                f"is not part of the grain {grain_slot_ids}."
             )
 
 

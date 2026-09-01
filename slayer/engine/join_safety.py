@@ -13,6 +13,7 @@ only when every hop between is provably many-to-one.
 
 from __future__ import annotations
 
+import re
 from typing import Optional, Sequence
 
 from pydantic import BaseModel
@@ -28,21 +29,48 @@ from slayer.engine.cardinality import (
 __all__ = [
     "provably_to_one",
     "safe_reachable",
+    "may_inline_crossing_inputs",
     "audit_join_safety",
     "JoinSafetyFinding",
 ]
 
 
+def may_inline_crossing_inputs(crossed_paths: Sequence[tuple]) -> bool:  # NOSONAR(S1172) — crossed_paths is the documented DEV-1688 seam; the cardinality-aware decision reads it, hardcoded False until then.
+    """Whether a local aggregate whose inputs cross ``crossed_paths`` may stay
+    inline in the host base instead of desugaring onto a producer.
+
+    Hardcoded ``False``: a crossing input gets a producer, always. Inlining is
+    only safe when every crossed hop is provably 1:N-free for this aggregate
+    (the DEV-1688 cardinality work); this is the single seam that answer will
+    flip.
+    """
+    return False
+
+
+#: A ``Column.sql`` that is a bare identifier — a physical-column rename, which
+#: carries the column's uniqueness with it (unlike a derived expression).
+_BARE_IDENT_RE = re.compile(r"[A-Za-z_]\w*")
+
+
+def _physical_name(column) -> str:
+    """A column's physical spelling: a bare-identifier ``sql`` rename, else the
+    model name. Join pairs may use either spelling; uniqueness proofs must
+    match both."""
+    sql = (column.sql or "").strip()
+    return sql if sql and _BARE_IDENT_RE.fullmatch(sql) else column.name
+
+
 def _unique_key_sets(model: SlayerModel) -> list[list[str]]:
-    """The declared unique key-sets of ``model``: the composite primary key as
-    one set, plus every solo-``unique`` column as a singleton."""
+    """The declared unique key-sets of ``model`` in PHYSICAL spelling: the
+    composite primary key as one set, plus every solo-``unique`` column as a
+    singleton."""
     sets: list[list[str]] = []
-    pk = [c.name for c in model.columns if c.primary_key]
+    pk = [_physical_name(c) for c in model.columns if c.primary_key]
     if pk:
         sets.append(pk)
     for c in model.columns:
         if c.unique:
-            sets.append([c.name])
+            sets.append([_physical_name(c)])
     return sets
 
 
@@ -53,10 +81,16 @@ def provably_to_one(*, join: ModelJoin, target_model: SlayerModel) -> bool:
     cover a declared unique key-set of the target (structural proof). Composite
     uniqueness proves only under complete coverage (F6): ``is_key_set_unique``
     requires a full unique set to be a subset of the join's target columns.
+    Both sides compare in PHYSICAL spelling, so a join pair naming the raw
+    column still matches a PK declared on its bare-rename model column.
     """
     if join.cardinality in (JoinCardinality.MANY_TO_ONE, JoinCardinality.ONE_TO_ONE):
         return True
-    target_cols = [pair[1] for pair in join.join_pairs]
+    by_name = {c.name: c for c in target_model.columns}
+    target_cols = [
+        _physical_name(by_name[pair[1]]) if pair[1] in by_name else pair[1]
+        for pair in join.join_pairs
+    ]
     return is_key_set_unique(
         key_columns=target_cols, unique_key_sets=_unique_key_sets(target_model)
     )

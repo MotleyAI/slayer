@@ -27,7 +27,7 @@ deleted (DEV-1749). The seams the migration added:
   STRUCTURE renders here; only the aggregate LEAF goes to
   :class:`CompositeFacilities`'s ``agg_builder`` → the generator's ``_build_agg``
   (byte-identical). First/last aggregates render as a planned
-  ``RankedAggregatePlan`` CTE, not at render time.
+  ranked-kernel producer CTE, not at render time.
 * **Alias-environment / Outer-wrapper** (POST-phase filters, window-transform
   inputs, consecutive-periods predicates, the cross-model transform chain, and
   the DEV-1503 outer combined WHERE) — carry :class:`AliasFacilities` and

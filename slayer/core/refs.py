@@ -145,7 +145,7 @@ def agg_kwarg_canonical_str(value: Any) -> str:
     identifiers, qualified names, or numeric literals. Sites that build the
     synth ``AggRenderSpec`` from a typed ``AggregateKey`` -- AND the two
     canonical-alias renderers that previously called ``str(v)`` directly
-    (``slayer/sql/generator.py`` and ``slayer/engine/cross_model_planner.py``)
+    (``slayer/sql/generator.py``)
     -- route every kwarg value through this helper instead, so a ``ColumnKey``
     never surfaces as Pydantic-repr noise.
 

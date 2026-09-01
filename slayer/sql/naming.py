@@ -373,8 +373,8 @@ AggAliasProfile = Literal[
     # alias. Prefixes BOTH the source relation and the join path; an
     # unrecognised source collapses to the star form.
     "cross_model_cte",
-    # cross_model_planner._aggregate_alias — the aggregate's output column
-    # inside its CTE. Bare canonical name; no prefix of any kind.
+    # The aggregate's output column inside its producer CTE. Bare canonical
+    # name; no prefix of any kind.
     "cte_schema",
     # planning._canonical_name — a hidden slot's declared name. Bare, but an
     # unrecognised source gets an explicit ``_agg_<name>`` placeholder rather

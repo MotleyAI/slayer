@@ -161,8 +161,8 @@ class TestEmptyBaseGrainPlanNode:
         aggregate — which is what leaves ``_base`` with no grain columns, and so
         why the combined SELECT CROSS JOINs rather than joining on a predicate.
 
-        Deliberately NOT asserted against ``CrossModelAggregatePlan.shared_grain_slots``:
-        that list can name a HIDDEN row slot a filter created (``status`` in the
+        Deliberately NOT asserted against the producer's shared-grain slots:
+        that set can name a HIDDEN row slot a filter created (``status`` in the
         filtered shape), which never becomes a projected grain column. The
         emitted CROSS JOIN is asserted directly in
         ``TestEmittedSqlIsUnchanged.test_combined_select_cross_joins_the_scalar_cte``,
@@ -181,10 +181,6 @@ class TestEmptyBaseGrainPlanNode:
             }
             slots_by_id = {s.id: s for s in planned.row_slots + planned.aggregate_slots}
             isolated = {
-                p.aggregate_slot_id for p in planned.cross_model_aggregate_plans
-            } | {
-                p.aggregate_slot_id for p in planned.windowed_aggregate_plans
-            } | {
                 sid for sid in planned.projection
                 if slots_by_id.get(sid) is not None
                 and slots_by_id[sid].key in attach_placeholders

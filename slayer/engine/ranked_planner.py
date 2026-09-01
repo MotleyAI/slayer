@@ -1,16 +1,14 @@
-"""Plan-time construction of ``RankedAggregatePlan`` — the ``first`` / ``last``
-route (P-C / P-D).
+"""Ranking-key resolution for the ``first`` / ``last`` route (P-C / P-D).
 
 A ranked aggregate needs its own ROW ORDERING, so under P-C it compiles to a
-plan-shaped CTE rooted where its rows live and joined back on the query grain.
-Everything that decision needs is settled HERE — which column the ranking runs
-over, what the grain is in the ranked scope's own coordinates, which filters the
-CTE evaluates — so the renderer emits a plan rather than re-deriving one.
+ranked-kernel producer (DEV-1838 D4) rooted where its rows live and joined back
+on the query grain. The one decision this module owns is WHICH column the
+ranking runs over — settled at plan time so the renderer never re-derives it.
 
-The ranking column in particular used to be resolved at render time, twice: once
-for the host base's ranked wrap and once, by a different precedence, inside the
-cross-model CTE. They agreed by accident on the cases anyone had tried. One
-resolver with an explicit per-scope precedence replaces both:
+The ranking column used to be resolved at render time, twice: once for the host
+base's ranked wrap and once, by a different precedence, inside the cross-model
+CTE. They agreed by accident on the cases anyone had tried. One resolver with
+an explicit per-scope precedence replaces both:
 
 * **host-rooted** — an explicit positional time arg, else the first
   ``DATE``/``TIMESTAMP`` row dimension, else the first time dimension's RAW
@@ -27,7 +25,7 @@ scope's users already see.
 
 from __future__ import annotations
 
-from typing import Any, FrozenSet, List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 from slayer.core.enums import DataType
 from slayer.core.keys import (
@@ -36,13 +34,10 @@ from slayer.core.keys import (
     ColumnSqlKey,
     TimeTruncKey,
     ValueKey,
-    column_path,
     reroot_value_key,
 )
 from slayer.core.models import SlayerModel
 from slayer.engine.planned import (
-    RankedAggregatePlan,
-    RankedGrainMember,
     SlotId,
     ValueSlot,
 )
@@ -50,9 +45,8 @@ from slayer.engine.source_bundle import ResolvedSourceBundle
 
 __all__ = [
     "RANKED_AGGREGATIONS",
-    "build_host_ranked_plan",
-    "build_target_ranked_plan",
     "explicit_ranking_time_arg",
+    "ordered_row_keys",
     "resolve_ranking_time_key",
 ]
 
@@ -236,184 +230,5 @@ def ordered_row_keys(
     return ordered
 
 
-def _host_grain(
-    *,
-    row_slots: Sequence[ValueSlot],
-    combined_placeholder_keys: FrozenSet[ValueKey] = frozenset(),
-) -> List[RankedGrainMember]:
-    """The host grain: every VISIBLE row slot, in one coordinate system.
-
-    Hidden row slots are excluded for the same reason the windowed plan excludes
-    them — they are filter/order scaffolding the host base does not group by, so
-    partitioning the ranking over one would split groups the result never has.
-    """
-    return [
-        RankedGrainMember(host_slot_id=slot.id, ranked_key=slot.key)
-        for slot in row_slots
-        if not slot.hidden
-        # DEV-1824 — a COMBINED regroup placeholder (a partitioned MEASURE
-        # attached at the combined SELECT) is a ColumnKey ROW slot by
-        # substitution but is an aggregate value, not a query dimension: it is
-        # not in the ranked ``_rk_`` scope and must not partition the ranking.
-        # DEV-1835 D4 — a ROW-attach placeholder is a computed dimension the
-        # producer groups by, so only the combined set is excluded.
-        and slot.key not in combined_placeholder_keys
-    ]
 
 
-def _target_grain(
-    *,
-    row_slots: Sequence[ValueSlot],
-    shared_grain_slots: Sequence[SlotId],
-    public_projection: Sequence[SlotId],
-    target_path: Tuple[str, ...],
-) -> List[RankedGrainMember]:
-    """The grain a TARGET-rooted ranked CTE shares with the host.
-
-    Only host dimensions that lie ON the target's join path can be expressed in
-    the target's coordinates at all; the rest broadcast (the CTE is scalar and
-    CROSS JOINed), which is the forward cross-model path's existing semantics.
-    Re-rooting is what makes the rest reachable, and that route keeps its
-    ``CrossModelAggregatePlan``.
-    """
-    by_id = {s.id: s for s in row_slots}
-    projected = set(public_projection)
-    members: List[RankedGrainMember] = []
-    for sid in shared_grain_slots:
-        slot = by_id.get(sid)
-        if slot is None or slot.hidden or sid not in projected:
-            continue
-        path = _row_key_path(slot.key)
-        if not path or path != target_path:
-            # Empty: host-local, broadcast. Non-terminal / off-branch: not this
-            # target's grain. Both are the forward path's existing behaviour.
-            continue
-        members.append(RankedGrainMember(
-            host_slot_id=sid,
-            ranked_key=reroot_value_key(slot.key, target_path=target_path),
-        ))
-    return members
-
-
-def _row_key_path(key: ValueKey) -> Tuple[str, ...]:
-    if isinstance(key, (ColumnKey, ColumnSqlKey)):
-        return key.path
-    if isinstance(key, TimeTruncKey):
-        return column_path(key.column)
-    return ()
-
-
-def build_host_ranked_plan(
-    *,
-    slot: ValueSlot,
-    row_slots: Sequence[ValueSlot],
-    public_projection: Sequence[SlotId],
-    source_model: SlayerModel,
-    bundle: ResolvedSourceBundle,
-    where_filter_ids: Sequence[str] = (),
-    combined_placeholder_keys: FrozenSet[ValueKey] = frozenset(),
-) -> RankedAggregatePlan:
-    """One host-rooted ranked plan.
-
-    ``where_filter_ids`` are the ROW-phase host filters (user filters AND the
-    model's own ``filters``) the CTE ALSO evaluates. They are duplicated rather
-    than relocated: a LEFT JOIN back propagates a value but never an exclusion,
-    so a row filter that only reached the CTE would silently become "blank out
-    their measure" instead of "exclude these rows" (the PR-4 B6 ruling, one
-    route over).
-    """
-    key = slot.key
-    assert isinstance(key, AggregateKey)
-    return RankedAggregatePlan(
-        aggregate_slot_id=slot.id,
-        agg=key.agg,
-        root_model=source_model.name,
-        datasource=source_model.data_source,
-        target_path=(),
-        join_chain=[],
-        ranking_time_key=resolve_ranking_time_key(
-            key=key,
-            root_model=source_model,
-            bundle=bundle,
-            row_keys=ordered_row_keys(
-                row_slots=row_slots, public_projection=public_projection,
-            ),
-        ),
-        grain=_host_grain(
-            row_slots=row_slots,
-            combined_placeholder_keys=combined_placeholder_keys,
-        ),
-        # The model's own ``filters`` are ROW-phase entries of
-        # ``filters_by_phase`` like any other, so they arrive here by id rather
-        # than as text — unlike the target-rooted case, where the TARGET's
-        # filters are not in the host's filter list at all.
-        where_filter_ids=list(where_filter_ids),
-        applied_filter_ids=list(where_filter_ids),
-        hidden=slot.hidden,
-        public_alias=None if slot.hidden else slot.public_name,
-    )
-
-
-def build_target_ranked_plan(
-    *,
-    slot: ValueSlot,
-    cross_model_plan: Any,
-    row_slots: Sequence[ValueSlot],
-    public_projection: Sequence[SlotId],
-    bundle: ResolvedSourceBundle,
-) -> RankedAggregatePlan:
-    """One target-rooted ranked plan, re-shaped from the forward cross-model
-    plan the same strategy produced.
-
-    The routing decisions — which host filters this CTE evaluates as WHERE, as
-    HAVING, which are unreachable — are the cross-model planner's decision table
-    and are taken verbatim. Only the two things that are genuinely about RANKING
-    are computed here: the ranking column in the target's coordinates, and the
-    grain in the same.
-    """
-    key = slot.key
-    assert isinstance(key, AggregateKey)
-    target_path = tuple(getattr(key.source, "path", ()))
-    target_model = bundle.get_referenced_model(cross_model_plan.target_model)
-    if target_model is None:
-        raise ValueError(
-            f"Ranked cross-model target {cross_model_plan.target_model!r} is "
-            f"not in the resolved source bundle.",
-        )
-    return RankedAggregatePlan(
-        aggregate_slot_id=slot.id,
-        agg=key.agg,
-        root_model=target_model.name,
-        datasource=cross_model_plan.datasource,
-        target_path=target_path,
-        join_chain=list(cross_model_plan.join_chain),
-        ranking_time_key=resolve_ranking_time_key(
-            key=key,
-            root_model=target_model,
-            bundle=bundle,
-            target_path=target_path,
-        ),
-        grain=_target_grain(
-            row_slots=row_slots,
-            shared_grain_slots=cross_model_plan.shared_grain_slots,
-            public_projection=public_projection,
-            target_path=target_path,
-        ),
-        where_filter_ids=list(cross_model_plan.where_filter_ids),
-        # A ranked CTE NEVER emits a HAVING, so it must not claim one. The
-        # strategy routes an aggregate-phase filter there for a plain
-        # cross-model CTE; on a ranked one the same predicate goes to the outer
-        # combined SELECT instead, because this CTE is LEFT JOINed back and
-        # dropping its row would resurrect the host row carrying NULL
-        # (DEV-1503). ``where``/``having`` are INSTRUCTIONS about where a filter
-        # is evaluated — carrying an id the renderer ignores would be an
-        # instruction nothing follows. The audit (``applied_filter_ids``) keeps
-        # the full record, and ``_assert_ranked_having_is_covered`` proves the
-        # predicate really is applied somewhere.
-        having_filter_ids=[],
-        applied_filter_ids=list(cross_model_plan.applied_filter_ids),
-        target_model_filters=list(cross_model_plan.target_model_filters),
-        dropped_filter_warnings=list(cross_model_plan.dropped_filter_warnings),
-        hidden=cross_model_plan.hidden,
-        public_alias=cross_model_plan.public_alias,
-    )

@@ -13,10 +13,8 @@ These tests pin the planner-side contract of DEV-1503's isolation feature:
    ``disable_host_rooted_isolation=True`` (DEV-1709 rename of
    ``disable_dev1503_isolation``) does NOT recursively re-isolate the
    same filtered-local measure (otherwise the isolation recurses forever).
-4. A filtered-local first/last measure's host-rooted sub-plan contains
-   zero nested ``cross_model_aggregate_plans`` — so the
-   ``skip_cross_model_aggs=True`` + local-first/last crash path in
-   ``_build_base_select_for_planned`` stays unreachable.
+4. A filtered-local first/last measure's host-rooted producer plan holds
+   its measure inline — zero nested attaches — so nothing recurses.
 
 These complement the generator-shape tests in
 ``tests/test_sql_generator.py::TestIsolatedFilteredMeasureCTEs``.
@@ -39,7 +37,6 @@ from slayer.core.models import (
 )
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.column_filter_paths import compute_column_filter_join_paths
-from slayer.engine.planned import CrossModelAggregatePlan
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import plan_query
 
@@ -176,7 +173,13 @@ def _orders_with_derived_eu_filter(*, eu_amount_filter: str):
 
 
 def _agg_slot_for(planned, name: str):
-    """Find the public aggregate slot whose canonical alias contains ``name``."""
+    """Find the aggregate slot whose canonical alias contains ``name`` — the
+    top level first, then inside producer plans (DEV-1838 D5: a crossing
+    aggregate lives on its host-rooted producer)."""
+    for attach in planned.regroup_attach_plans:
+        nested = _agg_slot_for(attach.producer_plan, name)
+        if nested is not None:
+            return nested
     for slot in planned.aggregate_slots:
         if name in (slot.declared_name or "") or name in (slot.public_name or ""):
             return slot
@@ -367,8 +370,8 @@ class TestCrossModelPlannerTriggerPredicate:
             dimensions=["claim.claim_number"],
         )
         planned = plan_query(query=q, bundle=_bundle(host))
-        assert planned.cross_model_aggregate_plans == [], (
-            f"Plain local aggregate must not trigger isolation; got plans: {planned.cross_model_aggregate_plans}"
+        assert planned.regroup_attach_plans == [], (
+            f"Plain local aggregate must not trigger isolation; got attaches: {planned.regroup_attach_plans}"
         )
 
     def test_same_model_filter_does_not_trigger(self):
@@ -379,8 +382,8 @@ class TestCrossModelPlannerTriggerPredicate:
             dimensions=["claim.claim_number"],
         )
         planned = plan_query(query=q, bundle=_bundle(host))
-        assert planned.cross_model_aggregate_plans == [], (
-            f"Same-model filter must not trigger isolation; got plans: {planned.cross_model_aggregate_plans}"
+        assert planned.regroup_attach_plans == [], (
+            f"Same-model filter must not trigger isolation; got attaches: {planned.regroup_attach_plans}"
         )
 
     def test_dotted_cross_model_filter_triggers_isolation(self):
@@ -391,14 +394,17 @@ class TestCrossModelPlannerTriggerPredicate:
             dimensions=["claim.claim_number"],
         )
         planned = plan_query(query=q, bundle=_bundle(host))
-        assert len(planned.cross_model_aggregate_plans) == 1, (
-            f"Expected 1 isolated plan; got {len(planned.cross_model_aggregate_plans)}"
+        # DEV-1838 D5: filtered-local isolates as a HOST-rooted producer.
+        attaches = [
+            a for a in planned.regroup_attach_plans
+            if a.attach_phase == "combined"
+        ]
+        assert len(attaches) == 1, (
+            f"Expected 1 host-rooted producer; got {attaches}"
         )
-        plan = planned.cross_model_aggregate_plans[0]
-        assert isinstance(plan, CrossModelAggregatePlan)
-        # The CTE is rooted at the HOST model for the filtered-local case.
-        assert plan.cte_root_model == "claim_amount", (
-            f"Expected cte_root_model='claim_amount' for filtered-local; got {plan.cte_root_model!r}"
+        assert attaches[0].producer_root_model is None, (
+            f"Expected a HOST-rooted producer for filtered-local; got root "
+            f"{attaches[0].producer_root_model!r}"
         )
 
     def test_derived_ref_cross_model_filter_triggers_isolation(self):
@@ -411,11 +417,15 @@ class TestCrossModelPlannerTriggerPredicate:
             dimensions=["id"],
         )
         planned = plan_query(query=q, bundle=bundle)
-        assert len(planned.cross_model_aggregate_plans) == 1, (
-            f"Derived-ref cross-model filter must trigger isolation; got {len(planned.cross_model_aggregate_plans)} plans"
+        attaches = [
+            a for a in planned.regroup_attach_plans
+            if a.attach_phase == "combined"
+        ]
+        assert len(attaches) == 1, (
+            f"Derived-ref cross-model filter must trigger isolation; got "
+            f"{attaches}"
         )
-        plan = planned.cross_model_aggregate_plans[0]
-        assert plan.cte_root_model == "orders"
+        assert attaches[0].producer_root_model is None
 
     def test_cross_model_agg_still_triggers_via_path(self):
         """Pre-existing case must still work: an aggregate with a non-empty
@@ -434,7 +444,6 @@ class TestCrossModelPlannerTriggerPredicate:
         # DEV-1836: a genuine cross-model aggregate desugars into a TARGET-rooted
         # regroup producer (rooted at the join target ``loss_payment``), not a
         # host-rooted filtered-local plan.
-        assert not planned.cross_model_aggregate_plans
         assert len(planned.regroup_attach_plans) == 1
         assert planned.regroup_attach_plans[0].producer_root_model == "loss_payment"
 
@@ -493,7 +502,6 @@ class TestCrossModelPlannerTriggerPredicate:
         # DEV-1836: genuine cross-model, desugared into a TARGET-rooted producer
         # rooted at ``customers`` — NOT reinterpreted as a host-rooted
         # filtered-local plan (root None would be a local producer).
-        assert not planned.cross_model_aggregate_plans
         assert len(planned.regroup_attach_plans) == 1
         assert planned.regroup_attach_plans[0].producer_root_model == "customers"
 
@@ -522,11 +530,11 @@ class TestRecursionSuppression:
         planned = plan_query(
             query=q, bundle=_bundle(host), disable_host_rooted_isolation=True,
         )
-        # With the trigger suppressed, the filtered measure does NOT isolate
-        # — it stays as a plain local aggregate.
-        assert planned.cross_model_aggregate_plans == [], (
-            f"disable_host_rooted_isolation=True must suppress isolation; "
-            f"got plans: {planned.cross_model_aggregate_plans}"
+        # With local discovery suppressed, the filtered measure does NOT
+        # desugar — it stays as a plain local aggregate.
+        assert planned.regroup_attach_plans == [], (
+            f"disable_host_rooted_isolation=True must suppress the desugar; "
+            f"got attaches: {planned.regroup_attach_plans}"
         )
         # The aggregate slot must still exist on the (now non-isolated) plan.
         slot = _agg_slot_for(planned, "loss_payment_amt")
@@ -535,7 +543,7 @@ class TestRecursionSuppression:
     def test_isolated_sub_plan_has_no_nested_cma_plans(self):
         """An isolated filtered-local measure's host-rooted sub-plan
         (attached via ``rerooted_plan``) must contain zero nested
-        ``cross_model_aggregate_plans``. Without recursion suppression the
+        attaches. Without recursion suppression the
         sub-plan's same filtered measure would re-isolate → infinite recursion
         or a doubly-wrapped CTE. Pin both invariants here so a regression
         surfaces as a structural assertion, not a stack overflow."""
@@ -546,16 +554,15 @@ class TestRecursionSuppression:
             dimensions=["claim.claim_number"],
         )
         planned = plan_query(query=q, bundle=_bundle(host))
-        assert len(planned.cross_model_aggregate_plans) == 1
-        plan = planned.cross_model_aggregate_plans[0]
-        # Filtered-local plans always carry a host-rooted nested sub-plan.
-        assert plan.rerooted_plan is not None, (
-            "Filtered-local plan must carry rerooted_plan (the host-rooted sub-plan)"
-        )
-        sub = plan.rerooted_plan
-        assert sub.cross_model_aggregate_plans == [], (
-            f"Host-rooted sub-plan must have NO nested cross_model_aggregate_plans; "
-            f"got {sub.cross_model_aggregate_plans}"
+        # DEV-1838 D5: the nested scope is the producer plan itself.
+        (attach,) = [
+            a for a in planned.regroup_attach_plans
+            if a.attach_phase == "combined"
+        ]
+        sub = attach.producer_plan
+        assert sub.regroup_attach_plans == [], (
+            f"Host-rooted producer must hold its measure inline (recursion "
+            f"suppression); got nested attaches: {sub.regroup_attach_plans}"
         )
 
 
@@ -607,10 +614,11 @@ class TestHostModelFiltersInteractions:
             dimensions=["id"],
         )
         planned = plan_query(query=q, bundle=bundle)
-        assert len(planned.cross_model_aggregate_plans) == 1
-        plan = planned.cross_model_aggregate_plans[0]
-        assert plan.rerooted_plan is not None
-        sub = plan.rerooted_plan
+        (attach,) = [
+            a for a in planned.regroup_attach_plans
+            if a.attach_phase == "combined"
+        ]
+        sub = attach.producer_plan
         # The host model filter must appear in the sub-plan's filters_by_phase.
         sub_filter_texts = [
             fp.text for fp in sub.filters_by_phase if fp.text is not None
@@ -683,21 +691,16 @@ class TestFirstLastNoNestedCmaPlans:
             ],
         )
         planned = plan_query(query=q, bundle=_bundle(host))
-        assert planned.cross_model_aggregate_plans == []
-        # DEV-1835: the local ranked first/last desugars into a regroup
-        # producer; the ranked plan lives inside it, not at top level.
-        assert planned.ranked_aggregate_plans == []
+        # DEV-1835/DEV-1838: the local ranked first/last desugars into a
+        # ranked-kernel producer attach; the ranking lives on the kernel.
         assert len(planned.regroup_attach_plans) == 1
-        producer = planned.regroup_attach_plans[0].producer_plan
-        assert len(producer.ranked_aggregate_plans) == 1
-        plan = producer.ranked_aggregate_plans[0]
-        assert plan.root_model == "claim_amount"
-        assert plan.target_path == ()
+        attach = planned.regroup_attach_plans[0]
+        assert attach.kernel.kind == "ranked"
+        assert attach.producer_root_model is None  # rooted at the host
+        producer = attach.producer_plan
         # The measure's crossing ``Column.filter`` rides on the aggregate's own
-        # key, which this plan names — nothing about it needs a second plan.
-        slot = next(
-            s for s in producer.aggregate_slots if s.id == plan.aggregate_slot_id
-        )
+        # key, which the producer slot names — nothing needs a second plan.
+        (slot,) = producer.aggregate_slots
         assert slot.key.column_filter_key is not None
 
 
@@ -793,7 +796,15 @@ def _s5_plans(formula: str, *, dimensions=None, **plan_kwargs):
         dimensions=dimensions,
     )
     planned = plan_query(query=q, bundle=_s5_bundle(), **plan_kwargs)
-    return planned, planned.cross_model_aggregate_plans
+    # DEV-1838 D5 — the widened crossing-input trigger now desugars onto
+    # HOST-rooted PLAIN-kernel producers (ranked/windowed roots desugar on
+    # their own trigger and are excluded here).
+    return planned, [
+        a for a in planned.regroup_attach_plans
+        if a.attach_phase == "combined"
+        and a.producer_root_model is None
+        and a.kernel.kind == "plain"
+    ]
 
 
 def _assert_single_ranked_host(planned):
@@ -807,50 +818,37 @@ def _assert_single_ranked_host(planned):
     plans are empty. Asserted flatly: the producer carries no nested cross-model
     plan, so there is nothing to recurse into. Returns the ranked plan.
     """
-    assert planned.cross_model_aggregate_plans == [], (
-        f"a ranked aggregate must not ALSO produce a cross-model plan; "
-        f"got {planned.cross_model_aggregate_plans}"
-    )
-    assert planned.ranked_aggregate_plans == [], (
-        f"DEV-1835: a local ranked first/last desugars into a regroup producer, "
-        f"leaving no top-level ranked plan; got {planned.ranked_aggregate_plans}"
-    )
     assert len(planned.regroup_attach_plans) == 1, (
         f"Expected exactly one regroup-attach producer; "
         f"got {planned.regroup_attach_plans}"
     )
-    producer = planned.regroup_attach_plans[0].producer_plan
-    assert producer.cross_model_aggregate_plans == [], (
-        f"the ranked producer must not ALSO produce a cross-model plan; "
-        f"got {producer.cross_model_aggregate_plans}"
+    attach = planned.regroup_attach_plans[0]
+    # DEV-1838 D4: the ranking rides on the attach kernel, host-rooted.
+    assert attach.kernel.kind == "ranked", attach.kernel
+    assert attach.producer_root_model is None, attach.producer_root_model
+    assert attach.producer_plan.regroup_attach_plans == [], (
+        f"the ranked producer must hold its measure inline; "
+        f"got nested attaches: {attach.producer_plan.regroup_attach_plans}"
     )
-    assert len(producer.ranked_aggregate_plans) == 1, (
-        f"Expected exactly one ranked isolation plan in the producer; "
-        f"got {producer.ranked_aggregate_plans}"
-    )
-    plan = producer.ranked_aggregate_plans[0]
-    assert plan.root_model == "orders", plan
-    assert plan.target_path == (), plan
-    return plan
+    return attach
 
 
-def _assert_single_host_rooted(plans) -> CrossModelAggregatePlan:
+def _assert_single_host_rooted(plans):
+    """DEV-1838 D5 — one HOST-rooted producer attach, its producer free of
+    nested isolation (the recursion-suppression invariant, one form over)."""
     assert len(plans) == 1, (
-        f"Expected exactly one host-rooted isolation plan; got {len(plans)}: {plans}"
+        f"Expected exactly one host-rooted producer; got {len(plans)}: {plans}"
     )
-    plan = plans[0]
-    assert plan.cte_root_model == "orders", (
-        f"Widened Law-3 trigger must produce a HOST-rooted plan "
-        f"(cte_root_model='orders'); got {plan.cte_root_model!r}"
+    attach = plans[0]
+    assert attach.producer_root_model is None, (
+        f"Widened Law-3 trigger must produce a HOST-rooted producer; got "
+        f"root {attach.producer_root_model!r}"
     )
-    assert plan.rerooted_plan is not None, (
-        "Host-rooted isolation plan must carry the nested host-rooted sub-plan"
+    assert attach.producer_plan.regroup_attach_plans == [], (
+        f"Host-rooted producer must hold its measure inline (recursion "
+        f"suppression); got nested attaches: {attach.producer_plan.regroup_attach_plans}"
     )
-    assert plan.rerooted_plan.cross_model_aggregate_plans == [], (
-        f"Host-rooted sub-plan must have NO nested CMA plans (recursion "
-        f"suppression); got {plan.rerooted_plan.cross_model_aggregate_plans}"
-    )
-    return plan
+    return attach
 
 
 def test_aggregate_input_paths_module_exists():
@@ -884,11 +882,11 @@ class TestCrossingFirstLastStaysRanked:
 
     def test_structural_time_arg_stays_ranked(self):
         planned, _ = _s5_plans("amount:last(customers.signup_at)")
-        plan = _assert_single_ranked_host(planned)
+        attach = _assert_single_ranked_host(planned)
         # The one plan-level handle the crossing surfaces on: the ranking key
         # reaches through the customers join. A non-crossing time arg has path
         # ``()``, so this is what makes the case discriminate crossing at all.
-        assert plan.ranking_time_key.path == ("customers",)
+        assert attach.kernel.ranking_time_key.path == ("customers",)
 
     def test_derived_time_arg_stays_ranked(self):
         planned, _ = _s5_plans("amount:last(cross_time)")
@@ -948,12 +946,16 @@ class TestWidenedLaw3TriggerCrossingInputs:
         # `region_pay:sum + amount:sum`: the crossing LEAF isolates (one
         # hidden host-rooted plan); the local leaf stays in the base — so
         # exactly ONE plan, not two, and not a plan for the composite slot.
-        _, plans = _s5_plans("region_pay:sum + amount:sum")
-        plan = _assert_single_host_rooted(plans)
-        assert plan.hidden, (
-            "The composite's crossing leaf is a HIDDEN aggregate slot; its "
-            "isolation plan must be hidden too (the composite renders in the "
-            "combined SELECT, not the leaf)"
+        planned, plans = _s5_plans("region_pay:sum + amount:sum")
+        attach = _assert_single_host_rooted(plans)
+        (sub,) = attach.substitutions
+        ph_slot = next(
+            s for s in planned.row_slots if s.key == sub.placeholder
+        )
+        assert ph_slot.hidden, (
+            "The composite's crossing leaf is consumed through a HIDDEN "
+            "placeholder slot (the composite renders in the combined SELECT, "
+            "not the leaf)"
         )
 
     # -- negatives -------------------------------------------------------
@@ -1012,15 +1014,16 @@ class TestWidenedLaw3TriggerCrossingInputs:
         # Codex test-review #4: the flag suppresses ONLY host-rooted
         # isolation — a genuine cross-model aggregate (source.path
         # non-empty) must still plan target-rooted under the flag.
-        _, plans = _s5_plans(
+        planned, _ = _s5_plans(
             "customers.weight:sum", disable_host_rooted_isolation=True,
         )
-        assert len(plans) == 1, (
-            f"target-rooted plan must survive disable_host_rooted_isolation; "
-            f"got {plans}"
-        )
-        assert plans[0].target_model == "customers"
-        assert plans[0].cte_root_model is None
+        # DEV-1838 (2.5): under the flag, cross-model still isolates — as a
+        # TARGET-rooted producer (its own measure is local; no recursion).
+        (attach,) = [
+            a for a in planned.regroup_attach_plans
+            if a.attach_phase == "combined"
+        ]
+        assert attach.producer_root_model == "customers"
 
     def test_identical_key_shared_between_public_and_composite_leaf(self):
         # Codex test-review #6: IDENTICAL AggregateKeys intern to one slot
@@ -1035,9 +1038,12 @@ class TestWidenedLaw3TriggerCrossingInputs:
             ],
         )
         planned = plan_query(query=q, bundle=_s5_bundle())
-        assert len(planned.cross_model_aggregate_plans) == 1, (
-            f"identical crossing keys must share one slot/plan; got "
-            f"{planned.cross_model_aggregate_plans}"
+        attaches = [
+            a for a in planned.regroup_attach_plans
+            if a.attach_phase == "combined"
+        ]
+        assert len(attaches) == 1, (
+            f"identical crossing keys must share one producer; got {attaches}"
         )
 
     def test_two_distinct_crossing_measures_two_plans(self):
@@ -1052,7 +1058,11 @@ class TestWidenedLaw3TriggerCrossingInputs:
             ],
         )
         planned = plan_query(query=q, bundle=_s5_bundle())
-        assert len(planned.cross_model_aggregate_plans) == 2
+        attaches = [
+            a for a in planned.regroup_attach_plans
+            if a.attach_phase == "combined"
+        ]
+        assert len(attaches) == 2
 
     @staticmethod
     def _sub_row_bound_filters(sub) -> list:
@@ -1073,9 +1083,11 @@ class TestWidenedLaw3TriggerCrossingInputs:
             filters=["amount > 50"],
         )
         planned = plan_query(query=q, bundle=_s5_bundle())
-        assert len(planned.cross_model_aggregate_plans) == 1
-        sub = planned.cross_model_aggregate_plans[0].rerooted_plan
-        assert sub is not None
+        (attach,) = [
+            a for a in planned.regroup_attach_plans
+            if a.attach_phase == "combined"
+        ]
+        sub = attach.producer_plan
         assert self._sub_row_bound_filters(sub), (
             f"Host ROW filter must propagate into the host-rooted sub-plan; "
             f"got sub-plan filters {sub.filters_by_phase!r}"
@@ -1094,9 +1106,11 @@ class TestWidenedLaw3TriggerCrossingInputs:
             filters=["customers.weight > 1"],
         )
         planned = plan_query(query=q, bundle=_s5_bundle())
-        assert len(planned.cross_model_aggregate_plans) == 1
-        sub = planned.cross_model_aggregate_plans[0].rerooted_plan
-        assert sub is not None
+        (attach,) = [
+            a for a in planned.regroup_attach_plans
+            if a.attach_phase == "combined"
+        ]
+        sub = attach.producer_plan
         assert self._sub_row_bound_filters(sub), (
             f"Pathed host ROW filter must propagate into the host-rooted "
             f"sub-plan; got sub-plan filters {sub.filters_by_phase!r}"
