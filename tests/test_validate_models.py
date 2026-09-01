@@ -481,6 +481,21 @@ class TestSqlModelSourceRefs:
         refs = _sql_model_source_refs(sql=sql, dialect="postgres")
         assert refs == {"t1": {"a"}, "t2": {"b"}}
 
+    def test_table_less_statement_returns_empty_refs(self) -> None:
+        # {} (verifies vacuously — invalid_sql) is distinct from None
+        # (cannot verify — schema drift).
+        refs = _sql_model_source_refs(
+            sql="SELECT no_such_function(1)", dialect="postgres"
+        )
+        assert refs == {}
+
+    def test_using_keys_not_attributed_to_later_joins(self) -> None:
+        # ``c`` is not an operand of the USING join, so it must not be
+        # probed for ``k``.
+        sql = "SELECT a.x FROM a JOIN b USING (k) JOIN c ON c.id = a.cid"
+        refs = _sql_model_source_refs(sql=sql, dialect="postgres")
+        assert refs == {"a": {"x", "k", "cid"}, "b": {"k"}, "c": {"id"}}
+
 
 # ---------------------------------------------------------------------------
 # compute_datasource_drops — cascade rules + collapse

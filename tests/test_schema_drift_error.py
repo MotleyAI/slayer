@@ -185,6 +185,27 @@ class TestSchemaDriftErrorWrap:
         assert broken[0].cause == "invalid_sql"
         assert "source tables and referenced columns exist" in broken[0].reasons[0].reason
 
+    async def test_table_less_broken_sql_reported_as_invalid_sql(
+        self, workspace: Path
+    ) -> None:
+        """No source tables ⇒ nothing can have drifted ⇒ invalid_sql."""
+        engine, _ = await _setup(workspace)
+        await engine.storage.save_model(
+            SlayerModel(
+                name="broken",
+                sql="SELECT NO_SUCH_FUNCTION(1) AS x",
+                data_source="ds",
+                columns=[
+                    Column(name="x", sql="x", type=DataType.DOUBLE, primary_key=True),
+                ],
+            )
+        )
+        entries = await engine.validate_models(data_source="ds")
+        broken = [e for e in entries if e.model_name == "broken"]
+        assert len(broken) == 1
+        assert isinstance(broken[0], WholeModelDelete)
+        assert broken[0].cause == "invalid_sql"
+
     async def test_sql_model_on_dropped_column_still_wraps_as_drift(
         self, workspace: Path
     ) -> None:

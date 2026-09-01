@@ -2088,27 +2088,43 @@ def _add_using_join_columns(
     refs: dict[str, set[str]],
     dialect: str,
 ) -> bool:
-    """Attribute ``JOIN .. USING (k)`` keys to every physical table of a scope.
+    """Attribute ``JOIN .. USING (k)`` keys to the join's operand tables.
 
     ``USING`` identifiers are not ``exp.Column`` nodes, so the column walk
-    misses them. Over-attribution is safe — a failed probe only keeps the
-    schema-drift classification. Returns True when a USING join coexists with
-    a CTE / derived source: the key's presence there cannot be verified
-    statically, so the caller treats it like a derived ref.
+    misses them. A key is attributed to every physical table joined so far
+    plus the join's own table — which left-side table supplies it is
+    statically unknowable, and over-attribution only fails the probe, which
+    safely keeps the schema-drift classification. Returns True when a USING
+    join has a CTE / derived operand whose key presence cannot be verified.
     """
-    using_idents = [
-        ident
-        for join in scope.expression.args.get("joins") or []
-        for ident in join.args.get("using") or []
-        if isinstance(ident, exp.Identifier)
-    ]
-    if not using_idents:
+    joins = scope.expression.args.get("joins") or []
+    if not any(join.args.get("using") for join in joins):
         return False
-    for ident in using_idents:
-        rendered = exp.Column(this=ident.copy()).sql(dialect=dialect)
-        for table in local_tables.values():
-            refs[table].add(rendered)
-    return len(local_tables) < len(scope.sources)
+    args = scope.expression.args
+    from_expr = args.get("from_") or args.get("from")  # key renamed in sqlglot 30
+    operands = [from_expr.this] if from_expr else []
+    cannot_verify = False
+    for join in joins:
+        operands.append(join.this)
+        using = join.args.get("using") or []
+        if not using:
+            continue
+        physical = [
+            rendered
+            for op in operands
+            if isinstance(op, exp.Table)
+            and (rendered := local_tables.get(op.alias_or_name)) is not None
+        ]
+        if len(physical) < len(operands):
+            cannot_verify = True
+        rendered_keys = [
+            exp.Column(this=ident.copy()).sql(dialect=dialect)
+            for ident in using
+            if isinstance(ident, exp.Identifier)
+        ]
+        for table in physical:
+            refs[table].update(rendered_keys)
+    return cannot_verify
 
 
 def _attribute_qualified_ref(
@@ -2253,11 +2269,12 @@ async def _source_tables_resolve(
     ``True`` means the trial-execute failure was NOT caused by a missing
     table or column — the model's own SQL is broken. Any probe failure
     (missing object, transient error, unparseable or ambiguous SQL) returns
-    ``False``, keeping the schema-drift classification.
+    ``False``, keeping the schema-drift classification. Empty refs (a
+    table-less statement) verify vacuously — nothing can have drifted.
     """
     dialect = dialect_for_ds_type(client.datasource.type).sqlglot_name
     refs = _sql_model_source_refs(sql=model.sql or "", dialect=dialect)
-    if not refs:
+    if refs is None:
         return False
     for table, columns in refs.items():
         select_list = ", ".join(sorted(columns)) or "*"
