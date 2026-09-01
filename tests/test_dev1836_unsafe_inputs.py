@@ -52,35 +52,38 @@ class TestUnsafeInputs:
     async def test_source_expression_over_unproven_hop_errors(self, exec_backend):
         """customers.seg_label reads segments.label across the unproven hop."""
         _, engine = exec_backend
+        query = q(
+            dimensions=["status"],
+            measures=[ModelMeasure(formula="customers.seg_label:count",
+                                   name="x")],
+        )
         with pytest.raises(RAISES) as ei:
-            await engine.execute(q(
-                dimensions=["status"],
-                measures=[ModelMeasure(formula="customers.seg_label:count",
-                                       name="x")],
-            ))
+            await engine.execute(query)
         _assert_clear(ei, "segments", remedy=True)
 
     async def test_column_filter_over_unproven_hop_errors(self, exec_backend):
         """customers.vip_spend's Column.filter references segments.label."""
         _, engine = exec_backend
+        query = q(
+            dimensions=["status"],
+            measures=[ModelMeasure(formula="customers.vip_spend:sum",
+                                   name="x")],
+        )
         with pytest.raises(RAISES) as ei:
-            await engine.execute(q(
-                dimensions=["status"],
-                measures=[ModelMeasure(formula="customers.vip_spend:sum",
-                                       name="x")],
-            ))
+            await engine.execute(query)
         _assert_clear(ei, "segments", remedy=True)
 
     async def test_ranking_time_arg_over_unsafe_hop_errors(self, exec_backend):
         """The explicit first/last time key is an input: orders.ordered_at is
         reachable from customers only across the declared 1:N edge."""
         _, engine = exec_backend
+        query = q(
+            dimensions=["customers.tier"],
+            measures=[ModelMeasure(formula="customers.spend:last(ordered_at)",
+                                   name="x")],
+        )
         with pytest.raises(RAISES) as ei:
-            await engine.execute(q(
-                dimensions=["customers.tier"],
-                measures=[ModelMeasure(formula="customers.spend:last(ordered_at)",
-                                       name="x")],
-            ))
+            await engine.execute(query)
         _assert_clear(ei, "ordered_at")
 
 
@@ -91,13 +94,14 @@ class TestUnsafeExplicitPartitionKeys:
         """F4 — a cross-model aggregate whose declared grain crosses the 1:N
         edge: hard error naming the key and the remedy, never a fanning join."""
         _, engine = exec_backend
+        query = q(
+            dimensions=["status"],
+            measures=[ModelMeasure(
+                formula="customers.spend:sum(partition_by=status)", name="x",
+            )],
+        )
         with pytest.raises(RAISES) as ei:
-            await engine.execute(q(
-                dimensions=["status"],
-                measures=[ModelMeasure(
-                    formula="customers.spend:sum(partition_by=status)", name="x",
-                )],
-            ))
+            await engine.execute(query)
         _assert_clear(ei, "status")
         message = str(ei.value).lower()
         assert "cardinality" in message or "unique" in message
@@ -106,14 +110,15 @@ class TestUnsafeExplicitPartitionKeys:
         self, exec_backend,
     ):
         _, engine = exec_backend
+        query = q(
+            dimensions=["customers.tier"],
+            measures=[ModelMeasure(
+                formula="customers.spend:sum(partition_by=customers.segments.label)",
+                name="x",
+            )],
+        )
         with pytest.raises(RAISES) as ei:
-            await engine.execute(q(
-                dimensions=["customers.tier"],
-                measures=[ModelMeasure(
-                    formula="customers.spend:sum(partition_by=customers.segments.label)",
-                    name="x",
-                )],
-            ))
+            await engine.execute(query)
         _assert_clear(ei, "label", remedy=True)
 
     async def test_local_aggregate_with_unproven_joined_key_errors(
@@ -122,14 +127,15 @@ class TestUnsafeExplicitPartitionKeys:
         """The rule applies to local aggregates too: orders → customers is
         safe but customers → segments is not."""
         _, engine = exec_backend
+        query = q(
+            dimensions=["status"],
+            measures=[ModelMeasure(
+                formula="amount:sum(partition_by=customers.segments.label)",
+                name="x",
+            )],
+        )
         with pytest.raises(RAISES) as ei:
-            await engine.execute(q(
-                dimensions=["status"],
-                measures=[ModelMeasure(
-                    formula="amount:sum(partition_by=customers.segments.label)",
-                    name="x",
-                )],
-            ))
+            await engine.execute(query)
         _assert_clear(ei, "label", remedy=True)
 
     async def test_unattributable_partition_key_in_dimension_expression_errors(
@@ -138,27 +144,29 @@ class TestUnsafeExplicitPartitionKeys:
         """The rule reaches dimension expressions too (computed-dimensions
         delta: grain self-containment error surface)."""
         _, engine = exec_backend
+        query = q(
+            dimensions=[{
+                "expression": ("CASE WHEN amount:sum(partition_by="
+                               "customers.segments.label) > 10 "
+                               "THEN 1 ELSE 0 END"),
+                "name": "b",
+            }],
+            measures=[M],
+        )
         with pytest.raises(RAISES) as ei:
-            await engine.execute(q(
-                dimensions=[{
-                    "expression": ("CASE WHEN amount:sum(partition_by="
-                                   "customers.segments.label) > 10 "
-                                   "THEN 1 ELSE 0 END"),
-                    "name": "b",
-                }],
-                measures=[M],
-            ))
+            await engine.execute(query)
         _assert_clear(ei, "label", remedy=True)
 
     async def test_errors_apply_in_strict_mode_alike(self, exec_backend):
         _, engine = exec_backend
+        query = q(
+            strict=True, dimensions=["status"],
+            measures=[ModelMeasure(
+                formula="customers.spend:sum(partition_by=status)", name="x",
+            )],
+        )
         with pytest.raises(RAISES) as ei:
-            await engine.execute(q(
-                strict=True, dimensions=["status"],
-                measures=[ModelMeasure(
-                    formula="customers.spend:sum(partition_by=status)", name="x",
-                )],
-            ))
+            await engine.execute(query)
         _assert_clear(ei, "status")
 
 

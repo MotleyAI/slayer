@@ -5369,7 +5369,9 @@ class SQLGenerator:
                     producer_hoisted, producer_body_sql = (
                         self._render_producer_split(
                             producer=producer,
-                            bundle=self._producer_render_bundle(attach, bundle),
+                            bundle=self._producer_render_bundle(
+                                attach=attach, bundle=bundle,
+                            ),
                             kernel=attach.kernel,
                         )
                     )
@@ -5568,7 +5570,9 @@ class SQLGenerator:
             try:
                 producer_hoisted, producer_body_sql = self._render_producer_split(
                     producer=producer,
-                    bundle=self._producer_render_bundle(attach, bundle),
+                    bundle=self._producer_render_bundle(
+                        attach=attach, bundle=bundle,
+                    ),
                     kernel=attach.kernel,
                 )
             finally:

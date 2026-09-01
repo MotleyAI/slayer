@@ -145,10 +145,9 @@ class TestBroadcastMetadata:
 class TestStrictMode:
     async def test_strict_broadcast_errors_with_remedy(self, exec_backend):
         _, engine = exec_backend
+        query = q(strict=True, dimensions=["status"], measures=[M, CM])
         with pytest.raises((SlayerError, ValueError)) as ei:
-            await engine.execute(
-                q(strict=True, dimensions=["status"], measures=[M, CM]),
-            )
+            await engine.execute(query)
         message = str(ei.value)
         assert "cm" in message or "spend" in message
         assert "status" in message
@@ -157,11 +156,12 @@ class TestStrictMode:
 
     async def test_strict_dropped_filter_errors(self, exec_backend):
         _, engine = exec_backend
+        query = q(
+            strict=True, dimensions=["customers.tier"], measures=[M, CM],
+            filters=["channel = 'app'"],
+        )
         with pytest.raises((SlayerError, ValueError)) as ei:
-            await engine.execute(q(
-                strict=True, dimensions=["customers.tier"], measures=[M, CM],
-                filters=["channel = 'app'"],
-            ))
+            await engine.execute(query)
         assert "channel" in str(ei.value)
 
     async def test_strict_passes_when_all_attributable(self, exec_backend):

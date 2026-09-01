@@ -4,8 +4,8 @@
 Spec: openspec …/specs/queries/cross-model-aggregates — "Target-rooted
 computation with metric independence", "Fan-out-safe grain with broadcast",
 "Existing cross-model behavior is preserved where already safe". Oracles in
-``tests/_dev1836_fixtures.py``; the naive join-multiplied spend (470) is the
-fan-out defect value that must never appear.
+``tests/_dev1836_fixtures.py``; the naive join-multiplied spend
+(``SPEND_FANNED`` = 510) is the fan-out defect value that must never appear.
 """
 
 from __future__ import annotations
@@ -58,8 +58,8 @@ def _approx(actual, expected, *, key) -> None:
 
 class TestTargetRootedExactness:
     async def test_joined_sum_is_not_multiplied_by_fan_out(self, exec_backend):
-        """c1 and c3 each have several orders; a fanned join would inflate
-        gold to 260 and the grand total to 470."""
+        """c1 and c3 each have two orders; a fanned join would inflate
+        gold to 320 and the grand total to 510 (``SPEND_FANNED``)."""
         dialect, engine = exec_backend
         query = q(dimensions=["customers.tier"], measures=[M, CM])
         resp = await engine.execute(query)

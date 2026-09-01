@@ -9,17 +9,22 @@ from typing import Any
 from collections.abc import Generator
 
 import pytest
+from mcp.server.fastmcp.exceptions import ToolError
 
 import slayer.engine.ingestion as ingestion_mod
 from slayer.core.enums import DataType
+from slayer.core.query import SlayerQuery
 from slayer.core.models import (
     Aggregation,
+    AggregationParam,
     Column,
     DatasourceConfig,
     ModelJoin,
     ModelMeasure,
     SlayerModel,
 )
+from slayer.engine.ingestion import _is_id_column
+from slayer.sql.client import SlayerSQLClient
 from slayer.inspect.model_render import (
     _choose_sample_agg,
     render_model_inspection,
@@ -31,9 +36,13 @@ from slayer.mcp.server import (
     _friendly_db_error,
     _markdown_table,
     _md_code_span,
+    _render_inspect_footer,
+    _resolve_inspect_sections,
     _strip_model_prefix,
+    _truncate_description,
     create_mcp_server,
 )
+from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -419,8 +428,6 @@ class TestMdCodeSpan:
         is auto-pruned. This test verifies the column appears in the schema
         by checking _build_sample_query_args uses inferred types.
         """
-        from slayer.mcp.server import _build_sample_query_args
-
         model = SlayerModel(
             name="typed",
             sql_table="t",
@@ -449,11 +456,7 @@ class TestInspectModelQueryBacked:
     """inspect_model output for query-backed models — backing_query section,
     source_type, and (with show_sql) backing_query_sql.
     """
-
     async def _setup(self, storage: YAMLStorage) -> None:
-        from slayer.core.models import DatasourceConfig
-        from slayer.core.query import SlayerQuery
-        from slayer.engine.query_engine import SlayerQueryEngine
         await storage.save_datasource(DatasourceConfig(
             name="test", type="sqlite", database=":memory:"
         ))
@@ -514,8 +517,6 @@ class TestInspectModelQueryBacked:
     async def test_required_variables_reported(
         self, mcp_server, storage: YAMLStorage
     ) -> None:
-        from slayer.core.models import DatasourceConfig
-        from slayer.core.query import SlayerQuery
         await storage.save_datasource(DatasourceConfig(
             name="test", type="sqlite", database=":memory:"
         ))
@@ -593,7 +594,6 @@ Column(name="m", sql="val", type=DataType.DOUBLE)
 
 class TestInspectModelShowSQL:
     """show_sql parameter must control visibility of all SQL in inspect_model output."""
-
     async def test_hides_sql_by_default_markdown(self, mcp_server, storage: YAMLStorage) -> None:
         """Without show_sql, markdown output has no ## SQL section and no sql column."""
         await storage.save_model(SlayerModel(
@@ -674,7 +674,6 @@ Column(name="val", sql="val", filter="val > 0", type=DataType.DOUBLE)
 
 class TestInspectModelSectionGating:
     """``sections`` parameter on inspect_model — markdown rendering."""
-
     async def _save_rich_model(self, storage: YAMLStorage) -> None:
         await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=":memory:"))
         await storage.save_model(SlayerModel(
@@ -947,7 +946,6 @@ class TestInspectModelSectionGating:
 
 class TestInspectModelDescriptionsMaxChars:
     """``descriptions_max_chars`` parameter — truncation behaviour."""
-
     async def _save_with_long_descriptions(self, storage: YAMLStorage) -> None:
         await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=":memory:"))
         await storage.save_model(SlayerModel(
@@ -1012,7 +1010,6 @@ class TestInspectModelDescriptionsMaxChars:
         """Negative values would silently produce ``str[:-N] + marker`` (i.e.
         "all but the last N chars" instead of "first N chars"). Rejected at
         the tool boundary."""
-        from mcp.server.fastmcp.exceptions import ToolError
         await self._save_with_long_descriptions(storage)
         with pytest.raises(ToolError, match="descriptions_max_chars must be >= 0"):
             await _call(
@@ -1023,9 +1020,7 @@ class TestInspectModelDescriptionsMaxChars:
 
 class TestInspectModelAggregationsShowSql:
     """show_sql gating on the aggregations section."""
-
     async def _save_with_aggs(self, storage: YAMLStorage) -> None:
-        from slayer.core.models import AggregationParam
         await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=":memory:"))
         await storage.save_model(SlayerModel(
             name="m", sql_table="t", data_source="test",
@@ -1077,9 +1072,7 @@ class TestInspectModelAggregationsShowSql:
 
 class TestInspectModelJsonGating:
     """JSON parity for section gating, descriptions, and observability arrays."""
-
     async def _save_rich(self, storage: YAMLStorage) -> None:
-        from slayer.core.models import AggregationParam
         await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=":memory:"))
         await storage.save_model(SlayerModel(
             name="rich", sql_table="t", data_source="test",
@@ -1194,34 +1187,27 @@ class TestInspectModelJsonGating:
 
 class TestInspectModelHelpers:
     """Direct unit tests for the section-budgeting helpers."""
-
     def test_truncate_description_none(self) -> None:
-        from slayer.mcp.server import _truncate_description
         assert _truncate_description(None, 10) is None
         assert _truncate_description("anything", None) == "anything"
 
     def test_truncate_description_short_unchanged(self) -> None:
-        from slayer.mcp.server import _truncate_description
         assert _truncate_description("hello", 10) == "hello"
         # Boundary: exactly equal to max_chars should not truncate
         assert _truncate_description("hello", 5) == "hello"
 
     def test_truncate_description_marks_truncation(self) -> None:
-        from slayer.mcp.server import _truncate_description
         assert _truncate_description("hello world", 5) == "hello ... [truncated]"
 
     def test_truncate_description_zero_yields_marker(self) -> None:
-        from slayer.mcp.server import _truncate_description
         assert _truncate_description("hello", 0) == " ... [truncated]"
 
     def test_resolve_inspect_sections_none(self) -> None:
-        from slayer.mcp.server import _resolve_inspect_sections
         resolved, unknown = _resolve_inspect_sections(None)
         assert resolved == ["columns", "measures", "aggregations", "joins", "samples", "learnings"]
         assert unknown == []
 
     def test_resolve_inspect_sections_empty(self) -> None:
-        from slayer.mcp.server import _resolve_inspect_sections
         resolved, unknown = _resolve_inspect_sections([])
         # Same expansion as the ``None`` case — pin the order so a
         # missing or duplicated section name fails.
@@ -1236,14 +1222,12 @@ class TestInspectModelHelpers:
         assert unknown == []
 
     def test_resolve_inspect_sections_subset_canonical_order(self) -> None:
-        from slayer.mcp.server import _resolve_inspect_sections
         resolved, unknown = _resolve_inspect_sections(["measures", "columns"])
         # Canonical order, not caller order
         assert resolved == ["columns", "measures"]
         assert unknown == []
 
     def test_resolve_inspect_sections_unknowns_filtered(self) -> None:
-        from slayer.mcp.server import _resolve_inspect_sections
         resolved, unknown = _resolve_inspect_sections(["columns", "fish", "samples"])
         assert resolved == ["columns", "samples"]
         assert unknown == ["fish"]
@@ -1255,7 +1239,6 @@ class TestInspectModelHelpers:
         payload. The footer's warning + names-only listing tells the caller
         what they have to work with.
         """
-        from slayer.mcp.server import _resolve_inspect_sections
         resolved, unknown = _resolve_inspect_sections(["fish", "bird"])
         assert resolved == []
         assert unknown == ["fish", "bird"]
@@ -1265,7 +1248,6 @@ class TestInspectModelHelpers:
         characters must not forge additional footer lines. ``repr()`` escapes
         control chars so the warning stays a single line.
         """
-        from slayer.mcp.server import _render_inspect_footer
         result = _render_inspect_footer(
             included=["columns", "measures", "aggregations", "joins", "samples", "learnings"],
             names_only=[], omitted=[], unknown=["foo\n> evil-injected"],
@@ -1277,7 +1259,6 @@ class TestInspectModelHelpers:
         assert "\\n" in result and "evil-injected" in result
 
     def test_render_inspect_footer_none_when_no_trim(self) -> None:
-        from slayer.mcp.server import _render_inspect_footer
         result = _render_inspect_footer(
             included=["columns", "measures", "aggregations", "joins", "samples", "learnings"],
             names_only=[], omitted=[], unknown=[],
@@ -1286,7 +1267,6 @@ class TestInspectModelHelpers:
 
     def test_render_inspect_footer_warning_only(self) -> None:
         """All sections shown but unknown names → warning line only, no other footer text."""
-        from slayer.mcp.server import _render_inspect_footer
         result = _render_inspect_footer(
             included=["columns", "measures", "aggregations", "joins", "samples", "learnings"],
             names_only=[], omitted=[], unknown=["fish"],
@@ -1296,7 +1276,6 @@ class TestInspectModelHelpers:
         assert "Sections shown:" not in result
 
     def test_render_inspect_footer_full(self) -> None:
-        from slayer.mcp.server import _render_inspect_footer
         result = _render_inspect_footer(
             included=["columns"],
             names_only=["measures", "joins"],
@@ -1635,7 +1614,6 @@ class TestCreateModel:
         (issue #74) — a regression that drops the engine routing in
         ``slayer/mcp/server.py`` would silently leave the cache empty.
         """
-        from slayer.core.models import DatasourceConfig
         await storage.save_datasource(DatasourceConfig(
             name="test", type="sqlite", database=":memory:"
         ))
@@ -1662,7 +1640,6 @@ class TestCreateModel:
 
 class TestEditModel:
     """Tests for the edit_model MCP tool with upsert semantics."""
-
     # --- Measure upserts ---
 
     async def test_upsert_new_column(self, mcp_server, storage: YAMLStorage) -> None:
@@ -2054,7 +2031,6 @@ class TestEditModel:
         """Switching source mode via edit_model: sql_table → source_queries.
         Persisted state must show source_queries set and sql_table cleared.
         """
-        from slayer.core.models import DatasourceConfig
         # Engine save path needs a datasource to dry-run validate the new
         # backing query.
         await storage.save_datasource(DatasourceConfig(
@@ -2096,8 +2072,6 @@ class TestEditModel:
     async def test_edit_query_variables_on_query_backed_model(
         self, mcp_server, storage: YAMLStorage
     ) -> None:
-        from slayer.core.models import DatasourceConfig
-        from slayer.core.query import SlayerQuery
         # Engine save path resolves datasource during dry-run validation;
         # provide one.
         await storage.save_datasource(DatasourceConfig(
@@ -2286,11 +2260,9 @@ class TestEditModelDatasourceMoveSafety:
     2. If validation/save fails after the data_source is updated, the
        source model must remain intact (no delete-before-save).
     """
-
     async def test_move_collision_with_target_refuses_and_preserves_source(
         self, mcp_server, storage: YAMLStorage
     ) -> None:
-        from slayer.core.models import DatasourceConfig
         for n in ("db_a", "db_b"):
             await storage.save_datasource(DatasourceConfig(
                 name=n, type="sqlite", database=":memory:"
@@ -2331,10 +2303,6 @@ class TestEditModelDatasourceMoveSafety:
         post-save delete must NOT remove the row we just saved at the
         original key. See PR #92 thread (post-merge, critical).
         """
-        from slayer.core.models import DatasourceConfig
-        from slayer.core.query import SlayerQuery
-        from slayer.engine.query_engine import SlayerQueryEngine
-
         for n in ("db_a", "db_b"):
             await storage.save_datasource(DatasourceConfig(
                 name=n, type="sqlite", database=":memory:"
@@ -2385,7 +2353,6 @@ class TestEditModelDatasourceMoveSafety:
     async def test_move_save_failure_preserves_source(
         self, mcp_server, storage: YAMLStorage, monkeypatch
     ) -> None:
-        from slayer.core.models import DatasourceConfig
         for n in ("db_a", "db_b"):
             await storage.save_datasource(DatasourceConfig(
                 name=n, type="sqlite", database=":memory:"
@@ -2432,14 +2399,12 @@ class TestEditModelMultiStageRename:
     SQL/columns to reflect the new names. Outer-stage references to the new
     name must resolve cleanly.
     """
-
     async def _setup_orders_with_two_stage_model(
         self, storage: YAMLStorage, *, inner_measures: list, outer_measures: list,
     ) -> None:
         """Save a datasource, an upstream `orders` table-model, and a saved
         2-stage query-backed model whose inner stage is named ``raw``.
         """
-        from slayer.core.query import SlayerQuery
         await storage.save_datasource(DatasourceConfig(
             name="test", type="sqlite", database=":memory:"
         ))
@@ -2452,7 +2417,6 @@ class TestEditModelMultiStageRename:
         ))
         # Build initial source_queries via the engine save path so the cache
         # reflects the initial state.
-        from slayer.engine.query_engine import SlayerQueryEngine
         engine = SlayerQueryEngine(storage=storage)
         await engine.save_model(SlayerModel(
             name="qb",
@@ -2601,12 +2565,9 @@ class TestEditModelColumnsRejected:
     """edit_model on a query-backed model must explicitly reject ``columns``
     (which are engine-managed cache) instead of silently dropping them.
     """
-
     async def test_columns_on_query_backed_edit_returns_error(
         self, mcp_server, storage: YAMLStorage
     ) -> None:
-        from slayer.core.models import DatasourceConfig
-        from slayer.core.query import SlayerQuery
         await storage.save_datasource(DatasourceConfig(
             name="test", type="sqlite", database=":memory:"
         ))
@@ -2647,12 +2608,9 @@ class TestInspectModelRequiredVariables:
     """``required_variables`` must exclude placeholders that have a default at
     either ``model.query_variables`` OR a stage's own ``variables`` block.
     """
-
     async def test_stage_scoped_default_not_required(
         self, mcp_server, storage: YAMLStorage
     ) -> None:
-        from slayer.core.models import DatasourceConfig
-        from slayer.core.query import SlayerQuery
         await storage.save_datasource(DatasourceConfig(
             name="test", type="sqlite", database=":memory:"
         ))
@@ -2685,12 +2643,9 @@ class TestRunByNamePlanFlagsMCP:
     """``query(source_model="qb_model", dry_run=True)`` should return SQL
     without executing the backing query.
     """
-
     async def test_dry_run_run_by_name_returns_sql_without_executing(
-        self, mcp_server, storage: YAMLStorage
+        self, mcp_server, storage: YAMLStorage, monkeypatch
     ) -> None:
-        from slayer.core.models import DatasourceConfig
-        from slayer.core.query import SlayerQuery
         await storage.save_datasource(DatasourceConfig(
             name="test", type="sqlite", database=":memory:"
         ))
@@ -2707,7 +2662,6 @@ class TestRunByNamePlanFlagsMCP:
                 # NOTE: no dry_run on the stage; only the caller asks.
             )],
         ))
-        from slayer.sql.client import SlayerSQLClient
         execute_calls = 0
         real_execute = SlayerSQLClient.execute
 
@@ -2716,17 +2670,41 @@ class TestRunByNamePlanFlagsMCP:
             execute_calls += 1
             return await real_execute(self, *a, **kw)
 
-        SlayerSQLClient.execute = counting_execute  # type: ignore[method-assign]
-        try:
-            result = await _call(mcp_server, name="query", arguments={
-                "source_model": "qb_dr",
-                "dry_run": True,
-            })
-        finally:
-            SlayerSQLClient.execute = real_execute  # type: ignore[method-assign]
+        monkeypatch.setattr(SlayerSQLClient, "execute", counting_execute)
+        result = await _call(mcp_server, name="query", arguments={
+            "source_model": "qb_dr",
+            "dry_run": True,
+        })
         assert "SQL:" in result
         assert "amount" in result.lower()
         assert execute_calls == 0, "dry_run=True must not execute SQL"
+
+    async def test_run_by_name_rejects_strict(
+        self, mcp_server, storage: YAMLStorage
+    ) -> None:
+        """The shortcut runs the stored backing query, which never sees a
+        call-level ``strict`` — rejecting beats silently dropping it."""
+        await storage.save_datasource(DatasourceConfig(
+            name="test", type="sqlite", database=":memory:"
+        ))
+        await storage.save_model(SlayerModel(
+            name="upstream", sql_table="t", data_source="test",
+            columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
+        ))
+        await storage.save_model(SlayerModel(
+            name="qb_strict",
+            data_source="test",
+            source_queries=[SlayerQuery(
+                source_model="upstream",
+                measures=[{"formula": "amount:sum"}],
+            )],
+        ))
+        with pytest.raises(ToolError, match="run-by-name"):
+            await _call(mcp_server, name="query", arguments={
+                "source_model": "qb_strict",
+                "strict": True,
+                "dry_run": True,
+            })
 
 
 class TestQueryAcceptsInlineSourceModel:
@@ -2736,7 +2714,6 @@ class TestQueryAcceptsInlineSourceModel:
     polymorphism. Previously typed ``str``, which forced agents to JSON-
     encode dicts and tripped name validation.
     """
-
     async def _setup_orders(self, storage: YAMLStorage) -> None:
         await storage.save_datasource(DatasourceConfig(
             name="test", type="sqlite", database=":memory:"
@@ -2811,7 +2788,6 @@ class TestQueryNested:
     ``source_model: "<sibling_name>"``. Mirrors ``engine.execute(list)``
     1:1; the regular ``query`` tool stays single-stage.
     """
-
     async def _setup_orders(self, storage: YAMLStorage) -> None:
         await storage.save_datasource(DatasourceConfig(
             name="test", type="sqlite", database=":memory:"
@@ -2851,7 +2827,6 @@ class TestQueryNested:
         assert "AVG(" in result.upper()
 
     async def test_empty_list_rejected(self, mcp_server, storage: YAMLStorage) -> None:
-        from mcp.server.fastmcp.exceptions import ToolError
         await self._setup_orders(storage)
         with pytest.raises(ToolError, match="non-empty list"):
             await _call(mcp_server, name="query_nested", arguments={
@@ -2891,7 +2866,6 @@ class TestQueryNested:
 
     async def test_cycle_raises(self, mcp_server, storage: YAMLStorage) -> None:
         """A cycle between stages must surface a clear error naming the cycle members."""
-        from mcp.server.fastmcp.exceptions import ToolError
         await self._setup_orders(storage)
         with pytest.raises(ToolError, match=r"[Cc]ycle"):
             await _call(mcp_server, name="query_nested", arguments={
@@ -2904,7 +2878,6 @@ class TestQueryNested:
             })
 
     async def test_invalid_format_rejected(self, mcp_server, storage: YAMLStorage) -> None:
-        from mcp.server.fastmcp.exceptions import ToolError
         await self._setup_orders(storage)
         with pytest.raises(ToolError, match="Invalid format"):
             await _call(mcp_server, name="query_nested", arguments={
@@ -3042,7 +3015,6 @@ class TestDeleteTools:
 
 class TestIngestionIdSkipping:
     def test_id_columns_skip_sum_avg(self) -> None:
-        from slayer.engine.ingestion import _is_id_column
         assert _is_id_column("id") is True
         assert _is_id_column("user_id") is True
         assert _is_id_column("customer_key") is True
@@ -3108,7 +3080,6 @@ class TestDataProfileRetryScope:
     queries, so these fakes key off ``query.dimensions`` to hit only the full
     profile, and the assertions are on outcomes rather than call counts.
     """
-
     @staticmethod
     def _model() -> SlayerModel:
         return SlayerModel(
@@ -3181,7 +3152,6 @@ class TestDataProfileRetryScope:
         self, storage: YAMLStorage
     ) -> None:
         """When the reduced profile also fails, report the first cause."""
-
         class _Engine:
             def __init__(self) -> None:
                 self.dimensioned_seen = False

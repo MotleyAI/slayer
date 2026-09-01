@@ -81,13 +81,6 @@ from slayer.engine.agg_registry import collect_reachable_agg_names
 from slayer.engine.normalization import normalize_model, normalize_query
 from slayer.core.keys import REGROUP_LEAF_PREFIX
 from slayer.engine.planned import PlannedQuery
-from slayer.engine.response_meta import (
-    FieldMetadata as FieldMetadata,  # re-export for slayer_client / tests
-    ResponseAttributes,
-    build_response_metadata,
-    projection_result_keys,
-)
-from slayer.engine.column_expansion import expand_derived_refs_sync
 from slayer.engine.schema_drift import (
     AppliedEntry,
     ApplyDriftResult,
@@ -95,13 +88,20 @@ from slayer.engine.schema_drift import (
     ToDeleteEntry,
     validate_datasource,
 )
+from slayer.engine.response_meta import (
+    FieldMetadata as FieldMetadata,  # re-export for slayer_client / tests
+    ResponseAttributes,
+    build_response_metadata,
+    projection_result_keys,
+)
+from slayer.engine.column_expansion import expand_derived_refs_sync
 from slayer.engine.source_bundle import (
     ResolvedSourceBundle,
     build_resolved_source_bundle,
     expand_query_backed_models_in_bundle,
 )
 from slayer.engine.stage_ordering import topologically_order_stages
-from slayer.engine.stage_planner import plan_stages
+from slayer.engine.stage_planner import _topo_sort, plan_stages
 from slayer.engine.variables import apply_variables_to_query
 from slayer.engine.introspect_utils import _safe_get_columns
 from slayer.engine.schema_scope import SchemaRef
@@ -388,14 +388,15 @@ def _build_explain_sql(dialect: str, sql: str) -> str:
     return get_dialect(dialect).build_explain_sql(sql)
 
 
-def _stage_location(stages, index: int) -> str:
-    """Human-readable pointer to the stage a filter came from.
+def _stage_location(*, stages, index: int, member: Optional[str] = "filters") -> str:
+    """Human-readable pointer to the stage a warning came from.
 
     Part of the dedup identity (D8), so it must distinguish two stages that
-    carry the SAME filter text — those are two distinct user filters.
+    carry the SAME filter text (or measure label) — those are distinct.
     """
     name = getattr(stages[index], "name", None) if index < len(stages) else None
-    return f"stage {name!r}.filters" if name else f"stages[{index}].filters"
+    base = f"stage {name!r}" if name else f"stages[{index}]"
+    return f"{base}.{member}" if member else base
 
 
 def _walk_regroup_attaches(planned):
@@ -414,65 +415,55 @@ def _collect_dropped_filter_warnings(
 
     Identity is ``(location, original filter text)`` — stated in the terms the
     author sees, because the contract is user-facing. The same filter dropped
-    by several producers (or a legacy cross-model plan) is ONE warning.
-
-    Reasons for the same filter must AGREE. A disagreement means two plans
-    reached different conclusions about one filter, which is a planner
-    inconsistency; raising beats silently keeping whichever came first.
+    by several producers (or a legacy cross-model plan) is ONE warning; its
+    conjuncts share the author's text but can legitimately drop for different
+    reasons, so distinct reasons merge in first-seen order.
     """
-    by_identity: "dict[tuple[str, str], DroppedFilterWarning]" = {}
+    reasons_by_identity: "dict[tuple[str, str], list[str]]" = {}
 
     def _record(w, location: str) -> None:
-        identity = (location, w.filter_text)
-        existing = by_identity.get(identity)
-        if existing is None:
-            by_identity[identity] = DroppedFilterWarning(
-                filter_text=w.filter_text, location=location, reason=w.reason,
-            )
-        elif existing.reason != w.reason:
-            raise ValueError(
-                f"Planner inconsistency: filter {w.filter_text!r} at "
-                f"{location} was dropped for two different reasons — "
-                f"{existing.reason!r} vs {w.reason!r}."
-            )
+        reasons = reasons_by_identity.setdefault((location, w.filter_text), [])
+        if w.reason not in reasons:
+            reasons.append(w.reason)
 
     for index, planned in enumerate(planned_list):
-        location = _stage_location(stages, index)
+        location = _stage_location(stages=stages, index=index)
         for attach in _walk_regroup_attaches(planned):
             for w in attach.dropped_filter_warnings or ():
                 _record(w, location)
-    return list(by_identity.values())
+    return [
+        DroppedFilterWarning(
+            filter_text=text, location=location, reason="; ".join(reasons),
+        )
+        for (location, text), reasons in reasons_by_identity.items()
+    ]
 
 
 def _collect_broadcast_warnings(
-    *, planned_list,
+    *, planned_list, stages,
 ) -> List[BroadcastGrainWarningPayload]:
-    """One broadcast payload per distinct aggregate (DEV-1836 D6): identified by
-    its measure label, roles deduped, dimensions unioned."""
-    dims_by_measure: "dict[str, list[tuple[str, str]]]" = {}
-    order: List[str] = []
-    for planned in planned_list:
+    """One broadcast payload per distinct aggregate (DEV-1836 D6): identified
+    by ``(stage location, measure label)`` — same-labeled aggregates in
+    different stages stay distinct — roles deduped, dimensions unioned."""
+    dims_by_key: "dict[tuple[str, str], list[tuple[str, str]]]" = {}
+    for index, planned in enumerate(planned_list):
+        location = _stage_location(stages=stages, index=index, member=None)
         for attach in _walk_regroup_attaches(planned):
             measure = attach.broadcast_measure
             if not measure:
                 continue
-            if measure not in dims_by_measure:
-                dims_by_measure[measure] = []
-                order.append(measure)
-            seen = {d for d, _ in dims_by_measure[measure]}
+            dims = dims_by_key.setdefault((location, measure), [])
+            seen = {d for d, _ in dims}
             for dim, reason in attach.broadcast_dimensions:
                 if dim not in seen:
-                    dims_by_measure[measure].append((dim, reason))
+                    dims.append((dim, reason))
                     seen.add(dim)
     return [
         BroadcastGrainWarningPayload(
-            measure=measure,
-            dimensions=[
-                BroadcastDimension(dimension=d, reason=r)
-                for d, r in dims_by_measure[measure]
-            ],
+            measure=measure, location=location,
+            dimensions=[BroadcastDimension(dimension=d, reason=r) for d, r in dims],
         )
-        for measure in order
+        for (location, measure), dims in dims_by_key.items()
     ]
 
 
@@ -1205,10 +1196,15 @@ class SlayerQueryEngine:
         # the pipeline (including nested rerooted subplans) and dedup them per
         # user filter. Collection happens here, with the plans in hand; the
         # Python-warnings emission happens later, at the outermost boundary.
+        # ``plan_stages`` returns plans in TOPO order — align the stage list
+        # the same way so each warning's location names its own stage.
+        ordered_stages = _topo_sort(stages) if len(stages) > 1 else stages
         dropped_warnings = _collect_dropped_filter_warnings(
-            planned_list=planned_list, stages=stages,
+            planned_list=planned_list, stages=ordered_stages,
         )
-        broadcast_warnings = _collect_broadcast_warnings(planned_list=planned_list)
+        broadcast_warnings = _collect_broadcast_warnings(
+            planned_list=planned_list, stages=ordered_stages,
+        )
         if getattr(query, "strict", False):
             _raise_on_strict_events(
                 broadcasts=broadcast_warnings, dropped=dropped_warnings,

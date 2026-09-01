@@ -105,14 +105,14 @@ join-fan-proof: the aggregate runs over the target's rows once, never through a
   *provably to-one* (a solo/complete primary key on the far side, a declared
   `one_to_one`/`many_to_one` cardinality, or a mirrored reverse edge). Every
   other requested dimension is **broadcast**: the value repeats across it, and
-  the response carries a `broadcast` warning naming the metric and each
-  unattributable dimension with its reason. An *explicit* `partition_by=` key
-  that is unattributable is a hard error instead (the author asked for a grain
-  the engine cannot prove safe).
+  the response carries a `broadcast` warning (fields: `measure`, `location` —
+  the pipeline stage, and `dimensions`, each with its `reason`). An *explicit*
+  `partition_by=` key that is unattributable is a hard error instead (the
+  author asked for a grain the engine cannot prove safe).
 - **Filter inheritance.** Each ROW-phase conjunct of the query's filters whose
   references are all attributable from the root inherits into the producer
   (re-rooted to target coordinates); an unreachable/unsafe conjunct is excluded
-  from that producer and warned (`dropped_filter` — the host base still applies
+  from that producer and warned (`unreachable_filter_dropped` — the host base still applies
   it to local measures). An AGGREGATE-phase predicate over the cross-model value
   applies at the outer SELECT's WHERE on the attached column, restricting rows
   uniformly with local aggregate filters.

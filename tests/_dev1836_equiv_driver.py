@@ -31,11 +31,11 @@ import traceback
 if sys.argv and sys.argv[0].endswith("_dev1836_equiv_driver.py") and len(sys.argv) > 3 and sys.argv[3]:
     sys.path.insert(0, sys.argv[3])
 
-from slayer.async_utils import run_sync
-from slayer.core.enums import DataType
-from slayer.core.models import DatasourceConfig, SlayerModel
-from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.storage.yaml_storage import YAMLStorage
+from slayer.async_utils import run_sync  # ALLOW(import-not-top): must follow the sys.path guard (old-worktree resolution)
+from slayer.core.enums import DataType  # ALLOW(import-not-top): must follow the sys.path guard (old-worktree resolution)
+from slayer.core.models import DatasourceConfig, SlayerModel  # ALLOW(import-not-top): must follow the sys.path guard (old-worktree resolution)
+from slayer.engine.query_engine import SlayerQueryEngine  # ALLOW(import-not-top): must follow the sys.path guard (old-worktree resolution)
+from slayer.storage.yaml_storage import YAMLStorage  # ALLOW(import-not-top): must follow the sys.path guard (old-worktree resolution)
 
 # module -> (fixtures_module, models_callable_name) ; None name => build inline
 MODULES = {

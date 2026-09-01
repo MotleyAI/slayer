@@ -133,6 +133,7 @@ class JoinSafetyFinding(BaseModel):
     """One validation flag about a join edge — an unproven hop or a
     detection-contradicted declaration."""
 
+    data_source: str
     model: str
     target_model: str
     message: str
@@ -153,16 +154,19 @@ def audit_join_safety(
     """Flag every join that is neither declared m:1/1:1 nor structurally proven
     (metrics crossing it broadcast), plus — given a detection report —
     declarations the observed data hard-contradicts."""
-    models_by_name = {m.name: m for m in models}
+    # Joins resolve within the parent model's datasource; same-named models in
+    # other datasources must not shadow the real target.
+    models_by_key = {(m.data_source, m.name): m for m in models}
     findings: list[JoinSafetyFinding] = []
     for model in models:
         for join in model.joins:
-            target = models_by_name.get(join.target_model)
+            target = models_by_key.get((model.data_source, join.target_model))
             if target is None:
                 continue
             if provably_to_one(join=join, target_model=target):
                 continue
             findings.append(JoinSafetyFinding(
+                data_source=model.data_source,
                 model=model.name,
                 target_model=join.target_model,
                 message=(
@@ -175,6 +179,7 @@ def audit_join_safety(
         for finding in detection.findings:
             if finding.verdict is CardinalityVerdict.CONTRADICTS_HARD:
                 findings.append(JoinSafetyFinding(
+                    data_source=finding.data_source,
                     model=finding.model,
                     target_model=finding.target_model,
                     message=(

@@ -113,18 +113,20 @@ class BroadcastGrainWarningPayload(SlayerWarning):
 
     ``measure`` names the affected metric — its public name when directly
     selected, else its canonical aggregate form (with role for a hidden use).
-    ``dimensions`` lists each broadcast dimension and the per-dimension reason.
+    ``location`` points at the pipeline stage it came from; ``dimensions``
+    lists each broadcast dimension and the per-dimension reason.
     """
 
     kind: Literal["broadcast"] = "broadcast"
     measure: str
+    location: str
     dimensions: list[BroadcastDimension]
 
     def human_message(self) -> str:
-        dims = ", ".join(d.dimension for d in self.dimensions)
+        dims = ", ".join(f"{d.dimension} ({d.reason})" for d in self.dimensions)
         return (
-            f"metric {self.measure!r} broadcast across unattributable "
-            f"dimension(s): {dims}"
+            f"metric {self.measure!r} (at {self.location}) broadcast across "
+            f"unattributable dimension(s): {dims}"
         )
 
 

@@ -42,7 +42,7 @@ from typing import (
     Union,
 )
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import DataType
 from slayer.core.formula import TIME_TRANSFORMS
@@ -1743,6 +1743,34 @@ def _attributable_from_root(
     )
 
 
+def _reroot_leaf_via_host(
+    r: ValueKey, *, target_path: Tuple[str, ...], root_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel], host_name: str,
+) -> Optional[ValueKey]:
+    """The via-host re-anchoring of one leaf, or ``None`` when
+    ``reroot_value_key``'s prefix rules (or the root's own sibling join)
+    already place it."""
+    if not isinstance(r, (ColumnKey, ColumnSqlKey, StarKey, TimeTruncKey)):
+        return None
+    hp = _key_host_path(r)
+    if hp[: len(target_path)] == target_path:
+        return None  # reroot_value_key strips the prefix below
+    if target_path and host_name == target_path[0]:
+        return None
+    via_host = (host_name, *hp)
+    if not safe_reachable(
+        root=root_model, path=via_host, models_by_name=models_by_name,
+    ) and hp and safe_reachable(
+        root=root_model, path=hp, models_by_name=models_by_name,
+    ):
+        return None  # resolved through the root's own join to the sibling
+    if isinstance(r, TimeTruncKey):
+        return r.model_copy(update={
+            "column": r.column.model_copy(update={"path": via_host}),
+        })
+    return r.model_copy(update={"path": via_host})
+
+
 def _reroot_from_root(
     key: ValueKey, *, target_path: Tuple[str, ...], root_model: SlayerModel,
     models_by_name: Dict[str, SlayerModel], host_name: str,
@@ -1758,27 +1786,12 @@ def _reroot_from_root(
     for r in walk_value_keys(key):
         # walk_value_keys does NOT descend into TimeTruncKey.column, so the
         # bucket key is rerooted here as a whole.
-        if not isinstance(r, (ColumnKey, ColumnSqlKey, StarKey, TimeTruncKey)):
-            continue
-        hp = _key_host_path(r)
-        if hp[: len(tp)] == tp:
-            continue  # reroot_value_key strips the prefix below
-        if tp and host_name == tp[0]:
-            continue
-        via_host = (host_name, *hp)
-        if not safe_reachable(
-            root=root_model, path=via_host, models_by_name=models_by_name,
-        ):
-            if hp and safe_reachable(
-                root=root_model, path=hp, models_by_name=models_by_name,
-            ):
-                continue  # resolved through the root's own join to the sibling
-        if isinstance(r, TimeTruncKey):
-            mapping[r] = r.model_copy(update={
-                "column": r.column.model_copy(update={"path": via_host}),
-            })
-        else:
-            mapping[r] = r.model_copy(update={"path": via_host})
+        rerooted = _reroot_leaf_via_host(
+            r, target_path=tp, root_model=root_model,
+            models_by_name=models_by_name, host_name=host_name,
+        )
+        if rerooted is not None:
+            mapping[r] = rerooted
     if mapping:
         key = substitute_value_keys(key, mapping)
     return reroot_value_key(key, target_path=tp)
@@ -1831,7 +1844,7 @@ def _assert_partition_key_attributable(
         models_by_name=models_by_name,
     )
     raise ValueError(
-        f"{label}: partition_by column '{_regroup_grain_name(pk)}' {reason}; "
+        f"{label}: partition_by column '{_partition_key_display(pk)}' {reason}; "
         f"every partition key must be attributable from the aggregate's root — "
         f"declare join cardinality or a covering unique key on the target."
     )
@@ -1888,18 +1901,18 @@ def _grain_member_attributable(
 
 
 def _cross_model_input_paths(
-    *, agg_R: AggregateKey, root_model: SlayerModel, root_name: str,
+    *, agg_rooted: AggregateKey, root_model: SlayerModel, root_name: str,
     bundle: ResolvedSourceBundle,
 ) -> List[Tuple[str, ...]]:
     """The join paths an aggregate's inputs (source ``Column.sql``, kwargs, and
     its ``Column.filter``) cross, in the ROOT's coordinates."""
     out: List[Tuple[str, ...]] = []
-    if agg_R.column_filter_key is not None:
-        for p in agg_R.column_filter_key.referenced_join_paths:
+    if agg_rooted.column_filter_key is not None:
+        for p in agg_rooted.column_filter_key.referenced_join_paths:
             if tuple(p) not in out:
                 out.append(tuple(p))
     for p in compute_aggregate_input_join_paths(
-        key=agg_R, anchor_model=root_model, anchor_relation=root_name,
+        key=agg_rooted, anchor_model=root_model, anchor_relation=root_name,
         bundle=bundle,
     ):
         if tuple(p) not in out:
@@ -1908,7 +1921,7 @@ def _cross_model_input_paths(
 
 
 def _assert_cross_model_inputs_safe(
-    *, agg: AggregateKey, agg_R: AggregateKey, root_model: SlayerModel,
+    *, agg: AggregateKey, agg_rooted: AggregateKey, root_model: SlayerModel,
     root_name: str, target_path: Tuple[str, ...], bundle: ResolvedSourceBundle,
     models_by_name: Dict[str, SlayerModel],
 ) -> None:
@@ -1918,7 +1931,7 @@ def _assert_cross_model_inputs_safe(
     remedy = "declare join cardinality or a covering unique key on the target"
     # Source-column / kwarg / column-filter refs, in the root's coordinates.
     for path in _cross_model_input_paths(
-        agg_R=agg_R, root_model=root_model, root_name=root_name, bundle=bundle,
+        agg_rooted=agg_rooted, root_model=root_model, root_name=root_name, bundle=bundle,
     ):
         if not safe_reachable(
             root=root_model, path=path, models_by_name=models_by_name,
@@ -1959,42 +1972,18 @@ def _cross_model_inherited_filters(
     that is unreachable/unsafe is excluded and warned (design D3)."""
     inherited: List[BoundFilter] = []
     dropped: List[UnreachableFilterDroppedWarning] = []
-
-    def _attributable(r: ValueKey) -> bool:
-        return _attributable_from_root(
-            host_path=_key_host_path(r), target_path=target_path,
-            root_model=root_model, models_by_name=models_by_name,
-            host_name=host_name,
-        )
-
     for bf, text in base_filters:
         if bf.phase != Phase.ROW:
             continue
         for cj in split_top_level_and(bf.value_key):
-            refs = [
-                k for k in walk_value_keys(cj)
-                if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey))
-            ]
-            if all(_attributable(r) for r in refs):
-                rerooted = (
-                    _reroot_from_root(
-                        cj, target_path=target_path, root_model=root_model,
-                        models_by_name=models_by_name, host_name=host_name,
-                    )
-                    if host_name is not None
-                    else reroot_value_key(cj, target_path=target_path)
-                )
-                inherited.append(_bound_filter_from_key(rerooted))
+            inherited_bf, dropped_w = _conjunct_disposition(
+                cj, text=text, target_path=target_path, root_model=root_model,
+                models_by_name=models_by_name, host_name=host_name,
+            )
+            if inherited_bf is not None:
+                inherited.append(inherited_bf)
             else:
-                unsafe = next((r for r in refs if not _attributable(r)), None)
-                reason = _broadcast_reason(
-                    host_path=_key_host_path(unsafe) if unsafe else (),
-                    target_path=target_path, root_model=root_model,
-                    models_by_name=models_by_name,
-                )
-                dropped.append(UnreachableFilterDroppedWarning(
-                    filter_text=text or _canonical_name(cj), reason=reason,
-                ))
+                dropped.append(dropped_w)
     return inherited, dropped
 
 
@@ -2287,21 +2276,63 @@ def _synthesize_wrap_attach(
     )
 
 
+def _conjunct_disposition(
+    cj: ValueKey, *, text: Optional[str], target_path: Tuple[str, ...],
+    root_model: SlayerModel, models_by_name: Dict[str, SlayerModel],
+    host_name: Optional[str],
+) -> Tuple[Optional[BoundFilter], Optional[UnreachableFilterDroppedWarning]]:
+    """(inherited, dropped) for ONE ROW conjunct — exactly one side is set."""
+    refs = [
+        k for k in walk_value_keys(cj)
+        if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey))
+    ]
+    unsafe = next((r for r in refs if not _attributable_from_root(
+        host_path=_key_host_path(r), target_path=target_path,
+        root_model=root_model, models_by_name=models_by_name,
+        host_name=host_name,
+    )), None)
+    if unsafe is None:
+        rerooted = (
+            _reroot_from_root(
+                cj, target_path=target_path, root_model=root_model,
+                models_by_name=models_by_name, host_name=host_name,
+            )
+            if host_name is not None
+            else reroot_value_key(cj, target_path=target_path)
+        )
+        return _bound_filter_from_key(rerooted), None
+    reason = _broadcast_reason(
+        host_path=_key_host_path(unsafe), target_path=target_path,
+        root_model=root_model, models_by_name=models_by_name,
+    )
+    return None, UnreachableFilterDroppedWarning(
+        filter_text=text or _canonical_name(cj), reason=reason,
+    )
+
+
+class _ProducerSynthesisContext(BaseModel):
+    """The per-plan inputs every cross-model producer synthesis shares."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    prebound: PreboundQuery
+    bundle: ResolvedSourceBundle
+    host_model: SlayerModel
+    models_by_name: Dict[str, SlayerModel]
+    projected_dim_keys: List[ValueKey]
+    projected_td_keys: List[ValueKey]
+    base_filters_with_text: List[Tuple[BoundFilter, Optional[str]]]
+    scope: Union[ModelScope, StageSchema]
+    stage_schemas: Dict[str, StageSchema]
+
+
 def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-rooted producer synthesis (root / safe-grain / broadcast / inputs / filter-inheritance / recursive plan / attach); the arms share the re-rooting coordinate state.
     *,
     agg: AggregateKey,
     placeholder: ValueKey,
     attach_phase: str,
     public_alias: Optional[str],
-    prebound: PreboundQuery,
-    bundle: ResolvedSourceBundle,
-    host_model: SlayerModel,
-    models_by_name: Dict[str, SlayerModel],
-    projected_dim_keys: List[ValueKey],
-    projected_td_keys: List[ValueKey],
-    base_filters_with_text: List[Tuple[BoundFilter, Optional[str]]],
-    scope: Union[ModelScope, StageSchema],
-    stage_schemas: Dict[str, StageSchema],
+    context: _ProducerSynthesisContext,
     declared_type: Optional[DataType] = None,
     producer_registry: Optional[Dict[Hashable, PlannedQuery]] = None,
 ) -> RegroupAttachPlan:
@@ -2309,6 +2340,12 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     (design D2/D3): root R at the aggregate's source model, compute at the
     fan-out-safe subset of the requested grain, broadcast across the rest, with
     inherited filters, and a null-safe grain attach back onto the consumer."""
+    prebound, bundle = context.prebound, context.bundle
+    host_model, models_by_name = context.host_model, context.models_by_name
+    projected_dim_keys = context.projected_dim_keys
+    projected_td_keys = context.projected_td_keys
+    base_filters_with_text = context.base_filters_with_text
+    scope, stage_schemas = context.scope, context.stage_schemas
     target_path = tuple(agg.source.path)
     root_model = walk_key_path(model=host_model, path=target_path, bundle=bundle)
     if root_model is None:  # pragma: no cover — bind resolved the path already
@@ -2364,9 +2401,9 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
                 models_by_name=models_by_name,
             )))
 
-    agg_R = reroot_value_key(agg, target_path=target_path)
+    agg_rooted = reroot_value_key(agg, target_path=target_path)
     _assert_cross_model_inputs_safe(
-        agg=agg, agg_R=agg_R, root_model=root_model, root_name=root_name,
+        agg=agg, agg_rooted=agg_rooted, root_model=root_model, root_name=root_name,
         target_path=target_path, bundle=bundle, models_by_name=models_by_name,
     )
 
@@ -2419,10 +2456,10 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     # measure over ``regions.pop``). The public name lands on the CONSUMER's
     # projection via the placeholder substitution.
     producer_prebound, ordered_pks = _regroup_producer_prebound(
-        pks=grain_keys, aggs=[agg_R], model=root_model, bundle=root_bundle,
+        pks=grain_keys, aggs=[agg_rooted], model=root_model, bundle=root_bundle,
         inherited=inherited, n_date_range=0, window_td_key=window_td_key,
         explicit_types=(
-            {agg_R: declared_type} if declared_type is not None else None
+            {agg_rooted: declared_type} if declared_type is not None else None
         ),
     )
     # A computed-dimension grain member (D4) nests its own producer inside this
@@ -2449,7 +2486,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
             *producer_plan.aggregate_slots,
             *producer_plan.combined_expression_slots,
         ],
-        key=agg_R,
+        key=agg_rooted,
         fallback=producer_answer_ids[0] if producer_answer_ids else None,
     )
     producer_grain_ids = list(producer_plan.projection)[: len(ordered_pks)]
@@ -2468,11 +2505,11 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     cm_attach_kwargs: Dict[str, Any] = {}
     if window_td_key is not None:
         cm_attach_kwargs["kernel"] = _trailing_window_kernel(
-            producer_plan=producer_plan, agg_key=agg_R, n_date_range=0,
+            producer_plan=producer_plan, agg_key=agg_rooted, n_date_range=0,
         )
-    elif isinstance(agg_R, AggregateKey) and agg_R.agg in RANKED_AGGREGATIONS:
+    elif isinstance(agg_rooted, AggregateKey) and agg_rooted.agg in RANKED_AGGREGATIONS:
         cm_attach_kwargs["kernel"] = _ranked_kernel(
-            producer_plan=producer_plan, agg_key=agg_R,
+            producer_plan=producer_plan, agg_key=agg_rooted,
             root_model=root_model, bundle=root_bundle,
         )
     return RegroupAttachPlan(
@@ -2509,26 +2546,26 @@ def _discover_cross_model_combined(
         if dm.is_dimension:
             continue
         vk = dm.bound.value_key
-        for k in walk_value_keys(vk):
-            if _is_cross_model_agg(k) and k not in seen:
-                seen.add(k)
-                out.append(k)
+        _accumulate_cross_model_leaves(vk, seen=seen, out=out)
         if _is_cross_model_agg(vk):
             if dm.public_name is not None:
                 alias.setdefault(vk, dm.public_name)
             if dm.type_is_explicit and dm.type is not None:
                 declared_type.setdefault(vk, dm.type)
     for sp in prebound.order_specs:
-        for k in walk_value_keys(sp.bound.value_key):
-            if _is_cross_model_agg(k) and k not in seen:
-                seen.add(k)
-                out.append(k)
+        _accumulate_cross_model_leaves(sp.bound.value_key, seen=seen, out=out)
     for bf in prebound.bound_filters:
-        for k in walk_value_keys(bf.value_key):
-            if _is_cross_model_agg(k) and k not in seen:
-                seen.add(k)
-                out.append(k)
+        _accumulate_cross_model_leaves(bf.value_key, seen=seen, out=out)
     return out, alias, declared_type
+
+
+def _accumulate_cross_model_leaves(
+    vk: ValueKey, *, seen: set, out: List[AggregateKey],
+) -> None:
+    for k in walk_value_keys(vk):
+        if _is_cross_model_agg(k) and k not in seen:
+            seen.add(k)
+            out.append(k)
 
 
 def _assert_total_routing(prebound: PreboundQuery) -> None:
@@ -2997,18 +3034,20 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
         prebound.bound_filter_texts
         + [None] * (len(prebound.bound_filters) - len(prebound.bound_filter_texts)),
     ))
+    synthesis_context = _ProducerSynthesisContext(
+        prebound=prebound, bundle=bundle, host_model=host_model_for_cm,
+        models_by_name=models_by_name_cm,
+        projected_dim_keys=projected_dim_keys,
+        projected_td_keys=projected_td_keys,
+        base_filters_with_text=base_filters_with_text, scope=scope,
+        stage_schemas=stage_schemas,
+    )
     for phase, cm_aggs in (("combined", cm_combined), ("row", cm_row)):
         for agg in cm_aggs:
             attaches.append(_synthesize_cross_model_producer(
                 agg=agg, placeholder=mapping[agg], attach_phase=phase,
-                public_alias=public_alias_by_agg.get(agg), prebound=prebound,
-                bundle=bundle, host_model=host_model_for_cm,
-                models_by_name=models_by_name_cm,
-                projected_dim_keys=projected_dim_keys,
-                projected_td_keys=projected_td_keys,
-                base_filters_with_text=base_filters_with_text, scope=scope,
-                stage_schemas=stage_schemas,
-                declared_type=cm_type.get(agg),
+                public_alias=public_alias_by_agg.get(agg),
+                context=synthesis_context, declared_type=cm_type.get(agg),
                 producer_registry=producer_registry,
             ))
 

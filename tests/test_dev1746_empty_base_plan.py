@@ -42,6 +42,7 @@ from slayer.core.query import ColumnRef, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import plan_query
+from slayer.sql.generator import SQLGenerator
 
 from tests._cross_model_chain import (
     _countries,
@@ -197,8 +198,6 @@ class TestEmptyBaseGrainPlanNode:
         """P-D: clearing the plan field must change the emitted SQL. If it does
         not, the generator re-derived the decision and the node is decorative.
         """
-        from slayer.sql.generator import SQLGenerator
-
         planned = plan_query(query=_filtered_query(), bundle=_bundle())
         assert planned.empty_base_plan is not None, (
             "precondition: the plan must be POPULATED before clearing, "

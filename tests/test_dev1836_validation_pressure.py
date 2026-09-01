@@ -64,6 +64,34 @@ class TestUnprovenJoins:
         assert "broadcast" in by_edge[("customers", "orders")].message.lower()
 
 
+class TestCrossDatasourceIsolation:
+    def test_same_named_model_in_another_datasource_does_not_shadow(self) -> None:
+        """Joins resolve within the parent's datasource: a weaker same-named
+        model elsewhere must not flip a proven join to unproven."""
+        customers_a = SlayerModel(
+            name="customers", sql_table="customers", data_source="ds_a",
+            columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+        )
+        orders_a = SlayerModel(
+            name="orders", sql_table="orders", data_source="ds_a",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="customer_id", type=DataType.INT),
+            ],
+            joins=[ModelJoin(target_model="customers",
+                             join_pairs=[["customer_id", "id"]])],
+        )
+        # Same name, different datasource, and 'id' is NOT unique here.
+        customers_b = SlayerModel(
+            name="customers", sql_table="customers", data_source="ds_b",
+            columns=[Column(name="id", type=DataType.INT)],
+        )
+        findings = audit_join_safety(
+            models=[orders_a, customers_a, customers_b],
+        )
+        assert ("orders", "customers") not in _findings_by_edge(findings)
+
+
 class TestContradictedDeclarations:
     def _detection(self) -> JoinCardinalityReport:
         return JoinCardinalityReport(findings=[JoinCardinalityFinding(
