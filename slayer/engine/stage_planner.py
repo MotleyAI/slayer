@@ -800,6 +800,7 @@ def _map_bound_keys(
             label=dm.label,
             canonical_alias=dm.canonical_alias,
             type=dm.type,
+            type_is_explicit=dm.type_is_explicit,
             format=dm.format,
             description=dm.description,
             is_dimension=dm.is_dimension,
@@ -1290,7 +1291,7 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
         [FrozenSet[ValueKey]], List[ValueKey],
     ] = _regroup_partition_order,
     public_alias_by_agg: Optional[Mapping[AggregateKey, str]] = None,
-    declared_type_by_agg: Optional[Mapping[AggregateKey, DataType]] = None,
+    explicit_types: Optional[Mapping[ValueKey, DataType]] = None,
     grain_name_by_key: Optional[Mapping[ValueKey, str]] = None,
     window_td_key: Optional[ValueKey] = None,
 ) -> Tuple[PreboundQuery, List[ValueKey]]:
@@ -1311,7 +1312,7 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
     key, evaluated per bucket and included verbatim in the attach keys.
     """
     public_alias_by_agg = public_alias_by_agg or {}
-    declared_type_by_agg = declared_type_by_agg or {}
+    explicit_types = explicit_types or {}
     grain_name_by_key = grain_name_by_key or {}
     ordered = partition_order(pks)
     dims = [pk for pk in ordered if not isinstance(pk, TimeTruncKey)]
@@ -1351,18 +1352,18 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
             or "regroup"
         )
         # A transform root (D4) carries no model-measure metadata — its type is
-        # inferred from the transform. A consumer's DECLARED type (query-field
+        # inferred from the transform. A consumer's EXPLICIT type (query-field
         # override) wins over the source-column type, mirroring the local chain.
-        override_type = declared_type_by_agg.get(agg)
         if model is not None and isinstance(agg, AggregateKey):
-            a_type = override_type or measure_key_type(model=model, key=agg)
+            a_type = measure_key_type(model=model, key=agg)
             a_fmt, a_desc = measure_key_format_description(model=model, key=agg)
         else:
-            a_type, a_fmt, a_desc = override_type, None, None
+            a_type, a_fmt, a_desc = None, None, None
         agg_dms.append(DeclaredMeasure(
             bound=BinderBoundExpr(value_key=agg),
             declared_name=canonical, public_name=canonical,
-            type=a_type, format=a_fmt, description=a_desc,
+            type=explicit_types.get(agg, a_type), format=a_fmt, description=a_desc,
+            type_is_explicit=agg in explicit_types,
         ))
     prebound = PreboundQuery(
         declared_measures=[*grain_dms, *agg_dms],
@@ -2174,7 +2175,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     producer_prebound, ordered_pks = _regroup_producer_prebound(
         pks=grain_keys, aggs=[agg_R], model=root_model, bundle=root_bundle,
         inherited=inherited, n_date_range=0, window_td_key=window_td_key,
-        declared_type_by_agg=(
+        explicit_types=(
             {agg_R: declared_type} if declared_type is not None else None
         ),
     )
@@ -2240,8 +2241,8 @@ def _discover_cross_model_combined(
     """Distinct cross-model aggregates reachable from a non-dimension measure,
     an order spec, or a query filter (the combined-attach roles). First-seen
     order; a directly-named measure maps to its public alias for naming, and its
-    declared type (when the measure IS the aggregate) so the producer casts to
-    the user-declared type rather than the source column's."""
+    EXPLICIT (user-declared) type so the producer casts to it rather than the
+    source column's; an inferred type never forces a producer cast (#347)."""
     seen: set = set()
     out: List[AggregateKey] = []
     alias: Dict[AggregateKey, str] = {}
@@ -2257,7 +2258,7 @@ def _discover_cross_model_combined(
         if _is_cross_model_agg(vk):
             if dm.public_name is not None:
                 alias.setdefault(vk, dm.public_name)
-            if dm.type is not None:
+            if dm.type_is_explicit and dm.type is not None:
                 declared_type.setdefault(vk, dm.type)
     for sp in prebound.order_specs:
         for k in walk_value_keys(sp.bound.value_key):
@@ -2491,6 +2492,11 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
                 pks=pks, aggs=producer_aggs, model=producer_model, bundle=bundle,
                 inherited=inherited, n_date_range=n_inherited_date,
                 partition_order=order_fn, public_alias_by_agg=alias_map,
+                explicit_types={
+                    dm.bound.value_key: dm.type
+                    for dm in prebound.declared_measures
+                    if phase == "combined" and dm.type_is_explicit and dm.type is not None
+                },
                 grain_name_by_key=grain_names,
                 window_td_key=prebound.main_time_key if windowed else None,
             )
@@ -2642,6 +2648,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
                 label=dm.label,
                 canonical_alias=dm.canonical_alias,
                 type=dm.type,
+                type_is_explicit=dm.type_is_explicit,
                 format=dm.format,
                 description=dm.description,
                 is_dimension=dm.is_dimension,
@@ -4199,11 +4206,8 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
         #      source measure's type metadata; re-look-up here.
         #   3. ``_type_for_measure_formula`` — aggregation-aware inference.
         # An explicit type wins over inference at every level of this chain.
-        m_type = (
-            m.type
-            or _saved_model_measure_type(scope=scope, formula=formula)
-            or _type_for_measure_formula(scope=scope, bound=bound)
-        )
+        explicit_type = m.type or _saved_model_measure_type(scope=scope, formula=formula)
+        m_type = explicit_type or _type_for_measure_formula(scope=scope, bound=bound)
         declared.append(DeclaredMeasure(
             bound=bound,
             declared_name=declared_name,
@@ -4214,6 +4218,7 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
             # name) so a colon-form filter / ORDER BY still resolves.
             canonical_alias=canonical if alias_name else None,
             type=m_type,
+            type_is_explicit=explicit_type is not None,
             format=fmt,
             description=desc,
         ))

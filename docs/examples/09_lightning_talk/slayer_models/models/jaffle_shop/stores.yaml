@@ -1,4 +1,4 @@
-version: 8
+version: 9
 name: stores
 sql_table: stores
 query_variables: {}

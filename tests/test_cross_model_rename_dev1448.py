@@ -480,7 +480,7 @@ class TestCrossModelStarAndCountDistinctRename:
             f"cross-model *:count rename must surface as the public key; got "
             f"{aliases!r}\nSQL:\n{sql}"
         )
-        assert 'COUNT(*) AS INTEGER) AS "customers._count"' in sql, (
+        assert 'COUNT(*) AS "customers._count"' in sql, (
             f"cross-model *:count CTE column must stay canonical:\n{sql}"
         )
 
@@ -511,7 +511,7 @@ class TestCrossModelStarAndCountDistinctRename:
             f"key; got {aliases!r}\nSQL:\n{sql}"
         )
         assert (
-            'COUNT(DISTINCT customers.id) AS INTEGER) AS "customers.id_count_distinct"'
+            'COUNT(DISTINCT customers.id) AS "customers.id_count_distinct"'
             in sql
         ), f"cross-model count_distinct CTE column must stay canonical:\n{sql}"
 
@@ -609,7 +609,7 @@ class TestCrossModelRenameCollisionGuards:
         )
         assert 'CAST(SUM(customers.lifetime_revenue) AS REAL) AS "customers.revenue_sum"' in sql
         assert (
-            'COUNT(DISTINCT customers.id) AS INTEGER) AS "customers.id_count_distinct"'
+            'COUNT(DISTINCT customers.id) AS "customers.id_count_distinct"'
             in sql
         )
 
@@ -770,7 +770,7 @@ class TestCrossModelRenameCollisionGuards:
         )
         # Distinct bodies survived: COUNT(*) for the canonical key, SUM for
         # the renamed one.
-        assert 'COUNT(*) AS INTEGER) AS "customers._count"' in sql, sql
+        assert 'COUNT(*) AS "customers._count"' in sql, sql
         assert 'CAST(SUM(customers.lifetime_revenue) AS REAL) AS "customers.revenue_sum"' in sql, sql
 
     async def test_cross_model_rename_collides_with_dimension_downstream_short_raises(
