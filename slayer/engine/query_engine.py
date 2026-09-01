@@ -83,6 +83,13 @@ from slayer.engine.response_meta import (
     projection_result_keys,
 )
 from slayer.engine.column_expansion import expand_derived_refs_sync
+from slayer.engine.schema_drift import (
+    AppliedEntry,
+    ApplyDriftResult,
+    ApplyError,
+    ToDeleteEntry,
+    validate_datasource,
+)
 from slayer.engine.source_bundle import (
     ResolvedSourceBundle,
     build_resolved_source_bundle,
@@ -101,8 +108,7 @@ from slayer.memories.resolver import (
 from slayer.sql.client import SlayerSQLClient
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type, get_dialect
 from slayer.sql import engine_factory
-from slayer.sql.engine_factory import EngineCacheKey
-from slayer.sql.engine_factory import _cache_key as _engine_cache_key
+from slayer.sql.engine_factory import EngineCacheKey, _sql_client_cache_key
 from slayer.sql.generator import generate_planned_stages
 from slayer.sql.session_policy import ScopedTable, apply_session_policy
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
@@ -231,21 +237,6 @@ def _build_recommend_coverage(
     return [e[0] for e in entries]
 
 _PLACEHOLDER_FILL_VALUE = "0"
-
-
-def _sql_client_cache_key(datasource: DatasourceConfig) -> EngineCacheKey:
-    """Cache key for ``SlayerQueryEngine._sql_clients``.
-
-    Delegates to ``engine_factory``'s key builder rather than re-deriving it
-    (DEV-1755): each client memoizes the engine it got from the factory, so if
-    the two keys disagreed a caller could be handed a client whose engine was
-    built for different credentials (e.g. a different user's BigQuery OAuth
-    token). Sharing one implementation makes that impossible. Distinct
-    ``connection_name`` / warehouse / role datasources still key apart (DEV-1551).
-    """
-    return _engine_cache_key(
-        datasource=datasource, connection_string=datasource.get_connection_string(),
-    )
 
 
 def _merge_query_variables(
@@ -1831,8 +1822,13 @@ class SlayerQueryEngine:
                     )
                     continue
                 collected.extend(entries)
+            # An "invalid_sql" entry is not drift evidence — it restates the
+            # query failure itself, so the original error must propagate.
             filtered = [
-                e for e in collected if getattr(e, "model_name", None) in touched
+                e
+                for e in collected
+                if getattr(e, "model_name", None) in touched
+                and getattr(e, "cause", "schema_drift") != "invalid_sql"
             ]
             if filtered:
                 raise SchemaDriftError(
@@ -2400,12 +2396,6 @@ class SlayerQueryEngine:
         attempted, ``validate_models`` re-runs on the touched datasources
         and the result populates ``residual``.
         """
-        from slayer.engine.schema_drift import (
-            AppliedEntry,
-            ApplyDriftResult,
-            ApplyError,
-        )
-
         applied: List[AppliedEntry] = []
         errors: List[ApplyError] = []
         touched_ds: set[str] = set()
@@ -2724,11 +2714,6 @@ class SlayerQueryEngine:
         ``data_source`` is ``None``, every datasource is validated
         concurrently and results are concatenated.
         """
-
-        from slayer.engine.schema_drift import (
-            ToDeleteEntry,
-            validate_datasource,
-        )
 
         if data_source is not None:
             ds = await self.storage.get_datasource(data_source)

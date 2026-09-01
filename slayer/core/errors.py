@@ -94,7 +94,7 @@ class SchemaDriftError(SlayerError):
         super().__init__(
             f"Schema drift detected on models {sorted(self.models)}. "
             f"Run validate_models to inspect the {len(self.to_delete)} "
-            f"pending delete(s)."
+            f"pending delete(s). Original error: {original}"
         )
         self.__cause__ = original
 
