@@ -779,7 +779,25 @@ class TestTimeArgJoinDiscovery:
 
     def _run(self, query: SlayerQuery, orders: SlayerModel) -> ScopeFrame:
         bundle = _u_bundle(orders)
-        order, slots = _planned_slots(query, bundle)
+        # DEV-1835: a LOCAL first/last is desugared into a regroup producer
+        # before isolation, so the ranked aggregate — and the time-arg join to
+        # discover — now live in the producer sub-plan's render order rather than
+        # at the top level. Drive the discovery pass over the producer's slots.
+        planned = plan_query(query=query, bundle=bundle)
+        sub = (
+            planned.regroup_attach_plans[0].producer_plan
+            if planned.regroup_attach_plans
+            else planned
+        )
+        slots = {
+            s.id: s
+            for s in (
+                list(sub.row_slots)
+                + list(sub.aggregate_slots)
+                + list(sub.combined_expression_slots)
+            )
+        }
+        order = list(sub.projection)
         gen = self._gen()
         scope = _host_scope(gen, source_model=orders, bundle=bundle)
         gen._resolve_agg_inputs_via_scope(
@@ -1086,9 +1104,10 @@ async def test_e2e_time_arg_join_dedup_with_dimension() -> None:
     arg's pull, deduped against the CTE's own dimension pull) — never twice
     within one scope.
 
-    The CTE is a ranked ``_rk_`` one rather than the generic ``_cm_`` one it was
-    under DEV-1709: a first/last now isolates because it RANKS, which subsumes
-    the crossing-input trigger that used to be its only reason.
+    DEV-1835: a LOCAL first/last is desugared into a regroup producer, so its
+    isolated CTE renders under the uniform ``_cm_`` producer name (carrying the
+    ROW_NUMBER ranking) rather than the ``_rk_`` name it had under DEV-1748 —
+    still one isolated CTE per crossing first/last, one join per scope.
     """
     engine = await _multi_hop_engine()
     resp = await engine.execute(SlayerQuery(
@@ -1097,8 +1116,11 @@ async def test_e2e_time_arg_join_dedup_with_dimension() -> None:
         measures=[{"formula": "amount:last(customers.signup_at)"}],
     ))
     assert resp.data, resp.sql
-    assert "_rk_" in resp.sql, (
+    assert "_cm_" in resp.sql, (
         f"crossing time arg must isolate:\n{resp.sql}"
+    )
+    assert "ROW_NUMBER" in resp.sql.upper(), (
+        f"the isolated CTE must still carry the ranking:\n{resp.sql}"
     )
     joins = re.findall(r"JOIN\s+customers\b", resp.sql, re.I)
     assert len(joins) == 2, (

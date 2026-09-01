@@ -542,14 +542,23 @@ class TestWindowedGrainInvariant:
     def test_windowed_plan_grain_always_contains_the_window_time_dimension(
         self,
     ) -> None:
-        """Why the ``_wm_`` join-back can never be an empty-grain CROSS JOIN:
+        """Why the windowed join-back can never be an empty-grain CROSS JOIN:
         the planner always includes the window's time dimension in the grain.
-        Pinned at plan level so the render path does not need a special case."""
+        Pinned at plan level so the render path does not need a special case.
+
+        MIGRATED (DEV-1835): a local windowed measure is desugared into a
+        regroup producer, so the windowed plan now lives inside the producer's
+        nested plan. The grain invariant is unchanged — pinned there."""
         planned = plan_query(
             query=_windowed_declared_first_query(), bundle=_chain_bundle(),
         )
-        assert planned.windowed_aggregate_plans, "expected a windowed plan"
-        for wm in planned.windowed_aggregate_plans:
+        assert not planned.windowed_aggregate_plans
+        windowed_plans = [
+            wm for rp in planned.regroup_attach_plans
+            for wm in rp.producer_plan.windowed_aggregate_plans
+        ]
+        assert windowed_plans, "expected a windowed plan inside a regroup producer"
+        for wm in windowed_plans:
             assert wm.grain_slot_ids, (
                 "a windowed plan has an EMPTY grain — the outer join-back would "
                 "degenerate to a CROSS JOIN and multiply rows."

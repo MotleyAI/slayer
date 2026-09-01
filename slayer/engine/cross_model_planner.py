@@ -978,6 +978,7 @@ class IsolatedCteCrossModelPlanner:
                 key=aggregate_key,
                 model=host_model,
                 public_alias=public_alias,
+                source_slot=next(s for s in host_slots if s.id == aggregate_slot_id),
             ),
             grain_measures=grain_measures,
             inherited_filters=[
@@ -1075,6 +1076,7 @@ def _aggregate_declared_measure(
     key: AggregateKey,
     model: SlayerModel,
     public_alias: Optional[str],
+    source_slot: Optional[ValueSlot] = None,
 ) -> DeclaredMeasure:
     """The nested plan's single measure declaration, built from the key.
 
@@ -1093,7 +1095,9 @@ def _aggregate_declared_measure(
         declared_name=public_alias or canonical,
         public_name=public_alias or canonical,
         canonical_alias=canonical if public_alias else None,
-        type=measure_key_type(model=model, key=key),
+        type=(source_slot.type if source_slot is not None and source_slot.type_is_explicit
+              else measure_key_type(model=model, key=key)),
+        type_is_explicit=source_slot is not None and source_slot.type_is_explicit,
         format=fmt,
         description=desc,
     )
@@ -1512,6 +1516,7 @@ def _maybe_reroot_cross_model_plan(  # NOSONAR(S3776) — one re-rooting decisio
             key=reroot_value_key(agg_key, target_path=target_path),
             model=target_model,
             public_alias=None,
+            source_slot=next(s for s in host_slots if s.key == agg_key),
         ),
         grain_measures=grain_declared,
         inherited_filters=rerooted_filters,

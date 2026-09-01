@@ -296,9 +296,10 @@ class TestFlavorAOrderByUnprojected:
     async def test_orderby_joined_column_resolves_in_first_last_ranked_scope(
         self,
     ) -> None:
-        """The first/last path. The ranked value is computed in a CTE of its
-        own, so a joined sort key cannot be a bare reference against it either —
-        it gets its own CTE, exactly as in the windowed case above."""
+        """The first/last path. DEV-1835: the ranked value desugars into its own
+        ``_cm_`` producer CTE; the joined sort key still cannot be a bare
+        reference against it, so it resolves through the projected ``_base``
+        scope — a valid reference, never a bare unbound one."""
         orders, joined = _orders_customers_regions()
         query = SlayerQuery(
             source_model="orders",
@@ -309,8 +310,8 @@ class TestFlavorAOrderByUnprojected:
         sql = _norm(await _engine_generate(
             query=query, model=orders, extra_models=joined,
         ))
-        assert "_rk_" in sql, sql
-        assert "ORDER BY _cm_" in sql, sql
+        assert "_cm_" in sql, sql  # DEV-1835: ranked value under uniform _cm_ scope
+        assert 'ORDER BY "orders.customers.regions.name"' in sql, sql
 
 
 # ============================================================================

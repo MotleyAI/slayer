@@ -45,6 +45,7 @@ from slayer.core.keys import (
     InKey,
     LiteralKey,
     Phase,
+    REGROUP_LEAF_PREFIX,
     ScalarCallKey,
     StarKey,
     TimeTruncKey,
@@ -266,6 +267,7 @@ class ValueRegistry:
         hidden: bool = False,
         label: Optional[str] = None,
         type: Optional[DataType] = None,
+        type_is_explicit: bool = False,
         expression: Optional["BoundExpr"] = None,
         format: Optional[NumberFormat] = None,
         description: Optional[str] = None,
@@ -287,6 +289,7 @@ class ValueRegistry:
                 hidden=hidden,
                 label=label,
                 type=type,
+                type_is_explicit=type_is_explicit,
                 format=format,
                 description=description,
             )
@@ -323,6 +326,7 @@ class ValueRegistry:
             phase=phase,
             label=label,
             type=type,
+            type_is_explicit=type_is_explicit,
             is_dimension=is_dimension,
             expression=expression if expression is not None else BoundExpr(value_key=key),
             format=format,
@@ -343,6 +347,7 @@ class ValueRegistry:
         hidden: bool,
         label: Optional[str] = None,
         type: Optional[DataType] = None,
+        type_is_explicit: bool = False,
         format: Optional[NumberFormat] = None,
         description: Optional[str] = None,
     ) -> SlotId:
@@ -378,6 +383,8 @@ class ValueRegistry:
             format=format,
             description=description,
         )
+        if type_is_explicit and type is not None and slot.type in (None, type):
+            updates["type_is_explicit"] = True
         if updates:
             new_slot = slot.model_copy(update=updates)
             self._slots[existing_sid] = new_slot
@@ -602,6 +609,7 @@ class DeclaredMeasure(BaseModel):
     label: Optional[str] = None
     canonical_alias: Optional[str] = None
     type: Optional[DataType] = None
+    type_is_explicit: bool = False
     format: Optional[NumberFormat] = None
     description: Optional[str] = None
     # DEV-1740: a computed (expression) dimension is a ROW-phase composite that
@@ -700,6 +708,29 @@ def _iter_slot_deps(key: ValueKey):
     # StarKey, LiteralKey — never slottable on their own.
 
 
+def _regroup_substituted_composite_phase(value_key: ValueKey) -> Optional[Phase]:
+    """DEV-1839 D10 — the AGGREGATE phase of a composite (arithmetic / scalar-
+    call / desugared CASE) EVERY materialisable leaf of which is a combined
+    regroup placeholder, else ``None``.
+
+    Such a composite reads only post-attachment ``_cm_`` values (its operands are
+    partitioned aggregates broadcast to the query grain), so it is semantically
+    an AGGREGATE-phase expression rendered at the combined SELECT — not the ROW
+    phase its bare-ColumnKey leaves would otherwise give it (which routes it into
+    ``_base`` and raises "needs an aggregation"). A composite mixing a plain
+    aggregate with a placeholder is already AGGREGATE-phase and unaffected."""
+    if not isinstance(value_key, (ArithmeticKey, ScalarCallKey)):
+        return None
+    deps = list(_iter_slot_deps(value_key))
+    if not deps:
+        return None
+    for dep in deps:
+        if not (isinstance(dep, ColumnKey)
+                and dep.leaf.startswith(REGROUP_LEAF_PREFIX)):
+            return None
+    return Phase.AGGREGATE
+
+
 class ProjectionPlanner:
     """Allocate slots for declared measures + hidden slots for refs only
     used in order/filter."""
@@ -721,7 +752,7 @@ class ProjectionPlanner:
                 phase=key.phase,
             )
 
-    def plan(
+    def plan(  # NOSONAR(S3776) — one sequential allocation pass (reserve names → intern measures → filter/order deps) sharing the same registry + hidden-slot rule; splitting the loops scatters that shared mutation invariant.
         self,
         *,
         measures: List[DeclaredMeasure],
@@ -745,14 +776,26 @@ class ProjectionPlanner:
         )
         public_projection: List[SlotId] = []
         for m in measures:
+            # DEV-1839 D10 — an all-placeholder regroup composite MEASURE is
+            # AGGREGATE-phase (rendered at the combined SELECT over its ``_cm_``
+            # operands), not the ROW phase its bare-ColumnKey leaves imply. A
+            # computed DIMENSION over a row placeholder is a genuine ROW attach
+            # (grouped in ``_base``) and is excluded.
+            phase = m.bound.phase
+            if not m.is_dimension:
+                phase = (
+                    _regroup_substituted_composite_phase(m.bound.value_key)
+                    or phase
+                )
             sid = registry.intern(
                 key=m.bound.value_key,
                 declared_name=m.declared_name,
                 public_name=m.public_name,
                 canonical_alias=m.canonical_alias,
-                phase=m.bound.phase,
+                phase=phase,
                 label=m.label,
                 type=m.type,
+                type_is_explicit=m.type_is_explicit,
                 format=m.format,
                 description=m.description,
                 is_dimension=m.is_dimension,

@@ -30,58 +30,61 @@ class TestDeferredMeasureShapesStillRaise:
     """Each deferred partitioned-MEASURE shape raises the pinned DEV-1824 error
     after the migration (the guard runs on the pre-substitution snapshot)."""
 
-    async def test_window_plus_partition_raises(self) -> None:
+    async def test_window_plus_partition_lifted(self) -> None:
+        # DEV-1824 (task 3.3) — a LOCAL window=+partition_by measure renders via a
+        # windowed producer at the (partition ∪ active-TD) grain (D5); executed
+        # values in test_dev1824_partitioned_execution.py::TestWindowPlusPartition.
         q = _q(
             dimensions=["region"], time_dimensions=month_td(),
             measures=[ModelMeasure(
                 formula="amount:sum(window='90d', partition_by=region)",
             )],
         )
-        with pytest.raises(NotImplementedError, match=r"window=.*DEV-1824"):
-            await gen(q)
+        assert "__regroup__" not in await gen(q)
 
     @pytest.mark.parametrize("agg", ["first", "last"])
-    async def test_first_last_plus_partition_raises(self, agg: str) -> None:
+    async def test_first_last_plus_partition_lifted(self, agg: str) -> None:
+        # DEV-1824 (task 3.4) — a LOCAL first/last with partition_by renders: the
+        # producer computes the ranked pick at the partition grain and attaches.
+        # (Executed values: test_dev1824_partitioned_execution.py.)
         q = _q(
             dimensions=["region", "city"],
             measures=[ModelMeasure(formula=f"amount:{agg}(partition_by=region)")],
         )
-        with pytest.raises(NotImplementedError, match=r"first/last.*DEV-1824"):
-            await gen(q)
+        assert "__regroup__" not in await gen(q)
 
-    async def test_nested_transform_raises(self) -> None:
+    async def test_nested_transform_lifted(self) -> None:
+        # DEV-1824 (task 3.5) — a LOCAL partitioned aggregate nested in a
+        # transform desugars into a combined regroup producer and the transform
+        # runs at the query grain over the attached value; it no longer raises.
+        # (Executed values: test_dev1824_partitioned_execution.py.)
         q = _q(
             dimensions=["region"], time_dimensions=month_td(),
             measures=[ModelMeasure(
                 formula="cumsum(amount:sum(partition_by=region))",
             )],
         )
-        with pytest.raises(
-            NotImplementedError, match=r"nested inside a transform.*DEV-1824",
-        ):
-            await gen(q)
+        assert "__regroup__" not in await gen(q)
 
-    async def test_partitioned_measure_in_filter_raises(self) -> None:
+    async def test_partitioned_measure_in_filter_lifted(self) -> None:
+        # DEV-1824 (task 3.6) — a LOCAL partitioned aggregate filter renders via a
+        # combined producer + outer WHERE (executed values in
+        # tests/test_dev1824_partitioned_execution.py::TestFilterOnPartitioned).
         q = _q(
             dimensions=["region", "city"],
             filters=["amount:sum(partition_by=region) > 50"],
             measures=[ModelMeasure(formula="amount:sum", name="s")],
         )
-        with pytest.raises(
-            NotImplementedError,
-            match=r"Filtering on a partition_by aggregate.*DEV-1824",
-        ):
-            await gen(q)
+        assert "__regroup__" not in await gen(q)
 
 
 class TestSharedAggregateRowPlusCombined:
     """A partitioned aggregate used BOTH inside a computed dimension (row attach)
-    AND as a selected measure (combined attach) is the deferred row+combined
-    coexistence shape. Discovery must keep it in BOTH sets so the guard raises —
-    excluding it from combined discovery would silently rewrite the measure to a
-    row placeholder at the wrong aggregation boundary (CR)."""
+    AND as a selected measure (combined attach). DEV-1824 (task 3.2) lifts this
+    coexistence: discovery keeps it in BOTH sets, and it ships as duplicate
+    producers (D10 — cross-phase dedup is Stage 2)."""
 
-    async def test_same_key_as_dimension_and_measure_raises(self) -> None:
+    async def test_same_key_as_dimension_and_measure(self) -> None:
         band = "CASE WHEN amount:sum(partition_by=region) > 5000 THEN 1 ELSE 0 END"
         q = _q(
             dimensions=["region", {"expression": band, "name": "band"}],
@@ -89,10 +92,8 @@ class TestSharedAggregateRowPlusCombined:
                 formula="amount:sum(partition_by=region)", name="region_total",
             )],
         )
-        with pytest.raises(
-            NotImplementedError, match=r"row and a combined regroup attach.*DEV-1824",
-        ):
-            await gen(q)
+        # Renders with both a row and a combined attach; no placeholder leaks.
+        assert "__regroup__" not in await gen(q)
 
 
 class TestGrainGuardsPreserved:
@@ -131,20 +132,17 @@ class TestGuardOrderingWithActiveRegroup:
     """D5 — the guard snapshot fires correctly even when a legitimate
     computed-dimension regroup is present in the same query."""
 
-    async def test_partitioned_filter_still_raises_with_computed_dim(self) -> None:
-        # A legitimate computed dimension (row attach, partition_by=city) does
-        # NOT mask a separately-guarded partitioned-aggregate FILTER — the
-        # in-filter guard still fires with the exact DEV-1824 message.
+    async def test_partitioned_filter_lifted_with_computed_dim(self) -> None:
+        # DEV-1824 (tasks 3.2/3.6) — a computed dimension (row attach,
+        # partition_by=city) coexists with a partitioned-aggregate FILTER
+        # (combined producer, partition_by=region, outer WHERE); both render with
+        # no placeholder leak.
         q = _q(
             dimensions=["region", {"expression": BAND_CITY, "name": "band"}],
             filters=["amount:sum(partition_by=region) > 50"],
             measures=[ModelMeasure(formula="amount:sum", name="s")],
         )
-        with pytest.raises(
-            NotImplementedError,
-            match=r"Filtering on a partition_by aggregate.*DEV-1824",
-        ):
-            await gen(q)
+        assert "__regroup__" not in await gen(q)
 
     async def test_legitimate_computed_dim_filter_not_wrongly_raised(self) -> None:
         # The reverse direction: a final-only filter over the computed dimension

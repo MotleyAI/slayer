@@ -111,6 +111,11 @@ nav = [
       "examples/14_variable_substitution/variable_substitution.md",
       { "Notebook" = "examples/14_variable_substitution/variable_substitution_nb.ipynb" },
     ]},
+    { "DuckDB" = [
+      "examples/15_duckdb/duckdb.md",
+      { "Notebook (Python)" = "examples/15_duckdb/duckdb_python_nb.ipynb" },
+      { "Notebook (CLI)" = "examples/15_duckdb/duckdb_cli_nb.ipynb" },
+    ]},
     { "Schema Drift (worked example)" = "examples/schema-drift.md" },
   ]},
   { "Configuration" = [
@@ -127,6 +132,7 @@ nav = [
     { "Planning" = "architecture/planning.md" },
     { "Cross-model aggregates" = "architecture/cross-model-aggregates.md" },
     { "Ranked aggregates" = "architecture/ranked-aggregates.md" },
+    { "Composable attach" = "architecture/composable-attach.md" },
     { "Stage planning" = "architecture/stage-planning.md" },
     { "SQL generation" = "architecture/sql-generation.md" },
     { "Errors & warnings" = "architecture/errors-and-warnings.md" },

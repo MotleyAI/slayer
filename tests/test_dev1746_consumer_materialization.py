@@ -73,28 +73,28 @@ from tests._engine_helpers import _extract_cte_body, _norm
 CROSSING_GRAIN_CTE = _norm(
     """
     SELECT _val_0 AS "orders_x.customers_v2.deep_pop",
-      MAX(CASE WHEN _rk_rn = 1 THEN _val_1 END) AS "orders_x.f"
+      MAX(CASE WHEN _ranked_rn = 1 THEN _val_1 END) AS "orders_x.f"
     FROM ( SELECT regions.population AS _val_0,
       customers_v2.lifetime_value AS _val_1,
       ROW_NUMBER() OVER (PARTITION BY regions.population
-        ORDER BY customers_v2.signup_at) AS _rk_rn
+        ORDER BY customers_v2.signup_at) AS _ranked_rn
       FROM customers AS customers_v2
       LEFT JOIN regions AS regions ON customers_v2.region_id = regions.id
-    ) AS _rk_src GROUP BY _val_0
+    ) AS _ranked_src GROUP BY _val_0
     """
 )
 
 CROSSING_VALUE_CTE = _norm(
     """
     SELECT _val_0 AS "orders_x.customers_v2.status",
-      MAX(CASE WHEN _rk_rn = 1 THEN _val_1 END) AS "orders_x.f"
+      MAX(CASE WHEN _ranked_rn = 1 THEN _val_1 END) AS "orders_x.f"
     FROM ( SELECT customers_v2.status AS _val_0,
       regions.weight AS _val_1,
       ROW_NUMBER() OVER (PARTITION BY customers_v2.status
-        ORDER BY customers_v2.signup_at) AS _rk_rn
+        ORDER BY customers_v2.signup_at) AS _ranked_rn
       FROM customers AS customers_v2
       LEFT JOIN regions AS regions ON customers_v2.region_id = regions.id
-    ) AS _rk_src GROUP BY _val_0
+    ) AS _ranked_src GROUP BY _val_0
     """
 )
 

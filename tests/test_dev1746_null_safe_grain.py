@@ -156,13 +156,18 @@ class TestB1WindowedInnerGrainNullSafe:
         assert "_src._w_time <" in on, f"upper bound changed shape:\n{on}"
 
     async def test_outer_joinback_remains_null_safe(self) -> None:
-        """§5.7 requires BOTH ``_wm_`` comparison sites be asserted. The outer
+        """§5.7 requires BOTH windowed comparison sites be asserted. The outer
         join-back is already null-safe; this pins it so B1's inner-site change
-        cannot regress it."""
+        cannot regress it.
+
+        MIGRATED (DEV-1835): the local windowed measure is desugared into a
+        regroup producer that renders as a ``_cm_`` CTE, so the outer join-back
+        is now onto a ``_cm_`` producer (the inner ``_src`` range join is
+        unchanged)."""
         sql = await _gen(_windowed_chain_query(), dialect="postgres")
-        on = _norm(joinback_on_predicate_for(sql, prefix="_wm_", dialect="postgres"))
+        on = _norm(joinback_on_predicate_for(sql, prefix="_cm_", dialect="postgres"))
         assert "IS NOT DISTINCT FROM" in on, (
-            f"the _wm_ outer join-back lost its null-safe equality:\n{on}"
+            f"the windowed outer join-back lost its null-safe equality:\n{on}"
         )
 
     async def test_null_dimension_group_gets_its_real_windowed_value(
@@ -254,9 +259,13 @@ class TestB2JoinBackBuiltAsAst:
     async def test_wm_joinback_references_only_bound_tables(
         self, dialect: str,
     ) -> None:
-        """B2 covers the ``_wm_`` join-back too — it shares the same builder."""
+        """B2 covers the windowed join-back too — it shares the same builder.
+
+        MIGRATED (DEV-1835): the windowed measure is desugared into a regroup
+        producer rendered as a ``_cm_`` CTE, so the join-back qualifier is now a
+        ``_cm_`` alias."""
         sql = await _gen(_windowed_chain_query(), dialect=dialect)
-        on = joinback_on_predicate_for(sql, prefix="_wm_", dialect=dialect)
+        on = joinback_on_predicate_for(sql, prefix="_cm_", dialect=dialect)
         qualifiers = {
             col.table for col in
             sqlglot.parse_one(on, dialect=dialect).find_all(exp.Column)
@@ -264,11 +273,11 @@ class TestB2JoinBackBuiltAsAst:
         }
         unbound = {
             q for q in qualifiers
-            if not (q == "_base" or (q.startswith("_wm_") and "___" not in q))
+            if not (q == "_base" or (q.startswith("_cm_") and "___" not in q))
         }
         assert not unbound, (
-            f"[{dialect}] the _wm_ join-back references non-existent table(s): "
-            f"{sorted(unbound)}.\nON: {on}\n\nfull SQL:\n{sql}"
+            f"[{dialect}] the windowed join-back references non-existent "
+            f"table(s): {sorted(unbound)}.\nON: {on}\n\nfull SQL:\n{sql}"
         )
 
     async def test_join_backs_are_built_as_ast_not_string_round_trip(
@@ -284,9 +293,11 @@ class TestB2JoinBackBuiltAsAst:
         assert "LEFT JOIN _cm_" in cm_sql, cm_sql
         cm_on = _norm(joinback_on_predicate_for(cm_sql, prefix="_cm_", dialect="postgres"))
         assert "IS NOT DISTINCT FROM" in cm_on, cm_on
+        # MIGRATED (DEV-1835): the desugared windowed measure renders as a
+        # ``_cm_`` producer, so its grain join-back is a ``_cm_`` LEFT JOIN.
         wm_sql = await _gen(_windowed_chain_query(), dialect="postgres")
-        assert "LEFT JOIN _wm_" in wm_sql, wm_sql
-        wm_on = _norm(joinback_on_predicate_for(wm_sql, prefix="_wm_", dialect="postgres"))
+        assert "LEFT JOIN _cm_" in wm_sql, wm_sql
+        wm_on = _norm(joinback_on_predicate_for(wm_sql, prefix="_cm_", dialect="postgres"))
         assert "IS NOT DISTINCT FROM" in wm_on, wm_on
 
 

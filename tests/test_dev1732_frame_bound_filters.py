@@ -43,6 +43,7 @@ from slayer.core.keys import (
     LiteralKey,
     ScalarCallKey,
 )
+from slayer.core.keys import TimeTruncKey
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import ColumnRef, ModelMeasure, SlayerQuery, TimeDimension
 from slayer.core.time_bounds import is_frame_bound, is_temporal_literal, strip_frame_bounds
@@ -382,8 +383,9 @@ def _windowed_query(**kw) -> SlayerQuery:
 
 
 async def _wm_sql(query: SlayerQuery, model: SlayerModel, **kw) -> str:
+    # DEV-1835: windowed producers now render under uniform ``_cm_`` naming.
     sql = await _engine_generate(query=query, model=model, validate=False, **kw)
-    assert "_wm_" in sql, sql
+    assert "_cm_" in sql, sql
     return sql
 
 
@@ -695,13 +697,22 @@ class TestWindowedSrcFrameBounds:
             filters=["created_at >= '2024-06-01' and status = 'paid'"],
         )
         sql = await _wm_sql(query, _orders())
-        bodies = [
-            _extract_cte_body(sql, r"_wm_orders__rev_90d"),
-            _extract_cte_body(sql, r"_wm_orders__rev_30d"),
+        # DEV-1835: producer CTEs render under ``_cm_`` naming, keyed by the
+        # canonical windowed-aggregate name (not the declared measure alias).
+        # Each producer now inlines its own ``_base`` (which KEEPS the frame
+        # bound) plus its own ``_src`` (which strips it), so the shared-residual
+        # assertion lives on each producer's ``_src`` body.
+        srcs = [
+            _extract_src_body(
+                _extract_cte_body(sql, r"_cm_orders__revenue_sum_window_90d"),
+            ),
+            _extract_src_body(
+                _extract_cte_body(sql, r"_cm_orders__revenue_avg_window_30d"),
+            ),
         ]
-        for body in bodies:
-            assert "2024-06-01" not in body, body
-            assert "'paid'" in body, body
+        for src in srcs:
+            assert "2024-06-01" not in src, src
+            assert "'paid'" in src, src
 
     async def test_split_conjunction_output_is_scope_closed(self) -> None:
         """A rewritten ``_src`` WHERE must still be a closed scope — every alias
@@ -797,7 +808,6 @@ class TestFrameBoundColumnSet:
         leave that axis wholly unconstrained — an unbounded over-count — so the
         set must contain only columns of NON-hidden time-dimension slots.
         """
-        from slayer.core.keys import TimeTruncKey
 
         plan = await _plan(
             _windowed_query(
