@@ -214,6 +214,43 @@ class TestSchemaDriftErrorWrap:
             await engine.execute(q)
         assert "orders_view" in exc.value.models
 
+    async def test_dropped_using_join_key_still_wraps_as_drift(
+        self, workspace: Path
+    ) -> None:
+        """A dropped ``JOIN .. USING`` key is real drift, not invalid SQL."""
+        engine, db_path = await _setup(workspace)
+        conn = sqlite3.connect(db_path)
+        conn.execute("ALTER TABLE orders ADD COLUMN batch_tag TEXT")
+        conn.execute("ALTER TABLE customers ADD COLUMN batch_tag TEXT")
+        conn.commit()
+        conn.close()
+        await engine.storage.save_model(
+            SlayerModel(
+                name="orders_by_batch",
+                sql=(
+                    "SELECT o.id, o.amount FROM orders AS o "
+                    "JOIN customers AS c USING (batch_tag)"
+                ),
+                data_source="ds",
+                columns=[
+                    Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                    Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                ],
+            )
+        )
+        conn = sqlite3.connect(db_path)
+        conn.execute("ALTER TABLE orders DROP COLUMN batch_tag")
+        conn.commit()
+        conn.close()
+
+        q = SlayerQuery(
+            source_model="orders_by_batch",
+            measures=[{"formula": "amount:sum", "name": "total"}],
+        )
+        with pytest.raises(SchemaDriftError) as exc:
+            await engine.execute(q)
+        assert "orders_by_batch" in exc.value.models
+
     async def test_dropped_column_behind_star_cte_still_wraps_as_drift(
         self, workspace: Path
     ) -> None:
@@ -288,8 +325,6 @@ class TestSchemaDriftErrorWrap:
 
         async def _boom(*args, **kwargs):
             raise RuntimeError("validate_models exploded")
-
-        from sqlalchemy.exc import SQLAlchemyError
 
         with patch.object(engine, "validate_models", side_effect=_boom):
             q = SlayerQuery(

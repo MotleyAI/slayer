@@ -19,8 +19,14 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
+
+try:
+    import duckdb
+except ImportError:  # optional dependency — tests importorskip at use sites
+    duckdb = None
 
 from slayer.core.enums import DataType
 from slayer.core.models import (
@@ -434,6 +440,46 @@ class TestSqlModelSourceRefs:
 
     def test_unparseable_sql_returns_none(self) -> None:
         assert _sql_model_source_refs(sql="SELECT FROM FROM", dialect="postgres") is None
+
+    def test_using_join_keys_attributed_to_all_tables(self) -> None:
+        # USING identifiers are not exp.Column nodes; a dropped join key must
+        # still be probed on every joined table (Codex review on PR #340).
+        sql = "SELECT o.amount FROM orders AS o JOIN stores AS s USING (store_id)"
+        refs = _sql_model_source_refs(sql=sql, dialect="postgres")
+        assert refs == {
+            "orders": {"amount", "store_id"},
+            "stores": {"store_id"},
+        }
+
+    def test_alias_shadowing_resolved_per_scope(self) -> None:
+        # ``a`` means orders outside and stores inside the subquery.
+        sql = (
+            "SELECT a.amount FROM orders AS a WHERE EXISTS "
+            "(SELECT 1 FROM stores AS a WHERE a.region = 'US')"
+        )
+        refs = _sql_model_source_refs(sql=sql, dialect="postgres")
+        assert refs == {"orders": {"amount"}, "stores": {"region"}}
+
+    def test_correlated_outer_ref_attributed(self) -> None:
+        sql = (
+            "SELECT o.amount FROM orders AS o WHERE EXISTS "
+            "(SELECT 1 FROM stores AS s WHERE s.oid = o.id)"
+        )
+        refs = _sql_model_source_refs(sql=sql, dialect="postgres")
+        assert refs == {"orders": {"amount", "id"}, "stores": {"oid"}}
+
+    def test_using_join_on_cte_with_star_returns_none(self) -> None:
+        # The USING key's presence in the CTE cannot be verified behind ``*``.
+        sql = (
+            "WITH c AS (SELECT * FROM stores) "
+            "SELECT o.amount FROM orders AS o JOIN c USING (store_id)"
+        )
+        assert _sql_model_source_refs(sql=sql, dialect="postgres") is None
+
+    def test_union_bare_columns_attributed_per_branch(self) -> None:
+        sql = "SELECT a FROM t1 UNION ALL SELECT b FROM t2"
+        refs = _sql_model_source_refs(sql=sql, dialect="postgres")
+        assert refs == {"t1": {"a"}, "t2": {"b"}}
 
 
 # ---------------------------------------------------------------------------
@@ -1198,7 +1244,6 @@ class TestValidateModelsSqliteProbe:
     async def test_non_sqlite_skips_probe(self, workspace: Path) -> None:
         """Non-SQLite datasources never run the probe at validate time."""
         pytest.importorskip("duckdb")
-        import duckdb
 
         db_path = str(workspace / "live.duckdb")
         con = duckdb.connect(db_path)
@@ -1229,7 +1274,6 @@ class TestValidateModelsSqliteProbe:
         )
         engine = SlayerQueryEngine(storage=storage)
 
-        from unittest.mock import patch
         with patch(
             "slayer.sql.sqlite_introspect.probe_sqlite_integer_column",
             side_effect=AssertionError("probe must not fire on non-SQLite"),
@@ -1254,7 +1298,6 @@ class TestValidateModelsSqliteProbe:
                 Column(name="tempstabidx", sql="tempstabidx", type=DataType.INT),
             ],
         )
-        from unittest.mock import patch
         with patch(
             "slayer.sql.sqlite_introspect.probe_sqlite_integer_column",
             return_value=None,
