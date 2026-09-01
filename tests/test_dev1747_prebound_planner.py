@@ -171,8 +171,11 @@ class TestNoTextRoundTrip:
         would be meaningless. The sentinel raises only once the reroot has
         begun building its nested plan."""
 
+        # DEV-1836: rerooting is now the target-rooted producer synthesis
+        # (``_synthesize_cross_model_producer``), which builds its nested plan
+        # from a typed ``PreboundQuery`` and never re-parses formula text.
         real_builder_calls: list[int] = []
-        original = cross_model_planner._maybe_reroot_cross_model_plan
+        original = stage_planner._synthesize_cross_model_producer
 
         def _wrapped(**kwargs):
             real_builder_calls.append(1)
@@ -189,7 +192,7 @@ class TestNoTextRoundTrip:
             #
             # A SCOPED context, not ``monkeypatch.undo()``: undo is global to
             # the fixture and would also tear down the outer
-            # ``_maybe_reroot_cross_model_plan`` spy, disarming the sentinels
+            # ``_synthesize_cross_model_producer`` spy, disarming the sentinels
             # for any second or nested reroot call.
             with monkeypatch.context() as inner:
                 for module in (cross_model_planner, stage_planner):
@@ -202,22 +205,24 @@ class TestNoTextRoundTrip:
                 return original(**kwargs)
 
         monkeypatch.setattr(
-            cross_model_planner, "_maybe_reroot_cross_model_plan", _wrapped,
+            stage_planner, "_synthesize_cross_model_producer", _wrapped,
         )
         _plan(self._reroot_query())
         assert real_builder_calls, "the reroot path never ran — test is vacuous"
 
 
     def test_nested_plan_measure_is_a_typed_key_not_a_formula(self) -> None:
-        """The observable end state: the nested plan's aggregate slot carries
-        the RE-ROOTED typed key, byte-identical to what the visitor produces —
-        not something re-derived from a string."""
+        """The observable end state: the producer plan's aggregate slot carries
+        the RE-ROOTED typed key, byte-identical to what ``reroot_value_key``
+        produces — not something re-derived from a string."""
 
         plan = _plan(self._reroot_query())
-        cma = plan.cross_model_aggregate_plans[0]
-        assert cma.rerooted_plan is not None
+        attach = next(
+            a for a in plan.regroup_attach_plans
+            if a.producer_root_model == "customers"
+        )
         sub_agg = next(
-            s for s in cma.rerooted_plan.aggregate_slots
+            s for s in attach.producer_plan.aggregate_slots
             if isinstance(s.key, AggregateKey)
         )
         expected = reroot_value_key(
@@ -264,7 +269,10 @@ class TestStrictCarrier:
                 super().__init__(**kwargs)
                 built.append(self)
 
-        monkeypatch.setattr(cross_model_planner, "StrictQueryCarrier", _Recording)
+        # DEV-1836: the carrier is constructed inside the producer synthesis in
+        # ``stage_planner`` (the ``plan_query(query=StrictQueryCarrier(...))``
+        # call), so the spy patches the name as bound there.
+        monkeypatch.setattr(stage_planner, "StrictQueryCarrier", _Recording)
         _plan(_SHAPES["rerooted"])
         assert built, (
             "the reroot built no StrictQueryCarrier — it is still handing the "
@@ -277,26 +285,23 @@ class TestStrictCarrier:
     ) -> None:
         """The seam's boundary condition. A nested ``plan_query`` given a real
         ``SlayerQuery`` would re-bind formula text no matter how the keys were
-        built upstream."""
+        built upstream. DEV-1836: the producer is planned via a nested
+        ``plan_query(query=StrictQueryCarrier(...))`` — spy the module-global
+        ``plan_query`` so only the NESTED calls (not the import-bound top call
+        in ``_plan``) are recorded."""
 
         seen: list = []
-        original = cross_model_planner.IsolatedCteCrossModelPlanner.plan
+        original = stage_planner.plan_query
 
-        def _recording(self, **kwargs):
-            builder = kwargs.get("subplan_builder")
-            if builder is not None:
-                def _wrapped(query, bundle, _builder=builder):
-                    seen.append(query)
-                    return _builder(query, bundle)
+        def _recording(*, query, **kwargs):
+            seen.append(query)
+            return original(query=query, **kwargs)
 
-                kwargs["subplan_builder"] = _wrapped
-            return original(self, **kwargs)
-
-        monkeypatch.setattr(
-            cross_model_planner.IsolatedCteCrossModelPlanner, "plan", _recording,
-        )
+        monkeypatch.setattr(stage_planner, "plan_query", _recording)
         _plan(_SHAPES["rerooted"])
-        assert seen, "the subplan builder was never invoked — test is vacuous"
+        assert any(isinstance(q, StrictQueryCarrier) for q in seen), (
+            f"the nested planner was never handed the typed carrier: {seen!r}"
+        )
         assert not any(isinstance(q, SlayerQuery) for q in seen), (
             f"the nested planner was handed a SlayerQuery ({seen!r}); §5.4 "
             f"requires the typed pre-bound carrier"

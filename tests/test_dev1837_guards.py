@@ -3,10 +3,10 @@
 Lifted direction: a row regroup attach (computed dimension) with a transform
 measure renders in both chains; the old catch-all DEV-1824 arm is gone from the
 source, and the windowed/ranked arm lifted with DEV-1835 (its absence is
-scanned in tests/test_dev1835_guards.py). Remaining deferrals: the narrowed
-arms with exact messages (cross-model → DEV-1836, CTE-body → DEV-1838) plus
-the combined-attach CTE-body arm re-pointed to DEV-1838, and the two stale
-stage_planner DEV-1824 refs re-pointed (D5).
+scanned in tests/test_dev1835_guards.py); the cross-model arm lifted with
+DEV-1836 (row-attach × cross-model now broadcasts). Remaining deferrals: the
+narrowed CTE-body arms with exact messages (row / combined → DEV-1838), and the
+two stale stage_planner DEV-1824 refs re-pointed (D5).
 """
 
 from __future__ import annotations
@@ -145,17 +145,19 @@ class TestRemainingArmsExactMessages:
         ))
         assert "__regroup__" not in sql, sql
 
-    async def test_cross_model_measure_arm(self) -> None:
-        query = q(
+    async def test_cross_model_measure_arm_is_lifted(self) -> None:
+        """DEV-1836 lifts the band × cross-model arm: it renders (the cross-model
+        measure broadcasts across the host-derived band) and the old arm message
+        is gone from the sources."""
+        sql = await gen(q(
             dimensions=["region", BAND],
             measures=[
                 ModelMeasure(formula="amount:sum", name="m"),
                 ModelMeasure(formula="customers.spend:sum", name="cm"),
             ],
-        )
-        with pytest.raises(NotImplementedError) as ei:
-            await gen(query)
-        assert str(ei.value) == ARM_CROSS_MODEL
+        ))
+        assert "__regroup__" not in sql, sql
+        assert not _sources_containing(ARM_CROSS_MODEL)
 
 
 class TestCteBodyArms:
@@ -199,7 +201,12 @@ class TestStalePlannerRefsRepointed:
         ]
         assert not offenders, offenders
 
-    async def test_cross_model_dim_source_points_at_stage_three(self) -> None:
+    async def test_cross_model_dim_source_unattributable_partition_rejected(
+        self,
+    ) -> None:
+        # DEV-1836 lifts the blanket "cross-model source in a computed dimension"
+        # guard; the residual check is attributability — `region` is a host
+        # column, unreachable from the customers root.
         cband = (
             "CASE WHEN customers.spend:sum(partition_by=region) > 100 "
             "THEN 1 ELSE 0 END"
@@ -208,10 +215,8 @@ class TestStalePlannerRefsRepointed:
             dimensions=["region", {"expression": cband, "name": "cband"}],
             measures=[ModelMeasure(formula="amount:sum", name="m")],
         )
-        with pytest.raises(
-            NotImplementedError,
-            match=r"cross-model aggregate source inside a computed dimension",
-        ) as ei:
+        with pytest.raises(ValueError, match=r"partition_by") as ei:
             await gen(query)
-        assert "DEV-1836" in str(ei.value)
-        assert "DEV-1824" not in str(ei.value)
+        msg = str(ei.value)
+        assert "region" in msg
+        assert "DEV-1824" not in msg

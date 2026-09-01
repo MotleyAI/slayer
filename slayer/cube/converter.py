@@ -11,7 +11,7 @@ import re
 import sqlglot
 from pydantic import BaseModel
 
-from slayer.core.enums import DataType, JoinType
+from slayer.core.enums import DataType, JoinCardinality, JoinType
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.formula import ALL_TRANSFORMS, parse_formula
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
@@ -92,6 +92,24 @@ class _Names:
 
     def reserve(self, name: str) -> None:
         self.used.add(name)
+
+
+#: Cube ``relationship`` → SLayer ``JoinCardinality`` (DEV-1836 D8, closed table).
+_RELATIONSHIP_CARDINALITY = {
+    "many_to_one": JoinCardinality.MANY_TO_ONE,
+    "belongs_to": JoinCardinality.MANY_TO_ONE,
+    "one_to_many": JoinCardinality.ONE_TO_MANY,
+    "has_many": JoinCardinality.ONE_TO_MANY,
+    "one_to_one": JoinCardinality.ONE_TO_ONE,
+    "has_one": JoinCardinality.ONE_TO_ONE,
+}
+
+
+def _map_relationship(relationship: str | None) -> JoinCardinality | None:
+    """Map a Cube join ``relationship`` onto cardinality; unknown → None."""
+    if relationship is None:
+        return None
+    return _RELATIONSHIP_CARDINALITY.get(relationship.strip().lower())
 
 
 def _map_format(fmt, report: CubeConversionReport, *, cube: str, member: str) -> NumberFormat | None:
@@ -666,7 +684,16 @@ class CubeToSlayerConverter:
                     cube=cube.name, member=cj.name,
                     message=f"Join ON '{cj.sql}' is not an equality of physical columns; dropped."))
                 continue
-            joins.append(ModelJoin(target_model=cj.name, join_pairs=resolved, join_type=JoinType.LEFT))
+            cardinality = _map_relationship(cj.relationship)
+            if cardinality is None:
+                report.add(CubeConversionIssue(
+                    category=CubeIssueCategory.LOSSY_MAPPING, severity="warning",
+                    cube=cube.name, member=cj.name,
+                    message=(f"Unrecognized join relationship {cj.relationship!r}; "
+                             f"cardinality left unset (metrics crossing it broadcast).")))
+            joins.append(ModelJoin(
+                target_model=cj.name, join_pairs=resolved,
+                join_type=JoinType.LEFT, cardinality=cardinality))
         return joins
 
     def _resolve_join_pairs(self, cube, cj, pairs) -> list[list[str]] | None:

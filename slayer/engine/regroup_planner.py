@@ -216,8 +216,8 @@ def combined_partitioned_aggregates(  # NOSONAR(S3776) — one cohesive discover
     order spec, or a query filter — a partitioned MEASURE, a composite / order
     leaf, or a filter reference (DEV-1824). In first-seen order, deduped by
     structural identity. A cross-model source (non-empty ``source.path``) is
-    EXCLUDED (D2): those keep the DEV-1739 cross-model narrow path, deferred to
-    DEV-1824.
+    EXCLUDED (D2): those are discovered separately and become target-rooted
+    producers (``_discover_cross_model_combined``).
 
     ``row_agg_set`` (the computed-dimension / row-attach aggregates) is treated
     asymmetrically (CR): a MEASURE use of such a key IS a genuine row+combined

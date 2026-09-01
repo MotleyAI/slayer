@@ -2,20 +2,21 @@
 cross-model guard (``stage 7b.15e``).
 
 The old guard rejected EITHER temporal op the moment the query also routed
-through the cross-model chain, regardless of what the transform's own inner
-aggregate was. DEV-1750 narrows it to exactly the one shape that cannot render:
-a ``time_shift`` whose inner aggregate is a TARGET-GRAIN cross-model aggregate
-(``cte_root_model`` is None) — host-rooted re-aggregation there would multiply
-target rows through the 1:N join. Everything else renders:
+through the cross-model chain, regardless of the transform's own inner
+aggregate. DEV-1750 narrowed it to the one shape that could not render: a
+``time_shift`` whose inner aggregate is a TARGET-GRAIN cross-model aggregate —
+host-rooted re-aggregation there multiplied target rows through the 1:N join.
+DEV-1836 removes that failure mode: the target-grain cross-model aggregate is
+computed by a target-rooted producer and broadcast, so this shape now renders
+too (its value broadcasts across the query grain, with a grain warning). Every
+shape here renders:
 
 * (a) local inner + a sibling cross-model measure,
 * (b) host-rooted crossing-fragment inner (``amount:wscaled_sum``),
+* (c) target-grain cross-model inner (``customers.spend:sum``) — DEV-1836,
 * ``consecutive_periods`` over any inner (it reads a materialised alias, never
-  re-aggregates, so it has no target-grain failure mode — lifted entirely),
+  re-aggregates),
 * ``change`` / ``change_pct`` (they desugar to ``time_shift``).
-
-Every "renders" case here RAISES ``stage 7b.15e`` on ``main`` — the feature is
-missing — so each fails for the right reason.
 """
 
 from __future__ import annotations
@@ -34,13 +35,6 @@ from tests._dev1750_fixtures import (
 )
 
 pytestmark = pytest.mark.asyncio
-
-
-# --------------------------------------------------------------------------- #
-# The narrowed-guard message contract (asserted by tests; defined once).
-# --------------------------------------------------------------------------- #
-_GUARD_TAG = "stage 7b.15e"
-_NARROWED_MARKER = "TARGET-GRAIN"  # the distinguishing phrase the new message adds
 
 
 def _q(*, measures) -> SlayerQuery:
@@ -109,31 +103,23 @@ class TestLiftedShapesRender:
 
 
 # --------------------------------------------------------------------------- #
-# The one shape that must STAY guarded — narrowed message.
+# The target-grain shape DEV-1836 lifts — renders via a target-rooted producer.
 # --------------------------------------------------------------------------- #
-class TestTargetGrainStaysGuarded:
-    async def test_c_target_grain_inner_raises_narrowed_guard(self) -> None:
-        """(c) ``time_shift(customers.spend:sum, -1)`` — the inner aggregate is
-        target-rooted. Host-rooted re-aggregation would multiply target rows, so
-        it stays behind a guard whose message now NAMES the target-grain shape
-        (not the blanket op-based text)."""
-        q = _q(measures=[
+class TestTargetGrainCrossModelRenders:
+    async def test_c_target_grain_inner_renders(self) -> None:
+        """(c) ``time_shift(customers.spend:sum, -1)`` — DEV-1836 computes the
+        target-grain cross-model aggregate with a target-rooted producer and
+        broadcasts it, so the row-multiplying re-aggregation the 7b.15e guard
+        protected against no longer occurs; it renders."""
+        sql = await gen(_q(measures=[
             ModelMeasure(formula="time_shift(customers.spend:sum, -1)", name="prev"),
-        ])
-        with pytest.raises(NotImplementedError) as ei:
-            await gen(q)
-        msg = str(ei.value)
-        assert _GUARD_TAG in msg, msg
-        assert _NARROWED_MARKER in msg, msg
-        # It must NOT be the old blanket wording (which raised for ANY cross-model
-        # coexistence, including the now-supported shapes).
-        assert "also has a cross-model aggregate" not in msg, msg
+        ]))
+        assert "shifted_" in sql, sql
 
-    async def test_c_guard_fires_before_the_emitter_runs(self) -> None:
-        """The narrowed guard is a plan-ownership decision made BEFORE any shifted
-        CTE is emitted — a target-grain shape must never reach
-        ``_emit_time_shift_ctes_for_planned`` (which would emit the row-
-        multiplying host-rooted re-aggregation)."""
+    async def test_c_reaches_the_emitter(self) -> None:
+        """The lifted shape now reaches ``_emit_time_shift_ctes_for_planned`` —
+        the shifted CTE is genuinely emitted, counter to the old guard that
+        raised before the emitter ran."""
         real = SQLGenerator._emit_time_shift_ctes_for_planned
         calls: list = []
 
@@ -147,15 +133,12 @@ class TestTargetGrainStaysGuarded:
         with patch.object(
             SQLGenerator, "_emit_time_shift_ctes_for_planned", _spy,
         ):
-            with pytest.raises(NotImplementedError):
-                await gen(q)
-        assert calls == [], (
-            "the target-grain guard let the shifted emitter run before raising"
-        )
+            await gen(q)
+        assert calls, "the lifted target-grain shape never reached the emitter"
 
     async def test_b_does_reach_the_emitter(self) -> None:
-        """Counter-case, so the spy above is not vacuous: the host-rooted shape
-        (b) DOES reach ``_emit_time_shift_ctes_for_planned``."""
+        """The host-rooted shape (b) also reaches
+        ``_emit_time_shift_ctes_for_planned``, with exactly one shifted slot."""
         real = SQLGenerator._emit_time_shift_ctes_for_planned
         calls: list = []
 

@@ -115,8 +115,8 @@ class TestGrainGuardsPreserved:
         assert "region" in str(ei.value)
 
     async def test_cross_model_partition_outside_grain_raises(self) -> None:
-        # D2 keeps the cross-model partitioned-measure path; its out-of-derived-
-        # grain guard must not regress.
+        # DEV-1836: an explicit partition key must be attributable from the
+        # aggregate's root — `region` is a host column, unreachable from customers.
         q = _q(
             dimensions=["region", "customers.tier"],
             measures=[ModelMeasure(
@@ -125,7 +125,9 @@ class TestGrainGuardsPreserved:
         )
         with pytest.raises(ValueError, match=r"partition_by") as ei:
             await gen(q)
-        assert "customers.tier" in str(ei.value)
+        msg = str(ei.value)
+        assert "region" in msg
+        assert "attributable from customers" in msg
 
 
 class TestGuardOrderingWithActiveRegroup:

@@ -311,10 +311,12 @@ class TestB7DeclarationOrderProjection:
             f"guard. operand={operand_sid} projected={ltv_sid}"
         )
 
-        # (2) The cross-model path — the guard lives in that builder.
-        assert planned.cross_model_aggregate_plans, (
-            "precondition: this query must take the cross-model path"
-        )
+        # (2) The cross-model path — the guard lives in that builder. DEV-1836:
+        # the cross-model aggregate now rides a TARGET-rooted regroup producer.
+        assert any(
+            a.producer_root_model == "customers_v2"
+            for a in planned.regroup_attach_plans
+        ), "precondition: this query must take the cross-model path"
         assert planned.transform_layers, (
             "precondition: this query must carry a transform chain"
         )

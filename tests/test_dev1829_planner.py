@@ -233,8 +233,15 @@ class TestCoexistenceWithIsolatedFamilies:
             ],
         )
         planned = plan_query(query=q, bundle=_bundle())
-        assert len(planned.regroup_attach_plans) == 1
-        assert len(planned.cross_model_aggregate_plans) == 1
+        # DEV-1836: the cross-model measure now desugars into its OWN
+        # target-rooted regroup producer, so it coexists as a SECOND combined
+        # attach rather than a top-level cross_model_aggregate_plan.
+        assert len(planned.regroup_attach_plans) == 2
+        assert planned.cross_model_aggregate_plans == []
+        # One local producer (rooted at the consumer → None) + one target-rooted
+        # cross-model producer rooted at ``customers``.
+        roots = {rap.producer_root_model for rap in planned.regroup_attach_plans}
+        assert roots == {None, "customers"}, roots
         assert "__regroup__" not in await gen(q)
 
     async def test_combined_attach_plus_windowed_measure(self) -> None:

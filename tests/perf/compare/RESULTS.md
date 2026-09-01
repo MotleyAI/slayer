@@ -25,6 +25,23 @@ branch, none to this stage.
 
 ---
 
+## DEV-1836 re-audit (stage-3 cross-model unification), 2026-09-01
+
+Re-ran correctness + timing on branch `f6d8adc6` (10k + 40k + adversarial; SQLite +
+DuckDB) after migrating the cross-model families onto target-rooted regroup
+producers. **No entry exceeded the regression thresholds (> 1.3× AND > 20 ms).**
+Correctness: the only differences attributable to this stage are the DEV-1836
+divergence-ledger class-(c) flips — cross-model metrics over unprovable join hops
+now **broadcast with a `broadcast` warning** instead of fanning through the join
+(`join_cross_model_rerooted_dim` on the adversarial dataset, plus warning drift on
+the `join_*` cross-model entries; the corpus models declare no join cardinality,
+so their host dims are unprovable by construction). Where the oracle arbitrates a
+mismatch it faults `0.9.12`, never the branch. Shapes whose reverse hops ARE
+provably to-one keep exact values (the Q9 pin,
+`tests/integration/test_integration.py::test_cross_model_measure_with_target_join_filters`).
+
+---
+
 ## TL;DR
 
 - **Correctness: the rewrite is at least as correct as 0.9.12 everywhere.** Where the

@@ -38,10 +38,10 @@ Both phases coexist in one query, in one flat `WITH` chain.
 ## Context grain (measure ⇔ dimension symmetry)
 
 Any measure-legal expression is legal as a computed dimension provided it is
-**grain-self-contained**: every aggregate is local to the query's source (not a
-cross-join source — cross-model aggregates stay deferred, stage 3) and carries an
-explicit `partition_by=`, and every transform wraps such a grained aggregate. A
-transform then evaluates at the grain of its *containing context*:
+**grain-self-contained**: every aggregate carries an explicit `partition_by=`
+(cross-model sources are legal since stage 3 — they compile through a
+target-rooted producer, below), and every transform wraps such a grained
+aggregate. A transform then evaluates at the grain of its *containing context*:
 
 - As a **measure**, `rank(revenue:sum(partition_by=region))` ranks the result
   rows at the query grain (over the attached, broadcast region total).
@@ -89,6 +89,45 @@ bucket.)
   key never hijacks the ordering.
 - **Transform-at-producer-grain** (a transform in a dimension) — the transform
   is a producer measure, rendered as a step CTE over the grained aggregate.
+
+## Target-rooted producers (stage 3)
+
+A **cross-model aggregate** — one whose source names a joined model
+(`customers.revenue:sum` from `orders`) — compiles through the same primitive,
+with the producer's `FROM` **rooted at the aggregate's own model** (the join
+target), not the consumer's. Rooting at the target is what makes the value
+join-fan-proof: the aggregate runs over the target's rows once, never through a
+1:N host join that would multiply them.
+
+- **Safe grain vs broadcast.** The producer computes at the subset of the
+  requested grain **attributable from its root** — a grain key is attributable
+  when its path re-roots onto the target's own join graph over hops that are
+  *provably to-one* (a solo/complete primary key on the far side, a declared
+  `one_to_one`/`many_to_one` cardinality, or a mirrored reverse edge). Every
+  other requested dimension is **broadcast**: the value repeats across it, and
+  the response carries a `broadcast` warning (fields: `measure`, `location` —
+  the pipeline stage, and `dimensions`, each with its `reason`). An *explicit*
+  `partition_by=` key that is unattributable is a hard error instead (the
+  author asked for a grain the engine cannot prove safe).
+- **Filter inheritance.** Each ROW-phase conjunct of the query's filters whose
+  references are all attributable from the root inherits into the producer
+  (re-rooted to target coordinates); an unreachable/unsafe conjunct is excluded
+  from that producer and warned (`unreachable_filter_dropped` — the host base still applies
+  it to local measures). An AGGREGATE-phase predicate over the cross-model value
+  applies at the outer SELECT's WHERE on the attached column, restricting rows
+  uniformly with local aggregate filters.
+- **Unsafe inputs are hard errors.** A source expression, aggregation argument,
+  ranking key, or `Column.filter` that crosses an unproven hop from the root
+  raises with the offending hop and the remedy (declare join cardinality or a
+  covering unique key) — never a silently fanned value.
+- **Strict mode.** `"strict": true` on the query turns every implicit broadcast
+  and dropped producer filter into an error, for callers that need exactness or
+  nothing.
+
+Inside the producer the aggregate keeps its **canonical alias** in target
+coordinates (`"customers.revenue_sum"`); the consumer's public name lands on the
+outer projection through the placeholder substitution, and the final result keys
+are unchanged (`"orders.customers.revenue_sum"`).
 
 ## Step-layer grain rule (stage 1a)
 
@@ -139,9 +178,10 @@ name collisions on any dialect.
 - **No placeholder leakage** — reserved `__regroup__` prefixes never appear in
   public schemas, response metadata, or emitted SQL; a real column using the
   prefix is rejected at plan time while a regroup is active.
-- **Fail closed** — an unrouted shape (cross-model source in a composed shape, an
-  aggregate over an attached value, no-common-scope filter) raises a clear error,
-  never wrong numbers.
+- **Fail closed** — an unrouted shape (an aggregate over an attached value, a
+  no-common-scope filter, an unsafe explicit partition key) raises a clear
+  error, never wrong numbers; the post-discovery total-routing invariant (D7)
+  catches any cross-model or partitioned leaf discovery failed to dispose.
 
 ## Roadmap
 
@@ -180,10 +220,16 @@ artifact with an issue attached, never a permanent boundary.
   guards dissolve; and the stage-1b windowed/`first`-`last` mixed-grain union
   broadcast lifts — a windowed inner contributes the query's synthesized time
   bucket, `first`/`last` is timeless.
-- **Stage 3 (DEV-1836)** — migrate the cross-model `_cm_` family via target-rooted
-  producers; cross-model sources become legal in the composed shapes and in
-  dimension expressions; `classify_isolation` dispatch retires.
+- **Stage 3 (DEV-1836, this change)** — migrate the cross-model `_cm_` family
+  (plain, re-rooted, ranked, windowed, partitioned) onto target-rooted
+  producers; cross-model sources become legal in the composed shapes, in
+  dimension expressions, and in `window=`; intermediate-hop and
+  band×cross-model guards fall (broadcast instead); the D7 total-routing
+  invariant lands. `classify_isolation` survives only for the host-rooted
+  routes (crossing `Column.filter` inputs, host-grain wraps, filtered-local) —
+  its retirement moves to stage 4.
 - **Stage 4 (DEV-1838)** — node discipline: the query renders as a chain of
   nodes (base → aggregate → combined → steps → post), each consuming only the
-  previous node's schema; the CTE-body deferrals lift via the CTE-hoist; exit
+  previous node's schema; the CTE-body deferrals lift via the CTE-hoist;
+  `classify_isolation` + the legacy cross-model dispatch retire; exit
   criterion — the guard list is empty and the matrix has no xfails.

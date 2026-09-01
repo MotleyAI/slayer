@@ -2,6 +2,7 @@
 
 import json
 import logging
+import sys
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from typing import Any
@@ -26,6 +27,8 @@ from slayer.core.models import (
 )
 from slayer.core.query import ModelExtension, SlayerQuery
 from slayer.core.recommend import render_recommendation_markdown
+from slayer import async_utils
+from slayer.engine import ingestion as engine_ingestion
 from slayer.engine.ingestion import (
     _empty_ingest_message as _shared_empty_ingest_message,
     _friendly_db_error,
@@ -35,6 +38,8 @@ from slayer.engine.ingestion import (
     IngestableObject,
     list_ingestable_objects,
 )
+from slayer.engine.schema_scope import schema_ref_from_token, validate_scope_args
+from slayer.sql import engine_factory
 from slayer.engine.profiling import handle_edit_refresh
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.memories.help_seed import seed_help_memories
@@ -92,7 +97,7 @@ def _import_fastmcp():
     wrong major get different remedies.
     """
     try:
-        from mcp.server.fastmcp import FastMCP
+        from mcp.server.fastmcp import FastMCP  # ALLOW(import-not-top): optional-dep probe — must attempt the import at call time to diagnose absent vs wrong-major
     except ImportError as exc:
         try:
             installed = _pkg_version("mcp")
@@ -149,7 +154,6 @@ def _ambiguous_with_mcp_hint(exc: AmbiguousModelError) -> str:
 def _test_connection(ds: DatasourceConfig) -> tuple[bool, str]:
     """Test a datasource connection. Returns (success, message)."""
     try:
-        from slayer.sql import engine_factory
         engine = engine_factory.get_engine(ds.resolve_env_vars())
         with engine.connect() as conn:
             conn.execute(sa.text("SELECT 1"))
@@ -173,8 +177,6 @@ def _fetch_tables(
     flag: a views-only schema must not read as empty and misdirect the agent.
     """
     try:
-        from slayer.sql import engine_factory
-        from slayer.engine.schema_scope import schema_ref_from_token
         sa_engine = engine_factory.get_engine(ds.resolve_env_vars())
         inspector = sa.inspect(sa_engine)
         # DEV-1758: route through a SchemaRef so ``schema_name=None`` resolves to
@@ -444,8 +446,6 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     ingest_on_startup: bool = False,
     _seed_help: bool = True,
 ):
-    from slayer.async_utils import run_sync
-
     # DEV-1658: seed the conceptual-help memories (help.intro …). ``_seed_help``
     # is False when embedded in create_app (which seeds once itself), so the
     # pass never fires twice. Idempotent / skip-if-unchanged, so a warm store
@@ -459,19 +459,18 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     # best-effort: warn and continue rather than abort the build.
     if _seed_help and isinstance(storage, StorageBackend):
         try:
-            run_sync(seed_help_memories(storage=storage))
+            # Via the modules so tests can monkeypatch both seams.
+            async_utils.run_sync(seed_help_memories(storage=storage))
         except Exception as exc:  # noqa: BLE001 — seeding must not abort the build
             logger.warning(
                 "SLayer help-memory seeding skipped: %s", exc, exc_info=True
             )
 
     if ingest_on_startup:
-        import sys
-
-        from slayer.engine.ingestion import ingest_all_datasources_idempotent
-
-        run_sync(
-            ingest_all_datasources_idempotent(storage=storage, stream=sys.stderr)
+        async_utils.run_sync(
+            engine_ingestion.ingest_all_datasources_idempotent(
+                storage=storage, stream=sys.stderr,
+            )
         )
     FastMCP = _import_fastmcp()  # NOSONAR(S117) — holds a class object; CapWords matches the class it aliases
 
@@ -517,6 +516,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         format: str = "markdown",
         variables: dict[str, Any] | None = None,
         distinct_dimension_values: bool = True,
+        strict: bool = False,
     ) -> str:
         """Query data from a semantic model. Call inspect(reference="<ds>.<model>", entity_type="model") first to see available columns and measures.
 
@@ -558,6 +558,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             offset: Number of rows to skip.
             whole_periods_only: When true, snap date filters to time bucket boundaries based on granularity, exclude the current incomplete time bucket.
             show_sql: When true, include the generated SQL in the response for debugging.
+            strict: Error instead of warn when a cross-model measure would broadcast or a producer filter would be dropped. Rejected with run-by-name execution — declare it on the stored query instead.
             dry_run: When true, generate and return the SQL without executing it.
             explain: When true, run EXPLAIN ANALYZE and return the query plan.
             format: Output format — "markdown" (default, compact and LLM-friendly), "json" (structured), or "csv" (most compact). Case-insensitive.
@@ -589,6 +590,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         # DEV-1543: only emit when non-default so tool calls stay compact.
         if distinct_dimension_values is False:
             data["distinct_dimension_values"] = False
+        # DEV-1836: strict = error on any silent broadcast / dropped filter.
+        if strict:
+            data["strict"] = True
         try:
             fmt = format.lower().strip()
             if fmt not in ("json", "csv", "markdown"):
@@ -616,6 +620,11 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 model_name = source_model
                 target = await storage.get_model(model_name)
                 if target is not None and target.source_queries:
+                    if strict:
+                        raise ValueError(
+                            "'strict' is not supported with run-by-name "
+                            "execution; declare it on the stored query instead."
+                        )
                     result = await engine.execute(
                         query=model_name,
                         variables=variables or {},
@@ -1275,8 +1284,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         if source_queries is not None:
             # Switching to query-backed source mode. Cache columns and
             # backing_query_sql get refreshed when we save via engine.save_model.
-            from slayer.core.query import SlayerQuery as _SlayerQuery
-            model.source_queries = [_SlayerQuery.model_validate(q) for q in source_queries]
+            model.source_queries = [SlayerQuery.model_validate(q) for q in source_queries]
             model.sql_table = None
             model.sql = None
             # Clear the user-managed columns so the cache write succeeds.
@@ -1529,8 +1537,6 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
         Example: create_datasource(name="mydb", type="postgres", host="localhost", port=5432, database="app", username="user", password="pass")
         """
-        from slayer.engine.ingestion import ingest_datasource_report as _ingest
-        from slayer.engine.schema_scope import validate_scope_args
 
         schemas_list = [s.strip() for s in schemas.split(",") if s.strip()] or None
         # Validate the scope BEFORE persisting — a conflicting request must not
@@ -1574,7 +1580,8 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
         # Auto-ingest models
         try:
-            ingest_output = _ingest(
+            # Via the module so tests can monkeypatch the seam.
+            ingest_output = engine_ingestion.ingest_datasource_report(
                 datasource=ds,
                 schema=schema_name or None,
                 schemas=schemas_list,
@@ -1913,8 +1920,6 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             schemas: Comma-separated schemas to inspect. Mutually exclusive with schema_name / all_schemas.
             all_schemas: Ingest every non-system schema. Mutually exclusive with schema_name / schemas.
         """
-        from slayer.engine.ingestion import ingest_datasource_idempotent
-        from slayer.engine.schema_scope import validate_scope_args
 
         ds = await storage.get_datasource(datasource_name)
         if ds is None:
@@ -1932,7 +1937,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
         try:
             include = [t.strip() for t in include_tables.split(",") if t.strip()] or None
-            result = await ingest_datasource_idempotent(
+            result = await engine_ingestion.ingest_datasource_idempotent(
                 datasource=ds,
                 storage=storage,
                 include_tables=include,

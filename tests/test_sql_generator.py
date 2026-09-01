@@ -7975,8 +7975,12 @@ Column(name="total_policy_amount", sql="policy_amount", type=DataType.DOUBLE)],
                 await storage.save_model(m)
             yield SlayerQueryEngine(storage=storage)
 
-    async def test_rerooted_cte_includes_target_join_filters(self, generator, _models):
-        """Q9-style: filters on premium and agreement_party_role are included in CTE."""
+    async def test_rerooted_cte_includes_reachable_and_sibling_filters(self, generator, _models):
+        """DEV-1836 D3: the re-rooted producer includes filters REACHABLE from the
+        target root — the target-path filter (``policy_amount.premium.has_premium``)
+        AND the host-sibling filter (``agreement_party_role``): the root's own
+        provably to-one join reaches the sibling, so it inherits instead of
+        dropping (the Q9 shape). Nothing warns."""
         policy, policy_amount, premium, agreement_party_role = _models
         async with self._setup_engine(policy, policy_amount, premium, agreement_party_role) as engine:
             query = SlayerQuery(
@@ -7988,21 +7992,26 @@ Column(name="total_policy_amount", sql="policy_amount", type=DataType.DOUBLE)],
                     "policy_amount.premium.has_premium = '1'",
                 ],
             )
-            sql = (await engine.execute(query, dry_run=True)).sql
+            resp = await engine.execute(query, dry_run=True)
+            sql = resp.sql
             _assert_valid_sql(sql, dialect=generator.dialect)
             _assert_valid_sql(sql)
 
-            # CTE should FROM policy_amount (target), not FROM policy (source)
-            cm_cte_start = sql.find("_cm_")
-            cte_section = sql[cm_cte_start:]
-            assert "FROM policy_amount" in cte_section or "FROM\n  policy_amount" in cte_section
-            # CTE should JOIN premium and agreement_party_role
-            assert "premium" in cte_section
-            assert "agreement_party_role" in cte_section
-            # CTE should include both filter conditions
-            assert "party_role_code" in cte_section
-            # has_premium sql='1' resolves to literal 1
-            assert "1 = '1'" in cte_section or "1 = 1" in cte_section
+            # Only the producer CTE body — the outer SELECT would satisfy these
+            # assertions even with filter inheritance missing from the CTE.
+            cte_body = _extract_cte_body(sql=sql, cte_name_pattern=r"_cm_\w+")
+            assert "FROM policy_amount" in cte_body or "FROM\n  policy_amount" in cte_body
+            # The reachable target-path filter rides into the producer with its join.
+            assert "premium" in cte_body
+            assert "1 = '1'" in cte_body or "1 = 1" in cte_body
+            # The host-sibling filter inherits through the root's own join.
+            assert "agreement_party_role" in cte_body
+            assert "party_role_code" in cte_body
+            dropped = [
+                w for w in (resp.warnings or [])
+                if getattr(w, "kind", None) == "unreachable_filter_dropped"
+            ]
+            assert not dropped, dropped
 
     async def test_rerooted_cte_without_filters(self, generator, _models):
         """Cross-model measure with no filters still uses re-rooted CTE."""
@@ -8121,15 +8130,9 @@ Column(name="score", sql="score", type=DataType.DOUBLE)],
             assert "_cm_" in sql
             assert "/" in sql  # Division expression
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1445: cross-model local-filter remap to source is not yet "
-            "implemented on the typed pipeline. Auto-promotes when supported."
-        ),
-    )
     async def test_rerooted_local_filter_remapped_to_source(self, generator, _models):
-        """Unqualified filter on source model is remapped to source.col in CTE."""
+        """Unqualified filter on source model is remapped to source.col in CTE
+        (the producer reaches the host over its provably to-one reverse join)."""
         policy, policy_amount, premium, agreement_party_role = _models
         async with self._setup_engine(policy, policy_amount, premium, agreement_party_role) as engine:
             # policy_amount has a join to policy, so status_code is reachable
@@ -8143,11 +8146,11 @@ Column(name="score", sql="score", type=DataType.DOUBLE)],
             _assert_valid_sql(sql, dialect=generator.dialect)
             _assert_valid_sql(sql)
 
-            # CTE should include the filter, qualified with the source model alias
-            cm_cte_start = sql.find("_cm_")
-            cte_section = sql[cm_cte_start:]
-            assert "status_code" in cte_section.lower()
-            assert "'ACTIVE'" in cte_section
+            # Only the producer CTE body — the outer SELECT can also carry the
+            # filter, so the whole-tail slice would pass vacuously.
+            cte_body = _extract_cte_body(sql=sql, cte_name_pattern=r"_cm_\w+")
+            assert "status_code" in cte_body.lower()
+            assert "'ACTIVE'" in cte_body
 
     async def test_rerooted_custom_agg_in_filter(self, generator):
         """Function-style custom aggregation in filter must be recognised during rerooting."""
@@ -9910,16 +9913,14 @@ class TestIsolatedFilteredMeasureCTEs:
         sql = await self._sql(
             claim_amount_model_with_time, related_models, query,
         )
-        # The routed filter literal must appear in the cross-model CTE's
-        # HAVING.
-        cm_body = _extract_cte_body(
-            sql, r"_cm_\w*has_flag\w*",
-        )
-        assert "> 0" in cm_body, (
-            f"Routed cross-model HAVING filter missing from _cm_ CTE:\n{cm_body}"
-        )
-        # And it must NOT appear inside the host ``_base`` ranked
-        # subquery (double-application bug).
+        # DEV-1836: the routed cross-model aggregate-phase filter lands as an
+        # OUTER WHERE on the producer's attached value — once, and never inside
+        # the host ``_base`` ranked subquery (double-application bug).
+        norm = _norm(sql)
+        tail = norm[norm.rfind("WHERE"):]
+        assert tail.startswith("WHERE"), norm
+        assert "has_flag_sum" in tail, tail
+        assert "> 0" in tail, tail
         base_body = _extract_cte_body(sql, r"_base")
         assert "> 0" not in base_body, (
             f"Routed cross-model filter leaked into host _base ranked subquery "
@@ -12399,7 +12400,7 @@ class TestCrossModelAggregateSourceSqlJoinInference:
                 formula="customers_v2.deep_pop:last(customers_v2.signup_at)")],
         )
         sql = (await engine.execute(query, dry_run=True)).sql
-        cm_body = _extract_cte_body(sql, r"_rk_\w+")
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
         assert "ROW_NUMBER()" in cm_body, cm_body
         normalized = _norm(cm_body)
         inner_start = normalized.find("FROM (")
@@ -12500,7 +12501,9 @@ class TestWindowedMeasureGuards:
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "customers.revenue:sum(window='30d')", "name": "rev_w"}],
         )
-        with pytest.raises(NotImplementedError, match="cross-model"):
+        # DEV-1836: fails closed with a precise attributability ValueError (the
+        # active time dimension is a host column, unreachable from customers).
+        with pytest.raises(ValueError, match="cross-model"):
             await engine.execute(query, dry_run=True)
 
     async def test_windowed_with_transform_raises(self, orders_model: SlayerModel) -> None:
@@ -12714,7 +12717,8 @@ class TestWindowedMeasureGuards:
             )
             q = SlayerQuery(source_model="orders", time_dimensions=td,
                             measures=[{"formula": "customers.revenue:sum(window='30d')", "name": "rev_w"}])
-            bundle, exc, match = _bundle(orders, [customers]), NotImplementedError, "cross-model"
+            # DEV-1836: windowed cross-model with an unattributable TD → ValueError.
+            bundle, exc, match = _bundle(orders, [customers]), ValueError, "cross-model"
         elif case == "g4_transform":
             model = _plain()
             model.default_time_dimension = "created_at"

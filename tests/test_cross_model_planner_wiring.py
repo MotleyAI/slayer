@@ -45,7 +45,7 @@ from slayer.engine.cross_model_planner import (
     HostFilterRouting,
     classify_host_filter,
 )
-from slayer.engine.planning import ValueRegistry
+from slayer.engine.planning import ValueRegistry, filter_referenced_slot_ids
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import plan_query
 
@@ -99,8 +99,6 @@ def _bundle() -> ResolvedSourceBundle:
 
 class TestFilterReferencedSlotIds:
     def test_simple_column_filter(self) -> None:
-        from slayer.engine.planning import filter_referenced_slot_ids
-
         reg = ValueRegistry()
         col = ColumnKey(path=(), leaf="amount")
         sid = reg.intern(key=col, declared_name="amount", phase=Phase.ROW)
@@ -118,8 +116,6 @@ class TestFilterReferencedSlotIds:
 
     def test_composite_predicate_collects_all_slot_leaves(self) -> None:
         # Filter: ``status == 'paid' AND customers.revenue:sum < 500``
-        from slayer.engine.planning import filter_referenced_slot_ids
-
         reg = ValueRegistry()
         status = ColumnKey(path=(), leaf="status")
         agg = AggregateKey(
@@ -149,8 +145,6 @@ class TestFilterReferencedSlotIds:
     def test_composite_only_nodes_not_in_result(self) -> None:
         # Top-level ArithmeticKey itself doesn't show up — only leaf
         # slottable refs.
-        from slayer.engine.planning import filter_referenced_slot_ids
-
         reg = ValueRegistry()
         col = ColumnKey(path=(), leaf="amount")
         reg.intern(key=col, declared_name="amount", phase=Phase.ROW)
@@ -171,8 +165,6 @@ class TestFilterReferencedSlotIds:
         # If a referenced key isn't in the registry (e.g., a literal,
         # or an arithmetic that didn't intern), the walker silently
         # skips it rather than raising.
-        from slayer.engine.planning import filter_referenced_slot_ids
-
         reg = ValueRegistry()
         # No interns.
         col = ColumnKey(path=(), leaf="amount")
@@ -203,15 +195,18 @@ class TestPlanQueryCrossModelWiring:
         assert planned.cross_model_aggregate_plans == []
 
     def test_cross_model_aggregate_emits_plan(self) -> None:
+        # DEV-1836: a cross-model aggregate emits a TARGET-rooted regroup
+        # producer rooted at the join target.
         q = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "customers.revenue:sum"}],
         )
         planned = plan_query(query=q, bundle=_bundle())
-        assert len(planned.cross_model_aggregate_plans) == 1
-        plan = planned.cross_model_aggregate_plans[0]
-        assert plan.target_model == "customers"
-        assert plan.datasource == "prod"
+        assert not planned.cross_model_aggregate_plans
+        assert len(planned.regroup_attach_plans) == 1
+        attach = planned.regroup_attach_plans[0]
+        assert attach.producer_root_model == "customers"
+        assert attach.producer_plan.source_relation == "customers"
 
     def test_cross_model_plan_carries_aggregate_slot_id(self) -> None:
         q = SlayerQuery(
@@ -219,23 +214,17 @@ class TestPlanQueryCrossModelWiring:
             measures=[{"formula": "customers.revenue:sum"}],
         )
         planned = plan_query(query=q, bundle=_bundle())
-        plan = planned.cross_model_aggregate_plans[0]
-        # The plan references the slot id of the aggregate it's
-        # materialising.
-        all_slots = (
-            planned.row_slots
-            + planned.aggregate_slots
-            + planned.combined_expression_slots
+        attach = planned.regroup_attach_plans[0]
+        # The substitution references the producer slot id of the aggregate it
+        # materialises.
+        prod_agg = next(
+            s for s in attach.producer_plan.aggregate_slots
+            if isinstance(s.key, AggregateKey) and s.key.agg == "sum"
         )
-        agg_slot = next(
-            s for s in all_slots
-            if isinstance(s.key, AggregateKey)
-            and getattr(s.key.source, "path", ()) == ("customers",)
-        )
-        assert plan.aggregate_slot_id == agg_slot.id
+        assert attach.substitutions[0].producer_slot_id == prod_agg.id
 
     def test_two_distinct_cross_model_aggregates_emit_separate_plans(self) -> None:
-        # customers.revenue:sum + customers.revenue:avg → two CTEs
+        # customers.revenue:sum + customers.revenue:avg → two producers
         # (one per AggregateKey).
         q = SlayerQuery(
             source_model="orders",
@@ -245,32 +234,32 @@ class TestPlanQueryCrossModelWiring:
             ],
         )
         planned = plan_query(query=q, bundle=_bundle())
-        assert len(planned.cross_model_aggregate_plans) == 2
+        assert len(planned.regroup_attach_plans) == 2
         target_aggs = {
-            (p.target_model, _slot_agg(planned, p.aggregate_slot_id).key.agg)
-            for p in planned.cross_model_aggregate_plans
+            (a.producer_root_model, s.key.agg)
+            for a in planned.regroup_attach_plans
+            for s in a.producer_plan.aggregate_slots
+            if isinstance(s.key, AggregateKey)
         }
         assert target_aggs == {("customers", "sum"), ("customers", "avg")}
 
     def test_local_filter_does_not_propagate_to_cte(self) -> None:
-        # ``status == 'paid'`` is a host-local row filter → DROP_HOST_LOCAL
-        # → not in the CTE's WHERE or HAVING.
+        # ``status == 'paid'`` is a host-local row filter unreachable from the
+        # target root → NOT in the producer (DEV-1836: dropped + warned).
         q = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "customers.revenue:sum"}],
             filters=["status == 'paid'"],
         )
         planned = plan_query(query=q, bundle=_bundle())
-        plan = planned.cross_model_aggregate_plans[0]
-        assert plan.where_filter_ids == []
-        assert plan.having_filter_ids == []
+        attach = planned.regroup_attach_plans[0]
+        assert not attach.producer_plan.filters_by_phase
+        assert attach.dropped_filter_warnings
 
     def test_parameterized_aggregates_get_distinct_cte_aliases(self) -> None:
-        # ``customers.revenue:percentile(p=0.5)`` and ``p=0.95`` produce
-        # two distinct cross-model aggregate slots; the CTE column
-        # aliases must differ so the generator can target them
-        # independently. (Codex HIGH #1 fold-in for 7b.5: include the
-        # aggregate signature in the CTE column alias.)
+        # ``customers.revenue:percentile(p=0.5)`` and ``p=0.95`` produce two
+        # distinct producers whose aggregate output aliases must differ so the
+        # generator can target them independently.
         host = _orders_model()
         target = _customers_model()
         bundle = ResolvedSourceBundle(
@@ -284,19 +273,19 @@ class TestPlanQueryCrossModelWiring:
             ],
         )
         planned = plan_query(query=q, bundle=bundle)
-        assert len(planned.cross_model_aggregate_plans) == 2
-        cte_aliases = {
-            col.name
-            for plan in planned.cross_model_aggregate_plans
-            for col in plan.cte_stage_schema.columns
-            if col.provenance == "agg:percentile"
+        assert len(planned.regroup_attach_plans) == 2
+        aliases = {
+            s.public_name
+            for a in planned.regroup_attach_plans
+            for s in a.producer_plan.aggregate_slots
+            if isinstance(s.key, AggregateKey)
         }
         # Two distinct aliases — not just "revenue_percentile" twice.
-        assert len(cte_aliases) == 2, cte_aliases
+        assert len(aliases) == 2, aliases
 
     def test_target_model_filters_propagate(self) -> None:
-        # Customers has an always-applied filter — must surface on the
-        # cross-model CTE plan.
+        # Customers has an always-applied filter — must surface INSIDE the
+        # target-rooted producer (its FROM is customers).
         host = _orders_model()
         target = _customers_model().model_copy(
             update={"filters": ["region IS NOT NULL"]},
@@ -309,8 +298,9 @@ class TestPlanQueryCrossModelWiring:
             measures=[{"formula": "customers.revenue:sum"}],
         )
         planned = plan_query(query=q, bundle=bundle)
-        plan = planned.cross_model_aggregate_plans[0]
-        assert plan.target_model_filters == ["region IS NOT NULL"]
+        attach = planned.regroup_attach_plans[0]
+        texts = [f.text for f in attach.producer_plan.filters_by_phase]
+        assert "region IS NOT NULL" in texts, texts
 
 
 # ---------------------------------------------------------------------------
@@ -340,14 +330,3 @@ class TestHostFilterRoutingViaPlanQuery:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _slot_agg(planned, slot_id):
-    for s in (
-        planned.row_slots
-        + planned.aggregate_slots
-        + planned.combined_expression_slots
-    ):
-        if s.id == slot_id:
-            return s
-    raise AssertionError(f"slot {slot_id!r} not found")

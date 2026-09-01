@@ -99,12 +99,43 @@ class DroppedFilterWarning(SlayerWarning):
         )
 
 
+class BroadcastDimension(BaseModel):
+    """One query dimension a metric could not attribute, with the reason it
+    broadcasts (an unproven/fanning join hop, or unreachable from the root)."""
+
+    dimension: str
+    reason: str
+
+
+class BroadcastGrainWarningPayload(SlayerWarning):
+    """A cross-model aggregate whose implicit grain lost one or more query
+    dimensions to broadcasting (DEV-1836 D6).
+
+    ``measure`` names the affected metric — its public name when directly
+    selected, else its canonical aggregate form (with role for a hidden use).
+    ``location`` points at the pipeline stage it came from; ``dimensions``
+    lists each broadcast dimension and the per-dimension reason.
+    """
+
+    kind: Literal["broadcast"] = "broadcast"
+    measure: str
+    location: str
+    dimensions: list[BroadcastDimension]
+
+    def human_message(self) -> str:
+        dims = ", ".join(f"{d.dimension} ({d.reason})" for d in self.dimensions)
+        return (
+            f"metric {self.measure!r} (at {self.location}) broadcast across "
+            f"unattributable dimension(s): {dims}"
+        )
+
+
 # The response carries a DISCRIMINATED union, not the bare base class: Pydantic
 # validates a ``List[SlayerWarning]`` down to the base type and would silently
 # drop every subclass field on the way through. Keyed on ``kind``, each payload
 # round-trips as itself.
 AnySlayerWarning = Annotated[
-    Union[NormalizationWarning, DroppedFilterWarning],
+    Union[NormalizationWarning, DroppedFilterWarning, BroadcastGrainWarningPayload],
     Field(discriminator="kind"),
 ]
 

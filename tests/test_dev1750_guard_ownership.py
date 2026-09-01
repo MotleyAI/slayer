@@ -1,18 +1,17 @@
-"""DEV-1750 — the narrowed guard is a PLAN-OWNERSHIP decision, pinned at the
-planner level (Codex test-review F1).
+"""DEV-1750 / DEV-1836 — where the cross-model work for a ``time_shift`` inner
+aggregate lives, pinned at the planner level (Codex test-review F1).
 
-The guard must fire for a ``time_shift`` whose inner aggregate is a TARGET-GRAIN
-cross-model aggregate — identified by its ``CrossModelAggregatePlan`` having
-``cte_root_model is None`` — and must NOT fire for a host-rooted one
-(``cte_root_model`` = the host model name). Asserting only the error message
-would let an implementation classify by formula text or op name instead; these
-tests pin the exact ownership property the decision must read, so changing only
-``cte_root_model`` flips supported vs guarded.
+A TARGET-GRAIN cross-model inner is migrated onto the regroup primitive by
+DEV-1836 — it becomes a ``RegroupAttachPlan`` and owns NO
+``CrossModelAggregatePlan`` — while a host-rooted inner (``amount:wscaled_sum``)
+still isolates into a ``CrossModelAggregatePlan`` (``cte_root_model`` = the host
+model). These tests pin that structural split, so a regression that reroutes
+either shape is caught here rather than only by an executed-value diff.
 """
 
 from __future__ import annotations
 
-from slayer.core.keys import AggregateKey, TransformKey
+from slayer.core.keys import AggregateKey, ColumnKey, TransformKey
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import plan_query
 
@@ -84,14 +83,22 @@ class TestGuardOwnership:
         assert plan is not None, "shape (b) inner aggregate has no cross-model plan"
         assert plan.cte_root_model == "orders", plan.cte_root_model
 
-    def test_c_target_grain_inner_is_owned_by_a_target_rooted_plan(self) -> None:
-        """(c) ``time_shift(customers.spend:sum)`` — the inner aggregate's plan is
-        TARGET-rooted (``cte_root_model is None``), the shape that stays guarded."""
+    def test_c_target_grain_inner_is_a_regroup_attach(self) -> None:
+        """(c) ``time_shift(customers.spend:sum)`` — DEV-1836 migrates the
+        target-grain inner onto the regroup primitive: the time_shift wraps a
+        regroup placeholder, the query owns a regroup attach, and no cross-model
+        plan is produced."""
         planned = _plan("time_shift(customers.spend:sum, -1)")
-        inner_sid = _time_shift_inner_slot_id(planned)
-        plan = _plan_owning(planned, inner_sid)
-        assert plan is not None, "shape (c) inner aggregate has no cross-model plan"
-        assert plan.cte_root_model is None, plan.cte_root_model
+        assert not planned.cross_model_aggregate_plans
+        assert planned.regroup_attach_plans
+        layer = next(
+            layer for layer in planned.transform_layers if layer.op == "time_shift"
+        )
+        out_slot = next(s for s in _all_slots(planned) if s.id in layer.slot_ids)
+        assert isinstance(out_slot.key, TransformKey), out_slot.key
+        inner = out_slot.key.input
+        assert isinstance(inner, ColumnKey), inner
+        assert inner.leaf.startswith("__regroup__"), inner
 
     def test_a_local_inner_has_no_cross_model_plan(self) -> None:
         """(a) ``time_shift(amount:sum)`` beside a cross-model sibling — the shift's
@@ -109,5 +116,5 @@ class TestGuardOwnership:
         )
         inner_sid = _time_shift_inner_slot_id(planned)
         assert _plan_owning(planned, inner_sid) is None
-        # The sibling DID isolate — so the query really is on the cross-model path.
-        assert planned.cross_model_aggregate_plans
+        # The sibling DID isolate onto the primitive — the query really crosses.
+        assert planned.regroup_attach_plans

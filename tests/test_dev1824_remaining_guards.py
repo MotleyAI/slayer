@@ -26,6 +26,8 @@ class TestCrossModelPartitionedStillGuarded:
     crosses a join path."""
 
     async def test_cross_model_window_plus_partition(self) -> None:
+        # DEV-1836: fails closed with a precise attributability error (the active
+        # time dimension is a host column, unreachable from customers).
         query = q(
             dimensions=["customers.tier"], time_dimensions=month_td(),
             measures=[ModelMeasure(
@@ -33,7 +35,7 @@ class TestCrossModelPartitionedStillGuarded:
                 name="w",
             )],
         )
-        with pytest.raises(NotImplementedError, match=r"(?i)cross-model"):
+        with pytest.raises(ValueError, match=r"(?i)cross-model"):
             await gen(query)
 
     async def test_cross_model_first_last_plus_partition(self) -> None:

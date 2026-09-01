@@ -255,7 +255,7 @@ class TestDev1702B2ForwardMaterialization:
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
-        cm_body = _extract_cte_body(sql, r"_rk_\w+")
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
         norm = _norm(cm_body)
         # Ranked subquery present, pulls the further join inside it.
         assert "ROW_NUMBER()" in norm, norm
@@ -282,7 +282,7 @@ class TestDev1702B2ForwardMaterialization:
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
-        cm_body = _extract_cte_body(sql, r"_rk_\w+")
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
         norm = _norm(cm_body)
         _outer, inner = _split_at_ranked_subquery(norm)
         # The time arg's crossed join is registered inside the ranked subquery,
@@ -310,7 +310,7 @@ class TestDev1702B2ForwardMaterialization:
         )
         sql = await _gen(query, customers_extra=customers_extra)
         assert_scope_closed(sql)
-        cm_body = _extract_cte_body(sql, r"_rk_\w+")
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
         norm = _norm(cm_body)
         outer, inner = _split_at_ranked_subquery(norm)
         # BOTH the value's join (regions) and the filter's deeper join
@@ -344,7 +344,7 @@ class TestDev1702B2ForwardMaterialization:
         assert_scope_closed(sql)
         norm = _norm(sql)
         assert "HAVING" not in norm, norm
-        rk_name = _re.search(r"(_rk_\w+) AS \(", norm)
+        rk_name = _re.search(r"(_cm_\w+) AS \(", norm)
         assert rk_name is not None, norm
         # The outer WHERE reads the ranked CTE's own output column.
         tail = norm[norm.rfind("WHERE"):]
@@ -352,12 +352,13 @@ class TestDev1702B2ForwardMaterialization:
         assert rk_name.group(1) in tail, tail
         assert "regions.population" not in tail, tail
 
-    async def test_compound_routed_having_nested_arith_registers_join(self) -> None:
+    async def test_compound_routed_filter_nested_arith_registers_join(self) -> None:
         """Codex F4: the routed-filter pre-pass walks the FULL ValueKey tree.
-        A HAVING wrapping the crossing aggregate in a nested arithmetic node
+        A filter wrapping the crossing aggregate in a nested arithmetic node
         (``deep_pop:sum + 1 > 5`` → ArithmeticKey(>) → ArithmeticKey(+) →
         AggregateKey) must still discover and register the aggregate leaf's
-        crossed join BEFORE the CTE FROM is built."""
+        crossed join in the producer FROM. DEV-1836 lands the compound
+        aggregate-phase filter as an outer WHERE on the producer value."""
         query = SlayerQuery(
             source_model="orders_x",
             dimensions=["customers_v2.status"],
@@ -367,10 +368,12 @@ class TestDev1702B2ForwardMaterialization:
         sql = await _gen(query)
         assert_scope_closed(sql)
         cm_body = _extract_cte_body(sql, r"_cm_\w+")
-        norm = _norm(cm_body)
-        assert "LEFT JOIN regions AS regions" in norm, norm
-        having = norm[norm.find("HAVING"):]
-        assert "SUM(regions.population) + 1 > 5" in having, having
+        norm_cm = _norm(cm_body)
+        assert "LEFT JOIN regions AS regions" in norm_cm, norm_cm
+        assert "SUM(regions.population)" in norm_cm, norm_cm
+        norm = _norm(sql)
+        assert "HAVING" not in norm, norm
+        assert '"customers_v2.deep_pop_sum" + 1' in norm, norm
 
     async def test_local_value_first_last_is_materialised_exactly_once(
         self,
@@ -393,7 +396,7 @@ class TestDev1702B2ForwardMaterialization:
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
-        cm_body = _extract_cte_body(sql, r"_rk_\w+")
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
         _outer, inner = _split_at_ranked_subquery(_norm(cm_body))
         projected = _re.findall(r"customers_v2\.lifetime_value AS (_val_\d+)", inner)
         assert len(projected) == 1, inner
@@ -455,7 +458,7 @@ class TestDerivedSharedGrainRenders:
         assert_scope_closed(sql)
         cm_body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
         assert "regions.population" in cm_body, cm_body
-        assert 'AS "orders_x.customers_v2.deep_pop"' in cm_body, cm_body
+        assert 'AS "customers_v2.deep_pop"' in cm_body, cm_body
 
     async def test_derived_source_unaffected_by_grain_guard(self) -> None:
         """The guard fires ONLY for a shared-grain dim — a derived aggregate
@@ -544,8 +547,8 @@ class TestAllocatorDeterminism:
         # Within-scope: no CTE body defines the same _val alias twice. DEV-1756
         # may length-fit an over-limit ranked CTE name (dropping the measure
         # substring — the two CTEs here differ only by hash), so locate them by
-        # the ``_rk_`` prefix rather than the measure name.
-        rk_names = _re.findall(r"(_rk_\w+)\s+AS\s*\(", sql1)
+        # the ``_cm_`` prefix rather than the measure name.
+        rk_names = _re.findall(r"(_cm_\w+)\s+AS\s*\(", sql1)
         assert len(rk_names) >= 2, f"expected two ranked CTEs:\n{sql1}"
         for name in rk_names:
             body = _extract_cte_body(sql1, _re.escape(name))

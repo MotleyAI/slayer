@@ -88,7 +88,7 @@ A partitioned aggregate SHALL be usable in the same query as windowed, `first`/`
 - THEN all measures are correct by executed values and the row count is unchanged
 
 ### Requirement: Attachment preserves cardinality structurally
-Attaching a partitioned aggregate MUST never change the query's row count or any other column's values. The planner SHALL verify structurally that the attachment joins on the producer's complete unique key, and that a keyless attachment is provably single-row.
+Attaching a partitioned aggregate MUST never change the query's row count or any other column's values. The planner SHALL verify structurally that the attachment joins on the producer's complete unique key, and that a keyless attachment is provably single-row. The same verification SHALL apply to every nested attachment inside a producer — including attachments nested inside target-rooted (cross-model) producers — so no attach at any depth can multiply rows.
 
 #### Scenario: Adding a partitioned measure is cardinality-neutral
 - WHEN any supported query runs with and without an additional partitioned-aggregate measure
@@ -97,6 +97,10 @@ Attaching a partitioned aggregate MUST never change the query's row count or any
 #### Scenario: Empty partition set attaches the overall total
 - WHEN a measure declares `partition_by=[]`
 - THEN every row carries the overall total and the row count is unchanged
+
+#### Scenario: Nested attachments inside a target-rooted producer are cardinality-checked
+- WHEN a cross-model producer internally attaches a nested producer (e.g. a computed dimension it groups by)
+- THEN the nested attach joins on the nested producer's complete unique key and the outer producer's row count is unchanged by it
 
 ### Requirement: Producers may require their own intermediate relations
 A partitioned aggregate whose computation itself needs intermediate relations (rolling windows, rankings, transform steps) SHALL render correctly, including several such producers in one query, with no name collisions in the generated SQL.
@@ -194,3 +198,14 @@ An aggregation's own filter SHALL restrict only the rows aggregated by its produ
 #### Scenario: A filtered measure is cardinality-neutral
 - WHEN a windowed or `first`/`last` measure carrying its own filter is added beside unfiltered measures
 - THEN the row count and every companion value are unchanged, and only the filtered measure's value reflects the filter
+
+### Requirement: Partition keys are attributable from the aggregate's root
+Every explicit `partition_by=` key SHALL be attributable from the aggregate's root — expressible over join hops that are provably many-to-one. An unattributable partition key is a hard error in both lenient and strict mode, naming the key, the failing hop, and the remedy; the producer MUST never join through an unproven or fanning hop to express a declared grain.
+
+#### Scenario: Joined partition key over a provably safe hop works
+- WHEN a local aggregate declares `partition_by=` naming a dimension reached over a provably many-to-one join
+- THEN the producer computes at that grain with correct executed values
+
+#### Scenario: Partition key over an unproven hop errors
+- WHEN an aggregate declares `partition_by=` naming a dimension reachable only across a join with unproven arity
+- THEN the query fails with a clear error naming the key and the remedy, never silently double-counting inside the producer

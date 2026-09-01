@@ -38,6 +38,8 @@ from typing import (
     Union,
 )
 
+from pydantic import BaseModel, ConfigDict, SkipValidation
+
 from slayer.core.enums import DataType
 from slayer.core.formula import TIME_TRANSFORMS
 from slayer.core.format import NumberFormat
@@ -56,14 +58,19 @@ from slayer.core.keys import (
     LiteralKey,
     Phase,
     ScalarCallKey,
+    StarKey,
     TimeTruncKey,
     TransformKey,
     ValueKey,
     column_leaf,
     normalize_scalar,
+    reroot_value_key,
     substitute_value_keys,
 )
+from slayer.core.errors import UnreachableFilterDroppedWarning
 from slayer.core.models import SlayerModel
+from slayer.engine.aggregate_input_paths import compute_aggregate_input_join_paths
+from slayer.engine.join_safety import provably_to_one, safe_reachable
 from slayer.core.query import (
     ORDER_PLACEHOLDER_NAMES,
     ComputedDimension,
@@ -136,6 +143,7 @@ from slayer.engine.prebound import (
     measure_key_format_description,
     measure_key_type,
     partition_declared_measures,
+    walk_key_path,
 )
 from slayer.engine.regroup_planner import (
     REGROUP_LEAF_PREFIX,
@@ -368,11 +376,9 @@ def _reject_unsupported_windowed_key(key: AggregateKey) -> None:
             f"{window_val!r}. Use syntax like '1y2m3w5d6h7min8s'."
         )
     parse_window_duration(window_val)  # G8 — raises on empty / malformed
-    if getattr(key.source, "path", ()):  # G3 — re-pointed to stage 3 (DEV-1835)
-        raise NotImplementedError(
-            "Windowed cross-model aggregates (e.g. customers.revenue:sum("
-            "window='90d')) are not yet supported (DEV-1836)."
-        )
+    # DEV-1836 — a windowed cross-model aggregate is a target-rooted windowed
+    # producer (its re-rooted measure is local inside the producer), so the
+    # former cross-model deferral (G3) is lifted.
 
 
 def _guard_windowed_measures(
@@ -472,16 +478,11 @@ def _guard_partitioned_measures(
     part_keys = [k for vk in all_vks for k in _part(vk)]
     if not part_keys:
         return
-    window_part = [k for k in part_keys if _window_kwarg_of(k) is not None]
     # DEV-1824 (task 3.3) — a LOCAL window=+partition_by measure is lifted: its
     # producer is a windowed aggregate at the (partition ∪ active-TD) grain (D5).
-    # A CROSS-MODEL window+partition source stays deferred (stage 3).
-    if any(_cross_model(k) for k in window_part):
-        raise NotImplementedError(
-            "partition_by combined with window= on a cross-model aggregation is "
-            "not yet supported (DEV-1824); the aggregate must be local to the "
-            "query's source."
-        )
+    # DEV-1836 — a CROSS-MODEL window+partition source is now a target-rooted
+    # windowed producer (same shape at the aggregate's root), so no longer
+    # deferred here.
     # DEV-1824 (task 3.4) — a LOCAL first/last with partition_by is lifted: its
     # producer computes the ranked pick at the partition grain (hoisted CTE) and
     # attaches. A CROSS-MODEL source stays deferred (stage 3).
@@ -1201,6 +1202,13 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         lenient = key in _dim_agg_keys and key not in _combined_consumer_keys
         new_pks = []
         for pk in key.partition_keys or ():
+            # DEV-1836 — a partition key reached over a join must be attributable
+            # from the aggregate's root (provably many-to-one hops only); an
+            # unproven/fanning hop is a hard error naming the remedy, in both
+            # modes, before the query-dimension checks below.
+            _assert_partition_key_attributable(
+                key=key, pk=pk, label=label, scope=scope, bundle=bundle,
+            )
             if pk in _dim_key_set or pk in _td_key_set:
                 new_pks.append(pk)          # already a query dim / td bucket
             elif pk in _td_ambiguous_sources:
@@ -1346,7 +1354,8 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
             or "regroup"
         )
         # A transform root (D4) carries no model-measure metadata — its type is
-        # inferred from the transform.
+        # inferred from the transform. A consumer's EXPLICIT type (query-field
+        # override) wins over the source-column type, mirroring the local chain.
         if model is not None and isinstance(agg, AggregateKey):
             a_type = measure_key_type(model=model, key=agg)
             a_fmt, a_desc = measure_key_format_description(model=model, key=agg)
@@ -1531,6 +1540,10 @@ def _split_partitioned_filter_conjuncts(
         return any(
             is_local_combined_regroup_ref(k, row_agg_set=row_agg_set)
             or _is_local_partitioned_agg(k)
+            # DEV-1836 — a cross-model aggregate becomes a combined-attach
+            # placeholder; a filter over it resolves only after the join-back, so
+            # it must split off and route to the outer WHERE like a local one.
+            or _is_cross_model_agg(k)
             for k in walk_value_keys(vk)
         )
 
@@ -1552,7 +1565,14 @@ def _split_partitioned_filter_conjuncts(
             new_texts.append(texts[i])
             continue
         for cj in split_top_level_and(bf.value_key):
-            scope = conjunct_scope(cj, dim_keys=dim_keys, row_agg_set=row_agg_set)
+            if any(_is_cross_model_agg(k) for k in walk_value_keys(cj)):
+                # A cross-model aggregate predicate resolves at the combined
+                # SELECT (after its producer joins back), like a local one.
+                scope = "combined"
+            else:
+                scope = conjunct_scope(
+                    cj, dim_keys=dim_keys, row_agg_set=row_agg_set,
+                )
             if scope == "combined":
                 combined_idx.append(len(new_filters))
             new_filters.append(_bound_filter_from_key(cj))
@@ -1725,6 +1745,599 @@ def _partition_free_identity(agg: ValueKey):  # NOSONAR(S8495) — distinct-shap
             agg.column_filter_key)
 
 
+# --------------------------------------------------------------------------- #
+# DEV-1836 — cross-model aggregates as target-rooted regroup producers.
+# A cross-model aggregate (``source.path`` non-empty) roots a producer at the
+# model whose rows it aggregates, computes at the fan-out-safe subset of its
+# requested grain, and broadcasts across the rest — the unification of the
+# bespoke ``_cm_`` path onto the regroup primitive (design D2/D3).
+# --------------------------------------------------------------------------- #
+def _is_cross_model_agg(k: ValueKey) -> bool:
+    """A cross-model ``AggregateKey`` — its source names another model."""
+    return isinstance(k, AggregateKey) and bool(getattr(k.source, "path", ()))
+
+
+def _key_host_path(key: ValueKey) -> Tuple[str, ...]:
+    """The host-coordinate join path of a dimension / grain key."""
+    if isinstance(key, TimeTruncKey):
+        return tuple(getattr(key.column, "path", ()) or ())
+    return tuple(getattr(key, "path", ()) or ())
+
+
+def _attributable_from_root(
+    *, host_path: Tuple[str, ...], target_path: Tuple[str, ...],
+    root_model: SlayerModel, models_by_name: Dict[str, SlayerModel],
+    host_name: Optional[str] = None,
+) -> bool:
+    """Is a host-coordinate path attributable from the aggregate's root, over
+    provably many-to-one hops only (design D2)? Three rules (D3): under the
+    target → prefix-strip; with ``host_name`` given, also a sibling path the
+    root's own graph reaches directly, or any host path reached by prepending a
+    provably to-one hop back to the host."""
+    tp, hp = tuple(target_path), tuple(host_path)
+    if hp[: len(tp)] == tp:
+        return safe_reachable(
+            root=root_model, path=hp[len(tp):], models_by_name=models_by_name,
+        )
+    if host_name is None or (tp and host_name == tp[0]):
+        return False
+    if hp and safe_reachable(root=root_model, path=hp, models_by_name=models_by_name):
+        return True
+    return safe_reachable(
+        root=root_model, path=(host_name, *hp), models_by_name=models_by_name,
+    )
+
+
+def _reroot_leaf_via_host(
+    r: ValueKey, *, target_path: Tuple[str, ...], root_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel], host_name: str,
+) -> Optional[ValueKey]:
+    """The via-host re-anchoring of one leaf, or ``None`` when
+    ``reroot_value_key``'s prefix rules (or the root's own sibling join)
+    already place it."""
+    if not isinstance(r, (ColumnKey, ColumnSqlKey, StarKey, TimeTruncKey)):
+        return None
+    hp = _key_host_path(r)
+    if hp[: len(target_path)] == target_path:
+        return None  # reroot_value_key strips the prefix below
+    if target_path and host_name == target_path[0]:
+        return None
+    via_host = (host_name, *hp)
+    if not safe_reachable(
+        root=root_model, path=via_host, models_by_name=models_by_name,
+    ) and hp and safe_reachable(
+        root=root_model, path=hp, models_by_name=models_by_name,
+    ):
+        return None  # resolved through the root's own join to the sibling
+    if isinstance(r, TimeTruncKey):
+        return r.model_copy(update={
+            "column": r.column.model_copy(update={"path": via_host}),
+        })
+    return r.model_copy(update={"path": via_host})
+
+
+def _reroot_from_root(
+    key: ValueKey, *, target_path: Tuple[str, ...], root_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel], host_name: str,
+) -> ValueKey:
+    """Re-anchor a host-coordinate key into the root's coordinates, per leaf,
+    by the same rules ``_attributable_from_root`` proves safety with:
+    target-prefix → strip; else prepend the hop back to the host (the exact
+    reproduction of the host's join instance) when that path is provable;
+    else a direct-reachable sibling stays unchanged (the root's own join —
+    legacy star-schema parity, safe-arity but instance-approximate)."""
+    tp = tuple(target_path)
+    mapping: Dict[ValueKey, ValueKey] = {}
+    for r in walk_value_keys(key):
+        # walk_value_keys does NOT descend into TimeTruncKey.column, so the
+        # bucket key is rerooted here as a whole.
+        rerooted = _reroot_leaf_via_host(
+            r, target_path=tp, root_model=root_model,
+            models_by_name=models_by_name, host_name=host_name,
+        )
+        if rerooted is not None:
+            mapping[r] = rerooted
+    if mapping:
+        key = substitute_value_keys(key, mapping)
+    return reroot_value_key(key, target_path=tp)
+
+
+def _broadcast_reason(
+    *, host_path: Tuple[str, ...], target_path: Tuple[str, ...],
+    root_model: SlayerModel, models_by_name: Dict[str, SlayerModel],
+) -> str:
+    """Why a dimension broadcasts: unreachable from the root (no stored edge at
+    all), or crosses an unproven/fanning join hop."""
+    tp, hp = tuple(target_path), tuple(host_path)
+    if hp[: len(tp)] != tp:
+        return "unreachable from the aggregate's root (no join path from it)"
+    current = root_model
+    for name in hp[len(tp):]:
+        join = next((j for j in current.joins if j.target_model == name), None)
+        if join is None:
+            return "unreachable from the aggregate's root (no join path from it)"
+        tgt = models_by_name.get(name)
+        if tgt is None or not provably_to_one(join=join, target_model=tgt):
+            return f"crosses an unproven join hop to {name}"
+        current = tgt
+    return "unreachable from the aggregate's root"
+
+
+def _assert_partition_key_attributable(
+    *, key: ValueKey, pk: ValueKey, label: str,
+    scope: Union[ModelScope, StageSchema], bundle: ResolvedSourceBundle,
+) -> None:
+    """A partition key reached over a join must be attributable from the
+    aggregate's root; an unproven/fanning hop is a hard error (design D2, F4)."""
+    hp = _key_host_path(pk)
+    if not hp:
+        return  # a local column — no join to cross
+    host_m = scope.source_model if isinstance(scope, ModelScope) else None
+    if host_m is None:
+        return
+    agg_target = tuple(key.source.path) if isinstance(key, AggregateKey) else ()
+    models_by_name = {m.name: m for m in bundle.referenced_models}
+    root = walk_key_path(model=host_m, path=agg_target, bundle=bundle) or host_m
+    if _attributable_from_root(
+        host_path=hp, target_path=agg_target, root_model=root,
+        models_by_name=models_by_name,
+        host_name=host_m.name if agg_target else None,
+    ):
+        return
+    reason = _broadcast_reason(
+        host_path=hp, target_path=agg_target, root_model=root,
+        models_by_name=models_by_name,
+    )
+    raise ValueError(
+        f"{label}: partition_by column '{_partition_key_display(pk)}' {reason}; "
+        f"every partition key must be attributable from the aggregate's root — "
+        f"declare join cardinality or a covering unique key on the target."
+    )
+
+
+def _shared_join_key_reroot(
+    *, key: ValueKey, target_path: Tuple[str, ...], host_model: SlayerModel,
+) -> Optional[ValueKey]:
+    """A host-local dimension that IS a source-side join column of the single hop
+    to the aggregate's root equals the root's target-side column per row (the
+    hop is provably many-to-one when this producer is target-rooted). Return that
+    target-side ``ColumnKey`` (local to the root), else ``None`` — the shared-key
+    attribution the prefix rule alone cannot see (a query-backed grain join)."""
+    if not isinstance(key, ColumnKey) or _key_host_path(key) or len(target_path) != 1:
+        return None
+    root_join = next(
+        (j for j in host_model.joins if j.target_model == target_path[0]), None,
+    )
+    if root_join is None:
+        return None
+    for src, tgt in root_join.join_pairs:
+        if src == key.leaf:
+            return key.model_copy(update={"leaf": tgt, "path": ()})
+    return None
+
+
+def _grain_member_attributable(
+    *, key: ValueKey, target_path: Tuple[str, ...], root_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel], host_name: Optional[str] = None,
+) -> bool:
+    """Is a grain member attributable from the aggregate's root? A plain column
+    follows its own path (D3 rules, incl. the safe hop back to the host); a
+    computed dimension is attributable iff every column and aggregate it
+    references is (D4 — its producer can nest inside; aggregates stay
+    prefix-only, their producers re-root separately)."""
+    saw = False
+    for r in walk_value_keys(key):
+        if isinstance(r, AggregateKey):
+            saw = True
+            if not _attributable_from_root(
+                host_path=tuple(r.source.path), target_path=target_path,
+                root_model=root_model, models_by_name=models_by_name,
+            ):
+                return False
+        elif isinstance(r, (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey)):
+            saw = True
+            if not _attributable_from_root(
+                host_path=_key_host_path(r), target_path=target_path,
+                root_model=root_model, models_by_name=models_by_name,
+                host_name=host_name,
+            ):
+                return False
+    return saw
+
+
+def _cross_model_input_paths(
+    *, agg_rooted: AggregateKey, root_model: SlayerModel, root_name: str,
+    bundle: ResolvedSourceBundle,
+) -> List[Tuple[str, ...]]:
+    """The join paths an aggregate's inputs (source ``Column.sql``, kwargs, and
+    its ``Column.filter``) cross, in the ROOT's coordinates."""
+    out: List[Tuple[str, ...]] = []
+    if agg_rooted.column_filter_key is not None:
+        for p in agg_rooted.column_filter_key.referenced_join_paths:
+            if tuple(p) not in out:
+                out.append(tuple(p))
+    for p in compute_aggregate_input_join_paths(
+        key=agg_rooted, anchor_model=root_model, anchor_relation=root_name,
+        bundle=bundle,
+    ):
+        if tuple(p) not in out:
+            out.append(tuple(p))
+    return out
+
+
+def _assert_cross_model_inputs_safe(
+    *, agg: AggregateKey, agg_rooted: AggregateKey, root_model: SlayerModel,
+    root_name: str, target_path: Tuple[str, ...], bundle: ResolvedSourceBundle,
+    models_by_name: Dict[str, SlayerModel],
+) -> None:
+    """Every input of a cross-model aggregate must be attributable from its root
+    (design D2, F4). Reading through a fanning/unproven join is ambiguous:
+    hard error naming the input and the remedy, in both modes."""
+    remedy = "declare join cardinality or a covering unique key on the target"
+    # Source-column / kwarg / column-filter refs, in the root's coordinates.
+    for path in _cross_model_input_paths(
+        agg_rooted=agg_rooted, root_model=root_model, root_name=root_name, bundle=bundle,
+    ):
+        if not safe_reachable(
+            root=root_model, path=path, models_by_name=models_by_name,
+        ):
+            hop = path[-1] if path else root_name
+            raise ValueError(
+                f"Cross-model aggregate {canonical_aggregate_alias(agg, profile='stage_formula')!r} "
+                f"reads an input across an unproven join hop to {hop} from "
+                f"{root_name}; {remedy}."
+            )
+    # Positional args in HOST coordinates (a ranking first/last time key): each
+    # column-like arg must be attributable from the root.
+    for arg in agg.args:
+        if not isinstance(arg, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+            continue
+        hp = _key_host_path(arg)
+        if not _attributable_from_root(
+            host_path=hp, target_path=target_path, root_model=root_model,
+            models_by_name=models_by_name,
+        ):
+            leaf = getattr(arg, "leaf", None) or getattr(
+                getattr(arg, "column", None), "leaf", None,
+            ) or "input"
+            raise ValueError(
+                f"Cross-model aggregate {canonical_aggregate_alias(agg, profile='stage_formula')!r} "
+                f"ranks/reads by {leaf}, which is not attributable from "
+                f"{root_name} (crosses a fanning join); {remedy}."
+            )
+
+
+def _cross_model_inherited_filters(
+    *, base_filters: List[Tuple[BoundFilter, Optional[str]]],
+    target_path: Tuple[str, ...], root_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel], host_name: Optional[str] = None,
+) -> Tuple[List[BoundFilter], List[UnreachableFilterDroppedWarning]]:
+    """Split base ROW filters into conjuncts; a conjunct all of whose references
+    are attributable from the root inherits into the producer (re-rooted); one
+    that is unreachable/unsafe is excluded and warned (design D3)."""
+    inherited: List[BoundFilter] = []
+    dropped: List[UnreachableFilterDroppedWarning] = []
+    for bf, text in base_filters:
+        if bf.phase != Phase.ROW:
+            continue
+        for cj in split_top_level_and(bf.value_key):
+            inherited_bf, dropped_w = _conjunct_disposition(
+                cj, text=text, target_path=target_path, root_model=root_model,
+                models_by_name=models_by_name, host_name=host_name,
+            )
+            if inherited_bf is not None:
+                inherited.append(inherited_bf)
+            else:
+                dropped.append(dropped_w)
+    return inherited, dropped
+
+
+def _conjunct_disposition(
+    cj: ValueKey, *, text: Optional[str], target_path: Tuple[str, ...],
+    root_model: SlayerModel, models_by_name: Dict[str, SlayerModel],
+    host_name: Optional[str],
+) -> Tuple[Optional[BoundFilter], Optional[UnreachableFilterDroppedWarning]]:
+    """(inherited, dropped) for ONE ROW conjunct — exactly one side is set."""
+    refs = [
+        k for k in walk_value_keys(cj)
+        if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey))
+    ]
+    unsafe = next((r for r in refs if not _attributable_from_root(
+        host_path=_key_host_path(r), target_path=target_path,
+        root_model=root_model, models_by_name=models_by_name,
+        host_name=host_name,
+    )), None)
+    if unsafe is None:
+        rerooted = (
+            _reroot_from_root(
+                cj, target_path=target_path, root_model=root_model,
+                models_by_name=models_by_name, host_name=host_name,
+            )
+            if host_name is not None
+            else reroot_value_key(cj, target_path=target_path)
+        )
+        return _bound_filter_from_key(rerooted), None
+    reason = _broadcast_reason(
+        host_path=_key_host_path(unsafe), target_path=target_path,
+        root_model=root_model, models_by_name=models_by_name,
+    )
+    return None, UnreachableFilterDroppedWarning(
+        filter_text=text or _canonical_name(cj), reason=reason,
+    )
+
+
+class _ProducerSynthesisContext(BaseModel):
+    """The per-plan inputs every cross-model producer synthesis shares."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    prebound: PreboundQuery
+    bundle: ResolvedSourceBundle
+    host_model: SlayerModel
+    models_by_name: Dict[str, SlayerModel]
+    projected_dim_keys: List[ValueKey]
+    projected_td_keys: List[ValueKey]
+    base_filters_with_text: List[Tuple[BoundFilter, Optional[str]]]
+    scope: Union[ModelScope, StageSchema]
+    # A Protocol — Pydantic must not build an isinstance validator for it.
+    cross_model_planner: SkipValidation[CrossModelPlanner]
+    stage_schemas: Dict[str, StageSchema]
+
+
+def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-rooted producer synthesis (root / safe-grain / broadcast / inputs / filter-inheritance / recursive plan / attach); the arms share the re-rooting coordinate state.
+    *,
+    agg: AggregateKey,
+    placeholder: ValueKey,
+    attach_phase: str,
+    public_alias: Optional[str],
+    context: _ProducerSynthesisContext,
+    declared_type: Optional[DataType] = None,
+) -> RegroupAttachPlan:
+    """Build one target-rooted regroup producer for a cross-model aggregate
+    (design D2/D3): root R at the aggregate's source model, compute at the
+    fan-out-safe subset of the requested grain, broadcast across the rest, with
+    inherited filters, and a null-safe grain attach back onto the consumer."""
+    prebound, bundle = context.prebound, context.bundle
+    host_model, models_by_name = context.host_model, context.models_by_name
+    projected_dim_keys = context.projected_dim_keys
+    projected_td_keys = context.projected_td_keys
+    base_filters_with_text = context.base_filters_with_text
+    scope, stage_schemas = context.scope, context.stage_schemas
+    cross_model_planner = context.cross_model_planner
+    target_path = tuple(agg.source.path)
+    root_model = walk_key_path(model=host_model, path=target_path, bundle=bundle)
+    if root_model is None:  # pragma: no cover — bind resolved the path already
+        raise ValueError(
+            f"Cross-model aggregate source path {target_path!r} does not resolve "
+            f"to a model from {host_model.name}."
+        )
+    root_name = root_model.name
+    alias = public_alias or canonical_aggregate_alias(agg, profile="stage_formula")
+
+    # Requested grain G: explicit partition_by else the query dimensions.
+    if agg.partition_keys is not None:
+        requested = list(agg.partition_keys)
+        explicit = True
+    else:
+        requested = [*projected_dim_keys, *projected_td_keys]
+        explicit = False
+
+    # Safe grain S (attributable from R) vs broadcast; an explicit key that is
+    # unattributable is a hard error (design D2, F4).
+    safe_pairs: List[Tuple[ValueKey, ValueKey]] = []  # (host_key, rerooted_key)
+    broadcast: List[Tuple[str, str]] = []
+    for g in requested:
+        hp = _key_host_path(g)
+        shared = _shared_join_key_reroot(
+            key=g, target_path=target_path, host_model=host_model,
+        )
+        if shared is not None:
+            # The join-key identity needs no join in the producer at all.
+            safe_pairs.append((g, shared))
+        elif _grain_member_attributable(
+            key=g, target_path=target_path, root_model=root_model,
+            models_by_name=models_by_name, host_name=host_model.name,
+        ):
+            safe_pairs.append((g, _reroot_from_root(
+                g, target_path=target_path, root_model=root_model,
+                models_by_name=models_by_name, host_name=host_model.name,
+            )))
+        elif explicit:
+            reason = _broadcast_reason(
+                host_path=hp, target_path=target_path, root_model=root_model,
+                models_by_name=models_by_name,
+            )
+            raise ValueError(
+                f"Cross-model aggregate {alias!r} declares partition_by="
+                f"{_regroup_grain_name(g)}, which {reason}; every explicit "
+                f"partition key must be attributable from {root_name} — declare "
+                f"join cardinality or a covering unique key on the target."
+            )
+        else:
+            broadcast.append((_regroup_grain_name(g), _broadcast_reason(
+                host_path=hp, target_path=target_path, root_model=root_model,
+                models_by_name=models_by_name,
+            )))
+
+    agg_rooted = reroot_value_key(agg, target_path=target_path)
+    _assert_cross_model_inputs_safe(
+        agg=agg, agg_rooted=agg_rooted, root_model=root_model, root_name=root_name,
+        target_path=target_path, bundle=bundle, models_by_name=models_by_name,
+    )
+
+    # A windowed cross-model aggregate synthesizes the query's active time
+    # dimension into its producer grain as the window bucket; the TD must be
+    # attributable from the root (design D5).
+    window_td_key: Optional[ValueKey] = None
+    if _window_kwarg_of(agg) is not None:
+        active_td = prebound.main_time_key
+        if active_td is None:
+            raise ValueError(
+                f"Windowed cross-model aggregate {alias!r} has no active time "
+                f"dimension; add a single time_dimensions entry."
+            )
+        if not _attributable_from_root(
+            host_path=_key_host_path(active_td), target_path=target_path,
+            root_model=root_model, models_by_name=models_by_name,
+            host_name=host_model.name,
+        ):
+            raise ValueError(
+                f"Windowed cross-model aggregate {alias!r} needs the query's "
+                f"active time dimension ('{_regroup_grain_name(active_td)}') "
+                f"attributable from {root_name}, but it crosses a fanning join; "
+                f"declare join cardinality or a covering unique key on the target."
+            )
+        window_td_key = _reroot_from_root(
+            active_td, target_path=target_path, root_model=root_model,
+            models_by_name=models_by_name, host_name=host_model.name,
+        )
+
+    inherited, dropped = _cross_model_inherited_filters(
+        base_filters=base_filters_with_text, target_path=target_path,
+        root_model=root_model, models_by_name=models_by_name,
+        host_name=host_model.name,
+    )
+
+    root_bundle = bundle.model_copy(update={"source_model": root_model})
+    root_scope = (
+        ModelScope(source_model=root_model)
+        if isinstance(scope, ModelScope) else scope
+    )
+    host_by_rerooted = {rr: hk for hk, rr in safe_pairs}
+    if window_td_key is not None:
+        # The bucket joins back on the consumer's own active TD.
+        host_by_rerooted.setdefault(window_td_key, prebound.main_time_key)
+    grain_keys = frozenset(rr for _, rr in safe_pairs)
+    # The producer measure keeps the CANONICAL aggregate alias, not the
+    # consumer's public name — a target-rooted producer roots at the aggregate's
+    # model, whose own columns could shadow the public name (e.g. a ``pop``
+    # measure over ``regions.pop``). The public name lands on the CONSUMER's
+    # projection via the placeholder substitution.
+    producer_prebound, ordered_pks = _regroup_producer_prebound(
+        pks=grain_keys, aggs=[agg_rooted], model=root_model, bundle=root_bundle,
+        inherited=inherited, n_date_range=0, window_td_key=window_td_key,
+        explicit_types=(
+            {agg_rooted: declared_type} if declared_type is not None else None
+        ),
+    )
+    # A computed-dimension grain member (D4) nests its own producer inside this
+    # one; a windowed producer runs its own windowed-CTE discovery — either way
+    # re-enable regroup discovery for the producer's strict-subset inner
+    # aggregates.
+    enable_nested = window_td_key is not None or any(
+        isinstance(rr, (ScalarCallKey, ArithmeticKey, TransformKey))
+        or _is_local_partitioned_agg(rr)
+        for rr in grain_keys
+    )
+    producer_plan = plan_query(
+        query=StrictQueryCarrier(source_model=root_name, prebound=producer_prebound),
+        bundle=root_bundle, scope=root_scope,
+        cross_model_planner=cross_model_planner, stage_schemas=stage_schemas,
+        disable_host_rooted_isolation=True,
+        enable_producer_regroups=enable_nested,
+        prebound=producer_prebound,
+    )
+    producer_answer_ids = list(producer_plan.projection)[len(ordered_pks):]
+    answer_slot = _regroup_answer_slot_id(
+        value_slots=[
+            *producer_plan.aggregate_slots,
+            *producer_plan.combined_expression_slots,
+        ],
+        key=agg_rooted,
+        fallback=producer_answer_ids[0] if producer_answer_ids else None,
+    )
+    producer_grain_ids = list(producer_plan.projection)[: len(ordered_pks)]
+    join_pairs: List[Tuple[ValueKey, SlotId]] = []
+    for i, rr in enumerate(ordered_pks):
+        slot_id = next(
+            (s.id for s in producer_plan.row_slots if s.key == rr), None,
+        )
+        if slot_id is None:
+            slot_id = producer_grain_ids[i]
+        join_pairs.append((host_by_rerooted[rr], slot_id))
+    _assert_attach_covers_producer_grain(
+        joined_slot_ids={slot_id for _, slot_id in join_pairs},
+        producer_grain_slot_ids=_producer_grain_slot_ids(producer_plan),
+    )
+    return RegroupAttachPlan(
+        producer_plan=producer_plan,
+        alias_hint=canonical_aggregate_alias(agg, profile="stage_formula"),
+        attach_phase=attach_phase,
+        join_pairs=join_pairs,
+        substitutions=[RegroupSubstitution(
+            placeholder=placeholder, producer_slot_id=answer_slot,
+            original_key=agg,
+        )],
+        partition_display=[_regroup_grain_name(rr) for rr in ordered_pks],
+        producer_root_model=root_name,
+        dropped_filter_warnings=dropped,
+        broadcast_measure=alias if broadcast else None,
+        broadcast_dimensions=broadcast,
+    )
+
+
+def _discover_cross_model_combined(
+    prebound: PreboundQuery,
+) -> Tuple[List[AggregateKey], Dict[AggregateKey, str], Dict[AggregateKey, DataType]]:
+    """Distinct cross-model aggregates reachable from a non-dimension measure,
+    an order spec, or a query filter (the combined-attach roles). First-seen
+    order; a directly-named measure maps to its public alias for naming, and its
+    EXPLICIT (user-declared) type so the producer casts to it rather than the
+    source column's; an inferred type never forces a producer cast (#347)."""
+    seen: set = set()
+    out: List[AggregateKey] = []
+    alias: Dict[AggregateKey, str] = {}
+    declared_type: Dict[AggregateKey, DataType] = {}
+    for dm in prebound.declared_measures:
+        if dm.is_dimension:
+            continue
+        vk = dm.bound.value_key
+        _accumulate_cross_model_leaves(vk, seen=seen, out=out)
+        if _is_cross_model_agg(vk):
+            if dm.public_name is not None:
+                alias.setdefault(vk, dm.public_name)
+            if dm.type_is_explicit and dm.type is not None:
+                declared_type.setdefault(vk, dm.type)
+    for sp in prebound.order_specs:
+        _accumulate_cross_model_leaves(sp.bound.value_key, seen=seen, out=out)
+    for bf in prebound.bound_filters:
+        _accumulate_cross_model_leaves(bf.value_key, seen=seen, out=out)
+    return out, alias, declared_type
+
+
+def _accumulate_cross_model_leaves(
+    vk: ValueKey, *, seen: set, out: List[AggregateKey],
+) -> None:
+    for k in walk_value_keys(vk):
+        if _is_cross_model_agg(k) and k not in seen:
+            seen.add(k)
+            out.append(k)
+
+
+def _assert_total_routing(prebound: PreboundQuery) -> None:
+    """D7 — post-discovery total-routing invariant. After the top-level regroup
+    rewrite, every cross-model or partitioned aggregate leaf must have been
+    disposed (producer substitution or an earlier explicit rejection); a
+    survivor is an unrouted shape and raises here — never a silent drop."""
+    roles: Tuple[Tuple[str, List[ValueKey]], ...] = (
+        ("measure", [dm.bound.value_key for dm in prebound.declared_measures]),
+        ("filter", [bf.value_key for bf in prebound.bound_filters]),
+        ("order", [sp.bound.value_key for sp in prebound.order_specs]),
+    )
+    for role, keys in roles:
+        for vk in keys:
+            for k in walk_value_keys(vk):
+                if _is_cross_model_agg(k) or (
+                    isinstance(k, AggregateKey) and k.partition_keys is not None
+                ):
+                    raise ValueError(
+                        f"Aggregate {_canonical_name(k)!r} in a {role} received "
+                        f"no routing disposition (inline, producer substitution, "
+                        f"or explicit rejection) — the planner cannot compile "
+                        f"this shape."
+                    )
+
+
 def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (computed-dim) + combined (measure/order) partitioned aggregates, synthesize one producer per (partition set, phase), and rewrite the prebound to placeholders. The two phases share the registry / inherited-filter / substitution state; splitting scatters it.
     *,
     prebound: PreboundQuery,
@@ -1810,7 +2423,18 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
             if _root_grain(k) != own_grain or k in windowed_transform_inputs
         ]
         row_aggs = [k for k in row_aggs if regroup_root_grain(k) != own_grain]
-    if not row_aggs and not combined_aggs:
+    # DEV-1836 — cross-model aggregates (source names another model) become
+    # target-rooted producers; discovered here so they share the registry /
+    # substitution with the local desugar and never fall to the retired
+    # classify_isolation dispatch. A cross-model root inside a computed dimension
+    # is a ROW-phase target-rooted producer; it is pulled off the local ``row_aggs``
+    # (which would wrongly root it at the host) and synthesized separately.
+    cm_row = [k for k in row_aggs if _is_cross_model_agg(k)]
+    row_aggs = [k for k in row_aggs if not _is_cross_model_agg(k)]
+    cm_combined, cm_alias, cm_type = _discover_cross_model_combined(prebound)
+    for agg, name in cm_alias.items():
+        public_alias_by_agg.setdefault(agg, name)
+    if not row_aggs and not combined_aggs and not cm_combined and not cm_row:
         return None
     # DEV-1824 (task 3.2) — a row attach (computed dimension) and a combined
     # attach (partitioned measure) coexist: the row producer joins into ``_base``
@@ -1831,23 +2455,14 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
             f"Column(s) {reserved!r} use the reserved '__regroup__' prefix, which "
             f"collides with the regroup primitive's placeholders. Rename them."
         )
-    # Codex F1 — a joined aggregate SOURCE inside a computed dimension would need
-    # a target-rooted producer (its own nested WITH); stage 3 unifies the
-    # cross-model producers. Combined-phase cross-model sources never reach here
-    # — they stay on the DEV-1739 cross-model narrow path (D2).
-    for agg in row_inner_aggs:
-        if getattr(agg.source, "path", ()):
-            raise NotImplementedError(
-                "A cross-model aggregate source inside a computed dimension "
-                "(e.g. 'customers.spend:sum(partition_by=...)') is not yet "
-                "supported (DEV-1836); the partitioned aggregate must be local "
-                "to the query's source."
-            )
     registry = RegroupPlaceholderRegistry()
     mapping: Dict[ValueKey, ValueKey] = {
-        agg: registry.placeholder_for(agg) for agg in (*row_aggs, *combined_aggs)
+        agg: registry.placeholder_for(agg)
+        for agg in (*row_aggs, *combined_aggs, *cm_row, *cm_combined)
     }
-    dim_agg_set = frozenset(row_inner_aggs)
+    # DEV-1836 — a cross-model computed-dimension aggregate is a ROW attach, so
+    # its ROW conjuncts classify like the local ones (``classify_regroup_filter``).
+    dim_agg_set = frozenset([*row_inner_aggs, *cm_row])
 
     inherited, n_inherited_date = _regroup_inherited_filters(prebound, dim_agg_set)
 
@@ -1960,15 +2575,9 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
             # WITH (a ranked first/last, a windowed producer at the synthesized
             # active-TD grain (D5), or a transform-at-producer-grain (D4)) renders
             # its WITH, which the generator hoists into the one flat WITH with
-            # allocator-uniquified base names. A cross-model producer is stage 3
-            # and fails closed. DEV-1839 D4 — a union-grain producer MAY carry
-            # nested COMBINED attaches (its strict-subset inner aggregates); those
-            # are admitted after structural validation, anything else fails closed.
-            if producer_plan.cross_model_aggregate_plans:
-                raise NotImplementedError(
-                    "A partitioned aggregate whose producer itself needs a "
-                    "cross-model CTE is not yet supported (DEV-1836)."
-                )
+            # allocator-uniquified base names. DEV-1839 D4 — a union-grain producer
+            # MAY carry nested COMBINED attaches (its strict-subset inner
+            # aggregates); those are admitted after structural validation.
             _validate_nested_producer_plan(
                 producer_plan=producer_plan, producer_grain=pks,
             )
@@ -2030,6 +2639,35 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
                 partition_display=[_regroup_grain_name(pk) for pk in ordered_pks],
             ))
 
+    # DEV-1836 — one target-rooted producer per distinct cross-model aggregate,
+    # attached at the combined SELECT (the DEV-1739 position). Roles (measure /
+    # order / filter) share one producer + placeholder, so a broadcast or dropped
+    # filter warns once.
+    host_model_for_cm = (
+        scope.source_model if isinstance(scope, ModelScope) else bundle.source_model
+    )
+    models_by_name_cm = {m.name: m for m in bundle.referenced_models}
+    base_filters_with_text = list(zip(
+        prebound.bound_filters,
+        prebound.bound_filter_texts
+        + [None] * (len(prebound.bound_filters) - len(prebound.bound_filter_texts)),
+    ))
+    synthesis_context = _ProducerSynthesisContext(
+        prebound=prebound, bundle=bundle, host_model=host_model_for_cm,
+        models_by_name=models_by_name_cm,
+        projected_dim_keys=projected_dim_keys,
+        projected_td_keys=projected_td_keys,
+        base_filters_with_text=base_filters_with_text, scope=scope,
+        cross_model_planner=cross_model_planner, stage_schemas=stage_schemas,
+    )
+    for phase, cm_aggs in (("combined", cm_combined), ("row", cm_row)):
+        for agg in cm_aggs:
+            attaches.append(_synthesize_cross_model_producer(
+                agg=agg, placeholder=mapping[agg], attach_phase=phase,
+                public_alias=public_alias_by_agg.get(agg),
+                context=synthesis_context, declared_type=cm_type.get(agg),
+            ))
+
     # DEV-1839 — the ROW substitution (a transform root / bare aggregate → its
     # row placeholder, at the union grain) applies ONLY to computed DIMENSIONS.
     # A NON-dimension measure structurally equal to a row root (the dual-role
@@ -2037,7 +2675,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
     # its query-grain evaluation — its INNER aggregates desugar to COMBINED
     # placeholders instead, so it is never rewritten to the union-grain producer.
     combined_mapping: Dict[ValueKey, ValueKey] = {
-        agg: mapping[agg] for agg in combined_aggs
+        agg: mapping[agg] for agg in (*combined_aggs, *cm_combined)
     }
     rewritten = PreboundQuery(
         declared_measures=[
@@ -2225,6 +2863,11 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         n_dims = prebound.n_dims
         n_tds = prebound.n_time_dimensions
         distinct_dimension_values = prebound.distinct_dimension_values
+    # D7 — at the top consumer level every cross-model / partitioned leaf must
+    # now be a placeholder; sub-plans (producers, host-rooted recursion) render
+    # theirs inline by design and are exempt.
+    if not disable_host_rooted_isolation and not enable_producer_regroups:
+        _assert_total_routing(prebound)
 
     # SlayerModel.filters — Mode-A SQL, always-applied WHERE. Scope-derived
     # (see ``bind_query_inputs``), so a pre-bound sub-plan picks up its OWN

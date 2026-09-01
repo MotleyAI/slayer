@@ -1133,6 +1133,13 @@ class SlayerQuery(BaseModel):
     # ``time_dimensions`` empty is also rejected (nothing to project).
     distinct_dimension_values: bool = True
 
+    # DEV-1836: turn every silent-semantics event into a hard error — an
+    # implicit-grain broadcast of a metric over an unattributable dimension, or
+    # a producer filter dropped as unreachable. Explicit ``partition_by=``
+    # broadcasting is by design and never errors. Default ``False`` (lenient:
+    # broadcast + warn).
+    strict: bool = False
+
     @model_validator(mode="after")
     def _validate_dsl_user_input(self) -> "SlayerQuery":
         """DEV-1369: enforce DSL-mode rules on every user-input string field.

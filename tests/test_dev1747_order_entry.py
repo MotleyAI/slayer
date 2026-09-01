@@ -402,14 +402,25 @@ class TestLaw3TriggerMatrix:
         self, query: SlayerQuery, expect_host_rooted: bool,
     ) -> None:
         plan = _plan(query)
-        assert plan.cross_model_aggregate_plans, (
-            "the Law-3 trigger did not fire for this branch"
-        )
-        cma = plan.cross_model_aggregate_plans[0]
-        assert (cma.cte_root_model is not None) is expect_host_rooted, (
-            f"cte_root_model={cma.cte_root_model!r} — expected "
-            f"{'host' if expect_host_rooted else 'target'}-rooted"
-        )
+        if expect_host_rooted:
+            # Host-grain path key → a HOST-rooted cross-model CTE (still the
+            # legacy dispatch; DEV-1836 did not migrate these).
+            assert plan.cross_model_aggregate_plans, (
+                "the Law-3 trigger did not fire for this branch"
+            )
+            cma = plan.cross_model_aggregate_plans[0]
+            assert cma.cte_root_model is not None, (
+                f"cte_root_model={cma.cte_root_model!r} — expected host-rooted"
+            )
+        else:
+            # DEV-1836: a target-grain cross-model aggregate now routes to a
+            # TARGET-rooted regroup producer, not a top-level cross-model plan.
+            assert plan.cross_model_aggregate_plans == []
+            attach = next(
+                a for a in plan.regroup_attach_plans
+                if a.producer_root_model == "customers"
+            )
+            assert attach.producer_root_model == "customers"
 
     def test_isolation_disabled_renders_inline_instead_of_recursing(self) -> None:
         """The recursion guard. The host-rooted sub-plan contains the SAME

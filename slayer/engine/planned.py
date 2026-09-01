@@ -24,7 +24,7 @@ yet. Stage 7b's engine cutover routes through them.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -637,6 +637,18 @@ class RegroupAttachPlan(BaseModel):
     join_pairs: List[Tuple[ValueKey, SlotId]] = Field(default_factory=list)
     substitutions: List[RegroupSubstitution] = Field(default_factory=list)
     partition_display: List[str] = Field(default_factory=list)
+    # DEV-1836 — a target-rooted (cross-model) producer roots its FROM at the
+    # aggregate's source model, not the consumer's root. ``None`` = a local
+    # producer rooted at the consumer (today's DEV-1825/1829 behavior).
+    producer_root_model: Optional[str] = None
+    # DEV-1836 D6 — silent-semantics events carried on the IR so the collector
+    # walks them recursively (nested producers included). ``dropped_filter_warnings``
+    # are ROW conjuncts excluded from THIS producer (unreachable/unsafe from its
+    # root); ``broadcast_measure`` + ``broadcast_dimensions`` name a metric whose
+    # implicit grain lost dimensions to broadcasting, each with a reason.
+    dropped_filter_warnings: List[Any] = Field(default_factory=list)
+    broadcast_measure: Optional[str] = None
+    broadcast_dimensions: List[Tuple[str, str]] = Field(default_factory=list)
 
 
 class PlannedQuery(BaseModel):
