@@ -56,7 +56,10 @@ from slayer.core.errors import (
 )
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.keys import ColumnKey, Phase
+from slayer.engine.planned import OrderEntry, OrderScope, PlannedQuery, ValueSlot
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.sql.generator import SQLGenerator
 from slayer.sql.scope_check import assert_scope_closed
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -788,8 +791,9 @@ class TestWindowedOrderOnly:
             order=[OrderItem(column="amount:sum(window='90d')", direction="desc")],
         )
         sql = await _sql(engine, query)
-        assert "_wm_" in sql, (
-            f"an order-only windowed measure needs its own _wm_ range-join CTE "
+        # DEV-1835: windowed producers render under uniform ``_cm_`` naming.
+        assert "_cm_" in sql, (
+            f"an order-only windowed measure needs its own _cm_ range-join CTE "
             f"— a plain SUM silently drops the window.\nSQL:\n{sql}"
         )
         assert "_w_time" in sql, sql
@@ -812,7 +816,8 @@ class TestWindowedOrderOnly:
         sql = await _sql(engine, query)
         terms = _outer_order_by_sql(sql)
         assert len(terms) == 1, terms
-        assert terms[0].startswith("_wm_"), (
+        # DEV-1835: windowed producers render under uniform ``_cm_`` naming.
+        assert terms[0].startswith("_cm_"), (
             f"hidden windowed order term must be CTE-qualified: {terms}\n{sql}"
         )
 
@@ -824,7 +829,8 @@ class TestWindowedOrderOnly:
             order=[OrderItem(column="amount:sum(window='90d') / id:count", direction="desc")],
         )
         sql = await _sql(engine, query)
-        assert "_wm_" in sql, sql
+        # DEV-1835: windowed producers render under uniform ``_cm_`` naming.
+        assert "_cm_" in sql, sql
         assert _outer_select_columns(sql) == ["orders.created_at", "orders.id_count"], (
             f"nothing from the order-only composite may leak into the "
             f"projection.\n{sql}"
@@ -832,12 +838,12 @@ class TestWindowedOrderOnly:
         terms = _outer_order_by_sql(sql)
         assert len(terms) == 1, f"{terms}\n{sql}"
         # The load-bearing assertion: the windowed operand must resolve to the
-        # ``_wm_`` CTE column. Asserting only that a `_wm_` CTE EXISTS is not
+        # ``_cm_`` CTE column. Asserting only that a `_cm_` CTE EXISTS is not
         # enough — the composite can be rendered in ``_base`` from a PLAIN
-        # aggregate while the `_wm_` CTE sits joined but unused, which is the
+        # aggregate while the `_cm_` CTE sits joined but unused, which is the
         # B1 silent-wrong-answer reaching through the composite door.
-        assert "_wm_" in terms[0], (
-            f"the composite must read the ROLLING value from its _wm_ CTE, "
+        assert "_cm_" in terms[0], (
+            f"the composite must read the ROLLING value from its _cm_ CTE, "
             f"not a plain aggregate.\nORDER BY: {terms[0]}\nSQL:\n{sql}"
         )
         # ... and no plain aggregate may be materialised for it in ``_base``.
@@ -861,7 +867,7 @@ class TestWindowedOrderOnly:
         )
         sql = await _sql(engine, query)
         assert _outer_select_columns(sql) == ["orders.created_at", "orders.w90"], sql
-        assert len(re.findall(r"_wm_\w+ AS \(", sql)) == 2, sql
+        assert len(re.findall(r"_cm_\w+ AS \(", sql)) == 2, sql
 
     async def test_declared_windowed_also_used_as_order_target_stays_public(
         self, engine,
@@ -877,7 +883,7 @@ class TestWindowedOrderOnly:
         )
         sql = await _sql(engine, query)
         assert _outer_select_columns(sql) == ["orders.created_at", "orders.w90"], sql
-        assert len(re.findall(r"_wm_\w+ AS \(", sql)) == 1, sql
+        assert len(re.findall(r"_cm_\w+ AS \(", sql)) == 1, sql
         assert _outer_order_by_names(sql) == ["orders.w90"], sql
 
     async def test_c13_two_aliases_for_one_windowed_key_plus_order(self, engine) -> None:
@@ -894,7 +900,7 @@ class TestWindowedOrderOnly:
         )
         sql = await _sql(engine, query)
         assert _outer_select_columns(sql) == ["orders.created_at", "orders.wa", "orders.wb"], sql
-        assert len(re.findall(r"_wm_\w+ AS \(", sql)) == 1, sql
+        assert len(re.findall(r"_cm_\w+ AS \(", sql)) == 1, sql
 
     async def test_order_only_windowed_with_grain_dimension(self, engine) -> None:
         """The ``_wm_`` grain partition is derived from the PROJECTED row slots;
@@ -959,7 +965,7 @@ class TestWindowedOrderOnly:
             order=[OrderItem(column="amount:sum(window='90d')", direction="desc")],
         )
         sql = await _sql(engine, query)
-        assert len(re.findall(r"_wm_\w+ AS \(", sql)) == 1, sql
+        assert len(re.findall(r"_cm_\w+ AS \(", sql)) == 1, sql
 
 
 class TestWindowedStillGuarded:
@@ -967,25 +973,30 @@ class TestWindowedStillGuarded:
     windowed/transform combination."""
 
     async def test_windowed_in_declared_composite_measure_still_raises(self, engine) -> None:
+        # DEV-1835: local windowed composite in ``measures`` now renders through
+        # the regroup producers (guard lifted); it must be scope-closed and leak
+        # no ``__regroup__`` marker.
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=_MONTH,
             measures=[ModelMeasure(formula="amount:sum(window='90d') / id:count", name="x")],
         )
-        with pytest.raises(NotImplementedError) as ei:
-            await _sql(engine, query)
-        assert "DEV-1504" in str(ei.value), ei.value
+        sql = await _sql(engine, query)
+        assert_scope_closed(sql, dialect="sqlite")
+        assert "__regroup__" not in sql
 
     async def test_transform_over_windowed_order_target_still_raises(self, engine) -> None:
+        # DEV-1835: transform over a LOCAL windowed order target now renders
+        # (guard lifted); cross-model windowed is still guarded below.
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=_MONTH,
             measures=[ModelMeasure(formula="id:count")],
             order=[OrderItem(column="cumsum(amount:sum(window='90d'))", direction="desc")],
         )
-        with pytest.raises(NotImplementedError) as ei:
-            await _sql(engine, query)
-        assert "DEV-1504" in str(ei.value), ei.value
+        sql = await _sql(engine, query)
+        assert_scope_closed(sql, dialect="sqlite")
+        assert "__regroup__" not in sql
 
     async def test_cross_model_windowed_order_target_still_raises(self, engine) -> None:
         query = SlayerQuery(
@@ -996,7 +1007,8 @@ class TestWindowedStillGuarded:
         )
         with pytest.raises(NotImplementedError) as ei:
             await _sql(engine, query)
-        assert "DEV-1504" in str(ei.value), ei.value
+        # DEV-1835: cross-model windowed stays guarded, now under DEV-1836.
+        assert "DEV-1836" in str(ei.value), ei.value
 
     async def test_non_sum_avg_windowed_order_target_still_raises(self, engine) -> None:
         query = SlayerQuery(
@@ -1155,11 +1167,6 @@ class TestStillGuarded:
         silently emit ``ORDER BY "orders.status"`` instead — a row column that
         is not in the GROUP BY.
         """
-        from slayer.core.keys import ColumnKey, Phase
-        from slayer.engine.planned import (
-            OrderEntry, OrderScope, PlannedQuery, ValueSlot,
-        )
-        from slayer.sql.generator import SQLGenerator
 
         slot = ValueSlot(
             id="s0",

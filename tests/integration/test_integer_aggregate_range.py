@@ -55,7 +55,13 @@ def _sql(*, model, measures, referenced_models=(), **query_kwargs):
 )
 def test_inferred_integer_aggregate_preserves_native_range(integer_orders, sql_type, amount, aggregation, expected):
     sql, planned = _sql(model=integer_orders, measures=[f"amount:{aggregation}"])
-    assert planned.aggregate_slots[0].type is DataType.INT
+    # first/last desugar onto the regroup primitive (DEV-1835): their public
+    # slot is ROW-phase; the other aggregations keep an AGGREGATE-phase slot.
+    slot = next(
+        s for s in (*planned.aggregate_slots, *planned.row_slots)
+        if s.declared_name == f"amount_{aggregation}"
+    )
+    assert slot.type is DataType.INT
     with duckdb.connect() as connection:
         connection.execute(f"CREATE TABLE orders (id INT, amount {sql_type}, created_at TIMESTAMP)")
         connection.execute(

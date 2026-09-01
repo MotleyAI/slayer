@@ -12,6 +12,19 @@ DuckDB, PostgreSQL 16**. Charts and numbers are regenerated from `out/` by
 
 ---
 
+## DEV-1835 re-audit (stage-2 local-family unification), 2026-08-31
+
+Re-ran correctness + timing on branch `443a7326` (10k + 40k + adversarial; SQLite +
+DuckDB) after migrating the windowed / `first`-`last` families onto the regroup
+primitive. **No entry exceeded the regression thresholds (> 1.3× AND > 20 ms).** The
+migration's predicted cost — one extra source scan per windowed producer group (design
+D3: a windowed producer now derives its own grain rows inline instead of sharing
+`_base`'s scan) — stays below the flag floor at these scales. Correctness is unchanged:
+every value difference vs `0.9.12` is a cumulative fix the oracle attributes to the
+branch, none to this stage.
+
+---
+
 ## TL;DR
 
 - **Correctness: the rewrite is at least as correct as 0.9.12 everywhere.** Where the

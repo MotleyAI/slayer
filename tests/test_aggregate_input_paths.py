@@ -22,27 +22,20 @@ Structure mirrors ``tests/test_filtered_local_isolation.py``'s fixtures.
 
 from __future__ import annotations
 
-import pytest
 
-# TDD staging: the module lands with the DEV-1709 implementation; until then
-# this file self-skips instead of aborting collection of the whole suite.
-pytest.importorskip("slayer.engine.aggregate_input_paths")
-
-from slayer.core.enums import DataType  # noqa: E402
-from slayer.core.keys import AggregateKey  # noqa: E402
-from slayer.core.models import (  # noqa: E402
+from slayer.core.enums import DataType
+from slayer.core.keys import AggregateKey
+from slayer.core.models import (
     Aggregation,
     AggregationParam,
     Column,
     ModelJoin,
     SlayerModel,
 )
-from slayer.core.query import SlayerQuery  # noqa: E402
-from slayer.engine.aggregate_input_paths import (  # noqa: E402
-    compute_aggregate_input_join_paths,
-)
-from slayer.engine.source_bundle import ResolvedSourceBundle  # noqa: E402
-from slayer.engine.stage_planner import plan_query  # noqa: E402
+from slayer.core.query import SlayerQuery
+from slayer.engine.aggregate_input_paths import compute_aggregate_input_join_paths
+from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.engine.stage_planner import plan_query
 
 
 def _regions() -> SlayerModel:
@@ -123,7 +116,12 @@ def _key_for(formula: str) -> AggregateKey:
         measures=[{"formula": formula, "name": "m0"}],
     )
     planned = plan_query(query=q, bundle=_bundle())
-    for slot in planned.aggregate_slots:
+    # DEV-1835: a local first/last desugars into a regroup producer, so its
+    # AggregateKey slot can live inside a producer_plan, not at top level.
+    candidates = list(planned.aggregate_slots)
+    for attach in planned.regroup_attach_plans:
+        candidates.extend(attach.producer_plan.aggregate_slots)
+    for slot in candidates:
         if isinstance(slot.key, AggregateKey):
             return slot.key
     raise AssertionError(f"no AggregateKey slot for formula {formula!r}")
