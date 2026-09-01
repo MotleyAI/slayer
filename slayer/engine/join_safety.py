@@ -119,11 +119,13 @@ def audit_join_safety(
     """Flag every join that is neither declared m:1/1:1 nor structurally proven
     (metrics crossing it broadcast), plus — given a detection report —
     declarations the observed data hard-contradicts."""
-    models_by_name = {m.name: m for m in models}
+    # Joins resolve within the parent model's datasource; same-named models in
+    # other datasources must not shadow the real target.
+    models_by_key = {(m.data_source, m.name): m for m in models}
     findings: list[JoinSafetyFinding] = []
     for model in models:
         for join in model.joins:
-            target = models_by_name.get(join.target_model)
+            target = models_by_key.get((model.data_source, join.target_model))
             if target is None:
                 continue
             if provably_to_one(join=join, target_model=target):

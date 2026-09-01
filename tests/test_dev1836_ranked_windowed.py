@@ -172,13 +172,14 @@ class TestCrossModelWindowed:
         """The query's active TD (orders.ordered_at) is not attributable from
         customers: clear error, not wrong numbers."""
         _, engine = exec_backend
+        query = q(
+            time_dimensions=month_td(),
+            measures=[ModelMeasure(
+                formula="customers.spend:sum(window='1y')", name="w",
+            )],
+        )
         with pytest.raises(RAISES) as ei:
-            await engine.execute(q(
-                time_dimensions=month_td(),
-                measures=[ModelMeasure(
-                    formula="customers.spend:sum(window='1y')", name="w",
-                )],
-            ))
+            await engine.execute(query)
         message = str(ei.value)
         assert "ordered_at" in message or "time dimension" in message
         assert "__regroup__" not in message

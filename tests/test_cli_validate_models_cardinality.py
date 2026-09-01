@@ -15,7 +15,7 @@ import pytest
 from slayer.async_utils import run_sync
 from slayer.cli import _run_validate_models
 from slayer.cli import main as cli_main
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
@@ -218,6 +218,35 @@ def test_json_without_cardinality_is_null(workspace: Path, capsys) -> None:
     assert data["drift"] == []
 
 
+def test_json_includes_join_safety_key(workspace: Path, capsys) -> None:
+    """Automation reading JSON must see the same audit the text output prints.
+    The fixture's join is structurally proven → an empty list, not a missing key."""
+    store = _setup(workspace)
+    _run_validate_models(_args(store, format="json"))
+    data = json.loads(capsys.readouterr().out)
+    assert data["join_safety"] == []
+
+
+def test_json_join_safety_reports_unproven_join(workspace: Path, capsys) -> None:
+    store = _setup(workspace)
+    run_sync(YAMLStorage(base_dir=store).save_model(SlayerModel(
+        name="risky", sql_table="orders", data_source="ds",
+        columns=[
+            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.INT),
+        ],
+        # region is neither a PK nor unique on customers → unproven hop.
+        joins=[ModelJoin(target_model="customers",
+                         join_pairs=[["customer_id", "region"]])],
+    )))
+    _run_validate_models(_args(store, format="json"))
+    data = json.loads(capsys.readouterr().out)
+    (finding,) = data["join_safety"]
+    assert finding["model"] == "risky"
+    assert finding["target_model"] == "customers"
+    assert "unproven" in finding["message"]
+
+
 def test_json_serialises_drift_entries(workspace: Path, capsys) -> None:
     """Both ToDeleteEntry variants must round-trip through json.dumps."""
     store = _setup(workspace, drift_orders=True, drift_customers=True)
@@ -320,8 +349,6 @@ def test_model_present_in_only_one_datasource_does_not_fail(
 
 
 def test_contradicts_hard_still_exits_zero(workspace: Path, capsys) -> None:
-    from slayer.core.enums import JoinCardinality
-
     store = _setup(workspace)
     storage = YAMLStorage(base_dir=store)
     orders = run_sync(storage.get_model("orders", data_source="ds"))
@@ -399,7 +426,9 @@ def test_datasource_failure_keeps_json_parseable(
     with pytest.raises(SystemExit):
         _run_validate_models(args)
     captured = capsys.readouterr()
-    assert json.loads(captured.out) == {"drift": [], "cardinality": None}
+    assert json.loads(captured.out) == {
+        "drift": [], "join_safety": [], "cardinality": None,
+    }
     assert "ds2" in captured.err
 
 

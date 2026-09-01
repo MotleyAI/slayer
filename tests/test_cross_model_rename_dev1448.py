@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import pytest
 import sqlglot
+from pydantic import ValidationError
 from sqlglot import exp
 
 from slayer.core.enums import DataType
@@ -1057,7 +1058,6 @@ class TestRenameRegressionGuards:
         (the ``qfield.name != canonical_name`` check is structurally
         true). This test pins that invariant so it surfaces in the
         suite when ``ModelMeasure.name`` validation loosens."""
-        from pydantic import ValidationError
         with pytest.raises(ValidationError, match=r"only letters, digits, and underscores"):
             ModelMeasure(formula="customers.revenue:sum", name="customers.revenue_sum")
 

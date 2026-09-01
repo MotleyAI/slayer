@@ -5,9 +5,16 @@ producers, roles, and nesting.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
+from slayer.core.errors import UnreachableFilterDroppedWarning
 from slayer.core.query import OrderItem
+from slayer.engine.query_engine import (
+    _collect_broadcast_warnings,
+    _collect_dropped_filter_warnings,
+)
 
 from tests._dev1836_fixtures import (
     AMOUNT_BY_BAND,
@@ -148,3 +155,101 @@ class TestBroadcastDedup:
             assert float(by[(band,)]["orders.cm"]) == pytest.approx(
                 SPEND_BY_BAND[band],
             )
+
+
+def _attach(**overrides):
+    empty = SimpleNamespace(regroup_attach_plans=[], cross_model_aggregate_plans=[])
+    base = dict(
+        dropped_filter_warnings=[], broadcast_measure=None,
+        broadcast_dimensions=[], producer_plan=empty,
+    )
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def _planned(attaches):
+    return SimpleNamespace(
+        regroup_attach_plans=list(attaches), cross_model_aggregate_plans=[],
+    )
+
+
+class TestCollectorIdentityUnits:
+    """Direct collector units for the identity rules the engine shapes above
+    cannot isolate: conjunct-level reason merging and per-stage broadcast
+    identity."""
+
+    def test_conjuncts_of_one_filter_merge_reasons_instead_of_raising(self):
+        """Two conjuncts of ONE filter can drop for different reasons; that is
+        not a planner inconsistency — one warning, reasons merged."""
+        text = "a.x = 1 AND b.y = 2"
+        plans = _planned([
+            _attach(dropped_filter_warnings=[UnreachableFilterDroppedWarning(
+                filter_text=text, reason="reason A",
+            )]),
+            _attach(dropped_filter_warnings=[UnreachableFilterDroppedWarning(
+                filter_text=text, reason="reason B",
+            )]),
+        ])
+        (w,) = _collect_dropped_filter_warnings(
+            planned_list=[plans], stages=[SimpleNamespace(name=None)],
+        )
+        assert w.filter_text == text
+        assert w.reason == "reason A; reason B"
+
+    def test_agreeing_reasons_still_collapse_to_one(self):
+        plans = _planned([
+            _attach(dropped_filter_warnings=[UnreachableFilterDroppedWarning(
+                filter_text="a.x = 1", reason="same",
+            )]),
+            _attach(dropped_filter_warnings=[UnreachableFilterDroppedWarning(
+                filter_text="a.x = 1", reason="same",
+            )]),
+        ])
+        (w,) = _collect_dropped_filter_warnings(
+            planned_list=[plans], stages=[SimpleNamespace(name=None)],
+        )
+        assert w.reason == "same"
+
+    def test_same_label_broadcasts_in_two_stages_stay_two_payloads(self):
+        """D6 identity is per stage: same-labeled aggregates in different DAG
+        stages are distinct — dimensions must not union across stages."""
+        stage_one = _planned([_attach(
+            broadcast_measure="orders.cm", broadcast_dimensions=[("d1", "r1")],
+        )])
+        stage_two = _planned([_attach(
+            broadcast_measure="orders.cm", broadcast_dimensions=[("d2", "r2")],
+        )])
+        out = _collect_broadcast_warnings(
+            planned_list=[stage_one, stage_two],
+            stages=[SimpleNamespace(name="s1"), SimpleNamespace(name=None)],
+        )
+        assert len(out) == 2
+        assert {w.location for w in out} == {"stage 's1'", "stages[1]"}
+        by_location = {w.location: w for w in out}
+        assert [d.dimension for d in by_location["stage 's1'"].dimensions] == ["d1"]
+        assert [d.dimension for d in by_location["stages[1]"].dimensions] == ["d2"]
+
+    def test_same_stage_same_measure_still_unions_dimensions(self):
+        plans = _planned([
+            _attach(broadcast_measure="orders.cm",
+                    broadcast_dimensions=[("d1", "r1")]),
+            _attach(broadcast_measure="orders.cm",
+                    broadcast_dimensions=[("d1", "r1"), ("d2", "r2")]),
+        ])
+        (w,) = _collect_broadcast_warnings(
+            planned_list=[plans], stages=[SimpleNamespace(name=None)],
+        )
+        assert [d.dimension for d in w.dimensions] == ["d1", "d2"]
+
+    def test_broadcast_human_message_names_location_and_reasons(self):
+        (w,) = _collect_broadcast_warnings(
+            planned_list=[_planned([_attach(
+                broadcast_measure="orders.cm",
+                broadcast_dimensions=[("status", "crosses an unproven join hop to x")],
+            )])],
+            stages=[SimpleNamespace(name=None)],
+        )
+        message = w.human_message()
+        assert "'orders.cm'" in message
+        assert "stages[0]" in message
+        assert "status (crosses an unproven join hop to x)" in message

@@ -25,13 +25,30 @@ delivered — intended, and asserted here rather than left implicit.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import pathlib
 import tempfile
 import warnings
+from types import SimpleNamespace
 
+import duckdb
 import pytest
+from fastapi.testclient import TestClient
 
+from slayer.api.server import create_app
+from slayer.cli import _run_query
 from slayer.core.enums import DataType
+from slayer.core.errors import SlayerError, UnreachableFilterDroppedWarning
+from slayer.core.warnings import (
+    DroppedFilterWarning,
+    NormalizationWarning,
+    SlayerWarning,
+)
+from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.engine.stage_planner import plan_query
+from slayer.mcp.server import create_mcp_server
+from slayer.sql.generator import SQLGenerator
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -128,8 +145,6 @@ async def _engine(tmpdir: str, *, with_tables: bool = False) -> SlayerQueryEngin
     storage = YAMLStorage(base_dir=tmpdir)
     database = ":memory:"
     if with_tables:
-        import duckdb
-
         database = str(pathlib.Path(tmpdir) / "w.duckdb")
         con = duckdb.connect(database)
         try:
@@ -180,7 +195,6 @@ def _dropped(response) -> list:
 class TestExecuteEntryPoint:
 
     async def test_exactly_one_python_warning_per_filter(self) -> None:
-        from slayer.core.errors import UnreachableFilterDroppedWarning
 
         with tempfile.TemporaryDirectory() as d:
             engine = await _engine(d)
@@ -197,7 +211,6 @@ class TestExecuteEntryPoint:
         )
 
     async def test_warning_is_the_typed_class_not_bare_userwarning(self) -> None:
-        from slayer.core.errors import UnreachableFilterDroppedWarning
 
         with tempfile.TemporaryDirectory() as d:
             engine = await _engine(d)
@@ -230,7 +243,6 @@ class TestExecuteEntryPoint:
         assert payload.kind == "unreachable_filter_dropped", payload.kind
 
     async def test_two_dropped_filters_produce_two_warnings(self) -> None:
-        from slayer.core.errors import UnreachableFilterDroppedWarning
 
         with tempfile.TemporaryDirectory() as d:
             engine = await _engine(d)
@@ -249,7 +261,6 @@ class TestExecuteEntryPoint:
         )
 
     async def test_clean_query_warns_nothing(self) -> None:
-        from slayer.core.errors import UnreachableFilterDroppedWarning
 
         with tempfile.TemporaryDirectory() as d:
             engine = await _engine(d)
@@ -289,8 +300,6 @@ class TestEmissionIsBoundaryNotRender:
         """The decisive dedup case. Pre-dedup this produces TWO raw
         dropped-filter entries for one user filter — the old per-plan emission
         fired both."""
-        from slayer.core.errors import UnreachableFilterDroppedWarning
-
         with tempfile.TemporaryDirectory() as d:
             engine = await _engine(d)
             with warnings.catch_warnings(record=True) as caught:
@@ -316,9 +325,6 @@ class TestEmissionIsBoundaryNotRender:
         kept the first. So compare the PRE-dedup reasons the planner produced
         directly, then check the boundary collapsed them to one.
         """
-        from slayer.engine.source_bundle import ResolvedSourceBundle
-        from slayer.engine.stage_planner import plan_query
-
         bundle = ResolvedSourceBundle(
             source_model=_orders(),
             referenced_models=[_customers(), _warehouses(), _shippers()],
@@ -354,8 +360,6 @@ class TestEmissionIsBoundaryNotRender:
     async def test_identical_text_at_different_locations_stays_two(self) -> None:
         """D8's identity is (location, text) — NOT text alone. Two stages each
         carrying the same filter text are two distinct user filters."""
-        from slayer.core.errors import UnreachableFilterDroppedWarning
-
         inner = SlayerQuery(
             name="s1",
             source_model="orders",
@@ -398,20 +402,14 @@ class TestWarningTypeHierarchy:
     on ``kind``."""
 
     def test_dropped_filter_warning_subclasses_the_base(self) -> None:
-        from slayer.core.warnings import DroppedFilterWarning, SlayerWarning
 
         assert issubclass(DroppedFilterWarning, SlayerWarning)
 
     def test_normalization_warning_subclasses_the_base(self) -> None:
-        from slayer.core.warnings import NormalizationWarning, SlayerWarning
 
         assert issubclass(NormalizationWarning, SlayerWarning)
 
     def test_each_subclass_declares_a_distinct_kind(self) -> None:
-        from slayer.core.warnings import (
-            DroppedFilterWarning,
-            NormalizationWarning,
-        )
 
         kinds = {
             NormalizationWarning.model_fields["kind"].default,
@@ -436,8 +434,6 @@ class TestLowerLayersStaySilent:
         return [w for w in caught if "warehouses.code" in str(w.message)]
 
     def test_planning_emits_no_python_warning(self) -> None:
-        from slayer.engine.source_bundle import ResolvedSourceBundle
-        from slayer.engine.stage_planner import plan_query
 
         bundle = ResolvedSourceBundle(
             source_model=_orders(),
@@ -452,9 +448,6 @@ class TestLowerLayersStaySilent:
         )
 
     def test_rendering_emits_no_python_warning(self) -> None:
-        from slayer.engine.source_bundle import ResolvedSourceBundle
-        from slayer.engine.stage_planner import plan_query
-        from slayer.sql.generator import SQLGenerator
 
         bundle = ResolvedSourceBundle(
             source_model=_orders(),
@@ -475,7 +468,6 @@ class TestLowerLayersStaySilent:
 class TestWarningsAsErrors:
 
     async def test_warnings_as_errors_raises(self) -> None:
-        from slayer.core.errors import UnreachableFilterDroppedWarning
 
         with tempfile.TemporaryDirectory() as d:
             engine = await _engine(d)
@@ -491,7 +483,6 @@ class TestInternalFailuresRaise:
     """A binder/planner bug must never be reported as an expected drop."""
 
     async def test_unknown_reference_raises_not_warns(self) -> None:
-        from slayer.core.errors import SlayerError
 
         with tempfile.TemporaryDirectory() as d:
             engine = await _engine(d)
@@ -511,11 +502,8 @@ class TestInternalFailuresRaise:
 class TestRestEntryPoint:
 
     def test_rest_query_response_surfaces_warnings(self) -> None:
-        import asyncio
 
-        from fastapi.testclient import TestClient
 
-        from slayer.api.server import create_app
 
         with tempfile.TemporaryDirectory() as d:
             storage = YAMLStorage(base_dir=d)
@@ -547,7 +535,6 @@ class TestRestEntryPoint:
 class TestMcpEntryPoint:
 
     async def test_mcp_query_output_mentions_the_dropped_filter(self) -> None:
-        from slayer.mcp.server import create_mcp_server
 
         with tempfile.TemporaryDirectory() as d:
             storage = YAMLStorage(base_dir=d)
@@ -576,11 +563,7 @@ class TestMcpEntryPoint:
 class TestCliEntryPoint:
 
     def test_cli_surfaces_the_dropped_filter(self, capsys) -> None:
-        import asyncio
-        import json
-        from types import SimpleNamespace
 
-        from slayer.cli import _run_query
 
         with tempfile.TemporaryDirectory() as d:
             storage = YAMLStorage(base_dir=d)

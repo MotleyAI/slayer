@@ -84,7 +84,8 @@ class TestUnsafeRowFilters:
         )
         (w,) = dropped_filter_warnings(resp)
         assert "channel" in w.filter_text
-        assert w.location and w.reason
+        assert w.location
+        assert w.reason
         hits = [c for c in caught
                 if issubclass(c.category, UnreachableFilterDroppedWarning)]
         assert len(hits) == 1

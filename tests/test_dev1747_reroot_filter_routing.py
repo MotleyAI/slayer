@@ -213,7 +213,8 @@ class TestClassifiedExactlyOnce:
         for bf, _text in calls[0]["base_filters"]:
             fid = str(bf.value_key)
             per_filter[fid] = per_filter.get(fid, 0) + 1
-        assert per_filter and set(per_filter.values()) == {1}, (
+        assert per_filter, "no host filters were presented at all"
+        assert set(per_filter.values()) == {1}, (
             f"host filters were presented more than once: {per_filter}"
         )
 

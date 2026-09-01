@@ -210,7 +210,7 @@ def _cte_names_by_scope(sql: str, *, dialect: str = "sqlite") -> List[List[str]]
     cross-scope uniqueness check would constrain the allocator beyond what the
     plan asks for.
     """
-    parsed = sqlglot.parse_one(sql, dialect=dialect)
+    parsed = sqlglot.parse_one(sql=sql, dialect=dialect)
     return [
         [cte.alias_or_name for cte in with_node.expressions]
         for with_node in parsed.find_all(exp.With)
@@ -447,7 +447,7 @@ class TestCrossModelCteNameAllocation:
         # passes it through under that same name — a benign CROSS-scope repeat.
         # The leaked-alias bug is a WITHIN-scope duplicate (two projections in
         # ONE SELECT claim the same output name), so check per SELECT node.
-        parsed = sqlglot.parse_one(resp.sql, read="sqlite")
+        parsed = sqlglot.parse_one(sql=resp.sql, read="sqlite")
         for select in parsed.find_all(exp.Select):
             names = [
                 proj.alias for proj in select.expressions

@@ -45,7 +45,7 @@ from slayer.engine.cross_model_planner import (
     HostFilterRouting,
     classify_host_filter,
 )
-from slayer.engine.planning import ValueRegistry
+from slayer.engine.planning import ValueRegistry, filter_referenced_slot_ids
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import plan_query
 
@@ -99,8 +99,6 @@ def _bundle() -> ResolvedSourceBundle:
 
 class TestFilterReferencedSlotIds:
     def test_simple_column_filter(self) -> None:
-        from slayer.engine.planning import filter_referenced_slot_ids
-
         reg = ValueRegistry()
         col = ColumnKey(path=(), leaf="amount")
         sid = reg.intern(key=col, declared_name="amount", phase=Phase.ROW)
@@ -118,8 +116,6 @@ class TestFilterReferencedSlotIds:
 
     def test_composite_predicate_collects_all_slot_leaves(self) -> None:
         # Filter: ``status == 'paid' AND customers.revenue:sum < 500``
-        from slayer.engine.planning import filter_referenced_slot_ids
-
         reg = ValueRegistry()
         status = ColumnKey(path=(), leaf="status")
         agg = AggregateKey(
@@ -149,8 +145,6 @@ class TestFilterReferencedSlotIds:
     def test_composite_only_nodes_not_in_result(self) -> None:
         # Top-level ArithmeticKey itself doesn't show up — only leaf
         # slottable refs.
-        from slayer.engine.planning import filter_referenced_slot_ids
-
         reg = ValueRegistry()
         col = ColumnKey(path=(), leaf="amount")
         reg.intern(key=col, declared_name="amount", phase=Phase.ROW)
@@ -171,8 +165,6 @@ class TestFilterReferencedSlotIds:
         # If a referenced key isn't in the registry (e.g., a literal,
         # or an arithmetic that didn't intern), the walker silently
         # skips it rather than raising.
-        from slayer.engine.planning import filter_referenced_slot_ids
-
         reg = ValueRegistry()
         # No interns.
         col = ColumnKey(path=(), leaf="amount")

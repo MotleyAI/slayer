@@ -8,8 +8,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from slayer.api.server import QueryRequest, create_app
+from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.sql.client import SlayerSQLClient
 from slayer.core.query import SlayerQuery
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -331,8 +333,6 @@ class TestQueryBackedModelsAPI:
         self, client: TestClient, storage: YAMLStorage
     ) -> None:
         # Set up upstream + a datasource so cache refresh succeeds at save time.
-        from slayer.core.models import DatasourceConfig
-        from slayer.async_utils import run_sync
         run_sync(
             storage.save_datasource(DatasourceConfig(
                 name="ds", type="sqlite", database=":memory:"
@@ -365,8 +365,6 @@ class TestQueryBackedModelsAPI:
     def test_post_models_rejects_user_columns_on_query_backed(
         self, client: TestClient, storage: YAMLStorage
     ) -> None:
-        from slayer.core.models import DatasourceConfig
-        from slayer.async_utils import run_sync
         run_sync(
             storage.save_datasource(DatasourceConfig(
                 name="ds", type="sqlite", database=":memory:"
@@ -410,6 +408,18 @@ class TestQueryBackedModelsAPI:
         resp = client.post("/query", json={
             "name": "some_model",
             "whole_periods_only": True,
+        })
+        assert resp.status_code == 400
+        assert "no other query fields" in resp.text or "may not be set" in resp.text
+
+    def test_post_query_run_by_name_rejects_strict(
+        self, client: TestClient
+    ) -> None:
+        # Run-by-name executes the stored backing query, which never sees a
+        # request-level ``strict`` — rejecting beats silently dropping it.
+        resp = client.post("/query", json={
+            "name": "some_model",
+            "strict": True,
         })
         assert resp.status_code == 400
         assert "no other query fields" in resp.text or "may not be set" in resp.text
@@ -634,8 +644,6 @@ class TestOpenAPI400Documentation:
         """``{"name": "m", "dry_run": true}`` must populate ``sql`` in the response
         without ever calling the SQL client.
         """
-        from slayer.core.models import DatasourceConfig
-        from slayer.async_utils import run_sync
         run_sync(storage.save_datasource(
             DatasourceConfig(name="ds", type="sqlite", database=":memory:")
         ))
@@ -654,7 +662,6 @@ class TestOpenAPI400Documentation:
         })
         assert setup_resp.status_code == 200, setup_resp.text
 
-        from slayer.sql.client import SlayerSQLClient
         execute_calls = 0
         real_execute = SlayerSQLClient.execute
 

@@ -273,7 +273,7 @@ class TestMigrationIsBytePreserving:
 
     async def test_crossing_grain_cte_is_unchanged(self) -> None:
         sql = await _gen(_crossing_grain_query(), dialect="postgres")
-        body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
+        body = _norm(_extract_cte_body(sql=sql, cte_name_pattern=r"_cm_\w+"))
         assert body == CROSSING_GRAIN_CTE, (
             "the crossing-grain CTE changed shape. The two materialisers dedup "
             "on the same key (resolved SQL text), so the migration must be "
@@ -283,7 +283,7 @@ class TestMigrationIsBytePreserving:
 
     async def test_crossing_value_cte_is_unchanged(self) -> None:
         sql = await _gen(_crossing_value_query(), dialect="postgres")
-        body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
+        body = _norm(_extract_cte_body(sql=sql, cte_name_pattern=r"_cm_\w+"))
         assert body == CROSSING_VALUE_CTE, (
             f"the crossing-value CTE changed shape.\n\nactual:\n{body}\n\n"
             f"expected:\n{CROSSING_VALUE_CTE}"
@@ -330,7 +330,7 @@ class TestDedupParity:
             )],
         )
         sql = await _gen(query, dialect="postgres")
-        body = _extract_cte_body(sql, r"_cm_\w+")
+        body = _extract_cte_body(sql=sql, cte_name_pattern=r"_cm_\w+")
         assert body.count("regions.weight AS _val_") == 1, (
             "the same crossing expression was materialised more than once in "
             f"one scope — the two materialisers still hold separate dedup "
@@ -354,7 +354,7 @@ class TestDedupParity:
         )
         sql = await _gen(query, dialect="postgres")
         for pattern in (r"_cm_\w*first\b", r"_cm_\w*last\b"):
-            body = _extract_cte_body(sql, pattern)
+            body = _extract_cte_body(sql=sql, cte_name_pattern=pattern)
             assert body.count("regions.weight AS _val_") == 1, (
                 f"each scope must project its own single materialisation:\n{body}"
             )

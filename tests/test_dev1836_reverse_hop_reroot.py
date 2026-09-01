@@ -73,9 +73,12 @@ def _seed(db_path: str) -> None:
     conn.execute("CREATE TABLE policy_amount (pa_id INTEGER PRIMARY KEY, policy_identifier INTEGER, policy_amount REAL, party_b INTEGER)")
     conn.execute("CREATE TABLE party (id INTEGER PRIMARY KEY, code TEXT)")
     conn.executemany("INSERT INTO party VALUES (?, ?)", [(1, "X"), (2, "Y")])
+    # Full datetimes: a date-only string sorts BELOW a computed datetime
+    # window bound ("2024-02-10" < "2024-02-10 00:00:00"), which would turn
+    # the inclusive-boundary case below into a string-comparison artifact.
     conn.executemany("INSERT INTO policy VALUES (?, ?, ?, ?)", [
-        (1, "POL-1", "2024-01-15", 1),
-        (2, "POL-2", "2024-02-10", 2),
+        (1, "POL-1", "2024-01-15 00:00:00", 1),
+        (2, "POL-2", "2024-02-10 00:00:00", 2),
     ])
     # party_b deliberately OPPOSITE of the owning policy's party_a, so the
     # root's own party join selects different rows than the host's instance.
@@ -128,9 +131,11 @@ class TestTimeTruncGrainReroots:
         assert_scope_closed(resp.sql, dialect="sqlite")
         by_month = {r["policy.created_at"][:7]: r for r in resp.data}
         # Values calibrated against the LOCAL windowed measure on identical
-        # dates/amounts — cross-model must match local window semantics.
+        # dates/amounts — cross-model must match local window semantics. The
+        # 20-day February window starts on Feb 10 inclusive, so POL-2's two
+        # amounts are in.
         assert by_month["2024-01"]["policy.w"] == pytest.approx(300.0)
-        assert by_month["2024-02"]["policy.w"] is None
+        assert by_month["2024-02"]["policy.w"] == pytest.approx(700.0)
 
 
 class TestSiblingFilterBindsTheHostInstance:

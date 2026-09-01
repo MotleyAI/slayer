@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import pytest
 
+import slayer.engine.regroup_planner as regroup_planner
+import slayer.engine.stage_planner as stage_planner
 from slayer.core.errors import SlayerError
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import plan_query
@@ -45,25 +47,25 @@ def _bundle() -> ResolvedSourceBundle:
 class TestExplicitRejections:
     async def test_bare_aggregate_in_dimension_is_rejected(self, exec_backend):
         _, engine = exec_backend
-        with pytest.raises(Exception) as ei:  # noqa: B017 — message is the pin
-            await engine.execute(q(
-                dimensions=[{"expression": "amount:sum", "name": "d"}],
-                measures=[ModelMeasure(formula="amount:sum", name="m")],
-            ))
-        message = str(ei.value)
-        assert "partition_by" in message
-        assert "__regroup__" not in message
+        query = q(
+            dimensions=[{"expression": "amount:sum", "name": "d"}],
+            measures=[ModelMeasure(formula="amount:sum", name="m")],
+        )
+        with pytest.raises(Exception, match="partition_by") as ei:  # noqa: B017 — message is the pin
+            await engine.execute(query)
+        assert "__regroup__" not in str(ei.value)
 
     async def test_aggregate_over_attached_value_is_rejected(self, exec_backend):
         """Still excluded (D4/F3): aggregating over an attached aggregate
         value is a clear not-yet-supported error, not an internal one."""
         _, engine = exec_backend
+        query = q(
+            dimensions=[LOCAL_BAND],
+            measures=[ModelMeasure(formula="amount:sum(partition_by=band)",
+                                   name="x")],
+        )
         with pytest.raises(NotImplementedError) as ei:
-            await engine.execute(q(
-                dimensions=[LOCAL_BAND],
-                measures=[ModelMeasure(formula="amount:sum(partition_by=band)",
-                                       name="x")],
-            ))
+            await engine.execute(query)
         message = str(ei.value)
         assert "band" in message
         assert "not yet" in message or "not supported" in message
@@ -83,7 +85,8 @@ class TestExplicitRejections:
         generator = SQLGenerator(dialect="postgres")
         sql = generator.generate_from_planned(planned, bundle=bundle,
                                               as_cte_body=True)
-        assert sql and "__regroup__" not in sql
+        assert sql
+        assert "__regroup__" not in sql
 
 
 class TestTotalRoutingInvariant:
@@ -93,9 +96,6 @@ class TestTotalRoutingInvariant:
     def test_unrouted_aggregate_raises_explicit_planner_error(self, monkeypatch):
         """Blind the combined-producer discovery to every partitioned leaf: the
         post-discovery invariant must catch the now-undisposed aggregate."""
-        import slayer.engine.regroup_planner as regroup_planner
-        import slayer.engine.stage_planner as stage_planner
-
         def _blind(*args, **kwargs):
             return [], {}
 
@@ -109,11 +109,12 @@ class TestTotalRoutingInvariant:
             measures=[ModelMeasure(formula="amount:sum(partition_by=channel)",
                                    name="pt")],
         )
+        bundle = _bundle()
         # D7: a raise, not an assert — AssertionError must not be the vehicle.
         with pytest.raises(
             (SlayerError, ValueError, NotImplementedError, RuntimeError),
         ) as ei:
-            plan_query(query=query, bundle=_bundle())
+            plan_query(query=query, bundle=bundle)
         assert not isinstance(ei.value, AssertionError)
         message = str(ei.value).lower()
         assert "aggregat" in message or "pt" in message, message
@@ -125,8 +126,6 @@ class TestTotalRoutingInvariant:
         Blind the CROSS-MODEL discovery: the un-desugared cross-model aggregate
         must be caught by ``_assert_total_routing`` with the explicit
         no-disposition error, not fall through to the legacy dispatch."""
-        import slayer.engine.stage_planner as stage_planner
-
         monkeypatch.setattr(
             stage_planner, "_discover_cross_model_combined",
             lambda prebound: ([], {}, {}),
@@ -135,8 +134,9 @@ class TestTotalRoutingInvariant:
             dimensions=["status"],
             measures=[ModelMeasure(formula="customers.spend:sum", name="cm")],
         )
+        bundle = _bundle()
         with pytest.raises(ValueError, match="no routing disposition"):
-            plan_query(query=query, bundle=_bundle())
+            plan_query(query=query, bundle=bundle)
 
     @pytest.mark.parametrize("role_kwargs", [
         pytest.param(
@@ -152,8 +152,6 @@ class TestTotalRoutingInvariant:
     ):
         """The invariant walks filters and orders too — a hidden cross-model
         leaf in either role must not survive blinded discovery."""
-        import slayer.engine.stage_planner as stage_planner
-
         monkeypatch.setattr(
             stage_planner, "_discover_cross_model_combined",
             lambda prebound: ([], {}, {}),
@@ -163,8 +161,9 @@ class TestTotalRoutingInvariant:
             measures=[ModelMeasure(formula="amount:sum", name="m")],
             **role_kwargs,
         )
+        bundle = _bundle()
         with pytest.raises(ValueError, match="no routing disposition"):
-            plan_query(query=query, bundle=_bundle())
+            plan_query(query=query, bundle=bundle)
 
 
 class TestNoSilentDrops:

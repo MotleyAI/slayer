@@ -23,7 +23,7 @@ Any measure-legal expression SHALL be legal as a computed dimension provided it 
 **Reason**: Cross-model aggregate sources become legal in dimension expressions, so the requirement's scope — and its cross-model rejection scenario — no longer matches its behavior.
 **Migration**: The still-rejected shapes continue under the narrowed "Grain self-containment error surface" requirement added below; the now-legal cross-model behavior is specified in `queries/cross-model-aggregates`.
 
-### Requirement: Transform coexistence deferrals fail closed
+### Requirement: Remaining coexistence deferrals fail closed
 **Reason**: Cross-model measures leave the deferral list — they coexist with aggregation-derived dimensions as supported shapes — so the requirement's scenarios pin a guard this change removes.
 **Migration**: The still-deferred combinations continue under "Coexistence deferrals after cross-model unification" added below; the supported cross-model coexistence is specified in `queries/cross-model-aggregates`.
 

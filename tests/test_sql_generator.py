@@ -7997,16 +7997,16 @@ Column(name="total_policy_amount", sql="policy_amount", type=DataType.DOUBLE)],
             _assert_valid_sql(sql, dialect=generator.dialect)
             _assert_valid_sql(sql)
 
-            # CTE should FROM policy_amount (target), not FROM policy (source)
-            cm_cte_start = sql.find("_cm_")
-            cte_section = sql[cm_cte_start:]
-            assert "FROM policy_amount" in cte_section or "FROM\n  policy_amount" in cte_section
+            # Only the producer CTE body — the outer SELECT would satisfy these
+            # assertions even with filter inheritance missing from the CTE.
+            cte_body = _extract_cte_body(sql=sql, cte_name_pattern=r"_cm_\w+")
+            assert "FROM policy_amount" in cte_body or "FROM\n  policy_amount" in cte_body
             # The reachable target-path filter rides into the producer with its join.
-            assert "premium" in cte_section
-            assert "1 = '1'" in cte_section or "1 = 1" in cte_section
+            assert "premium" in cte_body
+            assert "1 = '1'" in cte_body or "1 = 1" in cte_body
             # The host-sibling filter inherits through the root's own join.
-            assert "agreement_party_role" in cte_section
-            assert "party_role_code" in cte_section
+            assert "agreement_party_role" in cte_body
+            assert "party_role_code" in cte_body
             dropped = [
                 w for w in (resp.warnings or [])
                 if getattr(w, "kind", None) == "unreachable_filter_dropped"
@@ -8146,11 +8146,11 @@ Column(name="score", sql="score", type=DataType.DOUBLE)],
             _assert_valid_sql(sql, dialect=generator.dialect)
             _assert_valid_sql(sql)
 
-            # CTE should include the filter, qualified with the source model alias
-            cm_cte_start = sql.find("_cm_")
-            cte_section = sql[cm_cte_start:]
-            assert "status_code" in cte_section.lower()
-            assert "'ACTIVE'" in cte_section
+            # Only the producer CTE body — the outer SELECT can also carry the
+            # filter, so the whole-tail slice would pass vacuously.
+            cte_body = _extract_cte_body(sql=sql, cte_name_pattern=r"_cm_\w+")
+            assert "status_code" in cte_body.lower()
+            assert "'ACTIVE'" in cte_body
 
     async def test_rerooted_custom_agg_in_filter(self, generator):
         """Function-style custom aggregation in filter must be recognised during rerooting."""

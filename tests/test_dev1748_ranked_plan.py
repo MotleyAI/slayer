@@ -950,11 +950,16 @@ class TestNoFilterIsSilentlyDropped:
     both shapes: a filter on the ranked aggregate itself, and one on a DIFFERENT
     aggregate on the same target."""
 
-    @staticmethod
-    def _ranked_having(planned):
-        return {
+    @classmethod
+    def _ranked_having(cls, planned):
+        """Every ranked-plan HAVING id, including plans nested inside regroup
+        producers (DEV-1836 puts ranked plans there)."""
+        ids = {
             i for p in planned.ranked_aggregate_plans for i in p.having_filter_ids
         }
+        for attach in planned.regroup_attach_plans:
+            ids |= cls._ranked_having(attach.producer_plan)
+        return ids
 
     def test_a_filter_on_the_ranked_aggregate_reaches_the_outer_where(self) -> None:
         planned = _plan(_q(
