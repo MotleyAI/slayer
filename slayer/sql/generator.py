@@ -397,6 +397,230 @@ def _first_bare_column_name(key) -> Optional[str]:
     return None
 
 
+# --- Transform-input shape classification, shared by the hoisted validation
+# gate and the consecutive_periods emitter. ---
+
+_PREDICATE_COMPARISON_OPS = frozenset(
+    {"==", "=", "!=", "<>", "<", "<=", ">", ">="}
+)
+_BOOL_CONNECTIVE_OPS = frozenset({"and", "or", "not"})
+
+# SCALAR_PASSTHROUGH members whose result is a string (no defined truthiness);
+# length / instr return numbers and are intentionally excluded.
+_STRING_VALUED_SCALARS = frozenset({
+    "lower", "upper", "trim", "ltrim", "rtrim",
+    "replace", "substr", "substring", "concat",
+})
+
+# Real ValueKey args (a ScalarCallKey / iif may also carry raw scalar literals).
+_COMPOUND_VALUE_KEYS = (
+    ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey,
+    AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey, InKey,
+)
+
+
+def _is_boolean_shaped(key) -> bool:
+    """Whether ``key`` renders as a SQL predicate (truth value) rather than a
+    numeric/text value: a comparison, BETWEEN, IN, or an ``and`` / ``or`` /
+    ``not`` connective. Recursive by construction — a connective's operands are
+    themselves boolean-shaped (enforced by the typing contract)."""
+    if isinstance(key, ArithmeticKey):
+        return (
+            key.op in _PREDICATE_COMPARISON_OPS
+            or key.op in _BOOL_CONNECTIVE_OPS
+        )
+    return isinstance(key, (BetweenKey, InKey))
+
+
+def _regroup_placeholder_map(planned_query):
+    """Recover the aggregate leaves the planner isolated into ``_cm_*`` producer
+    CTEs. Returns ``(placeholder_key -> original aggregate key, original key ->
+    producer slot)`` — a join-crossing fragment aggregation is regrouped this way
+    and must re-aggregate in the shifted CTE rather than read its current value."""
+    to_original: Dict[Any, Any] = {}
+    to_slot: Dict[Any, Any] = {}
+    for plan in planned_query.regroup_attach_plans:
+        prod = plan.producer_plan
+        prod_slots = {
+            s.id: s
+            for s in (
+                list(prod.row_slots)
+                + list(prod.aggregate_slots)
+                + list(prod.combined_expression_slots)
+            )
+        }
+        for sub in plan.substitutions:
+            to_original[sub.placeholder] = sub.original_key
+            slot = prod_slots.get(sub.producer_slot_id)
+            if slot is not None:
+                to_slot[sub.original_key] = slot
+    return to_original, to_slot
+
+
+def _composite_operand_children(node) -> list:
+    """Sub-keys a composite / predicate node recurses into; ``[]`` for a leaf."""
+    if isinstance(node, ArithmeticKey):
+        return list(node.operands)
+    if isinstance(node, ScalarCallKey):
+        return list(node.args)
+    if isinstance(node, BetweenKey):
+        return [node.column, node.low, node.high]
+    if isinstance(node, InKey):
+        return [node.column]
+    return []
+
+
+def _classify_walk(node, *, flags, placeholder_to_original) -> None:
+    """One node of the composite walk; mutates ``flags`` (transform, row_leaf,
+    cross_model). AggregateKey nodes are opaque leaves; a regroup placeholder
+    resolves to its original aggregate (host-grain fine, cross-model not)."""
+    if isinstance(node, TransformKey):
+        flags[0] = True
+    elif isinstance(node, AggregateKey):
+        if getattr(node.source, "path", ()):
+            flags[2] = True
+    elif isinstance(node, ColumnKey) and node.leaf.startswith(REGROUP_LEAF_PREFIX):
+        original = placeholder_to_original.get(node)
+        if original is None:
+            flags[2] = True  # unknown placeholder — fail closed
+        else:
+            _classify_walk(
+                original, flags=flags,
+                placeholder_to_original=placeholder_to_original,
+            )
+    elif isinstance(node, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+        flags[1] = True
+    else:
+        for child in _composite_operand_children(node):
+            _classify_walk(
+                child, flags=flags,
+                placeholder_to_original=placeholder_to_original,
+            )
+
+
+def _classify_time_shift_composite(key, *, placeholder_to_original) -> Tuple[bool, bool, bool]:
+    """Walk a composite ``time_shift`` input, returning
+    ``(has_transform, has_row_leaf, has_cross_model_agg)``."""
+    flags = [False, False, False]
+    _classify_walk(key, flags=flags, placeholder_to_original=placeholder_to_original)
+    return tuple(flags)  # type: ignore[return-value]
+
+
+def _nested_transform_msg(op: str) -> str:
+    return (
+        f"Nesting a transform inside {op!r} is not supported. Compute the inner "
+        f"transform in an earlier stage of a multi-stage `source_queries` model "
+        f"and reference its output in this stage."
+    )
+
+
+def _validate_time_shift_input(*, op: str, inner, placeholder_to_original) -> None:
+    """Fail closed on an unsupported ``time_shift`` input shape. Only a bare
+    aggregate/column leaf or an aggregate-only composite passes; a predicate
+    (IN / BETWEEN) or other non-leaf raises rather than leaking a RuntimeError."""
+    if isinstance(inner, TransformKey):
+        raise ValueError(_nested_transform_msg(op))
+    if not isinstance(inner, (ArithmeticKey, ScalarCallKey)):
+        if isinstance(inner, (AggregateKey, ColumnKey, ColumnSqlKey)):
+            return  # bare aggregate → re-aggregate; column → read-and-rebucket
+        raise ValueError(
+            f"{op!r} does not support a {type(inner).__name__} input; only a bare "
+            f"aggregate or column leaf, or an aggregate-only composite, is "
+            f"supported. Compute this value in an earlier stage of a multi-stage "
+            f"`source_queries` model and reference its aggregate here."
+        )
+    has_transform, has_row_leaf, has_cross_model = _classify_time_shift_composite(
+        inner, placeholder_to_original=placeholder_to_original,
+    )
+    if has_transform:
+        raise ValueError(_nested_transform_msg(op))
+    if has_row_leaf:
+        raise ValueError(
+            f"{op!r} does not support a row-level (non-aggregate) leaf inside a "
+            f"composite input; every leaf must be an aggregate. Compute the "
+            f"row-level value in an earlier stage of a multi-stage "
+            f"`source_queries` model and reference its aggregate here."
+        )
+    if has_cross_model:
+        raise ValueError(
+            f"{op!r} does not support a cross-model aggregate leaf inside a "
+            f"composite input; compute it in an earlier stage of a multi-stage "
+            f"`source_queries` model and reference its output here."
+        )
+
+
+def _validate_consecutive_periods_input(*, op: str, inner) -> None:
+    """Enforce the ``consecutive_periods`` predicate typing contract: a
+    top-level string-valued scalar call has no truthiness; a boolean-shaped node
+    is legal only at the predicate top level or in an ``iif`` condition."""
+    if (
+        isinstance(inner, ScalarCallKey)
+        and inner.name.lower() in _STRING_VALUED_SCALARS
+    ):
+        raise ValueError(
+            f"{op!r} cannot use a string-valued predicate ({inner.name}(...)): a "
+            f"string has no truthiness. Compare it explicitly (e.g. "
+            f"`length(...) > 0`) to form a predicate."
+        )
+    _walk_cp_predicate(op=op, key=inner, expect="either")
+
+
+def _assert_cp_shape(*, op: str, key, expect: str, node_is_bool: bool) -> None:
+    """Enforce the boolean-vs-value expectation at one node; raise on mismatch."""
+    if expect == "bool" and not node_is_bool:
+        raise ValueError(
+            f"{op!r}: 'and' / 'or' / 'not' require boolean-shaped operands (a "
+            f"comparison, BETWEEN, IN, or another connective); got "
+            f"{type(key).__name__}."
+        )
+    if expect == "value" and node_is_bool:
+        raise ValueError(
+            f"{op!r}: a boolean-shaped predicate cannot appear in a value "
+            f"position (arithmetic operand, scalar-call argument, or IN / BETWEEN "
+            f"operand); only iif's condition and the top-level predicate accept a "
+            f"boolean. Got {type(key).__name__}."
+        )
+
+
+def _walk_cp_scalar_call(*, op: str, key) -> None:
+    """Recurse into a scalar call: an ``iif`` condition accepts either shape;
+    every remaining compound argument must be value-shaped."""
+    if key.name == "iif" and key.args:
+        _walk_cp_predicate(op=op, key=key.args[0], expect="either")
+        rest = key.args[1:]
+    else:
+        rest = key.args
+    for a in rest:
+        if isinstance(a, _COMPOUND_VALUE_KEYS):
+            _walk_cp_predicate(op=op, key=a, expect="value")
+
+
+def _cp_value_operands(key) -> list:
+    """Value-position sub-keys of a BETWEEN / IN predicate (its column, bounds,
+    and IN set) — each must be value-shaped, never a nested boolean."""
+    if isinstance(key, BetweenKey):
+        return [key.column, key.low, key.high]
+    return [key.column, *key.values]  # InKey
+
+
+def _walk_cp_predicate(*, op: str, key, expect: str) -> None:
+    """Recursively check the boolean-vs-value contract. ``expect`` is 'bool'
+    (must be boolean-shaped), 'value' (must not be), or 'either' (predicate top
+    level / iif condition)."""
+    _assert_cp_shape(
+        op=op, key=key, expect=expect, node_is_bool=_is_boolean_shaped(key),
+    )
+    if isinstance(key, ArithmeticKey):
+        child_expect = "bool" if key.op in _BOOL_CONNECTIVE_OPS else "value"
+        for o in key.operands:
+            _walk_cp_predicate(op=op, key=o, expect=child_expect)
+    elif isinstance(key, ScalarCallKey):
+        _walk_cp_scalar_call(op=op, key=key)
+    elif isinstance(key, (BetweenKey, InKey)):
+        for sub in _cp_value_operands(key):
+            _walk_cp_predicate(op=op, key=sub, expect="value")
+
+
 _WINDOW_UNIT_SQL = {
     "y": "year",
     "m": "month",
@@ -1110,6 +1334,10 @@ class SQLGenerator:
             r for r in planned_query.regroup_attach_plans
             if r.attach_phase == "combined"
         ]
+        # One hoisted gate: above the kernel-body / combined-attaches early
+        # returns so every render path raises the same shape error.
+        self._validate_transform_input_shapes(planned_query=planned_query)
+
         if (
             as_cte_body
             and producer_kernel is not None
@@ -1124,10 +1352,6 @@ class SQLGenerator:
             return self._render_with_combined_attaches(
                 planned_query=planned_query, bundle=bundle,
             )
-
-        self._validate_window_transform_ops_for_7b10(
-            planned_query=planned_query,
-        )
 
         slots_by_id = {
             s.id: s
@@ -1677,95 +1901,35 @@ class SQLGenerator:
 
 
     @staticmethod
-    def _validate_window_transform_ops_for_7b10(*, planned_query) -> None:
-        """Validate transform-layer op scope."""
-
-        deferred: set = set()
-
-        leaf_kinds = (ColumnKey, ColumnSqlKey, AggregateKey, TimeTruncKey)
-        _COMPARISON_OPS = {"==", "!=", "<", "<=", ">", ">="}
-
-        def _walk(key) -> Optional[str]:
-            if isinstance(key, TransformKey):
-                if key.op in deferred:
-                    return key.op
-                return _walk(key.input)
-            if isinstance(key, ArithmeticKey):
-                for o in key.operands:
-                    found = _walk(o)
-                    if found:
-                        return found
-                return None
-            if isinstance(key, ScalarCallKey):
-                for a in key.args:
-                    if isinstance(
-                        a,
-                        (TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey, InKey),
-                    ):
-                        found = _walk(a)
-                        if found:
-                            return found
-                return None
-            if isinstance(key, BetweenKey):
-                for k in (key.column, key.low, key.high):
-                    found = _walk(k)
-                    if found:
-                        return found
-                return None
-            if isinstance(key, InKey):
-                return _walk(key.column)
-            return None
-
+    def _validate_transform_input_shapes(*, planned_query) -> None:
+        """Reject unsupported ``time_shift`` / ``consecutive_periods`` input
+        shapes uniformly, before any render path (plain, combined-attaches,
+        kernel body) branches. The message names the transform, the offending
+        shape, and the multi-stage ``source_queries`` remedy."""
+        slots_map = {
+            s.id: s
+            for s in (
+                list(planned_query.row_slots)
+                + list(planned_query.aggregate_slots)
+                + list(planned_query.combined_expression_slots)
+            )
+        }
+        placeholder_to_original, _ = _regroup_placeholder_map(planned_query)
         for layer in planned_query.transform_layers:
-            if layer.op in deferred:
-                raise NotImplementedError(
-                    f"DEV-1450 stage 7b.11: transform op {layer.op!r} "
-                    f"(self-join CTE) deferred to a follow-up slice.",
-                )
-            if layer.op in ("time_shift", "consecutive_periods"):
-                slots_map = {
-                    s.id: s
-                    for s in (
-                        list(planned_query.row_slots)
-                        + list(planned_query.aggregate_slots)
-                        + list(planned_query.combined_expression_slots)
+            if layer.op not in ("time_shift", "consecutive_periods"):
+                continue
+            for sid in layer.slot_ids:
+                slot = slots_map.get(sid)
+                if slot is None or not isinstance(slot.key, TransformKey):
+                    continue
+                inner = slot.key.input
+                if layer.op == "time_shift":
+                    _validate_time_shift_input(
+                        op=layer.op, inner=inner,
+                        placeholder_to_original=placeholder_to_original,
                     )
-                }
-                for sid in layer.slot_ids:
-                    slot = slots_map.get(sid)
-                    if slot is None or not isinstance(slot.key, TransformKey):
-                        continue
-                    inner = slot.key.input
-                    if isinstance(inner, leaf_kinds):
-                        continue
-                    if (
-                        layer.op == "consecutive_periods"
-                        and isinstance(inner, ArithmeticKey)
-                        and inner.op in _COMPARISON_OPS
-                    ):
-                        continue
-                    raise ValueError(
-                        f"Nesting a transform inside {layer.op!r} "
-                        f"(input={type(inner).__name__}) is not supported. "
-                        f"Compute the inner transform in an earlier stage of "
-                        f"a multi-stage `source_queries` model and reference "
-                        f"its output in this stage."
-                    )
-
-        slots = (
-            list(planned_query.row_slots)
-            + list(planned_query.aggregate_slots)
-            + list(planned_query.combined_expression_slots)
-        )
-        for slot in slots:
-            found_op = _walk(slot.key)
-            if found_op is not None:
-                raise NotImplementedError(
-                    f"DEV-1450 stage 7b.11: transform op {found_op!r} "
-                    f"(reached via slot id={slot.id!r}, key="
-                    f"{type(slot.key).__name__}) deferred to a follow-up "
-                    f"slice.",
-                )
+                else:
+                    _validate_consecutive_periods_input(op=layer.op, inner=inner)
 
     @staticmethod
     def _composite_has_remote_operand(
@@ -4364,9 +4528,10 @@ class SQLGenerator:
                 ]),
                 spec=unbounded_frame,
             )
+        # Total-dispatch backstop: the 9 window ops above exhaust the vocabulary
+        # minus the desugared change/change_pct and the two dedicated emitters.
         raise NotImplementedError(
-            f"DEV-1450 stage 7b.10: transform op {op!r} not in the "
-            f"window-transform slice scope.",
+            f"window-transform dispatch has no arm for op {op!r}.",
         )
 
     def _render_post_phase_filter_conditions(  # NOSONAR(S3776) — one cohesive walk of every POST-phase filter producing the outer-WHERE conditions: per-filter slot-id lookup, expr rebuild (Compare / BoolOp / UnaryOp / scalar wraps), alias resolution. Splitting hides the shared registry / alias-map state both wrap-CTE and outer-WHERE emission depend on.
@@ -4555,12 +4720,20 @@ class SQLGenerator:
             )
         inner_key = key.input
         time_key = key.time_key
-        if not isinstance(inner_key, (AggregateKey, ColumnKey, ColumnSqlKey)):
-            raise NotImplementedError(
-                f"DEV-1450 stage 7b.11: composite-input transforms "
-                f"(layer op='time_shift' input={type(inner_key).__name__}) "
-                f"are deferred to a follow-up slice. slot id={slot.id!r}."
-            )
+        # A COMPOSITE re-aggregates each aggregate leaf in the shifted CTE: any
+        # regroup-isolated leaf (a join-crossing fragment aggregation the planner
+        # moved into a _cm_* CTE) is substituted back to its original aggregate so
+        # the builder can re-aggregate it. A BARE leaf keeps its DEV-1750 path
+        # (aggregate → re-aggregate; column / regroup-placeholder → read-and-
+        # rebucket its base-slot value), leaving single-leaf SQL byte-identical.
+        is_composite = isinstance(inner_key, (ArithmeticKey, ScalarCallKey))
+        placeholder_to_original, regroup_slot_by_key = _regroup_placeholder_map(
+            planned_query,
+        )
+        shifted_input_key = (
+            substitute_value_keys(key=inner_key, mapping=placeholder_to_original)
+            if is_composite else inner_key
+        )
         if not isinstance(time_key, TimeTruncKey):
             raise ValueError(
                 f"time_shift requires a TimeTruncKey time_key; got "
@@ -4601,13 +4774,19 @@ class SQLGenerator:
             )
         time_alias = available_alias_by_slot_id[time_sid]
 
+        # A bare leaf has its own base slot (alias reused, keeping N=1 SQL
+        # byte-identical); a composite has none, so its value gets an allocated
+        # internal alias below.
         input_sid = slot_id_by_key.get(inner_key)
-        if input_sid is None or input_sid not in available_alias_by_slot_id:
+        input_alias = (
+            available_alias_by_slot_id.get(input_sid)
+            if input_sid is not None else None
+        )
+        if not is_composite and input_alias is None:
             raise RuntimeError(
                 f"time_shift input not materialised in base CTE: "
                 f"slot id={slot.id!r}, input={inner_key!r}.",
             )
-        input_alias = available_alias_by_slot_id[input_sid]
 
         shifted_allocator = self._gen_allocator or self._new_allocator()
         shifted_scope = self._scope_frame(
@@ -4635,11 +4814,12 @@ class SQLGenerator:
                     key=pk_obj,
                     ctx=RenderContext(scope=shifted_scope, dialect=self._dialect),
                 )
-            raise NotImplementedError(
-                f"time_shift partition on {type(pk_obj).__name__} is not "
-                f"supported (only column / derived-column / time-dimension / "
-                f"computed-dimension partitions render in the shifted CTE). "
-                f"slot id={slot.id!r}.",
+            # Unreachable: auto-partitions are query-dimension slots, always one
+            # of the five kinds above. A RuntimeError invariant, not a user error.
+            raise RuntimeError(
+                f"time_shift partition on {type(pk_obj).__name__} reached the "
+                f"shifted CTE (slot id={slot.id!r}); only query-dimension "
+                f"partition kinds are expected here.",
             )
 
         def _add_partition(pk_obj, *, where: str) -> None:
@@ -4665,38 +4845,68 @@ class SQLGenerator:
             if sid in grain_sids or isinstance(dim_slot.key, TimeTruncKey):
                 _add_partition(dim_slot.key, where="query dimension")
 
-        for pk in sorted(key.partition_keys, key=lambda k: repr(k)):
-            _add_partition(pk, where="partition_key")
+        # partition_by is binder-rejected on non-rank transforms (DEV-1739) and
+        # rank never routes here, so explicit partition_keys are always empty.
+        if key.partition_keys:
+            raise RuntimeError(
+                f"time_shift unexpectedly carries partition_keys "
+                f"{key.partition_keys!r} (slot id={slot.id!r}).",
+            )
 
-        shifted_frag_kwargs: "Dict[str, ResolvedAggKwarg]" = {}
-        if isinstance(inner_key, AggregateKey):
-            if isinstance(inner_key.source, ColumnSqlKey) or getattr(
-                inner_key.source, "path", (),
-            ):
-                shifted_scope.resolve(inner_key.source)
-            for _arg in inner_key.args:
+        def _build_shifted_leaf_agg(leaf_key) -> exp.Expression:
+            """Re-aggregate one aggregate leaf over the shifted bucket: register
+            its joins / fragment kwargs / column filter into ``shifted_scope``,
+            build the aggregate, and cast per the leaf's own base slot. The
+            composite renderer recomposes the arithmetic on top."""
+            leaf_sid = slot_id_by_key.get(leaf_key)
+            leaf_slot = (
+                slots_by_id.get(leaf_sid) if leaf_sid is not None
+                else regroup_slot_by_key.get(leaf_key)
+            )
+            if leaf_slot is None:
+                raise RuntimeError(
+                    f"time_shift composite leaf not materialised: "
+                    f"slot id={slot.id!r}, leaf={leaf_key!r}.",
+                )
+            if getattr(leaf_key.source, "path", ()):  # gate rejects this shape
+                raise RuntimeError(
+                    f"time_shift reached a cross-model aggregate leaf "
+                    f"{leaf_key!r} in the shifted CTE (slot id={slot.id!r}).",
+                )
+            leaf_frag_kwargs: "Dict[str, ResolvedAggKwarg]" = {}
+            if isinstance(leaf_key.source, ColumnSqlKey):
+                shifted_scope.resolve(leaf_key.source)
+            for _arg in leaf_key.args:
                 if isinstance(_arg, ColumnSqlKey) and _arg.path:
                     continue
                 if isinstance(_arg, (ColumnKey, ColumnSqlKey)):
                     shifted_scope.resolve(_arg)
-            for _kname, _kval in inner_key.kwargs:
+            for _kname, _kval in leaf_key.kwargs:
                 if isinstance(_kval, (ColumnKey, ColumnSqlKey)):
                     shifted_scope.resolve(_kval)
             for _fname, _fast in self._register_fragment_kwarg_joins(
-                key=inner_key, scope=shifted_scope, model=source_model,
+                key=leaf_key, scope=shifted_scope, model=source_model,
             ).items():
-                shifted_frag_kwargs.setdefault(
+                leaf_frag_kwargs.setdefault(
                     _fname, ResolvedAggKwarg(kind="expr", value=_fast),
                 )
             if (
-                inner_key.column_filter_key is not None
-                and inner_key.column_filter_key.canonical_sql
+                leaf_key.column_filter_key is not None
+                and leaf_key.column_filter_key.canonical_sql
             ):
                 self._enter_mode_a_predicate(
-                    sql=inner_key.column_filter_key.canonical_sql,
+                    sql=leaf_key.column_filter_key.canonical_sql,
                     scope=shifted_scope,
                     location=f"Column.filter on model {source_model.name!r}",
                 )
+            synth = self._build_agg_render_spec_from_planned(
+                slot=leaf_slot, key=leaf_key, source_model=source_model,
+                source_relation=source_relation,
+                full_alias=input_alias or "__op__", bundle=bundle,
+                resolved_agg_kwargs=leaf_frag_kwargs or None,
+            )
+            agg_expr, _ = self._build_agg(synth)
+            return _wrap_cast_for_type(agg_expr, leaf_slot.cast_type)
 
         # Shift granularity is the explicit 3rd arg else the TD granularity, so a year-shift over a month bucket yields
         # 'same month, previous year' (YoY).
@@ -4742,35 +4952,42 @@ class SQLGenerator:
             shifted_select_parts.append(pk_expr.as_(pk_alias, quoted=True))
             shifted_group_by.append(pk_expr.copy())
 
-        if isinstance(inner_key, AggregateKey):
-            inner_slot = slots_by_id.get(input_sid)
-            if inner_slot is None:
-                raise RuntimeError(
-                    f"inner aggregate slot {input_sid!r} not found",
-                )
-            synth = self._build_agg_render_spec_from_planned(
-                slot=inner_slot,
-                key=inner_key,
-                source_model=source_model,
-                source_relation=source_relation,
-                full_alias=input_alias,
-                bundle=bundle,
-                resolved_agg_kwargs=shifted_frag_kwargs or None,
-            )
-            agg_expr, _ = self._build_agg(synth)
-            agg_expr = _wrap_cast_for_type(agg_expr, inner_slot.cast_type)
-            shifted_select_parts.append(
-                agg_expr.as_(input_alias, quoted=True),
-            )
+        if not is_composite and isinstance(inner_key, (ColumnKey, ColumnSqlKey)):
+            # Bare column or regroup placeholder: grouped and projected directly
+            # (read-and-rebucket of its base-slot value — DEV-1750, unchanged).
+            shifted_value_expr = shifted_scope.resolve(inner_key)
+            shifted_group_by.append(shifted_value_expr.copy())
+            shifted_value_alias = input_alias
         else:
-            col_expr = shifted_scope.resolve(inner_key)
-            shifted_select_parts.append(
-                col_expr.as_(input_alias, quoted=True),
+            # Bare aggregate (N=1) or aggregate-only composite (N>1): the same
+            # door — each aggregate leaf re-aggregates in the shifted bucket and
+            # the composite recomposes on top. No whole-composite cast (leaves
+            # cast). A bare aggregate reuses its base-slot alias (byte-identical).
+            shifted_value_expr = render_value_key(
+                key=shifted_input_key,
+                ctx=RenderContext(
+                    scope=shifted_scope, dialect=self._dialect,
+                    composites=CompositeFacilities(
+                        agg_builder=_build_shifted_leaf_agg,
+                    ),
+                ),
             )
-            shifted_group_by.append(col_expr.copy())
+            shifted_value_alias = input_alias or cte_allocator.allocate_cte(
+                f"{slot.declared_name}__ts",
+            )
+        shifted_select_parts.append(
+            shifted_value_expr.as_(shifted_value_alias, quoted=True),
+        )
 
-        regroup_attach_conditions = self._resolve_regroup_attach_conditions(
-            regroup_join_specs=render.regroup_join_specs, scope=shifted_scope,
+        # A composite re-aggregates every leaf from source, so it reads no _cm_*
+        # value — omit the regroup attaches (a bare read-and-rebucket still needs
+        # them to resolve its placeholder column).
+        regroup_attach_conditions = (
+            []
+            if is_composite
+            else self._resolve_regroup_attach_conditions(
+                regroup_join_specs=render.regroup_join_specs, scope=shifted_scope,
+            )
         )
         for _p in shifted_where_join_paths:
             shifted_scope.join_paths.add(_p)
@@ -4846,7 +5063,7 @@ class SQLGenerator:
             slot_full_aliases.append(full_slot_alias)
             sjoin_select_parts.append(
                 grain_alias_column(
-                    alias=input_alias, table=shifted_cte_name,
+                    alias=shifted_value_alias, table=shifted_cte_name,
                 ).as_(full_slot_alias, quoted=True),
             )
 
@@ -4917,45 +5134,25 @@ class SQLGenerator:
             )
         time_alias = available_alias_by_slot_id[time_sid]
 
-        leaf_kinds = (ColumnKey, ColumnSqlKey, AggregateKey, TimeTruncKey)
-        if isinstance(inner_key, leaf_kinds):
-            input_sid = slot_id_by_key.get(inner_key)
-            if input_sid is None or input_sid not in available_alias_by_slot_id:
-                raise RuntimeError(
-                    f"consecutive_periods input not materialised: "
-                    f"slot id={slot.id!r}, input={inner_key!r}.",
-                )
-            input_col = exp.column(
-                available_alias_by_slot_id[input_sid], quoted=True,
-            )
-            predicate = exp.And(
-                this=exp.Is(this=input_col.copy(), expression=exp.Null()).not_(),
-                expression=exp.NEQ(
-                    this=input_col.copy(), expression=exp.Literal.number(0),
-                ),
-            )
-            predicate_is_boolean = False
-        elif isinstance(inner_key, ArithmeticKey):
-            comparison_ops = {"==", "!=", "<", "<=", ">", ">=", "=", "<>"}
-            if inner_key.op not in comparison_ops:
-                raise NotImplementedError(
-                    f"DEV-1450 stage 7b.11: composite-input transforms "
-                    f"(layer op='consecutive_periods' input="
-                    f"ArithmeticKey op={inner_key.op!r}) are deferred to "
-                    f"a follow-up slice (slot id={slot.id!r}).",
-                )
-            predicate = render_value_key(
-                key=inner_key,
-                ctx=self._alias_render_ctx(
-                    slot_id_by_key=slot_id_by_key,
-                    available_alias_by_slot_id=available_alias_by_slot_id,
-                ),
-            )
-            predicate_is_boolean = True
+        # One render path for every input shape (the gate already rejected the
+        # unsupported ones). A boolean-shaped tree IS the predicate; a
+        # value-shaped tree drives the streak by non-NULL / non-zero truthiness.
+        predicate_is_boolean = _is_boolean_shaped(inner_key)
+        rendered = render_value_key(
+            key=inner_key,
+            ctx=self._alias_render_ctx(
+                slot_id_by_key=slot_id_by_key,
+                available_alias_by_slot_id=available_alias_by_slot_id,
+            ),
+        )
+        if predicate_is_boolean:
+            predicate = rendered
         else:
-            raise NotImplementedError(
-                f"DEV-1450 stage 7b.11: consecutive_periods input "
-                f"{type(inner_key).__name__} not supported.",
+            predicate = exp.And(
+                this=exp.Is(this=rendered.copy(), expression=exp.Null()).not_(),
+                expression=exp.NEQ(
+                    this=rendered.copy(), expression=exp.Literal.number(0),
+                ),
             )
 
         if predicate_is_boolean:

@@ -1,12 +1,12 @@
 # Parsing
 
 **Modules:** `slayer/engine/syntax.py` (Mode B), `slayer/sql/sql_expr.py`
-(Mode A), `slayer/engine/measure_expansion.py` (pre-bind expansion)
+(Mode A)
 
 Parsing turns expression strings into typed `ParsedExpr` trees. It is **pure
-syntax** — no scope resolution and no named-measure expansion. Those are
-separate stages (the [binder](binding.md) does scope; expansion is its own
-step). This separation is what keeps each stage small. Both aggregation
+syntax** — no scope resolution and no saved-measure resolution. Those are
+separate stages (the [binder](binding.md) does scope *and* saved-measure
+resolution). This separation is what keeps each stage small. Both aggregation
 spellings — colon (`amount:sum`) and functional (`sum(amount)`) — are native
 grammar and collapse to the SAME `AggCall` node (DEV-1826), so everything
 downstream is spelling-insensitive by construction.
@@ -152,31 +152,27 @@ predicate the binder uses to reject filters that touch a windowed `Column.sql`
 to detect windows — a Mode-A `SUM(amount)` stays raw SQL, untouched by the
 Mode-B aggregation grammar.
 
-## Pre-bind measure expansion — `measure_expansion.py`
+## Saved-measure resolution — in the binder
 
-The binder raises `UnknownReferenceError` for a bare *measure* name (measures
-aren't columns). `expand_model_measures` runs *before* binding: it is an
-AST → AST rewrite that replaces every `Ref(name=X)` whose `X` is a saved
-`ModelMeasure` with the recursively-expanded `parse_expr(measure.formula)` tree,
-turning measure refs into binder-resolvable column/aggregation nodes.
+There is no pre-bind expansion pass; the binder (`binding.py`) is the single
+saved-measure resolution authority. A bare name resolves in `_resolve_ref`
+(`alias_map` → column → saved measure); a saved measure inlines as
+`parse_expr(measure.formula)` re-bound at the same scope, and recursion resolves
+nesting. A dotted name resolves in `_resolve_dotted` (`alias_map` on the full
+dotted text → join walk to the terminal model → leaf column → saved measure): a
+dotted measure is bound against `ModelScope(source_model=terminal)` then
+prepend-rerooted into host coordinates (`keys.py`), so `customers.aov` from an
+`orders` query is bound-tree-identical to the hand-expanded `customers.`-prefixed
+formula and inherits DEV-1836 cross-model semantics for free.
 
-```mermaid
-flowchart LR
-    r["Ref('aov')"] -->|aov is a ModelMeasure| sub["parse_expr(aov.formula)"]
-    sub --> walk["recursively expand its refs"]
-    walk --> out["expanded ParsedExpr"]
-```
-
-Eligibility is principled: expansion fires at the root and in `Arith` / `UnaryOp`
-/ `Cmp` / `BoolOp` operands, `ScalarCall.args`, and `TransformCall.input` / args
-/ kwarg values. It does **not** fire on `DottedRef` segments (those resolve
-through joins), `AggCall` in any position (sources/args/kwargs are column-level
-by contract), or function-name slots. Recursion is bounded: depth limit 32
-(configurable via `SLAYER_MEASURE_EXPANSION_DEPTH`) raising
-`MeasureRecursionLimitError`, plus per-chain cycle detection raising
-`MeasureCycleError` with the offending chain. A `parse_cache` memoizes each
-measure's parse. The node-type tuple is derived from the `ParsedExpr` union via
-`get_args`, so a new node type added to `syntax.py` is automatically walked.
+Eligibility is an explicit bind context (`MeasureResolutionCtx`), threaded like
+`in_filter` and enabled only at the two eligible call sites (measure formulas and
+computed-dimension expressions). It is dropped on aggregation-level edges —
+`_bind_agg` source/args/kwargs, `partition_by`, transform scalar args — each
+pinned by a test, so a measure never resolves inside an aggregation position.
+Recursion is bounded: a depth cap (default 32, `SLAYER_MEASURE_EXPANSION_DEPTH`)
+raising `MeasureRecursionLimitError`, plus per-chain cycle detection raising
+`MeasureCycleError` naming the offending (model, measure) chain.
 
 ## Design rationale
 
@@ -191,10 +187,11 @@ measure's parse. The node-type tuple is derived from the `ParsedExpr` union via
   construction, and collapsing both spellings to one node makes identity,
   naming, and cross-spelling measure/filter matching free. See
   [slack normalization](slack-normalization.md) for the retirement.
-- **Why is parsing pure (no scope)?** So the same parser serves the binder, the
-  measure expander, and the scope-free extractors. Mixing in resolution would
-  re-couple parsing to the model graph — the coupling the redesign removes.
-- **Why a separate expansion pass instead of expanding in the binder?** Expansion
-  is an AST → AST rewrite with its own recursion/cycle concerns; keeping it
-  before binding means the binder only ever sees column/aggregation refs and can
-  stay a straight scope lookup.
+- **Why is parsing pure (no scope)?** So the same parser serves the binder and
+  the scope-free extractors. Mixing in resolution would re-couple parsing to the
+  model graph — the coupling the redesign removes.
+- **Why resolve saved measures in the binder, not a separate pass?** Resolution
+  is inherently scope-bound (it needs the model graph the binder already holds),
+  so a pre-bind pass would duplicate that scope machinery; inlining
+  `parse_expr(measure.formula)` at the same scope keeps recursion, cycle, and
+  depth handling in one place.

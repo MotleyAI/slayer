@@ -90,8 +90,9 @@ def _cases() -> dict:
         "window/cumsum_cross_model": _q(measures=[
             {"formula": "cumsum(customers.spend:sum)", "name": "run"},
         ]),
-        # composite-input transform — 7b.11 must survive the lift (records raise).
-        "composite/still_7b11": _q(measures=[
+        # composite-input transform — DEV-1846 lifted this; it now renders a
+        # shifted-CTE re-aggregation beside the cross-model sibling.
+        "composite/lifted": _q(measures=[
             {"formula": "customers.spend:sum", "name": "cm"},
             {"formula": "time_shift(amount:sum + amount:sum, -1)", "name": "prev"},
         ]),

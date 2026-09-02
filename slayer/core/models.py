@@ -11,11 +11,11 @@ from sqlalchemy.engine import URL as _SA_URL
 from slayer.core.enums import (
     BUILTIN_AGGREGATIONS,
     DEFAULT_AGGREGATIONS_BY_TYPE,
-    PRIMARY_KEY_AGGREGATIONS,
     DataType,
     JoinCardinality,
     JoinType,
     ObjectKind,
+    PRIMARY_KEY_AGGREGATIONS,
     _coerce_legacy_datatype,
 )
 from slayer.core.format import NumberFormat
@@ -30,27 +30,15 @@ _NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 logger = logging.getLogger(__name__)
 
-# Host-field normalization for the generic connection URL. ``URL.create``
-# wants a raw host (IPv6 without brackets) plus a separate port, but the
-# pre-fix string branch tolerated the port being embedded in the host
-# field. These two patterns split it back out. See
-# ``DatasourceConfig.get_connection_string``.
-#
+# Split an embedded port out of the host field for ``URL.create``.
 # ``[<ipv6>]`` or ``[<ipv6>]:<port>`` — bracketed IPv6, optional port.
 _BRACKETED_HOST_RE = re.compile(r"^\[(.+)\](?::(\d+))?$")
-# ``<host>:<numeric-port>`` — the leading class excludes ``:`` and ``[`` so
-# bare IPv6 (``::1``) and bracketed IPv6 never match here; only a
-# single-colon, numeric-tail host does.
+# ``<host>:<numeric-port>`` — single-colon numeric-tail host only.
 _HOST_EMBEDDED_PORT_RE = re.compile(r"^([^:\[]+):(\d+)$")
 
 
 class _SubstringRule:
-    """Single source of truth for a forbidden substring inside a name.
-
-    Each rule pairs the forbidden character / digraph with the rationale.
-    Every validator that rejects the same substring uses the same rule
-    so the wording (and the rejection rationale) lives in one place.
-    """
+    """A forbidden substring inside a name, paired with its rejection rationale."""
 
     __slots__ = ("substring", "reason")
 
@@ -66,11 +54,8 @@ class _SubstringRule:
             )
 
 
-# DEV-1743: ``__`` is no longer banned in model/query/column/measure names
-# (the dotted-canonical flip made join-path ambiguity structurally
-# impossible). The only reserved substring left is the ``__slayer_`` prefix,
-# which the colon-agg preprocessor mints internally — user input must not spoof
-# it.
+# ``__`` is allowed in names (DEV-1743); only the internal ``__slayer_`` prefix
+# is reserved, so user input cannot spoof colon-agg preprocessor identifiers.
 _RESERVED_NAME_PREFIX = "__slayer_"
 
 
@@ -110,8 +95,7 @@ _NO_NUL = _SubstringRule(
 
 
 def _require_non_empty_trimmed(v: str, context: str) -> None:
-    """Reject empty / whitespace-only inputs and inputs with
-    leading or trailing whitespace."""
+    """Reject empty/whitespace-only inputs and leading/trailing whitespace."""
     if not v or not v.strip():
         raise ValueError(
             f"{context} must be a non-empty string; got {v!r}."
@@ -124,8 +108,7 @@ def _require_non_empty_trimmed(v: str, context: str) -> None:
 
 
 def _validate_model_name(name: str, context: str) -> str:
-    """Reject model/query names containing ``.`` or ``:``, or the reserved
-    ``__slayer_`` prefix. ``__`` elsewhere is allowed (DEV-1743)."""
+    """Reject model/query names containing ``.``/``:`` or the ``__slayer_`` prefix."""
     label = f"{context} name"
     _NO_DOT.check(name=name, context=label)
     _NO_COLON.check(name=name, context=label)
@@ -137,24 +120,12 @@ _DUNDER_RUN_RE = re.compile(r"_{2,}")
 
 
 def sanitize_model_name(name: str) -> str:
-    """Collapse runs of 2+ underscores to a single underscore.
-
-    Regex, not ``replace("__", "_")``: ``str.replace`` is non-overlapping, so
-    ``"a___b"`` would become ``"a__b"``. Used by ingestion's re-ingest fallback
-    matching (D3): ``__`` in names is no longer rejected, but the sanitized
-    spelling is still the fallback key for matching a stored model to a freshly
-    scanned one. Dotted names aren't handled here (ambiguous with schema
-    qualification) — the caller skips them.
-    """
+    """Collapse runs of 2+ underscores to one (regex handles overlaps; the fallback match key for re-ingest)."""
     return _DUNDER_RUN_RE.sub("_", name)
 
 
 def _validate_column_name(name: str, context: str) -> str:
-    """Reject dimension/measure names containing ``.`` or ``:``.
-
-    ``__`` is allowed — it encodes flattened join paths in virtual
-    models created by ``_query_as_model`` (e.g., ``stores__name``).
-    """
+    """Reject dimension/measure names containing ``.`` or ``:`` (``__`` allowed for flattened join paths)."""
     label = f"{context} name"
     _NO_DOT.check(name=name, context=label)
     _NO_COLON.check(name=name, context=label)
@@ -163,14 +134,7 @@ def _validate_column_name(name: str, context: str) -> str:
 
 
 class Column(BaseModel):
-    """A row-level column on a model.
-
-    Carries the metadata needed to use the column either as a GROUP BY key
-    (a "dimension") or as the input to an aggregation (a "measure"). What it's
-    used as is decided per-query, gated by data type and ``allowed_aggregations``.
-
-    Replaces v1 ``Dimension`` and ``Measure`` (which were merged in v2).
-    """
+    """A row-level column, usable per-query as a GROUP BY dimension or an aggregation measure."""
     name: str
     sql: str | None = None
     type: DataType = DataType.TEXT
@@ -199,9 +163,7 @@ class Column(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _coerce_legacy_type(cls, data: Any) -> Any:
-        # DEV-1361: absorb legacy lowercase ``type`` strings ("string",
-        # "number", "integer", "time", "date", "boolean") and drop pseudo-
-        # type values ("count"/"sum"/...) so older agent input keeps working.
+        # Absorb legacy lowercase ``type`` strings; drop pseudo-types to None.
         if isinstance(data, dict) and "type" in data:
             mapped = _coerce_legacy_datatype(data["type"])
             if mapped is None:
@@ -219,27 +181,13 @@ class Column(BaseModel):
     @classmethod
     def _validate_filter_predicate(cls, v: Optional[str]) -> Optional[str]:
         if v is not None:
-            # DEV-1369: Column.filter is SQL-mode — validate at construction
-            # time so DSL constructs (aggregation colon, transform calls) are
-            # caught early. Result is discarded; we only care about the
-            # side effect of raising on a violation.
+            # SQL-mode: validate at construction so DSL constructs raise early.
             parse_sql_predicate(v)
         return v
 
 
 class ModelMeasure(BaseModel):
-    """A named formula on a model (or a query-level computed measure).
-
-    A formula is a string that evaluates to an aggregated value: a column-with-
-    aggregation reference (``"revenue:sum"``), arithmetic over such references
-    (``"revenue:sum / *:count"``), a transform call (``"cumsum(revenue:sum)"``),
-    or a bare reference to another ``ModelMeasure`` by name. See
-    ``slayer/core/formula.py`` for full grammar.
-
-    Stored in ``SlayerModel.measures`` for reuse, and in ``SlayerQuery.measures``
-    for inline / query-specific definitions. The shape is identical in both
-    contexts; the difference is scope.
-    """
+    """A named formula evaluating to an aggregated value (grammar: ``slayer/core/formula.py``)."""
     formula: str
     name: str | None = None
     label: str | None = None
@@ -250,9 +198,7 @@ class ModelMeasure(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _coerce_legacy_type(cls, data: Any) -> Any:
-        # DEV-1361: ``type`` declares the formula's result data type for outer
-        # CAST emission at aggregation time. Legacy lowercase strings get
-        # mapped to canonical values; pseudo-types drop to None.
+        # ``type`` declares the formula's result type; legacy strings mapped, pseudo-types dropped.
         if isinstance(data, dict) and "type" in data:
             mapped = _coerce_legacy_datatype(data["type"])
             if mapped is None:
@@ -276,10 +222,7 @@ class ModelMeasure(BaseModel):
     @field_validator("name")
     @classmethod
     def _reject_transform_shadowing(cls, v: str | None) -> str | None:
-        """A saved measure named after a built-in transform (``cumsum`` etc.)
-        would shadow the transform when written as ``cumsum(...)`` in another
-        formula. Reject these names at construction time.
-        """
+        """Reject names that would shadow a built-in transform (``cumsum`` etc.)."""
         if v is None:
             return v
         if v in ALL_TRANSFORMS:
@@ -292,21 +235,13 @@ class ModelMeasure(BaseModel):
     @field_validator("formula")
     @classmethod
     def _reject_raw_window_function(cls, v: str) -> str:
-        """DEV-1336: a measure formula containing raw ``OVER (...)`` SQL cannot
-        be parsed by SLayer's formula grammar (Python AST rejects ``OVER`` as a
-        keyword) and produces invalid SQL on every dialect if used as a filter.
-        Reject at construction time with an actionable error.
-        """
+        """Reject raw ``OVER (...)`` window SQL — unparseable by the formula grammar."""
         if has_window_function(v):
             raise ValueError(f"ModelMeasure formula '{v}' {WINDOW_IN_FILTER_ERROR}")
         return v
 
-    # DEV-1369: ModelMeasure formulas may legitimately contain ``__`` —
-    # virtual-model columns produced by ``_query_as_model`` flatten join
-    # paths into names like ``kpis__total_amount_sum``, which downstream
-    # stages reference directly. Strict resolution at binding time
-    # catches typos like ``customers__region`` that don't resolve to any
-    # Column on the model.
+    # Formulas may contain ``__`` (flattened virtual-model join paths); typos are
+    # caught by strict resolution at binding time.
 
 
 class AggregationParam(BaseModel):
@@ -316,12 +251,7 @@ class AggregationParam(BaseModel):
 
 
 class Aggregation(BaseModel):
-    """A named aggregation, either overriding a built-in or fully custom.
-
-    For built-in overrides (e.g., setting default weight for weighted_avg),
-    ``formula`` may be omitted — the built-in formula is used.
-    For fully custom aggregations, ``formula`` is required.
-    """
+    """A named aggregation overriding a built-in (``formula`` optional) or fully custom (``formula`` required)."""
     name: str
     formula: str | None = None  # SQL template; None = use built-in formula
     params: list[AggregationParam] = Field(default_factory=list)
@@ -331,10 +261,7 @@ class Aggregation(BaseModel):
     @field_validator("name")
     @classmethod
     def _validate_name(cls, v: str) -> str:
-        # DEV-1567: same identifier rule as Column.name / ModelMeasure.name.
-        # The pg-facade catalog flattens cross-model entries with a dotted
-        # prefix; the local/cross-model split would misclassify a dotted
-        # Aggregation.name as cross-model.
+        # Same identifier rule as Column.name; a dotted name would misclassify in the pg-facade catalog.
         if not _NAME_PATTERN.match(v):
             raise ValueError(
                 f"Invalid name '{v}': must contain only letters, digits, "
@@ -354,9 +281,7 @@ class Aggregation(BaseModel):
 
     @model_validator(mode="after")
     def _reject_transform_names(self) -> "Aggregation":
-        # Names that are ONLY transforms (not also built-in aggregations) are
-        # forbidden as custom aggregation names to avoid ambiguity with the
-        # formula parser's transform detection.
+        # Transform-only names are forbidden to avoid ambiguity with transform detection.
         transform_only = ALL_TRANSFORMS - BUILTIN_AGGREGATIONS
         if self.name in transform_only:
             raise ValueError(
@@ -378,21 +303,12 @@ class Aggregation(BaseModel):
 
 
 def _coerce_source_queries(v: Any) -> Any:
-    """Parse source_queries entries: dicts → SlayerQuery instances.
-
-    Imports SlayerQuery lazily to avoid the slayer.core.models ↔
-    slayer.core.query import cycle (query.py imports ModelMeasure from
-    models.py).
-
-    Raises ``ValueError`` (not ``TypeError``) for bad input so Pydantic v2
-    wraps it into a ``ValidationError`` — required for REST/MCP/CLI callers
-    to get structured error responses instead of raw tracebacks.
-    """
+    """Parse source_queries dicts → SlayerQuery (lazy import breaks a cycle; raises ValueError for Pydantic)."""
     if v is None:
         return v
     if not isinstance(v, list):
         raise ValueError(f"source_queries must be a list, got {type(v).__name__}")
-    from slayer.core.query import SlayerQuery  # ALLOW(import-not-top): breaks the core.query <-> core.models cycle
+    from slayer.core.query import SlayerQuery  # ALLOW(import-not-top): circular — slayer.core.query imports SlayerModel/ModelMeasure from this module
     result = []
     for i, item in enumerate(v):
         if isinstance(item, SlayerQuery):
@@ -408,28 +324,12 @@ def _coerce_source_queries(v: Any) -> Any:
 
 
 class SourceModelOrigin(BaseModel):
-    """Lineage breadcrumb for virtual stage models produced by
-    ``_query_as_model``. Records the chain of upstream source models so
-    outer-stage dotted-ref lookup can strip the right prefix and find
-    the flat column in the wrapped subquery's projection (DEV-1449).
+    """In-memory lineage breadcrumb for virtual stage models: a linked list of
+    upstream names so outer-stage dotted-ref lookup can strip prefixes.
 
-    Linked-list shape: each virtual model points at its direct
-    upstream's name; walking ``parent`` reaches the original
-    table-backed (or sql-backed) root.
-
-    ``agg_column_names`` (Codex review on PR #137 round 9) records the
-    flat names of columns on this stage that came from
-    ``cross_model_measures`` or aggregated ``measures`` in the inner
-    query's binding — i.e. the columns the cross-stage intercept
-    is safe to re-aggregate. Without this provenance, a user-defined
-    dimension whose name happens to look like an aggregation canonical
-    (e.g. ``customers__revenue_sum``) would be silently re-summed by
-    the intercept. Empty by default; only ``_query_as_model``
-    populates it.
-
-    The field is in-memory only — virtual stage models are not
-    persisted, and `SlayerModel.source_model_origin` carries
-    ``exclude=True`` so accidental save paths drop it cleanly.
+    ``agg_column_names`` marks columns safe for the cross-stage intercept to
+    re-aggregate, so a dimension that merely looks like an aggregation canonical
+    isn't silently re-summed.
     """
     name: str
     data_source: str | None = None
@@ -444,9 +344,7 @@ class ModelJoin(BaseModel):
     join_type: JoinType = JoinType.LEFT             # LEFT (default) or INNER
     # Join arity, read source->target; None = undetermined.
     cardinality: JoinCardinality | None = None
-    # DEV-1643: optional human/agent metadata (e.g. carrying OSI relationship
-    # ai_context on import). Purely additive/optional — old data omits them and
-    # validates unchanged, so no SlayerModel schema-version bump is needed.
+    # Optional human/agent metadata; additive, so no schema-version bump needed.
     description: str | None = None
     meta: dict[str, Any] | None = None
 
@@ -463,14 +361,46 @@ class ModelJoin(BaseModel):
         return v
 
 
+def _check_column_measure_namespace(
+    *, model_name: str, columns: list, measures: list
+) -> None:
+    """Columns and measures share one namespace: unique within each, disjoint across."""
+    col_names_seq = [c.name for c in columns]
+    col_dupes = sorted({n for n in col_names_seq if col_names_seq.count(n) > 1})
+    if col_dupes:
+        raise ValueError(
+            f"Model '{model_name}': duplicate column names: {col_dupes}. "
+            f"Each column name must be unique within a model."
+        )
+    unnamed = [m.formula for m in measures if m.name is None]
+    if unnamed:
+        raise ValueError(
+            f"Model '{model_name}': every ModelMeasure in 'measures' must "
+            f"have a name. Unnamed formulas: {unnamed}."
+        )
+    measure_names_seq = [m.name for m in measures if m.name is not None]
+    measure_dupes = sorted(
+        {n for n in measure_names_seq if measure_names_seq.count(n) > 1}
+    )
+    if measure_dupes:
+        raise ValueError(
+            f"Model '{model_name}': duplicate measure names: {measure_dupes}. "
+            f"Each named ModelMeasure must have a unique name within a model."
+        )
+    overlap = sorted(set(col_names_seq) & set(measure_names_seq))
+    if overlap:
+        raise ValueError(
+            f"Model '{model_name}': name collision between columns and "
+            f"measures: {overlap}. Each name must be unique within a model "
+            f"(columns and measures share a namespace)."
+        )
+
+
 class SlayerModel(BaseModel):
     version: int = 9  # DEV-1743: v9 = ``__`` ban lift + legacy-alias load rewrite
     name: str
     sql_table: str | None = None
-    # What kind of database object ``sql_table`` names; only auto-ingestion sets
-    # it. ``None`` = unknown (pre-v8, hand-authored, or sql/query-backed models
-    # with no live object to classify), and explains why a view-backed model has
-    # no primary key.
+    # Kind of DB object ``sql_table`` names; only auto-ingestion sets it. ``None`` = unknown.
     source_kind: Optional[ObjectKind] = None
     sql: str | None = None
     source_queries: Annotated[
@@ -496,13 +426,8 @@ class SlayerModel(BaseModel):
     @field_validator("data_source")
     @classmethod
     def _validate_data_source_format(cls, v: str) -> str:
-        # Format-only checks (run on every input). Emptiness is enforced
-        # in ``_require_data_source_unless_query_backed`` below so
-        # query-backed models can be constructed before their cache
-        # populator fills in ``data_source`` from the resolved virtual
-        # model. Whitespace-strip mismatch and substring rules mirror
-        # ``DatasourceConfig.name`` so the two canonical-id ingress
-        # points share validation logic via the shared ``_NO_*`` rules.
+        # Format-only checks; emptiness is enforced below so query-backed models
+        # can be constructed before their cache populator fills data_source.
         if not v:
             return v
         if v.strip() != v:
@@ -520,12 +445,8 @@ class SlayerModel(BaseModel):
 
     @model_validator(mode="after")
     def _require_data_source_unless_query_backed(self) -> "SlayerModel":
-        # Table-backed models (sql_table / sql) must have data_source up
-        # front — it's part of the v4 storage key. Query-backed models are
-        # allowed to start with an empty data_source because
-        # ``engine._validate_and_populate_cache`` fills it in from the
-        # resolved virtual model, and ``engine.save_model`` re-runs the
-        # check before persisting.
+        # Table-backed models need data_source up front (storage key); query-backed
+        # ones may start empty — the engine fills it in before persisting.
         if not self.data_source.strip() and not self.source_queries:
             raise ValueError(
                 f"Model '{self.name}': 'data_source' must be a non-empty "
@@ -539,88 +460,28 @@ class SlayerModel(BaseModel):
     description: str | None = None
     hidden: bool = False
     meta: dict[str, Any] | None = None
-    # DEV-1449: in-memory breadcrumb for virtual stage models produced by
-    # ``_query_as_model``. ``exclude=True`` keeps it out of YAML/SQLite
-    # roundtrips; virtual stage models are not persisted in the first place.
+    # In-memory breadcrumb for virtual stage models; ``exclude=True`` keeps it unpersisted.
     source_model_origin: SourceModelOrigin | None = Field(default=None, exclude=True)
 
     @field_validator("filters")
     @classmethod
     def _validate_filter_predicates(cls, v: list[str]) -> list[str]:
-        """Validate each model filter as a SQL-mode predicate (DEV-1369).
-
-        Model filters are SQL snippets: joined column references use the
-        ``__`` alias syntax (``customers__regions.name``). Each entry is
-        parsed with :func:`parse_sql_predicate` so DSL constructs
-        (aggregation colon, transform calls, raw OVER) are caught at
-        construction time.
-        """
+        """Validate each model filter as a SQL-mode predicate at construction time."""
         for f in v:
             parse_sql_predicate(f)
         return v
 
     @model_validator(mode="after")
     def _validate_column_measure_disjoint(self) -> "SlayerModel":
-        """Names within ``columns`` and within ``measures`` must each be unique,
-        and the two lists must not overlap.
-
-        A query formula like ``{"formula": "revenue"}`` resolves by looking up
-        the name in both lists; allowing duplicates within a list or collisions
-        across lists would make resolution ambiguous.
-        """
-        col_names_seq = [c.name for c in self.columns]
-        col_dupes = sorted({n for n in col_names_seq if col_names_seq.count(n) > 1})
-        if col_dupes:
-            raise ValueError(
-                f"Model '{self.name}': duplicate column names: {col_dupes}. "
-                f"Each column name must be unique within a model."
-            )
-        unnamed = [m.formula for m in self.measures if m.name is None]
-        if unnamed:
-            raise ValueError(
-                f"Model '{self.name}': every ModelMeasure in 'measures' must "
-                f"have a name. Unnamed formulas: {unnamed}."
-            )
-        measure_names_seq = [m.name for m in self.measures if m.name is not None]
-        measure_dupes = sorted({n for n in measure_names_seq if measure_names_seq.count(n) > 1})
-        if measure_dupes:
-            raise ValueError(
-                f"Model '{self.name}': duplicate measure names: {measure_dupes}. "
-                f"Each named ModelMeasure must have a unique name within a model."
-            )
-        col_names = set(col_names_seq)
-        measure_names = set(measure_names_seq)
-        overlap = sorted(col_names & measure_names)
-        if overlap:
-            raise ValueError(
-                f"Model '{self.name}': name collision between columns and "
-                f"measures: {overlap}. Each name must be unique within a model "
-                f"(columns and measures share a namespace)."
-            )
+        """Columns and measures share one namespace (see ``_check_column_measure_namespace``)."""
+        _check_column_measure_namespace(
+            model_name=self.name, columns=self.columns, measures=self.measures
+        )
         return self
 
     @model_validator(mode="after")
     def _validate_allowed_aggregations(self) -> "SlayerModel":
-        """Enforce the intersection contract on ``Column.allowed_aggregations``.
-
-        A whitelist entry is accepted iff:
-
-        0. **Opaque rule** — the column's type is not opaque. An opaque
-           (``UNKNOWN``) column cannot be aggregated at all, so declaring a
-           whitelist on one is always a mistake.
-        1. It is a known aggregation name (built-in or custom on this model).
-        2. **PK rule** — if the column is a primary key, the entry must be in
-           ``PRIMARY_KEY_AGGREGATIONS`` (``count`` / ``count_distinct`` only),
-           regardless of type or whether the entry is a custom aggregation.
-        3. **Type-default rule** — for non-PK columns, built-in aggregations
-           must be eligible under ``DEFAULT_AGGREGATIONS_BY_TYPE`` for the
-           column's type. Custom aggregations bypass this check (their formula
-           determines applicability).
-
-        Together these turn the whitelist into a guaranteed subset of the
-        type/PK eligibility set, so query-time gating reduces to a whitelist
-        membership check.
-        """
+        """Enforce that ``Column.allowed_aggregations`` is a subset of the type/PK eligibility set."""
         custom_agg_names = {a.name for a in self.aggregations}
         valid_names = BUILTIN_AGGREGATIONS | custom_agg_names
         for c in self.columns:
@@ -651,9 +512,7 @@ class SlayerModel(BaseModel):
                         )
                     continue
                 if agg_name in custom_agg_names and agg_name not in BUILTIN_AGGREGATIONS:
-                    # Custom aggregations are exempt from type-default eligibility;
-                    # the formula determines applicability. Built-in name overrides
-                    # (e.g., a model-defined ``sum``) keep their type semantics.
+                    # Custom aggregations bypass type-default eligibility; the formula decides.
                     continue
                 allowed_for_type = DEFAULT_AGGREGATIONS_BY_TYPE.get(
                     c.type, frozenset()
@@ -670,12 +529,7 @@ class SlayerModel(BaseModel):
 
     @model_validator(mode="after")
     def _validate_source_mode_exclusivity(self) -> "SlayerModel":
-        """Exactly one of sql_table, sql, source_queries must be populated.
-
-        Empty source_queries=[] is rejected with a specific message. None / 0
-        / 2+ populated source modes raise a generic exclusivity error listing
-        which modes were set.
-        """
+        """Exactly one of sql_table, sql, source_queries must be populated."""
         if self.source_queries is not None and len(self.source_queries) == 0:
             raise ValueError(
                 f"Model '{self.name}': source_queries cannot be an empty list. "
@@ -705,12 +559,7 @@ class SlayerModel(BaseModel):
     # apply to validator methods.
     @model_validator(mode="after")
     def _validate_source_query_stages(self) -> "SlayerModel":
-        """Validate stage-name rules on source_queries.
-
-        - All non-final stages must have a non-empty name (so later stages
-          and the outer query can reference them by name).
-        - Stage names (across all stages, not just non-final) must be unique.
-        """
+        """Non-final stages must be named; all stage names must be unique."""
         if not self.source_queries:
             return self
         stages = self.source_queries
@@ -734,6 +583,19 @@ class SlayerModel(BaseModel):
             raise ValueError(
                 f"Model '{self.name}': duplicate stage name(s) in "
                 f"source_queries: {sorted(dupes)}."
+            )
+        return self
+
+    # NOSONAR S3516 — Pydantic v2 @model_validator(mode="after") must return self.
+    @model_validator(mode="after")
+    def _reject_measures_on_query_backed(self) -> "SlayerModel":
+        """A query-backed model may not declare ``measures`` directly — they never take effect."""
+        if self.source_queries and self.measures:
+            raise ValueError(
+                f"Model '{self.name}': a query-backed model (source_queries) "
+                f"cannot declare measures directly — they never take effect. "
+                f"Declare the measure in the backing query's final stage, or add "
+                f"it with a ModelExtension at query time."
             )
         return self
 
@@ -767,35 +629,20 @@ class DatasourceConfig(BaseModel):
     password: str | None = None
     connection_string: str | None = None
     schema_name: str | None = None
-    # ``schema_name`` (above) is the UPSTREAM physical schema this datasource
-    # reads from (e.g. a Snowflake/Postgres source schema). ``postgres_schema``
-    # is unrelated: it's the schema name the Postgres *facade* advertises this
-    # datasource's models under. Default ``None`` => "public", so by default
-    # every datasource's models share one schema; set it to separate them.
+    # Unlike ``schema_name`` (upstream physical schema), this is the schema the
+    # Postgres facade advertises this datasource's models under; ``None`` => "public".
     postgres_schema: str | None = None
     description: str | None = None
-    # Snowflake-specific (v2, DEV-1551). Other dialects ignore them.
-    # ``connection_name`` is the primary auth path — when set, all credentials
-    # come from ``~/.snowflake/connections.toml`` via
-    # ``snowflake.connector.connect(connection_name=...)``. Inline form
-    # (host as account, username, password, database, schema_name) is the
-    # secondary path; ``warehouse`` and ``role`` populate the URL's query
-    # string for that path. See docs/configuration/datasources.md#snowflake.
+    # Snowflake-specific. ``connection_name`` is the primary auth path (creds from
+    # connections.toml); inline fields + ``warehouse``/``role`` are the secondary path.
     connection_name: str | None = None
     warehouse: str | None = None
     role: str | None = None
-    # BigQuery-specific. Other dialects ignore it. The contents of a Google
-    # service-account key file as a JSON string. When set, the BigQuery dialect
-    # constructs the SQLAlchemy engine with ``credentials_info=json.loads(...)``
-    # so the connection authenticates against that service account directly.
-    # When unset, BigQuery falls back to Application Default Credentials
-    # (``GOOGLE_APPLICATION_CREDENTIALS`` env var or attached compute identity).
+    # BigQuery-specific. A service-account key file as JSON; when set, the engine
+    # authenticates against it, else falls back to Application Default Credentials.
     credentials_json: str | None = Field(default=None, repr=False)
-    # BigQuery-specific. A Google OAuth authorized-user grant as JSON, in the
-    # shape ``Credentials.from_authorized_user_info`` consumes — the per-end-user
-    # auth path, so queries run with that user's permissions. Mutually exclusive
-    # with ``credentials_json``, which cannot carry a grant: the driver feeds it
-    # to ``from_service_account_info``.
+    # BigQuery-specific. A per-end-user OAuth authorized-user grant as JSON;
+    # mutually exclusive with ``credentials_json`` (which carries a service account).
     oauth_credentials_json: str | None = Field(default=None, repr=False)
 
     @model_validator(mode="before")
@@ -809,16 +656,8 @@ class DatasourceConfig(BaseModel):
     @field_validator("name")
     @classmethod
     def _validate_name(cls, v: str) -> str:
-        # Datasource names are the leading segment of every canonical-id
-        # (``<ds>``, ``<ds>.<model>``, ``<ds>.<model>.<leaf>``) and a
-        # path component in YAML storage (``datasources/<name>.yaml``,
-        # ``models/<name>/...``). The substring rules are shared with
-        # ``SlayerModel.data_source`` via the module-level ``_NO_*``
-        # rules so the rationale lives in one place.
-        #
-        # ``__`` is intentionally NOT rejected: datasource names never
-        # become SQL table aliases, so the join-path-alias reservation
-        # that applies to model and query names doesn't apply here.
+        # Leading segment of every canonical-id and a YAML storage path component;
+        # substring rules shared with ``SlayerModel.data_source``. ``__`` is allowed.
         label = "Datasource 'name'"
         _require_non_empty_trimmed(v=v, context=label)
         _NO_NUL.check(name=v, context=label)
@@ -831,10 +670,7 @@ class DatasourceConfig(BaseModel):
     @field_validator("postgres_schema")
     @classmethod
     def _validate_postgres_schema(cls, v: str | None) -> str | None:
-        # The facade advertises models under this schema, so it must be a
-        # plain unquoted Postgres identifier. Postgres folds unquoted
-        # identifiers to lowercase, so we require lowercase to avoid the
-        # quoting ambiguity that would otherwise surprise BI tools.
+        # Must be a lowercase unquoted Postgres identifier (avoids quoting ambiguity).
         if v is None:
             return v
         _require_non_empty_trimmed(v=v, context="Datasource 'postgres_schema'")
@@ -862,11 +698,7 @@ class DatasourceConfig(BaseModel):
     def get_connection_string(self) -> str:
         if self.connection_string:
             return self.connection_string
-        # Dialect-specific hook (DEV-1551): SnowflakeDialect builds the
-        # sentinel ``snowflake://?connection_name=<name>`` URL or the
-        # full snowflake-sqlalchemy URL from inline fields. Tier-1
-        # dialects without a custom hook return None and fall through
-        # to the standard branches below.
+        # Dialect-specific hook (e.g. Snowflake); others return None and fall through.
         dialect = dialect_for_ds_type(self.type)
         url_from_dialect = dialect.build_connection_url(self)
         if url_from_dialect is not None:
@@ -883,24 +715,11 @@ class DatasourceConfig(BaseModel):
             "clickhouse": "clickhouse+http",
         }
         driver = driver_map.get(self.type, self.type)
-        # Build the URL with SQLAlchemy's structured builder (issue #240)
-        # rather than manual string concatenation, so credentials containing
-        # reserved URL characters (``@``, ``/``, ``:``, ...) are
-        # percent-encoded in the userinfo section instead of being misparsed
-        # as URL delimiters. ``username``/``password`` are treated as raw
-        # credentials; ``host or "localhost"`` preserves the pre-fix default.
-        # (SQLAlchemy renders the database path unencoded, matching the
-        # pre-fix behavior — a ``?`` in a database name is not our concern.)
-        # Mirrors ``_get_tsql_connection_string``.
+        # Use SQLAlchemy's structured builder so reserved chars in credentials
+        # are percent-encoded rather than misparsed as URL delimiters.
         host, port = self.host or "localhost", self.port
-        # Backward-compat with the pre-fix string branch, which tolerated the
-        # port (and IPv6 brackets) living in the host field. ``URL.create``
-        # wants a raw host + separate port, so normalize:
-        #   [::1] / [::1]:5432  -> strip brackets, lift embedded port
-        #   db.example:5432     -> split single-colon numeric port
-        # A bare IPv6 host (``::1``) is left as-is — ``URL.create`` brackets
-        # it correctly. If the host embeds a port AND the ``port`` field is
-        # also set, that is contradictory config — raise rather than guess.
+        # ``URL.create`` wants a raw host + separate port, so lift any port
+        # embedded in the host field; a port set in both places is contradictory.
         embedded_port: str | None = None
         bracketed = _BRACKETED_HOST_RE.match(host)
         if bracketed:

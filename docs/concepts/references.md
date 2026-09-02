@@ -159,6 +159,7 @@ Accepted at construction:
 ```json
 {"name": "aov", "formula": "revenue:sum / *:count"}
 {"name": "cust_rev", "formula": "customers.revenue:sum"}     // cross-model dotted path
+{"name": "resale", "formula": "customers.aov"}               // another model's SAVED measure
 {"name": "growth", "formula": "change(revenue:sum)"}         // transform on agg ref
 ```
 
@@ -167,6 +168,8 @@ Rejected at enrichment (when the formula is evaluated against a model):
 ```json
 {"name": "bad", "formula": "json_extract(data, '$.x')"}      // raw SQL fn
 ```
+
+A bare `aov` or dotted `customers.aov` reuses a saved measure by expanding its formula inline, but only inside a measure formula or computed-dimension expression — see [Reusing another model's saved measure](models.md#reusing-another-models-saved-measure-customersaov).
 
 ## Scalar functions and dialect semantics
 
