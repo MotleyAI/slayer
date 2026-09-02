@@ -1,32 +1,9 @@
-"""DEV-1709 (Stage 5) — plan-time crossing-input discovery for aggregates.
-
-The widened Law-3 trigger isolates a LOCAL aggregate into a host-rooted CTE
-when ANY of its explicit inputs crosses a join. This module answers "which
-join paths do the aggregate's inputs cross?" for every input kind:
-
-* **source** — a structural ``source.path`` contributes as-is; a derived
-  ``ColumnSqlKey`` with ``path == ()`` has its ``Column.sql`` expanded and
-  scanned with the shared Law-1 scanner (via
-  ``compute_column_filter_join_paths``, the same parse → expand → walk
-  pipeline the ``Column.filter`` trigger half uses).
-* **positional args** (covers the explicit first/last time arg) — same
-  structural + derived-sql treatment.
-* **kwargs** — column-valued kwargs same as args; template-fragment STRING
-  kwargs (user-supplied values for custom-aggregation params) are parsed
-  with the dialect-fallback chain and scanned. Model-default
-  ``AggregationParam.sql`` fragments of the custom aggregation named by
-  ``key.agg`` are scanned too — but only for params NOT overridden by a
-  user kwarg (an overridden default never renders).
-* **``column_filter_key`` is deliberately NOT re-scanned** — the trigger
-  reads its bind-time ``SqlExprKey.referenced_join_paths`` directly
-  (DEV-1503, unchanged).
-
-Defensive fallbacks mirror ``column_filter_paths.py``: an unparseable
-fragment contributes nothing (parity with the ``Column.filter`` scan —
-pre-Stage-5 behavior is preserved for fragments the dialect fallback chain
-cannot parse; a documented D1 carve-out, not an endorsement), and scalar /
-duration / literal kwarg values contribute nothing.
-"""
+"""Plan-time crossing-input discovery: which join paths do an aggregate's inputs
+cross? The widened Law-3 trigger isolates a LOCAL aggregate into a host-rooted CTE
+when ANY explicit input crosses. Structural refs contribute as-is; derived
+``Column.sql`` / template-fragment kwargs / non-overridden default fragments are
+parsed and walked with the Law-1 scanner. ``column_filter_key`` is not re-scanned;
+unparseable fragments and scalar values contribute nothing."""
 
 from __future__ import annotations
 
@@ -42,8 +19,7 @@ _StructuralRef = Union[ColumnKey, ColumnSqlKey, StarKey]
 
 
 def _add_path_prefixes(path: Tuple[str, ...], out: _PathList) -> None:
-    """Emit every prefix of ``path`` once (``("a", "b")`` → ``("a",)`` AND
-    ``("a", "b")``) — same prefix semantics as the Law-1 scanner."""
+    """Emit every prefix of ``path`` once — same prefix semantics as the Law-1 scanner."""
     for i in range(1, len(path) + 1):
         prefix = tuple(path[:i])
         if prefix not in out:
@@ -58,10 +34,7 @@ def _scan_sql_fragment(
     bundle: ResolvedSourceBundle,
     out: _PathList,
 ) -> None:
-    """Scan a free-SQL fragment (derived ``Column.sql`` or a template
-    fragment) for crossed join paths, reusing the filter-side pipeline
-    (dialect-fallback parse → anchor-derived expansion → root-scope walk).
-    Unparseable fragments contribute nothing."""
+    """Scan a free-SQL fragment for crossed join paths (unparseable → nothing)."""
     for path in compute_column_filter_join_paths(
         canonical_sql=sql,
         anchor_model=anchor_model,
@@ -80,18 +53,13 @@ def _collect_ref_paths(
     bundle: ResolvedSourceBundle,
     out: _PathList,
 ) -> None:
-    """Crossed paths of one embedded reference (source / arg / kwarg value).
-
-    Scalars (Decimal / int / float / None) contribute nothing; strings are
-    template fragments and get the free-SQL scan.
-    """
+    """Crossed paths of one embedded ref; scalars contribute nothing, strings scan as free SQL."""
     if isinstance(ref, (ColumnKey, StarKey)):
         _add_path_prefixes(tuple(getattr(ref, "path", ()) or ()), out)
         return
     if isinstance(ref, ColumnSqlKey):
         if ref.path:
-            # Structural crossing; any FURTHER crossing inside the target's
-            # own Column.sql is the target-rooted CTE's concern (Stage 4).
+            # Structural crossing; further crossing inside the target's Column.sql is the CTE's concern.
             _add_path_prefixes(tuple(ref.path), out)
             return
         col = next(
@@ -125,9 +93,7 @@ def _collect_default_fragment_paths(
     bundle: ResolvedSourceBundle,
     out: _PathList,
 ) -> None:
-    """Scan the model-default ``AggregationParam.sql`` fragments of the
-    custom aggregation named by ``key.agg`` — skipping params a user kwarg
-    overrides (the default never renders for those)."""
+    """Scan ``key.agg``'s model-default ``AggregationParam.sql`` fragments, skipping kwarg-overridden params."""
     agg_def = next(
         (a for a in (anchor_model.aggregations or []) if a.name == key.agg),
         None,
@@ -156,16 +122,10 @@ def compute_aggregate_input_join_paths(
     bundle: ResolvedSourceBundle,
     include_source: bool = True,
 ) -> Tuple[Tuple[str, ...], ...]:
-    """Ordered, de-duplicated tuple of join-path prefixes crossed by the
-    aggregate's explicit inputs (source, positional args, kwargs, and
-    non-overridden custom-aggregation default fragments).
-
-    ``()`` for a purely-local aggregate. ``column_filter_key`` crossing is
-    intentionally excluded — read ``referenced_join_paths`` on the key.
-    ``include_source=False`` drops the SOURCE's own crossings (DEV-1838 D5:
-    a source that reads through a join consumes the target's values
-    per-match, which is legal; only filter references and arguments gate).
-    """
+    """Ordered, de-duplicated join-path prefixes crossed by the aggregate's explicit
+    inputs; ``()`` when purely local. ``column_filter_key`` crossing is excluded
+    (read ``referenced_join_paths``). ``include_source=False`` drops the SOURCE's own
+    crossings — reading through a join is legal; only filter refs and args gate."""
     if anchor_model is None:
         return ()
     out: _PathList = []

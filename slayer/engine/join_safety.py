@@ -1,15 +1,6 @@
-"""Join-arity safety predicate (DEV-1836 D1).
-
-A join hop is *provably many-to-one* iff its target-side join columns cover a
-declared PK/unique set of the target (structural proof) or the join declares
-``cardinality`` of ``many_to_one``/``one_to_one``. Unknown = unsafe (fail
-closed). Evaluated over EXISTING stored edges only — proving a forward join
-never makes an absent reverse hop traversable (F1).
-
-This replaces the arity-blind reachability tests as the authority for value
-paths: a metric may vary along a dimension (or read an input through a join)
-only when every hop between is provably many-to-one.
-"""
+"""Join-arity safety: a hop is *provably many-to-one* iff its target-side columns
+cover a declared PK/unique set or it declares ``many_to_one``/``one_to_one``.
+Unknown = unsafe; only stored edges count (no synthesized reverse hops)."""
 
 from __future__ import annotations
 
@@ -36,34 +27,23 @@ __all__ = [
 
 
 def may_inline_crossing_inputs(crossed_paths: Sequence[tuple]) -> bool:  # NOSONAR(S1172) — crossed_paths is the documented DEV-1688 seam; the cardinality-aware decision reads it, hardcoded False until then.
-    """Whether a local aggregate whose inputs cross ``crossed_paths`` may stay
-    inline in the host base instead of desugaring onto a producer.
-
-    Hardcoded ``False``: a crossing input gets a producer, always. Inlining is
-    only safe when every crossed hop is provably 1:N-free for this aggregate
-    (the DEV-1688 cardinality work); this is the single seam that answer will
-    flip.
-    """
+    """Whether a crossing-input local aggregate may stay inline in the host base.
+    Hardcoded ``False`` (always a producer); the DEV-1688 seam that will flip."""
     return False
 
 
-#: A ``Column.sql`` that is a bare identifier — a physical-column rename, which
-#: carries the column's uniqueness with it (unlike a derived expression).
+#: A bare-identifier ``Column.sql`` rename carries the column's uniqueness.
 _BARE_IDENT_RE = re.compile(r"[A-Za-z_]\w*")
 
 
 def _physical_name(column) -> str:
-    """A column's physical spelling: a bare-identifier ``sql`` rename, else the
-    model name. Join pairs may use either spelling; uniqueness proofs must
-    match both."""
+    """Physical spelling: a bare-identifier ``sql`` rename, else the model name."""
     sql = (column.sql or "").strip()
     return sql if sql and _BARE_IDENT_RE.fullmatch(sql) else column.name
 
 
 def _unique_key_sets(model: SlayerModel) -> list[list[str]]:
-    """The declared unique key-sets of ``model`` in PHYSICAL spelling: the
-    composite primary key as one set, plus every solo-``unique`` column as a
-    singleton."""
+    # PHYSICAL spelling: composite PK as one set, then each solo-unique singleton.
     sets: list[list[str]] = []
     pk = [_physical_name(c) for c in model.columns if c.primary_key]
     if pk:
@@ -75,15 +55,8 @@ def _unique_key_sets(model: SlayerModel) -> list[list[str]]:
 
 
 def provably_to_one(*, join: ModelJoin, target_model: SlayerModel) -> bool:
-    """Is ``join`` provably many-to-one onto ``target_model``?
-
-    True iff a trusted declaration says so, or the join's target-side columns
-    cover a declared unique key-set of the target (structural proof). Composite
-    uniqueness proves only under complete coverage (F6): ``is_key_set_unique``
-    requires a full unique set to be a subset of the join's target columns.
-    Both sides compare in PHYSICAL spelling, so a join pair naming the raw
-    column still matches a PK declared on its bare-rename model column.
-    """
+    """Is ``join`` provably many-to-one onto ``target_model``? True iff declared
+    m:1/1:1, or its target columns fully cover a unique key-set (PHYSICAL spelling)."""
     if join.cardinality in (JoinCardinality.MANY_TO_ONE, JoinCardinality.ONE_TO_ONE):
         return True
     by_name = {c.name: c for c in target_model.columns}
@@ -106,12 +79,8 @@ def safe_reachable(
     path: Sequence[str],
     models_by_name: dict[str, SlayerModel],
 ) -> bool:
-    """Is every hop of ``path`` (a sequence of target model names walked from
-    ``root``) a stored, provably many-to-one edge?
-
-    An empty path is safe. An absent edge is never synthesized (F1): a missing
-    stored join fails the walk regardless of any forward join's cardinality.
-    """
+    """Is every hop of ``path`` a stored, provably many-to-one edge? Empty is safe;
+    an absent edge is never synthesized — a missing stored join fails the walk."""
     current = root
     for target_name in path:
         join = _find_join(current, target_name)
@@ -126,12 +95,8 @@ def safe_reachable(
     return True
 
 
-# --------------------------------------------------------------------------- #
-# Validation pressure (D1/D5, F5)
-# --------------------------------------------------------------------------- #
 class JoinSafetyFinding(BaseModel):
-    """One validation flag about a join edge — an unproven hop or a
-    detection-contradicted declaration."""
+    """One validation flag about a join edge (unproven hop or contradicted declaration)."""
 
     data_source: str
     model: str
@@ -151,11 +116,8 @@ def audit_join_safety(
     models: Sequence[SlayerModel],
     detection: Optional[JoinCardinalityReport] = None,
 ) -> list[JoinSafetyFinding]:
-    """Flag every join that is neither declared m:1/1:1 nor structurally proven
-    (metrics crossing it broadcast), plus — given a detection report —
-    declarations the observed data hard-contradicts."""
-    # Joins resolve within the parent model's datasource; same-named models in
-    # other datasources must not shadow the real target.
+    """Flag joins neither declared m:1/1:1 nor structurally proven, plus data-contradicted declarations."""
+    # Joins resolve within the parent model's datasource — no cross-datasource shadowing.
     models_by_key = {(m.data_source, m.name): m for m in models}
     findings: list[JoinSafetyFinding] = []
     for model in models:

@@ -13,7 +13,6 @@ import pytest
 
 import slayer.engine.regroup_planner as regroup_planner
 import slayer.engine.stage_planner as stage_planner
-from slayer.core.errors import SlayerError
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import plan_query
 from slayer.sql.generator import SQLGenerator
@@ -112,9 +111,7 @@ class TestTotalRoutingInvariant:
         )
         bundle = _bundle()
         # D7: a raise, not an assert — AssertionError must not be the vehicle.
-        with pytest.raises(
-            expected_exception=(SlayerError, ValueError, NotImplementedError, RuntimeError),
-        ) as ei:
+        with pytest.raises(expected_exception=ValueError) as ei:
             plan_query(query=query, bundle=bundle)
         assert not isinstance(ei.value, AssertionError)
         message = str(ei.value).lower()
