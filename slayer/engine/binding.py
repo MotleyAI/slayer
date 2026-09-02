@@ -1,35 +1,5 @@
-"""Stage 7a.5 (DEV-1450) — ExpressionBinder + FilterBinder.
-
-The binder consumes a ``ParsedExpr`` (from ``slayer/engine/syntax.py``)
-plus a scope (``ModelScope`` or ``StageSchema``) and a
-``ResolvedSourceBundle`` (for join resolution). It produces a typed
-``BoundExpr`` whose leaves are resolved ``ValueKey``s.
-
-Public surface:
-
-* ``bind_expr(parsed, *, scope, bundle) -> BoundExpr``
-* ``bind_filter(parsed, *, scope, bundle) -> BoundFilter``
-
-Two scope kinds (P5):
-
-* ``ModelScope``: joins exist; dotted refs walk the join graph rooted
-  at ``source_model``. ``__``-bearing refs resolve by ordinary exact-match
-  against a column on the model (DEV-1743). I2: ``source_model is not None``
-  is asserted.
-* ``StageSchema``: flat namespace; dotted refs raise
-  ``IllegalScopeReferenceError``; flat names with ``__`` are legal.
-
-C14: same-model self-prefix in Mode-B (`orders.status` over an
-``orders``-rooted query) is stripped before the join walk.
-
-FilterBinder layers on top: ``bind_expr`` + phase classification
-(``Phase.ROW`` / ``AGGREGATE`` / ``POST`` = the max phase of any
-referenced slot) + walk for the referenced ``ValueKey``s + reject
-filters that touch a windowed ``Column.sql``.
-
-Dormant in 7a — no engine wiring. The planner (7a.6) is the first
-consumer.
-"""
+"""ExpressionBinder + FilterBinder: bind a ``ParsedExpr`` against a scope
+(``ModelScope`` / ``StageSchema``) into a typed ``BoundExpr`` / ``BoundFilter``."""
 
 from __future__ import annotations
 
@@ -120,7 +90,7 @@ _MEASURE_DEPTH_ENV_VAR = "SLAYER_MEASURE_EXPANSION_DEPTH"
 
 
 def _measure_depth_limit() -> int:
-    """Saved-measure expansion depth cap (``SLAYER_MEASURE_EXPANSION_DEPTH``, default 32)."""
+    """Saved-measure expansion depth cap (env override, default 32)."""
     raw = os.environ.get(_MEASURE_DEPTH_ENV_VAR)
     if raw is None:
         return _DEFAULT_MEASURE_DEPTH
@@ -131,10 +101,9 @@ def _measure_depth_limit() -> int:
 
 
 class MeasureResolutionCtx(BaseModel):
-    """Present (not ``None``) makes saved-measure references legal at the
-    position being bound and carries the ``(model, measure)`` chain for
-    cycle/depth detection; dropped at aggregation boundaries so a measure
-    errors there."""
+    """Non-``None`` makes saved-measure refs legal here; carries the
+    ``(model, measure)`` chain for cycle/depth detection. Dropped at
+    aggregation boundaries so a measure errors there."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -150,18 +119,8 @@ def _fmt_measure_chain(chain: Tuple[Tuple[str, str], ...]) -> List[str]:
     return [f"{model}.{measure}" for model, measure in chain]
 
 
-# ---------------------------------------------------------------------------
-# BoundExpr / BoundFilter
-# ---------------------------------------------------------------------------
-
-
 class BoundExpr(BaseModel):
-    """A bound expression — its leaves are resolved ``ValueKey``s.
-
-    ``value_key`` is the structural identity of the entire expression.
-    ``phase`` is the property of ``value_key.phase`` (lifted for
-    convenience).
-    """
+    """A bound expression — its leaves are resolved ``ValueKey``s."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
 
@@ -173,27 +132,15 @@ class BoundExpr(BaseModel):
 
 
 class BoundFilter(BaseModel):
-    """A bound filter predicate.
-
-    The same ``value_key`` shape as ``BoundExpr`` (boolean ops and
-    comparisons are encoded as ``ArithmeticKey`` with the corresponding
-    op string), plus:
-
-    * ``phase`` — the maximum phase any referenced slot reaches.
-    * ``referenced_keys`` — every ``ValueKey`` touched anywhere in the
-      bound tree (used by the cross-model planner's filter routing).
-    """
+    """A bound filter predicate: ``value_key`` (like ``BoundExpr``), ``phase``
+    (max phase any referenced slot reaches), and ``referenced_keys`` (every
+    ``ValueKey`` in the tree, for the cross-model planner's filter routing)."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
 
     value_key: ValueKey
     phase: Phase
     referenced_keys: Tuple[ValueKey, ...] = Field(default_factory=tuple)
-
-
-# ---------------------------------------------------------------------------
-# Public entry points
-# ---------------------------------------------------------------------------
 
 
 def bind_expr(
@@ -203,18 +150,11 @@ def bind_expr(
     bundle: ResolvedSourceBundle,
     allow_measures: bool = False,
 ) -> BoundExpr:
-    """Bind a parsed expression against a scope.
-
-    Returns a ``BoundExpr`` carrying the structural identity of the
-    entire expression. Raises ``UnknownReferenceError`` if a ref doesn't
-    resolve; ``IllegalScopeReferenceError`` if a dotted ref is used
-    against a ``StageSchema`` (or vice versa for ``__`` against a
-    ``ModelScope``).
+    """Bind a parsed expression against a scope into a ``BoundExpr``.
 
     ``allow_measures`` enables saved-measure resolution (bare and dotted) in
     the eligible positions — measure formulas and computed-dimension
-    expressions. Off everywhere else, so a saved-measure name elsewhere errors.
-    """
+    expressions; off everywhere else, so a saved-measure name there errors."""
     measure_ctx = (
         MeasureResolutionCtx(depth_limit=_measure_depth_limit())
         if allow_measures else None
@@ -231,27 +171,11 @@ def bind_time_dimension(
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
 ) -> BoundExpr:
-    """Bind a ``TimeDimension`` into a ``BoundExpr`` carrying a
-    ``TimeTruncKey``.
+    """Bind a ``TimeDimension`` into a ``BoundExpr`` carrying a ``TimeTruncKey``.
 
-    The underlying column is resolved against ``scope`` exactly like a
-    Mode-B identifier ref (local name or dotted-join path); the bound
-    column must be a plain ``ColumnKey`` whose ``Column.type`` is in the
-    temporal bucket (``DATE`` / ``TIMESTAMP``).
-
-    Stage 7b.3b limitations:
-
-    * Only ``ModelScope`` with a non-None ``source_model`` is accepted.
-      Downstream stages bind upstream-emitted truncated columns by flat
-      name through ``bind_expr``; they do not re-truncate at a different
-      grain through this entry point. Passing a ``StageSchema`` raises
-      ``IllegalScopeReferenceError``.
-    * Derived (``Column.sql`` is set) temporal columns route through
-      ``ColumnSqlKey`` rather than ``ColumnKey``, and ``TimeTruncKey``
-      is typed as ``column: ColumnKey``. Rather than silently widen the
-      typed key, this stage rejects derived-TD columns with
-      ``NotImplementedError`` and a clear message.
-    """
+    The column resolves against ``scope`` like a Mode-B identifier ref and must
+    be temporal (``DATE`` / ``TIMESTAMP``). Only ``ModelScope`` with a non-None
+    ``source_model`` is accepted; a ``StageSchema`` raises."""
     if isinstance(scope, StageSchema):
         raise IllegalScopeReferenceError(
             name=td.dimension.full_name,
@@ -280,24 +204,20 @@ def bind_time_dimension(
         bound_col = _resolve_ref(full, scope=scope, bundle=bundle)
 
     if not isinstance(bound_col, (ColumnKey, ColumnSqlKey)):
-        # Defensive — the binder should never produce a non-column key
-        # for an identifier ref against a ModelScope.
+        # Defensive: an identifier ref against a ModelScope is always a column.
         raise ValueError(
             f"TimeDimension {full!r} did not resolve to a column "
             f"reference (got {type(bound_col).__name__})."
         )
 
-    # DEV-1450 follow-up #4a: a derived (Column.sql) temporal column routes
-    # through ColumnSqlKey; TimeTruncKey.column accepts both kinds, so the
-    # leaf / path are read via the kind-agnostic helpers.
+    # Leaf / path read via kind-agnostic helpers (ColumnKey or ColumnSqlKey).
     terminal_model = _terminal_model_for_path(
         path=column_path(bound_col),
         scope=scope,
         bundle=bundle,
     )
     if terminal_model is None:
-        # Shouldn't be reachable: _resolve_ref / _resolve_dotted would
-        # already have raised. Defensive only.
+        # Defensive: _resolve_ref / _resolve_dotted would already have raised.
         raise UnknownReferenceError(
             name=full,
             scope_kind="ModelScope",
@@ -328,9 +248,7 @@ def _terminal_model_for_path(
     scope: ModelScope,
     bundle: ResolvedSourceBundle,
 ) -> Optional[SlayerModel]:
-    """Walk ``path`` from ``scope.source_model`` and return the terminal
-    model. Returns the host when ``path`` is empty.
-    """
+    """Walk ``path`` from ``scope.source_model`` to the terminal model (host if empty)."""
     current = scope.source_model
     if current is None:
         return None
@@ -351,19 +269,11 @@ def bind_filter(
 ) -> BoundFilter:
     """Bind a parsed filter predicate + classify its phase.
 
-    Walks the bound tree to gather every referenced ``ValueKey`` and
-    raises ``IllegalWindowInFilterError`` if any referenced
-    ``Column.sql`` contains a window function (DEV-1369: no
-    auto-promotion).
-
-    ``alias_map`` maps a stage's declared-measure names (user ``name``,
-    canonical alias, declared name) to their bound ``ValueKey`` so a
-    filter may reference a declared measure by alias (P4 / DEV-1445:
-    ``filters=["rev >= 100"]`` for a measure declared ``name="rev"``).
-    A bare ref that matches an alias interns onto that exact slot rather
-    than resolving against the model columns — so the colon form and the
-    alias form share one slot.
-    """
+    Walks the bound tree to gather every referenced ``ValueKey``; raises
+    ``IllegalWindowInFilterError`` if a referenced ``Column.sql`` is windowed.
+    ``alias_map`` maps a stage's declared-measure names to their bound
+    ``ValueKey`` so a bare ref matching an alias interns onto that slot rather
+    than resolving against model columns (colon form and alias form share one slot)."""
     value_key = _bind(
         parsed, scope=scope, bundle=bundle, in_filter=True, alias_map=alias_map,
     )
@@ -376,11 +286,6 @@ def bind_filter(
     return BoundFilter(
         value_key=value_key, phase=phase, referenced_keys=refs,
     )
-
-
-# ---------------------------------------------------------------------------
-# Walk helper
-# ---------------------------------------------------------------------------
 
 
 _VALUE_KEY_TYPES = (
@@ -429,18 +334,10 @@ def walk_value_keys(key: ValueKey):
         yield from walk_value_keys(key.low)
         yield from walk_value_keys(key.high)
     elif isinstance(key, InKey):
-        # DEV-1475: walk the column LHS and every literal RHS so the
-        # cross-model filter router and the windowed-column rejection
-        # check both see InKey-rooted predicates the same way they see
-        # BetweenKey ones.
+        # Walk column LHS + every literal RHS, like BetweenKey.
         yield from walk_value_keys(key.column)
         for v in key.values:
             yield from walk_value_keys(v)
-
-
-# ---------------------------------------------------------------------------
-# Internals
-# ---------------------------------------------------------------------------
 
 
 def _bind(
@@ -452,9 +349,8 @@ def _bind(
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     measure_ctx: Optional[MeasureResolutionCtx] = None,
 ) -> ValueKey:
-    # ``measure_ctx`` rides the eligible operand edges and is dropped at the
-    # aggregation boundary, so a measure is legal at the value level but not
-    # inside an aggregation.
+    # ``measure_ctx`` rides eligible operand edges, dropped at the aggregation
+    # boundary — a measure is legal at value level but not inside an aggregation.
     if isinstance(parsed, Literal):
         return LiteralKey(value=normalize_scalar(parsed.value))
 
@@ -504,11 +400,8 @@ def _bind(
         )
 
     if isinstance(parsed, Cmp):
-        # DEV-1475: ``IN`` / ``NOT IN`` predicates fold into a single
-        # ``InKey`` rather than an ``ArithmeticKey`` so the SQL generator
-        # has a structured handle on the column + literal-tuple shape.
-        # The parser already validated that ``parsed.right`` is a
-        # ``TupleLit`` of ``Literal`` elements for these ops.
+        # ``IN`` / ``NOT IN`` fold into a single ``InKey`` (structured
+        # column + literal-tuple handle for the generator).
         if parsed.op in ("in", "not in"):
             return _bind_in(
                 parsed,
@@ -544,21 +437,12 @@ def _bind_in(
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     measure_ctx: Optional[MeasureResolutionCtx] = None,
 ) -> InKey:
-    """Bind an ``IN`` / ``NOT IN`` predicate into an ``InKey`` (DEV-1475).
+    """Bind an ``IN`` / ``NOT IN`` predicate into an ``InKey``.
 
-    The LHS is bound through the normal column-resolution path
-    (``ColumnKey`` for a bare ref, ``ColumnKey`` with a non-empty
-    ``path`` for a dotted join ref, ``ColumnSqlKey`` for a derived
-    column, or an alias-map hit for a declared-measure name).
-
-    The RHS is a ``TupleLit`` of ``Literal`` nodes (the parser already
-    enforced that shape); every element binds to a ``LiteralKey`` after
-    scalar normalization.
-    """
+    LHS binds through the normal column-resolution path; RHS is a ``TupleLit``
+    of ``Literal`` nodes, each bound to a ``LiteralKey`` after normalization."""
     if not isinstance(parsed.right, TupleLit):
-        # Defensive — the parser's ``ast.Compare`` branch guarantees a
-        # ``TupleLit`` on the RHS for ``in`` / ``not in``. Surface a
-        # clear runtime error if a future caller bypasses the parser.
+        # Defensive: the parser guarantees a TupleLit RHS for in / not in.
         raise ValueError(
             f"_bind_in: expected TupleLit on RHS of {parsed.op!r}, got "
             f"{type(parsed.right).__name__}."
@@ -572,11 +456,8 @@ def _bind_in(
         LiteralKey(value=normalize_scalar(elt.value))
         for elt in parsed.right.elements
     )
-    # SQL's three-valued logic makes a NULL in the list a trap rather than a
-    # member test. ``col IN (a, NULL)`` never matches on the NULL, and
-    # ``col NOT IN (a, NULL)`` evaluates to NULL for EVERY row — so the filter
-    # silently returns zero rows instead of "everything except a". Neither is
-    # what the author meant, and neither announces itself.
+    # SQL three-valued logic makes NULL in the list a silent trap:
+    # ``col NOT IN (a, NULL)`` is NULL for every row (zero rows returned).
     if any(v.value is None for v in values):
         raise ValueError(
             f"NULL is not allowed inside an {parsed.op!r} list: SQL compares "
@@ -593,10 +474,7 @@ def _bind_in(
 
 
 def _name_suggestion(*, name: str, model: "SlayerModel") -> str | None:
-    """A ``Did you mean 'X'?`` clause over the model's columns + named measures.
-
-    Unnamed measures are skipped — ``None`` can't sort against strings.
-    """
+    """A ``Did you mean 'X'?`` clause over the model's columns + named measures."""
     known = sorted(
         {c.name for c in model.columns}
         | {m.name for m in model.measures if m.name is not None}
@@ -615,13 +493,9 @@ def _resolve_ref(
 ) -> ValueKey:
     """Resolve a bare identifier against the scope.
 
-    Resolution order: declared alias → column → saved measure. A name present
-    in ``alias_map`` (a stage's declared-measure aliases, supplied on the
-    filter/order path) interns onto that declared slot before any column
-    lookup, so a filter referencing a measure by its user ``name`` shares its
-    slot (P4). A name matching a saved measure (and no column) resolves inline
-    when ``measure_ctx`` is set (eligible position), else errors.
-    """
+    Resolution order: declared alias → column → saved measure. A saved-measure
+    name (no matching column) resolves inline only when ``measure_ctx`` is set
+    (eligible position), else errors."""
     if alias_map and name in alias_map:
         return alias_map[name]
 
@@ -649,10 +523,7 @@ def _resolve_ref(
         )
     model = scope.source_model
 
-    # DEV-1743: a ``__``-bearing name is no longer special — it resolves by the
-    # ordinary exact-match below. A flat query-backed column literally named
-    # ``stores__name`` (D5) binds when it exists; otherwise the normal
-    # unknown-reference error fires.
+    # A ``__``-bearing name is not special: it resolves by ordinary exact-match.
     col = next((c for c in model.columns if c.name == name), None)
     if col is not None:
         if col.sql is not None and col.sql.strip() != name:
@@ -684,10 +555,9 @@ def _walk_join_chain(
     bundle: ResolvedSourceBundle,
     parts: Tuple[str, ...],
 ):
-    """Walk ``hop_path`` join hops from ``host``, validating each hop against the
-    current model's joins and rejecting a hop that revisits a model (circular
-    join). Returns the terminal model. ``parts`` is the full dotted ref, used
-    only for error messages."""
+    """Walk ``hop_path`` join hops from ``host``, validating each and rejecting a
+    hop that revisits a model (circular join). Returns the terminal model;
+    ``parts`` is the full dotted ref, for error messages only."""
     current = host
     visited_models = {host.name}
     for hop in hop_path:
@@ -712,9 +582,8 @@ def _walk_join_chain(
                 scope_summary=f"target {hop!r} not in source bundle",
                 suggestion=None,
             )
-        # A path that walks back to an already-visited model is a circular join
-        # (``a -> b -> a``): the leaf can never resolve, so reject it here rather
-        # than fail confusingly on the leaf. Legacy-compatible ValueError.
+        # Revisiting a model is a circular join (``a -> b -> a``): reject here
+        # rather than fail confusingly on the leaf.
         if nxt.name in visited_models:
             raise ValueError(
                 f"Circular join detected resolving {'.'.join(parts)!r}: "
@@ -723,6 +592,21 @@ def _walk_join_chain(
         visited_models.add(nxt.name)
         current = nxt
     return current
+
+
+def _strip_self_prefix(
+    parts: Tuple[str, ...], *, host: SlayerModel
+) -> Tuple[str, ...]:
+    """Drop a leading same-model self-prefix (``orders.orders.x`` → ``orders.x``)."""
+    remainder = parts[1:]
+    if not remainder:
+        raise UnknownReferenceError(
+            name=host.name,
+            scope_kind="ModelScope",
+            scope_summary=f"model {host.name!r}",
+            suggestion="self-prefix only — expected a column or join target.",
+        )
+    return remainder
 
 
 def _resolve_dotted(
@@ -735,11 +619,8 @@ def _resolve_dotted(
 ) -> ValueKey:
     """Resolve a dotted ref against the scope.
 
-    Resolution order: declared alias (on the full dotted text) → join walk →
-    leaf column → saved measure. So a SELECTED dotted measure stays addressable
-    by its ``customers.aov`` name in filters / ORDER BY, and an unnamed dotted
-    saved measure re-anchors into host coordinates in an eligible position.
-    """
+    Resolution order: declared alias (full dotted text) → join walk → leaf
+    column → saved measure (re-anchored into host coords, eligible position)."""
     if alias_map:
         dotted_text = ".".join(parts)
         if dotted_text in alias_map:
@@ -764,33 +645,19 @@ def _resolve_dotted(
             suggestion=None,
         )
 
-    # C14: strip same-model self-prefix.
+    # C14: strip same-model self-prefix, then resolve any single local ref.
     host = scope.source_model
     original_parts = parts
     if parts and parts[0] == host.name:
-        parts = parts[1:]
-        if not parts:
-            raise UnknownReferenceError(
-                name=host.name,
-                scope_kind="ModelScope",
-                scope_summary=f"model {host.name!r}",
-                suggestion="self-prefix only — expected a column or join target.",
-            )
-        if len(parts) == 1:
-            return _resolve_ref(
-                parts[0], scope=scope, bundle=bundle, alias_map=alias_map,
-                measure_ctx=measure_ctx,
-            )
+        parts = _strip_self_prefix(parts, host=host)
 
-    # parts now has the join walk to perform.
     if len(parts) == 1:
-        # Single-segment after possible stripping — already a local ref.
         return _resolve_ref(
             parts[0], scope=scope, bundle=bundle, alias_map=alias_map,
             measure_ctx=measure_ctx,
         )
 
-    # Walk join chain. parts[:-1] are join targets; parts[-1] is the leaf column.
+    # parts[:-1] are join targets; parts[-1] is the leaf column.
     hop_path = parts[:-1]
     leaf = parts[-1]
     current = _walk_join_chain(
@@ -814,8 +681,8 @@ def _resolve_terminal_leaf(
     bundle: ResolvedSourceBundle,
     measure_ctx: Optional[MeasureResolutionCtx],
 ) -> ValueKey:
-    """Resolve ``leaf`` on the terminal model ``current``: column (plain or
-    derived) → saved measure (re-anchored into host coords) → unresolved error."""
+    """Resolve ``leaf`` on terminal model ``current``: column (plain or derived)
+    → saved measure (re-anchored into host coords) → unresolved error."""
     col = next((c for c in current.columns if c.name == leaf), None)
     if col is not None:
         if col.sql is not None and col.sql.strip() != leaf:
@@ -844,8 +711,7 @@ _MEASURE_LEGAL_POSITIONS = (
 def _ineligible_saved_measure_error(
     *, ref_text: str, model_name: str,
 ) -> UnknownReferenceError:
-    """A saved-measure reference in a position where measures are not legal
-    (an aggregation source, a plain dimension, a filter, ORDER BY, partition_by)."""
+    """Error: a saved-measure reference where measures are not legal."""
     return UnknownReferenceError(
         name=ref_text,
         scope_kind="ModelScope",
@@ -861,8 +727,8 @@ def _ineligible_saved_measure_error(
 def _unresolved_dotted_error(
     *, parts: Tuple[str, ...], terminal_model: SlayerModel,
 ) -> UnknownReferenceError:
-    """A dotted leaf that matches neither a column nor a saved measure on the
-    terminal model — names both namespaces and offers close matches from each."""
+    """Error: a dotted leaf matching neither column nor saved measure; names
+    both namespaces and offers close matches."""
     dotted = ".".join(parts)
     columns = [c.name for c in terminal_model.columns]
     measures = [m.name for m in terminal_model.measures if m.name]
@@ -884,10 +750,8 @@ def _unresolved_dotted_error(
 def _rerooted_bundle(
     *, bundle: ResolvedSourceBundle, target: SlayerModel,
 ) -> ResolvedSourceBundle:
-    """A copy of ``bundle`` re-rooted at ``target``, reusing the same referenced
-    models. Binding a saved measure's formula against the target then resolves
-    its column filters / aggregation gates against the model that owns them
-    (those helpers walk from ``bundle.source_model``)."""
+    """A copy of ``bundle`` re-rooted at ``target`` (same referenced models), so
+    a measure formula binds its filters / gates against the owning model."""
     others = [m for m in bundle.referenced_models if m.name != target.name]
     return bundle.model_copy(update={
         "source_model": target,
@@ -903,9 +767,8 @@ def _reject_round_trip(
     ref_text: str,
     terminal_name: str,
 ) -> None:
-    """Reject a re-anchored measure whose join path revisits a model already on
-    the host→target chain (a round trip) — parity with the hand-written dotted
-    spelling, which is rejected as a circular join."""
+    """Reject a re-anchored measure whose join path revisits a model on the
+    host→target chain (round trip) — parity with the circular-join rejection."""
     for sub in walk_value_keys(host_key):
         path = getattr(sub, "path", None)
         if not path:
@@ -936,9 +799,8 @@ def _resolve_saved_measure(
     host_path: Tuple[str, ...],
 ) -> ValueKey:
     """Resolve a saved ``ModelMeasure`` into a bound ``ValueKey``. ``host_path``
-    is the host→terminal join path (``()`` for a bare/local measure); a
-    cross-model measure binds against the target then prepends ``host_path``,
-    giving the same tree as the hand-written host-prefixed formula. Raises the
+    is the host→terminal join path (``()`` for bare/local); a cross-model
+    measure binds against the target then prepends ``host_path``. Raises the
     ineligible-position error when ``measure_ctx`` is None."""
     if measure_ctx is None:
         raise _ineligible_saved_measure_error(
@@ -956,13 +818,13 @@ def _resolve_saved_measure(
         )
     parsed = parse_expr(measure.formula)
     if not host_path:
-        # Bare/local: the measure lives on the host; bind inline at this scope.
+        # Bare/local: measure lives on the host; bind inline at this scope.
         return _bind(
             parsed, scope=scope, bundle=bundle, in_filter=False, measure_ctx=child,
         )
     # Cross-model: bind against the target, then prepend into host coordinates.
     host_model = scope.source_model
-    assert host_model is not None  # dotted resolution guarantees a host anchor
+    assert host_model is not None
     target_scope = ModelScope(source_model=terminal_model)
     target_bundle = _rerooted_bundle(bundle=bundle, target=terminal_model)
     bound = _bind(
@@ -983,13 +845,8 @@ def _resolve_dotted_star(
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
 ) -> StarKey:
-    """Resolve a dotted star (``customers.*``, trailing ``*``) to a StarKey.
-
-    Mirrors ``_resolve_dotted``'s self-prefix strip (C14) and join-chain
-    validation, but the leaf is ``*`` (no terminal column) so the result
-    is a ``StarKey`` whose ``path`` is the validated hop chain. An empty
-    path after stripping is the local star (``orders.*`` on ``orders``).
-    """
+    """Resolve a dotted star (``customers.*``) to a ``StarKey`` whose ``path`` is
+    the validated hop chain (empty path = local star)."""
     assert parts and parts[-1] == "*"
     if isinstance(scope, StageSchema):
         raise IllegalScopeReferenceError(
@@ -1010,11 +867,11 @@ def _resolve_dotted_star(
             suggestion=None,
         )
     hop_path = parts[:-1]
-    # C14: strip same-model self-prefix (``orders.*`` on ``orders``).
+    # Strip same-model self-prefix (``orders.*`` on ``orders``).
     if hop_path and hop_path[0] == host.name:
         hop_path = hop_path[1:]
-    # Validate the hop chain (raises on a missing / circular join) — the leaf is
-    # ``*`` so the terminal model is not needed, only the validated hop path.
+    # Validate the hop chain (raises on missing / circular join); leaf ``*``
+    # needs only the validated path, not the terminal model.
     _walk_join_chain(hop_path=hop_path, host=host, bundle=bundle, parts=parts)
     return StarKey(path=tuple(hop_path))
 
@@ -1024,8 +881,7 @@ def _bind_agg_partition_keys(
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
 ) -> frozenset:
-    """Bind an aggregation ``partition_by`` value (single ref, list/tuple, or
-    ``[]``) to a frozenset of column keys (DEV-1739)."""
+    """Bind an aggregation ``partition_by`` value to a frozenset of column keys."""
     elements = value if isinstance(value, tuple) else (value,)
     pks: List = []
     for elem in elements:
@@ -1051,10 +907,8 @@ def _bind_agg(
         and parsed.source.parts
         and parsed.source.parts[-1] == "*"
     ):
-        # Cross-model star: ``customers.*:count`` → a StarKey carrying the
-        # join path so the cross-model planner routes COUNT(*) through the
-        # join graph, exactly like ``customers.revenue:sum`` (P3). Parity
-        # with the legacy dotted-star path.
+        # Cross-model star: ``customers.*:count`` → a StarKey carrying the join
+        # path so the planner routes COUNT(*) through the join graph.
         source = _resolve_dotted_star(
             parsed.source.parts, scope=scope, bundle=bundle,
         )
@@ -1069,10 +923,8 @@ def _bind_agg(
             )
         source = bound_source
 
-    # Bind args / kwargs. For aggregations, identifier args/kwargs become
-    # ColumnKey via the binder; scalars normalise. ``partition_by`` is lifted
-    # out of kwargs onto ``partition_keys`` (DEV-1739): a single ref, a list,
-    # or ``[]`` (grand total). ``None`` means no partition.
+    # ``partition_by`` is lifted out of kwargs onto ``partition_keys``
+    # (``None`` means no partition, ``[]`` means grand total).
     args = tuple(
         _bind_agg_arg(a, scope=scope, bundle=bundle) for a in parsed.args
     )
@@ -1084,25 +936,14 @@ def _bind_agg(
             continue
         kwargs_list.append((k, _bind_agg_arg(v, scope=scope, bundle=bundle)))
     kwargs = tuple(kwargs_list)
-    # DEV-1450 stage 7b.12: propagate ``Column.filter`` into the
-    # AggregateKey's structural identity. The resolved source's column
-    # may carry a Mode-A SQL fragment (``filter="status = 'paid'"``)
-    # that wraps the aggregate argument as ``SUM(CASE WHEN ... THEN col
-    # END)``. Two aggregates over the same column with different
-    # ``Column.filter`` therefore differ at the key level; same-filter
-    # ones intern (legacy CASE-WHEN-at-agg-time semantics, preserved by
-    # the spec's C5 + ``column_filter_key`` invariants).
+    # Propagate ``Column.filter`` into the AggregateKey's identity: two
+    # aggregates over the same column with different filters differ at the key
+    # level (wrapped as ``SUM(CASE WHEN ... THEN col END)``); same-filter intern.
     column_filter_key = _resolve_column_filter_key(
         source=source, bundle=bundle,
     )
-    # Codex review: enforce the per-column aggregation eligibility gates.
-    # Without this, ``id:sum`` (a PK) or ``status:avg`` (text) compile
-    # silently in the typed pipeline. The check is best-effort against
-    # the bundle — sources whose target model can't be resolved (e.g.
-    # an unreferenced join target) skip the check.
-    # DEV-1576 / DEV-1717: heal alias + gate, then store the EFFECTIVE
-    # (healed) name on the key so the generator resolves the canonical
-    # aggregation rather than the raw parser token.
+    # Gate per-column aggregation eligibility, then store the EFFECTIVE
+    # (alias-healed) name so the generator resolves the canonical aggregation.
     effective_agg = _validate_agg_eligibility(
         source=source, agg=parsed.agg, bundle=bundle,
     )
@@ -1119,18 +960,9 @@ def _bind_agg(
 def _resolve_column_filter_key(
     *, source, bundle: ResolvedSourceBundle,
 ) -> Optional[SqlExprKey]:
-    """Look up the resolved source's ``Column.filter`` and convert it
-    to a ``SqlExprKey``.
-
-    Returns ``None`` for ``StarKey`` sources (``*:count`` has no column
-    to attach a filter to) and for any column whose ``filter`` is
-    unset. For ``ColumnKey`` / ``ColumnSqlKey`` sources the resolver
-    walks ``source.path`` through the bundle and reads the target
-    model's column entry. Models the planner doesn't have access to
-    (e.g. an unresolved join target) are tolerated — no exception is
-    raised; the key just stays ``None`` (the compile-time validator
-    in path resolution would have caught a genuinely missing model).
-    """
+    """Look up the resolved source's ``Column.filter`` and convert to a
+    ``SqlExprKey``. ``None`` for ``StarKey``, unset filters, or an unresolvable
+    target model (best-effort — the compile-time path validator catches those)."""
     if isinstance(source, StarKey):
         return None
     path = getattr(source, "path", ())
@@ -1149,11 +981,9 @@ def _resolve_column_filter_key(
     col = next((c for c in current.columns if c.name == leaf), None)
     if col is None or not col.filter:
         return None
-    # DEV-1503 — stamp the typed non-anchor join paths on the SqlExprKey so
-    # the planner's isolation trigger reads typed data, not parsed SQL. The
-    # anchor is the model the filter is bound against — the joined target for
-    # cross-model aggregates, the host for filtered-local. The anchor relation
-    # uses the ``__``-canonical path alias when the anchor is a joined model.
+    # Stamp typed non-anchor join paths on the SqlExprKey so the planner's
+    # isolation trigger reads typed data, not parsed SQL. The anchor relation
+    # is the ``__``-canonical path alias when the anchor is a joined model.
     anchor_relation = "__".join(path) if path else current.name
     paths = compute_column_filter_join_paths(
         canonical_sql=col.filter,
@@ -1167,13 +997,8 @@ def _resolve_column_filter_key(
 def _resolve_gate_owner(
     source, bundle: ResolvedSourceBundle,
 ) -> "Optional[tuple[SlayerModel, str]]":
-    """Resolve the ``(owning_model, leaf)`` an aggregation gate applies to.
-
-    Returns ``None`` when the target can't be confirmed — a ``StarKey``
-    (``*:count`` has no column), a source with no leaf, no host model, or an
-    unresolved join hop — so the caller best-effort skips the gate (the
-    compile-time path validator catches truly broken refs).
-    """
+    """Resolve the ``(owning_model, leaf)`` an aggregation gate applies to;
+    ``None`` when the target can't be confirmed (caller best-effort skips)."""
     if isinstance(source, StarKey):
         return None
     leaf = getattr(source, "leaf", None) or getattr(source, "column_name", None)
@@ -1194,42 +1019,21 @@ def _resolve_gate_owner(
 def _validate_agg_eligibility(
     *, source, agg: str, bundle: ResolvedSourceBundle,
 ) -> str:
-    """Heal the aggregation name and enforce per-column eligibility gates.
+    """Heal the aggregation name and enforce per-column eligibility gates,
+    returning the effective (alias-healed) name for ``AggregateKey.agg``.
 
-    Returns the **effective** (alias-healed) aggregation name, which the
-    caller stores on ``AggregateKey.agg`` (DEV-1576 / DEV-1717) — the typed
-    colon parser (``syntax.py``) does not normalise, so healing must land
-    here, after the owning model is resolved, or the generator later fails on
-    the raw token at ``_resolve_aggregation_def``.
-
-    Healing (:func:`normalize_aggregation_name`) is **skipped** when the raw
-    token exactly matches a custom aggregation registered on the owning model,
-    so a custom ``countd`` wins over the ``countd -> count_distinct`` alias.
-
-    Gate order (the binding contract):
-
-    0. Unknown-name-first: a name that is neither a built-in nor a model
-       custom aggregation raises ``"Unknown aggregation ..."`` **before** the
-       PK / whitelist / type gates, so a misspelled agg on an otherwise
-       aggregatable column is not mislabelled as a type restriction.
-    1. Primary-key columns are restricted to ``count`` / ``count_distinct``.
-    2. An explicit ``Column.allowed_aggregations`` whitelist overrides
-       type defaults.
-    3. Otherwise, built-in aggregations are gated by
-       ``DEFAULT_AGGREGATIONS_BY_TYPE``; model-custom aggregations are exempt.
-
-    ``StarKey`` sources (``*:count`` / ``customers.*:count``) have no
-    column to attach a whitelist to and pass through. Cross-model and
-    derived (``ColumnSqlKey``) sources are best-effort: if the target
-    model can't be resolved through the bundle (an unresolved join
-    target) the gate is skipped — the compile-time path validator would
-    have raised earlier on a truly broken ref.
-    """
+    Healing is skipped when the raw token exactly matches a custom aggregation
+    on the owning model (a custom ``countd`` wins over the alias). Gate order:
+    0. unknown-name-first (before PK / whitelist / type, so a misspelling isn't
+    mislabelled a type restriction); 1. PK columns restricted to count /
+    count_distinct; 2. explicit ``Column.allowed_aggregations`` whitelist;
+    3. else ``DEFAULT_AGGREGATIONS_BY_TYPE`` (custom aggregations exempt).
+    ``StarKey`` and unresolvable targets pass through (best-effort)."""
     owner = _resolve_gate_owner(source, bundle)
     if owner is None:
         return normalize_aggregation_name(agg)
     current, leaf = owner
-    # DEV-1576 alias healing — custom aggregation named like an alias wins.
+    # Alias healing — custom aggregation named like an alias wins.
     custom_names = {a.name for a in (current.aggregations or [])}
     effective = agg if agg in custom_names else normalize_aggregation_name(agg)
     # Gate 0: unknown-name-first (precedence over PK / whitelist / type).
@@ -1283,13 +1087,8 @@ def _bind_agg_arg(
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
 ):
-    """Bind one positional / kwarg argument of an aggregation.
-
-    The AggregateKey shape stores Scalars inline (not as LiteralKey)
-    so identity matches the spec — see ``slayer/core/keys.py``.
-    Identifier args become ``ColumnKey`` / ``ColumnSqlKey``; literal
-    args normalise via ``normalize_scalar``.
-    """
+    """Bind one aggregation arg: identifiers → ``ColumnKey`` / ``ColumnSqlKey``,
+    literals → inline scalar via ``normalize_scalar`` (stored inline, not as LiteralKey)."""
     if isinstance(parsed, Literal):
         return normalize_scalar(parsed.value)
     if isinstance(parsed, (Ref, DottedRef)):
@@ -1306,12 +1105,8 @@ _NOT_SCALAR = object()  # sentinel returned by _fold_to_scalar when the input is
 def _fold_to_scalar(parsed: ParsedExpr):
     """Resolve a parsed expression to a scalar literal if possible.
 
-    Folds ``Literal`` directly, and unary ``-`` over a numeric ``Literal``
-    (the AST shape Python emits for ``periods=-1``) into the negated
-    literal value. Returns ``_NOT_SCALAR`` for anything that doesn't
-    reduce — transform kwargs are typed as ``Scalar``, so a non-scalar
-    expression is a binding error.
-    """
+    Folds ``Literal`` and unary ``-`` over a numeric ``Literal`` (``periods=-1``);
+    returns ``_NOT_SCALAR`` otherwise (transform kwargs must be scalar)."""
     if isinstance(parsed, Literal):
         return normalize_scalar(parsed.value)
     if (
@@ -1321,18 +1116,15 @@ def _fold_to_scalar(parsed: ParsedExpr):
     ):
         inner = parsed.operand.value
         if isinstance(inner, bool):
-            # Reject explicitly — ``-True`` is nonsense and bool is an
-            # int subclass that would otherwise pass the next branch.
+            # ``-True`` is nonsense; bool is an int subclass, so reject first.
             return _NOT_SCALAR
         if isinstance(inner, (int, float, Decimal)):
             return normalize_scalar(-inner)
     return _NOT_SCALAR
 
 
-# Per-op kwarg whitelist for the typed pipeline. ``partition_by`` is accepted
-# only for the rank family (bound above, before this check); every other op —
-# ``time_shift`` and the ``change`` family that desugars onto it included —
-# takes just the kwargs listed here, so their ``partition_keys`` stay empty.
+# Per-op kwarg whitelist. ``partition_by`` is handled separately (rank family
+# only); every other op takes just the kwargs listed here.
 _TRANSFORM_KWARG_RULES: dict = {
     "cumsum": frozenset(),
     "change": frozenset(),
@@ -1349,11 +1141,8 @@ _TRANSFORM_KWARG_RULES: dict = {
     "consecutive_periods": frozenset({"period"}),
 }
 
-# Positional-parameter signature (after the value) for the transforms whose
-# documented DSL form accepts positional args: ``time_shift(x, periods,
-# granularity)``, ``lag(x, periods)``, ``lead(x, periods)``. Each name maps the
-# i-th positional onto the matching kwarg. Transforms absent here are
-# keyword-only after the value.
+# Positional-param signature (after the value) mapping the i-th positional onto
+# a kwarg; transforms absent here are keyword-only after the value.
 _TRANSFORM_POSITIONAL_KWARGS: dict = {
     "time_shift": ("periods", "granularity"),
     "lag": ("periods",),
@@ -1368,21 +1157,14 @@ def _bind_transform(
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     measure_ctx: Optional[MeasureResolutionCtx] = None,
 ) -> TransformKey:
-    # ``alias_map`` lets a transform input reference a declared-measure
-    # alias inside a filter (``change(rev) > 0``); partition_by must still
-    # be a real column, so it is bound without the alias map. ``measure_ctx``
-    # rides the transform INPUT only (D2) — partition_by / scalar kwargs drop
-    # it, so a saved measure is illegal there.
+    # ``measure_ctx`` rides the transform INPUT only — partition_by / scalar
+    # kwargs drop it (and partition_by binds without ``alias_map``).
     inp = _bind(
         parsed.input, scope=scope, bundle=bundle, in_filter=False,
         alias_map=alias_map, measure_ctx=measure_ctx,
     )
-    # The value to transform is the first positional (``parsed.input``).
-    # A few transforms accept further POSITIONAL params per the documented
-    # DSL surface (``time_shift(x, periods, granularity)``,
-    # ``lag(x, periods)``, ``lead(x, periods)``); map those onto their kwarg
-    # names. Every other transform (rank family, cumsum, change,
-    # consecutive_periods, ...) stays keyword-only after the value.
+    # A few transforms accept further positional params (mapped onto kwargs);
+    # every other transform is keyword-only after the value.
     positional_pairs: List = []
     pos_names = _TRANSFORM_POSITIONAL_KWARGS.get(parsed.op)
     if parsed.args:
@@ -1405,8 +1187,7 @@ def _bind_transform(
     partition_keys: List = []
     allowed_kwargs = _TRANSFORM_KWARG_RULES.get(parsed.op, frozenset())
     seen_kwargs: set = set()
-    # Positional params first, then explicit kwargs; a name supplied BOTH
-    # ways is an error (ambiguous, e.g. ``time_shift(x, -1, periods=-2)``).
+    # A name supplied both positionally and as a kwarg is ambiguous → error.
     _explicit_kw_names = {k for k, _ in parsed.kwargs}
     for k, _ in positional_pairs:
         if k in _explicit_kw_names:
@@ -1447,7 +1228,6 @@ def _bind_transform(
                 f"{type(v).__name__}."
             )
         kwargs.append((k, scalar))
-    # Per-op required-kwarg validation + defaults.
     kwargs = _apply_transform_kwarg_defaults(
         op=parsed.op, kwargs=kwargs, seen=seen_kwargs,
     )
@@ -1463,24 +1243,11 @@ def _bind_transform(
 def _apply_transform_kwarg_defaults(
     *, op: str, kwargs: list, seen: set,
 ) -> list:
-    """Validate required kwargs and apply per-op defaults for the typed
-    TransformKey.
+    """Validate required kwargs and apply per-op defaults for the TransformKey.
 
-    Validation:
-    * ``ntile`` requires ``n``; ``n`` must be a positive integer
-      (``bool`` rejected — it's an ``int`` subclass in Python but a
-      boolean ``True``/``False`` is never a sensible bucket count).
-    * ``time_shift`` requires ``periods`` (integer; may be negative).
-
-    Defaults:
-    * ``lag`` / ``lead`` default ``periods=1`` when missing so the
-      typed TransformKey carries the resolved kwarg list; the SQL
-      generator can render PARTITION/ORDER without re-applying defaults.
-
-    ``normalize_scalar`` wraps numeric literals in ``Decimal``, so the
-    integer checks accept ``Decimal`` whose value is integral as well
-    as plain ``int``.
-    """
+    ``ntile`` requires positive-integer ``n``; ``time_shift`` requires integer
+    ``periods`` (may be negative); ``lag`` / ``lead`` default ``periods=1``.
+    Integer checks accept integral ``Decimal`` (``normalize_scalar`` wraps numbers)."""
     def _ensure_positive_integer(value: object, *, kw: str) -> None:
         if isinstance(value, bool):
             raise ValueError(
@@ -1534,9 +1301,7 @@ def _bind_scalar(
     measure_ctx: Optional[MeasureResolutionCtx] = None,
 ) -> ScalarCallKey:
     if parsed.name not in SCALAR_FUNCTIONS:
-        # Defence in depth: the parser already enforces the allowlist,
-        # but direct ParsedExpr construction can bypass the parser.
-        # Re-check here so the typed key family is always sound.
+        # Defence in depth: direct ParsedExpr construction bypasses the parser.
         raise UnknownFunctionError(
             name=parsed.name,
             location="(binder)",
@@ -1545,10 +1310,8 @@ def _bind_scalar(
                 f"{sorted(SCALAR_FUNCTIONS)}."
             ),
         )
-    # Arity for EVERY allowlisted scalar, not just like. sqlglot's own
-    # handling is inconsistent — a wrong-arity round silently drops the
-    # extra argument, length emits SQL the database rejects — so a
-    # mistyped filter deserves a clear error here instead.
+    # Check arity for every allowlisted scalar: sqlglot's handling is
+    # inconsistent (silent arg-drop / DB-rejected SQL), so error clearly here.
     arity_error = check_scalar_arity(
         name=parsed.name, argc=len(parsed.args),
     )
@@ -1573,15 +1336,10 @@ def _reject_windowed_column_sql(
     bundle: ResolvedSourceBundle,
     parsed: ParsedExpr,
 ) -> None:
-    """Raise ``IllegalWindowInFilterError`` if any referenced
-    ``ColumnSqlKey`` has a windowed ``Column.sql`` body.
-
-    DEV-1369 removed predicate-promotion; filters touching a windowed
-    column SQL now raise.
-    """
+    """Raise ``IllegalWindowInFilterError`` if any referenced ``ColumnSqlKey``
+    has a windowed ``Column.sql`` body (no predicate-promotion)."""
     if isinstance(scope, StageSchema):
-        # StageSchema columns don't carry Column.sql in the bundle;
-        # window detection is handled when the upstream stage was bound.
+        # StageSchema columns carry no Column.sql; windows caught upstream.
         return
     for k in refs:
         if not isinstance(k, ColumnSqlKey):
