@@ -155,7 +155,8 @@ class TestPrependLeafKinds:
         b = K.prepend_value_key(
             SqlExprKey(canonical_sql="x", referenced_join_paths=(("segments",), ("regions",))),
             host_path=HOST)
-        assert a == b and hash(a) == hash(b)
+        assert a == b
+        assert hash(a) == hash(b)
 
 
 # --------------------------------------------------------------------------- #
@@ -249,8 +250,9 @@ class TestPrependTotalityAndFailClosed:
         class NotAKey:
             path = ("customers",)
 
+        not_a_key = NotAKey()
         with pytest.raises(TypeError):
-            K.prepend_value_key(NotAKey(), host_path=HOST)
+            K.prepend_value_key(not_a_key, host_path=HOST)
 
     def test_empty_host_path_is_identity(self) -> None:
         key = AggregateKey(source=ColumnKey(path=(), leaf="spend"), agg="sum")
@@ -275,7 +277,8 @@ class TestRoundTrip:
         prepended = K.prepend_value_key(key, host_path=HOST)
         restored = reroot_value_key(prepended, target_path=HOST)
         # Equal AND hash-equal — the round trip must intern back onto one slot.
-        assert restored == key and hash(restored) == hash(key)
+        assert restored == key
+        assert hash(restored) == hash(key)
 
     def test_strip_undoes_prepend_deep(self) -> None:
         key = AggregateKey(

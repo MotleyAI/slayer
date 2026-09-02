@@ -13,7 +13,7 @@ multi-stage DAG. It composes the [binder](binding.md), the
 
 ```mermaid
 flowchart TB
-    q["SlayerQuery + scope + bundle"] --> dm["_declared_measures_from_query<br/>parse + expand + bind dims/TDs/measures"]
+    q["SlayerQuery + scope + bundle"] --> dm["_declared_measures_from_query<br/>parse + bind dims/TDs/measures"]
     dm --> filt["bind filters (date_range, model.filters, user filters)"]
     filt --> ord["resolve ORDER BY (alias map → bind)"]
     ord --> td["resolve active TD → _attach_time_keys"]
@@ -32,9 +32,9 @@ time-dim → measure** order (matching the legacy `user_projection` order). Each
 dimension/time-dimension binds and is declared under its flattened `__` name
 (`stores.opened_at` → `stores__opened_at`) — that flat name is the
 `StageColumn.name` a downstream stage binds against (DEV-1448/1449). Measures
-run through `expand_model_measures` first (against a `ModelScope` only —
-downstream `StageSchema` stages don't expose saved measures), then bind, then get
-a canonical alias via `_canonical_alias_for_formula`.
+bind directly (the binder resolves any saved-measure reference in place, against
+a `ModelScope` only — downstream `StageSchema` stages don't expose saved
+measures), then get a canonical alias via `_canonical_alias_for_formula`.
 
 `_canonical_alias_for_formula` routes any aggregate-rooted formula (including
 parametric `revenue:percentile(p=0.5)`) through `canonical_agg_name` so kwargs are

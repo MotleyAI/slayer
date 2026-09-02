@@ -2,16 +2,10 @@
 identical to the hand-written host-prefixed formula.
 
 Each ``EQUIV_PAIRS`` entry pairs a dotted spelling (``customers.aov``) with its
-hand-expanded twin (``customers.spend:sum / customers.*:count``). The guarantee
-is total: identical generated SQL (byte-for-byte) AND identical executed values
-on SQLite and DuckDB. Coverage spans composite, nested-saved (recursion),
-self-qualified (no double-prefix), nested-join, column-filter (owner-local and
-join-crossing over a proven hop), partitioned (target-local and ``[]``),
-transform, transform-wrapping-dotted, mixed local+dotted, and a
-computed-dimension source.
-
-Today every dotted spelling raises ``UnknownReferenceError`` (``_resolve_dotted``
-has no saved-measure fall-through), so these fail for the right reason.
+hand-expanded twin. The guarantee is total: identical generated SQL (byte-for-
+byte) AND identical executed values on SQLite and DuckDB, across composite,
+nested-saved, self-qualified, nested-join, column-filter, partitioned, transform,
+mixed local+dotted, and computed-dimension-source forms.
 """
 
 from __future__ import annotations
@@ -91,7 +85,8 @@ def _approx(actual, expected) -> None:
     if expected is None:
         assert actual is None, f"expected NULL, got {actual!r}"
     else:
-        assert actual is not None and float(actual) == pytest.approx(expected)
+        assert actual is not None
+        assert float(actual) == pytest.approx(expected)
 
 
 class TestExecutedValuesAgainstOracles:
@@ -160,9 +155,11 @@ class TestUnsafeInputParity:
     @pytest.mark.parametrize("label", list(PARITY_ERROR_PAIRS))
     async def test_dotted_inherits_unproven_hop_rejection(self, label) -> None:
         dotted, hand = PARITY_ERROR_PAIRS[label]
+        hand_query = _measure_query(hand)
+        dotted_query = _measure_query(dotted)
         with pytest.raises(ValueError) as hand_err:
-            await gen(_measure_query(hand))
+            await gen(hand_query)
         assert "unproven join hop" in str(hand_err.value)
         with pytest.raises(ValueError) as dotted_err:
-            await gen(_measure_query(dotted))
+            await gen(dotted_query)
         assert "unproven join hop" in str(dotted_err.value)

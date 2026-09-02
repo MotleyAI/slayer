@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import difflib
 import os
+from decimal import Decimal
 from typing import Dict, List, Optional, Tuple, Union
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -796,18 +797,34 @@ def _resolve_dotted(
         hop_path=hop_path, host=host, bundle=bundle, parts=parts,
     )
 
-    # `current` is the terminal model; `leaf` is the column on it.
+    return _resolve_terminal_leaf(
+        current=current, leaf=leaf, hop_path=hop_path,
+        original_parts=original_parts, scope=scope, bundle=bundle,
+        measure_ctx=measure_ctx,
+    )
+
+
+def _resolve_terminal_leaf(
+    *,
+    current: SlayerModel,
+    leaf: str,
+    hop_path: Tuple[str, ...],
+    original_parts: Tuple[str, ...],
+    scope: ModelScope,
+    bundle: ResolvedSourceBundle,
+    measure_ctx: Optional[MeasureResolutionCtx],
+) -> ValueKey:
+    """Resolve ``leaf`` on the terminal model ``current``: column (plain or
+    derived) → saved measure (re-anchored into host coords) → unresolved error."""
     col = next((c for c in current.columns if c.name == leaf), None)
     if col is not None:
         if col.sql is not None and col.sql.strip() != leaf:
-            # Derived column on a joined model. The path is part of the key
-            # so the cross-model planner can route via the join graph.
+            # Derived column on a joined model — path is part of the key so the
+            # cross-model planner can route via the join graph.
             return ColumnSqlKey(
                 path=tuple(hop_path), model=current.name, column_name=leaf,
             )
         return ColumnKey(path=tuple(hop_path), leaf=leaf)
-
-    # No column on the terminal model: a saved measure re-anchors into host coords.
     mm = current.get_measure(leaf)
     if mm is not None:
         return _resolve_saved_measure(
@@ -1302,8 +1319,6 @@ def _fold_to_scalar(parsed: ParsedExpr):
         and parsed.op == "-"
         and isinstance(parsed.operand, Literal)
     ):
-        from decimal import Decimal
-
         inner = parsed.operand.value
         if isinstance(inner, bool):
             # Reject explicitly — ``-True`` is nonsense and bool is an
@@ -1468,8 +1483,6 @@ def _apply_transform_kwarg_defaults(
     integer checks accept ``Decimal`` whose value is integral as well
     as plain ``int``.
     """
-    from decimal import Decimal
-
     def _ensure_positive_integer(value: object, *, kw: str) -> None:
         if isinstance(value, bool):
             raise ValueError(

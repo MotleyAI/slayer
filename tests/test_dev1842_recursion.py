@@ -1,15 +1,9 @@
 """DEV-1842 task 1.3 — recursion, depth, and cycles for dotted saved measures.
 
-Expansion is recursive in both directions: a target measure may reference other
-saved measures on its model (``customers.aov_big`` → ``aov`` → ``spend:sum /
-*:count``), and a host measure may itself contain a dotted reference
-(``host_runs_dotted`` = ``cumsum(customers.aov)``). Depth is bounded (default 32,
-env-configurable); a cross-model reference cycle raises naming the (model,
-measure) chain.
-
-The cross-model cycle here is a genuine measure cycle (``customers.cyc_c`` →
-``orders.cyc_o`` → ``customers.cyc_c``), detected on descent before any
-re-anchoring — distinct from the single-hop round-trip of task 1.6.
+Recursion runs both directions (a target measure referencing other saved
+measures; a host measure containing a dotted ref); depth is bounded (default 32,
+env-configurable); a cross-model measure cycle raises naming the (model, measure)
+chain, detected on descent — distinct from the single-hop round-trip of task 1.6.
 """
 
 from __future__ import annotations
@@ -23,7 +17,8 @@ from slayer.core.enums import DataType
 from slayer.core.errors import MeasureRecursionLimitError
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 
-from tests._dev1842_fixtures import gen, make_exec_engine, q
+from tests._dev1842_fixtures import gen, make_exec_engine, month_td, q
+from tests._engine_helpers import _engine_generate
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -64,8 +59,6 @@ class TestHostMeasureContainingDottedRef:
         """A bare host measure whose formula contains a dotted cross-model
         reference (``host_runs_dotted`` = ``cumsum(customers.aov)``) resolves
         recursively — identical SQL to writing the dotted form inline."""
-        from tests._dev1842_fixtures import month_td
-
         bare = q(dimensions=["customers.tier"],
                  measures=[{"formula": "host_runs_dotted", "name": "x"}],
                  time_dimensions=month_td())
@@ -84,7 +77,8 @@ class TestCrossModelCycle:
         with pytest.raises(ValueError) as ei:
             await gen(query)
         message = str(ei.value).lower()
-        assert "cyc_c" in message and "cyc_o" in message
+        assert "cyc_c" in message
+        assert "cyc_o" in message
         assert "cycl" in message or "circular" in message
 
 
@@ -116,8 +110,6 @@ class TestDepthLimit:
         return main, sub
 
     async def _generate(self, formula: str) -> str:
-        from tests._engine_helpers import _engine_generate
-
         main, sub = self._models()
         return await _engine_generate(
             query=q(source_model="main",

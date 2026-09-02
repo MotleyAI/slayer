@@ -238,7 +238,7 @@ Column and measure names share a namespace within a model — you can't have a c
 ]
 ```
 
-A saved formula produces the same SQL as writing it out longhand, and cycles (`a → b → a`) or names shadowing built-in transforms are rejected at model construction.
+A saved formula produces the same SQL as writing it out longhand. Cycles (`a → b → a`) are rejected during binding. Names shadowing built-in transforms are rejected at model construction.
 
 ### Reusing another model's saved measure (`customers.aov`)
 

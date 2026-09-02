@@ -1,13 +1,9 @@
 """Shared fixtures for DEV-1842 — dotted references to another model's saved
 measures (``customers.aov`` from an ``orders``-rooted query).
 
-Reuses the DEV-1836 dataset and physical schema verbatim (same four tables,
-same rows, same oracles) and layers **saved measures** onto ``customers`` and
-``orders``. A dotted saved-measure reference must be bound-tree-identical to the
-hand-written host-prefixed formula, so every equality test pairs a dotted form
-with its hand-expanded twin and asserts identical SQL / executed values.
-
-Underscore-prefixed so pytest skips collection (mirrors ``_dev1836_fixtures``).
+Reuses the DEV-1836 dataset/schema and layers saved measures onto ``customers``
+and ``orders``; every equality test pairs a dotted form with its hand-expanded
+twin (bound-tree-identical). Underscore-prefixed so pytest skips collection.
 """
 
 from __future__ import annotations
@@ -18,8 +14,9 @@ from typing import AsyncIterator, List
 
 import pytest
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -44,25 +41,10 @@ from tests._dev1836_fixtures import (  # noqa: E402,F401  (re-export)
 )
 
 
-# --------------------------------------------------------------------------- #
-# Saved measures.
-#
-# On ``customers`` — each exercises one re-anchoring kind:
-#   aov              composite: column source + star  (spend:sum / *:count)
-#   aov_big          nested saved measure (recursion) referencing ``aov``
-#   self_aov         self-qualified refs (C14 strip; MUST NOT double-prefix)
-#   pop_total        crosses the target's OWN join (regions.pop:sum)
-#   gold_spend_total Column.filter owner-local     (tier = 'gold')
-#   north_spend_total Column.filter crossing a PROVEN join (regions.name); works
-#   vip_spend_total  Column.filter crossing an UNPROVEN join (segments.label);
-#                    inherits the DEV-1836 unsafe-input rejection (both raise)
-#   spend_by_tier    partition_by over a target-local dimension
-#   spend_grand      partition_by=[] (grand-total broadcast producer)
-#   spend_run        transform (cumsum) over the target aggregate
-#   typed_aov        same as aov but with an explicit ``type=`` (metadata)
-#   order_total      round-trip: crosses the reverse join back to ``orders``
-#   cyc_c            cross-model cycle partner (see orders.cyc_o)
-# --------------------------------------------------------------------------- #
+# Saved measures on ``customers`` — each exercises one re-anchoring kind
+# (composite, nested/recursive, self-qualified, own-join, column-filter local /
+# proven-hop / unproven-hop, partition_by local / grand, transform, typed,
+# round-trip, cross-model cycle). See EQUIV_PAIRS for the hand-expanded twins.
 CUSTOMER_MEASURES: List[ModelMeasure] = [
     ModelMeasure(name="aov", formula="spend:sum / *:count"),
     ModelMeasure(name="aov_big", formula="aov * 2"),
@@ -88,12 +70,9 @@ ORDERS_MEASURES: List[ModelMeasure] = [
 ]
 
 
-# --------------------------------------------------------------------------- #
 # Models — DEV-1836 shapes with the saved measures overlaid.
-# --------------------------------------------------------------------------- #
 #: A filtered column whose predicate crosses the PROVEN customers → regions hop
-#: (regions.id is a PK). Unlike ``vip_spend`` (unproven segments hop) this is a
-#: safe cross-model input, so ``north_spend:sum`` executes.
+#: (safe cross-model input, so ``north_spend:sum`` executes; cf. ``vip_spend``).
 _NORTH_SPEND = Column(
     name="north_spend", type=DataType.DOUBLE, sql="spend",
     filter="regions.name = 'North'",
@@ -117,20 +96,13 @@ def dev1842_models() -> List[SlayerModel]:
     return [orders_model(), customers_model(), regions_model(), segments_model()]
 
 
-# --------------------------------------------------------------------------- #
 # Query + generation shorthands.
-# --------------------------------------------------------------------------- #
 def q(**kw):
-    from slayer.core.query import SlayerQuery
-
     kw.setdefault("source_model", "orders")
     return SlayerQuery(**kw)
 
 
 def month_td(column: str = "ordered_at"):
-    from slayer.core.query import ColumnRef, TimeDimension
-    from slayer.core.enums import TimeGranularity
-
     return [TimeDimension(
         dimension=ColumnRef(name=column), granularity=TimeGranularity.MONTH,
     )]

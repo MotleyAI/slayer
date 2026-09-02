@@ -17,6 +17,8 @@ suites uniquely covered.
 from __future__ import annotations
 
 import os
+import pathlib
+import re
 from unittest import mock
 
 import pytest
@@ -28,6 +30,7 @@ from slayer.core.errors import (
     MeasureRecursionLimitError,
 )
 from slayer.core.models import Column, ModelMeasure, SlayerModel
+from slayer.core.query import SlayerQuery
 from slayer.core.scope import StageColumn, StageSchema
 from slayer.engine.binding import bind_expr
 from slayer.engine.source_bundle import ResolvedSourceBundle
@@ -50,8 +53,6 @@ def _model(measures) -> SlayerModel:
 
 
 async def _gen(model, formula, **kw) -> str:
-    from slayer.core.query import SlayerQuery
-
     return await _engine_generate(
         query=SlayerQuery(source_model="orders",
                           measures=[{"formula": formula, "name": "x"}], **kw),
@@ -140,7 +141,8 @@ class TestCycleAndDepthThroughBinder:
         with pytest.raises((MeasureCycleError, ValueError)) as ei:
             await _gen(model, "a")
         message = str(ei.value).lower()
-        assert "a" in message and "b" in message
+        assert "a" in message
+        assert "b" in message
         assert "cycl" in message or "circular" in message
 
     async def test_depth_limit_exceeded(self) -> None:
@@ -166,9 +168,9 @@ class TestTransformArgEligibilityDropped:
     eligibility. This is a deliberate change from the deleted pass, which
     expanded transform kwargs. With ``status`` a real query dimension, the ONLY
     variable is whether ``grp`` (a measure whose formula is the bare dimension
-    ``status``) expands: the old pass substituted ``status`` and the query
-    succeeded; under D2 ``grp`` is not expanded and the reference is rejected.
-    (Fails today — the behaviour has not yet changed.)"""
+    ``status``) expands: under D2 ``grp`` is not expanded in a transform's
+    ``partition_by`` and the reference is rejected (the deleted pass substituted
+    ``status`` and the query succeeded)."""
 
     async def test_transform_partition_by_measure_not_expanded(self) -> None:
         model = _model([_REV, _GRP])
@@ -188,18 +190,16 @@ class TestStageSchemaScope:
             relation_name="s",
             columns=[StageColumn(name="aov", sql_alias="aov", type=DataType.DOUBLE)],
         )
+        parsed = parse_expr("customers.aov")
+        bundle = ResolvedSourceBundle()
         with pytest.raises(IllegalScopeReferenceError):
-            bind_expr(parse_expr("customers.aov"), scope=stage,
-                      bundle=ResolvedSourceBundle())
+            bind_expr(parsed, scope=stage, bundle=bundle)
 
 
 class TestDeletedPassNotImported:
     """The migrated suite must not depend on the deleted module (task 2.1)."""
 
     def test_new_suites_do_not_import_measure_expansion(self) -> None:
-        import pathlib
-        import re
-
         here = pathlib.Path(__file__).parent
         importer = re.compile(r"^\s*(from|import)\s+slayer\.engine\.measure_expansion",
                               re.MULTILINE)

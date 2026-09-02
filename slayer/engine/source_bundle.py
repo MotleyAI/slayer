@@ -29,7 +29,13 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union, cast
 from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.models import (
+    Column,
+    ModelJoin,
+    ModelMeasure,
+    SlayerModel,
+    _check_column_measure_namespace,
+)
 from slayer.core.query import ModelExtension, SlayerQuery
 from slayer.engine.variables import merge_query_variables
 
@@ -147,16 +153,15 @@ def _apply_extension_overlay(
             "joins": list(base.joins) + extra_joins,
         }
     )
-    # A ModelExtension measure reusing a model measure's name is a loud duplicate
-    # error, not a silent shadow (model_copy runs no validators, so check here).
+    # model_copy runs no validators, so re-run the full namespace check: an
+    # overlay column/measure reusing an existing name is a loud error, never a
+    # silent shadow. (Query-backed bases defer measures above, so skip then.)
     if not merged.source_queries:
-        names = [m.name for m in merged.measures if m.name]
-        dupes = sorted({n for n in names if names.count(n) > 1})
-        if dupes:
-            raise ValueError(
-                f"Model '{merged.name}': duplicate measure names: {dupes}. A "
-                f"ModelExtension measure may not reuse a model measure's name."
-            )
+        _check_column_measure_namespace(
+            model_name=merged.name,
+            columns=merged.columns,
+            measures=merged.measures,
+        )
     return merged
 
 
@@ -178,6 +183,15 @@ def _source_name_if_sibling(
         nm = spec["source_name"]
         return nm if nm in sibling_names else None
     return None
+
+
+def _spec_adds_measures(spec: SourceSpec) -> bool:
+    """True when a ``source_model`` spec is a ``ModelExtension`` carrying measures."""
+    if isinstance(spec, ModelExtension):
+        return bool(spec.measures)
+    if isinstance(spec, dict) and isinstance(spec.get("source_name"), str):
+        return bool(spec.get("measures"))
+    return False
 
 
 def _follow_sibling_chain(
@@ -335,9 +349,22 @@ async def build_resolved_source_bundle(
         # a failure here (typoed / missing model) is a genuine error, not a
         # best-effort skip — swallowing it would silently fall back to the root
         # source and emit wrong SQL when column names overlap.
-        stage_source_models[nm] = await _resolve_source_spec(
+        resolved_stage = await _resolve_source_spec(
             nq.source_model, storage=storage, data_source=walk_ds or data_source
         )
+        # A ModelExtension over a query-backed base defers its measures for
+        # post-expansion re-application; that re-application is wired only for the
+        # ROOT source (``inline_extensions``), not stage sources — so a stage
+        # extension's measures would be silently dropped. Fail loud until wired.
+        if resolved_stage.source_queries and _spec_adds_measures(nq.source_model):
+            raise ValueError(
+                f"Stage {nm!r}: a ModelExtension over query-backed model "
+                f"{resolved_stage.name!r} may not add measures — deferred-overlay "
+                f"re-application is not wired for stage sources, so the measures "
+                f"would be silently dropped. Reference them from the root source "
+                f"or a table-backed base."
+            )
+        stage_source_models[nm] = resolved_stage
 
     query_variables = merge_query_variables(
         runtime=runtime_variables,

@@ -68,16 +68,14 @@ class TestBroadcastMetadataInherited:
 class TestStrictInherited:
     async def test_strict_broadcast_errors_like_hand(self, exec_backend):
         _, engine = exec_backend
+        dotted_query = q(strict=True, dimensions=["status"],
+                         measures=[{"formula": DOTTED, "name": "x"}])
+        hand_query = q(strict=True, dimensions=["status"],
+                       measures=[{"formula": HAND, "name": "x"}])
         with pytest.raises((SlayerError, ValueError)) as dotted_err:
-            await engine.execute(
-                q(strict=True, dimensions=["status"],
-                  measures=[{"formula": DOTTED, "name": "x"}]),
-            )
+            await engine.execute(dotted_query)
         with pytest.raises((SlayerError, ValueError)) as hand_err:
-            await engine.execute(
-                q(strict=True, dimensions=["status"],
-                  measures=[{"formula": HAND, "name": "x"}]),
-            )
+            await engine.execute(hand_query)
         # Same failure: same exception type, same broadcast dimension, same remedy.
         assert type(dotted_err.value) is type(hand_err.value)
         for err in (dotted_err.value, hand_err.value):

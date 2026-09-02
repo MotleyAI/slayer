@@ -10,14 +10,17 @@ from sqlalchemy.engine import URL as _SA_URL
 
 from slayer.core.enums import (
     BUILTIN_AGGREGATIONS,
+    DEFAULT_AGGREGATIONS_BY_TYPE,
     DataType,
     JoinCardinality,
     JoinType,
     ObjectKind,
+    PRIMARY_KEY_AGGREGATIONS,
     _coerce_legacy_datatype,
 )
 from slayer.core.format import NumberFormat
 from slayer.core.formula import ALL_TRANSFORMS
+from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.sql_predicate import parse_sql_predicate
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 from slayer.storage.migrations import migrate as _migrate_schema
@@ -350,7 +353,6 @@ class Aggregation(BaseModel):
 
     @model_validator(mode="after")
     def _reject_transform_names(self) -> "Aggregation":
-        from slayer.core.formula import ALL_TRANSFORMS
         # Names that are ONLY transforms (not also built-in aggregations) are
         # forbidden as custom aggregation names to avoid ambiguity with the
         # formula parser's transform detection.
@@ -379,7 +381,7 @@ def _coerce_source_queries(v: Any) -> Any:
         return v
     if not isinstance(v, list):
         raise ValueError(f"source_queries must be a list, got {type(v).__name__}")
-    from slayer.core.query import SlayerQuery
+    from slayer.core.query import SlayerQuery  # ALLOW(import-not-top): circular — slayer.core.query imports SlayerModel/ModelMeasure from this module
     result = []
     for i, item in enumerate(v):
         if isinstance(item, SlayerQuery):
@@ -448,6 +450,46 @@ class ModelJoin(BaseModel):
                     f"join_pairs[{i}] must be [source_dim, target_dim] with non-empty strings, got {pair}"
                 )
         return v
+
+
+def _check_column_measure_namespace(
+    *, model_name: str, columns: list, measures: list
+) -> None:
+    """Columns and measures share one namespace: unique within each, disjoint across.
+
+    Shared by ``SlayerModel._validate_column_measure_disjoint`` and the
+    ``ModelExtension`` overlay (``model_copy`` runs no validators, so the overlay
+    must call this itself).
+    """
+    col_names_seq = [c.name for c in columns]
+    col_dupes = sorted({n for n in col_names_seq if col_names_seq.count(n) > 1})
+    if col_dupes:
+        raise ValueError(
+            f"Model '{model_name}': duplicate column names: {col_dupes}. "
+            f"Each column name must be unique within a model."
+        )
+    unnamed = [m.formula for m in measures if m.name is None]
+    if unnamed:
+        raise ValueError(
+            f"Model '{model_name}': every ModelMeasure in 'measures' must "
+            f"have a name. Unnamed formulas: {unnamed}."
+        )
+    measure_names_seq = [m.name for m in measures if m.name is not None]
+    measure_dupes = sorted(
+        {n for n in measure_names_seq if measure_names_seq.count(n) > 1}
+    )
+    if measure_dupes:
+        raise ValueError(
+            f"Model '{model_name}': duplicate measure names: {measure_dupes}. "
+            f"Each named ModelMeasure must have a unique name within a model."
+        )
+    overlap = sorted(set(col_names_seq) & set(measure_names_seq))
+    if overlap:
+        raise ValueError(
+            f"Model '{model_name}': name collision between columns and "
+            f"measures: {overlap}. Each name must be unique within a model "
+            f"(columns and measures share a namespace)."
+        )
 
 
 class SlayerModel(BaseModel):
@@ -548,42 +590,11 @@ class SlayerModel(BaseModel):
 
     @model_validator(mode="after")
     def _validate_column_measure_disjoint(self) -> "SlayerModel":
-        """Names within ``columns`` and within ``measures`` must each be unique,
-        and the two lists must not overlap.
-
-        A query formula like ``{"formula": "revenue"}`` resolves by looking up
-        the name in both lists; allowing duplicates within a list or collisions
-        across lists would make resolution ambiguous.
-        """
-        col_names_seq = [c.name for c in self.columns]
-        col_dupes = sorted({n for n in col_names_seq if col_names_seq.count(n) > 1})
-        if col_dupes:
-            raise ValueError(
-                f"Model '{self.name}': duplicate column names: {col_dupes}. "
-                f"Each column name must be unique within a model."
-            )
-        unnamed = [m.formula for m in self.measures if m.name is None]
-        if unnamed:
-            raise ValueError(
-                f"Model '{self.name}': every ModelMeasure in 'measures' must "
-                f"have a name. Unnamed formulas: {unnamed}."
-            )
-        measure_names_seq = [m.name for m in self.measures if m.name is not None]
-        measure_dupes = sorted({n for n in measure_names_seq if measure_names_seq.count(n) > 1})
-        if measure_dupes:
-            raise ValueError(
-                f"Model '{self.name}': duplicate measure names: {measure_dupes}. "
-                f"Each named ModelMeasure must have a unique name within a model."
-            )
-        col_names = set(col_names_seq)
-        measure_names = set(measure_names_seq)
-        overlap = sorted(col_names & measure_names)
-        if overlap:
-            raise ValueError(
-                f"Model '{self.name}': name collision between columns and "
-                f"measures: {overlap}. Each name must be unique within a model "
-                f"(columns and measures share a namespace)."
-            )
+        """Columns and measures share one namespace — see
+        ``_check_column_measure_namespace``."""
+        _check_column_measure_namespace(
+            model_name=self.name, columns=self.columns, measures=self.measures
+        )
         return self
 
     @model_validator(mode="after")
@@ -608,11 +619,6 @@ class SlayerModel(BaseModel):
         type/PK eligibility set, so query-time gating reduces to a whitelist
         membership check.
         """
-        from slayer.core.enums import (
-            DEFAULT_AGGREGATIONS_BY_TYPE,
-            PRIMARY_KEY_AGGREGATIONS,
-        )
-
         custom_agg_names = {a.name for a in self.aggregations}
         valid_names = BUILTIN_AGGREGATIONS | custom_agg_names
         for c in self.columns:
@@ -874,7 +880,6 @@ class DatasourceConfig(BaseModel):
         # full snowflake-sqlalchemy URL from inline fields. Tier-1
         # dialects without a custom hook return None and fall through
         # to the standard branches below.
-        from slayer.sql.dialects import dialect_for_ds_type  # noqa: PLC0415
         dialect = dialect_for_ds_type(self.type)
         url_from_dialect = dialect.build_connection_url(self)
         if url_from_dialect is not None:
