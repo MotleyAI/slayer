@@ -614,6 +614,10 @@ def _walk_cp_predicate(*, op: str, key, expect: str) -> None:
     elif isinstance(key, (BetweenKey, InKey)):
         for sub in _cp_value_operands(key):
             _walk_cp_predicate(op=op, key=sub, expect="value")
+    elif isinstance(key, TransformKey):
+        # A transform computes over a numeric value; a boolean in its input is
+        # a value-position error (write iif(pred, 1, 0) instead).
+        _walk_cp_predicate(op=op, key=key.input, expect="value")
 
 
 _WINDOW_UNIT_SQL = {

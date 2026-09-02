@@ -68,7 +68,7 @@ def _f(v):
     return None if v is None else float(v)
 
 
-async def _error(measures, dimensions=None):
+async def _error(*, measures, dimensions=None):
     """The (type-name, message) of the raise a query produces, or fail."""
     try:
         await gen(_q(measures=measures, dimensions=dimensions))
@@ -340,7 +340,7 @@ class TestPredicateTypingContract:
         assert int(by["2024-03"]["sales.streak"]) == 3
 
     async def test_boolean_in_arithmetic_rejected(self) -> None:
-        name, msg = await _error([ModelMeasure(
+        name, msg = await _error(measures=[ModelMeasure(
             formula="consecutive_periods((revenue:sum > 0) + (cost:sum > 0))",
             name="x")])
         assert name == "ValueError", (name, msg)
@@ -350,7 +350,7 @@ class TestPredicateTypingContract:
         assert "numeric" in low or "arithmetic" in low, msg
 
     async def test_boolean_as_scalar_call_argument_rejected(self) -> None:
-        name, msg = await _error([ModelMeasure(
+        name, msg = await _error(measures=[ModelMeasure(
             formula="consecutive_periods(coalesce(revenue:sum > 0, 0))", name="x")])
         assert name == "ValueError", (name, msg)
         low = msg.lower()
@@ -358,7 +358,7 @@ class TestPredicateTypingContract:
         assert "boolean" in low, msg
 
     async def test_string_family_predicate_rejected(self) -> None:
-        name, msg = await _error([ModelMeasure(
+        name, msg = await _error(measures=[ModelMeasure(
             formula="consecutive_periods(lower(sku:max))", name="x")])
         assert name == "ValueError", (name, msg)
         low = msg.lower()
@@ -369,8 +369,18 @@ class TestPredicateTypingContract:
     async def test_boolean_in_in_column_rejected(self) -> None:
         """A boolean-shaped comparison in an IN value position is rejected, not
         passed through as ``(SUM(revenue) > 0) IN (...)``."""
-        name, msg = await _error([ModelMeasure(
+        name, msg = await _error(measures=[ModelMeasure(
             formula="consecutive_periods((revenue:sum > 0) in (1, 0))", name="x")])
+        assert name == "ValueError", (name, msg)
+        low = msg.lower()
+        assert "consecutive_periods" in low, msg
+        assert "boolean" in low, msg
+
+    async def test_boolean_in_transform_input_rejected(self) -> None:
+        """A boolean-shaped node in a transform's value input (cumsum of a
+        comparison) is rejected, not summed as a boolean."""
+        name, msg = await _error(measures=[ModelMeasure(
+            formula="consecutive_periods(cumsum(revenue:sum > 0))", name="x")])
         assert name == "ValueError", (name, msg)
         low = msg.lower()
         assert "consecutive_periods" in low, msg
@@ -399,7 +409,7 @@ class TestUniformFailClosed:
 
     @pytest.mark.parametrize("shape", list(SHAPES))
     async def test_plain_path_names_shape_and_remedy(self, shape) -> None:
-        name, msg = await _error([ModelMeasure(formula=self.SHAPES[shape], name="prev")])
+        name, msg = await _error(measures=[ModelMeasure(formula=self.SHAPES[shape], name="prev")])
         assert name == "ValueError", (shape, name, msg)
         low = msg.lower()
         for token in self.TOKENS[shape]:
@@ -410,8 +420,8 @@ class TestUniformFailClosed:
         """The presence of a cross-model measure elsewhere must not change which
         error the unsupported shape produces (today the plain path and the
         cross-model-chain path diverge)."""
-        plain = await _error([ModelMeasure(formula=self.SHAPES[shape], name="prev")])
-        with_sibling = await _error([
+        plain = await _error(measures=[ModelMeasure(formula=self.SHAPES[shape], name="prev")])
+        with_sibling = await _error(measures=[
             ModelMeasure(formula="regions.factor:sum", name="cm"),
             ModelMeasure(formula=self.SHAPES[shape], name="prev"),
         ])

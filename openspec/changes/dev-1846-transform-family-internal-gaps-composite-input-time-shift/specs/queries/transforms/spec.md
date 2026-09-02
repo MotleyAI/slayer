@@ -146,10 +146,11 @@ or `and` / `or` / `not` whose operands are themselves boolean-shaped. A
 boolean-shaped node SHALL be accepted at the predicate top level and in a
 conditional's condition position (`iif` first argument), and SHALL be rejected
 with a `ValueError` naming the shape when it appears in any value position — an
-arithmetic operand, an argument of any other scalar call, or an operand of an
-`IN` / `BETWEEN` predicate. `and` / `or` / `not` SHALL reject non-boolean-shaped
-operands the same way. A top-level string-family scalar call SHALL be rejected
-as a predicate (its truthiness is undefined).
+arithmetic operand, an argument of any other scalar call, an operand of an
+`IN` / `BETWEEN` predicate, or the value input of a transform. `and` / `or` /
+`not` SHALL reject non-boolean-shaped operands the same way. A top-level
+string-family scalar call SHALL be rejected as a predicate (its truthiness is
+undefined).
 
 #### Scenario: iif condition position accepts a predicate
 
@@ -174,6 +175,12 @@ as a predicate (its truthiness is undefined).
 - **WHEN** a query requests `consecutive_periods((revenue:sum > 0) in (1, 0))`
 - **THEN** the query fails with a `ValueError` naming the boolean shape, rather
   than passing the predicate through into the emitted `IN` list
+
+#### Scenario: Boolean in a transform's value input rejected
+
+- **WHEN** a query requests `consecutive_periods(cumsum(revenue:sum > 0))`
+- **THEN** the query fails with a `ValueError` naming the boolean shape, rather
+  than aggregating a boolean inside the transform
 
 #### Scenario: String-family scalar call rejected as predicate
 
