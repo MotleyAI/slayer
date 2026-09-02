@@ -844,7 +844,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     # partition keys for the join-back; the finer-grain exemption is row-attach only.
     # Local and cross-model partitioned consumers are strict-checked alike.
     _consumers = combined_consumer_aggregates(
-        declared_measures, order_specs,
+        declared_measures=declared_measures, order_specs=order_specs,
         row_agg_set=_dim_agg_keys, bound_filters=bound_filters,
     )
     _combined_consumer_keys = frozenset(
@@ -1125,9 +1125,12 @@ def _partitioned_conjunct_scope(
     back) — except a transform-wrapped one, which is POST-phase (the wrapper owns it)."""
     cj_refs = list(walk_value_keys(cj))
     cj_has_transform = any(isinstance(k, TransformKey) for k in cj_refs)
+    # A row-role aggregate (the computed dimension's own) stays row-scoped even when
+    # cross-model; only non-row refs take the combined-SELECT shortcut.
+    combined_refs = [k for k in cj_refs if k not in row_agg_set]
     if not cj_has_transform and (
-        any(_is_cross_model_agg(k) for k in cj_refs)
-        or (crossing_root is not None and any(crossing_root(k) for k in cj_refs))
+        any(_is_cross_model_agg(k) for k in combined_refs)
+        or (crossing_root is not None and any(crossing_root(k) for k in combined_refs))
     ):
         return "combined"
     return conjunct_scope(cj, dim_keys=dim_keys, row_agg_set=row_agg_set)
@@ -2214,7 +2217,8 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
     # One unified combined-consumer walk (local + cross-model); ``row_agg_set`` is empty
     # in a producer sub-plan, matching the pre-unification cross-model discovery.
     consumers = combined_consumer_aggregates(
-        prebound.declared_measures, prebound.order_specs,
+        declared_measures=prebound.declared_measures,
+        order_specs=prebound.order_specs,
         row_agg_set=frozenset(row_inner_aggs),
         bound_filters=prebound.bound_filters,
     )

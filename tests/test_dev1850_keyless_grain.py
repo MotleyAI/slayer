@@ -22,8 +22,10 @@ import pytest
 
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import (
+    _crossing_local_root_predicate,
     _plan_regroups,
     _resolve_scope,
+    _split_partitioned_filter_conjuncts,
     bind_query_inputs,
 )
 
@@ -137,8 +139,9 @@ async def test_combined_consumer_keyless_grain_rejected(
         kw["order"] = order
     if filters:
         kw["filters"] = filters
+    query = q(**kw)
     with pytest.raises(ValueError, match=r"not a query dimension") as ei:
-        await gen(q(**kw))
+        await gen(query)
     msg = str(ei.value)
     assert key in msg, msg
     assert "Add it to dimensions/time_dimensions" in msg, msg  # the remedy
@@ -155,16 +158,18 @@ _ERROR_TEMPLATE = (
 async def test_keyless_dual_role_error_shape_matches_local() -> None:
     """The cross-model clean error is identical IN SHAPE to the local twin's —
     same wording, differing only in the offending key and the available dims."""
+    local_query = q(
+        dimensions=[_dim(LOCAL_BAND, "cband")],
+        measures=[ModelMeasure(formula=LOCAL_AGG, name="rt")],
+    )
+    cm_query = q(
+        dimensions=[_dim(SPEND_BAND, "sband")],
+        measures=[ModelMeasure(formula=CM_AGG, name="rt")],
+    )
     with pytest.raises(ValueError) as local_ei:
-        await gen(q(
-            dimensions=[_dim(LOCAL_BAND, "cband")],
-            measures=[ModelMeasure(formula=LOCAL_AGG, name="rt")],
-        ))
+        await gen(local_query)
     with pytest.raises(ValueError) as cm_ei:
-        await gen(q(
-            dimensions=[_dim(SPEND_BAND, "sband")],
-            measures=[ModelMeasure(formula=CM_AGG, name="rt")],
-        ))
+        await gen(cm_query)
     assert str(local_ei.value) == _ERROR_TEMPLATE.format(key="city", dims="cband")
     assert str(cm_ei.value) == _ERROR_TEMPLATE.format(
         key="customers.tier", dims="sband",
@@ -212,6 +217,26 @@ async def test_keyless_filter_over_own_cross_model_aggregate_row_routes(
     assert _cm_count(dry.sql, dialect) == 1, cte_aliases(
         dry.sql, "_cm_", dialect=dialect,
     )
+
+
+def test_filter_over_own_cross_model_aggregate_routes_row_not_combined() -> None:
+    """The dim's OWN cross-model aggregate in a filter stays row-scoped, not pushed to the combined outer WHERE."""
+    models = dev1838_models()
+    bundle = ResolvedSourceBundle(
+        source_model=models[0], referenced_models=list(models[1:]),
+    )
+    query = q(
+        dimensions=[_dim(SPEND_BAND, "sband")],
+        measures=[ModelMeasure(formula="amount:sum", name="m")],
+        filters=[f"{CM_AGG} > 100"],
+    )
+    scope = _resolve_scope(query=query, bundle=bundle, stage_schemas={})
+    prebound = bind_query_inputs(query=query, bundle=bundle, scope=scope)
+    crossing_root = _crossing_local_root_predicate(scope=scope, bundle=bundle)
+    _, combined_idx = _split_partitioned_filter_conjuncts(
+        prebound, crossing_root=crossing_root,
+    )
+    assert combined_idx == []
 
 
 async def test_keyless_order_by_dimension_name_cross_model_row_routes(
@@ -264,7 +289,8 @@ async def test_keyless_order_by_dimension_name_local_row_routes(
 # --------------------------------------------------------------------------- #
 # D4 — the producer-recursion contract of the unified seam: with
 # ``local_discovery=False`` the local combined bucket is suppressed (the recursion
-# guard) while cross-model discovery still runs. Pinned directly on _plan_regroups.
+# guard) while both cross-model buckets (bare AND partitioned) still run. Pinned
+# directly on _plan_regroups.
 # --------------------------------------------------------------------------- #
 def test_local_discovery_false_suppresses_local_keeps_cross_model() -> None:
     models = dev1838_models()
@@ -276,6 +302,9 @@ def test_local_discovery_false_suppresses_local_keeps_cross_model() -> None:
         measures=[
             ModelMeasure(formula="amount:sum(partition_by=status)", name="lt"),
             ModelMeasure(formula="customers.spend:sum", name="cm"),
+            ModelMeasure(
+                formula="customers.spend:sum(partition_by=customers.tier)", name="cp",
+            ),
         ],
     )
     scope = _resolve_scope(query=query, bundle=bundle, stage_schemas={})
@@ -289,9 +318,9 @@ def test_local_discovery_false_suppresses_local_keeps_cross_model() -> None:
         assert result is not None
         return result[1]
 
-    # A LOCAL combined attach has no producer_root_model; a cross-model one names its root.
+    # A LOCAL combined attach has no producer_root_model; cross-model ones (bare + partitioned) name their root.
     on = _attaches(local_discovery=True)
-    assert [a.producer_root_model for a in on] == [None, "customers"]
+    assert [a.producer_root_model for a in on] == [None, "customers", "customers"]
 
     off = _attaches(local_discovery=False)
-    assert [a.producer_root_model for a in off] == ["customers"]
+    assert [a.producer_root_model for a in off] == ["customers", "customers"]
