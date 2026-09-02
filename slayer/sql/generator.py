@@ -452,17 +452,17 @@ def _regroup_placeholder_map(planned_query):
     return to_original, to_slot
 
 
-def _composite_operand_children(node) -> tuple:
-    """Sub-keys a composite / predicate node recurses into; ``()`` for a leaf."""
+def _composite_operand_children(node) -> list:
+    """Sub-keys a composite / predicate node recurses into; ``[]`` for a leaf."""
     if isinstance(node, ArithmeticKey):
-        return tuple(node.operands)
+        return list(node.operands)
     if isinstance(node, ScalarCallKey):
-        return tuple(node.args)
+        return list(node.args)
     if isinstance(node, BetweenKey):
-        return (node.column, node.low, node.high)
+        return [node.column, node.low, node.high]
     if isinstance(node, InKey):
-        return (node.column,)
-    return ()
+        return [node.column]
+    return []
 
 
 def _classify_walk(node, *, flags, placeholder_to_original) -> None:
@@ -570,10 +570,10 @@ def _assert_cp_shape(*, op: str, key, expect: str, node_is_bool: bool) -> None:
         )
     if expect == "value" and node_is_bool:
         raise ValueError(
-            f"{op!r}: a boolean-shaped predicate cannot appear as a numeric / "
-            f"arithmetic operand or as a scalar-call argument; only iif's "
-            f"condition and the top-level predicate accept a boolean. Got "
-            f"{type(key).__name__}."
+            f"{op!r}: a boolean-shaped predicate cannot appear in a value "
+            f"position (arithmetic operand, scalar-call argument, or IN / BETWEEN "
+            f"operand); only iif's condition and the top-level predicate accept a "
+            f"boolean. Got {type(key).__name__}."
         )
 
 
@@ -590,6 +590,14 @@ def _walk_cp_scalar_call(*, op: str, key) -> None:
             _walk_cp_predicate(op=op, key=a, expect="value")
 
 
+def _cp_value_operands(key) -> list:
+    """Value-position sub-keys of a BETWEEN / IN predicate (its column, bounds,
+    and IN set) — each must be value-shaped, never a nested boolean."""
+    if isinstance(key, BetweenKey):
+        return [key.column, key.low, key.high]
+    return [key.column, *key.values]  # InKey
+
+
 def _walk_cp_predicate(*, op: str, key, expect: str) -> None:
     """Recursively check the boolean-vs-value contract. ``expect`` is 'bool'
     (must be boolean-shaped), 'value' (must not be), or 'either' (predicate top
@@ -603,6 +611,9 @@ def _walk_cp_predicate(*, op: str, key, expect: str) -> None:
             _walk_cp_predicate(op=op, key=o, expect=child_expect)
     elif isinstance(key, ScalarCallKey):
         _walk_cp_scalar_call(op=op, key=key)
+    elif isinstance(key, (BetweenKey, InKey)):
+        for sub in _cp_value_operands(key):
+            _walk_cp_predicate(op=op, key=sub, expect="value")
 
 
 _WINDOW_UNIT_SQL = {

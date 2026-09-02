@@ -366,6 +366,16 @@ class TestPredicateTypingContract:
         assert "string" in low, msg
         assert "truthiness" in low or "predicate" in low, msg
 
+    async def test_boolean_in_in_column_rejected(self) -> None:
+        """A boolean-shaped comparison in an IN value position is rejected, not
+        passed through as ``(SUM(revenue) > 0) IN (...)``."""
+        name, msg = await _error([ModelMeasure(
+            formula="consecutive_periods((revenue:sum > 0) in (1, 0))", name="x")])
+        assert name == "ValueError", (name, msg)
+        low = msg.lower()
+        assert "consecutive_periods" in low, msg
+        assert "boolean" in low, msg
+
 
 class TestUniformFailClosed:
     #: shape id -> the still-unsupported time_shift input.
