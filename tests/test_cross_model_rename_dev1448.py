@@ -1,47 +1,7 @@
-"""DEV-1448 — user-supplied ``name`` on a join-traversed (cross-model) measure
-must propagate to the rendered SQL projection and to downstream nested-DAG
-stages.
-
-Bug shape: stage 1 declares ``{"formula": "<other>.<col>:<agg>", "name": "x"}``.
-The original cross-model branch in ``slayer/engine/enrichment.py`` called
-``_resolve_cross_model_measure`` and ignored ``qfield.name`` — the returned
-``CrossModelMeasure.alias`` kept the canonical
-``<query_model>.<hop_path>.<col>_<agg>`` form. Result: the top-level result
-column key surfaced as the canonical form, and the downstream-stage virtual
-model (built by ``the legacy query-backed wrap`` via ``_alias_to_short(cm.alias)``)
-exposed the column as ``<hop_path>__<col>_<agg>`` — so a downstream
-``x:max`` reference failed with ``Column 'x' not found``.
-
-Fix: after the cross-model branch appends the ``CrossModelMeasure``, mutate
-``cm.alias`` and ``cm.name``. Only the **canonical leaf** of the dotted path
-is swapped to the user name; the hop path is preserved (same dot-syntax
-shape every other multi-hop caller-facing key uses). So
-``customers.revenue:sum`` with ``name="cust_rev"`` surfaces as
-``orders.customers.cust_rev`` (one-hop) and
-``customers.regions.population:sum`` with ``name="region_pop"`` as
-``orders.customers.regions.region_pop`` (multi-hop). For the downstream-
-stage virtual model column, a special-case in ``the legacy query-backed wrap``'s cross-
-model loop short-circuits the ``_alias_to_short`` ``__``-flattening when
-``cm.name`` is a bare identifier — so stage 2's ``cust_rev:max`` resolves
-against the bare user name rather than a flattened encoding.
-
-Companion / deferred scope:
-* DEV-1445 — cross-model filter remap (colon form
-  ``customers.revenue:sum > 100`` and bare user alias ``cust_rev > 100``).
-  LANDED on the typed pipeline: both now route to a HAVING inside the
-  ``_cm_*`` CTE, so the two tests that used to pin the strict-resolution
-  error / carry a ``pytest.mark.skip`` are real coverage.
-* DEV-1446 — transform-wrapped agg refs (e.g. ``cumsum(customers.revenue:sum)``
-  with ``name``). Out of scope; pinned via a skipped test.
-
-DEV-1703 note: ``SlayerQueryEngine._enrich`` and ``SQLGenerator.generate(
-enriched=...)`` are gone, and with them the ``EnrichedQuery`` object these
-tests used to introspect (``cross_model_measures[*].alias`` / ``.name`` /
-``.user_declared`` / ``.measure``). Every such assertion is now stated
-against the SQL the typed pipeline emits for the same query; where the typed
-naming differs from the legacy alias shape (a renamed cross-model measure's
-public key is ``orders.<name>``, not ``orders.<hop>.<name>``) the affected
-test's docstring spells out the translation.
+"""User-supplied ``name`` on a cross-model (join-traversed) measure must reach
+the rendered SQL projection and downstream nested-DAG stages. A renamed
+measure's public key is ``orders.<name>`` (source-model prefix); the cross-model
+CTE keeps the canonical ``<hop>.<col>_<agg>`` column.
 """
 from __future__ import annotations
 
@@ -64,41 +24,15 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._engine_helpers import _norm, _outer_select
 
-# ---------------------------------------------------------------------------
-# Rendered-SQL helpers.
-#
-# DEV-1703 retired ``SlayerQueryEngine._enrich`` / ``SQLGenerator.generate(
-# enriched=...)``; every assertion in this module that used to read the
-# ``EnrichedQuery``'s ``cross_model_measures`` / ``measures`` lists now reads
-# the emitted SQL instead. These two helpers are the rendered-SQL equivalents
-# of "what public columns did enrichment decide on" and "which cross-model
-# CTEs did it build".
-# ---------------------------------------------------------------------------
-
-
 def _public_projection_aliases(sql: str) -> list[str]:
-    """Result keys the OUTERMOST SELECT projects — the public projection.
-
-    Rendered-SQL equivalent of the legacy ``{cm.alias for cm in
-    enriched.cross_model_measures} | {m.alias for m in enriched.measures}``
-    reads: the outer SELECT is what the caller actually receives, so the
-    user-facing effect of a rename is exactly the alias list below.
-    """
+    """Result keys the outermost SELECT projects — the public projection."""
     return [proj.alias_or_name for proj in _outer_select(sql).expressions]
 
 
 def _cte_names(sql: str) -> list[str]:
-    """Names of every CTE in ``sql`` (the ``_cm_*`` per-cross-model CTEs
-    are the rendered-SQL evidence that N distinct cross-model measures
-    were resolved)."""
+    """CTE names in ``sql``; ``_cm_*`` ones are the per-cross-model producers."""
     parsed = sqlglot.parse_one(sql, dialect="postgres")
     return [cte.alias_or_name for cte in parsed.find_all(exp.CTE)]
-
-
-# ---------------------------------------------------------------------------
-# Fixtures: orders → customers (single hop) and orders → customers → regions
-# (multi-hop) for the dotted-path rename test.
-# ---------------------------------------------------------------------------
 
 
 async def _save_test_datasource(storage: YAMLStorage) -> None:
@@ -187,39 +121,14 @@ async def orders_customers_regions_engine(tmp_path) -> tuple[SlayerQueryEngine, 
     return SlayerQueryEngine(storage=storage), orders
 
 
-# ---------------------------------------------------------------------------
-# Group A — Single-stage rename: cm.alias must reflect the user-supplied name.
-# ---------------------------------------------------------------------------
+# Group A — single-stage rename.
 
 
 class TestCrossModelRenameSingleStage:
     async def test_cross_model_rename_top_level_result_key(
         self, orders_customers_engine,
     ) -> None:
-        """Top-level query (no nesting). With ``name="cust_rev"`` on a
-        cross-model measure, the PUBLIC projection key carries the user
-        name while the cross-model CTE keeps the canonical
-        ``orders.customers.revenue_sum`` output column its aggregate
-        expression is built from. Pins:
-
-        * the outer SELECT aliases the cross-model CTE's column under the
-          user name — the rename reaches the public projection
-        * the canonical key is NOT a public projection alias
-        * the INNER CTE column intentionally retains the canonical form:
-          the CTE aggregate expression / format inference / column
-          introspection all key off it; only the OUTER projection is the
-          user-facing handle.
-
-        DEV-1703 migration: this test used to read
-        ``enriched.cross_model_measures[0]`` (``cm.alias``, ``cm.name``,
-        ``cm.user_declared``, ``cm.measure.{name,alias}``). That object
-        retires with the enrichment stack, so each clause above is the
-        rendered-SQL statement of the same contract. Note the typed
-        pipeline surfaces the rename under the source-model prefix
-        (``orders.cust_rev``), not the legacy hop-preserving
-        ``orders.customers.cust_rev`` — see
-        ``test_cross_model_rename_propagates_to_dry_run_columns``.
-        """
+        """User name reaches the outer projection; the CTE column stays canonical."""
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             source_model="orders",
@@ -229,17 +138,14 @@ class TestCrossModelRenameSingleStage:
         resp = await engine.execute(query=query, dry_run=True)
         sql = resp.sql or ""
         aliases = _public_projection_aliases(sql)
-        # Public projection: user name reached the outer SELECT.
         assert aliases == ["orders.status", "orders.cust_rev"], (
             f"cross-model rename must surface as the public projection key; "
             f"got {aliases!r}\nSQL:\n{sql}"
         )
-        # The canonical key is not a public alias.
         assert "orders.customers.revenue_sum" not in aliases, (
             f"canonical cross-model key must not stay public after rename; "
             f"got {aliases!r}\nSQL:\n{sql}"
         )
-        # Inner cross-model CTE column stays canonical.
         assert (
             'CAST(SUM(customers.lifetime_revenue) AS REAL) AS "customers.revenue_sum"'
             in sql
@@ -251,18 +157,8 @@ class TestCrossModelRenameSingleStage:
     async def test_cross_model_rename_renders_in_sql(
         self, orders_customers_engine,
     ) -> None:
-        """The rendered SQL must alias the cross-model aggregate under the
-        user-supplied name, and the canonical ``revenue_sum`` leaf must
-        never surface as a PUBLIC projection alias.
-
-        DEV-1703 migration: was ``engine._enrich`` + ``SQLGenerator.generate(
-        enriched=...)``; now the typed ``execute(dry_run=True)`` SQL. The
-        "canonical must not leak" clause is asserted against the outer
-        SELECT's alias list rather than a whole-string ``not in`` — on the
-        typed pipeline the canonical form is the cross-model CTE's own
-        output column (so it legitimately appears inside the CTE), exactly
-        the carve-out the original comment already spelled out.
-        """
+        """Renamed aggregate aliases under the user name; canonical leaf never
+        surfaces as a public alias (it legitimately lives inside the CTE)."""
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             source_model="orders",
@@ -283,12 +179,7 @@ class TestCrossModelRenameSingleStage:
     async def test_cross_model_rename_propagates_to_dry_run_columns(
         self, orders_customers_engine,
     ) -> None:
-        """The dry-run ``SlayerResponse.columns`` must contain the
-        renamed measure key. DEV-1450 typed pipeline surfaces the
-        rename under the source-model-prefixed user alias
-        ``orders.cust_rev`` (no hop) — `cm.alias` retains the
-        hop-preserved form for join bookkeeping, but the actual
-        emitted column header reflects the user-visible flat key."""
+        """Dry-run ``columns`` carries the renamed key ``orders.cust_rev`` (no hop)."""
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             source_model="orders",
@@ -300,26 +191,18 @@ class TestCrossModelRenameSingleStage:
             f"renamed alias must appear in dry-run columns; got "
             f"{resp.columns!r}"
         )
-        # Canonical leaf form must NOT surface — only the rename does.
         assert "orders.customers.revenue_sum" not in resp.columns
         assert "orders.customers.cust_rev" not in resp.columns
 
 
-# ---------------------------------------------------------------------------
-# Group B — Nested-DAG: ticket repro. Downstream stage references the
-# renamed measure by the user-supplied name.
-# ---------------------------------------------------------------------------
+# Group B — nested-DAG: downstream stage references the renamed measure.
 
 
 class TestCrossModelRenameNestedDAG:
     async def test_cross_model_rename_propagates_to_downstream_stage(
         self, orders_customers_engine,
     ) -> None:
-        """Ticket repro: stage 1 declares a cross-model measure with
-        ``name="cust_rev"``. Stage 2 references it as ``cust_rev:max``.
-        Today this fails with ``Column 'cust_rev' not found in model
-        'stage1'``. After the fix, stage 2 must succeed and the rendered
-        SQL must expose ``cust_rev`` in the inner-stage projection."""
+        """Stage 2's ``cust_rev:max`` resolves against stage 1's renamed measure."""
         engine, _ = orders_customers_engine
         stage1 = SlayerQuery(
             name="stage1",
@@ -334,13 +217,10 @@ class TestCrossModelRenameNestedDAG:
         )
         resp = await engine.execute(query=[stage1, stage2], dry_run=True)
         sql = resp.sql or ""
-        # Outer stage must produce a top_cust_rev column.
         assert "stage1.top_cust_rev" in resp.columns, (
             f"outer stage must project stage1.top_cust_rev; got columns "
             f"{resp.columns!r}\nSQL:\n{sql}"
         )
-        # The inner stage must expose ``cust_rev`` (the user-renamed alias)
-        # so the outer stage's ``cust_rev:max`` reference resolves.
         assert "cust_rev" in sql, (
             f"inner stage must expose cust_rev for outer stage:\n{sql}"
         )
@@ -348,13 +228,8 @@ class TestCrossModelRenameNestedDAG:
     async def test_cross_model_rename_downstream_short_form_is_bare_user_name(
         self, orders_customers_engine,
     ) -> None:
-        """The downstream-stage virtual model column for a renamed cross-
-        model measure is the BARE user name (``cust_rev``), NOT the
-        ``__``-flattened path (``customers__cust_rev``). The top-level
-        result key preserves the hop path (``orders.customers.cust_rev``);
-        the downstream short does not — by design, so a stage-2 caller
-        can write ``cust_rev:max`` directly without having to learn how
-        the hop path encodes to a single identifier."""
+        """Downstream-stage column for a renamed cross-model measure is the bare
+        user name, so stage 2 can write ``cust_rev:max`` directly."""
         engine, _ = orders_customers_engine
         stage1 = SlayerQuery(
             name="stage1",
@@ -365,14 +240,10 @@ class TestCrossModelRenameNestedDAG:
         stage2 = SlayerQuery(
             source_model="stage1",
             dimensions=[ColumnRef(name="status")],
-            # Bare reference — only works if downstream column is the
-            # bare user name, not the ``__``-flattened encoding.
             measures=[ModelMeasure(formula="cust_rev:max", name="top_cust_rev")],
         )
         resp = await engine.execute(query=[stage1, stage2], dry_run=True)
         assert resp.sql, "dry_run must produce SQL"
-        # Stage 2's bare reference resolved — outer projection has the
-        # outer-stage measure.
         assert "stage1.top_cust_rev" in resp.columns, (
             f"stage 2 bare reference to user name must resolve; got "
             f"{resp.columns!r}"
@@ -381,44 +252,25 @@ class TestCrossModelRenameNestedDAG:
     async def test_hidden_cross_model_measure_kept_user_declared_false(
         self, orders_customers_engine,
     ) -> None:
-        """Codex review round 3 on PR #136: cross-model aggregates that a
-        query never declared directly — hoisted out of an arithmetic /
-        transform formula — must stay HIDDEN. Only the outer expression
-        (here the division) is the user-declared entity; the hoisted inner
-        aggregate must never surface as a public column, because a
-        downstream stage could then accidentally bind to what is really an
-        internal placeholder.
-
-        DEV-1703 migration: the original pinned ``cm.user_declared is
-        False`` on every ``EnrichedQuery.cross_model_measures`` entry. That
-        flag existed purely to gate whether the hoisted aggregate got a
-        user-facing name, so the surviving statement of the same contract
-        is the rendered one — the arithmetic measure is the only public
-        column the cross-model hop contributes, and the hoisted aggregate
-        exists solely as the ``_cm_*`` CTE's internal (canonical) column.
-        """
+        """A cross-model aggregate hoisted out of an arithmetic formula stays
+        hidden: only the division is public, the aggregate lives in the CTE."""
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            # Arithmetic formula referencing a cross-model aggregate ->
-            # the inner ref is hoisted as a hidden cross-model aggregate.
             measures=[ModelMeasure(formula="customers.revenue:sum / 100")],
         )
         resp = await engine.execute(query=query, dry_run=True)
         sql = resp.sql or ""
         aliases = _public_projection_aliases(sql)
-        # Only the user-declared arithmetic measure is public.
         assert aliases == ["orders.status", "orders.customers.revenue_sum / 100"], (
             f"only the user-declared arithmetic measure may be public; got "
             f"{aliases!r}\nSQL:\n{sql}"
         )
-        # The hoisted inner aggregate is NOT a public column...
         assert "orders.customers.revenue_sum" not in aliases, (
             f"hoisted (hidden) cross-model aggregate must not surface as a "
             f"public column; got {aliases!r}\nSQL:\n{sql}"
         )
-        # ...it exists only as the cross-model CTE's internal column.
         assert (
             'CAST(SUM(customers.lifetime_revenue) AS REAL) AS "customers.revenue_sum"'
             in sql
@@ -430,10 +282,8 @@ class TestCrossModelRenameNestedDAG:
     async def test_cross_model_rename_downstream_stage_does_not_see_canonical(
         self, orders_customers_engine,
     ) -> None:
-        """Stage 2 referencing the OLD canonical short-form
-        ``customers__revenue_sum`` must NOT resolve once the rename is
-        honored — the canonical column is no longer in the virtual model's
-        column set."""
+        """Once renamed, the old canonical short ``customers__revenue_sum`` is
+        gone from the virtual model, so a stage-2 reference to it must not resolve."""
         engine, _ = orders_customers_engine
         stage1 = SlayerQuery(
             name="stage1",
@@ -441,7 +291,6 @@ class TestCrossModelRenameNestedDAG:
             dimensions=[ColumnRef(name="status")],
             measures=[ModelMeasure(formula="customers.revenue:sum", name="cust_rev")],
         )
-        # Stage 2 attempts to reference the auto-derived flattened name.
         stage2 = SlayerQuery(
             source_model="stage1",
             dimensions=[ColumnRef(name="status")],
@@ -451,23 +300,14 @@ class TestCrossModelRenameNestedDAG:
             await engine.execute(query=[stage1, stage2], dry_run=True)
 
 
-# ---------------------------------------------------------------------------
 # Group C — `*:count` and `:count_distinct` cross-model variants.
-# ---------------------------------------------------------------------------
 
 
 class TestCrossModelStarAndCountDistinctRename:
     async def test_cross_model_star_count_rename(
         self, orders_customers_engine,
     ) -> None:
-        """``customers.*:count`` with ``name="cust_n"`` must project the
-        cross-model COUNT(*) under the user name.
-
-        DEV-1703 migration: was ``cm.alias == "orders.customers.cust_n"``
-        on the enriched query; the typed pipeline's public key for a
-        renamed cross-model measure is ``orders.cust_n`` while the CTE
-        keeps the canonical ``orders.customers._count`` column.
-        """
+        """``customers.*:count`` renamed ``cust_n`` projects COUNT(*) under it."""
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             source_model="orders",
@@ -488,14 +328,8 @@ class TestCrossModelStarAndCountDistinctRename:
     async def test_cross_model_count_distinct_rename(
         self, orders_customers_engine,
     ) -> None:
-        """``customers.id:count_distinct`` with ``name="cust_distinct"``
-        must project the cross-model COUNT(DISTINCT …) under the user name.
-
-        DEV-1703 migration: was ``cm.alias ==
-        "orders.customers.cust_distinct"`` on the enriched query; the typed
-        public key is ``orders.cust_distinct`` and the CTE keeps the
-        canonical ``orders.customers.id_count_distinct`` column.
-        """
+        """``customers.id:count_distinct`` renamed ``cust_distinct`` projects
+        COUNT(DISTINCT …) under it."""
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             source_model="orders",
@@ -517,18 +351,14 @@ class TestCrossModelStarAndCountDistinctRename:
         ), f"cross-model count_distinct CTE column must stay canonical:\n{sql}"
 
 
-# ---------------------------------------------------------------------------
-# Group C2 — explicit ``type=`` on a cross-model measure reaches the
-# target-rooted producer (DEV-1836); inferred types never force a cast (#347).
-# ---------------------------------------------------------------------------
+# Group C2 — explicit ``type=`` reaches the producer CTE; inferred types don't cast.
 
 
 class TestCrossModelDeclaredTypeCast:
     async def test_declared_type_casts_producer_column(
         self, orders_customers_engine,
     ) -> None:
-        """Explicit INT on a DOUBLE-column sum: the producer CTE must cast to
-        the declared type, not the source column's."""
+        """Explicit INT on a DOUBLE-column sum casts to the declared type."""
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             source_model="orders",
@@ -548,8 +378,7 @@ class TestCrossModelDeclaredTypeCast:
     async def test_declared_int_count_still_casts(
         self, orders_customers_engine,
     ) -> None:
-        """Explicit INT is a real cast request — unlike inferred INT, whose
-        cast is suppressed to preserve COUNT's native range."""
+        """Explicit INT still casts, unlike inferred INT (COUNT range preserved)."""
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             source_model="orders",
@@ -565,36 +394,20 @@ class TestCrossModelDeclaredTypeCast:
         )
 
 
-# ---------------------------------------------------------------------------
-# Group D — Collision guards. Lifted canonical-collision guard must run for
-# both local and cross-model renames symmetrically.
-# ---------------------------------------------------------------------------
+# Group D — collision guards (local and cross-model renames, symmetric).
 
 
 class TestCrossModelRenameCollisionGuards:
     async def test_cross_model_rename_collides_with_local_canonical_raises(
         self, orders_customers_engine,
     ) -> None:
-        """A cross-model rename whose ``name`` equals another sibling
-        measure's canonical alias must be REJECTED — both would land on
-        ``orders.revenue_sum``, silently merging two distinct aggregates.
-
-        Setup: local ``revenue:sum`` (canonical ``revenue_sum``) + cross-
-        model ``customers.revenue:sum`` renamed to ``revenue_sum``.
-
-        DEV-1703 migration: the rejection now happens in the typed
-        pipeline's naming module, which raises
-        ``DuplicateMeasureNameError`` (a ``ValueError``) with a
-        "declared more than once" message instead of the enrichment-era
-        "silently merged" wording. The contract — this query is rejected,
-        not silently merged — is unchanged.
-        """
+        """Rename target equal to a sibling's canonical alias is rejected, not
+        silently merged onto ``orders.revenue_sum``."""
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[
-                # Cross-model rename target collides with local sibling's canonical.
                 ModelMeasure(formula="customers.revenue:sum", name="revenue_sum"),
                 ModelMeasure(formula="revenue:sum"),  # NOSONAR(S125) — explanatory note: canonical alias is "revenue_sum" (not commented-out code)
             ],
@@ -605,28 +418,9 @@ class TestCrossModelRenameCollisionGuards:
     async def test_cross_model_rename_leaf_vs_sibling_canonical_leaf_stay_distinct(
         self, orders_customers_engine,
     ) -> None:
-        """Codex review round 2 on PR #136: two cross-model measures
-        sharing the same hop path must NEVER silently merge into one
-        public column when one is renamed to the other's canonical leaf.
-
-        Setup:
-        * ``customers.revenue:sum`` renamed to ``name="id_count_distinct"``
-        * unrenamed ``customers.id:count_distinct`` → canonical leaf
-          ``id_count_distinct``
-
-        DEV-1703 migration: under the legacy hop-preserved alias shape
-        (``orders.<hop>.<leaf>``) BOTH measures constructed the SAME public
-        alias ``orders.customers.id_count_distinct``, so the only way to
-        avoid a silent merge was a pre-pass that raised. The typed
-        pipeline's naming module gives a renamed measure the
-        source-model-prefixed key ``orders.<name>`` and an unrenamed
-        cross-model measure the hop-qualified key
-        ``orders.<hop>.<canonical>``, so the two can no longer collide —
-        the hazard is gone by construction. The surviving statement of the
-        SAME intent is asserted directly: two distinct SUM / COUNT DISTINCT
-        aggregates come back as two distinct public columns, each backed by
-        its own cross-model CTE.
-        """
+        """A measure renamed to a sibling's canonical leaf (``id_count_distinct``)
+        stays a distinct public column: the renamed key is source-model-prefixed,
+        the unrenamed one hop-qualified, so they can't collide."""
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             source_model="orders",
@@ -651,7 +445,6 @@ class TestCrossModelRenameCollisionGuards:
             f"public projection has a duplicate alias — silent merge; got "
             f"{aliases!r}\nSQL:\n{sql}"
         )
-        # Two distinct aggregates, each in its own cross-model CTE.
         cm_ctes = [name for name in _cte_names(sql) if name.startswith("_cm_")]
         assert len(set(cm_ctes)) == 2, (
             f"expected 2 distinct cross-model CTEs, got {cm_ctes!r}\nSQL:\n{sql}"
@@ -665,28 +458,9 @@ class TestCrossModelRenameCollisionGuards:
     async def test_two_local_renames_mutually_colliding_canonicals_stay_distinct(
         self, orders_customers_engine,
     ) -> None:
-        """Symmetric name/canonical swap between two LOCAL renames: A's
-        name equals B's canonical AND B's name equals A's canonical.
-        Neither aggregate may be lost or merged into the other.
-
-        DEV-1703 migration: the enrichment-era pre-pass rejected this
-        outright (``silently merged``). The typed pipeline's naming module
-        keys every measure off its EXPLICIT name when one is given, so the
-        swap produces two distinct public columns and there is nothing to
-        merge. The surviving intent — the two aggregates stay distinct and
-        keep their OWN aggregate bodies, i.e. nothing was silently
-        collapsed onto one — is asserted against the rendered SQL, which
-        is strictly more specific than the raise ever was (it checks WHICH
-        aggregate landed under WHICH key).
-
-        (The cross-model variant of this symmetric scenario is
-        structurally impossible — cross-model canonicals always contain
-        dots, while ``ModelMeasure.name`` rejects dots.)
-        """
+        """Symmetric swap of two local renames (A's name == B's canonical and
+        vice versa) keeps both aggregates distinct with their own bodies."""
         engine, _ = orders_customers_engine
-        # canonical("revenue:sum") = "revenue_sum"
-        # canonical("revenue:avg") = "revenue_avg"
-        # A's name == B's canonical AND B's name == A's canonical.
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
@@ -702,8 +476,7 @@ class TestCrossModelRenameCollisionGuards:
             f"the symmetric rename swap must keep both measures distinct; got "
             f"{aliases!r}\nSQL:\n{sql}"
         )
-        # The name/canonical swap did not swap the BODIES: the measure the
-        # user named ``revenue_avg`` is still the SUM, and vice versa.
+        # The swap didn't swap bodies: ``revenue_avg`` is still the SUM.
         assert 'SUM(orders.amount) AS REAL) AS "orders.revenue_avg"' in sql, (
             f"'revenue_avg' must carry the declared revenue:sum body:\n{sql}"
         )
@@ -714,19 +487,10 @@ class TestCrossModelRenameCollisionGuards:
     async def test_cross_model_rename_collides_with_outer_source_column_raises(
         self, tmp_path,
     ) -> None:
-        """User-supplied name on a cross-model measure collides with a
-        source column on the outer model — must be rejected regardless of
-        measure kind.
-
-        DEV-1703 migration: the typed pipeline raises
-        ``MeasureNameCollidesWithColumnError`` (a ``ValueError``) whose
-        message reads "matches a source column on model 'orders'"; the
-        enrichment-era wording was "collides with a source column".
-        """
+        """A rename colliding with a source column on the outer model is rejected."""
         storage = YAMLStorage(base_dir=str(tmp_path))
         await _save_test_datasource(storage)
         await storage.save_model(_customers_model())
-        # Add a literal "cust_rev" column on orders to trigger the collision.
         orders = SlayerModel(
             name="orders",
             sql_table="orders",
@@ -752,15 +516,7 @@ class TestCrossModelRenameCollisionGuards:
     async def test_cross_model_duplicate_explicit_name_raises(
         self, orders_customers_engine,
     ) -> None:
-        """Two cross-model measures sharing the same explicit ``name``
-        must be rejected by the same-explicit-name guard (which covers all
-        measure kinds).
-
-        DEV-1703 migration: the typed pipeline raises
-        ``DuplicateMeasureNameError`` (a ``ValueError``) reading "Measure
-        name 'metric' is declared more than once"; the enrichment-era
-        wording was "both declare name".
-        """
+        """Two cross-model measures with the same explicit ``name`` are rejected."""
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             source_model="orders",
@@ -776,29 +532,14 @@ class TestCrossModelRenameCollisionGuards:
     async def test_cross_model_star_count_vs_renamed_sibling_stay_distinct(
         self, orders_customers_engine,
     ) -> None:
-        """Codex review round 3 on PR #136: a cross-model ``*:count`` and a
-        sibling renamed to the leaf that ``*:count`` canonicalises to
-        (``_count``, NOT ``*_count``) must not collapse into one column.
-
-        DEV-1703 migration: under the legacy hop-preserved alias shape both
-        measures constructed ``orders.customers._count``, so the guard had
-        to raise — and the bug Codex found was that the pre-pass compared
-        against ``_canonical_agg_name("customers.*", "count")`` =
-        ``customers.*_count`` instead of the ``_count`` the resolver
-        actually emitted. The typed naming module keys the renamed measure
-        as ``orders._count`` and the unrenamed one as
-        ``orders.customers._count``, so they cannot collide. The surviving
-        statement of the same intent: COUNT(*) and SUM come back as two
-        distinct public columns, each under its own key.
-        """
+        """A ``*:count`` (canonical leaf ``_count``) and a sibling renamed to
+        ``_count`` stay distinct: ``orders._count`` vs ``orders.customers._count``."""
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[
                 ModelMeasure(formula="customers.*:count"),
-                # Renamed to the leaf the unrenamed *:count above
-                # canonicalises to (``_count``).
                 ModelMeasure(formula="customers.revenue:sum", name="_count"),
             ],
         )
@@ -817,38 +558,14 @@ class TestCrossModelRenameCollisionGuards:
             f"public projection has a duplicate alias — silent merge; got "
             f"{aliases!r}\nSQL:\n{sql}"
         )
-        # Distinct bodies survived: COUNT(*) for the canonical key, SUM for
-        # the renamed one.
         assert 'COUNT(*) AS "customers._count"' in sql, sql
         assert 'CAST(SUM(customers.lifetime_revenue) AS REAL) AS "customers.revenue_sum"' in sql, sql
 
     async def test_cross_model_rename_collides_with_dimension_downstream_short_raises(
         self, orders_customers_engine,
     ) -> None:
-        """Codex review round 4 on PR #136: the pre-pass seeds dim/time-
-        dim PUBLIC aliases but not their DOWNSTREAM SHORT names. A
-        renamed measure whose downstream short (used as the virtual-
-        model column for nested-DAG stages) collides with a dim's
-        ``__``-flattened short — even though the PUBLIC aliases
-        differ — would silently emit two columns with the same alias in
-        the wrapper that ``the legacy query-backed wrap`` builds.
-
-        Setup:
-        * dimension ``customers.region_id`` → public alias
-          ``orders.customers.region_id``, downstream short
-          ``customers__region_id``.
-        * cross-model measure renamed to ``name="customers__region_id"``
-          → public alias ``orders.customers.customers__region_id``
-          (DIFFERENT from the dim's public — the existing guard misses
-          this), downstream short ``customers__region_id`` (SAME as
-          dim's short — the virtual model would have duplicate
-          columns).
-
-        DEV-1703 migration: the typed pipeline still rejects this, via
-        ``DuplicateMeasureNameError`` (a ``ValueError``) reading "Measure
-        name 'customers__region_id' is declared more than once"; the
-        enrichment-era wording was "silently merged".
-        """
+        """A measure renamed to a dimension's ``__``-flattened downstream short
+        (``customers__region_id``) is rejected, even though public aliases differ."""
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             source_model="orders",
@@ -868,25 +585,8 @@ class TestCrossModelRenameCollisionGuards:
     async def test_cross_model_rename_vs_dimension_stay_distinct(
         self, orders_customers_engine,
     ) -> None:
-        """CodeRabbit review round 3 on PR #136: a renamed cross-model
-        measure must not silently duplicate a DIMENSION's outer projection
-        key.
-
-        Setup: ``dimensions=[customers.region_id]`` produces alias
-        ``orders.customers.region_id``. A measure renamed to
-        ``name="region_id"`` on a cross-model hop through ``customers``
-        also produced ``orders.customers.region_id`` under the legacy
-        hop-preserved alias shape. ``region_id`` is NOT a column on the
-        outer ``orders`` model, so the source-column guard doesn't fire.
-
-        DEV-1703 migration: the typed naming module gives the renamed
-        measure the source-model-prefixed key ``orders.region_id``, which
-        can never equal the dimension's hop-qualified
-        ``orders.customers.region_id`` — the duplicate-key hazard is gone
-        by construction, so the enrichment-era raise has nothing left to
-        guard. The surviving statement of the same intent is asserted
-        directly: dimension and measure occupy two distinct public keys.
-        """
+        """A measure renamed ``region_id`` and a ``customers.region_id`` dimension
+        occupy distinct public keys (``orders.region_id`` vs the hop-qualified one)."""
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             source_model="orders",
@@ -904,42 +604,14 @@ class TestCrossModelRenameCollisionGuards:
             f"public projection has a duplicate alias — silent merge; got "
             f"{aliases!r}\nSQL:\n{sql}"
         )
-        # The measure key carries the aggregate, the dimension key the raw
-        # grouping column — nothing was collapsed onto the other.
         assert 'CAST(SUM(customers.lifetime_revenue) AS REAL) AS "customers.revenue_sum"' in sql, sql
 
     async def test_cross_model_rename_vs_arithmetic_mangled_name_stay_distinct(
         self, orders_customers_engine,
     ) -> None:
-        """Codex review round 6 on PR #136: the pre-pass skipped non-
-        ``legacy aggregated-measure node`` query measures, so a renamed cross-
-        model measure could collide with an arithmetic / transform
-        measure's downstream short name.
-
-        Setup:
-        * arithmetic measure ``revenue:sum / 100`` (no name) — the
-          formula's mangled ``field_name`` is ``"revenue_sum__div__100"``
-          (the enrichment loop's mangling: ``" "`` → ``"_"`` then
-          ``"/"`` → ``"_div_"`` then ``":"`` → ``"_"``). ``the legacy query-backed wrap``
-          emits this as a virtual-model column under ``e.name`` →
-          ``revenue_sum__div__100``.
-        * cross-model rename ``{"formula": "customers.revenue:sum",
-          "name": "revenue_sum__div__100"}`` — user_declared, ``cm.name``
-          is bare so the gated short-circuit in ``the legacy query-backed wrap``
-          uses it directly → ``revenue_sum__div__100``.
-
-        Both produced the same virtual-model column name under the legacy
-        naming, so downstream references would have been ambiguous.
-
-        DEV-1703 migration: the typed pipeline no longer mangles an
-        arithmetic measure's key — it keeps the readable
-        ``orders.revenue_sum / 100`` — so the renamed cross-model measure's
-        ``orders.revenue_sum__div__100`` can no longer collide with it, and
-        the enrichment-era raise has nothing left to guard. The surviving
-        statement of the same intent is asserted directly: the arithmetic
-        measure and the renamed cross-model measure occupy two distinct
-        public keys backed by two distinct bodies.
-        """
+        """A measure renamed ``revenue_sum__div__100`` and an arithmetic
+        ``revenue:sum / 100`` stay distinct; the typed pipeline keeps the readable
+        ``orders.revenue_sum / 100`` key rather than the legacy mangled short."""
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             source_model="orders",
@@ -964,22 +636,14 @@ class TestCrossModelRenameCollisionGuards:
             f"public projection has a duplicate alias — silent merge; got "
             f"{aliases!r}\nSQL:\n{sql}"
         )
-        # Distinct bodies: the local division vs the cross-model SUM.
         assert 'SUM(orders.amount) AS REAL) / 100 AS "orders.revenue_sum / 100"' in sql, sql
         assert 'CAST(SUM(customers.lifetime_revenue) AS REAL) AS "customers.revenue_sum"' in sql, sql
 
     async def test_two_local_renames_distinct_canonicals_pass(
         self, orders_customers_engine,
     ) -> None:
-        """Local-only regression for the canonical-collision guard: two
-        local renames with non-colliding names AND non-colliding canonicals
-        must continue to resolve successfully — no false-positive
-        rejection.
-
-        DEV-1703 migration: was ``{m.alias for m in enriched.measures}``;
-        now the rendered public projection, which is the same alias set as
-        the caller sees it.
-        """
+        """Two local renames with non-colliding names and canonicals resolve
+        (no false-positive rejection)."""
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             source_model="orders",
@@ -995,24 +659,14 @@ class TestCrossModelRenameCollisionGuards:
         assert "orders.rev_avg" in aliases, aliases
 
 
-# ---------------------------------------------------------------------------
-# Group E — Regression guards. The no-rename path and the local-rename path
-# must both remain unchanged.
-# ---------------------------------------------------------------------------
+# Group E — regression guards: no-rename and local-rename paths unchanged.
 
 
 class TestRenameRegressionGuards:
     async def test_cross_model_no_rename_unchanged(
         self, orders_customers_engine,
     ) -> None:
-        """No ``name`` supplied on a cross-model measure: the public key
-        stays in the canonical ``<query_model>.<hop_path>.<col>_<agg>``
-        form.
-
-        DEV-1703 migration: was ``cm.alias`` on the enriched query; the
-        typed pipeline's unrenamed cross-model public key is the same
-        canonical string, so this is a direct translation.
-        """
+        """Without a name, the public key stays canonical ``<model>.<hop>.<col>_<agg>``."""
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             source_model="orders",
@@ -1030,14 +684,7 @@ class TestRenameRegressionGuards:
     async def test_local_rename_unchanged(
         self, orders_customers_engine,
     ) -> None:
-        """Local-measure rename behavior is unchanged by this fix: the
-        user name becomes the public key and carries the declared
-        aggregate.
-
-        DEV-1703 migration: was ``next(m for m in enriched.measures if
-        m.alias == "orders.rev").name == "rev"``; the rendered equivalent
-        is the ``orders.rev`` public key wrapping ``SUM(orders.amount)``.
-        """
+        """Local rename: the user name becomes the public key over the aggregate."""
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             source_model="orders",
@@ -1050,37 +697,20 @@ class TestRenameRegressionGuards:
         assert 'SUM(orders.amount) AS REAL) AS "orders.rev"' in sql, sql
 
     async def test_cross_model_canonical_unreachable_via_user_name(self) -> None:  # NOSONAR(S7503) — sibling tests in this class do await
-        """Documents an invariant: cross-model canonicals always contain
-        dots (``customers.revenue_sum``, ``customers.regions.population_sum``)
-        but ``ModelMeasure.name`` rejects dots. So a user-supplied ``name``
-        can never equal a cross-model canonical — meaning the rename
-        branch ALWAYS fires for cross-model when ``name`` is supplied
-        (the ``qfield.name != canonical_name`` check is structurally
-        true). This test pins that invariant so it surfaces in the
-        suite when ``ModelMeasure.name`` validation loosens."""
+        """Invariant: cross-model canonicals contain dots but ``ModelMeasure.name``
+        rejects them, so a name can never equal a cross-model canonical."""
         with pytest.raises(ValidationError, match=r"only letters, digits, and underscores"):
             ModelMeasure(formula="customers.revenue:sum", name="customers.revenue_sum")
 
 
-# ---------------------------------------------------------------------------
 # Group F — label/type propagation through the rename.
-# ---------------------------------------------------------------------------
 
 
 class TestCrossModelRenameLabelAndType:
     async def test_cross_model_rename_label_propagates(
         self, orders_customers_engine,
     ) -> None:
-        """``label`` on the query measure must survive the rename and be
-        published against the RENAMED result key.
-
-        DEV-1703 migration: was ``cm.label`` on the enriched query. The
-        typed pipeline publishes labels through
-        ``SlayerResponse.attributes``, keyed by result key — a strictly
-        more end-to-end statement of the same contract (it also pins that
-        the label is filed under the user-facing key, not the canonical
-        one).
-        """
+        """``label`` survives the rename, published under the renamed result key."""
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             source_model="orders",
@@ -1110,18 +740,7 @@ class TestCrossModelRenameLabelAndType:
     async def test_cross_model_rename_type_propagates_to_measure(
         self, orders_customers_engine,
     ) -> None:
-        """``type=INT`` on a renamed cross-model measure must NOT be
-        dropped by the rename — the aggregate is CAST to INTEGER.
-
-        DEV-1703 migration: the original could only pin the
-        enrichment-level ``cm.measure.type == DataType.INT``, because the
-        legacy ``_build_rerooted_enriched`` re-enriched a fresh
-        ``ModelMeasure(formula=...)`` without threading the outer measure's
-        ``type=`` through, so no CAST reached the SQL. The typed pipeline
-        closes that gap, so this now pins the STRONGER, end-user-visible
-        form of the same contract: the declared type materialises as a CAST
-        in the cross-model CTE.
-        """
+        """``type=INT`` survives the rename as a CAST in the cross-model CTE."""
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             source_model="orders",
@@ -1148,32 +767,16 @@ class TestCrossModelRenameLabelAndType:
         )
 
 
-# ---------------------------------------------------------------------------
-# Group G — Filter / ORDER BY interaction with the rename.
-# ---------------------------------------------------------------------------
+# Group G — filter / ORDER BY interaction with the rename.
 
 
 class TestCrossModelRenameOrderBy:
-    """ORDER BY via the bare user alias for a renamed cross-model measure
-    resolves to the cross-model CTE's output column — pinned by Codex
-    review round 5 on PR #136 after a doc/code mismatch was flagged.
-    (Filters via the bare user alias did NOT resolve on the legacy stack;
-    the typed pipeline routes them too — see
-    ``TestCrossModelRenameFilters``.)"""
+    """ORDER BY via the bare user alias resolves to the cross-model CTE column."""
 
     async def test_order_by_user_alias_resolves_to_cross_model_cte_column(
         self, orders_customers_engine,
     ) -> None:
-        """``order=[{"column": "cust_rev"}]`` referencing the renamed
-        cross-model measure must RESOLVE (not raise) and sort on the
-        cross-model CTE's output column, keeping the ``desc`` direction.
-
-        DEV-1703 migration: was ``engine._enrich`` + ``SQLGenerator.generate(
-        enriched=...)``; the emitted ORDER BY term is now the CTE's typed
-        output column ``"orders.customers.revenue_sum"`` rather than the
-        legacy hop-preserved ``"orders.customers.cust_rev"`` — same column,
-        renamed only in the outer projection.
-        """
+        """ORDER BY on the bare user alias sorts on the CTE column, ``desc`` kept."""
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             source_model="orders",
@@ -1198,14 +801,8 @@ class TestCrossModelRenameFilters:
     async def test_filter_via_user_alias_resolves_to_cross_model_value(
         self, orders_customers_engine,
     ) -> None:
-        """Same-stage filter ``"cust_rev > 100"`` referencing a renamed
-        cross-model measure resolves to the cross-model aggregate's value.
-
-        DEV-1836 routes the aggregate-phase cross-model filter to an outer
-        ``WHERE`` on the producer CTE's output column (a real column), uniform
-        with local aggregate filters — not a HAVING inside a host-rooted CTE and
-        never a WHERE on a non-existent base-table column.
-        """
+        """Filter ``"cust_rev > 100"`` lands as an outer WHERE on the producer
+        CTE's output column, not a base-table column."""
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             source_model="orders",
@@ -1225,7 +822,6 @@ class TestCrossModelRenameFilters:
             f"the bare user alias must resolve to a WHERE on the cross-model "
             f"aggregate's value:\n{sql}"
         )
-        # Never a WHERE against a column that doesn't exist on the base table.
         assert "orders.cust_rev > 100" not in _norm(sql), (
             f"the filter must not be emitted against a non-existent base-table "
             f"column:\n{sql}"
@@ -1233,21 +829,11 @@ class TestCrossModelRenameFilters:
 
 
 class TestDeferredCrossModelFilterScope:
-    """Cross-model colon-form filter remap was DEV-1445 territory; the
-    typed pipeline lands it, so the deferred boundary is now real
-    coverage."""
-
     async def test_cross_model_filter_colon_form_with_rename_deferred(
         self, orders_customers_engine,
     ) -> None:
-        """Colon-form filter ``customers.revenue:sum > 100`` paired with a
-        rename resolves to the cross-model aggregate's value, and the measure
-        still projects under the user alias.
-
-        DEV-1836 routes the colon-form aggregate-phase filter to an outer
-        ``WHERE`` on the producer CTE's output column (uniform with local
-        aggregate filters).
-        """
+        """Colon-form filter ``customers.revenue:sum > 100`` with a rename lands
+        as an outer WHERE on the producer CTE column; measure still projects."""
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             source_model="orders",
@@ -1270,27 +856,15 @@ class TestDeferredCrossModelFilterScope:
         )
 
 
-# ---------------------------------------------------------------------------
-# Group H — Multi-hop and same-query rename/no-rename mix (CTE uniqueness).
-# ---------------------------------------------------------------------------
+# Group H — multi-hop and same-query rename/no-rename mix (CTE uniqueness).
 
 
 class TestCrossModelRenameMultiHopAndCTEUniqueness:
     async def test_cross_model_rename_multi_hop(
         self, orders_customers_regions_engine,
     ) -> None:
-        """Two-hop cross-model measure ``customers.regions.population:sum``
-        with ``name="region_pop"`` must project under the bare user name —
-        the hops are never ``__``-flattened into the caller-facing key —
-        while the CTE keeps the fully hop-qualified canonical column.
-
-        DEV-1703 migration: was ``cm.alias ==
-        "orders.customers.regions.region_pop"`` plus ``cm.name ==
-        "region_pop"``. The typed pipeline's public key for a renamed
-        cross-model measure is ``orders.region_pop`` regardless of hop
-        count; the hop path survives on the CTE's canonical column
-        ``orders.customers.regions.population_sum``.
-        """
+        """A two-hop measure renamed ``region_pop`` projects the bare user name;
+        the CTE keeps the fully hop-qualified canonical column."""
         engine, _ = orders_customers_regions_engine
         query = SlayerQuery(
             source_model="orders",
@@ -1317,17 +891,8 @@ class TestCrossModelRenameMultiHopAndCTEUniqueness:
     async def test_renamed_and_unrenamed_cross_model_no_collision(
         self, orders_customers_engine,
     ) -> None:
-        """One renamed + one unrenamed cross-model measure in the same
-        query must produce distinct CTEs and distinct projection aliases.
-
-        DEV-1703 migration: was ``{cm.alias for cm in
-        enriched.cross_model_measures}``; the rendered equivalent is the
-        outer projection plus the ``_cm_*`` CTE list. The renamed
-        measure's typed public key is ``orders.cust_rev`` (source-model
-        prefix) rather than the legacy hop-preserved
-        ``orders.customers.cust_rev``; the unrenamed one keeps its
-        canonical hop-qualified key.
-        """
+        """One renamed + one unrenamed cross-model measure produce distinct CTEs
+        and distinct projection aliases."""
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             source_model="orders",
@@ -1340,16 +905,12 @@ class TestCrossModelRenameMultiHopAndCTEUniqueness:
         resp = await engine.execute(query=query, dry_run=True)
         sql = resp.sql or ""
         aliases = _public_projection_aliases(sql)
-        # Renamed: user name under the source-model prefix.
         assert "orders.cust_rev" in aliases, (f"{aliases!r}\n{sql}")
-        # Unrenamed: canonical hop-qualified key.
         assert "orders.customers.id_count_distinct" in aliases, (f"{aliases!r}\n{sql}")
-        # Distinct — no silent merge.
         assert len(set(aliases)) == len(aliases) == 3, (
             f"renamed + unrenamed cross-model must produce distinct aliases; "
             f"got {aliases!r}\nSQL:\n{sql}"
         )
-        # ...and two distinct cross-model CTEs back them.
         cm_ctes = [name for name in _cte_names(sql) if name.startswith("_cm_")]
         assert len(set(cm_ctes)) == 2, (
             f"renamed + unrenamed cross-model must produce 2 distinct CTEs; "
@@ -1357,11 +918,7 @@ class TestCrossModelRenameMultiHopAndCTEUniqueness:
         )
 
 
-# ---------------------------------------------------------------------------
-# Group I — Transform-wrapped cross-model with `name`. DEV-1448 does NOT
-# promise to fix this case; pin the current behavior so we know when it
-# changes.
-# ---------------------------------------------------------------------------
+# Group I — transform-wrapped cross-model with `name`; pins current (unsupported).
 
 
 class TestTransformWrappedCrossModelDeferred:
@@ -1391,8 +948,6 @@ class TestTransformWrappedCrossModelDeferred:
                 ),
             ],
         )
-        # When fixed: assert the hoisted cross-model aggregate is renamed
-        # consistently with the transform output.
         resp = await engine.execute(query=query, dry_run=True)
         assert _public_projection_aliases(resp.sql or "") == [
             "orders.status", "orders.cum_cust_rev",

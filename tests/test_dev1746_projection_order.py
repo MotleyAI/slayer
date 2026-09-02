@@ -1,40 +1,4 @@
-"""DEV-1746 §5.2 — one ordered public projection (B7, B8, B11).
-
-``PlannedQuery.projection`` already exists, is already in declaration order, and
-already excludes hidden slots. What is missing is that **no renderer consumes
-it**: the cross-model combined SELECT rebuilds an order out of four separate
-grouped passes (host slots, then outer composites, then ``_cm_``, then ``_wm_``),
-which is why a cross-model measure declared FIRST is emitted LAST. The generator
-even admits it in a comment — "windowed columns are grouped after the ``_base``
-projection rather than woven into ``planned_query.projection`` order". B7 makes
-every renderer walk the plan's list verbatim.
-
-Trimming hidden slots then stops being a mechanism at all: a hidden slot is
-simply absent from ``projection``, which is what replaces the five bespoke
-variants. One renderer-side assertion is kept as a belt because pydantic's
-``model_copy(update=…)`` skips validation and rerooted plans use it (Codex D9).
-
-**B8** — eight inner-stage projection sites carry their aliases as
-``sorted(aliases)``; one still carries the comment "matches legacy
-``_generate_with_computed:1607``", i.e. it is byte-parity ballast. They become
-plan-ordered. The tests name measures so that alphabetical order and declaration
-order DISAGREE (``zz_`` declared before ``aa_``), because a test whose two
-candidate orders coincide proves nothing. Each site also fails closed: the new
-ordered list must contain exactly the aliases the old flattening did, so a
-reorder can never silently drop one (Codex D8).
-
-**B11** — the base FROM's join order comes from a two-tier merge that exists to
-reproduce legacy bytes ("→ byte-identical FROM"); it becomes the same
-first-seen registration order the per-CTE path already uses. B11 is ratified as
-**execution-identical**, so what is asserted here is the part that can regress:
-the join SET is unchanged, every join still appears (including one discovered
-late, from a filter rather than a projection), generation is deterministic, and
-the results are right. The precise emitted ORDER is deliberately not pinned to a
-literal here — both the old and new orders are deterministic and
-execution-equivalent, so a literal pin would assert an implementation detail
-rather than a contract; the order change itself is surfaced through the PR's
-recompare churn list (Codex D6).
-"""
+"""One ordered public projection consumed by every renderer (B7/B8/B11)."""
 
 from __future__ import annotations
 
@@ -92,13 +56,8 @@ async def exec_engine() -> AsyncIterator[SlayerQueryEngine]:
         yield await make_sqlite_engine(os.path.join(d, "store"), db_path)
 
 
-# --------------------------------------------------------------------------- #
-# Shapes whose declaration order and current emitted order disagree.
-# --------------------------------------------------------------------------- #
 def _cm_declared_first_query() -> SlayerQuery:
-    """A cross-model measure declared BEFORE a local one. Emitted today as
-    ``status, local_second, cm_first``; B7 makes it ``status, cm_first,
-    local_second``."""
+    """A cross-model measure declared BEFORE a local one; B7 keeps its position."""
     return SlayerQuery(
         source_model="orders_x",
         dimensions=[ColumnRef(name="status")],
@@ -140,11 +99,7 @@ def _interleaved_query() -> SlayerQuery:
 
 
 def _all_slots(planned: PlannedQuery) -> List[ValueSlot]:
-    """Every slot a projection id can point at.
-
-    A transform (``cumsum(...)``) is a ``combined_expression_slot``, not a row
-    or aggregate slot, so a lookup over only those two misses it.
-    """
+    """Every slot a projection id can point at (row + aggregate + combined-expression)."""
     return (
         list(planned.row_slots)
         + list(planned.aggregate_slots)
@@ -153,12 +108,7 @@ def _all_slots(planned: PlannedQuery) -> List[ValueSlot]:
 
 
 def _expected_projection_aliases(query: SlayerQuery) -> List[str]:
-    """The public aliases the plan declares, in plan order.
-
-    Derived from ``PlannedQuery.projection`` rather than hard-coded, so this
-    expresses the actual contract ("renderers consume the plan's list verbatim")
-    instead of a guess about how aliases are spelled.
-    """
+    """The public aliases the plan declares, in plan order (derived from ``PlannedQuery.projection``, not hard-coded)."""
     planned = plan_query(query=query, bundle=_chain_bundle())
     slots = {s.id: s for s in _all_slots(planned)}
     out: List[str] = []
@@ -173,18 +123,13 @@ def _expected_projection_aliases(query: SlayerQuery) -> List[str]:
 
 
 def _alias_suffixes(aliases: List[str]) -> List[str]:
-    """Emitted aliases are host-rooted (``orders_x.status``); the plan names the
-    trailing public part. Compare on that."""
+    """Emitted aliases are host-rooted (``orders_x.status``); compare on the trailing public part."""
     return [a.split(".")[-1] for a in aliases]
 
 
-# =========================================================================== #
-# B7 — declaration-order projection.
-# =========================================================================== #
 class TestB7DeclarationOrderProjection:
 
     async def test_cross_model_measure_keeps_its_declared_position(self) -> None:
-        """NEW (B7): a cross-model measure declared first is emitted first."""
         sql = await _gen(_cm_declared_first_query(), dialect="postgres")
         emitted = _alias_suffixes(outer_select_aliases(sql))
         assert emitted == ["status", "cm_first", "local_second"], (
@@ -193,7 +138,6 @@ class TestB7DeclarationOrderProjection:
         )
 
     async def test_windowed_measure_keeps_its_declared_position(self) -> None:
-        """NEW (B7): the same for a windowed measure."""
         sql = await _gen(_windowed_declared_first_query(), dialect="postgres")
         emitted = _alias_suffixes(outer_select_aliases(sql))
         assert emitted == ["status", "created_at", "w_first", "local_second"], (
@@ -201,8 +145,7 @@ class TestB7DeclarationOrderProjection:
         )
 
     async def test_interleaved_local_and_cross_model_measures(self) -> None:
-        """The decisive shape: local, cross-model, local. No grouped-pass scheme
-        can emit this order — only walking the plan's list can."""
+        """The decisive shape: local, cross-model, local — only walking the plan's list emits this order."""
         sql = await _gen(_interleaved_query(), dialect="postgres")
         emitted = _alias_suffixes(outer_select_aliases(sql))
         assert emitted == ["status", "a_local", "b_cross", "c_local"], (
@@ -232,8 +175,7 @@ class TestB7DeclarationOrderProjection:
     async def test_response_column_order_follows_declaration_order(
         self, exec_engine: SlayerQueryEngine,
     ) -> None:
-        """B7 is observable to callers: ``response.columns`` is read off the
-        emitted outer SELECT, so its order changes with the projection."""
+        """``response.columns`` is read off the emitted outer SELECT, so its order follows the projection."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
@@ -246,7 +188,6 @@ class TestB7DeclarationOrderProjection:
         assert _alias_suffixes(list(resp.columns)) == [
             "status", "cm_first", "local_second",
         ], f"response column order: {resp.columns}"
-        # Row keys follow the same order.
         assert _alias_suffixes(list(resp.data[0].keys())) == [
             "status", "cm_first", "local_second",
         ], f"row keys: {list(resp.data[0].keys())}"
@@ -254,25 +195,7 @@ class TestB7DeclarationOrderProjection:
     async def test_a_slot_that_is_both_projected_and_a_transform_operand(
         self,
     ) -> None:
-        """A slot can be publicly projected AND consumed as a transform input.
-
-        This is the shape where the projection's occurrence count and the slot's
-        rendered columns could disagree, which is what the combined SELECT's
-        leftover guard exists to catch.
-
-        Three things have to line up for the test to mean anything, so each is
-        asserted rather than assumed:
-
-        * the measure and the transform's operand must be ONE slot (same key →
-          same slot), otherwise there is no slot reached by both paths;
-        * the query must take the CROSS-MODEL path, because the guard lives in
-          the combined-SELECT builder — a purely local transform never reaches
-          it;
-        * the assertion must be on the COMBINED select (which becomes the
-          transform chain's ``base`` CTE), because a leftover column appended
-          there would be trimmed by the outer wrap and never show up in the
-          outermost SELECT.
-        """
+        """A slot both projected and consumed as a transform operand exercises the combined-SELECT leftover guard; the three preconditions are asserted below."""
         query = SlayerQuery(
             source_model="orders_x",
             time_dimensions=[TimeDimension(
@@ -311,8 +234,7 @@ class TestB7DeclarationOrderProjection:
             f"guard. operand={operand_sid} projected={ltv_sid}"
         )
 
-        # (2) The cross-model path — the guard lives in that builder. DEV-1836:
-        # the cross-model aggregate now rides a TARGET-rooted regroup producer.
+        # (2) The cross-model path — the guard lives in that builder.
         assert any(
             a.producer_root_model == "customers_v2"
             for a in planned.regroup_attach_plans
@@ -321,11 +243,7 @@ class TestB7DeclarationOrderProjection:
             "precondition: this query must carry a transform chain"
         )
 
-        # The transform slot is IN the projection but is rendered by a later
-        # step CTE, not by the combined SELECT. That is why the combined
-        # projection loop skips a slot with no rendered columns instead of
-        # treating it as a dropped column: making that case raise — the
-        # symmetric-looking guard — would reject every transform query.
+        # The transform slot is projected but rendered by a later step CTE, so the combined loop skips it (no rendered columns) rather than flagging a drop.
         assert running_sid in planned.projection, planned.projection
         assert isinstance(slots[running_sid].key, TransformKey), (
             f"expected a transform slot, got {type(slots[running_sid].key).__name__}"
@@ -333,13 +251,8 @@ class TestB7DeclarationOrderProjection:
 
         sql = await _gen(query, dialect="postgres")
 
-        # (3) The combined SELECT — the transform chain's ``base`` CTE.
-        # ``\bbase`` and not ``base``: the latter also matches the host ``_base``
-        # CTE, which is a different scope and carries none of these columns.
+        # (3) The combined SELECT (the chain's ``base`` CTE); ``\bbase`` avoids matching the host ``_base``.
         base_body = _extract_cte_body(sql, r"\bbase")
-        # Parsed, not regexed: an ``AS "..."`` scan misses a column projected
-        # without an alias and would also match a CAST's type name or an alias
-        # inside a nested subquery.
         base_aliases = _alias_suffixes(outer_select_aliases(base_body))
         assert base_aliases == ["created_at", "ltv"], (
             f"the combined SELECT must carry the grain and exactly ONE column "
@@ -358,21 +271,7 @@ class TestB7DeclarationOrderProjection:
     async def test_combined_order_by_suppresses_the_tsql_nulls_emulation(
         self, direction: str,
     ) -> None:
-        """The combined ORDER BY must go through the generator's ``_ordered``.
-
-        On T-SQL an unset ``nulls_first`` makes sqlglot emulate NULLS ordering
-        with ``ORDER BY CASE WHEN <alias> IS NULL THEN 1 ELSE 0 END, <alias>``,
-        and the bracketed alias inside that CASE mis-resolves against the FROM
-        scope — SQL Server rejects it with ``Invalid column name``. The
-        generator has ``_ordered`` precisely to pin ``nulls_first`` and suppress
-        the wrapper.
-
-        This became reachable only when the combined ORDER BY moved from text to
-        AST: the string form never built an ``Ordered`` node, so there was
-        nothing for sqlglot to emulate around. Both directions are covered
-        because the wrapper appears on ASC only — every other ordering test in
-        this PR used ``desc`` and would not have caught it.
-        """
+        """The combined ORDER BY must go through ``_ordered`` to pin ``nulls_first`` and suppress the T-SQL NULLS-emulation CASE wrapper (whose alias mis-resolves); the wrapper appears on ASC only."""
         query = SlayerQuery(
             source_model="orders_x",
             dimensions=[ColumnRef(name="customers_v2.status")],
@@ -390,8 +289,7 @@ class TestB7DeclarationOrderProjection:
         )
 
     async def test_hidden_slots_are_absent_from_the_projection(self) -> None:
-        """Unified trimming: an order-only aggregate never reaches the public
-        projection because it is not in ``projection`` at all."""
+        """Unified trimming: an order-only aggregate never reaches the public projection — it is simply not in ``projection``."""
         query = SlayerQuery(
             source_model="orders_x",
             dimensions=[ColumnRef(name="status")],
@@ -408,9 +306,7 @@ class TestB7DeclarationOrderProjection:
     async def test_hidden_cross_model_order_slot_is_trimmed_but_orderable(
         self, exec_engine: SlayerQueryEngine,
     ) -> None:
-        """A hidden CROSS-MODEL aggregate must still drive ORDER BY while being
-        absent from the projection — the case the ``trim_hidden`` flag handled
-        and which unified trimming must preserve."""
+        """A hidden cross-model aggregate must drive ORDER BY while absent from the projection."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="customers.tier")],
@@ -419,19 +315,14 @@ class TestB7DeclarationOrderProjection:
         )
         resp = await exec_engine.execute(query)
         assert _alias_suffixes(list(resp.columns)) == ["tier", "n"], resp.columns
-        # gold (1000.0) outranks the NULL tier group (325.0).
         assert [r["orders.customers.tier"] for r in resp.data] == ["gold", None], (
             f"hidden cross-model order slot did not drive the ordering: {resp.data}"
         )
 
 
-# =========================================================================== #
-# The projection invariant + its belt.
-# =========================================================================== #
 class TestProjectionInvariant:
 
     def test_a_hidden_slot_in_the_projection_is_rejected(self) -> None:
-        """Validated at construction: the public projection is public-only."""
         planned = plan_query(
             query=_cm_declared_first_query(), bundle=_chain_bundle(),
         )
@@ -440,8 +331,7 @@ class TestProjectionInvariant:
             if s.hidden
         ]
         if not hidden:
-            # Synthesise one so the invariant is tested even when this shape
-            # happens to have no hidden slot.
+            # Synthesise a hidden slot so the invariant is tested even when this shape has none.
             slot = planned.aggregate_slots[0].model_copy(
                 update={"id": "hidden_x", "hidden": True,
                         "public_name": None, "public_aliases": []},
@@ -456,9 +346,7 @@ class TestProjectionInvariant:
             PlannedQuery(**fields)
 
     def test_a_slot_may_repeat_once_per_declared_public_name(self) -> None:
-        """C13: one key selected under two names IS listed twice, and each
-        occurrence consumes the next alias. Pinned so the duplicate check below
-        cannot be tightened into rejecting a legitimate plan."""
+        """One key selected under two names is listed twice, each consuming the next alias — a legitimate plan the duplicate check must not reject."""
         query = SlayerQuery(
             source_model="orders_x",
             time_dimensions=[TimeDimension(
@@ -483,9 +371,7 @@ class TestProjectionInvariant:
         assert len(slot.public_aliases) == planned.projection.count(repeated[0])
 
     def test_more_occurrences_than_declared_names_is_rejected(self) -> None:
-        """One occurrence too many would emit the same column twice under the
-        same name — the duplication that the per-occurrence alias cursor in the
-        combined projection exists to prevent."""
+        """One occurrence too many would emit the same column twice under the same name — rejected."""
         planned = plan_query(
             query=_cm_declared_first_query(), bundle=_chain_bundle(),
         )
@@ -497,9 +383,7 @@ class TestProjectionInvariant:
     def test_renderer_belt_catches_a_model_copy_that_skips_validation(
         self,
     ) -> None:
-        """Codex D9: ``model_copy(update=…)`` bypasses validators, and rerooting
-        uses it — so exactly one renderer-side assertion is kept. It must RAISE,
-        never silently skip the offending slot."""
+        """``model_copy(update=…)`` bypasses validators (rerooting uses it), so one renderer-side belt must RAISE on a hidden slot in the projection."""
         planned = plan_query(
             query=_cm_declared_first_query(), bundle=_chain_bundle(),
         )
@@ -510,10 +394,7 @@ class TestProjectionInvariant:
         broken_slot = slots[victim].model_copy(
             update={"hidden": True, "public_name": None, "public_aliases": []},
         )
-        # Replace the slot ONLY in the collection that owns it. Putting it in
-        # both would additionally corrupt slot classification, so the belt
-        # could then fire for an unrelated reason and the test would pass
-        # without proving anything about hidden-slot detection.
+        # Replace the slot ONLY in the collection that owns it, or the belt could fire for an unrelated reason.
         update = {}
         if any(s.id == victim for s in planned.row_slots):
             update["row_slots"] = [
@@ -536,21 +417,12 @@ class TestProjectionInvariant:
         )
 
 
-# =========================================================================== #
-# The ``_wm_`` grain invariant (Codex D1).
-# =========================================================================== #
 class TestWindowedGrainInvariant:
 
     def test_windowed_plan_grain_always_contains_the_window_time_dimension(
         self,
     ) -> None:
-        """Why the windowed join-back can never be an empty-grain CROSS JOIN:
-        the planner always includes the window's time dimension in the grain.
-        Pinned at plan level so the render path does not need a special case.
-
-        MIGRATED (DEV-1835/DEV-1838): a local windowed measure is desugared
-        into a regroup producer whose attach carries the trailing-window
-        kernel. The grain invariant is unchanged — pinned on the attach."""
+        """The planner always includes the window's time dimension in the grain, so the windowed join-back is never an empty-grain CROSS JOIN (pinned on the attach)."""
         planned = plan_query(
             query=_windowed_declared_first_query(), bundle=_chain_bundle(),
         )
@@ -571,12 +443,8 @@ class TestWindowedGrainInvariant:
             )
 
 
-# =========================================================================== #
-# B8 — inner-stage projections in plan order.
-# =========================================================================== #
 class TestB8InnerStagePlanOrder:
-    """Measures are named so alphabetical and declaration order DISAGREE:
-    ``zz_running`` is declared before ``aa_total``."""
+    """Measures named so alphabetical and declaration order disagree (``zz_running`` before ``aa_total``)."""
 
     def _transform_query(self) -> SlayerQuery:
         return SlayerQuery(
@@ -646,13 +514,7 @@ class TestB8InnerStagePlanOrder:
     async def test_carried_aliases_follow_base_order_not_alphabetical(
         self, factory_name: str,
     ) -> None:
-        """NEW (B8): every downstream stage carries its aliases in the order the
-        base stage projects them (plan order), not ``sorted()``.
-
-        The measures are named so the two orders disagree: the base projects
-        ``created_at, aa_total, amount_sum`` while ``sorted()`` yields
-        ``aa_total, amount_sum, created_at``.
-        """
+        """Every downstream stage carries its aliases in the base's plan order, not ``sorted()`` (the measure names make the two disagree)."""
         query = getattr(self, factory_name)()
         sql = await _gen(query, dialect="postgres")
         violations = carry_list_order_violations(sql)
@@ -672,14 +534,7 @@ class TestB8InnerStagePlanOrder:
         ],
     )
     async def test_no_carried_alias_is_dropped(self, factory_name: str) -> None:
-        """Codex D8 — fail closed, at BOTH ends.
-
-        Comparing only the plan against the outermost SELECT would miss the
-        failure mode that matters: an intermediate stage dropping a hidden
-        input, a time key, or an aggregate operand that a LATER stage still
-        references. So this asserts (a) every public alias survives to the
-        projection, and (b) no stage omits an alias the next stage reads.
-        """
+        """Fail closed at both ends: every public alias survives to the projection, and no stage omits an alias the next stage reads."""
         query = getattr(self, factory_name)()
         sql = await _gen(query, dialect="postgres")
         expected = set(_alias_suffixes(_expected_projection_aliases(query)))
@@ -697,9 +552,7 @@ class TestB8InnerStagePlanOrder:
     async def test_local_transform_chain_executes_with_plan_ordered_stages(
         self, exec_engine: SlayerQueryEngine,
     ) -> None:
-        """EXECUTED (Codex D5): reordering inner-stage projections must not
-        change any value. Monthly totals are 15.0 (10+5) and 27.0 (20+7), so
-        the running total is 15.0 then 42.0."""
+        """Executed: reordering inner-stage projections must not change values — running total 15.0 then 42.0."""
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
@@ -722,9 +575,7 @@ class TestB8InnerStagePlanOrder:
     async def test_cross_model_transform_chain_executes(
         self, exec_engine: SlayerQueryEngine,
     ) -> None:
-        """EXECUTED (Codex D5), family 2 of 4: a transform chain that also
-        carries a cross-model measure — the chain whose WITH assembly this PR
-        rebuilds."""
+        """Executed: a transform chain that also carries a cross-model measure."""
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
@@ -769,8 +620,6 @@ class TestB8InnerStagePlanOrder:
         }
         assert by_month["2024-01"][0] == pytest.approx(15.0), resp.data
         assert by_month["2024-02"][0] == pytest.approx(27.0), resp.data
-        # February's previous month is January's total; January has no
-        # predecessor in the seeded data.
         assert by_month["2024-02"][1] == pytest.approx(15.0), (
             f"time_shift did not read the previous month: {resp.data}"
         )
@@ -779,8 +628,7 @@ class TestB8InnerStagePlanOrder:
     async def test_consecutive_periods_chain_executes(
         self, exec_engine: SlayerQueryEngine,
     ) -> None:
-        """EXECUTED (Codex D5), family 4 of 4: the ``cp_reset_`` carry list.
-        Both seeded months are positive, so the streak runs 1 then 2."""
+        """Executed: the ``cp_reset_`` carry list — both months positive, so the streak runs 1 then 2."""
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
@@ -800,9 +648,6 @@ class TestB8InnerStagePlanOrder:
         )
 
 
-# =========================================================================== #
-# B11 — one deterministic FROM-join ordering mechanism.
-# =========================================================================== #
 class TestB11JoinOrdering:
 
     async def test_join_set_is_unchanged_for_a_projected_join(self) -> None:
@@ -817,9 +662,7 @@ class TestB11JoinOrdering:
         assert _join_aliases(sql) == {"customers_v2"}, _join_aliases(sql)
 
     async def test_join_discovered_only_by_a_filter_is_still_emitted(self) -> None:
-        """The late-registration case (Codex D6): a join that no projection
-        mentions — it is discovered while rendering the filter — must survive
-        the switch to registration-order collection."""
+        """A join no projection mentions — discovered while rendering the filter — must survive the switch to registration-order collection."""
         sql = await _gen(
             SlayerQuery(
                 source_model="orders_x",
@@ -836,22 +679,7 @@ class TestB11JoinOrdering:
     async def test_filter_on_a_joined_derived_column_pulls_the_deeper_hop(
         self,
     ) -> None:
-        """Regression: filtering on a JOINED model's crossing derived column.
-
-        ``customers_v2.deep_pop`` is declared on the joined model as
-        ``regions.population``. Both the filter renderer and the join scanner
-        expanded it as if ``customers_v2`` were the query root, so the ref came
-        out bare (``regions.population``) — which the scanner could not match to
-        a join path, leaving the hop unjoined and the filter pointing at a table
-        that is not in the FROM::
-
-            FROM orders AS orders_x LEFT JOIN customers AS customers_v2 ...
-            WHERE regions.population > 0        -- no such table
-
-        Both sites now expand with ``is_root=False``, so the ref resolves to the
-        full path alias and the scanner registers the hop. The two must stay in
-        lockstep: discovery scans the SAME expansion the renderer emits.
-        """
+        """Filtering on a joined model's crossing derived column: both the filter renderer and the join scanner must expand with ``is_root=False`` so the hop is joined."""
         sql = await _gen(
             SlayerQuery(
                 source_model="orders_x",
@@ -869,9 +697,7 @@ class TestB11JoinOrdering:
         )
 
     async def test_multi_hop_joins_emit_parent_before_child(self) -> None:
-        """A three-hop path must emit every hop, each after its parent — the
-        structural requirement ANY ordering must satisfy, asserted over the
-        full emitted sequence rather than one adjacent pair."""
+        """A three-hop path must emit every hop, each after its parent — asserted over the full sequence."""
         sql = await _gen(
             SlayerQuery(
                 source_model="orders_x",
@@ -893,8 +719,7 @@ class TestB11JoinOrdering:
         )
 
     async def test_generation_is_deterministic(self) -> None:
-        """Whatever the order is, it must be the SAME order every run — a set
-        would make emitted SQL vary between processes."""
+        """Whatever the order, it must be the same every run — a set would vary between processes."""
         query = SlayerQuery(
             source_model="orders_x",
             dimensions=[
@@ -909,10 +734,7 @@ class TestB11JoinOrdering:
         assert first == second, "emitted SQL is not deterministic across runs"
 
     async def test_mixed_projection_and_filter_joins_all_present(self) -> None:
-        """The shape where the two tiers of the old merge differ: the two-hop
-        ``regions`` join arrives via a projected dimension while the one-hop
-        ``customers_v2`` join is also named by a filter. Both must be emitted
-        exactly once, whichever tier discovered them."""
+        """A join arriving via a projected dimension and one named by a filter must each be emitted exactly once."""
         sql = await _gen(
             SlayerQuery(
                 source_model="orders_x",
@@ -930,9 +752,7 @@ class TestB11JoinOrdering:
     async def test_executed_multi_join_query_is_correct(
         self, exec_engine: SlayerQueryEngine,
     ) -> None:
-        """EXECUTED (Codex D5): join reordering is only safe if the rows are
-        unchanged. Region 2's name is NULL, so this also covers a nullable
-        two-hop dimension."""
+        """Executed: join reordering is only safe if rows are unchanged; region 2's NULL name covers a nullable two-hop dimension."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="customers.regions.name")],
@@ -943,19 +763,11 @@ class TestB11JoinOrdering:
             r["orders.customers.regions.name"]: r["orders.revenue"]
             for r in resp.data
         }
-        # Orders 1,2 -> customer 100 -> region 1 ("West"): 10 + 20 = 30.
-        # Orders 3,4 -> customer 101 -> region 2 (NULL):    5 +  7 = 12.
         assert by_region.get("West") == pytest.approx(30.0), resp.data
         assert by_region.get(None) == pytest.approx(12.0), resp.data
 
     async def test_join_order_is_stable_across_dialects(self) -> None:
-        """One mechanism means the relative join order does not depend on the
-        dialect — only identifier quoting does.
-
-        The sequence is read out of the parsed JOIN nodes. Building it by
-        testing known names for membership in the SQL string would return the
-        *caller's* ordering every time and assert nothing.
-        """
+        """Relative join order does not depend on the dialect, only quoting; the sequence is read from the parsed JOIN nodes, not string membership."""
         query = SlayerQuery(
             source_model="orders_x",
             dimensions=[ColumnRef(name="customers_v2.deep_pop")],
@@ -976,34 +788,13 @@ class TestB11JoinOrdering:
     async def test_every_registered_scope_path_is_emitted_as_a_join(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """B11's safety property, stated in terms of the mechanism it adopts.
-
-        Whatever the host scope registers must end up in the FROM. This is the
-        half of B11 that can regress: switching the collector to
-        ``join_paths.as_list()`` changes which list is authoritative, and a path
-        present in one list but not the other becomes a missing join — invalid
-        SQL rather than a cosmetic reordering.
-
-        NOTE ON WHY THE *ORDER* IS NOT PINNED HERE. Today the host scope is not
-        consulted at all for a plain joined dimension: ``ScopeFrame.resolve``
-        is never called for that shape, and the dimension paths come from the
-        row-slot walk. So the new ordering cannot be asserted against the scope
-        before the implementation exists without presuming its internals — and
-        the ratified statement for B11 is *execution-identical*, with the order
-        change itself surfaced through the PR's recompare corpus. What is
-        pinned here instead are the properties that must hold either way: the
-        join SET, parent-before-child, determinism, and executed results.
-        """
+        """Whatever the host scope registers must end up in the FROM; a path in one list but not the other becomes a missing join (order is not pinned — B11 is execution-identical)."""
         registered: List[str] = []
         original = ScopeFrame._register_join_paths
 
         def _wrapped(self_frame, parsed):
             result = original(self_frame, parsed)
-            # Only the HOST scope. The generator also builds throwaway frames
-            # (agg-kwarg resolution, explicit time columns, Mode-A entry) whose
-            # join_paths are documented as intentionally discarded — a path
-            # registered there need not appear in the base FROM, so recording
-            # them would make this property false for a correct generator.
+            # Only the HOST scope; throwaway frames' join_paths are intentionally discarded and need not appear in the FROM.
             if self_frame.root_relation == "orders_x":
                 registered.extend(
                     "__".join(p) for p in self_frame.join_paths.as_list()

@@ -1,27 +1,4 @@
-"""Stage 7a.6 (DEV-1450) — ValueRegistry, TransformLowerer, ProjectionPlanner.
-
-Three composable concerns:
-
-* ``ValueRegistry`` interns ``ValueKey``s by structural identity. Two
-  structurally-equal keys share one ``ValueSlot`` (P2). The same key
-  declared with multiple ``name``s accumulates multiple
-  ``public_aliases`` on a single slot (P4 / C13). Alias collisions
-  with source columns / duplicate names are rejected per DEV-1443.
-
-* ``desugar_change`` / ``desugar_change_pct`` lower sugar transforms
-  into their underlying form. The inner operand keeps the same
-  structural identity across all occurrences (DEV-1446) so the
-  ValueRegistry interns it once. ``partition_by`` threads through to
-  the underlying ``time_shift`` (C6).
-
-* ``ProjectionPlanner`` allocates slots for declared measures and
-  creates hidden slots for refs that appear ONLY in order/filter.
-  Hidden slots are materialised but trimmed from the public projection.
-
-Dormant in 7a — no engine wiring. Stage 7a.7's ``stage_planner.py``
-composes these with the cross-model planner to build a
-``PlannedQuery``.
-"""
+"""ValueRegistry, TransformLowerer, and ProjectionPlanner for query planning."""
 
 from __future__ import annotations
 
@@ -73,9 +50,7 @@ __all__ = [
 ]
 
 
-# ---------------------------------------------------------------------------
 # ValueRegistry
-# ---------------------------------------------------------------------------
 
 
 def _fill_missing_metadata(
@@ -87,13 +62,6 @@ def _fill_missing_metadata(
     format: Optional[NumberFormat] = None,
     description: Optional[str] = None,
 ) -> None:
-    """Populate ``updates`` with each per-field value that is set on the
-    incoming intern call AND missing on the existing slot (DEV-1452 round-2
-    refactor of the previous if-chain to keep
-    :meth:`ValueRegistry._merge_into_existing` under the S3776 complexity
-    cap). Mutates ``updates`` in place; never overrides an already-set
-    field on the slot.
-    """
     for field_name, new_value in (
         ("label", label),
         ("type", type),
@@ -105,15 +73,7 @@ def _fill_missing_metadata(
 
 
 class ValueRegistry:
-    """Interns ``ValueKey``s by structural identity into ``ValueSlot``s.
-
-    Constructor takes ``source_column_names``: the set of column names
-    on the host model used for the alias-collision validations
-    (``MeasureNameCollidesWithColumnError``,
-    ``CanonicalAliasShadowsColumnError``). Pass an empty set when the
-    host doesn't expose column names (or when the validations should
-    skip — e.g., in unit tests for the registry in isolation).
-    """
+    """Interns ``ValueKey``s by structural identity into ``ValueSlot``s; ``source_column_names`` drives alias-collision checks."""
 
     def __init__(
         self,
@@ -129,11 +89,8 @@ class ValueRegistry:
         self._by_key: Dict[ValueKey, SlotId] = {}
         self._declared_names: Dict[str, SlotId] = {}
         self._counter = 0
-        # DEV-1733: every alias name already spoken for — user-declared public
-        # names (reserved up front, see ``reserve_public_names``) plus the
-        # resolved ``declared_name`` of each interned slot. HIDDEN slots are
-        # uniquified against this set at intern time so no renderer can emit
-        # two different expressions under one alias.
+        # Every alias name already taken (public names + each slot's declared_name);
+        # hidden slots are uniquified against it so no alias maps to two expressions.
         self._taken_names: set = set()
 
     def _next_id(self) -> SlotId:
@@ -141,31 +98,13 @@ class ValueRegistry:
         return f"s{self._counter}"
 
     def reserve_public_names(self, names) -> None:
-        """Claim user-declared names BEFORE any hidden slot is interned.
-
-        DEV-1733: hidden-name uniquification must not depend on intern order.
-        Measures are interned public-slot-then-hidden-deps, so measure *i*'s
-        hidden dependency would otherwise be able to claim a name that measure
-        *j > i* later declares publicly — and public names are never renamed,
-        so the collision would come straight back. Reserving every declared
-        name first makes the outcome order-independent.
-        """
+        """Claim user-declared names before any hidden slot is interned (order-independent uniquification)."""
         for name in names:
             if name:
                 self._taken_names.add(name)
 
     def _unique_hidden_name(self, declared_name: str) -> str:
-        """``declared_name``, suffixed ``_2`` / ``_3`` / … if already taken.
-
-        Hidden canonical names are structural, not user-facing
-        (``_cumsum_inner``, ``_arith_/``, ``_scalar_abs``), so two distinct
-        keys of the same shape collide by construction:
-        ``cumsum(a:sum) + cumsum(b:sum)`` interned two hidden slots both named
-        ``_cumsum_inner``, the step CTE projected two columns under that one
-        alias, and the composite silently evaluated ``cumsum(a) + cumsum(a)``.
-        DEV-1692 fixed this inside the ``time_shift`` / ``consecutive_periods``
-        emitters only; owning it here covers every renderer at once.
-        """
+        """``declared_name`` suffixed ``_2``/``_3``/… if taken — structural hidden names collide by construction (``cumsum(a)+cumsum(b)`` both ``_cumsum_inner``)."""
         if declared_name not in self._taken_names:
             return declared_name
         n = 2
@@ -181,24 +120,7 @@ class ValueRegistry:
         public_name: Optional[str],
         canonical_alias: Optional[str],
     ) -> None:
-        """Alias-collision validations (P4 / DEV-1443).
-
-        Split out of :meth:`intern` so the interning path reads as
-        validate → merge-or-create. Raises
-        ``MeasureNameCollidesWithColumnError`` when a public name shadows a
-        source column, and ``CanonicalAliasShadowsColumnError`` when a
-        renamed measure's canonical alias does.
-
-        Exemption: a dimension whose public name IS its own column name
-        (``ColumnKey(path=(), leaf=X)`` declared as ``X``) is the column, not a
-        rename of it — collision check skipped. Same exemption for a local
-        ``TimeTruncKey`` over that same column, since a time dimension on
-        ``created_at`` projects the (truncated) ``created_at`` column rather
-        than introducing a new alias. DEV-1450 stage 7b.13: also exempt
-        ``ColumnSqlKey(model=..., column_name=X)`` declared as ``X`` — a
-        derived column (``Column.sql`` set) selected as a dimension projects
-        the column unchanged, identical to the plain-column case.
-        """
+        """Alias-collision validations (P4): a public name or renamed canonical alias shadowing a source column raises; self-named dimensions are exempt."""
         is_self_named_dimension = (
             isinstance(key, ColumnKey)
             and key.path == ()
@@ -212,27 +134,15 @@ class ValueRegistry:
             and column_path(key.column) == ()
             and public_name == column_leaf(key.column)
         )
-        # An UNNAMED ``*:<agg>`` (StarKey source) re-aggregation is exempt: its
-        # canonical alias (``_count``) is a structural marker, not a column
-        # reference — ``COUNT(*)`` reads no column, so it can't be ambiguous
-        # with a same-named source column. This is the chain re-count case
-        # (``*:count`` over a stage that already projects ``_count``). An
-        # EXPLICIT user name that collides still raises (canonical_alias is set
-        # only on a rename, so it stays None here for the unnamed form).
+        # An unnamed ``*:<agg>`` (StarKey) is exempt: its canonical alias (``_count``)
+        # is a structural marker, not a column ref. An explicit user name still raises.
         is_unnamed_star_agg = (
             isinstance(key, AggregateKey)
             and isinstance(getattr(key, "source", None), StarKey)
             and canonical_alias is None
         )
-        # DEV-1743 [D5]: a JOINED/pathed column ref (``customers.region``) only
-        # flattens to a ``__`` name at a stage / query-backed boundary. If that
-        # flattened name coincides with a source column (``customers__region``,
-        # the C11 carve-out), it is a FLATTEN collision — owned by the stage-
-        # schema guard (``stage_planner._emit_stage_schema``, "Stage column name
-        # collision"), not a measure-shadows-column. Exempt it here so the
-        # clearer stage message fires instead of preempting with this one. In a
-        # regular (non-stage) query the public name stays dotted and can never be
-        # a source column, so this exemption is a no-op there.
+        # A pathed column ref only flattens to a ``__`` name at a stage boundary;
+        # that collision is owned by the stage-schema guard, so exempt it here.
         is_pathed_projection = (
             isinstance(key, (ColumnKey, ColumnSqlKey)) and key.path != ()
         )
@@ -307,9 +217,8 @@ class ValueRegistry:
                 )
 
         sid = self._next_id()
-        # DEV-1733: uniquify HIDDEN slot names only. A public name is the
-        # user's result-key contract and is never rewritten — a genuine
-        # duplicate there already raised ``DuplicateMeasureNameError`` above.
+        # Uniquify hidden names only; a public name is the user's contract and a
+        # duplicate already raised above.
         if hidden:
             declared_name = self._unique_hidden_name(declared_name)
         self._taken_names.add(declared_name)
@@ -371,10 +280,8 @@ class ValueRegistry:
         elif not hidden and slot.hidden and public_name is None:
             # Re-intern as non-hidden — promote to public.
             updates["hidden"] = False
-        # Codex: when a hidden slot is promoted to public, carry the
-        # display metadata supplied by the public re-intern. Only fill
-        # missing fields — never overwrite metadata the first intern
-        # already supplied.
+        # On hidden→public promotion, carry display metadata from the public
+        # re-intern, filling missing fields only.
         _fill_missing_metadata(
             slot=slot,
             updates=updates,
@@ -401,23 +308,11 @@ class ValueRegistry:
         return list(self._slots.values())
 
 
-# ---------------------------------------------------------------------------
 # TransformLowerer
-# ---------------------------------------------------------------------------
 
 
 def desugar_change(key: TransformKey) -> ArithmeticKey:
-    """``change(x)`` → ``x - time_shift(x, periods=-1, [partition_by=…])``.
-
-    The inner ``x`` is identity-preserving — the ``ArithmeticKey`` and
-    the ``TransformKey`` use the SAME ``ValueKey`` instance, so a
-    downstream ValueRegistry interns it as one slot (DEV-1446).
-
-    ``partition_by`` (the binder put it on ``key.partition_keys``)
-    threads through to the underlying ``time_shift`` (C6). ``periods``
-    is fixed at ``-1`` (one period back) because ``change`` has no
-    user-tunable offset.
-    """
+    """``change(x)`` → ``x - time_shift(x, periods=-1)``; inner ``x`` is identity-preserving so the registry interns it once."""
     if key.op != "change":
         raise ValueError(
             f"desugar_change expected op='change', got {key.op!r}."
@@ -434,16 +329,7 @@ def desugar_change(key: TransformKey) -> ArithmeticKey:
 
 
 def lower_sugar_transforms(key: ValueKey) -> ValueKey:
-    """Recursively lower ``change`` / ``change_pct`` TransformKeys to
-    their desugared arithmetic form, preserving the inner aggregate's
-    structural identity (DEV-1446). Other ValueKey shapes are walked
-    but otherwise unchanged.
-
-    The desugar functions preserve ``partition_keys`` / ``time_key`` on
-    the resulting ``time_shift`` TransformKey (DEV-1450 C6), so
-    ``change(amount:sum, partition_by=region)`` lowers to
-    ``amount:sum - time_shift(amount:sum, partition_by=region)``.
-    """
+    """Recursively lower ``change``/``change_pct`` TransformKeys to desugared arithmetic, preserving the inner aggregate's identity."""
     if isinstance(key, TransformKey):
         new_input = lower_sugar_transforms(key.input)
         if new_input is not key.input:
@@ -482,9 +368,7 @@ def lower_sugar_transforms(key: ValueKey) -> ValueKey:
             return key
         return BetweenKey(column=new_col, low=new_low, high=new_high)
     if isinstance(key, InKey):
-        # DEV-1475: ``InKey.values`` is a literal-only tuple, so it
-        # carries no sugar to lower; only the LHS column can host a
-        # rewritable transform. Rebuild only if the column changed.
+        # InKey.values is literal-only; only the LHS column can host a transform.
         new_col = lower_sugar_transforms(key.column)
         if new_col is key.column:
             return key
@@ -495,22 +379,7 @@ def lower_sugar_transforms(key: ValueKey) -> ValueKey:
 def rewrite_rank_partition_keys(  # NOSONAR(S3776) — sequential isinstance dispatch over the closed ValueKey union; each branch is the per-type identity-preserving rebuild contract, mirroring lower_sugar_transforms. Extracting per-type helpers would scatter the contract across the module.
     key: ValueKey, *, rewrite_fn: Callable[[TransformKey], FrozenSet],
 ) -> ValueKey:
-    """Walk ``key``; for every rank-family ``TransformKey`` carrying an
-    explicit ``partition_by`` (non-empty ``partition_keys``), replace those
-    keys with ``rewrite_fn(transform_key)`` (DEV-1497).
-
-    ``rewrite_fn`` receives the whole ``TransformKey`` and returns a new
-    ``frozenset`` of partition keys — validating that each resolves to a query
-    dimension / time-dimension and rewriting a time-dimension source column to
-    its ``TimeTruncKey`` bucket. It may raise ``ValueError`` for a partition
-    column that is not a query dimension.
-
-    Identity-preserving (mirrors :func:`lower_sugar_transforms`): parents are
-    rebuilt only where a child changed, so this runs BEFORE interning without
-    churning unrelated slots. Reaches rank transforms nested in composite
-    measures (``ArithmeticKey`` / ``ScalarCallKey``) and in filter predicates
-    (comparisons are ``ArithmeticKey``).
-    """
+    """Replace every rank-family ``TransformKey`` with an explicit ``partition_by`` via ``rewrite_fn``; identity-preserving, runs before interning."""
     def _rec(k: ValueKey) -> ValueKey:
         return rewrite_rank_partition_keys(key=k, rewrite_fn=rewrite_fn)
 
@@ -556,14 +425,7 @@ def rewrite_rank_partition_keys(  # NOSONAR(S3776) — sequential isinstance dis
 
 
 def desugar_change_pct(key: TransformKey) -> ArithmeticKey:
-    """``change_pct(x)`` → ``(x - time_shift(x, periods=-1)) /
-    NULLIF(time_shift(x, periods=-1), 0)``.
-
-    The divisor is wrapped in ``NULLIF(..., 0)`` so a zero prior-period
-    value yields NULL instead of a divide-by-zero error / Inf. Same
-    identity-preservation as ``desugar_change`` — numerator and divisor
-    share the one ``shifted`` ValueKey instance.
-    """
+    """``change_pct(x)`` → ``(x - time_shift(x,-1)) / NULLIF(time_shift(x,-1), 0)``; NULLIF guards a zero prior value."""
     if key.op != "change_pct":
         raise ValueError(
             f"desugar_change_pct expected op='change_pct', got {key.op!r}."
@@ -583,23 +445,11 @@ def desugar_change_pct(key: TransformKey) -> ArithmeticKey:
     return ArithmeticKey(op="/", operands=(numerator, guarded_divisor))
 
 
-# ---------------------------------------------------------------------------
 # ProjectionPlanner
-# ---------------------------------------------------------------------------
 
 
 class DeclaredMeasure(BaseModel):
-    """One declared measure on a query.
-
-    ``bound`` is the binder's output. ``declared_name`` is the canonical
-    or user-supplied name. ``public_name`` is the user-facing alias —
-    set when the user supplied an explicit ``name`` on the measure spec.
-
-    DEV-1452 Stage B decisions #2 + #8: ``type``, ``format``, and
-    ``description`` carry typed display + slot metadata from the source
-    ``ModelMeasure`` / ``Column``. ``type`` follows the aggregation
-    (count → INT, avg → DOUBLE, sum/min/max → source column type).
-    """
+    """One declared measure; ``type`` follows the aggregation (count → INT, avg → DOUBLE, else source type)."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -612,9 +462,8 @@ class DeclaredMeasure(BaseModel):
     type_is_explicit: bool = False
     format: Optional[NumberFormat] = None
     description: Optional[str] = None
-    # DEV-1740: a computed (expression) dimension is a ROW-phase composite that
-    # must be projected AND grouped, unlike a bare-measure expression (which is
-    # a user error). The flag tells the generator which one it is.
+    # A computed dimension is a ROW-phase composite projected AND grouped; the
+    # flag distinguishes it from a bare-measure expression.
     is_dimension: bool = False
 
 
@@ -644,32 +493,15 @@ _SLOTTABLE_KIND = (
 
 
 def _iter_slot_deps(key: ValueKey):
-    """Yield only ``ValueKey``s that need a materialised slot.
-
-    Skips composite-only nodes that the SQL generator inlines:
-    ``ArithmeticKey`` (operators), ``ScalarCallKey`` (function calls
-    inlined into SELECT / WHERE), ``LiteralKey``, ``StarKey``. Stops
-    at ``AggregateKey`` (its inner ``source`` ColumnKey is materialised
-    inside the aggregate, not as a separate slot). Recurses into
-    ``TransformKey.input`` so a nested aggregate inside a transform
-    gets its own hidden slot.
-
-    ``TimeTruncKey`` is itself the materialised slot (the generator
-    emits the DATE_TRUNC at SELECT time); the inner ColumnKey is not
-    yielded as a separate dependency — adding a time dimension must
-    not auto-add the raw column as an output (matches legacy).
-    """
+    """Yield only ``ValueKey``s needing a materialised slot; TimeTruncKey is itself the slot (its inner column isn't yielded, so a time dimension doesn't auto-add the raw column)."""
     if isinstance(key, AggregateKey):
         yield key
         return
     if isinstance(key, TransformKey):
         yield key
         yield from _iter_slot_deps(key.input)
-        # Transform aux deps: partition_keys and time_key must be
-        # materialised as their own slots so the SQL generator (slice
-        # 7b.10 / 7b.11) can render PARTITION BY / ORDER BY against
-        # named SELECT projections instead of re-walking the model
-        # graph.
+        # partition_keys / time_key get their own slots so the generator renders
+        # PARTITION BY / ORDER BY against named projections.
         for pk in key.partition_keys:
             yield from _iter_slot_deps(pk)
         if key.time_key is not None:
@@ -692,33 +524,19 @@ def _iter_slot_deps(key: ValueKey):
                 yield from _iter_slot_deps(arg)
         return
     if isinstance(key, BetweenKey):
-        # BetweenKey is not itself a slot — the generator inlines it
-        # into WHERE. Recurse into the column / low / high so the
-        # underlying ColumnKey shows up as a referenced slot for the
-        # cross-model routing / hidden-slot pass (Codex F4).
+        # BetweenKey is inlined into WHERE; recurse so its ColumnKey surfaces as
+        # a referenced slot.
         yield from _iter_slot_deps(key.column)
         yield from _iter_slot_deps(key.low)
         yield from _iter_slot_deps(key.high)
     if isinstance(key, InKey):
-        # DEV-1475: InKey, like BetweenKey, is inlined into WHERE by the
-        # generator (no public slot of its own). Surface its LHS column
-        # for cross-model routing / hidden-slot collection; the literal
-        # RHS values are never slottable.
+        # InKey is inlined into WHERE; surface its LHS column (RHS literals aren't slottable).
         yield from _iter_slot_deps(key.column)
     # StarKey, LiteralKey — never slottable on their own.
 
 
 def _regroup_substituted_composite_phase(value_key: ValueKey) -> Optional[Phase]:
-    """DEV-1839 D10 — the AGGREGATE phase of a composite (arithmetic / scalar-
-    call / desugared CASE) EVERY materialisable leaf of which is a combined
-    regroup placeholder, else ``None``.
-
-    Such a composite reads only post-attachment ``_cm_`` values (its operands are
-    partitioned aggregates broadcast to the query grain), so it is semantically
-    an AGGREGATE-phase expression rendered at the combined SELECT — not the ROW
-    phase its bare-ColumnKey leaves would otherwise give it (which routes it into
-    ``_base`` and raises "needs an aggregation"). A composite mixing a plain
-    aggregate with a placeholder is already AGGREGATE-phase and unaffected."""
+    """AGGREGATE phase for a composite whose every leaf is a regroup placeholder (reads only ``_cm_`` values, so it renders at the combined SELECT), else None."""
     if not isinstance(value_key, (ArithmeticKey, ScalarCallKey)):
         return None
     deps = list(_iter_slot_deps(value_key))
@@ -732,18 +550,11 @@ def _regroup_substituted_composite_phase(value_key: ValueKey) -> Optional[Phase]
 
 
 class ProjectionPlanner:
-    """Allocate slots for declared measures + hidden slots for refs only
-    used in order/filter."""
+    """Allocate slots for declared measures + hidden slots for order/filter-only refs."""
 
     @staticmethod
     def _intern_hidden(registry: "ValueRegistry", key: ValueKey) -> None:
-        """Intern ``key`` as a hidden slot unless it already has one.
-
-        The single rule every hidden-slot site shares — measure aux deps,
-        filter operands, order operands, and (DEV-1733) an order target that
-        is itself a composite. Keeping it in one place is what stops the four
-        call sites drifting on ``declared_name`` / ``phase``.
-        """
+        """Intern ``key`` as a hidden slot unless it already has one (the shared hidden-slot rule)."""
         if registry.find_by_key(key) is None:
             registry.intern(
                 key=key,
@@ -765,10 +576,8 @@ class ProjectionPlanner:
             source_column_names=source_column_names,
             host_model_name=host_model_name,
         )
-        # DEV-1733: claim every user-declared name before the first intern, so
-        # hidden-name uniquification is independent of intern order (a hidden
-        # dependency of measure 1 must not be able to take a name measure 2
-        # declares publicly — public names are never renamed).
+        # Claim every declared name before interning so hidden-name uniquification
+        # is order-independent.
         registry.reserve_public_names(
             name
             for m in measures
@@ -776,11 +585,8 @@ class ProjectionPlanner:
         )
         public_projection: List[SlotId] = []
         for m in measures:
-            # DEV-1839 D10 — an all-placeholder regroup composite MEASURE is
-            # AGGREGATE-phase (rendered at the combined SELECT over its ``_cm_``
-            # operands), not the ROW phase its bare-ColumnKey leaves imply. A
-            # computed DIMENSION over a row placeholder is a genuine ROW attach
-            # (grouped in ``_base``) and is excluded.
+            # An all-placeholder regroup composite measure is AGGREGATE-phase, not
+            # the ROW phase its leaves imply; a computed dimension is excluded.
             phase = m.bound.phase
             if not m.is_dimension:
                 phase = (
@@ -801,18 +607,13 @@ class ProjectionPlanner:
                 is_dimension=m.is_dimension,
             )
             public_projection.append(sid)
-            # Materialise any auxiliary slot-worthy deps of the measure
-            # as hidden slots (e.g. the inner AggregateKey of a transform,
-            # the partition columns, the time_key column). These are
-            # rendered by the generator into the inner SELECT but not
-            # surfaced in the public projection.
+            # Materialise the measure's aux deps (inner aggregate, partition/time
+            # columns) as hidden slots — rendered but not publicly projected.
             for dep in _iter_slot_deps(m.bound.value_key):
                 if dep != m.bound.value_key:
                     self._intern_hidden(registry, dep)
 
-        # Filter and order share the same dependency-selection rule: walk
-        # the bound expression, intern each slot-worthy key as a hidden
-        # slot if not already present.
+        # Filter and order: intern each slot-worthy dep as a hidden slot.
         for f in filters:
             for dep in _iter_slot_deps(f.value_key):
                 self._intern_hidden(registry, dep)
@@ -820,18 +621,10 @@ class ProjectionPlanner:
         for o in order:
             for dep in _iter_slot_deps(o.bound.value_key):
                 self._intern_hidden(registry, dep)
-            # DEV-1733: ``_iter_slot_deps`` yields a composite's OPERANDS but
-            # never the composite itself (the generator normally inlines those
-            # nodes). An ORDER BY target that IS a composite therefore had no
-            # slot of its own, so ``plan_query``'s ``find_by_key`` lookup
-            # returned None and the order entry was SILENTLY DROPPED — the
-            # ``change`` / ``change_pct`` / scalar-call ORDER BY bug. Intern the
-            # top-level key so it gets a hidden slot the generator can
-            # materialise and the outer wrap can order on.
-            #
-            # ORDER ONLY: filters keep the operands-only walk. A filter's
-            # top-level composite is rendered inline into WHERE / HAVING, and
-            # giving it a slot would change that emission.
+            # _iter_slot_deps yields a composite's operands but not the composite
+            # itself, so an ORDER BY on a composite had no slot and was silently
+            # dropped. Intern the top-level key here (order only — a filter's
+            # top-level composite renders inline into WHERE/HAVING).
             if isinstance(o.bound.value_key, (ArithmeticKey, ScalarCallKey)):
                 self._intern_hidden(registry, o.bound.value_key)
 
@@ -844,37 +637,20 @@ class ProjectionPlanner:
 
 
 def _canonical_name(key: ValueKey) -> str:  # NOSONAR(S3776) — sequential isinstance dispatch over the closed ValueKey union; each branch is the per-type canonical-name contract. Extracting per-type helpers would scatter the contract.
-    """Best-effort canonical name for a hidden slot.
-
-    Mirrors the public-alias canonical form used by the engine
-    elsewhere: ``revenue:sum`` → ``revenue_sum``; ``*:count`` →
-    ``_count``; ``customers.regions.name`` → flattened ``customers__regions__name``.
-    """
+    """Best-effort canonical name for a hidden slot (``revenue:sum`` → ``revenue_sum``, ``customers.regions.name`` → ``customers__regions__name``)."""
     if isinstance(key, ColumnKey):
         return "__".join(key.path + (key.leaf,))
     if isinstance(key, ColumnSqlKey):
         prefix = "__".join(key.path) + "__" if key.path else ""
         return f"{prefix}{key.column_name}"
     if isinstance(key, TimeTruncKey):
-        # Legacy alias contract: granularity is encoded in the SQL
-        # DATE_TRUNC, not in the alias.
+        # Granularity lives in the SQL DATE_TRUNC, not the alias.
         return _canonical_name(key.column)
     if isinstance(key, AggregateKey):
-        # DEV-1501: include args/kwargs so parametric aggregates over the
-        # same value column (``revenue:last(created_at)`` vs
-        # ``revenue:last(updated_at)``, ``revenue:percentile(p=0.5)`` vs
-        # ``revenue:percentile(p=0.95)``) get DISTINCT declared names —
-        # mirrors the cross-model parametric P10 exception. Without this,
-        # two hidden parametric aggregates collide on a single base-CTE
-        # alias when materialised.
-        # The derivation lives in ``slayer.sql.naming`` (P-F). The
-        # ``declared_name`` profile is the bare canonical name, with the
-        # explicit ``_agg_<name>`` placeholder for a source exposing neither a
-        # leaf nor a column name (deliberately NOT the star form, so such a
-        # slot stays distinguishable from a real ``*:count``).
+        # Include args/kwargs so parametric aggregates over one column
+        # (``revenue:percentile(p=0.5)`` vs ``p=0.95``) get distinct names.
         alias = canonical_aggregate_alias(key, profile="declared_name")
-        # Only the ``stage_formula`` profile ever declines (returns None);
-        # ``declared_name`` always yields a name.
+        # declared_name profile always yields a name.
         assert alias is not None
         return alias
     if isinstance(key, TransformKey):
@@ -888,12 +664,10 @@ def _canonical_name(key: ValueKey) -> str:  # NOSONAR(S3776) — sequential isin
     if isinstance(key, StarKey):
         return "_star"
     if isinstance(key, BetweenKey):
-        # Defensive — BetweenKey shouldn't materialise as a public slot
-        # in 7b.9; it's always inlined into WHERE by the renderer.
+        # Defensive: BetweenKey is always inlined into WHERE, never a public slot.
         return f"_between_{_canonical_name(key.column)}"
     if isinstance(key, InKey):
-        # Defensive — InKey (DEV-1475) is always inlined into WHERE
-        # like BetweenKey; never materialises as a public slot.
+        # Defensive: InKey is always inlined into WHERE, never a public slot.
         return f"_in_{_canonical_name(key.column)}"
     return "_hidden"
 
@@ -901,32 +675,14 @@ def _canonical_name(key: ValueKey) -> str:  # NOSONAR(S3776) — sequential isin
 ProjectionPlan.model_rebuild()
 
 
-# ---------------------------------------------------------------------------
-# Stage 7b.5 — filter → slot id mapping for cross-model planner routing
-# ---------------------------------------------------------------------------
+# Filter → slot id mapping for cross-model planner routing
 
 
 def filter_referenced_slot_ids(
     bound_filter: "BoundFilter",
     registry: "ValueRegistry",
 ) -> "set":
-    """Return the set of ``SlotId``s that ``bound_filter``'s predicate
-    references through interned slots.
-
-    Walks the predicate's ``ValueKey`` tree via ``_iter_slot_deps`` —
-    yielding only slot-worthy keys (``ColumnKey`` / ``ColumnSqlKey`` /
-    ``AggregateKey`` / ``TransformKey`` / ``TimeTruncKey``) and skipping
-    composite-only nodes (``ArithmeticKey``, ``ScalarCallKey``,
-    ``LiteralKey``, ``StarKey``). Each slot-worthy key is looked up in
-    the registry; keys without an interned slot are silently skipped
-    (filter literals, hidden registry misses).
-
-    Codex HIGH #3/#4 for DEV-1450: this helper exists so the
-    cross-model planner gets ``set[SlotId]`` instead of having to
-    classify ``BoundFilter.referenced_keys`` (which are
-    pre-interning ``ValueKey``s, not slot ids) or naively walking only
-    the top-level key (which misses composite-predicate leaves).
-    """
+    """``set[SlotId]`` that ``bound_filter``'s predicate references through interned slots (slot-worthy keys only; misses are skipped)."""
     result: set = set()
     for dep in _iter_slot_deps(bound_filter.value_key):
         sid = registry.find_by_key(dep)

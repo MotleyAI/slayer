@@ -1,27 +1,8 @@
-"""Ranking-key resolution for the ``first`` / ``last`` route (P-C / P-D).
-
-A ranked aggregate needs its own ROW ORDERING, so under P-C it compiles to a
-ranked-kernel producer (DEV-1838 D4) rooted where its rows live and joined back
-on the query grain. The one decision this module owns is WHICH column the
-ranking runs over — settled at plan time so the renderer never re-derives it.
-
-The ranking column used to be resolved at render time, twice: once for the host
-base's ranked wrap and once, by a different precedence, inside the cross-model
-CTE. They agreed by accident on the cases anyone had tried. One resolver with
-an explicit per-scope precedence replaces both:
-
-* **host-rooted** — an explicit positional time arg, else the first
-  ``DATE``/``TIMESTAMP`` row dimension, else the first time dimension's RAW
-  column (never the truncated bucket: ranking within a month by the month ties
-  every row in it), else the model's ``default_time_dimension``.
-* **target-rooted** — the same explicit arg, re-anchored in the target's
-  coordinates, else the TARGET model's ``default_time_dimension``. Host
-  dimensions are deliberately not candidates: the CTE ranks target rows, and a
-  host column is not in scope there.
-
-Both ends of the precedence raise rather than fall through, with the message the
-scope's users already see.
-"""
+"""Ranking-key resolution for ``first`` / ``last``: WHICH column a ranked
+aggregate's ``ROW_NUMBER`` orders by, settled at plan time. host-rooted — explicit
+time arg, else first DATE/TIMESTAMP row dimension, else first time dimension's RAW
+column (never the truncated bucket, which ties every row), else the model default.
+target-rooted — the same arg re-anchored, else the target default (host out of scope)."""
 
 from __future__ import annotations
 
@@ -50,21 +31,14 @@ __all__ = [
     "resolve_ranking_time_key",
 ]
 
-#: The aggregations that rank. Named once so the classifier, the planner and
-#: the renderer cannot drift on what "a ranked aggregate" is.
+#: The aggregations that rank; named once so classifier, planner and renderer agree.
 RANKED_AGGREGATIONS = ("first", "last")
 
 _TEMPORAL_TYPES = (DataType.DATE, DataType.TIMESTAMP)
 
 
 def explicit_ranking_time_arg(key: AggregateKey) -> Optional[ValueKey]:
-    """The explicit positional ranking-time arg of a ``first`` / ``last``, or
-    ``None``.
-
-    The FIRST positional arg iff it is a column ref; ``None`` for anything else
-    — first/last never takes a leading non-column positional, so a different
-    shape means the caller passed something this aggregation does not read.
-    """
+    """The explicit positional ranking-time arg (first positional iff a column ref), or ``None``."""
     if key.agg not in RANKED_AGGREGATIONS:
         return None
     for arg in key.args:
@@ -73,7 +47,6 @@ def explicit_ranking_time_arg(key: AggregateKey) -> Optional[ValueKey]:
 
 
 def _ranking_key_name(key: ValueKey) -> str:
-    """The user-facing name of a ranking-time key, for an error message."""
     if isinstance(key, ColumnKey):
         return ".".join((*key.path, key.leaf))
     if isinstance(key, ColumnSqlKey):
@@ -82,14 +55,8 @@ def _ranking_key_name(key: ValueKey) -> str:
 
 
 def _resolves_on(*, key: ValueKey, model: SlayerModel) -> bool:
-    """Whether ``key`` names something reachable FROM ``model``.
-
-    A shallow check on purpose: a local leaf must be a column of the model, and
-    a path-bearing one must start at a model this one joins to. Walking the
-    whole chain is the renderer's job and it raises its own errors; this exists
-    so the common mistake — naming a HOST column as a TARGET-rooted ranking key
-    — is caught where the plan is made rather than at the database.
-    """
+    """Whether ``key`` is reachable FROM ``model`` — a shallow check catching the
+    common mistake (a HOST column as a TARGET-rooted ranking key) at plan time."""
     if isinstance(key, ColumnKey):
         leaf, path = key.leaf, key.path
     elif isinstance(key, ColumnSqlKey):
@@ -107,7 +74,6 @@ def _temporal_row_dimension_key(
     source_model: SlayerModel,
     bundle: ResolvedSourceBundle,
 ) -> Optional[ValueKey]:
-    """The first row dimension whose declared type is ``DATE``/``TIMESTAMP``."""
     for key in row_keys:
         if not isinstance(key, ColumnKey):
             continue
@@ -143,29 +109,14 @@ def resolve_ranking_time_key(
     target_path: Tuple[str, ...] = (),
 ) -> ValueKey:
     """The column a ranked aggregate's ``ROW_NUMBER`` orders by, in the RANKED
-    scope's coordinates.
-
-    ``row_keys`` are the host's row-dimension keys in render order; they are
-    candidates only for a HOST-rooted plan (``target_path`` empty). A
-    target-rooted CTE ranks the target's rows, so a host dimension is not in
-    scope there and the precedence goes straight from the explicit arg to the
-    target's own default.
-    """
+    scope's coordinates. ``row_keys`` (host row dimensions) are candidates only for
+    a HOST-rooted plan; a target-rooted CTE goes straight to the target's default."""
     arg = explicit_ranking_time_arg(key)
     if arg is not None:
-        # The arg arrives in the HOST's coordinates; a target-rooted plan needs
-        # it in the target's, which is the same re-anchoring the aggregate
-        # source itself undergoes — done in lockstep so the ORDER BY and the
-        # value cannot end up rooted at different relations.
+        # Re-anchor into the target's coordinates in lockstep with the source.
         rerooted = reroot_value_key(arg, target_path=target_path)
         if target_path and not _resolves_on(key=rerooted, model=root_model):
-            # A HOST column as the ranking key of a TARGET-rooted CTE. The rows
-            # being ranked are the target's, and a host column is not one of
-            # their attributes — the relationship runs the other way, usually
-            # one-to-many, so there is no single host value per target row to
-            # rank by. This used to emit ``ORDER BY <target>.<host column>``,
-            # a reference to a column that does not exist, and fail at the
-            # database with no indication of which measure caused it.
+            # A host column can't rank a target-rooted CTE (the relation runs 1:N).
             raise ValueError(
                 f"first/last ranking column "
                 f"{_ranking_key_name(rerooted)!r} is not resolvable on model "
@@ -208,13 +159,8 @@ def resolve_ranking_time_key(
 def ordered_row_keys(
     *, row_slots: Sequence[ValueSlot], public_projection: Sequence[SlotId],
 ) -> List[ValueKey]:
-    """Row-dimension keys in the order the base SELECT renders them.
-
-    Publicly projected slots first, in projection order, then the rest. That is
-    the order the superseded render-time resolver walked, and the ranking-column
-    precedence is order-sensitive — two temporal dimensions rank by whichever
-    comes first.
-    """
+    """Row-dimension keys in base-SELECT render order (publicly projected first,
+    then the rest); the ranking precedence is order-sensitive."""
     by_id = {s.id: s for s in row_slots}
     seen: set = set()
     ordered: List[ValueKey] = []

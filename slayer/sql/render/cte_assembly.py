@@ -1,30 +1,5 @@
-"""WITH-chain assembly in topological order (§5.6).
-
-The cross-model paths used to splice their WITH chain out of f-strings::
-
-    cte_strs = [f"{name} AS (\\n{sql}\\n)" for name, sql in all_ctes[:-1]]
-    sql = f"WITH {', '.join(cte_strs)}\\n{combined_select_sql}"
-
-so the emitted order was whatever order the python list happened to be built
-in, and the transform chain read its predecessor positionally
-(``prev_cte = ctes[-1][0]``). That works only while one hard-coded sequence
-stays correct; it carries no statement of what actually depends on what.
-
-Here a caller DECLARES each CTE's dependencies and the assembler emits a stable
-topological order, with insertion order as the tiebreak so independent CTEs
-keep declaration order and the SQL is byte-stable across runs.
-
-Dependencies are declared, never discovered by scanning the rendered AST. A
-scan cannot tell a CTE reference from a same-named real table, is defeated by
-quoting and case folding, and — worst — would silently mis-order rather than
-fail. The caller already knows the answer structurally (``_wm_`` reads
-``_base``; transform step N reads step N-1; ``_cm_`` reads nothing), so it says
-so.
-
-Ordering is the only thing this module owns. Name collisions remain
-``assert_unique_cte_names``' job, which validates the emitted statement per
-WITH scope and case-folds on dialects that fold.
-"""
+"""WITH-chain assembly in dependency order from caller-declared dependencies
+(never AST-scanned); insertion order tiebreaks so the SQL is byte-stable."""
 
 from __future__ import annotations
 
@@ -43,22 +18,15 @@ class CteEntry(BaseModel):
 
     name: str
     query: exp.Expression
-    #: Names of CTEs this one references. A name absent from this assembly is
-    #: ordered by the ENCLOSING assembly after hoisting (DEV-1838).
+    #: CTEs this one references; a name absent here is ordered by the enclosing assembly.
     depends_on: List[str] = Field(default_factory=list)
 
 
 def _index_entries(
     entries: Sequence[CteEntry], *, external_names: AbstractSet[str],
 ) -> Dict[str, CteEntry]:
-    """Name → entry, rejecting a duplicate name or a dangling dependency.
-
-    Both are wiring bugs whose SQL would be invalid or silently wrong, so they
-    fail here rather than at the database. ``external_names`` (DEV-1838) are
-    the exception: shared producer CTEs that live in the ENCLOSING assembly —
-    a hoistable producer's chain is assembled locally, then hoisted flat, so a
-    dep may legally name one; the enclosing assembly orders that edge.
-    """
+    """Name → entry, rejecting duplicate names and dangling dependencies (both
+    wiring bugs); ``external_names`` (enclosing-assembly CTEs) are exempt."""
     by_name: Dict[str, CteEntry] = {}
     for entry in entries:
         if entry.name in by_name:
@@ -82,10 +50,7 @@ def _index_entries(
 def _topological_order(
     *, entries: Sequence[CteEntry], by_name: Dict[str, CteEntry],
 ) -> List[CteEntry]:
-    """Depth-first emit in declaration order: the first entry that is ready goes
-    first, and a dependency is emitted immediately before the entry needing it.
-    Declaration order is preserved wherever dependencies permit.
-    """
+    """Depth-first emit: each dependency before the entry needing it, else declaration order."""
     ordered: List[CteEntry] = []
     emitted: set[str] = set()
     visiting: List[str] = []
@@ -118,16 +83,9 @@ def assemble_with_chain(
     final: exp.Select,
     external_names: AbstractSet[str] = frozenset(),
 ) -> exp.Select:
-    """Attach ``entries`` to ``final`` as a WITH clause in dependency order.
-
-    Returns ``final`` unchanged when there are no entries — an empty ``WITH`` is
-    not valid SQL.
-
-    ``final`` must not already carry a WITH clause. The assembler owns the
-    statement's CTE list, and silently discarding one the caller had attached
-    would leave its references dangling — a live hazard for the transform
-    chains, which build a statement that already has CTEs before wrapping it.
-    """
+    """Attach ``entries`` to ``final`` as a WITH clause in dependency order;
+    returns ``final`` unchanged when empty. ``final`` must not already carry a WITH
+    clause — the assembler owns the CTE list and would strand a pre-attached one."""
     if final.args.get("with_") is not None:
         raise ValueError(
             "assemble_with_chain owns the WITH clause, but `final` already "

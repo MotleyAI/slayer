@@ -1,23 +1,10 @@
-"""DEV-1503 — planner unit tests for cross-model-filtered local measure isolation.
+"""Planner unit tests for cross-model-filtered local measure isolation.
 
-These tests pin the planner-side contract of DEV-1503's isolation feature:
-
-1. ``SqlExprKey.referenced_join_paths`` is populated at binder time and carries
-   the typed non-host join paths the filter touches (after derived-ref
-   expansion), so the planner reads structural information — not parsed SQL
-   text — when deciding whether to isolate.
-2. The cross-model planner's invocation predicate fires for empty-path
-   aggregates whose ``column_filter_key`` references at least one non-host
-   join path, and DOES NOT fire for same-model filters or no-filter cases.
-3. The host-rooted sub-plan compiled by ``plan_query`` with
-   ``disable_host_rooted_isolation=True`` (DEV-1709 rename of
-   ``disable_dev1503_isolation``) does NOT recursively re-isolate the
-   same filtered-local measure (otherwise the isolation recurses forever).
-4. A filtered-local first/last measure's host-rooted producer plan holds
-   its measure inline — zero nested attaches — so nothing recurses.
-
-These complement the generator-shape tests in
-``tests/test_sql_generator.py::TestIsolatedFilteredMeasureCTEs``.
+Pins: (1) ``SqlExprKey.referenced_join_paths`` carries the non-host join paths a
+filter touches; (2) the cross-model planner's trigger fires for empty-path
+aggregates whose filter references a non-host join path, not for same-model /
+no-filter cases; (3) the recursive host-rooted sub-plan does not re-isolate;
+(4) a filtered-local first/last holds its measure inline.
 """
 
 from __future__ import annotations
@@ -41,9 +28,7 @@ from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import plan_query
 
 
-# ---------------------------------------------------------------------------
 # Fixtures
-# ---------------------------------------------------------------------------
 
 
 def _loss_payment() -> SlayerModel:
@@ -83,11 +68,10 @@ def _claim_amount(
         Column(name="id", type=DataType.INT, primary_key=True),
         Column(name="claim_id", type=DataType.INT),
         Column(name="amount", type=DataType.DOUBLE),
-        # No-filter local measure.
         Column(name="total_amount", sql="amount", type=DataType.DOUBLE),
-        # Same-model filter — should NOT trigger isolation.
+        # Same-model filter — must NOT trigger isolation.
         Column(name="paid_amount", sql="amount", filter="claim_id > 0", type=DataType.DOUBLE),
-        # Cross-model filter (direct dotted ref) — SHOULD trigger.
+        # Cross-model filter — must trigger.
         Column(
             name="loss_payment_amt", sql="amount",
             filter="loss_payment.has_flag = 1", type=DataType.DOUBLE,
@@ -131,15 +115,7 @@ def _bundle(host: SlayerModel) -> ResolvedSourceBundle:
 
 
 def _orders_with_derived_eu_filter(*, eu_amount_filter: str):
-    """Build an ``orders`` host whose ``eu_amount`` filter references the
-    derived ``is_eu`` column (whose own sql crosses to ``customers.region``).
-
-    ``eu_amount_filter`` lets each test exercise a different ref shape
-    (bare ``is_eu = 1``, self-qualified ``orders.is_eu = 1``) — the
-    rest of the setup (host + customers + bundle) is shared, matching
-    DEV-1503's "filter expansion must surface the cross-model path
-    regardless of ref qualification" contract.
-    """
+    """``orders`` host whose ``eu_amount`` filter references derived ``is_eu`` (crosses to customers.region); ``eu_amount_filter`` varies the ref shape."""
     host = SlayerModel(
         name="orders", data_source="test", sql_table="Orders",
         columns=[
@@ -173,9 +149,7 @@ def _orders_with_derived_eu_filter(*, eu_amount_filter: str):
 
 
 def _agg_slot_for(planned, name: str):
-    """Find the aggregate slot whose canonical alias contains ``name`` — the
-    top level first, then inside producer plans (DEV-1838 D5: a crossing
-    aggregate lives on its host-rooted producer)."""
+    """Find the aggregate slot whose alias contains ``name``, recursing into producer plans."""
     for attach in planned.regroup_attach_plans:
         nested = _agg_slot_for(attach.producer_plan, name)
         if nested is not None:
@@ -186,29 +160,17 @@ def _agg_slot_for(planned, name: str):
     return None
 
 
-# ---------------------------------------------------------------------------
 # SqlExprKey.referenced_join_paths — populated at binder time
-# ---------------------------------------------------------------------------
 
 
 class TestSqlExprKeyReferencedJoinPaths:
-    """The binder must compute the non-host join paths a ``Column.filter``
-    touches and stamp them on the ``SqlExprKey`` as a typed field —
-    so the planner reads structural data, not parsed SQL text."""
+    """The binder stamps the non-host join paths a ``Column.filter`` touches onto
+    the ``SqlExprKey``, so the planner reads structural data not SQL text."""
 
     def test_dialect_fallback_chain_recovers_mysql_backtick_filter(self):
-        """A ``Column.filter`` using MySQL backtick identifiers must still
-        surface its non-anchor join paths even though Postgres can't
-        parse backticks. The fallback chain in
-        ``compute_column_filter_join_paths`` tries multiple dialects;
-        without it, the helper would silently return ``()`` and the
-        DEV-1503 trigger would miss, letting the cross-model filter
-        join leak into ``_base`` and silently corrupt the aggregate
-        (Codex round 7).
-        """
+        """A backtick-quoted (MySQL) filter must still surface its join paths — the dialect fallback chain covers what Postgres can't parse."""
         host = _claim_amount()
         bundle = _bundle(host)
-        # Backtick-quoted (MySQL/T-SQL style) joined alias ref.
         paths = compute_column_filter_join_paths(
             canonical_sql="`loss_payment`.`has_flag` = 1",
             anchor_model=host,
@@ -221,21 +183,14 @@ class TestSqlExprKeyReferencedJoinPaths:
         )
 
     def test_dialect_fallback_chain_recovers_derived_ref_with_backticks(self):
-        """A derived column whose ``Column.sql`` uses MySQL backtick
-        syntax must still expand correctly when referenced from a
-        ``Column.filter`` — the round-7 outer fallback chain didn't
-        cover ``expand_derived_refs_sync`` itself, so a derived expansion
-        on backtick SQL would silently fail under hard-coded Postgres,
-        dropping the join path (Codex round 9).
-        """
+        """A derived column with backtick ``Column.sql`` must still expand when referenced from a filter."""
         host = SlayerModel(
             name="orders", data_source="test", sql_table="Orders",
             columns=[
                 Column(name="id", type=DataType.INT, primary_key=True),
                 Column(name="customer_id", type=DataType.INT),
                 Column(name="amount", type=DataType.DOUBLE),
-                # Derived column whose sql uses MySQL backtick syntax —
-                # Postgres can't parse this.
+                # Derived sql in MySQL backticks — Postgres can't parse this.
                 Column(
                     name="is_eu", type=DataType.DOUBLE,
                     sql="CASE WHEN `customers`.`region` = 'EU' THEN 1 ELSE 0 END",
@@ -282,7 +237,6 @@ class TestSqlExprKeyReferencedJoinPaths:
         assert isinstance(slot.key, AggregateKey)
         cfk = slot.key.column_filter_key
         assert isinstance(cfk, SqlExprKey)
-        # Same-model filter: no non-host paths.
         assert cfk.referenced_join_paths == (), (
             f"Same-model filter must have empty referenced_join_paths; got {cfk.referenced_join_paths!r}"
         )
@@ -299,18 +253,12 @@ class TestSqlExprKeyReferencedJoinPaths:
         assert isinstance(slot.key, AggregateKey)
         cfk = slot.key.column_filter_key
         assert isinstance(cfk, SqlExprKey)
-        # The filter ``loss_payment.has_flag = 1`` references the
-        # ``loss_payment`` join from the host.
         assert ("loss_payment",) in cfk.referenced_join_paths, (
             f"Expected ('loss_payment',) in referenced_join_paths; got {cfk.referenced_join_paths!r}"
         )
 
     def test_self_qualified_derived_ref_records_expanded_path(self):
-        """A ``Column.filter`` like ``filter="orders.is_eu = 1"`` —
-        self-qualified to the anchor relation — must trip the same
-        derived-expansion gate as the bare ``filter="is_eu = 1"`` form.
-        Without that, ``orders.is_eu`` is treated as same-model and the
-        join through ``customers`` is missed (CodeRabbit thread 1)."""
+        """A self-qualified ``orders.is_eu = 1`` filter must trip the same derived-expansion gate as the bare form."""
         _, bundle = _orders_with_derived_eu_filter(
             eu_amount_filter="orders.is_eu = 1",
         )
@@ -330,9 +278,7 @@ class TestSqlExprKeyReferencedJoinPaths:
         )
 
     def test_derived_ref_cross_model_filter_records_expanded_path(self):
-        """``Column.filter`` that references a host derived column whose
-        own sql crosses a join (1494's derived-ref flavour) must surface
-        the EXPANDED join path on ``referenced_join_paths``."""
+        """A filter referencing a host derived column whose sql crosses a join must surface the expanded path."""
         _, bundle = _orders_with_derived_eu_filter(
             eu_amount_filter="is_eu = 1",
         )
@@ -345,22 +291,17 @@ class TestSqlExprKeyReferencedJoinPaths:
         assert slot is not None
         cfk = slot.key.column_filter_key
         assert isinstance(cfk, SqlExprKey)
-        # Even though the literal canonical_sql is ``is_eu = 1``, the
-        # derived-ref expansion at bind time must surface ``customers``.
+        # canonical_sql is ``is_eu = 1`` but bind-time expansion must surface customers.
         assert ("customers",) in cfk.referenced_join_paths, (
             f"derived-ref expansion missed customers path; got {cfk.referenced_join_paths!r}"
         )
 
 
-# ---------------------------------------------------------------------------
 # Trigger predicate: cross-model planner invocation
-# ---------------------------------------------------------------------------
 
 
 class TestCrossModelPlannerTriggerPredicate:
-    """Pins the extended trigger: invoke the cross-model planner if the
-    aggregate's source.path is non-empty OR its column_filter_key references
-    at least one non-host join path."""
+    """Trigger: invoke the cross-model planner if source.path is non-empty OR the filter references a non-host join path."""
 
     def test_no_filter_local_measure_does_not_trigger(self):
         host = _claim_amount()
@@ -394,7 +335,6 @@ class TestCrossModelPlannerTriggerPredicate:
             dimensions=["claim.claim_number"],
         )
         planned = plan_query(query=q, bundle=_bundle(host))
-        # DEV-1838 D5: filtered-local isolates as a HOST-rooted producer.
         attaches = [
             a for a in planned.regroup_attach_plans
             if a.attach_phase == "combined"
@@ -428,12 +368,7 @@ class TestCrossModelPlannerTriggerPredicate:
         assert attaches[0].producer_root_model is None
 
     def test_cross_model_agg_still_triggers_via_path(self):
-        """Pre-existing case must still work: an aggregate with a non-empty
-        ``source.path`` triggers the cross-model planner regardless of any
-        column_filter_key — extending the predicate must not regress this.
-        Also pins ``target_model`` semantics: for a genuine cross-model
-        aggregate, ``target_model`` is the join target (``loss_payment``)
-        and ``cte_root_model`` stays None (Codex review #7)."""
+        """A non-empty ``source.path`` triggers the cross-model planner; the producer roots at the join target ``loss_payment``."""
         host = _claim_amount()
         q = SlayerQuery(
             source_model="claim_amount",
@@ -441,27 +376,11 @@ class TestCrossModelPlannerTriggerPredicate:
             dimensions=["claim.claim_number"],
         )
         planned = plan_query(query=q, bundle=_bundle(host))
-        # DEV-1836: a genuine cross-model aggregate desugars into a TARGET-rooted
-        # regroup producer (rooted at the join target ``loss_payment``), not a
-        # host-rooted filtered-local plan.
         assert len(planned.regroup_attach_plans) == 1
         assert planned.regroup_attach_plans[0].producer_root_model == "loss_payment"
 
     def test_cross_model_agg_with_target_column_filter_does_not_become_filtered_local(self):
-        """DEV-1494's case: a CROSS-MODEL aggregate whose TARGET column has
-        its own ``Column.filter`` (e.g. ``customers.premium_rev:sum`` where
-        ``premium_rev`` filters via ``regions.is_premium = 1``) must keep
-        genuine cross-model semantics — NOT be reinterpreted as a host-rooted
-        filtered-local plan.
-
-        Concretely: ``target_model`` is the join target (``customers``),
-        ``cte_root_model`` is None (existing cross-model rendering path),
-        and the target's own join graph reachability for the filter is
-        handled by the existing cross-model CTE — not by host-rooted
-        isolation.
-
-        Pins Codex review #6.
-        """
+        """A cross-model aggregate whose TARGET column has its own filter keeps genuine cross-model semantics, not host-rooted filtered-local."""
         regions = SlayerModel(
             name="regions", data_source="test", sql_table="regions",
             columns=[
@@ -499,26 +418,16 @@ class TestCrossModelPlannerTriggerPredicate:
             dimensions=["id"],
         )
         planned = plan_query(query=q, bundle=bundle)
-        # DEV-1836: genuine cross-model, desugared into a TARGET-rooted producer
-        # rooted at ``customers`` — NOT reinterpreted as a host-rooted
-        # filtered-local plan (root None would be a local producer).
         assert len(planned.regroup_attach_plans) == 1
         assert planned.regroup_attach_plans[0].producer_root_model == "customers"
 
 
-# ---------------------------------------------------------------------------
 # Recursion suppression
-# ---------------------------------------------------------------------------
 
 
 class TestRecursionSuppression:
-    """The host-rooted sub-plan built by ``IsolatedCteCrossModelPlanner`` for a
-    filtered-local measure is compiled by ``plan_query`` recursively. Without
-    suppression, the sub-plan's same filtered-local aggregate would re-trigger
-    the isolation rule → infinite recursion. ``disable_host_rooted_isolation=True``
-    (DEV-1709 rename of ``disable_dev1503_isolation``) on the recursive
-    ``plan_query`` call suppresses the host-rooted trigger so the
-    sub-plan compiles cleanly with the filtered measure as a plain local aggregate."""
+    """The host-rooted sub-plan is compiled recursively; without suppression its own
+    filtered-local aggregate would re-trigger isolation → infinite recursion."""
 
     def test_disable_kwarg_suppresses_trigger(self):
         host = _claim_amount()
@@ -530,23 +439,16 @@ class TestRecursionSuppression:
         planned = plan_query(
             query=q, bundle=_bundle(host), disable_host_rooted_isolation=True,
         )
-        # With local discovery suppressed, the filtered measure does NOT
-        # desugar — it stays as a plain local aggregate.
+        # Suppressed: the filtered measure stays a plain local aggregate.
         assert planned.regroup_attach_plans == [], (
             f"disable_host_rooted_isolation=True must suppress the desugar; "
             f"got attaches: {planned.regroup_attach_plans}"
         )
-        # The aggregate slot must still exist on the (now non-isolated) plan.
         slot = _agg_slot_for(planned, "loss_payment_amt")
         assert slot is not None
 
     def test_isolated_sub_plan_has_no_nested_cma_plans(self):
-        """An isolated filtered-local measure's host-rooted sub-plan
-        (attached via ``rerooted_plan``) must contain zero nested
-        attaches. Without recursion suppression the
-        sub-plan's same filtered measure would re-isolate → infinite recursion
-        or a doubly-wrapped CTE. Pin both invariants here so a regression
-        surfaces as a structural assertion, not a stack overflow."""
+        """The host-rooted sub-plan must contain zero nested attaches, else the filtered measure re-isolates."""
         host = _claim_amount()
         q = SlayerQuery(
             source_model="claim_amount",
@@ -554,7 +456,7 @@ class TestRecursionSuppression:
             dimensions=["claim.claim_number"],
         )
         planned = plan_query(query=q, bundle=_bundle(host))
-        # DEV-1838 D5: the nested scope is the producer plan itself.
+        # The nested scope is the producer plan itself.
         (attach,) = [
             a for a in planned.regroup_attach_plans
             if a.attach_phase == "combined"
@@ -566,28 +468,14 @@ class TestRecursionSuppression:
         )
 
 
-# ---------------------------------------------------------------------------
 # First/last + zero nested CMA plans
-# ---------------------------------------------------------------------------
 
 
 class TestHostModelFiltersInteractions:
-    """Host ``SlayerModel.filters`` (Mode-A always-applied WHERE filters)
-    must apply inside the host-rooted filtered-local sub-plan, and the
-    documented known limit (model filters cannot reference aggregate
-    measures) must surface as a clear ``ValueError`` rather than emit
-    invalid SQL."""
+    """Host ``SlayerModel.filters`` apply inside the sub-plan; the known limit (no aggregate-measure refs) raises ``ValueError``."""
 
     def test_host_model_filter_lands_inside_filtered_local_sub_plan(self):
-        """A ``SlayerModel.filters`` entry on the host model must apply
-        inside the host-rooted filtered-local sub-plan — the sub-plan is
-        compiled by ``plan_query`` recursively, so it picks up the host's
-        ``model.filters`` via the normal predicate path. Pin this by
-        asserting the model filter's text appears in the sub-plan's
-        ``filters_by_phase``.
-
-        Pins Codex review #2 (host model filters inside the sub-plan).
-        """
+        """A host ``model.filters`` entry must appear in the sub-plan's ``filters_by_phase``."""
         host = SlayerModel(
             name="claim_amount", data_source="test", sql_table="Claim_Amount",
             columns=[
@@ -619,7 +507,6 @@ class TestHostModelFiltersInteractions:
             if a.attach_phase == "combined"
         ]
         sub = attach.producer_plan
-        # The host model filter must appear in the sub-plan's filters_by_phase.
         sub_filter_texts = [
             fp.text for fp in sub.filters_by_phase if fp.text is not None
         ]
@@ -629,19 +516,7 @@ class TestHostModelFiltersInteractions:
         )
 
     def test_host_model_filter_referencing_aggregate_measure_raises(self):
-        """Known documented limit: ``SlayerModel.filters`` are Mode-A text
-        WHERE filters and cannot reference aggregate measures. Attempting to
-        construct such a model must surface as a typed validation error
-        (``ValueError`` — Pydantic ``ValidationError`` is a subclass), NOT
-        silently emit invalid SQL downstream.
-
-        Pins Codex review #3 (known limit pinned as an error).
-        """
-        # Pydantic catches the illegal filter at model construction time
-        # (sql_predicate's ``_reject_dsl_constructs`` runs in the field
-        # validator). ``ValidationError`` is a ``ValueError`` subclass, so a
-        # broad ``ValueError`` match catches both this and any later
-        # surfacing layer.
+        """``model.filters`` referencing an aggregate measure must raise at construction (``ValidationError`` is a ``ValueError``), not emit bad SQL."""
         with pytest.raises(ValueError, match=r"(?i)aggregation colon syntax|measure"):
             SlayerModel(
                 name="claim_amount", data_source="test", sql_table="Claim_Amount",
@@ -664,18 +539,7 @@ class TestHostModelFiltersInteractions:
 
 
 class TestFirstLastNoNestedCmaPlans:
-    """A filtered-local first/last isolates FLATLY — one ranked plan, no nested
-    sub-plan at all.
-
-    It used to be a host-rooted ``_cm_`` plan wrapping a re-rooted sub-plan that
-    carried the ranking, and this class pinned the one thing that made that
-    legal: the sub-plan had to contain no nested cross-model plan of its own, or
-    the generator hit ``first/last`` + ``skip_cross_model_aggs`` and raised.
-
-    ``RankedAggregatePlan`` removes the nesting rather than constraining it. The
-    aggregate's ``Column.filter`` is a predicate inside its own CTE, which is
-    where the crossing it introduces belongs — so there is no second plan to
-    keep clean."""
+    """A filtered-local first/last isolates flatly — one ranked plan, its ``Column.filter`` a predicate inside its own CTE."""
 
     def test_filtered_local_first_last_isolates_without_nesting(self):
         host = _claim_amount(with_time=True, with_filter_first=True)
@@ -691,22 +555,18 @@ class TestFirstLastNoNestedCmaPlans:
             ],
         )
         planned = plan_query(query=q, bundle=_bundle(host))
-        # DEV-1835/DEV-1838: the local ranked first/last desugars into a
-        # ranked-kernel producer attach; the ranking lives on the kernel.
+        # The local ranked first/last desugars into a ranked-kernel producer attach.
         assert len(planned.regroup_attach_plans) == 1
         attach = planned.regroup_attach_plans[0]
         assert attach.kernel.kind == "ranked"
         assert attach.producer_root_model is None  # rooted at the host
         producer = attach.producer_plan
-        # The measure's crossing ``Column.filter`` rides on the aggregate's own
-        # key, which the producer slot names — nothing needs a second plan.
+        # The crossing filter rides on the aggregate's own key; no second plan needed.
         (slot,) = producer.aggregate_slots
         assert slot.key.column_filter_key is not None
 
 
-# ---------------------------------------------------------------------------
-# DEV-1709 (Stage 5) — widened Law-3 trigger: ANY crossing input isolates
-# ---------------------------------------------------------------------------
+# Widened Law-3 trigger: ANY crossing input isolates.
 
 
 def _s5_regions() -> SlayerModel:
@@ -734,9 +594,7 @@ def _s5_customers() -> SlayerModel:
 
 
 def _s5_orders() -> SlayerModel:
-    """Host with one derived column per crossing-input kind DEV-1709 widens
-    the Law-3 trigger to, plus custom aggregations for the template-fragment
-    kwarg kinds and local negatives."""
+    """Host with one derived column per crossing-input kind, plus custom aggregations."""
     return SlayerModel(
         name="orders", data_source="test", sql_table="orders",
         columns=[
@@ -744,10 +602,8 @@ def _s5_orders() -> SlayerModel:
             Column(name="customer_id", type=DataType.INT),
             Column(name="amount", type=DataType.DOUBLE),
             Column(name="created_at", type=DataType.TIMESTAMP),
-            # Derived source crossing via multi-hop `__` path alias.
             Column(name="region_pay", sql="customers.regions.payment_amount",
                    type=DataType.DOUBLE),
-            # Derived source crossing via single-dot form.
             Column(name="cust_weight_d", sql="customers.weight",
                    type=DataType.DOUBLE),
             # Sibling derived chain: doubled_pop -> pop_helper -> crossing.
@@ -758,7 +614,6 @@ def _s5_orders() -> SlayerModel:
             # Derived TIME column crossing a join (explicit-arg use only).
             Column(name="cross_time", sql="customers.signup_at",
                    type=DataType.TIMESTAMP),
-            # Local derived (negative).
             Column(name="local_double", sql="amount * 2", type=DataType.DOUBLE),
         ],
         joins=[ModelJoin(
@@ -770,8 +625,7 @@ def _s5_orders() -> SlayerModel:
                 name="scaled_sum", formula="SUM({value}) / {scale}",
                 params=[AggregationParam(name="scale", sql="1")],
             ),
-            # Model-default fragment CROSSES a join — the AggregationParam
-            # sql itself is the crossing input.
+            # Model-default fragment CROSSES a join — the param sql is the crossing input.
             Aggregation(
                 name="wscaled_sum", formula="SUM({value} * {w})",
                 params=[AggregationParam(
@@ -796,9 +650,7 @@ def _s5_plans(formula: str, *, dimensions=None, **plan_kwargs):
         dimensions=dimensions,
     )
     planned = plan_query(query=q, bundle=_s5_bundle(), **plan_kwargs)
-    # DEV-1838 D5 — the widened crossing-input trigger now desugars onto
-    # HOST-rooted PLAIN-kernel producers (ranked/windowed roots desugar on
-    # their own trigger and are excluded here).
+    # Keep only HOST-rooted PLAIN-kernel producers (ranked/windowed roots excluded).
     return planned, [
         a for a in planned.regroup_attach_plans
         if a.attach_phase == "combined"
@@ -808,22 +660,12 @@ def _s5_plans(formula: str, *, dimensions=None, **plan_kwargs):
 
 
 def _assert_single_ranked_host(planned):
-    """A first/last isolates through the RANKED route (DEV-1748), now DESUGARED
-    into a regroup producer (DEV-1835).
-
-    Its crossing input still triggers isolation — the widened Law-3 verdict is
-    unchanged — but the kind is ranked, because needing its own ROW ORDERING is
-    the stronger reason and subsumes the crossing one. The ranked plan now lives
-    inside the single regroup-attach producer; top-level ranked/cross-model
-    plans are empty. Asserted flatly: the producer carries no nested cross-model
-    plan, so there is nothing to recurse into. Returns the ranked plan.
-    """
+    """A first/last isolates through the ranked route, one regroup producer with no nested plan. Returns the attach."""
     assert len(planned.regroup_attach_plans) == 1, (
         f"Expected exactly one regroup-attach producer; "
         f"got {planned.regroup_attach_plans}"
     )
     attach = planned.regroup_attach_plans[0]
-    # DEV-1838 D4: the ranking rides on the attach kernel, host-rooted.
     assert attach.kernel.kind == "ranked", attach.kernel
     assert attach.producer_root_model is None, attach.producer_root_model
     assert attach.producer_plan.regroup_attach_plans == [], (
@@ -834,8 +676,7 @@ def _assert_single_ranked_host(planned):
 
 
 def _assert_single_host_rooted(plans):
-    """DEV-1838 D5 — one HOST-rooted producer attach, its producer free of
-    nested isolation (the recursion-suppression invariant, one form over)."""
+    """One HOST-rooted producer attach, its producer free of nested isolation."""
     assert len(plans) == 1, (
         f"Expected exactly one host-rooted producer; got {len(plans)}: {plans}"
     )
@@ -852,29 +693,14 @@ def _assert_single_host_rooted(plans):
 
 
 def test_aggregate_input_paths_module_exists():
-    """Canary: ``tests/test_aggregate_input_paths.py`` now hard-imports the
-    DEV-1709 helper at module top, so its absence surfaces as a loud collection
-    error there. This keeps that absence explicit here too. Codex test-review
-    finding #1."""
+    """Canary: the aggregate_input_paths helper module must import."""
 
     importlib.import_module("slayer.engine.aggregate_input_paths")
 
 
 class TestCrossingFirstLastStaysRanked:
-    """DEV-1709 x DEV-1748 — a first/last isolates via the RANKED route
-    whatever its inputs do: needing its own ROW ORDERING is the stronger reason
-    and subsumes the crossing one, so the classifier routes it to a ranked CTE
-    BEFORE the crossing-input branch runs. These pin that INTERACTION — a
-    crossing first/last produces ONE flat ranked host plan, not a second
-    cross-model ``_cm_`` plan — which is not redundant with the ranked-render
-    coverage.
-
-    The crossed hop is NOT visible on a host-rooted ranked plan (join_chain is
-    always ``[]``, target_path ``()``); only the ranking TIME arg surfaces it,
-    asserted below for the structural case. The crossings buried in a derived
-    ``Column.sql`` (the source and derived-time-arg cases) are pinned at the
-    RENDER level by the DEV-1748 first/last matrix and ranked-CTE tests
-    (``test_dev1748_first_last_matrix.py`` / ``test_dev1748_ranked_plan.py``)."""
+    """A first/last isolates via the ranked route whatever its inputs do (row
+    ordering subsumes crossing): one flat ranked host plan. Only the ranking TIME arg surfaces the crossed hop."""
 
     def test_derived_source_first_last_stays_ranked(self):
         planned, _ = _s5_plans("region_pay:last(orders.created_at)")
@@ -883,9 +709,7 @@ class TestCrossingFirstLastStaysRanked:
     def test_structural_time_arg_stays_ranked(self):
         planned, _ = _s5_plans("amount:last(customers.signup_at)")
         attach = _assert_single_ranked_host(planned)
-        # The one plan-level handle the crossing surfaces on: the ranking key
-        # reaches through the customers join. A non-crossing time arg has path
-        # ``()``, so this is what makes the case discriminate crossing at all.
+        # The ranking key reaches through the customers join (path () if non-crossing).
         assert attach.kernel.ranking_time_key.path == ("customers",)
 
     def test_derived_time_arg_stays_ranked(self):
@@ -894,15 +718,8 @@ class TestCrossingFirstLastStaysRanked:
 
 
 class TestWidenedLaw3TriggerCrossingInputs:
-    """DEV-1709 — a LOCAL aggregate isolates host-rooted when ANY input
-    crosses a join: source ``Column.sql`` (D1), positional args incl. the
-    explicit time arg (D2), kwargs (typed refs, user template fragments,
-    and model-default ``AggregationParam`` fragments). ``Column.filter``
-    crossing is the pre-existing DEV-1503 half, pinned above. The first/last
-    manifestations of these triggers route to the ranked CTE instead — see
-    ``TestCrossingFirstLastStaysRanked``."""
-
-    # -- source Column.sql crossing (D1) ---------------------------------
+    """A LOCAL aggregate isolates host-rooted when ANY input crosses a join:
+    source ``Column.sql``, positional/time args, kwargs. Filter crossing is pinned above."""
 
     def test_derived_source_path_alias_triggers(self):
         _, plans = _s5_plans("region_pay:sum")
@@ -913,12 +730,9 @@ class TestWidenedLaw3TriggerCrossingInputs:
         _assert_single_host_rooted(plans)
 
     def test_sibling_derived_chain_triggers(self):
-        # doubled_pop -> pop_helper -> customers__regions: the scan must
-        # expand sibling derived refs before looking for crossed paths.
+        # doubled_pop -> pop_helper -> crossing; sibling derived refs expand first.
         _, plans = _s5_plans("doubled_pop:sum")
         _assert_single_host_rooted(plans)
-
-    # -- kwargs ----------------------------------------------------------
 
     def test_structural_kwarg_triggers(self):
         _, plans = _s5_plans("amount:weighted_avg(weight=customers.weight)")
@@ -935,17 +749,13 @@ class TestWidenedLaw3TriggerCrossingInputs:
         _assert_single_host_rooted(plans)
 
     def test_model_default_fragment_kwarg_crossing_triggers(self):
-        # No user kwarg at all — the crossing input is the model-default
-        # AggregationParam sql fragment (`w` -> customers__regions.weight).
+        # Crossing input is the model-default AggregationParam sql fragment.
         _, plans = _s5_plans("amount:wscaled_sum")
         _assert_single_host_rooted(plans)
 
-    # -- composite lowering (F3) -----------------------------------------
-
     def test_composite_crossing_leaf_isolates_individually(self):
-        # `region_pay:sum + amount:sum`: the crossing LEAF isolates (one
-        # hidden host-rooted plan); the local leaf stays in the base — so
-        # exactly ONE plan, not two, and not a plan for the composite slot.
+        # `region_pay:sum + amount:sum`: only the crossing LEAF isolates (one
+        # hidden host-rooted plan); the local leaf stays in the base — exactly one.
         planned, plans = _s5_plans("region_pay:sum + amount:sum")
         attach = _assert_single_host_rooted(plans)
         (sub,) = attach.substitutions
@@ -957,8 +767,6 @@ class TestWidenedLaw3TriggerCrossingInputs:
             "placeholder slot (the composite renders in the combined SELECT, "
             "not the leaf)"
         )
-
-    # -- negatives -------------------------------------------------------
 
     def test_local_derived_source_does_not_trigger(self):
         _, plans = _s5_plans("local_double:sum")
@@ -973,16 +781,13 @@ class TestWidenedLaw3TriggerCrossingInputs:
         assert plans == []
 
     def test_unparseable_template_fragment_does_not_trigger(self):
-        # Parity with the Mode-A Column.filter scan: an unparseable fragment
-        # contributes no paths (defensive fallback, NOT an endorsement) —
-        # pre-Stage-5 behavior is preserved for fragments the dialect
-        # fallback chain cannot parse. See DEV-1709 Codex plan-review F1.
+        # Parity with the Column.filter scan: an unparseable fragment contributes
+        # no paths (defensive fallback), preserving pre-Stage-5 behavior.
         _, plans = _s5_plans("amount:scaled_sum(scale='%% !! ((')")
         assert plans == []
 
     def test_crossing_dimension_only_does_not_trigger(self):
-        # ROW-phase crossing (a joined dimension) is Law-1 territory —
-        # it base-pulls; only AGGREGATE inputs trigger Law-3 isolation.
+        # A joined dimension is Law-1 (base-pull); only aggregate inputs trigger Law-3.
         _, plans = _s5_plans("amount:sum", dimensions=["customers.region_id"])
         assert plans == []
 
@@ -990,12 +795,8 @@ class TestWidenedLaw3TriggerCrossingInputs:
         _, plans = _s5_plans("amount:last(orders.created_at)")
         assert plans == []
 
-    # -- interactions ----------------------------------------------------
-
     def test_source_path_still_target_rooted(self):
-        # A genuine cross-model aggregate keeps target-rooted semantics —
-        # the widened host-rooted branch must not reinterpret it. DEV-1836: it
-        # desugars into a producer rooted at the target ``customers``.
+        # A genuine cross-model aggregate stays target-rooted at ``customers``.
         planned, cma = _s5_plans("customers.weight:sum")
         assert cma == []
         assert len(planned.regroup_attach_plans) == 1
@@ -1011,14 +812,11 @@ class TestWidenedLaw3TriggerCrossingInputs:
         )
 
     def test_disable_flag_keeps_target_rooted(self):
-        # Codex test-review #4: the flag suppresses ONLY host-rooted
-        # isolation — a genuine cross-model aggregate (source.path
-        # non-empty) must still plan target-rooted under the flag.
+        # The flag suppresses ONLY host-rooted isolation; a cross-model aggregate
+        # still plans target-rooted under it.
         planned, _ = _s5_plans(
             "customers.weight:sum", disable_host_rooted_isolation=True,
         )
-        # DEV-1838 (2.5): under the flag, cross-model still isolates — as a
-        # TARGET-rooted producer (its own measure is local; no recursion).
         (attach,) = [
             a for a in planned.regroup_attach_plans
             if a.attach_phase == "combined"
@@ -1026,10 +824,8 @@ class TestWidenedLaw3TriggerCrossingInputs:
         assert attach.producer_root_model == "customers"
 
     def test_identical_key_shared_between_public_and_composite_leaf(self):
-        # Codex test-review #6: IDENTICAL AggregateKeys intern to one slot
-        # → one plan, even when one use is a public measure and the other
-        # a composite leaf. (Distinct keys → distinct plans is pinned by
-        # test_two_distinct_crossing_measures_two_plans.)
+        # Identical AggregateKeys intern to one slot → one plan, even across a
+        # public measure and a composite leaf.
         q = SlayerQuery(
             source_model="orders",
             measures=[
@@ -1047,9 +843,7 @@ class TestWidenedLaw3TriggerCrossingInputs:
         )
 
     def test_two_distinct_crossing_measures_two_plans(self):
-        # Per-AggregateKey-slot isolation (interview decision): two DISTINCT
-        # crossing aggregates → two separate host-rooted plans (no CTE
-        # merging machinery in Stage 5).
+        # Two DISTINCT crossing aggregates → two separate host-rooted plans.
         q = SlayerQuery(
             source_model="orders",
             measures=[
@@ -1066,17 +860,14 @@ class TestWidenedLaw3TriggerCrossingInputs:
 
     @staticmethod
     def _sub_row_bound_filters(sub) -> list:
-        """ROW-phase BOUND filter entries of a sub-plan. User query-filters
-        propagate as typed bound expressions (``FilterPhase.text`` is None
-        for them — only Mode-A model filters keep text)."""
+        """ROW-phase bound filter entries of a sub-plan (user filters have text None)."""
         return [
             fp for fp in sub.filters_by_phase
             if fp.expression is not None and fp.phase == Phase.ROW
         ]
 
     def test_host_row_filter_propagates_into_widened_sub_plan(self):
-        # F4: a host ROW filter constrains the host-rooted scope — it must
-        # propagate into the sub-plan's filters (same rule as DEV-1503).
+        # A host ROW filter must propagate into the sub-plan's filters.
         q = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "region_pay:sum"}],
@@ -1094,12 +885,8 @@ class TestWidenedLaw3TriggerCrossingInputs:
         )
 
     def test_pathed_host_row_filter_propagates_into_widened_sub_plan(self):
-        # F4 (Codex plan-review F5): a host-rooted ROW filter whose
-        # EXPRESSION itself crosses a join still roots at the host, so it
-        # too propagates into the host-rooted sub-plan (which registers the
-        # join inside the CTE scope). The rendered-SQL counterpart is
-        # test_sql_generator.py::TestDev1709WidenedIsolationShapes::
-        # test_pathed_host_row_filter_inherited_into_cte.
+        # A host ROW filter whose expression itself crosses a join still roots at
+        # the host, so it too propagates into the sub-plan.
         q = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "region_pay:sum"}],
