@@ -296,6 +296,8 @@ errors (their partition is fixed to the query's dimensions). To coarsen the
 
 The self-join matches on **every projected dimension as well as the shifted time column** — plain columns, joined columns (`stores.name`), derived columns, and any secondary time dimension all take part in the join grain (e.g. `ON base.month IS NOT DISTINCT FROM shifted.month AND base.store IS NOT DISTINCT FROM shifted.store`). So these transforms are partition-safe: each group's series is compared only against itself, and per-group series reset cleanly. One store's first month is never diffed against another store's last month. The grain match is **null-safe** (`IS NOT DISTINCT FROM`, or the dialect equivalent), so a group with a NULL dimension value — for example rows with no matching row across a LEFT join — still lines up against its own prior period instead of dropping to a NULL shifted value.
 
+`time_shift` (and therefore `change` / `change_pct`) accepts a **composite input** — an arithmetic or scalar-call expression whose leaves are all aggregates, e.g. `time_shift(revenue:sum / qty:sum, -1)` or `change_pct(revenue:sum / *:count)`. Each aggregate leaf re-aggregates in the shifted period and the expression recomposes on top, so a missing shifted bucket stays NULL even under a wrapper like `coalesce`. Still rejected (with an error naming the shape and the multi-stage `source_queries` remedy): a nested transform (`time_shift(cumsum(x), -1)`), a row-level column in the expression (`revenue:sum * weight`), and a cross-model aggregate leaf.
+
 **Intent recipes:**
 
 - Month-over-month / period-over-period growth → `change_pct(revenue:sum)` with a `time_dimensions` entry at the desired granularity. Prefer this over hand-building the ratio from `time_shift`.
@@ -309,7 +311,14 @@ The self-join matches on **every projected dimension as well as the shifted time
 
 `consecutive_periods(predicate)` evaluates a predicate at the query grain and
 returns an integer streak length for the current row. False or NULL breaks the
-run and returns 0. The result composes with normal comparisons:
+run and returns 0. The input can be any Mode-B value tree: a comparison
+(`revenue:sum > 0`), `IN` / `not in`, `and` / `or` / `not` of predicates, a
+nested transform (`consecutive_periods(change(revenue:sum) > 0)`), or a bare
+value — where a value is truthy when it is non-NULL and non-zero
+(`consecutive_periods(revenue:sum - cost:sum)`). A boolean-shaped node is legal
+only at the predicate top level or in an `iif` condition; using one as a numeric
+operand or a scalar-call argument, or feeding a string-valued call as the
+predicate, is rejected. The result composes with normal comparisons:
 
 ```json
 {
@@ -323,7 +332,7 @@ run and returns 0. The result composes with normal comparisons:
 
 ### Nesting
 
-Field formulas support nesting — window transforms can wrap self-join transforms (but not vice versa):
+Field formulas support nesting — window transforms can wrap self-join transforms (but not vice versa, except that `consecutive_periods` accepts a nested transform anywhere in its predicate, e.g. `consecutive_periods(change(revenue:sum) > 0)`):
 
 ```json
 "measures": [

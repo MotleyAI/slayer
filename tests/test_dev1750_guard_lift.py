@@ -173,19 +173,19 @@ class TestWindowOpsUnaffected:
 
 
 # --------------------------------------------------------------------------- #
-# Pre-existing loud errors that must survive the lift.
+# DEV-1846 lifted the composite-input time_shift the old 7b.11 guard deferred.
 # --------------------------------------------------------------------------- #
-class TestPreExistingGuardsSurvive:
-    async def test_composite_input_time_shift_still_raises_7b11(self) -> None:
-        """A composite-input transform (``time_shift`` over an arithmetic of two
-        aggregates) is deferred by 7b.11 and must keep raising that — the lift
-        touches only the 7b.15e guard."""
+class TestCompositeInputTimeShiftRenders:
+    async def test_composite_input_time_shift_now_renders(self) -> None:
+        """A composite-input ``time_shift`` (arithmetic of two aggregates) that
+        the old 7b.11 guard deferred now renders a shifted-CTE re-aggregation —
+        no NotImplementedError remains."""
         q = _q(measures=[
             ModelMeasure(formula="customers.spend:sum", name="cm"),
             ModelMeasure(
                 formula="time_shift(amount:sum + amount:sum, -1)", name="prev",
             ),
         ])
-        with pytest.raises(NotImplementedError) as ei:
-            await gen(q)
-        assert "7b.11" in str(ei.value), str(ei.value)
+        sql = await gen(q)
+        assert "shifted_" in sql and "sjoin_" in sql, sql
+        assert "7b.11" not in sql
