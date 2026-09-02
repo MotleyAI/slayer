@@ -147,10 +147,11 @@ raising `MeasureRecursionLimitError`, plus per-chain cycle detection raising
   subset; `ast.parse` gives precedence, grouping, and operator handling for free,
   and the conversion layer stays small. The colon preprocessor is the only piece
   that bridges the one construct Python doesn't have.
-- **Why is parsing pure (no scope)?** So the same parser serves the binder, the
-  measure expander, and the scope-free extractors. Mixing in resolution would
-  re-couple parsing to the model graph — the coupling the redesign removes.
-- **Why a separate expansion pass instead of expanding in the binder?** Expansion
-  is an AST → AST rewrite with its own recursion/cycle concerns; keeping it
-  before binding means the binder only ever sees column/aggregation refs and can
-  stay a straight scope lookup.
+- **Why is parsing pure (no scope)?** So the same parser serves the binder and
+  the scope-free extractors. Mixing in resolution would re-couple parsing to the
+  model graph — the coupling the redesign removes.
+- **Why resolve saved measures in the binder, not a separate pass?** Resolution
+  is inherently scope-bound (it needs the model graph the binder already holds),
+  so a pre-bind pass would duplicate that scope machinery; inlining
+  `parse_expr(measure.formula)` at the same scope keeps recursion, cycle, and
+  depth handling in one place.
