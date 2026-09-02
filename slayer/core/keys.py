@@ -566,30 +566,23 @@ class AggregateKey(_FrozenKey):
 _RerootableT = TypeVar("_RerootableT")
 
 
-def _reroot_path_ref(ref, *, target_path: Tuple[str, ...]):
-    """Re-anchor a single embedded reference from the host coordinate system
-    into the target's local scope (DEV-1707).
+def _map_path_ref(ref, *, map_path):
+    """Apply ``map_path`` to a single embedded reference's join ``path``.
 
-    Prefix-strip with residual: if ``ref`` carries a join ``path`` that starts
-    with ``target_path``, drop that prefix and keep the residual hops
-    (``("customers", "regions")`` under target ``("customers",)`` →
-    ``("regions",)``; an exact match → ``()``). A ``path`` that does NOT start
-    with ``target_path`` — or a value with no ``path`` at all (a scalar
-    ``Decimal`` / ``str`` / ``bool`` / ``None``) — is returned unchanged. The
-    strip applies uniformly to ``ColumnKey``, ``ColumnSqlKey``, and
-    ``StarKey``; the non-``path`` fields (``leaf`` / ``model`` /
-    ``column_name``) ride along untouched via ``model_copy``.
+    The per-leaf half of the generic path-map visitor: ``ColumnKey`` /
+    ``ColumnSqlKey`` / ``StarKey`` carry a ``path``; the non-``path`` fields
+    (``leaf`` / ``model`` / ``column_name``) ride along untouched via
+    ``model_copy``. A value with no ``path`` (a scalar) is returned unchanged,
+    and a ``path`` that ``map_path`` leaves untouched short-circuits the copy.
     """
     path = getattr(ref, "path", None)
     if path is None:
         return ref
     path = tuple(path)
-    if path[: len(target_path)] != tuple(target_path):
+    new_path = tuple(map_path(path))
+    if new_path == path:
         return ref
-    residual = path[len(target_path):]
-    if residual == path:
-        return ref
-    return ref.model_copy(update={"path": residual})
+    return ref.model_copy(update={"path": new_path})
 
 
 def reroot_aggregate_key(
@@ -836,84 +829,66 @@ TimeTruncKey.model_rebuild()
 # ---------------------------------------------------------------------------
 
 
-def _reroot_sql_expr_key(
-    key: SqlExprKey, *, target_path: Tuple[str, ...],
-) -> SqlExprKey:
-    """Re-anchor a STANDALONE Mode-A fragment's referenced join paths.
+def _map_sql_expr_key(key: SqlExprKey, *, map_path) -> SqlExprKey:
+    """Apply ``map_path`` to a STANDALONE Mode-A fragment's referenced join paths.
 
     Only correct when the fragment is anchored at the QUERY ROOT. A fragment
     reached as ``AggregateKey.column_filter_key`` is anchored at the owning
     model instead and must NOT come through here — see the note in
-    :func:`reroot_value_key`.
+    :func:`_map_value_key`.
+
+    Constructed, NOT ``model_copy``: the ``before`` validator is what sorts and
+    de-duplicates ``referenced_join_paths``, and ``model_copy`` skips validators
+    in Pydantic v2 — two mappings can share a residual, and mapped paths need
+    not stay sorted, yet ``__hash__`` / ``__eq__`` read the tuple directly, so
+    two semantically equal keys would fail to intern (CodeRabbit). A path that
+    ``map_path`` sends to ``()`` (an exact-prefix strip → the "same-model
+    filter" marker, not a join-path prefix) is dropped rather than carried.
     """
-    stripped = [
-        path[len(target_path):]
-        if tuple(path[: len(target_path)]) == target_path else path
-        for path in key.referenced_join_paths
-    ]
-    # Constructed, NOT ``model_copy``: the ``before`` validator is what sorts
-    # and de-duplicates ``referenced_join_paths``, and ``model_copy`` skips
-    # validators in Pydantic v2. Stripping can produce both — two distinct
-    # paths can share a residual, and the residuals need not stay in sorted
-    # order — and ``__hash__`` / ``__eq__`` read the tuple directly, so two
-    # semantically equal keys would fail to intern (CodeRabbit).
-    #
-    # An EXACT match strips to ``()``, which is not a join-path prefix at all
-    # but the documented "same-model filter" marker, so it is dropped rather
-    # than carried as an empty tuple.
+    mapped = [np for p in key.referenced_join_paths if (np := tuple(map_path(p)))]
     return SqlExprKey(
         canonical_sql=key.canonical_sql,
-        referenced_join_paths=[p for p in stripped if p],
+        referenced_join_paths=mapped,
     )
 
 
-def _reroot_partition_keys(partition_keys, *, target_path: Tuple[str, ...]):
-    """Reroot an ``AggregateKey.partition_keys`` frozenset, preserving the
+def _map_partition_keys(partition_keys, *, map_path):
+    """Map an ``AggregateKey.partition_keys`` frozenset, preserving the
     ``None`` (absent) vs empty (grand total) distinction."""
     if partition_keys is None:
         return None
     return frozenset(
-        reroot_value_key(key=p, target_path=target_path) for p in partition_keys
+        _map_value_key(p, map_path=map_path) for p in partition_keys
     )
 
 
-def reroot_value_key(
-    key: _RerootableT, *, target_path: Tuple[str, ...],
-) -> _RerootableT:
-    """Re-anchor every embedded reference in ``key`` from the query root into
-    ``target_path``'s local scope.
+def _map_value_key(key: _RerootableT, *, map_path) -> _RerootableT:
+    """Rewrite every embedded join ``path`` in ``key`` through ``map_path``.
 
-    The generalisation of :func:`reroot_aggregate_key` over the whole
-    ``ValueKey`` union (plus the standalone ``SqlExprKey``). Two properties
-    make it safe to reroot a plan structurally instead of via formula text:
+    The one total, fail-closed visitor over the whole ``ValueKey`` union (plus
+    the standalone ``SqlExprKey``); :func:`reroot_value_key` (strip) and
+    :func:`prepend_value_key` (prepend) are thin wrappers that only differ in
+    the ``map_path`` they supply. Two implementations would be free to drift
+    into two re-anchoring semantics — the drift §5.4 removes.
 
     **Total.** Every union member has an explicit case. A kind added to
     ``ValueKey`` later has none, so it lands in the fail-closed arm rather than
-    riding through unrerooted.
+    riding through unmapped.
 
     **Fail-closed.** An unhandled kind raises ``TypeError``. Returning it
     unchanged would be indistinguishable from "correctly identity", which is
     how a mis-anchored ref reaches the SQL generator looking well-formed.
 
-    The rule is prefix-strip-with-residual, applied per position: a ``path``
-    starting with ``target_path`` drops that prefix and keeps the residual
-    hops; any other ``path``, and any scalar, is returned unchanged.
-    ``target_path == ()`` is the identity — the empty prefix strips zero hops.
-
-    ``AggregateKey.column_filter_key`` is deliberately copied UNCHANGED.
-    ``binding._resolve_column_filter_key`` walks ``source.path`` first and only
-    then stamps the anchor, so the fragment's paths are expressed relative to
-    the model that OWNS the filtered column. Rerooting changes how that owner
-    is reached from the query root; it never moves the owner, so those paths
-    are invariant. A standalone ``SqlExprKey`` is anchored at the query root
-    and therefore does strip — the asymmetry is per position, not per type.
+    ``AggregateKey.column_filter_key`` is deliberately copied UNCHANGED, in
+    BOTH directions. ``binding._resolve_column_filter_key`` walks ``source.path``
+    first and only then stamps the anchor, so the fragment's paths are expressed
+    relative to the model that OWNS the filtered column — re-anchoring changes
+    how that owner is reached, never moves the owner. A standalone ``SqlExprKey``
+    is anchored at the query root and therefore DOES map — the asymmetry is per
+    position, not per type.
     """
-    target_path = tuple(target_path)
-    if not target_path:
-        return key
-
     def _recurse(value):
-        return reroot_value_key(value, target_path=target_path)
+        return _map_value_key(value, map_path=map_path)
 
     # Scalars ride through untouched — they appear as ScalarCallKey args and
     # as AggregateKey kwarg values.
@@ -922,9 +897,7 @@ def reroot_value_key(
 
     # --- leaves ---------------------------------------------------------
     if isinstance(key, (ColumnKey, ColumnSqlKey, StarKey)):
-        # ``_reroot_path_ref`` also accepts bare scalars, so it cannot carry the
-        # type-preserving annotation; the isinstance guard above establishes it.
-        return cast(_RerootableT, _reroot_path_ref(key, target_path=target_path))
+        return cast(_RerootableT, _map_path_ref(key, map_path=map_path))
     if isinstance(key, LiteralKey):
         return key
     if isinstance(key, TimeTruncKey):
@@ -933,7 +906,7 @@ def reroot_value_key(
         # spot.
         return key.model_copy(update={"column": _recurse(key.column)})
     if isinstance(key, SqlExprKey):
-        return _reroot_sql_expr_key(key, target_path=target_path)
+        return cast(_RerootableT, _map_sql_expr_key(key, map_path=map_path))
 
     # --- composites -----------------------------------------------------
     if isinstance(key, AggregateKey):
@@ -941,8 +914,8 @@ def reroot_value_key(
             "source": _recurse(key.source),
             "args": tuple(_recurse(a) for a in key.args),
             "kwargs": tuple((n, _recurse(v)) for n, v in key.kwargs),
-            "partition_keys": _reroot_partition_keys(
-                key.partition_keys, target_path=target_path,
+            "partition_keys": _map_partition_keys(
+                key.partition_keys, map_path=map_path,
             ),
         })
     if isinstance(key, TransformKey):
@@ -978,11 +951,61 @@ def reroot_value_key(
         })
 
     raise TypeError(
-        f"reroot_value_key has no case for {type(key).__name__!r}. The visitor "
-        f"is total over ValueKey by design: add an explicit case rather than "
-        f"letting an unrerooted key through, which the SQL generator cannot "
-        f"distinguish from a correctly-local one."
+        f"the value-key path visitor has no case for {type(key).__name__!r}. "
+        f"The visitor is total over ValueKey by design: add an explicit case "
+        f"rather than letting an unmapped key through, which the SQL generator "
+        f"cannot distinguish from a correctly-anchored one."
     )
+
+
+def reroot_value_key(
+    key: _RerootableT, *, target_path: Tuple[str, ...],
+) -> _RerootableT:
+    """Re-anchor every embedded reference in ``key`` from the query root into
+    ``target_path``'s local scope (the STRIP direction).
+
+    Prefix-strip-with-residual, applied per position: a ``path`` starting with
+    ``target_path`` drops that prefix and keeps the residual hops
+    (``("customers", "regions")`` under target ``("customers",)`` →
+    ``("regions",)``; an exact match → ``()``); any other ``path``, and any
+    scalar, is returned unchanged. ``target_path == ()`` is the identity — the
+    empty prefix strips zero hops. The inverse of :func:`prepend_value_key`.
+    """
+    target_path = tuple(target_path)
+    if not target_path:
+        return key
+
+    def _strip(path: Tuple[str, ...]) -> Tuple[str, ...]:
+        path = tuple(path)
+        if path[: len(target_path)] == target_path:
+            return path[len(target_path):]
+        return path
+
+    return _map_value_key(key, map_path=_strip)
+
+
+def prepend_value_key(
+    key: _RerootableT, *, host_path: Tuple[str, ...],
+) -> _RerootableT:
+    """Prefix every embedded join ``path`` in ``key`` with ``host_path`` (the
+    PREPEND direction), re-anchoring a TARGET-local bound tree into the host's
+    coordinate system.
+
+    The inverse of ``reroot_value_key(key, target_path=host_path)``: a saved
+    measure bound against its own model produces target-local keys, and
+    prepending the host→target join path makes them bound-tree-identical to the
+    hand-written host-prefixed formula. ``host_path == ()`` is the identity.
+    ``AggregateKey.column_filter_key`` stays owner-anchored — unchanged here,
+    exactly as under the strip direction.
+    """
+    host_path = tuple(host_path)
+    if not host_path:
+        return key
+
+    def _prepend(path: Tuple[str, ...]) -> Tuple[str, ...]:
+        return host_path + tuple(path)
+
+    return _map_value_key(key, map_path=_prepend)
 
 
 # ---------------------------------------------------------------------------
