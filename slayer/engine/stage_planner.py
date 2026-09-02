@@ -1445,10 +1445,12 @@ def _partitioned_conjunct_scope(
     POST-phase: the transform wrapper owns it, never the outer combined WHERE."""
     cj_refs = list(walk_value_keys(cj))
     cj_has_transform = any(isinstance(k, TransformKey) for k in cj_refs)
-    if any(_is_cross_model_agg(k) for k in cj_refs) or (
-        not cj_has_transform
-        and crossing_root is not None
-        and any(crossing_root(k) for k in cj_refs)
+    # A transform-wrapped aggregate predicate is POST-phase whatever it wraps
+    # (cross-model agg included) — the transform owns it, never the combined
+    # WHERE; the guard gates both crossing branches, not just crossing_root.
+    if not cj_has_transform and (
+        any(_is_cross_model_agg(k) for k in cj_refs)
+        or (crossing_root is not None and any(crossing_root(k) for k in cj_refs))
     ):
         return "combined"
     return conjunct_scope(cj, dim_keys=dim_keys, row_agg_set=row_agg_set)

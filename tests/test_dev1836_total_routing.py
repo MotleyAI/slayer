@@ -51,7 +51,7 @@ class TestExplicitRejections:
             dimensions=[{"expression": "amount:sum", "name": "d"}],
             measures=[ModelMeasure(formula="amount:sum", name="m")],
         )
-        with pytest.raises(ValueError, match="partition_by") as ei:
+        with pytest.raises(expected_exception=ValueError, match="partition_by") as ei:
             await engine.execute(query)
         assert not isinstance(ei.value, AssertionError)
         assert "__regroup__" not in str(ei.value)
@@ -113,7 +113,7 @@ class TestTotalRoutingInvariant:
         bundle = _bundle()
         # D7: a raise, not an assert — AssertionError must not be the vehicle.
         with pytest.raises(
-            (SlayerError, ValueError, NotImplementedError, RuntimeError),
+            expected_exception=(SlayerError, ValueError, NotImplementedError, RuntimeError),
         ) as ei:
             plan_query(query=query, bundle=bundle)
         assert not isinstance(ei.value, AssertionError)
@@ -136,7 +136,7 @@ class TestTotalRoutingInvariant:
             measures=[ModelMeasure(formula="customers.spend:sum", name="cm")],
         )
         bundle = _bundle()
-        with pytest.raises(ValueError, match="no routing disposition"):
+        with pytest.raises(expected_exception=ValueError, match="no routing disposition"):
             plan_query(query=query, bundle=bundle)
 
     @pytest.mark.parametrize("role_kwargs", [
@@ -163,7 +163,7 @@ class TestTotalRoutingInvariant:
             **role_kwargs,
         )
         bundle = _bundle()
-        with pytest.raises(ValueError, match="no routing disposition"):
+        with pytest.raises(expected_exception=ValueError, match="no routing disposition"):
             plan_query(query=query, bundle=bundle)
 
 
