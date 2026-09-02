@@ -5379,6 +5379,13 @@ class SQLGenerator:
         qualified SQL text: plain columns anchor at ``source_relation``,
         derived columns expand through ``_expand_derived_column_sql``."""
         def _column_ast(ref) -> exp.Expression:
+            # Fail closed for a joined operand before any dispatch, so a pathed
+            # ColumnSqlKey can't expand against the host relation (DEV-1832).
+            if getattr(ref, "path", ()):
+                raise NotImplementedError(
+                    f"Cross-model operand {ref!r} inside an aggregated "
+                    f"expression is not supported (DEV-1832)."
+                )
             if isinstance(ref, ColumnSqlKey):
                 return self._parse(self._expand_derived_column_sql(
                     source_model=source_model,
@@ -5386,11 +5393,6 @@ class SQLGenerator:
                     column_name=ref.column_name,
                     bundle=bundle,
                 ))
-            if getattr(ref, "path", ()):
-                raise NotImplementedError(
-                    f"Cross-model operand {ref!r} inside an aggregated "
-                    f"expression is not supported (DEV-1832)."
-                )
             return exp.Column(
                 this=self._to_ident(ref.leaf),
                 table=exp.to_identifier(source_relation),

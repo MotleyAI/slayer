@@ -479,3 +479,16 @@ class TestExpressionGates:
         q = _q(measures=["sum(True)"])
         with pytest.raises(ValueError, match="(?i)boolean"):
             await _dry(q)
+
+    async def test_boolean_scalar_expression_rejected(self) -> None:
+        # like(...) is boolean; iif follows its branch types — both reach SQL
+        # generation as SUM(<bool>) unless rejected here.
+        for measure in ["sum(like(name, 'A%'))", "sum(iif(amount, True, False))"]:
+            q = _q(measures=[measure])
+            with pytest.raises(ValueError, match="(?i)boolean"):
+                await _dry(q)
+
+    async def test_numeric_iif_expression_allowed(self) -> None:
+        # iif with numeric branches stays numeric — must not be over-rejected.
+        resp = await _dry(_q(measures=["sum(iif(amount, 1, 0))"]))
+        assert resp.sql

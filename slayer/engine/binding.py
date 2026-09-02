@@ -874,6 +874,8 @@ _TEXT_RESULT_SCALARS = frozenset({
 _ARG_CLASS_SCALARS = frozenset({
     "coalesce", "ifnull", "nullif", "greatest", "least",
 })
+# Comparison-family scalars whose result is certainly boolean (DEV-1826).
+_BOOL_RESULT_SCALARS = frozenset({"like"})
 
 
 def _expression_is_confidently_text(key, *, model: Optional[SlayerModel]) -> bool:
@@ -906,6 +908,15 @@ def _expression_is_confidently_boolean(key, *, model: Optional[SlayerModel]) -> 
     if isinstance(key, LiteralKey):
         return isinstance(key.value, bool)
     if isinstance(key, ScalarCallKey):
+        if key.name in _BOOL_RESULT_SCALARS:
+            return True
+        if key.name == "iif":
+            # iif's result follows its two branches, not the condition (arg 0).
+            branches = key.args[1:3]
+            return len(branches) == 2 and all(
+                _expression_is_confidently_boolean(a, model=model)
+                for a in branches
+            )
         if key.name in _ARG_CLASS_SCALARS:
             return any(
                 _expression_is_confidently_boolean(a, model=model)
