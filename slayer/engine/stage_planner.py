@@ -149,11 +149,12 @@ from slayer.engine.source_bundle import (
     stage_bundle_with_siblings,
     synthetic_model_from_stage_schema,
 )
-from slayer.engine.normalization import func_style_agg_to_colon
 from slayer.engine.syntax import (
     AggCall,
+    ParsedExpr,
     Ref,
     TransformCall,
+    canonical_measure_text,
     parse_expr,
     parse_filter_expr,
 )
@@ -485,14 +486,10 @@ def _reject_measure_refs_for_raw_rows(*, query: SlayerQuery, scope) -> None:
     measure_names: FrozenSet[str] = frozenset(
         m.name for m in (getattr(src, "measures", None) or []) if m.name
     )
-    custom_agg_names: FrozenSet[str] = frozenset(
-        a.name for a in (getattr(src, "aggregations", None) or []) if a.name
-    )
     _reject_measure_refs_in_filters(query=query, measure_names=measure_names)
     _reject_measure_refs_in_order(
         query=query,
         measure_names=measure_names,
-        custom_agg_names=custom_agg_names,
         source_name=getattr(src, "name", None),
     )
 
@@ -514,13 +511,9 @@ def _reject_measure_refs_in_filters(
             )
 
 
-def _parse_order_formula(raw: str, *, custom_agg_names: FrozenSet[str]):
+def _parse_order_formula(raw: str):
     try:
-        text = func_style_agg_to_colon(raw, custom_agg_names=custom_agg_names)
-    except Exception:  # noqa: BLE001 — fall back to the original text
-        text = raw
-    try:
-        return parse_expr(text)
+        return parse_expr(raw)
     except Exception:  # noqa: BLE001 — binder reports parse errors properly
         return None
 
@@ -529,13 +522,12 @@ def _reject_measure_refs_in_order(
     *,
     query: SlayerQuery,
     measure_names: FrozenSet[str],
-    custom_agg_names: FrozenSet[str],
     source_name: Optional[str],
 ) -> None:
     for item in (query.order or []):
         raw = getattr(item, "raw_formula", None)
         if raw:
-            parsed = _parse_order_formula(raw, custom_agg_names=custom_agg_names)
+            parsed = _parse_order_formula(raw)
             if parsed is not None and _expr_has_measure_ref(
                 parsed, measure_names=measure_names,
             ):
@@ -3512,10 +3504,14 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
             label=td.label,
             type=DataType.TIMESTAMP,
         ))
+    seen_measure_keys: Dict[str, Tuple[str, ValueKey]] = {}
     for m in (query.measures or []):
         formula = m.formula
         explicit_name = m.name
         parsed = parse_expr(formula)
+        # The pre-expansion tree drives text-shape alias derivation, so both
+        # spellings of one formula share an alias (DEV-1826).
+        parsed_original = parsed
         # Pre-bind ModelMeasure expansion: a bare Ref matching a saved measure is
         # rewritten to its formula AST. Only against ModelScope.
         if isinstance(scope, ModelScope) and scope.source_model is not None:
@@ -3529,12 +3525,28 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
             _reraise_nested_attach(
                 err, computed_dim_names=_computed_dim_names(query),
             )
-        canonical = _canonical_alias_for_formula(formula, bound=bound)
+        canonical = _canonical_alias_for_formula(
+            formula, bound=bound, parsed=parsed_original,
+        )
         # A bare saved-ModelMeasure reference surfaces under the measure NAME (explicit query name still wins).
         saved_name = _bare_saved_measure_name(scope=scope, formula=formula)
         alias_name = explicit_name or saved_name
         declared_name = alias_name or canonical
         public_name = alias_name or canonical
+        # Two DIFFERENT values whose DERIVED keys collide would silently share
+        # a column (e.g. ``sum(amount - cost)`` vs ``sum(amount + cost)`` both
+        # sanitize to ``amount_cost_sum``, DEV-1826) — fail loudly. Scoped to
+        # unnamed entries: explicit-name collisions keep their dedicated
+        # declared-more-than-once errors downstream.
+        if alias_name is None:
+            prior = seen_measure_keys.get(public_name)
+            if prior is not None and prior[1] != bound.value_key:
+                raise ValueError(
+                    f"Measures {prior[0]!r} and {formula!r} both derive the "
+                    f"result key {public_name!r} but compute different "
+                    f"values; rename one (set 'name') to disambiguate."
+                )
+            seen_measure_keys[public_name] = (formula, bound.value_key)
         fmt, desc = _format_description_for_measure_formula(
             scope=scope, bound=bound,
         )
@@ -3608,10 +3620,14 @@ def _canonical_alias_for_formula(
     formula: str,
     *,
     bound: Optional[BinderBoundExpr] = None,
+    parsed: Optional[ParsedExpr] = None,
 ) -> str:
     """Canonical public alias for a measure formula: ``canonical_aggregate_alias``
     when the bound root is an AggregateKey (kwargs sanitised: ``p=0.5`` -> ``_p_0_5``),
-    else text-shape recognition sanitised to a valid identifier."""
+    else text-shape recognition sanitised to a valid identifier. The text shape
+    runs over the CANONICAL colon-spelling rendering of ``parsed`` when given
+    (DEV-1826), so ``cumsum(sum(revenue))`` and ``cumsum(revenue:sum)`` derive
+    one alias."""
     if bound is not None and isinstance(bound.value_key, AggregateKey):
         # stage_formula profile prefixes the join path relative to the stage
         # (``customers.*:count`` → ``customers._count``).
@@ -3621,7 +3637,9 @@ def _canonical_alias_for_formula(
         if alias is not None:
             return alias
         # None means the source exposes no leaf/column name; use the text-shape path.
-    text = formula.strip()
+    text = (
+        canonical_measure_text(parsed) if parsed is not None else formula.strip()
+    )
     if ":" in text and "(" not in text:
         base, agg = text.rsplit(":", 1)
         return canonical_agg_name(

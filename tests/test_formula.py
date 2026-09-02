@@ -458,16 +458,18 @@ class TestOrderColumnNormalization:
     """Order column normalization with function-style syntax."""
 
     def test_funcstyle_sum(self) -> None:
-        from slayer.core.query import OrderItem
+        # DEV-1826: the author's functional spelling is preserved — the item
+        # carries a placeholder + raw_formula, resolved at binding.
+        from slayer.core.query import _FUNCSTYLE_PENDING, OrderItem
         item = OrderItem(column="sum(revenue)", direction="desc")
-        assert item.column.name == "revenue_sum"
-        assert item.raw_formula == "revenue:sum"
+        assert item.column.name == _FUNCSTYLE_PENDING
+        assert item.raw_formula == "sum(revenue)"
 
     def test_funcstyle_count_star(self) -> None:
-        from slayer.core.query import OrderItem
+        from slayer.core.query import _FUNCSTYLE_PENDING, OrderItem
         item = OrderItem(column="count(*)", direction="desc")
-        assert item.column.name == "_count"
-        assert item.raw_formula == "*:count"
+        assert item.column.name == _FUNCSTYLE_PENDING
+        assert item.raw_formula == "count(*)"
 
     def test_colon_syntax_still_works(self) -> None:
         from slayer.core.query import OrderItem

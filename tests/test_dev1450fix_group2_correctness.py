@@ -288,19 +288,11 @@ def test_noncyclic_dotted_star_ok():
 # ---------------------------------------------------------------------------
 
 
-def test_measure_formula_refs_custom_agg_with_names():
-    # weighted_avg is builtin; use a model-custom name.
-    refs = _measure_formula_refs(
-        "my_custom_agg(amount)", custom_agg_names={"my_custom_agg"},
-    )
-    assert "amount" in refs
-
-
-def test_measure_formula_refs_custom_agg_without_names_misses():
-    # Without the custom name, the call parses as an unknown function and the
-    # ref is lost (the pre-fix behavior the cascade relied on for builtins).
+def test_measure_formula_refs_custom_agg():
+    # DEV-1826: an unknown functional name defers as an AggCall candidate, so
+    # a custom aggregation's source ref surfaces with NO registry threading.
     refs = _measure_formula_refs("my_custom_agg(amount)")
-    assert refs == set()
+    assert "amount" in refs
 
 
 # ---------------------------------------------------------------------------

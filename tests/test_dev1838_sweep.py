@@ -48,6 +48,9 @@ ALLOWED_EXPRESSIVENESS = [
     r"cannot take ``\*`` as its source",
     r"NULL is not allowed inside an IN list",
     r"ScopeFrame\.resolve does not yet handle",
+    # DEV-1826 — fail-closed guard on the row-level expression renderer (an
+    # aggregate's expression source may not contain phase-crossing keys).
+    r"^Row-level expression cannot contain",
 ]
 
 

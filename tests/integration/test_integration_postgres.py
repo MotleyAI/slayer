@@ -179,6 +179,15 @@ class TestPostgresQueries:
         result = await pg_env.execute(query=query)
         assert float(result.data[0]["orders.total_sum"]) == 875.0
 
+    async def test_functional_aggregation_parity(self, pg_env: SlayerQueryEngine) -> None:
+        colon = await pg_env.execute(
+            query=SlayerQuery(source_model="orders", measures=[{"formula": "total:sum"}])
+        )
+        func = await pg_env.execute(
+            query=SlayerQuery(source_model="orders", measures=[{"formula": "sum(total)"}])
+        )
+        assert float(func.data[0]["orders.total_sum"]) == float(colon.data[0]["orders.total_sum"])
+
     async def test_avg_measure(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(source_model="orders", measures=[{"formula": "avg_amount:avg"}])
         result = await pg_env.execute(query=query)

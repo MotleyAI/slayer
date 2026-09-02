@@ -30,7 +30,14 @@ from sqlglot.errors import ParseError
 
 from slayer.core.enums import DataType
 from slayer.core.errors import ModeASqlParseError, UnknownReferenceError
-from slayer.core.keys import REGROUP_LEAF_PREFIX, ColumnKey, ColumnSqlKey
+from slayer.core.keys import (
+    REGROUP_LEAF_PREFIX,
+    ArithmeticKey,
+    ColumnKey,
+    ColumnSqlKey,
+    LiteralKey,
+    ScalarCallKey,
+)
 from slayer.core.models import SlayerModel
 from slayer.engine.column_expansion import (
     collect_root_scope_joined_paths,
@@ -40,6 +47,7 @@ from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.naming import AliasAllocator
 from slayer.sql.render.parse import parse_expression, parse_predicate
+from slayer.sql.render.row_expr import render_row_expression
 from slayer.sql.reserved_keywords import (
     install_reserved_keywords,
     prequote_reserved_identifiers,
@@ -54,9 +62,10 @@ _PREDICATE = "predicate"
 _EXPRESSION = "expression"
 _Grammar = Literal["predicate", "expression"]
 
-# A ref that can enter a scope. Stage 2 exercises structural column refs, derived
-# columns, and free Mode-A / predicate text; later stages widen this union.
-Ref = Union[ColumnKey, ColumnSqlKey, str]
+# A ref that can enter a scope: structural column refs, derived columns, free
+# Mode-A / predicate text, and (DEV-1826) row-level expression composites — an
+# aggregate's same-model expression source anchors through the same door.
+Ref = Union[ColumnKey, ColumnSqlKey, ArithmeticKey, ScalarCallKey, LiteralKey, str]
 
 
 class _OrderedPathSet:
@@ -385,6 +394,13 @@ class ScopeFrame(BaseModel):
                 crossed_paths=self.join_paths,
             )
             return self._parse(expanded or raw_sql)
+        if isinstance(ref, (ArithmeticKey, ScalarCallKey, LiteralKey)):
+            # DEV-1826: an aggregate's row-level expression source — column
+            # leaves anchor recursively through this scope, so join
+            # registration and derived expansion apply per leaf.
+            return render_row_expression(
+                key=ref, dialect=self.dialect, resolve_column=self._anchor,
+            )
         if isinstance(ref, str):
             prequoted = prequote_reserved_identifiers(
                 ref, dialect=self.dialect.sqlglot_name,

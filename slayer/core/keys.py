@@ -468,7 +468,14 @@ class SqlExprKey(_FrozenKey):
 # ---------------------------------------------------------------------------
 
 
-_AggregateSource = Union[ColumnKey, ColumnSqlKey, StarKey]
+# DEV-1826: beyond column / star sources, an aggregate may take a row-level
+# same-model EXPRESSION source (``sum(amount - cost)``) — the bound tree reuses
+# the existing row-level composites, so hash/equality/serialization come from
+# the canonical tree and formatting variants intern to one key.
+_AggregateSource = Union[
+    ColumnKey, ColumnSqlKey, StarKey,
+    "ArithmeticKey", "ScalarCallKey", "LiteralKey",
+]
 # Positional and keyword arg values accept the same union — both
 # `last(created_at)` (positional ColumnKey time arg) and
 # `weighted_avg(weight=qty)` (kwarg ColumnKey) bind to identifier columns
@@ -829,6 +836,8 @@ BetweenKey.model_rebuild()
 InKey.model_rebuild()
 # TimeTruncKey.column is a Union[ColumnKey, ColumnSqlKey] (DEV-1450 #4a).
 TimeTruncKey.model_rebuild()
+# AggregateKey.source forward-references the expression composites (DEV-1826).
+AggregateKey.model_rebuild()
 
 
 # ---------------------------------------------------------------------------

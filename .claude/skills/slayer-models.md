@@ -43,7 +43,7 @@ measures:
     formula: "amount:sum / *:count"
 ```
 
-Aggregation is specified at query time with **colon syntax**: `"amount:sum"`, `"amount:avg"`, `"*:count"`. A bare-name reference like `{"formula": "aov"}` resolves to the saved `ModelMeasure` formula on the model. Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `count_distinct_approx`, `first`, `last`, `weighted_avg`, `median`, `percentile`, `stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, `covar_pop`. `count_distinct_approx` is dialect-aware (native approximate-distinct where available, exact `COUNT(DISTINCT)` fallback otherwise). The two-column ones (`corr`, `covar_samp`, `covar_pop`) take the second column as a named param: `price:corr(other=quantity)`.
+Aggregation is specified at query time with **colon syntax** (`"amount:sum"`, `"amount:avg"`, `"*:count"`) or the exactly-equivalent **functional spelling** (`"sum(amount)"`, `"count(*)"`) — same SQL, same result keys, saved spelling preserved. The functional form additionally accepts a same-model expression: `"sum(amount - cost)"` (bare local columns, scalar functions, arithmetic, literals; no dotted paths / filtered columns / nested aggregations inside). A bare-name reference like `{"formula": "aov"}` resolves to the saved `ModelMeasure` formula on the model. Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `count_distinct_approx`, `first`, `last`, `weighted_avg`, `median`, `percentile`, `stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, `covar_pop`. `count_distinct_approx` is dialect-aware (native approximate-distinct where available, exact `COUNT(DISTINCT)` fallback otherwise). The two-column ones (`corr`, `covar_samp`, `covar_pop`) take the second column as a named param: `price:corr(other=quantity)`.
 
 ## Data Types
 
@@ -182,7 +182,7 @@ Generates:
 Via MCP, agents edit models through the unified `edit_model` tool:
 - `edit_model(model_name="orders", description="Core orders table")`
 - `edit_model(model_name="orders", columns=[{"name": "region", "sql": "region", "type": "string"}])` — upserts columns by name
-- `edit_model(model_name="orders", measures=[{"name": "margin", "formula": "(amount - cost):sum"}])` — upserts named ModelMeasure formulas
+- `edit_model(model_name="orders", measures=[{"name": "margin", "formula": "sum(amount - cost)"}])` — upserts named ModelMeasure formulas
 - `edit_model(model_name="orders", delete_columns=["legacy_field"])`
 - `edit_model(model_name="orders", delete_measures=["margin"])`
 

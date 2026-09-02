@@ -2,11 +2,19 @@
 of truth). Depends only on ``slayer.core.keys`` so model/query validators avoid circular imports."""
 from __future__ import annotations
 
+import hashlib
 import re
 from decimal import Decimal
 from typing import Any
 
-from slayer.core.keys import ColumnKey, ColumnSqlKey, TimeTruncKey
+from slayer.core.keys import (
+    ArithmeticKey,
+    ColumnKey,
+    ColumnSqlKey,
+    LiteralKey,
+    ScalarCallKey,
+    TimeTruncKey,
+)
 
 # Identifier shapes
 
@@ -33,6 +41,62 @@ AGG_REF_RE = re.compile(
 # Aggregation-suffix utilities
 
 _NON_IDENT_RE = re.compile(r"\W+")
+
+
+def auto_name_from_expression(expression: str) -> str:
+    """Deterministic identifier for an expression-derived name (computed
+    dimensions AND expression-aggregation leaves — one convention product-wide);
+    long names fold to ``<head>_<hash8>_<tail>`` to avoid prefix collisions."""
+    base = re.sub(r"\W+", "_", expression.strip()).strip("_").lower() or "expr"
+    if base[0].isdigit():
+        base = f"e_{base}"
+    if len(base) > 48:
+        digest = hashlib.sha256(expression.encode("utf-8")).hexdigest()[:8]
+        base = f"{base[:28]}_{digest}_{base[-8:]}"
+    # No ``__`` — reserved for join-path aliases in generated SQL.
+    return re.sub(r"_+", "_", base).strip("_")
+
+
+# The row-level ``ValueKey`` kinds an ``AggregateKey.source`` may take when it
+# is a same-model scalar EXPRESSION (DEV-1826) rather than a column / star.
+EXPRESSION_SOURCE_KINDS = (ArithmeticKey, ScalarCallKey, LiteralKey)
+
+
+def _value_key_display(key: Any) -> str:
+    """Canonical text of a row-level bound expression, for name derivation.
+
+    Deterministic and formatting-normalised, so ``sum(amount-cost)`` and
+    ``sum( amount - cost )`` derive the same leaf and the same hash fold.
+    """
+    if isinstance(key, ColumnKey):
+        return ".".join((*key.path, key.leaf))
+    if isinstance(key, ColumnSqlKey):
+        return ".".join((*key.path, key.column_name))
+    if isinstance(key, LiteralKey):
+        if isinstance(key.value, str):
+            return f"'{key.value}'"
+        return str(key.value)
+    if isinstance(key, ArithmeticKey):
+        rendered = [_value_key_display(o) for o in key.operands]
+        if len(rendered) == 1:
+            return (
+                f"not {rendered[0]}" if key.op == "not"
+                else f"{key.op}{rendered[0]}"
+            )
+        return f" {key.op} ".join(
+            f"({r})" if isinstance(o, ArithmeticKey) else r
+            for o, r in zip(key.operands, rendered)
+        )
+    if isinstance(key, ScalarCallKey):
+        args = ", ".join(_value_key_display(a) for a in key.args)
+        return f"{key.name}({args})"
+    return str(key)
+
+
+def expression_source_leaf(source: Any) -> str:
+    """The derived result-key leaf for an expression aggregate source
+    (``sum(amount - cost)`` → ``amount_cost``), via the shared sanitizer."""
+    return auto_name_from_expression(_value_key_display(source))
 
 
 def agg_signature_suffix(

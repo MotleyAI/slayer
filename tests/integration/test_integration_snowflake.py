@@ -304,6 +304,21 @@ def test_basic_query(sf_storage_with_models) -> None:
     assert int(val) == 16
 
 
+def test_functional_aggregation_parity(sf_storage_with_models) -> None:
+    """sum(quantity) returns the same value as quantity:sum (DEV-1826)."""
+    engine = SlayerQueryEngine(storage=sf_storage_with_models)
+    colon = run_sync(engine.execute(SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="quantity:sum")],
+    )))
+    func = run_sync(engine.execute(SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="sum(quantity)")],
+    )))
+    assert int(next(iter(func.data[0].values()))) == 16
+    assert func.data == colon.data
+
+
 def test_query_with_dimension(sf_storage_with_models) -> None:
     """Group-by status; assert 3 status groups."""
     engine = SlayerQueryEngine(storage=sf_storage_with_models)

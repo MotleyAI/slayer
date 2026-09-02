@@ -162,6 +162,54 @@ async def test_sum_measure(integration_env):
     assert response.data[0]["orders.total_amount_sum"] == pytest.approx(750.0)
 
 
+async def test_functional_aggregation_parity(integration_env):
+    """sum(total_amount) returns the same rows as total_amount:sum (DEV-1826)."""
+    engine = integration_env
+
+    colon = await engine.execute(SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="total_amount:sum")],
+    ))
+    func = await engine.execute(SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="sum(total_amount)")],
+    ))
+
+    assert func.data[0]["orders.total_amount_sum"] == pytest.approx(750.0)
+    assert func.data == colon.data
+    assert list(func.columns) == list(colon.columns)
+
+
+async def test_functional_star_count_parity(integration_env):
+    """count(*) returns the same rows as *:count (DEV-1826)."""
+    engine = integration_env
+
+    colon = await engine.execute(SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="*:count")],
+    ))
+    func = await engine.execute(SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="count(*)")],
+    ))
+
+    assert func.data[0]["orders._count"] == 6
+    assert func.data == colon.data
+
+
+async def test_expression_aggregation_executes(integration_env):
+    """sum(amount + amount) aggregates the row-level expression (DEV-1826)."""
+    engine = integration_env
+
+    response = await engine.execute(SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="sum(amount + amount)")],
+    ))
+
+    assert response.row_count == 1
+    assert response.data[0]["orders.amount_amount_sum"] == pytest.approx(1500.0)
+
+
 async def test_dimensions_groupby(integration_env):
     """Count orders grouped by status."""
     engine = integration_env

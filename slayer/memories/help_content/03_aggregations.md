@@ -1,6 +1,10 @@
 # Aggregations
 
-An aggregation is picked at query time via colon syntax: `measure:agg`. It is
+An aggregation is picked at query time via colon syntax (`measure:agg`) or
+the equivalent functional spelling (`agg(measure)` — e.g. `sum(revenue)`,
+`count(*)`, `percentile(price, p=0.9)`); both produce identical SQL and
+result keys, and the functional form also accepts a same-model expression
+(`sum(amount - cost)`). It is
 not baked into the measure definition.
 
 ## Built-in aggregations

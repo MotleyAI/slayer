@@ -16,7 +16,6 @@ This is a focused unit test of the token yielder; the end-to-end
 
 from __future__ import annotations
 
-from slayer.engine.normalization import func_style_agg_to_colon
 from slayer.engine.syntax import parse_expr
 from slayer.memories.resolver import _formula_entity_tokens
 
@@ -81,23 +80,23 @@ class TestFormulaEntityTokens:
         ) == ["amount:sum"]
 
 
-class TestFuncStyleNormalization:
-    """Function-style aggs are rewritten to colon form before parse_expr in
-    ``extract_entities_from_query`` — pinned here at the composition level."""
-
-    def _tokens_normalized(self, formula: str) -> list[str]:
-        return list(
-            _formula_entity_tokens(parse_expr(func_style_agg_to_colon(formula)))
-        )
+class TestFunctionalSpellingTokens:
+    """Functional aggregations parse natively (DEV-1826) to the SAME AggCall
+    as colon syntax, so token extraction is spelling-insensitive."""
 
     def test_func_style_simple_agg(self) -> None:
-        assert self._tokens_normalized("sum(amount)") == ["amount:sum"]
+        assert _tokens("sum(amount)") == ["amount:sum"]
 
     def test_func_style_count_star(self) -> None:
-        assert self._tokens_normalized("count(*)") == ["*:count"]
+        assert _tokens("count(*)") == ["*:count"]
 
     def test_func_style_in_arithmetic(self) -> None:
-        assert self._tokens_normalized("sum(amount) / count(*)") == [
+        assert _tokens("sum(amount) / count(*)") == [
             "amount:sum",
             "*:count",
         ]
+
+    def test_expression_source_yields_operand_refs(self) -> None:
+        # An aggregated expression is not itself an entity — its operand
+        # columns surface individually.
+        assert _tokens("sum(amount - cost)") == ["amount", "cost"]

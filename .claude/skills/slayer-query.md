@@ -28,7 +28,7 @@ A `SlayerQuery` is a JSON/dict object. The same shape works across the REST API,
 
 ## Measures — colon aggregation
 
-Each entry in `measures` is either a bare formula string or a `{"formula": ..., "name": ..., "label": ...}` dict. Aggregation is chosen at query time using **colon syntax**:
+Each entry in `measures` is either a bare formula string or a `{"formula": ..., "name": ..., "label": ...}` dict. Aggregation is chosen at query time using **colon syntax** (shown below) or the exactly-equivalent **functional spelling** — `sum(revenue)` ≡ `revenue:sum`, `count(*)` ≡ `*:count`, `percentile(price, p=0.9)` ≡ `price:percentile(p=0.9)`, in every position (measures, filters, order, model measures) with identical SQL, result keys, and errors. The functional form also aggregates a same-model expression: `sum(amount - cost)` (result key derives from the expression: `orders.amount_cost_sum`; dotted paths, filtered columns, and nested aggregations inside the expression are rejected). `first`/`last` disambiguate by argument: `last(balance)` is the aggregation, `last(sum(revenue))` the transform.
 
 ```json
 "measures": [

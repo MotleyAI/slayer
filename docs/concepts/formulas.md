@@ -25,6 +25,61 @@ customers.score:avg  — cross-model: AVG of "score" from the joined "customers"
 
 Colon syntax is used everywhere measures appear: in `measures`, in arithmetic expressions, in transform function arguments, and in filters.
 
+### Functional spelling
+
+Every colon aggregation may equally be written as a function call —
+`sum(revenue)` ≡ `revenue:sum`, `count(*)` ≡ `*:count`,
+`percentile(price, p=0.9)` ≡ `price:percentile(p=0.9)` — in every position,
+with identical SQL, results, result-column keys, and errors. Neither spelling
+is rewritten: a saved model keeps the author's text. The full mapping table
+and the `first`/`last` disambiguation rules are in
+[Reference semantics → Aggregation spelling equivalence](references.md#aggregation-spelling-equivalence).
+
+### Expression aggregation
+
+The functional spelling additionally accepts a same-model scalar
+**expression** as the aggregated value — something the colon form cannot
+spell:
+
+```
+sum(amount - cost)                     — aggregate a row-level expression
+count_distinct(upper(email))           — scalar-allowlist calls compose
+percentile(price * quantity, p=0.5)    — parametric aggs work too
+my_agg(price * quantity)               — as do model-defined custom aggs
+sum(amount - cost, partition_by=region)  — reserved kwargs compose
+count(1)                               — a constant is a valid expression
+```
+
+The expression may use bare host-model columns (derived `Column.sql` columns
+included), scalar-allowlist functions, arithmetic, and literals. It works in
+every functional-aggregation position — measures, post-aggregation filters
+(`sum(amount - cost) > 0` routes to HAVING), order, computed-dimension
+expressions — and composes with `rename`.
+
+**Naming.** The result key derives from the expression via the same sanitizer
+used for computed dimensions: `sum(amount - cost)` on `orders` →
+`orders.amount_cost_sum`, formatting-insensitively (`sum(amount-cost)` is the
+same key). Very long expressions fold to a stable-hash key. An explicit
+`name` overrides the derived key; two *different* expressions whose derived
+keys collide (`sum(amount - cost)` and `sum(amount + cost)`) fail with a
+duplicate-key error asking for a rename.
+
+**Boundaries** (rejected with clear errors):
+
+* joined-model refs / dotted paths inside the expression
+  (`sum(amount - customers.discount)`) — cross-model expression aggregation
+  is not yet supported;
+* operands whose column carries a column-level `filter` — define a derived
+  model column instead;
+* nested aggregations or transforms (`sum(sum(x))`, `sum(cumsum(x) - 1)`).
+
+**Gates.** Per-column `allowed_aggregations` / primary-key / type-default
+gates apply to *columns*, not expressions — `sum(price * quantity)` succeeds
+even when `quantity` whitelists only `min`/`max`, because the expression is a
+new derived quantity owned by the query author. Global validation still
+applies: the aggregation name must be known, and numeric-only aggregations
+reject a confidently non-numeric expression (`sum(lower(name))`).
+
 ### Windowed sum and average
 
 `sum` and `avg` accept an optional `window` parameter for trailing time-window

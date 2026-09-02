@@ -122,6 +122,15 @@ class TestDuckDBQueries:
         result = await duckdb_env.execute(query=query)
         assert float(result.data[0]["orders.total_sum"]) == 875.0
 
+    async def test_functional_aggregation_parity(self, duckdb_env: SlayerQueryEngine) -> None:
+        colon = await duckdb_env.execute(
+            query=SlayerQuery(source_model="orders", measures=[{"formula": "total:sum"}])
+        )
+        func = await duckdb_env.execute(
+            query=SlayerQuery(source_model="orders", measures=[{"formula": "sum(total)"}])
+        )
+        assert float(func.data[0]["orders.total_sum"]) == float(colon.data[0]["orders.total_sum"])
+
     async def test_avg_measure(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(source_model="orders", measures=[{"formula": "avg_amount:avg"}])
         result = await duckdb_env.execute(query=query)

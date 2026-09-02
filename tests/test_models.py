@@ -71,11 +71,13 @@ class TestOrderItem:
         assert item.column.name == "revenue_sum"
         assert item.raw_formula == "revenue:sum"
 
-    def test_funcstyle_builtin_agg_normalized(self) -> None:
-        """Built-in function-style aggregations get rewritten to colon form."""
+    def test_funcstyle_builtin_agg_preserved(self) -> None:
+        """DEV-1826: the functional spelling is preserved verbatim — a
+        placeholder defers resolution to binding (like custom aggs)."""
+        from slayer.core.query import _FUNCSTYLE_PENDING
         item = OrderItem(column="sum(revenue)", direction="desc")
-        assert item.column.name == "revenue_sum"
-        assert item.raw_formula == "revenue:sum"
+        assert item.column.name == _FUNCSTYLE_PENDING
+        assert item.raw_formula == "sum(revenue)"
 
     def test_funcstyle_custom_agg_accepted(self) -> None:
         """Function-style custom aggregations must validate without rejecting on parens.
