@@ -72,9 +72,7 @@ logger = logging.getLogger(__name__)
 VALID_DIMENSION_TYPES = {"string", "time", "date", "boolean", "number"}
 _UNSET = object()  # Sentinel to distinguish "not provided" from "explicitly set to None"
 
-# Shared remedy for every mcp-import failure below. The direct constrained
-# install leads because it works on any SLayer release; "upgrade SLayer" is
-# secondary (reinstalling doesn't help someone already on the latest).
+# Shared remedy for every mcp-import failure below.
 _MCP_REMEDY = (
     "Install a supported version: pip install 'mcp>=1.0,<2' "
     "(or upgrade SLayer, which pins mcp<2: pip install -U motley-slayer)."
@@ -92,9 +90,7 @@ def _mcp_major(version_str: str) -> int | None:
 def _import_fastmcp():
     """Return the mcp 1.x ``FastMCP`` class, or raise an actionable ImportError.
 
-    mcp 2.x renamed ``mcp.server.fastmcp`` to ``mcp.server.mcpserver``, so an
-    unbounded pin can resolve a major SLayer cannot import; absent package and
-    wrong major get different remedies.
+    Absent package and wrong major (mcp 2.x dropped the module) get different remedies.
     """
     try:
         from mcp.server.fastmcp import FastMCP  # ALLOW(import-not-top): optional-dep probe — must attempt the import at call time to diagnose absent vs wrong-major
@@ -111,8 +107,7 @@ def _import_fastmcp():
                 f"mcp.server.mcpserver.MCPServer)."
             )
         else:
-            # 1.x that failed for another reason (e.g. broken transitive dep) —
-            # report that, not the 2.x rename.
+            # 1.x that failed for another reason — report that, not the rename.
             detail = (
                 f"mcp {installed} is installed, but 'mcp.server.fastmcp' could "
                 f"not be imported: {exc}"
@@ -122,12 +117,7 @@ def _import_fastmcp():
 
 
 def _set_server_version(mcp) -> None:
-    """Stamp SLayer's version onto the lowlevel MCP server.
-
-    FastMCP 1.x forwards no ``version`` to the lowlevel ``Server``, which then
-    reports the mcp SDK's own version. Both degradation paths are tolerated so
-    an SDK change can't abort construction over a cosmetic field.
-    """
+    """Stamp SLayer's version onto the lowlevel MCP server (best-effort; cosmetic)."""
     lowlevel = getattr(mcp, "_mcp_server", None)
     if lowlevel is None:
         logger.debug("MCP server exposes no _mcp_server; leaving serverInfo.version")
@@ -139,12 +129,7 @@ def _set_server_version(mcp) -> None:
 
 
 def _ambiguous_with_mcp_hint(exc: AmbiguousModelError) -> str:
-    """Render an ``AmbiguousModelError`` for the MCP surface.
-
-    The exception itself is intentionally surface-neutral; we append an
-    MCP-specific remediation pointing at the ``data_source`` tool argument
-    and the ``set_datasource_priority`` MCP tool.
-    """
+    """Render an ``AmbiguousModelError`` with an MCP-specific remediation hint."""
     return (
         f"{exc} Pass data_source=... to this tool, or use the "
         f"set_datasource_priority tool to set a priority."
@@ -166,21 +151,16 @@ def _test_connection(ds: DatasourceConfig) -> tuple[bool, str]:
 def _fetch_tables(
     ds: DatasourceConfig, schema_name: str | None = None,
 ) -> tuple[list[IngestableObject] | None, str | None]:
-    """Inspect a datasource's table AND view objects (name + kind).
+    """Inspect a datasource's table and view objects (name + kind).
 
-    Returns ``(objects, None)`` on success or ``(None, friendly_error_message)``
-    on failure. ``schema_name=None`` uses the dialect's default schema. Each
-    object keeps its ``kind`` so callers can label views / matviews rather than
-    presenting every object as a bare table name.
-
-    Views are always included, independent of the ingest-side ``--no-views``
-    flag: a views-only schema must not read as empty and misdirect the agent.
+    Returns (objects, None) or (None, friendly_error). schema_name=None uses the
+    default schema. Views are always included so a views-only schema isn't empty.
     """
     try:
         sa_engine = engine_factory.get_engine(ds.resolve_env_vars())
         inspector = sa.inspect(sa_engine)
-        # DEV-1758: route through a SchemaRef so ``schema_name=None`` resolves to
-        # the catalog-qualified default rather than sweeping every schema (DuckDB).
+        # Route through a SchemaRef so schema_name=None resolves to the
+        # catalog-qualified default rather than sweeping every schema.
         ref = (
             schema_ref_from_token(
                 schema_name, dialect_name=sa_engine.dialect.name,
@@ -284,11 +264,7 @@ def _render_drift_section(to_delete: list[Any]) -> list[str]:
 
 
 def _render_skipped_section(skipped: list[Any]) -> list[str]:
-    """Objects that produced no model at all.
-
-    Unlike the CLI this omits the ``--exclude`` hint — the agent has no such
-    argument to pass.
-    """
+    """Objects that produced no model at all (no --exclude hint; the agent has none)."""
     if not skipped:
         return []
     out = ["", f"Skipped ({len(skipped)}) — not modellable, no model created:"]
@@ -297,8 +273,7 @@ def _render_skipped_section(skipped: list[Any]) -> list[str]:
 
 
 def _render_skipped_schemas_section(skipped_schemas: list[Any]) -> list[str]:
-    """Requested schemas dropped from scope (foreign catalog / system schema),
-    so an explicit request for one isn't reported as an empty success."""
+    """Requested schemas dropped from scope (foreign catalog / system schema)."""
     if not skipped_schemas:
         return []
     out = ["", f"Skipped schemas ({len(skipped_schemas)}):"]
@@ -309,12 +284,10 @@ def _render_skipped_schemas_section(skipped_schemas: list[Any]) -> list[str]:
 def _render_hidden_internals_section(
     hidden: list[Any], *, data_source: str | None = None
 ) -> list[str]:
-    """Recognised ELT/migration bookkeeping modelled ``hidden``.
+    """Recognised ELT/migration internals modelled ``hidden``.
 
-    The models exist and stay queryable but are absent from ``models_summary``;
-    reporting them lets the agent tell a hidden model from an uncreated one. The
-    hint is datasource-qualified (via ``_unhide_hint``) because an agent runs it
-    verbatim and these names collide across datasources by construction.
+    Queryable but absent from models_summary; reporting them tells a hidden
+    model from an uncreated one. The unhide hint is datasource-qualified.
     """
     if not hidden:
         return []
@@ -344,8 +317,7 @@ def _render_ingest_result(
 ) -> str:
     """Render an ``IdempotentIngestResult`` for the MCP ``ingest_datasource_models`` tool."""
     additions = list(result.additions)
-    # Read defensively — called with more than one result shape; an older one
-    # may carry neither attribute.
+    # Read defensively — older result shapes may lack these attributes.
     skipped = list(getattr(result, "skipped", None) or [])
     skipped_schemas = list(getattr(result, "skipped_schemas", None) or [])
     hidden_internals = list(getattr(result, "hidden_internals", None) or [])
@@ -359,20 +331,9 @@ def _render_ingest_result(
         and not hidden_internals
         and not datasource_described
     ):
-        # Two distinct cases produce an empty result:
-        #   1. The scanned scope actually has no tables (the agent should look
-        #      elsewhere — show the "Try schema_name=..." hint).
-        #   2. The scope has tables but every persisted model is sql /
-        #      query-backed (silently skipped by the additive pass) — no
-        #      additive work to do, but the existing models are healthy.
-        # Use the scan's own discovered objects (DEV-1758) rather than
-        # re-probing ``_fetch_tables(schema_name)``, which only sees the default
-        # schema and so misreports a synchronized ``schemas`` / ``all_schemas``
-        # request as empty.
-        #
-        # The skipped/hidden checks are part of this guard: a steady-state
-        # re-ingest produces no additions, so without them this branch would
-        # answer "already in sync" and swallow both sections.
+        # Empty result: either no tables in scope, or all models already
+        # skipped. Use the scan's own discovered objects (not _fetch_tables,
+        # which only sees the default schema) to tell the two apart.
         scanned_objects = getattr(result, "objects", None) or []
         if not scanned_objects:
             return _empty_ingest_message(schema_name=schema_name, ds=ds)
@@ -446,17 +407,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     ingest_on_startup: bool = False,
     _seed_help: bool = True,
 ):
-    # DEV-1658: seed the conceptual-help memories (help.intro …). ``_seed_help``
-    # is False when embedded in create_app (which seeds once itself), so the
-    # pass never fires twice. Idempotent / skip-if-unchanged, so a warm store
-    # is a cheap no-op.
-    #
-    # DEV-1669: seeding is a convenience side-effect and must never crash server
-    # construction. Skip silently for a ``None`` / non-``StorageBackend`` arg —
-    # metadata-only builds (reading advertised tool names / a tool's JSON
-    # schema) need no storage at all. When a real backend is given, treat a
-    # genuine seed failure (nested-loop ``run_sync``, embedding/DB error) as
-    # best-effort: warn and continue rather than abort the build.
+    # Seed conceptual-help memories (idempotent; _seed_help=False when
+    # create_app already seeds). Best-effort — never abort the build on a
+    # seed failure, and skip for metadata-only (non-StorageBackend) builds.
     if _seed_help and isinstance(storage, StorageBackend):
         try:
             # Via the modules so tests can monkeypatch both seams.
@@ -487,16 +440,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     )
     _set_server_version(mcp)
     engine = SlayerQueryEngine(storage=storage)
-    # DEV-1656: expose the closure engine so callers (bird-interact-agents on
-    # the cloud Ray runner, where one actor process is reused across many
-    # tasks) can dispose its per-task asyncpg pools at task teardown:
-    #   engine = getattr(mcp, "_slayer_engine", None)
-    #   if engine is not None:
-    #       await engine.aclose()   # loop-bound; run before the task loop closes
-    # aclose() is idempotent and leaves the engine reusable (a later execute
-    # lazily recreates the async engine). The read-only introspection tools
-    # (validate_models / recommend_root_model) reuse this same engine so a
-    # single engine holds every cached SQL client for the server's lifetime.
+    # Expose the closure engine so callers can dispose per-task pools via
+    # mcp._slayer_engine.aclose() (idempotent; leaves the engine reusable).
+    # The read-only introspection tools share this same engine.
     mcp._slayer_engine = engine
 
     @mcp.tool()
@@ -597,23 +543,16 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             fmt = format.lower().strip()
             if fmt not in ("json", "csv", "markdown"):
                 raise ValueError(f"Invalid format '{format}'. Must be one of: json, csv, markdown")
-            # Run-by-name shortcut: when ``source_model`` is a stored model
-            # name (string) and no overrides are given, dispatch through
-            # ``engine.execute(str)`` so the model's stored backing query
-            # runs directly with run-by-name variable precedence
-            # (``runtime_kwarg > stage > model.query_variables``). Inline
-            # ``ModelExtension`` / ``SlayerModel`` values fall through to
-            # the regular ``SlayerQuery`` path below — they have no stored
-            # backing query and the run-by-name semantics don't apply.
-            # See DEV-1373 for the variable-precedence asymmetry between
-            # the two paths.
+            # Run-by-name shortcut: a bare stored-model name with no overrides
+            # dispatches through engine.execute(str) for run-by-name variable
+            # precedence (runtime_kwarg > stage > model.query_variables).
+            # Inline ModelExtension / SlayerModel values fall through below.
             no_overrides = (
                 not measures and not dimensions and not filters
                 and not time_dimensions and not order
                 and limit is None and offset is None
                 and not whole_periods_only
-                # DEV-1543: explicit ``False`` is a real override; default
-                # ``True`` falls through.
+                # Explicit False is a real override; default True falls through.
                 and distinct_dimension_values
             )
             if isinstance(source_model, str) and no_overrides:
@@ -746,9 +685,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 return _friendly_db_error(e)
             raise
 
-    # -----------------------------------------------------------------------
     # Model discovery
-    # -----------------------------------------------------------------------
 
     @mcp.tool()
     async def models_summary(
@@ -972,9 +909,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             descriptions_max_chars=descriptions_max_chars,
         )
 
-    # -----------------------------------------------------------------------
     # Model creation and editing
-    # -----------------------------------------------------------------------
 
     @mcp.tool()
     async def create_model(
@@ -1076,9 +1011,8 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             await storage.get_model(name, data_source=model.data_source)
             is not None
         )
-        # Route through engine.save_model so the model is normalized, its
-        # Mode-A join paths are validated, and a raw-``sql`` source is
-        # trial-executed against its datasource before it persists (DEV-1843).
+        # save_model normalizes, validates Mode-A join paths, and trial-executes
+        # a raw-sql source against its datasource before it persists.
         try:
             await engine.save_model(model)
         except Exception as e:
@@ -1225,16 +1159,13 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
         original_data_source = model.data_source
         changes: list[str] = []
-        # DEV-1375: track refresh-triggering changes so the post-save hook
-        # knows whether to refresh just the touched columns or every
-        # column on the model.
+        # Track column-level vs model-level changes so the post-save hook
+        # refreshes only the touched columns when possible.
         changed_columns: set = set()
         model_level_change = False
-        # DEV-1386: pure model-doc changes (measures / aggregations /
-        # joins) don't invalidate ``Column.sampled`` but DO change the
-        # embedding text rendered by ``slayer.search.render``. Track
-        # these separately so the embedding refresh fires without
-        # triggering a full per-column sample-value re-profile.
+        # Model-doc changes (measures / joins) don't invalidate Column.sampled
+        # but do change the embedding text — track separately to refresh
+        # embeddings without a full per-column re-profile.
         model_doc_changed = False
 
         # --- Phase 1: Scalar metadata ---
@@ -1242,12 +1173,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             model.description = description
             changes.append("updated description")
         if new_data_source is not None and new_data_source != model.data_source:
-            # v4: moving a model between datasources is delete-old +
-            # save-new. To avoid losing the source row when validation/save
-            # fails, we (a) refuse if a sibling already lives at the target
-            # ``(new_data_source, model.name)`` key, and (b) defer the
-            # delete-from-old until *after* the new save succeeds (handled
-            # below in Phase 5). Here we only mutate the in-memory model.
+            # Moving a model is delete-old + save-new: refuse if the target key
+            # is taken and defer the delete until after the new save (Phase 5).
+            # Here we only mutate the in-memory model.
             try:
                 existing_target = await storage.get_model(
                     model.name, data_source=new_data_source
@@ -1414,74 +1342,52 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             return f"No changes specified for model '{model_name}'."
 
         # --- Phase 5: Validate and save ---
-        # For query-backed models, columns are an engine-managed cache.
-        # If we end up with source_queries set after this edit, we route through
-        # engine.save_model so the cache is refreshed (and any user-supplied
-        # cache fields are rejected). Otherwise, persist directly via storage.
+        # Query-backed models route through engine.save_model so the
+        # engine-managed column cache is refreshed and user-supplied cache
+        # fields are rejected.
         try:
             validated = SlayerModel.model_validate(model.model_dump(mode="json"))
         except Exception as exc:
             return f"Validation error: {exc}"
 
         if validated.source_queries:
-            # ``columns`` and ``backing_query_sql`` are engine-managed for
-            # query-backed models. Reject explicit user supply rather than
-            # silently dropping (which would let the API report a successful
-            # column edit that never persists).
+            # columns / backing_query_sql are engine-managed here; reject
+            # explicit user supply rather than silently dropping it.
             if columns is not None:
                 return (
                     "Validation error: cannot supply 'columns' on a "
                     f"query-backed model ('{model_name}'). Columns are "
                     "engine-managed (auto-derived from the backing query)."
                 )
-            # Strip cache fields before save so engine.save_model can repopulate
-            # them from a fresh expansion of the backing query. (These are
-            # present here only because they were on the existing stored
-            # model, not from this edit.)
+            # Strip cache fields so save_model repopulates them from a fresh
+            # expansion of the backing query.
             validated = validated.model_copy(update={
                 "columns": [],
                 "backing_query_sql": None,
             })
             try:
-                # ``engine.save_model`` may RECOMPUTE ``data_source`` for
-                # query-backed models from the resolved virtual model, so
-                # we cannot trust ``validated.data_source`` after this
-                # call — use the returned model's identity for the
-                # post-save cleanup decision below.
+                # save_model may recompute data_source for query-backed models,
+                # so use the returned model's identity for cleanup below.
                 saved_model = await engine.save_model(validated)
             except Exception as exc:
                 return f"Validation error: {exc}"
         else:
-            # Route through engine.save_model (not storage) so the model is
-            # normalized, its Mode-A join paths are validated, and a raw-``sql``
-            # source is trial-executed against its datasource before it
-            # persists (DEV-1843). ``save_model`` does not recompute
-            # ``data_source`` for non-query models, so the atomic-move guard
-            # below still keys off ``saved_model.data_source`` correctly. The
-            # source row is intact on failure because the delete is deferred.
+            # save_model normalizes, validates Mode-A join paths, and trial-
+            # executes a raw-sql source before it persists.
             try:
                 saved_model = await engine.save_model(validated)
             except Exception as exc:
                 return f"Validation error: {exc}"
 
-        # v4 atomic move: only after the new save has succeeded do we
-        # remove the source row, and only if the saved model actually
-        # landed at a different ``data_source`` than where it started.
-        # For query-backed models the engine-side cache populator can
-        # override ``new_data_source`` (it derives ``data_source`` from
-        # the backing query); without this guard a "move that didn't
-        # move" silently deleted the just-saved row at the original key.
+        # Atomic move: remove the source row only after the save succeeded and
+        # only if the saved model actually landed at a different data_source
+        # (the cache populator can override new_data_source).
         if saved_model.data_source != original_data_source:
             await storage.delete_model(
                 saved_model.name, data_source=original_data_source
             )
-        # DEV-1375 / DEV-1386: refresh persisted ``Column.sampled``
-        # values for any touched columns (or every column when a
-        # source-level change made every column's sample suspect), and
-        # refresh embeddings for the model subtree on any edit that
-        # changed the indexed text. Best-effort: any raise here is
-        # captured into ``refresh_warnings`` so the save's success
-        # status survives a flaky embedding API.
+        # Refresh sampled column values and subtree embeddings. Best-effort —
+        # a raise is captured into refresh_warnings so the save still succeeds.
         refresh_warnings: list[str] = []
         if changed_columns or model_level_change or model_doc_changed:
             try:
@@ -1511,9 +1417,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             response_payload["warnings"] = refresh_warnings
         return json.dumps(response_payload, indent=2)
 
-    # -----------------------------------------------------------------------
     # Datasource management
-    # -----------------------------------------------------------------------
 
     @mcp.tool()
     async def create_datasource(
@@ -1648,8 +1552,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     async def list_datasources() -> str:
         """List all configured database connections (names and types only, credentials are not shown). Use describe_datasource for connection details and status."""
         names = await storage.list_datasources()
-        # DEV-1667: rendering delegates to the shared renderer (also used by
-        # the ``inspect`` datasource collection view) — one code path.
+        # Delegates to the shared renderer (also used by inspect).
         pairs: list[tuple[str, str | None]] = []
         for name in names:
             try:
@@ -1719,8 +1622,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             elif tables:
                 lines.append(f"\nTables ({len(tables)}){schema_label}:")
                 for o in tables:
-                    # Label non-table objects so a view-backed model is not
-                    # presented as a plain table (source_kind visibility).
+                    # Label non-table objects (views/matviews) explicitly.
                     suffix = "" if o.kind == "table" else f" ({o.kind})"
                     lines.append(f"  - {o.name}{suffix}")
                 lines.append(
@@ -1752,16 +1654,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
         await storage.save_datasource(ds)
 
-        # DEV-1549: the datasource embedding text now includes
-        # ``DatasourceConfig.description``, so an edit to the
-        # description must refresh the embedding inline — otherwise the
-        # persisted row stays stale until the next ``slayer ingest``
-        # and description-only semantic matches silently miss.
-        #
-        # The save is already committed at this point. Per CodeRabbit
-        # round-7 review: the refresh is post-save and best-effort —
-        # log a warning if it raises and surface a partial-success
-        # message rather than telling the agent the save itself failed.
+        # The embedding text includes the description, so refresh it inline on
+        # a description change. Post-save and best-effort — warn and report
+        # partial success rather than failing the already-committed save.
         refresh_warning: str | None = None
         if description is not None and description != old_description:
             models_in_ds: list[SlayerModel] = []
@@ -1787,9 +1682,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             )
         return f"Datasource '{name}' updated."
 
-    # -----------------------------------------------------------------------
     # Delete operations
-    # -----------------------------------------------------------------------
 
     @mcp.tool()
     async def delete_model(name: str, data_source: str | None = None) -> str:
@@ -1824,15 +1717,13 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 concatenated.
         """
         if data_source is not None:
-            # Fail loudly on an unknown name. Without this guard the engine
-            # returns ``[]`` because no persisted models match, which is
-            # indistinguishable from "no drift" — risky for an agent flow.
+            # Fail loudly on an unknown name — an empty result is otherwise
+            # indistinguishable from "no drift".
             ds = await storage.get_datasource(data_source)
             if ds is None:
                 return f"Datasource '{data_source}' not found."
-        # DEV-1656: reuse the closure engine (not a fresh per-call engine) so
-        # the schema-drift SQL client it opens is cached on the server's
-        # engine and disposed by ``mcp._slayer_engine.aclose()`` at teardown.
+        # Reuse the closure engine so its schema-drift SQL client is cached and
+        # disposed at teardown.
         try:
             entries = await engine.validate_models(data_source=data_source)
         except (sa.exc.OperationalError, sa.exc.DatabaseError) as exc:
@@ -1881,7 +1772,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 f"recommend_root_model failed: unknown format '{format}'. "
                 f"Use 'markdown' or 'json'."
             )
-        # DEV-1656: reuse the closure engine (see validate_models above).
+        # Reuse the closure engine (see validate_models above).
         try:
             rec = await engine.recommend_root_model(
                 items, data_source=data_source, root_hint=root_hint
@@ -1905,9 +1796,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             return f"Datasource '{name}' deleted."
         return f"Datasource '{name}' not found."
 
-    # -----------------------------------------------------------------------
     # Ingestion
-    # -----------------------------------------------------------------------
 
     @mcp.tool()
     async def ingest_datasource_models(
@@ -1996,7 +1885,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         priority = await storage.get_datasource_priority()
         return f"Datasource priority: {priority}"
 
-    # ---------- DEV-1357 v2: unified Memory surface -------------------
+    # Unified Memory surface
 
     memory_service = MemoryService(storage=storage)
 
@@ -2114,9 +2003,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             return _format_resolution_error(exc)
         return response.model_dump_json(indent=2)
 
-    # ---------- DEV-1375: semantic search -----------------------------
-
-    # DEV-1516: pass the engine so the search service's post-fusion
+    # Semantic search. Pass the engine so the search service's post-fusion
     # column-hit hook can auto-refresh stale categorical columns.
     search_service = SearchService(storage=storage, engine=engine)
 
@@ -2229,14 +2116,7 @@ def _format_json(
     data: list[dict[str, Any]],
     warnings: list[dict[str, Any]] | None = None,
 ) -> str:
-    """Format data as JSON.
-
-    A bare array when there is nothing to report, so the long-standing shape is
-    unchanged for every clean query. When warnings exist they go INSIDE the
-    JSON as ``{"data": [...], "warnings": [...]}`` — appending them as prose
-    would break ``json.loads`` on exactly the queries a caller most needs to
-    inspect (DEV-1745 W5).
-    """
+    """Format data as JSON — a bare array, or {"data", "warnings"} when warnings exist."""
     if not warnings:
         return json.dumps(data, default=str)
     return json.dumps({"data": data, "warnings": warnings}, default=str)
@@ -2259,23 +2139,13 @@ def _format_csv(data: list[dict[str, Any]], columns: list[str]) -> str:
 
 
 def _csv_warning_comments(result: SlayerResponse) -> str:
-    """Warnings as leading `#` comment lines for CSV output.
-
-    Comments precede the header, so every DATA record keeps a uniform column
-    count and the advisory is still visible to whoever reads the output.
-    """
+    """Warnings as leading `#` comment lines for CSV output (uniform column count)."""
     lines = [f"# warning: {w.human_message()}" for w in (result.warnings or [])]
     return "" if not lines else "\n".join(lines) + "\n"
 
 
 def _format_warnings(result: SlayerResponse) -> str:
-    """Advisories about the query, appended to the TEXT output formats.
-
-    A dropped filter changes which rows the answer covers, so it cannot be
-    left to a field the caller might not read (DEV-1745 W5 / D2). Rendering
-    goes through each payload's ``human_message`` so this surface and the CLI
-    cannot describe the same warning differently.
-    """
+    """Advisories appended to text output, rendered via each payload's human_message."""
     lines = [f"  - {w.human_message()}" for w in (result.warnings or [])]
     return "" if not lines else "\n\nWarnings:\n" + "\n".join(lines)
 
@@ -2283,19 +2153,12 @@ def _format_warnings(result: SlayerResponse) -> str:
 def _format_output(result: SlayerResponse, fmt: str) -> str:
     """Format query output in the requested format.
 
-    Warnings never corrupt a machine-readable format: for ``json`` they go
-    INSIDE the payload under a ``warnings`` key, and for ``csv`` they become
-    leading ``#`` comment lines. Only ``markdown`` gets a prose block.
-
-    Note this covers the warnings only. The ``query`` tool still prepends
-    ``SQL:`` text for ``show_sql`` / ``explain`` and appends an attributes
-    block, which has always made those combinations non-JSON; that predates
-    this change and is not addressed here.
+    Warnings stay machine-safe: inside the json payload, leading `#` lines for
+    csv, a prose block only for markdown.
     """
     if fmt == "csv":
-        # Leading `#` comment lines, never trailing prose: appending the block
-        # turned each warning into a record with the wrong column count and
-        # broke every CSV reader on exactly the queries worth inspecting.
+        # Leading `#` lines, never trailing prose — trailing rows break the
+        # column count for every CSV reader.
         return _csv_warning_comments(result) + _format_csv(
             data=result.data, columns=result.columns,
         )
