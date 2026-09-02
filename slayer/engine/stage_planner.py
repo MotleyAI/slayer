@@ -54,7 +54,7 @@ from slayer.core.keys import (
     substitute_value_keys,
 )
 from slayer.core.errors import UnreachableFilterDroppedWarning
-from slayer.core.models import SlayerModel
+from slayer.core.models import ModelMeasure, SlayerModel
 from slayer.engine.aggregate_input_paths import compute_aggregate_input_join_paths
 from slayer.engine.join_safety import (
     may_inline_crossing_inputs,
@@ -81,7 +81,6 @@ from slayer.engine.binding import (
     bind_time_dimension,
     walk_value_keys,
 )
-from slayer.engine.measure_expansion import expand_model_measures
 from slayer.engine.filter_reachability import (
     compute_key_join_paths,
     key_has_host_local_ref,
@@ -152,6 +151,7 @@ from slayer.engine.source_bundle import (
 from slayer.engine.normalization import func_style_agg_to_colon
 from slayer.engine.syntax import (
     AggCall,
+    DottedRef,
     Ref,
     TransformCall,
     parse_expr,
@@ -464,23 +464,36 @@ def _iter_expr_children(node):
             yield item[1] if isinstance(item, tuple) and len(item) == 2 else item
 
 
-def _expr_has_measure_ref(node, *, measure_names: FrozenSet[str]) -> bool:
+def _expr_has_measure_ref(
+    node, *, measure_names: FrozenSet[str], scope, bundle,
+) -> bool:
     if node is None:
         return False
     if isinstance(node, (AggCall, TransformCall)):
         return True
     if isinstance(node, Ref) and node.name in measure_names:
         return True
+    # A dotted leaf resolving to a saved measure on the terminal model is a
+    # measure ref too — the detector sees through the join graph (task 5.2).
+    if isinstance(node, DottedRef) and _resolve_saved_measure_ref(
+        scope=scope, bundle=bundle, formula=".".join(node.parts),
+    ) is not None:
+        return True
     return any(
-        _expr_has_measure_ref(child, measure_names=measure_names)
+        _expr_has_measure_ref(
+            child, measure_names=measure_names, scope=scope, bundle=bundle,
+        )
         for child in _iter_expr_children(node)
     )
 
 
-def _reject_measure_refs_for_raw_rows(*, query: SlayerQuery, scope) -> None:
+def _reject_measure_refs_for_raw_rows(
+    *, query: SlayerQuery, scope, bundle: ResolvedSourceBundle,
+) -> None:
     """Raw-rows mode (``distinct_dimension_values=False``): no measure reference may
-    appear in filters/order. The model-resolved half — a bare name is a measure ref
-    only if it's a saved ModelMeasure. Unparseable text is left for the binder."""
+    appear in filters/order. A bare name is a measure ref only if it's a saved
+    ModelMeasure; a dotted one if its leaf is a saved measure on the terminal
+    model. Unparseable text is left for the binder."""
     src = getattr(scope, "source_model", None)
     measure_names: FrozenSet[str] = frozenset(
         m.name for m in (getattr(src, "measures", None) or []) if m.name
@@ -488,17 +501,22 @@ def _reject_measure_refs_for_raw_rows(*, query: SlayerQuery, scope) -> None:
     custom_agg_names: FrozenSet[str] = frozenset(
         a.name for a in (getattr(src, "aggregations", None) or []) if a.name
     )
-    _reject_measure_refs_in_filters(query=query, measure_names=measure_names)
+    _reject_measure_refs_in_filters(
+        query=query, measure_names=measure_names, scope=scope, bundle=bundle,
+    )
     _reject_measure_refs_in_order(
         query=query,
         measure_names=measure_names,
         custom_agg_names=custom_agg_names,
         source_name=getattr(src, "name", None),
+        scope=scope,
+        bundle=bundle,
     )
 
 
 def _reject_measure_refs_in_filters(
-    *, query: SlayerQuery, measure_names: FrozenSet[str],
+    *, query: SlayerQuery, measure_names: FrozenSet[str], scope,
+    bundle: ResolvedSourceBundle,
 ) -> None:
     for f in (query.filters or []):
         if not isinstance(f, str):
@@ -507,7 +525,9 @@ def _reject_measure_refs_in_filters(
             parsed = parse_filter_expr(f)
         except Exception:  # noqa: BLE001 — binder reports parse errors properly
             continue
-        if _expr_has_measure_ref(parsed, measure_names=measure_names):
+        if _expr_has_measure_ref(
+            parsed, measure_names=measure_names, scope=scope, bundle=bundle,
+        ):
             raise DistinctDimensionValuesError(
                 f"distinct_dimension_values=False rejects measure references, "
                 f"but filter {f!r} contains one. {_RAW_ROW_FIX_HINT}"
@@ -531,13 +551,15 @@ def _reject_measure_refs_in_order(
     measure_names: FrozenSet[str],
     custom_agg_names: FrozenSet[str],
     source_name: Optional[str],
+    scope,
+    bundle: ResolvedSourceBundle,
 ) -> None:
     for item in (query.order or []):
         raw = getattr(item, "raw_formula", None)
         if raw:
             parsed = _parse_order_formula(raw, custom_agg_names=custom_agg_names)
             if parsed is not None and _expr_has_measure_ref(
-                parsed, measure_names=measure_names,
+                parsed, measure_names=measure_names, scope=scope, bundle=bundle,
             ):
                 raise DistinctDimensionValuesError(
                     f"distinct_dimension_values=False rejects measure "
@@ -550,6 +572,17 @@ def _reject_measure_refs_in_order(
                 f"distinct_dimension_values=False rejects measure references, "
                 f"but order item {name!r} resolves to a saved measure on "
                 f"{source_name or 'the source model'!r}. "
+                f"{_RAW_ROW_FIX_HINT}"
+            )
+        # A dotted ORDER BY column (``customers.aov``) whose leaf is a saved
+        # measure on the terminal model is a measure ref too (task 5.2).
+        full = getattr(getattr(item, "column", None), "full_name", None)
+        if full and "." in full and _resolve_saved_measure_ref(
+            scope=scope, bundle=bundle, formula=full,
+        ) is not None:
+            raise DistinctDimensionValuesError(
+                f"distinct_dimension_values=False rejects measure references, "
+                f"but order item {full!r} resolves to a saved measure. "
                 f"{_RAW_ROW_FIX_HINT}"
             )
 
@@ -627,7 +660,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
 
     # Runs BEFORE binding so the targeted error wins over the binder's generic one.
     if query.distinct_dimension_values is False:
-        _reject_measure_refs_for_raw_rows(query=query, scope=scope)
+        _reject_measure_refs_for_raw_rows(query=query, scope=scope, bundle=bundle)
 
     declared_measures = _declared_measures_from_query(
         query=query, scope=scope, bundle=bundle,
@@ -3312,28 +3345,79 @@ def _reject_opaque_grouping_dim(
         )
 
 
+def _terminal_model_for_dotted(
+    *, source_model: SlayerModel, hops: List[str], bundle: ResolvedSourceBundle,
+) -> Optional[SlayerModel]:
+    """Walk ``hops`` join targets from ``source_model``; None on a missing /
+    circular hop. Mirrors the binder's join walk for naming/metadata."""
+    current = source_model
+    visited = {current.name}
+    for hop in hops:
+        if not any(j.target_model == hop for j in current.joins):
+            return None
+        nxt = bundle.get_referenced_model(hop)
+        if nxt is None or nxt.name in visited:
+            return None
+        visited.add(nxt.name)
+        current = nxt
+    return current
+
+
+def _resolve_saved_measure_ref(
+    *,
+    scope: Union[ModelScope, StageSchema],
+    bundle: ResolvedSourceBundle,
+    formula: str,
+) -> Optional[Tuple[SlayerModel, "ModelMeasure"]]:
+    """Return ``(terminal_model, measure)`` if ``formula`` is a bare or dotted
+    saved-measure reference, mirroring the binder's resolution order; else None.
+    The one authority both the naming/type helpers and the raw-row detector share.
+    """
+    if not isinstance(scope, ModelScope) or scope.source_model is None:
+        return None
+    host = scope.source_model
+    text = formula.strip()
+    if text.isidentifier():
+        mm = host.get_measure(text)
+        return (host, mm) if mm is not None else None
+    parts = text.split(".")
+    if len(parts) < 2 or not all(p.isidentifier() for p in parts):
+        return None
+    if parts[0] == host.name:  # C14 self-prefix strip
+        parts = parts[1:]
+    if len(parts) == 1:
+        mm = host.get_measure(parts[0])
+        return (host, mm) if mm is not None else None
+    *hops, leaf = parts
+    terminal = _terminal_model_for_dotted(
+        source_model=host, hops=hops, bundle=bundle,
+    )
+    if terminal is None:
+        return None
+    mm = terminal.get_measure(leaf)
+    return (terminal, mm) if mm is not None else None
+
+
 def _saved_model_measure_type(
-    *, scope: Union[ModelScope, StageSchema], formula: str,
+    *,
+    scope: Union[ModelScope, StageSchema],
+    bundle: ResolvedSourceBundle,
+    formula: str,
 ) -> Optional[DataType]:
-    if not isinstance(scope, ModelScope) or scope.source_model is None:
-        return None
-    bare = formula.strip()
-    if not bare.isidentifier():
-        return None
-    saved = scope.source_model.get_measure(bare)
-    return saved.type if saved is not None else None
+    ref = _resolve_saved_measure_ref(scope=scope, bundle=bundle, formula=formula)
+    return ref[1].type if ref is not None else None
 
 
-def _bare_saved_measure_name(
-    *, scope: Union[ModelScope, StageSchema], formula: str,
+def _saved_measure_public_name(
+    *,
+    scope: Union[ModelScope, StageSchema],
+    bundle: ResolvedSourceBundle,
+    formula: str,
 ) -> Optional[str]:
-    if not isinstance(scope, ModelScope) or scope.source_model is None:
-        return None
-    bare = formula.strip()
-    if not bare.isidentifier():
-        return None
-    saved = scope.source_model.get_measure(bare)
-    return saved.name if saved is not None else None
+    """Implicit surfaced name for a bare/dotted saved-measure reference — the
+    formula text itself (``aov`` → ``aov``; ``customers.aov`` → ``customers.aov``)."""
+    ref = _resolve_saved_measure_ref(scope=scope, bundle=bundle, formula=formula)
+    return formula.strip() if ref is not None else None
 
 
 def _reject_computed_dim_name_collision(
@@ -3424,10 +3508,10 @@ def _declared_computed_dimension(
 ) -> DeclaredMeasure:
     _reject_computed_dim_name_collision(name=d.name, query=query, scope=scope)
     parsed = parse_expr(d.expression)
-    if isinstance(scope, ModelScope) and scope.source_model is not None:
-        parsed = expand_model_measures(expr=parsed, model=scope.source_model)
     try:
-        bound = bind_expr(parsed=parsed, scope=scope, bundle=bundle)
+        bound = bind_expr(
+            parsed=parsed, scope=scope, bundle=bundle, allow_measures=True,
+        )
     except UnknownReferenceError as err:
         _reraise_nested_attach(err, computed_dim_names=_computed_dim_names(query))
     _guard_computed_dimension(d=d, bound=bound, query=query)
@@ -3516,22 +3600,21 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
         formula = m.formula
         explicit_name = m.name
         parsed = parse_expr(formula)
-        # Pre-bind ModelMeasure expansion: a bare Ref matching a saved measure is
-        # rewritten to its formula AST. Only against ModelScope.
-        if isinstance(scope, ModelScope) and scope.source_model is not None:
-            parsed = expand_model_measures(
-                expr=parsed,
-                model=scope.source_model,
-            )
         try:
-            bound = bind_expr(parsed=parsed, scope=scope, bundle=bundle)
+            bound = bind_expr(
+                parsed=parsed, scope=scope, bundle=bundle, allow_measures=True,
+            )
         except UnknownReferenceError as err:
             _reraise_nested_attach(
                 err, computed_dim_names=_computed_dim_names(query),
             )
         canonical = _canonical_alias_for_formula(formula, bound=bound)
-        # A bare saved-ModelMeasure reference surfaces under the measure NAME (explicit query name still wins).
-        saved_name = _bare_saved_measure_name(scope=scope, formula=formula)
+        # A bare or dotted saved-ModelMeasure reference surfaces under the formula
+        # text (explicit query name still wins): ``customers.aov`` → key
+        # ``orders.customers.aov``.
+        saved_name = _saved_measure_public_name(
+            scope=scope, bundle=bundle, formula=formula,
+        )
         alias_name = explicit_name or saved_name
         declared_name = alias_name or canonical
         public_name = alias_name or canonical
@@ -3540,7 +3623,9 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
         )
         # Type-priority (highest wins): query m.type, saved ModelMeasure.type,
         # then aggregation-aware inference.
-        explicit_type = m.type or _saved_model_measure_type(scope=scope, formula=formula)
+        explicit_type = m.type or _saved_model_measure_type(
+            scope=scope, bundle=bundle, formula=formula,
+        )
         m_type = explicit_type or _type_for_measure_formula(scope=scope, bound=bound)
         declared.append(DeclaredMeasure(
             bound=bound,

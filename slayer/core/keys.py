@@ -830,20 +830,9 @@ TimeTruncKey.model_rebuild()
 
 
 def _map_sql_expr_key(key: SqlExprKey, *, map_path) -> SqlExprKey:
-    """Apply ``map_path`` to a STANDALONE Mode-A fragment's referenced join paths.
-
-    Only correct when the fragment is anchored at the QUERY ROOT. A fragment
-    reached as ``AggregateKey.column_filter_key`` is anchored at the owning
-    model instead and must NOT come through here — see the note in
-    :func:`_map_value_key`.
-
-    Constructed, NOT ``model_copy``: the ``before`` validator is what sorts and
-    de-duplicates ``referenced_join_paths``, and ``model_copy`` skips validators
-    in Pydantic v2 — two mappings can share a residual, and mapped paths need
-    not stay sorted, yet ``__hash__`` / ``__eq__`` read the tuple directly, so
-    two semantically equal keys would fail to intern (CodeRabbit). A path that
-    ``map_path`` sends to ``()`` (an exact-prefix strip → the "same-model
-    filter" marker, not a join-path prefix) is dropped rather than carried.
+    """Apply ``map_path`` to a standalone (root-anchored) fragment's referenced
+    paths. Reconstructed, not ``model_copy``d, so the validator re-sorts/dedups
+    them (identity reads the tuple directly); a path mapped to ``()`` is dropped.
     """
     mapped = [np for p in key.referenced_join_paths if (np := tuple(map_path(p)))]
     return SqlExprKey(
@@ -863,29 +852,14 @@ def _map_partition_keys(partition_keys, *, map_path):
 
 
 def _map_value_key(key: _RerootableT, *, map_path) -> _RerootableT:
-    """Rewrite every embedded join ``path`` in ``key`` through ``map_path``.
+    """Rewrite every embedded join ``path`` in ``key`` through ``map_path`` —
+    the one total, fail-closed visitor behind :func:`reroot_value_key` (strip)
+    and :func:`prepend_value_key` (prepend); an unhandled kind raises ``TypeError``
+    rather than riding through unmapped.
 
-    The one total, fail-closed visitor over the whole ``ValueKey`` union (plus
-    the standalone ``SqlExprKey``); :func:`reroot_value_key` (strip) and
-    :func:`prepend_value_key` (prepend) are thin wrappers that only differ in
-    the ``map_path`` they supply. Two implementations would be free to drift
-    into two re-anchoring semantics — the drift §5.4 removes.
-
-    **Total.** Every union member has an explicit case. A kind added to
-    ``ValueKey`` later has none, so it lands in the fail-closed arm rather than
-    riding through unmapped.
-
-    **Fail-closed.** An unhandled kind raises ``TypeError``. Returning it
-    unchanged would be indistinguishable from "correctly identity", which is
-    how a mis-anchored ref reaches the SQL generator looking well-formed.
-
-    ``AggregateKey.column_filter_key`` is deliberately copied UNCHANGED, in
-    BOTH directions. ``binding._resolve_column_filter_key`` walks ``source.path``
-    first and only then stamps the anchor, so the fragment's paths are expressed
-    relative to the model that OWNS the filtered column — re-anchoring changes
-    how that owner is reached, never moves the owner. A standalone ``SqlExprKey``
-    is anchored at the query root and therefore DOES map — the asymmetry is per
-    position, not per type.
+    ``AggregateKey.column_filter_key`` is copied unchanged in both directions —
+    its paths are anchored at the filtered column's owning model, not the query
+    root — while a standalone ``SqlExprKey`` is root-anchored and does map.
     """
     def _recurse(value):
         return _map_value_key(value, map_path=map_path)

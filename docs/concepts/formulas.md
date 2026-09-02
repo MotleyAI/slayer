@@ -246,9 +246,7 @@ All three forms below — bare name, transform, arithmetic — work as query mea
 ]
 ```
 
-Bare-name references are inline-expanded at parse time into the saved formula's text, so queries that use the saved name produce the same SQL as queries with the formula written out longhand. Saved formulas can reference other saved formulas (transitively) — cycles like `a → b → a` are detected and rejected with the chain in the error message.
-
-The bare name resolves only when it appears as a standalone identifier — a name that's part of colon syntax (`revenue:sum`), preceded by `.` (cross-model: `customers.aov`), or followed by `(` (a transform call) is not expanded. Saved-measure names that would shadow built-in transform names (`cumsum`, `change`, `time_shift`, `lag`, `lead`, `rank`, `percent_rank`, `dense_rank`, `ntile`, `first`, `last`, `change_pct`, `consecutive_periods`) are rejected at model construction time.
+A saved measure reused by name — bare `aov` or another model's `customers.aov` — expands to the same SQL as its longhand formula and is legal only in a measure formula or computed-dimension expression (see [Models → Reusing another model's saved measure](models.md#reusing-another-models-saved-measure-customersaov)).
 
 Transforms work on cross-model measures: `"cumsum(customers.score:avg)"`, `"first(customers.score:avg)"`, `"last(customers.score:avg)"`. The cross-model measure is computed first (as a sub-query CTE), then the transform is applied on the joined result.
 

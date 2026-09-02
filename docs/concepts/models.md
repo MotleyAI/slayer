@@ -238,7 +238,11 @@ Column and measure names share a namespace within a model — you can't have a c
 ]
 ```
 
-Expansion is purely textual at parse time, so the SQL is identical to writing the longhand formula. Cycles (`a → b → a`) are detected and rejected with the cycle in the error message. Names that would shadow built-in transforms (`cumsum`, `change`, `rank`, `first`, `last`, etc.) are rejected at model construction time.
+A saved formula produces the same SQL as writing it out longhand, and cycles (`a → b → a`) or names shadowing built-in transforms are rejected at model construction.
+
+### Reusing another model's saved measure (`customers.aov`)
+
+A dotted `{"formula": "customers.aov"}` reuses a saved measure from the joined `customers` model as if its formula were written inline, and a query-backed model cannot declare `measures` directly.
 
 See [formulas.md](formulas.md) for the full formula grammar — operators, transforms, time-shifted forms, and the `Mode B` DSL rules.
 

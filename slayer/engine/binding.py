@@ -34,6 +34,7 @@ consumer.
 from __future__ import annotations
 
 import difflib
+import os
 from typing import Dict, List, Optional, Tuple, Union
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -42,6 +43,8 @@ from slayer.core.errors import (
     AggregationNotAllowedError,
     IllegalScopeReferenceError,
     IllegalWindowInFilterError,
+    MeasureCycleError,
+    MeasureRecursionLimitError,
     UnknownFunctionError,
     UnknownReferenceError,
 )
@@ -74,6 +77,7 @@ from slayer.core.keys import (
     column_leaf,
     column_path,
     normalize_scalar,
+    prepend_value_key,
 )
 from slayer.core.models import SlayerModel
 from slayer.core.query import TimeDimension
@@ -94,6 +98,7 @@ from slayer.engine.syntax import (
     TransformCall,
     TupleLit,
     UnaryOp,
+    parse_expr,
 )
 from slayer.sql.sql_expr import has_window_function
 
@@ -108,6 +113,40 @@ __all__ = [
 
 
 _TEMPORAL_TYPES = frozenset({DataType.DATE, DataType.TIMESTAMP})
+
+_DEFAULT_MEASURE_DEPTH = 32
+_MEASURE_DEPTH_ENV_VAR = "SLAYER_MEASURE_EXPANSION_DEPTH"
+
+
+def _measure_depth_limit() -> int:
+    """Saved-measure expansion depth cap (``SLAYER_MEASURE_EXPANSION_DEPTH``, default 32)."""
+    raw = os.environ.get(_MEASURE_DEPTH_ENV_VAR)
+    if raw is None:
+        return _DEFAULT_MEASURE_DEPTH
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return _DEFAULT_MEASURE_DEPTH
+
+
+class MeasureResolutionCtx(BaseModel):
+    """Present (not ``None``) makes saved-measure references legal at the
+    position being bound and carries the ``(model, measure)`` chain for
+    cycle/depth detection; dropped at aggregation boundaries so a measure
+    errors there."""
+
+    model_config = ConfigDict(frozen=True)
+
+    chain: Tuple[Tuple[str, str], ...] = ()
+    depth_limit: int
+
+    def descend(self, *, model: str, measure: str) -> "MeasureResolutionCtx":
+        return self.model_copy(update={"chain": self.chain + ((model, measure),)})
+
+
+def _fmt_measure_chain(chain: Tuple[Tuple[str, str], ...]) -> List[str]:
+    """Render a ``(model, measure)`` chain as ``model.measure`` steps for errors."""
+    return [f"{model}.{measure}" for model, measure in chain]
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +200,7 @@ def bind_expr(
     *,
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
+    allow_measures: bool = False,
 ) -> BoundExpr:
     """Bind a parsed expression against a scope.
 
@@ -169,8 +209,18 @@ def bind_expr(
     resolve; ``IllegalScopeReferenceError`` if a dotted ref is used
     against a ``StageSchema`` (or vice versa for ``__`` against a
     ``ModelScope``).
+
+    ``allow_measures`` enables saved-measure resolution (bare and dotted) in
+    the eligible positions — measure formulas and computed-dimension
+    expressions. Off everywhere else, so a saved-measure name elsewhere errors.
     """
-    value_key = _bind(parsed, scope=scope, bundle=bundle, in_filter=False)
+    measure_ctx = (
+        MeasureResolutionCtx(depth_limit=_measure_depth_limit())
+        if allow_measures else None
+    )
+    value_key = _bind(
+        parsed, scope=scope, bundle=bundle, in_filter=False, measure_ctx=measure_ctx,
+    )
     return BoundExpr(value_key=value_key)
 
 
@@ -399,17 +449,25 @@ def _bind(
     bundle: ResolvedSourceBundle,
     in_filter: bool,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
+    measure_ctx: Optional[MeasureResolutionCtx] = None,
 ) -> ValueKey:
+    # ``measure_ctx`` rides the eligible operand edges and is dropped at the
+    # aggregation boundary, so a measure is legal at the value level but not
+    # inside an aggregation.
     if isinstance(parsed, Literal):
         return LiteralKey(value=normalize_scalar(parsed.value))
 
     if isinstance(parsed, Ref):
         return _resolve_ref(
             parsed.name, scope=scope, bundle=bundle, alias_map=alias_map,
+            measure_ctx=measure_ctx,
         )
 
     if isinstance(parsed, DottedRef):
-        return _resolve_dotted(parsed.parts, scope=scope, bundle=bundle)
+        return _resolve_dotted(
+            parsed.parts, scope=scope, bundle=bundle, alias_map=alias_map,
+            measure_ctx=measure_ctx,
+        )
 
     if isinstance(parsed, StarSource):
         return StarKey()
@@ -420,27 +478,28 @@ def _bind(
     if isinstance(parsed, TransformCall):
         return _bind_transform(
             parsed, scope=scope, bundle=bundle, alias_map=alias_map,
+            measure_ctx=measure_ctx,
         )
 
     if isinstance(parsed, ScalarCall):
         return _bind_scalar(
             parsed, scope=scope, bundle=bundle, in_filter=in_filter,
-            alias_map=alias_map,
+            alias_map=alias_map, measure_ctx=measure_ctx,
         )
 
     if isinstance(parsed, Arith):
         return ArithmeticKey(
             op=parsed.op,
             operands=(
-                _bind(parsed.left, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map),
-                _bind(parsed.right, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map),
+                _bind(parsed.left, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx),
+                _bind(parsed.right, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx),
             ),
         )
 
     if isinstance(parsed, UnaryOp):
         return ArithmeticKey(
             op=parsed.op,
-            operands=(_bind(parsed.operand, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map),),
+            operands=(_bind(parsed.operand, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx),),
         )
 
     if isinstance(parsed, Cmp):
@@ -453,19 +512,19 @@ def _bind(
             return _bind_in(
                 parsed,
                 scope=scope, bundle=bundle, in_filter=in_filter,
-                alias_map=alias_map,
+                alias_map=alias_map, measure_ctx=measure_ctx,
             )
         return ArithmeticKey(
             op=parsed.op,
             operands=(
-                _bind(parsed.left, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map),
-                _bind(parsed.right, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map),
+                _bind(parsed.left, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx),
+                _bind(parsed.right, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx),
             ),
         )
 
     if isinstance(parsed, BoolOp):
         operands = tuple(
-            _bind(v, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map)
+            _bind(v, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx)
             for v in parsed.operands
         )
         return ArithmeticKey(op=parsed.op, operands=operands)
@@ -482,6 +541,7 @@ def _bind_in(
     bundle: ResolvedSourceBundle,
     in_filter: bool,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
+    measure_ctx: Optional[MeasureResolutionCtx] = None,
 ) -> InKey:
     """Bind an ``IN`` / ``NOT IN`` predicate into an ``InKey`` (DEV-1475).
 
@@ -505,6 +565,7 @@ def _bind_in(
     column = _bind(
         parsed.left,
         scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map,
+        measure_ctx=measure_ctx,
     )
     values = tuple(
         LiteralKey(value=normalize_scalar(elt.value))
@@ -549,13 +610,16 @@ def _resolve_ref(
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
+    measure_ctx: Optional[MeasureResolutionCtx] = None,
 ) -> ValueKey:
     """Resolve a bare identifier against the scope.
 
-    A name present in ``alias_map`` (a stage's declared-measure aliases,
-    supplied only on the filter/order path) interns onto that declared
-    slot's ``ValueKey`` before any column lookup — so a filter referencing
-    a measure by its user ``name`` shares the measure's slot (P4).
+    Resolution order: declared alias → column → saved measure. A name present
+    in ``alias_map`` (a stage's declared-measure aliases, supplied on the
+    filter/order path) interns onto that declared slot before any column
+    lookup, so a filter referencing a measure by its user ``name`` shares its
+    slot (P4). A name matching a saved measure (and no column) resolves inline
+    when ``measure_ctx`` is set (eligible position), else errors.
     """
     if alias_map and name in alias_map:
         return alias_map[name]
@@ -589,35 +653,27 @@ def _resolve_ref(
     # ``stores__name`` (D5) binds when it exists; otherwise the normal
     # unknown-reference error fires.
     col = next((c for c in model.columns if c.name == name), None)
-    if col is None:
-        # Try ModelMeasure as a fallback for bare measure refs.
-        mm = next((m for m in model.measures if m.name == name), None)
-        if mm is not None:
-            # A bare saved measure reaches the binder only as the source of an
-            # explicit aggregation — a plain ``aov`` is inlined by expansion first.
-            raise UnknownReferenceError(
-                name=name,
-                scope_kind="ModelScope",
-                scope_summary=f"model {model.name!r}",
-                suggestion=(
-                    f"{name!r} is a saved measure on {model.name!r}, not a "
-                    f"column, so it takes no aggregation. Reference it by its "
-                    f"bare name {name!r} without a colon aggregation."
-                ),
-            )
-        raise UnknownReferenceError(
-            name=name,
-            scope_kind="ModelScope",
-            scope_summary=(
-                f"model {model.name!r} columns: "
-                f"{[c.name for c in model.columns]}"
-            ),
-            suggestion=_name_suggestion(name=name, model=model),
-        )
+    if col is not None:
+        if col.sql is not None and col.sql.strip() != name:
+            return ColumnSqlKey(path=(), model=model.name, column_name=col.name)
+        return ColumnKey(path=(), leaf=col.name)
 
-    if col.sql is not None and col.sql.strip() != name:
-        return ColumnSqlKey(path=(), model=model.name, column_name=col.name)
-    return ColumnKey(path=(), leaf=col.name)
+    # No column: a saved measure resolves inline in an eligible position.
+    mm = model.get_measure(name)
+    if mm is not None:
+        return _resolve_saved_measure(
+            measure=mm, terminal_model=model, scope=scope, bundle=bundle,
+            measure_ctx=measure_ctx, ref_text=name, host_path=(),
+        )
+    raise UnknownReferenceError(
+        name=name,
+        scope_kind="ModelScope",
+        scope_summary=(
+            f"model {model.name!r} columns: "
+            f"{[c.name for c in model.columns]}"
+        ),
+        suggestion=_name_suggestion(name=name, model=model),
+    )
 
 
 def _walk_join_chain(
@@ -673,8 +729,21 @@ def _resolve_dotted(
     *,
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
+    alias_map: Optional[Dict[str, "ValueKey"]] = None,
+    measure_ctx: Optional[MeasureResolutionCtx] = None,
 ) -> ValueKey:
-    """Resolve a dotted ref against the scope."""
+    """Resolve a dotted ref against the scope.
+
+    Resolution order: declared alias (on the full dotted text) → join walk →
+    leaf column → saved measure. So a SELECTED dotted measure stays addressable
+    by its ``customers.aov`` name in filters / ORDER BY, and an unnamed dotted
+    saved measure re-anchors into host coordinates in an eligible position.
+    """
+    if alias_map:
+        dotted_text = ".".join(parts)
+        if dotted_text in alias_map:
+            return alias_map[dotted_text]
+
     if isinstance(scope, StageSchema):
         raise IllegalScopeReferenceError(
             name=".".join(parts),
@@ -696,6 +765,7 @@ def _resolve_dotted(
 
     # C14: strip same-model self-prefix.
     host = scope.source_model
+    original_parts = parts
     if parts and parts[0] == host.name:
         parts = parts[1:]
         if not parts:
@@ -706,12 +776,18 @@ def _resolve_dotted(
                 suggestion="self-prefix only — expected a column or join target.",
             )
         if len(parts) == 1:
-            return _resolve_ref(parts[0], scope=scope, bundle=bundle)
+            return _resolve_ref(
+                parts[0], scope=scope, bundle=bundle, alias_map=alias_map,
+                measure_ctx=measure_ctx,
+            )
 
     # parts now has the join walk to perform.
     if len(parts) == 1:
         # Single-segment after possible stripping — already a local ref.
-        return _resolve_ref(parts[0], scope=scope, bundle=bundle)
+        return _resolve_ref(
+            parts[0], scope=scope, bundle=bundle, alias_map=alias_map,
+            measure_ctx=measure_ctx,
+        )
 
     # Walk join chain. parts[:-1] are join targets; parts[-1] is the leaf column.
     hop_path = parts[:-1]
@@ -722,24 +798,166 @@ def _resolve_dotted(
 
     # `current` is the terminal model; `leaf` is the column on it.
     col = next((c for c in current.columns if c.name == leaf), None)
-    if col is None:
-        raise UnknownReferenceError(
-            name=".".join(parts),
-            scope_kind="ModelScope",
-            scope_summary=(
-                f"model {current.name!r} columns: "
-                f"{[c.name for c in current.columns]}"
-            ),
-            suggestion=None,
-        )
+    if col is not None:
+        if col.sql is not None and col.sql.strip() != leaf:
+            # Derived column on a joined model. The path is part of the key
+            # so the cross-model planner can route via the join graph.
+            return ColumnSqlKey(
+                path=tuple(hop_path), model=current.name, column_name=leaf,
+            )
+        return ColumnKey(path=tuple(hop_path), leaf=leaf)
 
-    if col.sql is not None and col.sql.strip() != leaf:
-        # Derived column on a joined model. The path is part of the key
-        # so the cross-model planner can route via the join graph.
-        return ColumnSqlKey(
-            path=tuple(hop_path), model=current.name, column_name=leaf,
+    # No column on the terminal model: a saved measure re-anchors into host coords.
+    mm = current.get_measure(leaf)
+    if mm is not None:
+        return _resolve_saved_measure(
+            measure=mm, terminal_model=current, scope=scope, bundle=bundle,
+            measure_ctx=measure_ctx, ref_text=".".join(original_parts),
+            host_path=tuple(hop_path),
         )
-    return ColumnKey(path=tuple(hop_path), leaf=leaf)
+    raise _unresolved_dotted_error(parts=original_parts, terminal_model=current)
+
+
+_MEASURE_LEGAL_POSITIONS = (
+    "saved measures may be referenced only in a measure formula or a "
+    "computed dimension expression"
+)
+
+
+def _ineligible_saved_measure_error(
+    *, ref_text: str, model_name: str,
+) -> UnknownReferenceError:
+    """A saved-measure reference in a position where measures are not legal
+    (an aggregation source, a plain dimension, a filter, ORDER BY, partition_by)."""
+    return UnknownReferenceError(
+        name=ref_text,
+        scope_kind="ModelScope",
+        scope_summary=f"model {model_name!r}",
+        suggestion=(
+            f"{ref_text!r} is a saved measure on {model_name!r}, not a column, "
+            f"so it takes no aggregation. {_MEASURE_LEGAL_POSITIONS}; reference "
+            f"it there as {ref_text!r}."
+        ),
+    )
+
+
+def _unresolved_dotted_error(
+    *, parts: Tuple[str, ...], terminal_model: SlayerModel,
+) -> UnknownReferenceError:
+    """A dotted leaf that matches neither a column nor a saved measure on the
+    terminal model — names both namespaces and offers close matches from each."""
+    dotted = ".".join(parts)
+    columns = [c.name for c in terminal_model.columns]
+    measures = [m.name for m in terminal_model.measures if m.name]
+    detail = (
+        f"{dotted!r} is neither a column nor a saved measure on "
+        f"{terminal_model.name!r}. Columns: {columns}; saved measures: {measures}."
+    )
+    match = _name_suggestion(name=parts[-1], model=terminal_model)
+    if match:
+        detail = f"{detail} {match}"
+    return UnknownReferenceError(
+        name=dotted,
+        scope_kind="ModelScope",
+        scope_summary=f"model {terminal_model.name!r}",
+        suggestion=detail,
+    )
+
+
+def _rerooted_bundle(
+    *, bundle: ResolvedSourceBundle, target: SlayerModel,
+) -> ResolvedSourceBundle:
+    """A copy of ``bundle`` re-rooted at ``target``, reusing the same referenced
+    models. Binding a saved measure's formula against the target then resolves
+    its column filters / aggregation gates against the model that owns them
+    (those helpers walk from ``bundle.source_model``)."""
+    others = [m for m in bundle.referenced_models if m.name != target.name]
+    return bundle.model_copy(update={
+        "source_model": target,
+        "referenced_models": [target] + others,
+    })
+
+
+def _reject_round_trip(
+    host_key: ValueKey,
+    *,
+    host: SlayerModel,
+    bundle: ResolvedSourceBundle,
+    ref_text: str,
+    terminal_name: str,
+) -> None:
+    """Reject a re-anchored measure whose join path revisits a model already on
+    the host→target chain (a round trip) — parity with the hand-written dotted
+    spelling, which is rejected as a circular join."""
+    for sub in walk_value_keys(host_key):
+        path = getattr(sub, "path", None)
+        if not path:
+            continue
+        visited = {host.name}
+        for hop in path:
+            nxt = bundle.get_referenced_model(hop)
+            if nxt is None:
+                break
+            if nxt.name in visited:
+                raise ValueError(
+                    f"Round-trip reference: saved measure {ref_text!r} expands "
+                    f"across a join back to {nxt.name!r}, a model already on the "
+                    f"host->{terminal_name} chain, so it cannot be re-anchored "
+                    f"(the identical hand-written path is rejected as circular)."
+                )
+            visited.add(nxt.name)
+
+
+def _resolve_saved_measure(
+    *,
+    measure,
+    terminal_model: SlayerModel,
+    scope: ModelScope,
+    bundle: ResolvedSourceBundle,
+    measure_ctx: Optional[MeasureResolutionCtx],
+    ref_text: str,
+    host_path: Tuple[str, ...],
+) -> ValueKey:
+    """Resolve a saved ``ModelMeasure`` into a bound ``ValueKey``. ``host_path``
+    is the host→terminal join path (``()`` for a bare/local measure); a
+    cross-model measure binds against the target then prepends ``host_path``,
+    giving the same tree as the hand-written host-prefixed formula. Raises the
+    ineligible-position error when ``measure_ctx`` is None."""
+    if measure_ctx is None:
+        raise _ineligible_saved_measure_error(
+            ref_text=ref_text, model_name=terminal_model.name,
+        )
+    step = (terminal_model.name, measure.name)
+    if step in measure_ctx.chain:
+        raise MeasureCycleError(
+            chain=_fmt_measure_chain(measure_ctx.chain + (step,)),
+        )
+    child = measure_ctx.descend(model=terminal_model.name, measure=measure.name)
+    if len(child.chain) > measure_ctx.depth_limit:
+        raise MeasureRecursionLimitError(
+            chain=_fmt_measure_chain(child.chain), limit=measure_ctx.depth_limit,
+        )
+    parsed = parse_expr(measure.formula)
+    if not host_path:
+        # Bare/local: the measure lives on the host; bind inline at this scope.
+        return _bind(
+            parsed, scope=scope, bundle=bundle, in_filter=False, measure_ctx=child,
+        )
+    # Cross-model: bind against the target, then prepend into host coordinates.
+    host_model = scope.source_model
+    assert host_model is not None  # dotted resolution guarantees a host anchor
+    target_scope = ModelScope(source_model=terminal_model)
+    target_bundle = _rerooted_bundle(bundle=bundle, target=terminal_model)
+    bound = _bind(
+        parsed, scope=target_scope, bundle=target_bundle, in_filter=False,
+        measure_ctx=child,
+    )
+    host_key = prepend_value_key(bound, host_path=host_path)
+    _reject_round_trip(
+        host_key, host=host_model, bundle=bundle,
+        ref_text=ref_text, terminal_name=terminal_model.name,
+    )
+    return host_key
 
 
 def _resolve_dotted_star(
@@ -1135,13 +1353,16 @@ def _bind_transform(
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
+    measure_ctx: Optional[MeasureResolutionCtx] = None,
 ) -> TransformKey:
     # ``alias_map`` lets a transform input reference a declared-measure
     # alias inside a filter (``change(rev) > 0``); partition_by must still
-    # be a real column, so it is bound without the alias map.
+    # be a real column, so it is bound without the alias map. ``measure_ctx``
+    # rides the transform INPUT only (D2) — partition_by / scalar kwargs drop
+    # it, so a saved measure is illegal there.
     inp = _bind(
         parsed.input, scope=scope, bundle=bundle, in_filter=False,
-        alias_map=alias_map,
+        alias_map=alias_map, measure_ctx=measure_ctx,
     )
     # The value to transform is the first positional (``parsed.input``).
     # A few transforms accept further POSITIONAL params per the documented
@@ -1299,6 +1520,7 @@ def _bind_scalar(
     bundle: ResolvedSourceBundle,
     in_filter: bool,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
+    measure_ctx: Optional[MeasureResolutionCtx] = None,
 ) -> ScalarCallKey:
     if parsed.name not in SCALAR_FUNCTIONS:
         # Defence in depth: the parser already enforces the allowlist,
@@ -1327,7 +1549,7 @@ def _bind_scalar(
             )
         raise ValueError(arity_error)
     args = tuple(
-        _bind(a, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map)
+        _bind(a, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx)
         for a in parsed.args
     )
     return ScalarCallKey(name=parsed.name, args=args)

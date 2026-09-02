@@ -134,13 +134,30 @@ def _apply_extension_overlay(
         ModelJoin.model_validate(j) if isinstance(j, dict) else j
         for j in (ext.joins or [])
     ]
-    return base.model_copy(
+    # A query-backed base defers its measure overlay to post-expansion (re-applied
+    # once source_queries expands to sql); overlaying measures now would build the
+    # source_queries+measures combination the validator rejects.
+    overlay_measures = list(base.measures) if base.source_queries else (
+        list(base.measures) + extra_measures
+    )
+    merged = base.model_copy(
         update={
             "columns": list(base.columns) + extra_cols,
-            "measures": list(base.measures) + extra_measures,
+            "measures": overlay_measures,
             "joins": list(base.joins) + extra_joins,
         }
     )
+    # A ModelExtension measure reusing a model measure's name is a loud duplicate
+    # error, not a silent shadow (model_copy runs no validators, so check here).
+    if not merged.source_queries:
+        names = [m.name for m in merged.measures if m.name]
+        dupes = sorted({n for n in names if names.count(n) > 1})
+        if dupes:
+            raise ValueError(
+                f"Model '{merged.name}': duplicate measure names: {dupes}. A "
+                f"ModelExtension measure may not reuse a model measure's name."
+            )
+    return merged
 
 
 def _source_name_if_sibling(

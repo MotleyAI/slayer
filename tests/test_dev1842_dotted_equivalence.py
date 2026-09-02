@@ -42,7 +42,9 @@ async def exec_backend(request):
 
 
 def _needs_time(formula: str) -> bool:
-    return "cumsum" in formula
+    # The transform pair's DOTTED spelling (``customers.spend_run``) hides its
+    # cumsum behind the measure name, so match the pair as well as the literal.
+    return "cumsum" in formula or formula in TRANSFORM_PAIR
 
 
 def _measure_query(spelling: str):

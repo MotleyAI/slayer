@@ -729,6 +729,21 @@ class SlayerModel(BaseModel):
             )
         return self
 
+    # NOSONAR S3516 — Pydantic v2 @model_validator(mode="after") must return self.
+    @model_validator(mode="after")
+    def _reject_measures_on_query_backed(self) -> "SlayerModel":
+        """A query-backed model may not declare ``measures`` directly — virtual
+        expansion silently dropped them, so they never took effect. Declare them
+        in the backing query's final stage, or via a ModelExtension."""
+        if self.source_queries and self.measures:
+            raise ValueError(
+                f"Model '{self.name}': a query-backed model (source_queries) "
+                f"cannot declare measures directly — they never take effect. "
+                f"Declare the measure in the backing query's final stage, or add "
+                f"it with a ModelExtension at query time."
+            )
+        return self
+
     def get_column(self, name: str) -> Column | None:
         for c in self.columns:
             if c.name == name:
