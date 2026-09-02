@@ -226,17 +226,29 @@ Expressions that are not grain-self-contained SHALL fail with clear errors namin
 - WHEN a dimension expression's aggregate declares a partition key reachable from its root only across a join with unproven arity
 - THEN the query fails with a clear error naming the key and the remedy
 
-### Requirement: Coexistence deferrals after cross-model unification
-A row regroup attach (computed dimension) or a partitioned-aggregate combined attach nested where the query must render as a single CTE body SHALL fail with a clear not-yet-supported error naming the unsupported combination — never with wrong numbers or invalid SQL. Cross-model measures are no longer in the deferral list (this change), and the windowed/ranked coexistence deferral was lifted by the stage-2 local unification. Shapes that rendered inside CTE bodies before this change — a plain cross-model aggregate measure in particular — MUST continue to render there after migrating onto the primitive.
+### Requirement: Nested attaches render inside CTE bodies
+A row regroup attach (computed dimension), a partitioned-aggregate combined attach, and a re-rooted `first`/`last` sub-plan that itself carries producers SHALL each compile and execute correctly when nested where the plan renders as a single CTE body (a non-final query stage, or inside another producer): their internal relations hoist into the enclosing statement's one flat `WITH`. No not-yet-supported coexistence guard remains for these shapes, and result cardinality is unchanged by the nesting.
 
-#### Scenario: CTE-body nesting still guarded
-- WHEN a query whose plan carries a computed-dimension row attach or a partitioned-aggregate combined attach must render as a single CTE body
-- THEN rendering fails with the exact CTE-body deferral error, never with invalid SQL
+#### Scenario: Computed-dimension row attach in a non-final stage executes
+- WHEN a multi-stage query's earlier stage groups by a dimension banding a partitioned aggregate and a later stage consumes the result
+- THEN the query executes with correct values and the earlier stage's producer relations appear in the statement's single flat `WITH`
 
-#### Scenario: Migrated cross-model measure still renders in a CTE body
-- WHEN a query with a plain cross-model aggregate measure renders as a CTE body (a non-final stage)
-- THEN the SQL renders as before the migration — the measure's producer never triggers the CTE-body deferral
+#### Scenario: Partitioned combined attach in a non-final stage executes
+- WHEN a multi-stage query's earlier stage selects a partitioned-aggregate measure and a later stage consumes the result
+- THEN the query executes with correct values, never the former CTE-body deferral error
 
-#### Scenario: The lifted cross-model guard leaves no residue
-- WHEN the package sources are scanned for the former cross-model-coexistence error
-- THEN no reference to it remains
+#### Scenario: Re-rooted first/last sub-plan with its own producers executes
+- WHEN a `first`/`last` aggregate's sub-plan itself requires producer relations and the whole plan renders as a CTE body
+- THEN the sub-plan's relations hoist and the query executes with correct values
+
+#### Scenario: One flat WITH per emitted statement
+- WHEN any query with nested attaches in CTE bodies renders
+- THEN the emitted SQL contains exactly one flat `WITH` chain — never a `WITH` nested inside a CTE definition
+
+#### Scenario: Nesting is cardinality-neutral
+- WHEN such a multi-stage query's later stage runs with and without the earlier stage's nested attach
+- THEN both runs return the same rows and identical values in all shared columns
+
+#### Scenario: The lifted CTE-body guards leave no residue
+- WHEN the package sources are scanned for the former CTE-body deferral errors
+- THEN no reference to them remains
