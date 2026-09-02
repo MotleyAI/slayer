@@ -132,7 +132,7 @@ from slayer.engine.regroup_planner import (
     REGROUP_LEAF_PREFIX,
     RegroupPlaceholderRegistry,
     classify_regroup_filter,
-    combined_partitioned_aggregates,
+    combined_consumer_aggregates,
     conjunct_scope,
     dimension_partitioned_aggregates,
     dimension_regroup_roots,
@@ -842,11 +842,13 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     _dim_agg_keys = frozenset(dimension_partitioned_aggregates(declared_measures))
     # A partitioned aggregate consumed in a COMBINED position needs query-dimension
     # partition keys for the join-back; the finer-grain exemption is row-attach only.
+    # Local and cross-model partitioned consumers are strict-checked alike.
+    _consumers = combined_consumer_aggregates(
+        declared_measures, order_specs,
+        row_agg_set=_dim_agg_keys, bound_filters=bound_filters,
+    )
     _combined_consumer_keys = frozenset(
-        combined_partitioned_aggregates(
-            declared_measures, order_specs,
-            row_agg_set=_dim_agg_keys, bound_filters=bound_filters,
-        )[0]
+        [*_consumers.local_partitioned, *_consumers.cross_model_partitioned]
     )
 
     def _validate_partition_keys(key: ValueKey) -> frozenset:
@@ -2106,39 +2108,6 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     )
 
 
-def _discover_cross_model_combined(
-    prebound: PreboundQuery,
-) -> Tuple[List[AggregateKey], Dict[AggregateKey, str], Dict[AggregateKey, DataType]]:
-    seen: set = set()
-    out: List[AggregateKey] = []
-    alias: Dict[AggregateKey, str] = {}
-    declared_type: Dict[AggregateKey, DataType] = {}
-    for dm in prebound.declared_measures:
-        if dm.is_dimension:
-            continue
-        vk = dm.bound.value_key
-        _accumulate_cross_model_leaves(vk, seen=seen, out=out)
-        if _is_cross_model_agg(vk):
-            if dm.public_name is not None:
-                alias.setdefault(vk, dm.public_name)
-            if dm.type_is_explicit and dm.type is not None:
-                declared_type.setdefault(vk, dm.type)
-    for sp in prebound.order_specs:
-        _accumulate_cross_model_leaves(sp.bound.value_key, seen=seen, out=out)
-    for bf in prebound.bound_filters:
-        _accumulate_cross_model_leaves(bf.value_key, seen=seen, out=out)
-    return out, alias, declared_type
-
-
-def _accumulate_cross_model_leaves(
-    vk: ValueKey, *, seen: set, out: List[AggregateKey],
-) -> None:
-    for k in walk_value_keys(vk):
-        if _is_cross_model_agg(k) and k not in seen:
-            seen.add(k)
-            out.append(k)
-
-
 def _assert_total_routing(prebound: PreboundQuery) -> None:
     """Post-discovery total-routing invariant: after the top-level regroup rewrite
     every cross-model / partitioned aggregate leaf must be disposed (producer
@@ -2240,14 +2209,17 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
         row_inner_aggs = dimension_partitioned_aggregates(
             prebound.declared_measures,
         )
-        combined_aggs, public_alias_by_agg = combined_partitioned_aggregates(
-            prebound.declared_measures, prebound.order_specs,
-            row_agg_set=frozenset(row_inner_aggs),
-            bound_filters=prebound.bound_filters,
-        )
     else:
         row_aggs, row_inner_aggs = [], []
-        combined_aggs, public_alias_by_agg = [], {}
+    # One unified combined-consumer walk (local + cross-model); ``row_agg_set`` is empty
+    # in a producer sub-plan, matching the pre-unification cross-model discovery.
+    consumers = combined_consumer_aggregates(
+        prebound.declared_measures, prebound.order_specs,
+        row_agg_set=frozenset(row_inner_aggs),
+        bound_filters=prebound.bound_filters,
+    )
+    combined_aggs = list(consumers.local_partitioned) if local_discovery else []
+    public_alias_by_agg: Dict[AggregateKey, str] = dict(consumers.public_alias)
     # Bare windowed / first-last measures join the COMBINED roots at the full projected grain.
     dim_dms, td_dms, _ = partition_declared_measures(
         declared_measures=prebound.declared_measures,
@@ -2306,9 +2278,10 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
     # a computed dimension is a ROW-phase producer synthesized separately.
     cm_row = [k for k in row_aggs if _is_cross_model_agg(k)]
     row_aggs = [k for k in row_aggs if not _is_cross_model_agg(k)]
-    cm_combined, cm_alias, cm_type = _discover_cross_model_combined(prebound)
-    for agg, name in cm_alias.items():
-        public_alias_by_agg.setdefault(agg, name)
+    cm_combined = [
+        *consumers.cross_model_partitioned, *consumers.cross_model_bare,
+    ]
+    cm_type = dict(consumers.declared_type)
     if not row_aggs and not combined_aggs and not cm_combined and not cm_row:
         return None
     # A real column sharing the reserved placeholder prefix would shadow a placeholder

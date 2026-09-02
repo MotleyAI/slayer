@@ -180,11 +180,17 @@ in a filter (`revenue:sum(partition_by=region) > 5000`) — a filter's top-level
 references resolve, and a predicate whose references share no scope raises a
 "split the filter" error. This includes cross-model sources
 (`customers.spend:sum(partition_by=…)`), which compute in a sub-query rooted at
-the measure's model. As a query MEASURE, a `partition_by` column that is not a
-query dimension errors at plan time; for a cross-model source, every explicit
-partition key must additionally be *attributable* from the measure's own model
-(see [cross-model measures](queries.md#cross-model-measures)) — an unprovable
-key errors naming the join remedy rather than fanning the value.
+the measure's model. Consumed in a **combined position** — a query measure, an
+arithmetic/scalar composite, a transform input, or a raw `order` target — every
+explicit partition key must be a query dimension (or a query time dimension's
+bucket), for local and cross-model sources alike, else it errors at plan time
+naming the key and the remedy. Only the computed-dimension consumer keeps the
+finer-grain freedom; a filter over, or `order` by the *name* of, that dimension's
+own aggregate is a row-scope reference that stays legal at any partition grain.
+For a cross-model source, every explicit partition key must additionally be
+*attributable* from the measure's own model (see
+[cross-model measures](queries.md#cross-model-measures)) — an unprovable key
+errors naming the join remedy rather than fanning the value.
 
 Combining aggregates at **different** grains in one expression is well-defined:
 `amount:sum(partition_by=region) - amount:sum(partition_by=city)` (as a measure,
