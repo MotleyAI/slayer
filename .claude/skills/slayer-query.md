@@ -56,7 +56,7 @@ Any aggregation accepts `partition_by=` to compute it over a subset of the query
 
 `*:count` is always available — no column definition needed. `col:count` counts non-nulls.
 
-Saved named formulas (`SlayerModel.measures`) can be referenced by bare name in any formula context: `{"formula": "aov"}`.
+Saved named formulas (`SlayerModel.measures`) can be referenced by bare name (`{"formula": "aov"}`), or by dotted path for a joined model's saved measure (`{"formula": "customers.aov"}`).
 
 Result column naming: `revenue:sum` → `orders.revenue_sum` (colon becomes underscore). `*:count` → `orders._count` (the leading `_` distinguishes it from any user-defined column literally named `count`). An explicit `name` on the measure spec overrides the canonical form: `{"formula": "amount:sum", "name": "rev"}` → `orders.rev`. Multi-stage `source_queries` rely on this — downstream stages reference inner-stage outputs by the chosen name.
 

@@ -31,8 +31,7 @@ individually patched.
 flowchart LR
     raw["SlayerQuery<br/>(raw, slack-tolerant)"] --> norm["slack normalize<br/>(normalization.py)"]
     norm --> parse["parse_expr<br/>(syntax.py)"]
-    parse --> expand["expand measures<br/>(measure_expansion.py)"]
-    expand --> bind["bind_expr / bind_filter<br/>(binding.py)"]
+    parse --> bind["bind_expr / bind_filter<br/>(binding.py)<br/>incl. saved-measure resolution"]
     bind --> plan["plan_query / plan_stages<br/>(stage_planner.py)"]
     plan --> planned["PlannedQuery<br/>(planned.py)"]
     planned --> gen["generate_planned_stages<br/>(generator.py)"]
@@ -60,7 +59,7 @@ flowchart TB
     bundle --> norm --> vars --> plan --> gen --> meta
 
     subgraph perstage["plan_query — per stage"]
-        decl["parse + expand + bind<br/>declared measures / dims / TDs"]
+        decl["parse + bind<br/>declared measures / dims / TDs"]
         filt["bind_filter<br/>filters (phase-classified, P8)"]
         td["attach time_key → transforms"]
         sugar["lower_sugar_transforms (change/change_pct)"]
@@ -104,8 +103,7 @@ The new pipeline modules, in dependency order:
 | `slayer/engine/normalization.py` | Slack-normalization layer (P0) | [Slack normalization](slack-normalization.md) |
 | `slayer/engine/syntax.py` | Mode-B Python-AST parser → `ParsedExpr` | [Parsing](parsing.md) |
 | `slayer/sql/sql_expr.py` | Mode-A sqlglot wrapper | [Parsing](parsing.md) |
-| `slayer/engine/measure_expansion.py` | Pre-bind named-`ModelMeasure` expansion | [Parsing](parsing.md) |
-| `slayer/engine/binding.py` | `ExpressionBinder` / `FilterBinder` → `BoundExpr` | [Binding](binding.md) |
+| `slayer/engine/binding.py` | `ExpressionBinder` / `FilterBinder` → `BoundExpr`; saved-measure resolution | [Binding](binding.md) |
 | `slayer/engine/planning.py` | `ValueRegistry`, `ProjectionPlanner`, transform lowering | [Planning](planning.md) |
 | `slayer/engine/cross_model_planner.py` | Cross-model aggregate strategy (I1) | [Cross-model aggregates](cross-model-aggregates.md) |
 | `slayer/engine/planned.py` | `PlannedQuery` and its parts | [Planning](planning.md) |
