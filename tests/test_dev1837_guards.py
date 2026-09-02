@@ -4,8 +4,9 @@ Lifted direction: a row regroup attach (computed dimension) with a transform
 measure renders in both chains; the old catch-all DEV-1824 arm is gone from the
 source, and the windowed/ranked arm lifted with DEV-1835 (its absence is
 scanned in tests/test_dev1835_guards.py); the cross-model arm lifted with
-DEV-1836 (row-attach × cross-model now broadcasts). Remaining deferrals: the
-narrowed CTE-body arms with exact messages (row / combined → DEV-1838), and the
+DEV-1836 (row-attach × cross-model now broadcasts); the CTE-body arms lifted
+with DEV-1838 stage 4 (nested attaches hoist — the positive contract below and
+the residue scan in tests/test_dev1838_cte_body_lifts.py). Also pinned: the
 two stale stage_planner DEV-1824 refs re-pointed (D5).
 """
 
@@ -15,6 +16,8 @@ import re
 from pathlib import Path
 
 import pytest
+import sqlglot
+from sqlglot import exp
 
 import slayer
 from slayer.engine.source_bundle import ResolvedSourceBundle
@@ -42,6 +45,8 @@ ARM_CROSS_MODEL = (
     "A row regroup attach (computed dimension) combined with a cross-model "
     "measure is not yet supported (DEV-1836)."
 )
+#: The DEV-1838-lifted CTE-body arms — kept only as no-residue scan needles
+#: (tests/test_dev1838_cte_body_lifts.py imports them).
 ARM_ROW_CTE_BODY = (
     "A row regroup attach (computed dimension) nested in a CTE body is not "
     "yet supported (DEV-1838)."
@@ -161,20 +166,35 @@ class TestRemainingArmsExactMessages:
 
 
 class TestCteBodyArms:
-    def test_row_attach_in_cte_body_arm(self) -> None:
+    """DEV-1838 stage 4 — the former CTE-body deferrals lifted: an
+    attach-carrying plan renders as a CTE body whose producer relations hoist
+    into the enclosing statement's flat WITH (the D2 split), leaving a
+    WITH-free body with no leaked placeholder."""
+
+    @staticmethod
+    def _split_cte_body(planned, bundle):
+        generator = SQLGenerator(dialect="postgres")
+        generator.install_generation()
+        sql = generator.generate_from_planned(
+            planned, bundle=bundle, as_cte_body=True, reuse_allocator=True,
+        )
+        return generator._split_statement_ctes(sql)
+
+    def _assert_hoistable(self, hoisted, body: str) -> None:
+        assert any(name.startswith("_cm_") for name, _ in hoisted)
+        parsed = sqlglot.parse_one(body, read="postgres")
+        assert not list(parsed.find_all(exp.With)), body
+        assert "__regroup__" not in body
+
+    def test_row_attach_renders_as_hoistable_cte_body(self) -> None:
         bundle = _bundle()
         planned = plan_query(query=q(
             dimensions=["region", BAND],
             measures=[ModelMeasure(formula="amount:sum", name="m")],
         ), bundle=bundle)
-        generator = SQLGenerator(dialect="postgres")
-        with pytest.raises(NotImplementedError) as ei:
-            generator.generate_from_planned(
-                planned, bundle=bundle, as_cte_body=True,
-            )
-        assert str(ei.value) == ARM_ROW_CTE_BODY
+        self._assert_hoistable(*self._split_cte_body(planned, bundle))
 
-    def test_combined_attach_in_cte_body_arm(self) -> None:
+    def test_combined_attach_renders_as_hoistable_cte_body(self) -> None:
         bundle = _bundle()
         planned = plan_query(query=q(
             dimensions=["region"],
@@ -182,12 +202,7 @@ class TestCteBodyArms:
                 ModelMeasure(formula="amount:sum(partition_by=region)", name="rt"),
             ],
         ), bundle=bundle)
-        generator = SQLGenerator(dialect="postgres")
-        with pytest.raises(NotImplementedError) as ei:
-            generator.generate_from_planned(
-                planned, bundle=bundle, as_cte_body=True,
-            )
-        assert str(ei.value) == ARM_COMBINED_CTE_BODY
+        self._assert_hoistable(*self._split_cte_body(planned, bundle))
 
 
 class TestStalePlannerRefsRepointed:

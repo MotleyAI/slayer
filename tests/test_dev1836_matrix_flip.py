@@ -154,7 +154,6 @@ class TestRowAttachWithCrossModelMeasure:
         planned = plan_query(
             query=q(dimensions=[LOCAL_BAND], measures=[M, CM]), bundle=_bundle(),
         )
-        assert not getattr(planned, "cross_model_aggregate_plans", [])
         phases = {p.attach_phase for p in planned.regroup_attach_plans}
         assert phases == {"row", "combined"}
 
@@ -204,7 +203,6 @@ class TestCrossModelSourceInComputedDimension:
             ),
             bundle=_bundle(),
         )
-        assert not getattr(planned, "cross_model_aggregate_plans", [])
 
         def _all_nested(plans) -> list:
             out = []

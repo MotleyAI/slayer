@@ -1,46 +1,9 @@
-"""P-F "one naming authority": CTE-name allocation + the alias consolidation.
+"""One naming authority: CTE-name allocation + alias-derivation consolidation.
 
-Three things are pinned here.
-
-**Every CTE name through the collision-aware allocator.** ``_wm_`` was retrofitted
-onto the allocator; ``_cm_`` never was. Two consequences, both reachable from
-the public query API today:
-
-* two cross-model measures whose canonical aliases differ ONLY in case emit two
-  ``_cm_`` CTE names that fold together on every case-folding dialect (which is
-  all of them but ClickHouse) — the collision belt raises, and without the belt
-  the backend would see a duplicate ``WITH`` name;
-* ``_cte_name_from_alias`` stacks two lossy steps (``flat_name``, which is
-  documented non-injective, then ``re.sub`` over non-identifier characters) and
-  the result is used as the PLAN IDENTITY key in ``seen_cm``. Two DISTINCT
-  aggregate slots that sanitise to the same name make the second one skip the
-  loop body, leaving ``agg_col_alias_for_plan`` / ``joinback_pairs_for_plan``
-  unfilled — a ``KeyError`` at the four unconditional downstream subscripts.
-
-The fix is structural identity (the full typed ``AggregateKey`` plus its source
-relation) for dedup, and the allocator for names. Canonical aliases are NOT a
-safe identity: ``canonical_agg_name`` omits ``column_filter_key``, so a filtered
-and an unfiltered aggregate over the same column share one canonical alias while
-needing two different CTEs.
-
-**The consolidation.** Four copies of canonical-aggregate-alias derivation
-(``generator._canonical_cross_model_alias``, ``cross_model_planner._aggregate_alias``,
-``planning._canonical_name``, ``stage_planner._canonical_alias_for_formula``) that
-have DRIFTED on four axes become one ``naming.canonical_aggregate_alias``
-parameterised by a named profile. The expected-value tables below are frozen
-from the four legacy bodies, so the consolidation is provably behavior-preserving.
-
-**The naming constants.** ``_outer`` / ``_stage_inner`` / ``_filtered`` are minted
-in more than one module, coupled by convention only (``generator.py`` and
-``dialects/tsql.py`` each write the ``_outer`` literal independently). The
-literals move into ``naming.py`` so one module owns them.
-
-Test style: the collision tests are SELF-CALIBRATING. Rather than hardcoding an
-expected aggregate value, each runs the query once per measure in isolation
-(which works today), then once with both measures together, and asserts the
-combined run reproduces both isolated values. That is exactly SLayer's core
-invariant — "adding a measure must never change another measure's value" — and
-it cannot pass by agreeing with a wrong hardcoded number.
+Pins: (1) every CTE name routes through the collision-aware allocator (``_cm_``
+did not), dedup keyed on the full typed ``AggregateKey`` not the lossy alias;
+(2) four drifted alias-derivation copies collapse into one profiled
+``naming.canonical_aggregate_alias``; (3) the naming constants get one owner.
 """
 
 from __future__ import annotations
@@ -52,7 +15,6 @@ import re
 import sqlite3
 from collections import Counter
 from decimal import Decimal
-from types import SimpleNamespace
 from typing import List
 
 import pytest
@@ -77,9 +39,8 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
-from slayer.engine import cross_model_planner, planning, stage_planner
+from slayer.engine import planning, stage_planner
 from slayer.engine.binding import BoundExpr
-from slayer.engine.cross_model_planner import _aggregate_alias
 from slayer.engine.planning import _canonical_name
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.stage_planner import _canonical_alias_for_formula
@@ -88,33 +49,18 @@ from slayer.sql import naming
 from slayer.sql import stage_wrapper as sw_module
 from slayer.sql.dialects import get_dialect
 from slayer.sql.dialects import tsql as tsql_module
-from slayer.sql.generator import SQLGenerator, _cm_plan_identity
+from slayer.sql.generator import SQLGenerator
 from slayer.sql.naming import AliasAllocator
 from slayer.storage.yaml_storage import YAMLStorage
 
 
-# ===========================================================================
-# Fixtures — a seeded SQLite store whose model deliberately contains the
-# name shapes that collide under the current sanitisation.
-# ===========================================================================
+# Fixtures — a seeded store whose model contains the colliding name shapes.
 
 
 async def _build_engine(*, base_dir: str, dialect: str = "sqlite") -> SlayerQueryEngine:
-    """orders -> customers, seeded, with the collision-bait columns.
-
-    On ``customers``:
-      * ``Rev`` and ``rev`` — a case-only pair (distinct physical columns
-        ``revx`` / ``revy``, so a shadowing bug shows up as equal values);
-      * ``revenue`` — the ordinary cross-model measure source.
-
-    On ``orders``:
-      * ``customers__revenue`` — a ``__``-in-name column (a ratified
-        keep-list carve-out) carrying a join-crossing ``Column.filter``, which
-        makes it a filtered-local ISOLATED aggregate — i.e. it also
-        renders as a ``_cm_`` CTE. Its canonical alias
-        ``orders.customers__revenue_sum`` sanitises to exactly the same CTE
-        name as the cross-model ``orders.customers.revenue_sum``.
-    """
+    """orders -> customers, seeded, with collision-bait columns: ``Rev``/``rev``
+    (case-only pair over revx/revy) and ``customers__revenue`` (a filtered-local
+    isolated aggregate colliding with the cross-model ``customers.revenue_sum``)."""
     d = base_dir
     db_path = os.path.join(d, "b4.db")
     con = sqlite3.connect(db_path)
@@ -177,8 +123,8 @@ async def _build_engine(*, base_dir: str, dialect: str = "sqlite") -> SlayerQuer
                 Column(name="status", type=DataType.TEXT),
                 Column(name="amount", type=DataType.DOUBLE),
                 Column(name="created_at", type=DataType.TIMESTAMP),
-                # __ in a Column.name (keep-list carve-out) + a join-crossing
-                # filter => filtered-local isolation => a _cm_ CTE.
+                # __-name carve-out + join-crossing filter => filtered-local
+                # isolation (its own _cm_ CTE).
                 Column(
                     name="customers__revenue",
                     sql="amount",
@@ -202,14 +148,7 @@ async def engine(tmp_path) -> SlayerQueryEngine:
 
 
 def _cte_names_by_scope(sql: str, *, dialect: str = "sqlite") -> List[List[str]]:
-    """CTE names grouped per ``WITH`` scope, in emission order.
-
-    Scope-aware because SQL only requires uniqueness WITHIN one ``WITH``; the
-    same name may legally recur in an independent nested scope, and
-    ``assert_unique_cte_names`` validates each ``exp.With`` separately. A flat
-    cross-scope uniqueness check would constrain the allocator beyond what the
-    plan asks for.
-    """
+    """CTE names grouped per ``WITH`` scope — SQL requires uniqueness only within one."""
     parsed = sqlglot.parse_one(sql=sql, dialect=dialect)
     return [
         [cte.alias_or_name for cte in with_node.expressions]
@@ -228,14 +167,7 @@ async def _isolated_then_combined(
     measures: List[ModelMeasure],
     dimension: str = "status",
 ) -> None:
-    """The self-calibrating collision assertion.
-
-    Run each measure ALONE (no collision possible), record its value, then run
-    them TOGETHER and require the combined run to reproduce every isolated
-    value. Catches all three failure modes at once: an exception, a silently
-    dropped measure, and — the nastiest — two slots sharing one CTE so both
-    read the same (wrong) column.
-    """
+    """Self-calibrating: each measure alone, then together must reproduce every isolated value."""
     isolated: dict = {}
     for m in measures:
         resp = await engine.execute(
@@ -273,23 +205,13 @@ async def _isolated_then_combined(
         )
 
 
-# ===========================================================================
 # B4 — cross-model CTE names through the allocator.
-# ===========================================================================
 
 
 class TestCrossModelCteNameAllocation:
     async def test_case_only_aliases_get_distinct_cte_names(
         self, engine,
     ) -> None:
-        """Two cross-model measures differing only in the case of the source
-        column must render as two distinct, non-fold-colliding CTEs.
-
-        Today ``_cm_`` bypasses the allocator entirely, so both names are
-        emitted verbatim and fold together on SQLite (a case-folding dialect),
-        tripping ``assert_unique_cte_names``. ``_wm_`` handles the identical
-        situation correctly because it routes through ``allocate_cte``.
-        """
         await _isolated_then_combined(
             engine,
             measures=[
@@ -301,8 +223,6 @@ class TestCrossModelCteNameAllocation:
     async def test_case_only_cte_names_do_not_fold_together(
         self, engine,
     ) -> None:
-        """The naming half of the same case, asserted on the emitted SQL: no
-        two CTE names may be equal after case folding."""
         resp = await engine.execute(
             SlayerQuery(
                 source_model="orders",
@@ -327,18 +247,8 @@ class TestCrossModelCteNameAllocation:
     async def test_sanitisation_collision_keeps_both_plans(
         self, engine,
     ) -> None:
-        """The ``seen_cm`` collision-as-identity bug.
-
-        ``orders.customers.revenue_sum`` (cross-model) and
-        ``orders.customers__revenue_sum`` (filtered-local isolated) are
-        DISTINCT aggregates whose canonical aliases both sanitise to
-        ``_cm_orders__customers__revenue_sum`` — ``flat_name`` maps ``.`` to
-        ``__``, so the two are indistinguishable after flattening.
-
-        Today the second plan hits ``continue``, its per-slot maps are never
-        written, and the first unconditional downstream subscript raises
-        ``KeyError``. Both aggregates must survive with their own values.
-        """
+        """seen_cm collision-as-identity: a cross-model and a filtered-local
+        aggregate sanitise to one ``_cm_`` name; both must survive with own values."""
         await _isolated_then_combined(
             engine,
             measures=[
@@ -350,16 +260,6 @@ class TestCrossModelCteNameAllocation:
     async def test_filtered_local_and_plain_aggregate_coexist(
         self, engine,
     ) -> None:
-        """A filtered-local ISOLATED aggregate (its own ``_cm_`` CTE) and a
-        plain host-base aggregate must coexist without either disturbing the
-        other — the general "isolation must not change the host" guard.
-
-        (This is NOT the identity edge case: these two have different canonical
-        aliases. The alias-collision-under-differing-filters case is pinned
-        structurally in ``TestDedupIdentityIsStructural`` below, because the
-        public query API cannot express two aggregates that share a column NAME
-        while differing in ``Column.filter``.)
-        """
         await _isolated_then_combined(
             engine,
             measures=[
@@ -371,17 +271,6 @@ class TestCrossModelCteNameAllocation:
     async def test_unrenamed_cross_model_measures_keep_their_own_aliases(
         self, engine,
     ) -> None:
-        """Two cross-model measures with NO declared ``name`` must each project
-        under their OWN canonical alias.
-
-        Every other cross-model test in this file declares ``name=``. This one
-        does not, so it exercises the path where the public alias is derived
-        rather than user-supplied — the branch that reads a plan's canonical
-        alias. It is a coverage gap-filler, not a regression guard: the planner
-        populates ``public_aliases`` even for un-named measures, so the
-        canonical-alias fallback inside
-        ``_public_aliases_for_cross_model_agg`` is not reachable from here.
-        """
         resp = await engine.execute(
             SlayerQuery(
                 source_model="orders",
@@ -395,31 +284,14 @@ class TestCrossModelCteNameAllocation:
         assert "orders.customers.revenue_sum" in resp.columns, resp.columns
         assert "orders.customers.Rev_sum" in resp.columns, resp.columns
         row = resp.data[0]
-        # revenue sums to 600 over the three customers; Rev (revx) to 24 —
-        # equal values would mean both read the same CTE column.
+        # revenue -> 600, Rev (revx) -> 24; equal values would mean a shared CTE column.
         assert row["orders.customers.revenue_sum"] != row["orders.customers.Rev_sum"]
 
     async def test_hidden_cross_model_agg_under_a_transform_keeps_its_alias(
         self, engine,
     ) -> None:
-        """A HIDDEN cross-model aggregate feeding a transform layer must
-        project under ITS OWN canonical alias.
-
-        This is the ONE shape that reaches the canonical-alias fallback in
-        ``_public_aliases_for_cross_model_agg``. The projection loop trims a
-        hidden aggregate only when there is no transform chain
-        (``plan.hidden and not transform_layers``); with a chain the hidden
-        aggregate stays projected so the step CTE can consume it, and — having
-        no user-declared name — its ``public_aliases`` is empty, so the alias
-        falls back to the plan's canonical one.
-
-        Reading a stale value there emits
-        ``_cm_..._revenue_sum."orders.customers.revenue_sum" AS
-        "orders.customers.revx_sum"``: the hidden aggregate is projected under
-        the OTHER measure's name, that alias appears twice in one SELECT, and
-        the step CTE binds the wrong column. Asserted as "no output alias is
-        emitted twice", which is what actually breaks.
-        """
+        """A hidden cross-model aggregate feeding a transform must project under its
+        own canonical alias — a stale value emits the alias twice in one SELECT."""
         resp = await engine.execute(
             SlayerQuery(
                 source_model="orders",
@@ -430,23 +302,19 @@ class TestCrossModelCteNameAllocation:
                     ),
                 ],
                 measures=[
-                    # Hidden CMA (customers.revenue:sum) feeding a transform.
+                    # Hidden CMA feeding a transform.
                     ModelMeasure(
                         formula="cumsum(customers.revenue:sum)", name="run",
                     ),
-                    # A second cross-model aggregate, so a leaked alias differs
-                    # from the correct one.
+                    # A second cross-model aggregate, so a leaked alias differs.
                     ModelMeasure(formula="customers.Rev:sum", name="rv"),
                 ],
             ),
             dry_run=True,
         )
         assert resp.sql is not None
-        # DEV-1836: producers are target-rooted, so the hidden CMA's own CTE
-        # names its output canonically (``customers.revenue_sum``) and ``base``
-        # passes it through under that same name — a benign CROSS-scope repeat.
         # The leaked-alias bug is a WITHIN-scope duplicate (two projections in
-        # ONE SELECT claim the same output name), so check per SELECT node.
+        # one SELECT claim the same name); the cross-scope repeat is benign.
         parsed = sqlglot.parse_one(sql=resp.sql, read="sqlite")
         for select in parsed.find_all(exp.Select):
             names = [
@@ -464,10 +332,6 @@ class TestCrossModelCteNameAllocation:
         assert "customers.revenue_sum" in all_aliases, all_aliases
 
     async def test_same_key_slots_still_share_one_cte(self, engine) -> None:
-        """Parity guard for the C13 intent the buggy dedup was meant to serve:
-        two measures that are the SAME aggregate under different public names
-        must still collapse onto ONE CTE. Structural dedup must not lose this.
-        """
         resp = await engine.execute(
             SlayerQuery(
                 source_model="orders",
@@ -485,7 +349,6 @@ class TestCrossModelCteNameAllocation:
     async def test_same_key_slots_both_surface_with_equal_values(
         self, engine,
     ) -> None:
-        """…and both public aliases still project, off that one CTE."""
         resp = await engine.execute(
             SlayerQuery(
                 source_model="orders",
@@ -503,22 +366,9 @@ class TestCrossModelCteNameAllocation:
 
 
 class TestDedupIdentityIsStructural:
-    """WHY the dedup key is the full typed ``AggregateKey`` and not the
-    canonical alias string.
-
-    ``canonical_agg_name`` is built from the measure name, the aggregation
-    name, and the args/kwargs signature. It does NOT encode
-    ``AggregateKey.column_filter_key``. So two aggregates that must render
-    differently can share one canonical alias — and deduping on that string
-    would silently merge them into one CTE, which is a WRONG-ANSWER bug,
-    strictly worse than the crash the current code produces.
-
-    These are structural tests rather than end-to-end ones on purpose: a
-    ``Column.filter`` is attached to the column DEFINITION, so the public query
-    API cannot express the same column name both with and without a filter.
-    The identity choice still has to be right, because the generator's dedup
-    map is what enforces it.
-    """
+    """Dedup keys on the full typed ``AggregateKey``, not the canonical alias
+    (which omits ``column_filter_key``, so a filtered and unfiltered aggregate
+    would wrongly merge). Structural: a ``Column.filter`` lives on the definition."""
     def _filtered_and_plain(self):
 
         source = ColumnKey(leaf="revenue")
@@ -536,7 +386,6 @@ class TestDedupIdentityIsStructural:
         assert len({plain, filtered}) == 2
 
     def test_but_they_share_one_canonical_alias(self) -> None:
-        """The trap, stated explicitly: the alias cannot tell them apart."""
         plain, filtered = self._filtered_and_plain()
         assert naming.canonical_aggregate_alias(
             plain, profile="cross_model_cte", source_relation="orders",
@@ -545,10 +394,7 @@ class TestDedupIdentityIsStructural:
         )
 
     def test_one_alias_two_identities_get_two_cte_names(self) -> None:
-        """Therefore the allocator must hand out a fresh name each time it is
-        asked, and never silently return a previously-minted one. Dedup is the
-        CALLER's structural decision; the naming primitive must not second-guess
-        it by keying on the string."""
+        """The allocator hands out a fresh name each call; dedup is the caller's decision."""
         alloc = AliasAllocator(folds_case=True)
         alias = "orders.revenue_sum"
         first = naming.cte_name_from_alias(prefix="_cm_", alias=alias, allocator=alloc)
@@ -559,23 +405,17 @@ class TestDedupIdentityIsStructural:
         )
 
 
-# ===========================================================================
 # B4 — the allocator is generation-scoped, and every CTE family shares it.
-# ===========================================================================
 
 
 class TestAllocatorRouting:
     def test_cte_name_from_alias_requires_an_allocator(self) -> None:
-        """The naming module gains the sanitise-and-allocate primitive, and it
-        cannot be called without an allocator — that is what makes bypassing
-        the naming authority impossible rather than merely discouraged."""
         alloc = AliasAllocator(folds_case=True)
         first = naming.cte_name_from_alias(
             prefix="_cm_", alias="orders.customers.revenue_sum", allocator=alloc,
         )
         assert first == "_cm_orders__customers__revenue_sum"
-        # A second, DIFFERENT alias that sanitises to the same string must get
-        # its own name rather than silently reusing the first.
+        # A different alias that sanitises to the same string gets its own name.
         second = naming.cte_name_from_alias(
             prefix="_cm_", alias="orders.customers__revenue_sum", allocator=alloc,
         )
@@ -589,8 +429,7 @@ class TestAllocatorRouting:
         assert a.lower() != b.lower(), (a, b)
 
     def test_cte_name_from_alias_is_exact_on_non_folding_dialects(self) -> None:
-        """ClickHouse is case-sensitive: the case-only pair keeps both original
-        spellings, with no ``_2`` suffix."""
+        """Case-sensitive dialect: the case-only pair keeps both spellings, no ``_2``."""
         alloc = AliasAllocator(folds_case=False)
         a = naming.cte_name_from_alias(prefix="_cm_", alias="orders.Rev_sum", allocator=alloc)
         b = naming.cte_name_from_alias(prefix="_cm_", alias="orders.rev_sum", allocator=alloc)
@@ -600,15 +439,7 @@ class TestAllocatorRouting:
     async def test_windowed_cte_names_use_the_shared_helper(
         self, tmp_path,
     ) -> None:
-        """DEV-1835: windowed producers now render under the unified ``_cm_``
-        producer naming, so they go through the same sanitise-and-allocate
-        primitive as every other ``_cm_`` CTE.
-
-        Both measures aggregate the SAME column (``amount``) over different
-        windows; the case-only pair is in their declared names, ``Wm`` and
-        ``wm``. The two windows yield two distinct ``_cm_`` producer CTEs that
-        the shared allocator keeps unfolded on a folding dialect.
-        """
+        """Windowed producers render as ``_cm_`` CTEs through the shared allocator (Wm/wm)."""
         engine = await _hostile_engine(
             column="revx2", base_dir=str(tmp_path),
         )
@@ -635,17 +466,7 @@ class TestAllocatorRouting:
         assert len(wm_names) == 2, wm_names
 
     def test_no_raw_step_cte_names_in_the_generator(self) -> None:
-        """P-F, checked structurally because it has no reachable behavioural
-        difference today: the four ``f"step{...}"`` mint sites must all go
-        through the allocator.
-
-        Two live in ``_generate_from_planned_impl`` (the window-batch and the
-        unmaterialised combined-expression step CTEs), sharing the allocator
-        built earlier in the same method; two live in
-        ``_render_cross_model_transform_chain``, which derives its own. They
-        are latently safe today only because no ``_cm_*`` CTE can be named
-        ``stepN`` — an invariant nothing enforces.
-        """
+        """Every ``f"step{...}"`` mint site must go through the allocator."""
         src = inspect.getsource(generator_module)
         raw = [
             line.strip()
@@ -659,9 +480,7 @@ class TestAllocatorRouting:
         )
 
     def test_generation_allocator_is_shared_across_cte_families(self) -> None:
-        """One allocator instance per generation is what makes cross-family
-        collisions impossible. Two allocators that cannot see each other's
-        names would each happily hand out the same name."""
+        """One allocator per generation makes cross-family collisions impossible."""
         alloc = AliasAllocator(folds_case=True)
         alloc.reserve("base", "_base", "_combined")
         # A user-shaped CTE name that folds onto a reserved literal must walk.
@@ -671,14 +490,11 @@ class TestAllocatorRouting:
         assert alloc.allocate_cte(cm) != cm
 
 
-# ===========================================================================
 # C7 — the bespoke name families, exercised against hostile user columns.
-# ===========================================================================
 
 
-# Every internal name C7 moves onto the allocator. All of them are LEGAL user
-# column names (``Column.name`` allows a leading underscore), so each is a
-# reachable collision, not merely a theoretical one.
+# Internal minted names C7 moves onto the allocator. All are legal user column
+# names, so each is a reachable collision.
 _INTERNAL_NAMES = [
     "_placeholder",   # empty-base grain projection
     "_td_0",          # ranked-subquery time-dimension alias
@@ -698,8 +514,7 @@ _INTERNAL_NAMES = [
 
 
 async def _hostile_engine(*, column: str, base_dir: str) -> SlayerQueryEngine:
-    """A single-model store whose ``orders`` model carries a user column named
-    exactly like one of SLayer's internal minted names."""
+    """A store whose ``orders`` model carries a user column named like an internal alias."""
     d = base_dir
     db_path = os.path.join(d, "hostile.db")
     con = sqlite3.connect(db_path)
@@ -742,21 +557,8 @@ async def _hostile_engine(*, column: str, base_dir: str) -> SlayerQueryEngine:
 
 
 class TestInternalNamesDoNotCollideWithUserColumns:
-    """P-F's payoff, stated as behavior rather than as source structure.
-
-    A name minted outside the allocator can shadow — or be shadowed by — a real
-    user column, because nothing reserved it. Every family C7 moves onto the
-    allocator must survive a user column of exactly that name: the query still
-    executes, and the user's own column still returns ITS values.
-
-    HONESTY NOTE: these all PASS today. They are parity guards, not red tests.
-    Today's safety is partly incidental — ``_reserve_model_column_names``
-    reserves model column names into the generation allocator, so the families
-    that DO go through it are protected, while the bespoke counters are safe
-    only because their shapes happen not to collide in the paths these queries
-    reach. C7 makes that safety structural instead of incidental, and these
-    tests are what stops the refactor from quietly losing it.
-    """
+    """Every internal name must survive a user column of that name: the query runs
+    and the user's column returns its values. Parity guards, all pass today."""
 
     @pytest.mark.parametrize("column", _INTERNAL_NAMES)
     async def test_user_column_named_like_an_internal_alias(
@@ -779,16 +581,14 @@ class TestInternalNamesDoNotCollideWithUserColumns:
             r["orders.status"]: (r["orders.hostile_sum"], r["orders.amt"])
             for r in resp.data
         }
-        # The user's column is seeded 1/2/3 against amounts 10/20/30, so a
-        # shadowing bug shows up as the two measures agreeing.
+        # Column seeded 1/2/3 vs amounts 10/20/30; a shadowing bug makes the two agree.
         assert by_status == {"a": (3.0, 30.0), "b": (3.0, 30.0)}
 
     @pytest.mark.parametrize("column", _INTERNAL_NAMES)
     async def test_user_column_named_like_an_internal_alias_as_dimension(
         self, column, tmp_path,
     ) -> None:
-        """The same names as a GROUP BY dimension, which routes through the
-        ranked-subquery / projection aliasing rather than the aggregate path."""
+        """The same names as a GROUP BY dimension (projection-aliasing path)."""
         engine = await _hostile_engine(
             column=column, base_dir=str(tmp_path),
         )
@@ -805,9 +605,7 @@ class TestInternalNamesDoNotCollideWithUserColumns:
     async def test_ranked_subquery_families_survive_the_name(
         self, column, tmp_path,
     ) -> None:
-        """Reaches the ``_td_<n>`` / ``_dim_<n>`` counters specifically: a
-        first/last measure builds the ranked subquery those aliases live in.
-        Last amount per status, ordered by ``created_at``: a -> 20, b -> 30."""
+        """first/last builds the ranked subquery; last amount: a -> 20, b -> 30."""
         engine = await _hostile_engine(
             column=column, base_dir=str(tmp_path),
         )
@@ -825,8 +623,7 @@ class TestInternalNamesDoNotCollideWithUserColumns:
         "column", ["_w_dim_0", "_w_td_0", "_w_time", "_w_value"],
     )
     async def test_windowed_families_survive_the_name(self, column, tmp_path) -> None:
-        """Reaches the ``_w_*`` ``_src``-projection aliases specifically: a
-        duration-windowed measure is the only shape that builds them."""
+        """A duration-windowed measure is the only shape that builds the ``_w_*`` aliases."""
         engine = await _hostile_engine(
             column=column, base_dir=str(tmp_path),
         )
@@ -848,37 +645,19 @@ class TestInternalNamesDoNotCollideWithUserColumns:
         assert all(r["orders.w"] is not None for r in resp.data), resp.data
 
 
-# ===========================================================================
 # Naming constants — one owner for the structural aliases.
-# ===========================================================================
 
 
 class TestNamingConstants:
-    """``_outer`` is currently written as a literal in BOTH ``generator.py``
-    (the outer-wrap subquery alias) and ``dialects/tsql.py`` (the ORDER-BY
-    detach rewrite), coupled by convention only — the tsql comment even says
-    "only ``_outer`` is visible". Moving the literals into ``naming.py`` gives
-    them a single owner.
-
-    Per the ratified decision these two sites keep taking the name as
-    a CONSTANT rather than an allocated name: the tsql rewrite is a
-    post-generation AST pass with no allocator in reach, and PR 4 rebuilds the
-    outer-wrap machinery wholesale. The carve-out is recorded as a named P-F
-    exception, not an omission.
-    """
+    """``_outer`` was a literal in both generator.py and dialects/tsql.py; the
+    constants move to naming.py. Both sites keep it as a CONSTANT — a named carve-out."""
     def test_constants_exist_and_match_the_current_literals(self) -> None:
         assert naming.OUTER_WRAP_ALIAS == "_outer"
         assert naming.STAGE_INNER_ALIAS == "_stage_inner"
         assert naming.FILTERED_ALIAS == "_filtered"
 
     def test_tsql_dialect_imports_the_shared_constant(self) -> None:
-        """The convention coupling becomes an import.
-
-        Asserted on the module NAMESPACE rather than by banning the literal
-        from the source text: the string may legitimately appear in a comment
-        or an error message, and forbidding that would constrain the
-        implementation past what the plan asks for.
-        """
+        """The coupling becomes an import — asserted on the namespace, not the source text."""
         assert hasattr(tsql_module, "OUTER_WRAP_ALIAS"), (
             "tsql.py does not import naming.OUTER_WRAP_ALIAS"
         )
@@ -892,23 +671,13 @@ class TestNamingConstants:
         assert sw_module.STAGE_INNER_ALIAS is naming.STAGE_INNER_ALIAS
 
     def test_tsql_outer_wrap_alias_still_round_trips(self) -> None:
-        """Behavioural companion: the ratified carve-out says the T-SQL
-        ORDER-BY detach rewrite keeps using a CONSTANT (not an allocated name),
-        so its emitted alias must still be exactly the shared one."""
+        """The T-SQL detach rewrite keeps using the shared constant, not an allocated name."""
         assert get_dialect("tsql") is not None
         assert naming.OUTER_WRAP_ALIAS == "_outer"
 
 
 class TestParityGuardRepair:
-    """A companion xfail-registry module was deleted along with its
-    ``pytest_collection_modifyitems`` hook, but ``test_parity_guards.py``'s
-    docstring still tells the reader the gate depends on it. Stale prose that
-    names a deleted file sends the next reader looking for infrastructure that
-    is not there.
-
-    Only the documentation is repaired — strengthening the guard's matcher is
-    explicitly out of scope for this PR.
-    """
+    """test_parity_guards.py's docstring still names a deleted xfail-registry module; repaired here."""
     def test_docstring_no_longer_references_the_deleted_module(self) -> None:
 
         doc = guard_module.__doc__ or ""
@@ -918,40 +687,24 @@ class TestParityGuardRepair:
         )
 
     def test_the_deleted_module_really_is_gone(self) -> None:
-        """Guard on the premise itself, so this repair cannot be silently
-        invalidated by the file coming back."""
+        """Guard the premise: the deleted file must not come back."""
         tests_dir = pathlib.Path(__file__).parent
         assert not (tests_dir / "parity_xfails.py").exists()
 
     def test_the_guard_itself_still_works(self) -> None:
-        """Parity: the repair is docstring-only, so the guard must still run
-        and still pass."""
+        """The repair is docstring-only, so the guard must still pass."""
         assert hasattr(guard_module, "APPROVED_GUARDS")
 
 
-# ===========================================================================
 # The canonical-aggregate-alias consolidation.
-# ===========================================================================
 
 
 def _key(source, agg: str, *, args=(), kwargs=()) -> AggregateKey:
     return AggregateKey(source=source, agg=agg, args=args, kwargs=kwargs)
 
 
-# The axis matrix, with the value each legacy profile produces TODAY. Frozen
-# from the four existing bodies so the consolidation is provably
-# behavior-preserving rather than merely plausible.
-#
-#   A = generator._canonical_cross_model_alias(source_relation="orders", key=…)
-#   B = cross_model_planner._aggregate_alias(key=…)
-#   C = planning._canonical_name(key)
-#   D = stage_planner._canonical_alias_for_formula(text, bound=…)
-#
-# Read the drift off the columns: A prefixes with the source relation AND the
-# join path; B and C emit no prefix at all; D emits the path RELATIVE (no
-# relation) and is the only one that keeps a StarKey's own path. The last row
-# is the missing-leaf edge — a source with neither ``leaf`` nor ``column_name``
-# — where all four disagree.
+# Axis matrix; each profile's value is frozen from its legacy body. Columns A/B/C/D
+# = cross_model_cte(source_relation="orders") / cte_schema / declared_name / stage_formula.
 _MATRIX: List[tuple] = [
     # (case, key, A, B, C, D)
     (
@@ -1017,12 +770,8 @@ _MATRIX: List[tuple] = [
     ),
 ]
 
-# The missing-leaf edge is kept out of the table above because profile D
-# returns None there (it falls through to its own formula-text sanitiser,
-# which is NOT part of the aggregate-alias contract and stays in
-# stage_planner).
-# ``model_copy(update=...)`` deliberately bypasses validation: a TimeTruncKey
-# source is outside ``_AggregateSource`` and normal construction would reject it.
+# Kept out of the matrix because profile D returns None here. model_copy bypasses
+# validation: a TimeTruncKey source would be rejected by normal construction.
 _MISSING_LEAF_KEY = AggregateKey(
     source=ColumnKey(leaf="x"), agg="sum",
 ).model_copy(
@@ -1035,8 +784,7 @@ _MISSING_LEAF_KEY = AggregateKey(
 
 
 class TestCanonicalAggregateAlias:
-    """One function, four named profiles, byte-identical to the four bodies
-    it replaces."""
+    """One function, four named profiles, matching the four legacy bodies."""
 
     @pytest.mark.parametrize(
         "case,key,expected_a,expected_b,expected_c,expected_d",
@@ -1060,10 +808,7 @@ class TestCanonicalAggregateAlias:
         ) == expected_d
 
     def test_missing_leaf_edge_keeps_each_profiles_escape_hatch(self) -> None:
-        """The one place the four genuinely disagree, preserved exactly:
-        A and B collapse an unrecognised source to the star form, C emits its
-        ``_agg_<name>`` placeholder, and D declines (returning None) so its
-        caller falls through to the formula-text path."""
+        """The one edge where the four disagree: star form / ``_agg_`` / None."""
         assert naming.canonical_aggregate_alias(
             _MISSING_LEAF_KEY, profile="cross_model_cte",
             source_relation="orders",
@@ -1081,9 +826,7 @@ class TestCanonicalAggregateAlias:
     def test_source_relation_is_required_by_the_cross_model_profile(
         self,
     ) -> None:
-        """Profile validation makes the impossible combinations
-        unrepresentable — the reason this is a profile enum rather than four
-        free-floating boolean flags."""
+        """Profile validation makes impossible combinations unrepresentable."""
         key = _key(ColumnKey(leaf="revenue"), "sum")
         with pytest.raises(ValueError):
             naming.canonical_aggregate_alias(key, profile="cross_model_cte")
@@ -1103,9 +846,7 @@ class TestCanonicalAggregateAlias:
 
 
 class TestProductionCallersDelegate:
-    """The four production functions keep their names and signatures (P-J
-    state 1 — nothing is deleted in PR 1) but must now agree with the naming
-    module for every case in the matrix. Any residual drift is a bug."""
+    """The production functions keep their signatures but must agree with the naming module."""
 
     @pytest.mark.parametrize(
         "case,key,expected_a,expected_b,expected_c,expected_d",
@@ -1120,7 +861,6 @@ class TestProductionCallersDelegate:
         assert gen._canonical_cross_model_alias(
             source_relation="orders", key=key,
         ) == expected_a
-        assert _aggregate_alias(key=key) == expected_b
         assert _canonical_name(key) == expected_c
         assert _canonical_alias_for_formula(
             "IGNORED_TEXT", bound=BoundExpr(value_key=key),
@@ -1129,13 +869,7 @@ class TestProductionCallersDelegate:
     def test_each_caller_actually_delegates_with_its_profile(
         self, monkeypatch,
     ) -> None:
-        """Agreeing on values is necessary but not sufficient — four copied
-        implementations returning the same frozen strings would also pass, and
-        that is precisely the duplication C5 exists to remove.
-
-        Spy on the naming module and assert each production function FORWARDS,
-        with the right profile and the right ``source_relation``.
-        """
+        """Spy on the naming module and assert each caller forwards with its profile."""
         key = _key(ColumnKey(path=("customers",), leaf="revenue"), "sum")
         calls: List[dict] = []
         real = naming.canonical_aggregate_alias
@@ -1144,11 +878,9 @@ class TestProductionCallersDelegate:
             calls.append(kw)
             return real(k, **kw)
 
-        # Each caller imports the function by name, so the spy has to replace
-        # the binding in the CALLER's namespace, not just in the naming module.
+        # Callers import by name, so patch the binding in each caller's namespace.
         for module in (
-            naming, generator_module, cross_model_planner, planning,
-            stage_planner,
+            naming, generator_module, planning, stage_planner,
         ):
             if getattr(module, "canonical_aggregate_alias", None) is not None:
                 monkeypatch.setattr(
@@ -1162,9 +894,6 @@ class TestProductionCallersDelegate:
         assert calls[-1].get("profile") == "cross_model_cte"
         assert calls[-1].get("source_relation") == "orders"
 
-        cross_model_planner._aggregate_alias(key=key)
-        assert calls[-1].get("profile") == "cte_schema"
-
         planning._canonical_name(key)
         assert calls[-1].get("profile") == "declared_name"
 
@@ -1174,70 +903,3 @@ class TestProductionCallersDelegate:
         assert calls[-1].get("profile") == "stage_formula"
 
 
-class TestCrossModelDedupIdentity:
-    """What makes two cross-model plans "the same CTE".
-
-    The identity is structural — never the sanitised name — because the
-    canonical alias omits the aggregate's column filter and the name is doubly
-    lossy, so either would merge plans that must render separately.
-
-    It also carries the RENDER SHAPE. The forward and rerooted paths produce
-    different join-back pairs and a different aggregate column alias (forward
-    uses the canonical alias; rerooted uses the sub-plan's), so sharing one CTE
-    across them would join at the wrong grain or read the wrong column. The
-    planner interns each key to one slot and emits one plan per slot, so two
-    plans cannot collide here today — these tests keep that from becoming
-    silently wrong if that ever changes.
-    """
-    def _identity(self, *, rerooted, key=None):
-
-        key = key or AggregateKey(
-            source=ColumnKey(path=("customers",), leaf="revenue"), agg="sum",
-        )
-        return _cm_plan_identity(
-            source_relation="orders",
-            plan=SimpleNamespace(rerooted_plan=object() if rerooted else None),
-            agg_slot=SimpleNamespace(key=key),
-        )
-
-    def test_forward_and_rerooted_are_different_identities(self) -> None:
-        assert self._identity(rerooted=False) != self._identity(rerooted=True)
-
-    def test_same_key_same_shape_shares_one_identity(self) -> None:
-        """Two SEPARATELY CONSTRUCTED but equal keys — which is what two plans
-        carry — collapse to ONE identity. The tuple has to compare equal BY
-        VALUE, since it is used as a dict key.
-
-        This is the unit-level precondition only. That two public names really
-        do end up sharing a single CTE is asserted end-to-end by
-        ``test_same_key_slots_still_share_one_cte`` above; this test cannot see
-        public names at all, because the identity deliberately excludes them.
-        """
-        first = AggregateKey(
-            source=ColumnKey(path=("customers",), leaf="revenue"), agg="sum",
-        )
-        second = AggregateKey(
-            source=ColumnKey(path=("customers",), leaf="revenue"), agg="sum",
-        )
-        assert first is not second
-        assert self._identity(rerooted=False, key=first) == self._identity(
-            rerooted=False, key=second,
-        )
-
-    def test_filtered_and_unfiltered_are_different_identities(self) -> None:
-        """The reason the identity is the typed key and not the alias: these
-        two produce the SAME canonical alias."""
-        source = ColumnKey(path=("customers",), leaf="revenue")
-        plain = AggregateKey(source=source, agg="sum")
-        filtered = AggregateKey(
-            source=source, agg="sum",
-            column_filter_key=SqlExprKey(canonical_sql="region_id = 1"),
-        )
-        assert self._identity(rerooted=False, key=plain) != self._identity(
-            rerooted=False, key=filtered,
-        )
-
-    def test_identity_is_hashable(self) -> None:
-        """It is used as a dict key, so an unhashable member would surface as a
-        TypeError mid-render rather than at import."""
-        assert len({self._identity(rerooted=False), self._identity(rerooted=True)}) == 2

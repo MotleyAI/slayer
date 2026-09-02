@@ -1,38 +1,4 @@
-"""DEV-1747 B6 — no silent filter drops in rerooting.
-
-The defect, reproducible today on this corpus: a cross-model aggregate whose
-CTE is RE-ROOTED at its target ends up with EMPTY routing lists and ZERO
-warnings, whatever the filter is::
-
-    reachable   customers.regions.name == 'Alpha'  -> where [] having [] dropped []
-    host-local  status == 'A'                      -> where [] having [] dropped []
-    unreachable order_tags.name == 'rush'          -> where [] having [] dropped []
-
-Two mechanisms conspire. ``_maybe_reroot_cross_model_plan`` decides which
-filters ride into the re-rooted CTE by TRY-BINDING each one against the target
-scope and swallowing a broad error tuple that included bare ``ValueError``, so
-a planner bug was indistinguishable from "not reachable". It
-then CLEARS ``dropped_filter_warnings`` / ``where_filter_ids`` /
-``having_filter_ids`` / ``applied_filter_ids``, throwing away the routing the
-decision table had already produced.
-
-B6 (with D6/D7) fixes both: decide reroot-vs-forward FIRST, then run
-``classify_host_filter`` exactly once per host filter in the coordinate system
-of the CTE that will actually exist, and keep the result. Unreachable filters
-warn per §5.5. Binder/planner failures RAISE — they never masquerade as
-expected drops.
-
-D7 scopes this to FILTERS. An unreachable rerooted DIMENSION still drops (the
-documented reroot contract), but structurally — not via a swallowed exception.
-
-Coverage note: the common forward abandon (``not needs_reroot``) is exercised
-by the target-grain dispatch tests below; the late ``_forward_only()`` fallbacks
-(a missing target/host-prebound, routing that applies nothing, or an absent
-sub-plan aggregate) guard internal invariants unreachable from a well-formed
-query and are intentionally not pinned.
-
-Refs: DEV-1747 (B6, D6, D7), DEV-1742 §5.4 / §5.5.
-"""
+"""No silent filter drops when a cross-model CTE is re-rooted at its target (B6/D6/D7)."""
 from __future__ import annotations
 
 import ast
@@ -58,37 +24,23 @@ from tests._dev1747_fixtures import (
     make_sqlite_engine,
     seed_dev1747_sqlite,
 )
-from slayer.engine import cross_model_planner
-from slayer.engine.cross_model_planner import IsolatedCteCrossModelPlanner
 import inspect
 
-#: A cross-model aggregate PLUS a dimension one hop PAST the target, which is
-#: what makes the planner re-root the CTE at ``customers`` instead of using the
-#: forward-path shape.
+#: Cross-model aggregate + a dimension a hop past the target → planner re-roots the CTE at ``customers``.
 _CROSS_MODEL_MEASURE = {"formula": "customers.spend:sum", "name": "cs"}
 
 #: Reachable from the re-rooted target (``customers -> regions``).
 FILTER_REACHABLE = "customers.regions.name == 'Alpha'"
 #: Purely host-local — filters host rows, stays at the host base, never warns.
 FILTER_HOST_LOCAL = "status == 'A'"
-#: Off the target's graph entirely (``orders -> order_tags``) — unreachable
-#: from a CTE rooted at ``customers``.
+#: Off the target's graph (``orders -> order_tags``) — unreachable from a CTE rooted at ``customers``.
 FILTER_UNREACHABLE = "order_tags.name == 'rush'"
-#: Reachable from BOTH scopes and, unlike the others, it changes the aggregate
-#: INSIDE a group that survives it: region Alpha keeps its gold customer and
-#: loses its silver one, so ``cs`` drops from 1040 to 1000 while the Alpha row
-#: stays. That is what distinguishes "the re-rooted CTE applied its own copy"
-#: from "the host filtered and the join-back happened to pick the right group".
+#: Reachable from both scopes; changes the aggregate inside a surviving group (Alpha ``cs`` 1040→1000) — separates CTE-applied from host-applied.
 FILTER_TARGET_ATTRIBUTE = "customers.tier == 'gold'"
-#: An AGGREGATE-phase predicate over the isolated aggregate itself. The host
-#: base cannot evaluate it — the aggregate does not live in ``_base`` — so
-#: unlike a ROW-phase filter it must STAY routed to the CTE.
+#: Aggregate-phase predicate over the isolated aggregate; not host-evaluable, so it must STAY routed to the CTE.
 FILTER_AGGREGATE_REF = "customers.spend:sum > 500"
 
-#: A HOST-ROOTED shape (``cte_root_model == "orders"``): ordering by a derived
-#: column whose ``Column.sql`` crosses. The DEV-1503/DEV-1709 helpers live only
-#: on this route, so a sentinel aimed at them has to plan THIS query — a
-#: target-rooted one leaves them untouched and asserts nothing.
+#: A HOST-ROOTED shape (``cte_root_model == "orders"``): order by a derived crossing column — the DEV-1503/1709 helpers live only on this route.
 _HOST_ROOTED_QUERY = SlayerQuery(
     source_model="orders",
     dimensions=[ColumnRef(name="status")],
@@ -107,9 +59,6 @@ def _query(*filters: str) -> SlayerQuery:
 
 
 def _attaches(*filters: str):
-    # DEV-1836: the ``_query`` cross-model aggregate (a hop past its target)
-    # now routes to a TARGET-rooted regroup producer rooted at ``customers``,
-    # not the legacy re-rooted ``CrossModelAggregatePlan``.
     plan = plan_query(query=_query(*filters), bundle=dev1747_bundle())
     attaches = [
         a for a in plan.regroup_attach_plans
@@ -127,19 +76,13 @@ def _sole_attach(*filters: str):
     return attaches[0]
 
 
-# ---------------------------------------------------------------------------
-# Group 1 — routing survives the reroot (D6)
-# ---------------------------------------------------------------------------
 class TestRoutingSurvivesReroot:
     def test_the_plan_is_actually_rerooted(self) -> None:
-        """Guard for the rest of the module: if the shape stops routing to a
-        target-rooted producer, every assertion below becomes vacuous."""
+        """Vacuity guard: if the shape stops routing to a target-rooted producer, the rest of the module is vacuous."""
         attach = _sole_attach(FILTER_REACHABLE)
         assert attach.producer_plan.source_relation == "customers"
 
     def test_reachable_filter_is_routed_not_blanked(self) -> None:
-        # DEV-1836: a filter reachable from the producer root inherits INTO the
-        # producer sub-plan (re-rooted) and is not dropped.
         attach = _sole_attach(FILTER_REACHABLE)
         assert attach.producer_plan.filters_by_phase, (
             "the reachable filter did not inherit into the producer sub-plan"
@@ -150,18 +93,12 @@ class TestRoutingSurvivesReroot:
         )
 
     def test_host_local_filter_is_dropped_and_warned(self) -> None:
-        """DEV-1836 class-(c) divergence (divergences.md): a host-local ROW
-        filter (``status``) is unreachable from the target root ``customers``,
-        so it is dropped from the producer and warned — the host base still
-        applies it to the local measure, but the cross-model aggregate is
-        computed over the un-narrowed target population."""
+        """Host-local ROW filter is unreachable from target root ``customers`` → dropped from the producer and warned; the host base still applies it locally."""
         attach = _sole_attach(FILTER_HOST_LOCAL)
         assert not attach.producer_plan.filters_by_phase
         assert attach.dropped_filter_warnings
 
     def test_routing_lists_are_not_cleared_wholesale(self) -> None:
-        """A reachable filter present alongside a host-local one must still
-        inherit into the producer."""
         attach = _sole_attach(FILTER_REACHABLE, FILTER_HOST_LOCAL)
         assert attach.producer_plan.filters_by_phase, (
             "the reachable filter did not inherit even though it is present"
@@ -173,17 +110,8 @@ class TestRoutingSurvivesReroot:
         assert attach.dropped_filter_warnings, "the unreachable filter did not warn"
 
 
-# ---------------------------------------------------------------------------
-# Group 1b — classified EXACTLY once, in the CTE's coordinate system (D6)
-# ---------------------------------------------------------------------------
 def _classifier_spy(monkeypatch) -> list:
-    """Record every ``_cross_model_inherited_filters`` call and its arguments.
-
-    DEV-1836: the target-rooted producer inherits/drops filters through
-    ``stage_planner._cross_model_inherited_filters`` (the legacy
-    ``classify_host_filter`` route is not taken for this now-migrated shape).
-    Called once per producer, so a per-CTE classification count comes from it.
-    """
+    """Record every ``_cross_model_inherited_filters`` call and its arguments (once per producer)."""
 
     calls: list = []
     original = stage_planner._cross_model_inherited_filters
@@ -201,8 +129,6 @@ def _classifier_spy(monkeypatch) -> list:
 
 class TestClassifiedExactlyOnce:
     def test_each_host_filter_is_classified_once_per_cte(self, monkeypatch) -> None:
-        """One cross-model aggregate ⇒ one producer ⇒ the inheritance pass runs
-        once, and each host ROW filter is presented to it exactly once."""
         calls = _classifier_spy(monkeypatch)
         _sole_attach(FILTER_REACHABLE, FILTER_HOST_LOCAL, FILTER_UNREACHABLE)
         assert calls, "the inheritance pass was never called — spy is vacuous"
@@ -222,10 +148,7 @@ class TestClassifiedExactlyOnce:
         )
 
     def test_the_classifier_sees_the_cte_actual_root(self, monkeypatch) -> None:
-        """The re-rooted producer is rooted at ``customers``, so the inheritance
-        pass must be asked about ``target_path == ("customers",)`` and the
-        matching root model — classifying against the FORWARD path is how a
-        reachable filter ends up judged unreachable (and vice versa)."""
+        """The inheritance pass must classify against ``target_path == ("customers",)``; the FORWARD path would misjudge reachability."""
         calls = _classifier_spy(monkeypatch)
         _sole_attach(FILTER_REACHABLE)
         assert calls, "the inheritance pass was never called — spy is vacuous"
@@ -235,9 +158,7 @@ class TestClassifiedExactlyOnce:
     def test_the_classifier_receives_the_structural_summary(
         self, monkeypatch,
     ) -> None:
-        """The decision input must carry the unreachable filter itself — an
-        inheritance pass handed an EMPTY filter list would drop nothing and pass
-        the warning tests below by accident."""
+        """The decision input must carry the unreachable filter itself, else the warning tests below pass vacuously."""
         calls = _classifier_spy(monkeypatch)
         attach = _sole_attach(FILTER_UNREACHABLE)
         texts = {
@@ -247,13 +168,9 @@ class TestClassifiedExactlyOnce:
             f"the unreachable filter never reached the inheritance pass; "
             f"saw {texts}"
         )
-        # …and the machinery actually ran the reachability decision on it.
         assert attach.dropped_filter_warnings, "the unreachable filter was not dropped"
 
 
-# ---------------------------------------------------------------------------
-# Group 2 — unreachable warns instead of vanishing (B6 / §5.5)
-# ---------------------------------------------------------------------------
 class TestUnreachableWarns:
     def test_unreachable_filter_produces_a_warning_on_the_plan(self) -> None:
         attach = _sole_attach(FILTER_UNREACHABLE)
@@ -263,8 +180,6 @@ class TestUnreachableWarns:
         )
 
     def test_warning_carries_the_original_filter_text(self) -> None:
-        """§5.5 payload fidelity — a warning that does not name the user's own
-        filter text cannot be acted on."""
         warning = _sole_attach(FILTER_UNREACHABLE).dropped_filter_warnings[0]
         assert FILTER_UNREACHABLE in warning.filter_text
 
@@ -274,8 +189,7 @@ class TestUnreachableWarns:
         assert "reach" in warning.reason.lower(), warning.reason
 
     async def test_exactly_one_warning_per_filter_per_execute(self) -> None:
-        """The boundary dedups per filter identity. Two cross-model measures
-        classify the same filter twice; the user must still see it once."""
+        """The boundary dedups per filter identity: two cross-model measures classify one filter twice, user sees it once."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="name", model="customers.regions")],
@@ -303,8 +217,7 @@ class TestUnreachableWarns:
         )
 
     async def test_warnings_as_errors_mode_surfaces_the_drop(self) -> None:
-        """Someone running with ``-W error`` must be stopped, not silently
-        given fewer rows than they asked for."""
+        """Under ``-W error`` the drop must stop execution, not silently return fewer rows."""
         with tempfile.TemporaryDirectory() as d:
             db = os.path.join(d, "dev1747.db")
             seed_dev1747_sqlite(db)
@@ -316,8 +229,7 @@ class TestUnreachableWarns:
                     await engine.execute(query)
 
     async def test_two_textually_distinct_filters_warn_separately(self) -> None:
-        """Identity is per FILTER, not per text-dedup bucket — two different
-        unreachable filters must not collapse into one warning."""
+        """Identity is per filter, not per text bucket: two different unreachable filters warn separately."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="name", model="customers.regions")],
@@ -338,30 +250,19 @@ class TestUnreachableWarns:
         assert len(dropped) == 2
 
 
-# ---------------------------------------------------------------------------
-# Group 3 — internal failures RAISE (§5.5)
-# ---------------------------------------------------------------------------
 class TestInternalFailuresRaise:
 
 
     def test_no_bare_except_in_the_reroot_path(self) -> None:
-        """Scoped to the reroot functions rather than the whole module, so an
-        unrelated ``except Exception`` elsewhere in the file cannot fail this
-        (or, worse, be deleted to make it pass).
-
-        The B6 defect was a broad tuple ``except (ValueError, …)`` — not a
-        literal ``except Exception`` — and a bare ``except:`` hides the same
-        thing. All three forms must fail this, and a rename must not skip it."""
+        """No swallowing ``except`` in the reroot functions: a broad tuple, ``except Exception``, or bare ``except:`` all reintroduce the B6 defect."""
         broad = {"Exception", "BaseException", "ValueError"}
         checked = 0
         for name in (
-            "_maybe_reroot_cross_model_plan",
-            "_plan_filtered_local",
-            "_route_host_filters",
+            "_cross_model_inherited_filters",
+            "_attributable_from_root",
+            "_reroot_from_root",
         ):
-            target = getattr(cross_model_planner, name, None) or getattr(
-                cross_model_planner.IsolatedCteCrossModelPlanner, name, None,
-            )
+            target = getattr(stage_planner, name, None)
             assert target is not None, (
                 f"{name} is gone — the reroot path was renamed and this guard "
                 f"now checks nothing"
@@ -379,10 +280,7 @@ class TestInternalFailuresRaise:
                     else [node.type]
                 )
                 names = {n.id for n in caught if isinstance(n, ast.Name)}
-                # A broad catch that RE-RAISES doesn't swallow — the B6 defect
-                # is the silent drop, not catching per se. Require the re-raise
-                # at the handler's TOP level: a raise buried in a conditional
-                # branch still leaves a swallow path.
+                # A broad catch that re-raises at the handler's top level doesn't swallow — the B6 defect is the silent drop.
                 reraises = any(isinstance(s, ast.Raise) for s in node.body)
                 assert not (names & broad) or reraises, (
                     f"{name} SWALLOWS {sorted(names & broad)} without re-raising "
@@ -391,7 +289,6 @@ class TestInternalFailuresRaise:
         assert checked == 3, "not every reroot function was checked"
 
     def test_planner_failure_propagates_rather_than_warning(self, monkeypatch) -> None:
-        """A genuine internal error must not be reported as an expected drop."""
 
         boom = RuntimeError("planner exploded")
 
@@ -405,13 +302,9 @@ class TestInternalFailuresRaise:
             _attaches(FILTER_REACHABLE)
 
 
-# ---------------------------------------------------------------------------
-# Group 4 — D7: dims still drop, but structurally
-# ---------------------------------------------------------------------------
 class TestUnreachableDimensionsStillDrop:
     def test_unreachable_dimension_is_dropped_without_a_warning(self) -> None:
-        """DEV-1836: an unreachable DIMENSION broadcasts (its own warning),
-        but it must not raise a dropped-FILTER warning (D7)."""
+        """An unreachable DIMENSION broadcasts but must not raise a dropped-FILTER warning (D7)."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[
@@ -439,20 +332,8 @@ class TestUnreachableDimensionsStillDrop:
         )
 
 
-# ---------------------------------------------------------------------------
-# Group 5 — D2: the host-rooted dispatch accepts a path-bearing key
-# ---------------------------------------------------------------------------
 class TestFilteredLocalDispatchAccounting:
-    """``_dispatch_filtered_local`` is reached only when ``source.path`` is
-    EMPTY (``if not path:`` in ``IsolatedCteCrossModelPlanner.plan``), and it
-    raises "this is a plain local aggregate" unless it finds a crossing input.
-
-    A ``grain="host"`` wrap has a NON-empty path and no crossing *input* — its
-    crossing IS the path. Both halves therefore have to change together, and
-    each fails in a different way: the first sends the wrap to a target-rooted
-    CTE (silent scalar CROSS JOIN), the second raises. Neither is visible in a
-    test that only checks the emitted SQL has an ORDER BY.
-    """
+    """A ``grain="host"`` wrap (path is its crossing) must take the HOST-rooted route; a target-rooted producer would degenerate to a scalar CROSS JOIN (D2)."""
 
     def _grouped_joined_order(self) -> SlayerQuery:
         return SlayerQuery(
@@ -465,43 +346,24 @@ class TestFilteredLocalDispatchAccounting:
             )],
         )
 
-    def _dispatch_spy(self, monkeypatch) -> list:
-
-        calls: list = []
-        original = IsolatedCteCrossModelPlanner._dispatch_filtered_local
-
-        def _recording(self, **kwargs):
-            calls.append(kwargs["aggregate_key"])
-            return original(self, **kwargs)
-
-        monkeypatch.setattr(
-            IsolatedCteCrossModelPlanner, "_dispatch_filtered_local", _recording,
+    def test_host_grain_wrap_dispatches_to_the_host_rooted_route(self) -> None:
+        plan = plan_query(
+            query=self._grouped_joined_order(), bundle=dev1747_bundle(),
         )
-        return calls
-
-    def test_host_grain_wrap_dispatches_to_the_host_rooted_route(
-        self, monkeypatch,
-    ) -> None:
-        calls = self._dispatch_spy(monkeypatch)
-        plan_query(query=self._grouped_joined_order(), bundle=dev1747_bundle())
-        assert calls, (
-            "the host-grain wrap never reached _dispatch_filtered_local — it "
-            "was routed to a TARGET-rooted CTE, which degenerates to a scalar "
-            "CROSS JOIN (D2)"
-        )
-        assert calls[0].grain == "host"
-        assert calls[0].source.path == ("customers", "regions"), (
+        (attach,) = [
+            a for a in plan.regroup_attach_plans
+            if a.attach_phase == "combined"
+        ]
+        assert attach.producer_root_model is None
+        (sub,) = attach.substitutions
+        assert sub.original_key.grain == "host"
+        assert sub.original_key.source.path == ("customers", "regions"), (
             "the wrap lost its path on the way to the host-rooted route"
         )
 
-    def test_a_target_grain_aggregate_does_not_take_that_route(
-        self, monkeypatch,
-    ) -> None:
-        """The contrast: a genuine cross-model measure must keep going to the
-        target-rooted CTE. Widening the dispatch to every path-bearing key
-        would move it, and its value would silently become per-host-group."""
-        calls = self._dispatch_spy(monkeypatch)
-        plan_query(
+    def test_a_target_grain_aggregate_does_not_take_that_route(self) -> None:
+        """The contrast: a genuine cross-model measure must keep the TARGET-rooted producer, or its value silently becomes per-host-group."""
+        plan = plan_query(
             query=SlayerQuery(
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
@@ -512,54 +374,30 @@ class TestFilteredLocalDispatchAccounting:
             ),
             bundle=dev1747_bundle(),
         )
-        assert not calls, (
-            f"a target-grain aggregate was routed host-rooted: {calls}"
+        roots = {a.producer_root_model for a in plan.regroup_attach_plans}
+        assert len(plan.regroup_attach_plans) == 1, plan.regroup_attach_plans
+        assert roots == {"customers"}, (
+            f"the target-grain aggregate must plan ONE target-rooted producer; "
+            f"got producer roots {roots}"
         )
 
     def test_the_path_counts_as_the_crossing_input(self) -> None:
-        """The accounting change itself. Without it the dispatch raises
-        ``ValueError('… this is a plain local aggregate')`` — a path-bearing
-        key has no ``column_filter_key`` and no crossing arg to find."""
         plan = plan_query(
             query=self._grouped_joined_order(), bundle=dev1747_bundle(),
         )
-        assert plan.cross_model_aggregate_plans, "no host-rooted CTE was planned"
-        cma = plan.cross_model_aggregate_plans[0]
-        assert cma.cte_root_model == "orders", (
-            f"the wrap's CTE is rooted at {cma.cte_root_model!r}, not the host"
-        )
+        attaches = [
+            a for a in plan.regroup_attach_plans
+            if a.attach_phase == "combined" and a.producer_root_model is None
+        ]
+        assert attaches, "no host-rooted producer was planned for the wrap"
 
 
-# ---------------------------------------------------------------------------
-# Group 5 — the ROWS, not the plan (the regression the plan fields hid)
-# ---------------------------------------------------------------------------
 class TestRerootedFilterStillNarrowsTheHost:
-    """The first attempt at B6 stopped blanking the routing lists wholesale.
-    That was right about ``applied_filter_ids`` — an AUDIT, "some scope
-    evaluates this" — and wrong about ``where_filter_ids`` /
-    ``having_filter_ids``, which are an INSTRUCTION: the forward CTE took this
-    filter over, so the host base must not apply it.
-
-    A re-rooted plan has no forward CTE (the sub-plan replaces it and carries
-    its own re-anchored filters), and the predicate is host-evaluable by
-    construction, since it was bound against the host. So the instruction told
-    the host base to skip a filter nothing else applied THERE, and rows the
-    user excluded came back with a NULL measure attached.
-
-    Every plan-level assertion in this module passed throughout: the plan was
-    self-consistent, and the wrongness existed only in the rows. These tests
-    execute.
-    """
+    """A re-rooted plan has no forward CTE, so ``where``/``having`` routing ids must NOT tell the host base to skip a host-evaluable filter — else excluded rows return with a NULL measure. Row-level tests; the plan-level ones passed throughout."""
 
     @staticmethod
     async def _rows_and_warnings(*filters: str):
-        """Rows plus every warning the execute emitted.
-
-        Warnings are CAPTURED rather than suppressed: a planner that
-        misclassified a reachable predicate as unreachable would drop it from
-        the CTE, warn about it, and — because the host still applies it — often
-        return correct-looking rows anyway. The warning is the only signal.
-        """
+        """Rows plus every warning; warnings are the only signal a reachable predicate was misclassified (rows still look right)."""
         with tempfile.TemporaryDirectory() as d:
             db = os.path.join(d, "dev1747.db")
             seed_dev1747_sqlite(db)
@@ -579,10 +417,7 @@ class TestRerootedFilterStillNarrowsTheHost:
         return rows
 
     def test_every_fixture_here_actually_reroots(self) -> None:
-        """Vacuity guard for the whole class. Every assertion below is about
-        what re-rooting does; if the planner quietly stopped re-rooting and
-        compiled an equivalent forward plan, the row assertions would still
-        pass and would be testing nothing."""
+        """Vacuity guard: if the planner stopped re-rooting and used a forward plan, the row assertions below would pass while testing nothing."""
         for label, flt in (
             ("reachable", FILTER_REACHABLE),
             ("host-local", FILTER_HOST_LOCAL),
@@ -596,12 +431,7 @@ class TestRerootedFilterStillNarrowsTheHost:
             )
 
     async def test_a_reachable_filter_narrows_the_host_rows(self) -> None:
-        """``customers.regions.name == 'Alpha'`` keeps ONE region group.
-
-        Without the fix the host base is unfiltered, so all four regions
-        survive and three of them carry a NULL measure — the user's filter
-        silently became "annotate, don't exclude".
-        """
+        """A reachable filter must narrow the host to one region group; without the fix it silently became "annotate, don't exclude"."""
         rows = await self._rows(FILTER_REACHABLE)
         regions = [r["orders.customers.regions.name"] for r in rows]
         assert regions == [REGION_A_LOW], (
@@ -610,10 +440,7 @@ class TestRerootedFilterStillNarrowsTheHost:
         )
 
     async def test_the_excluded_regions_do_not_come_back_as_nulls(self) -> None:
-        """States the failure mode directly rather than by row count: the
-        symptom is specifically a row PRESENT with a NULL measure, which a
-        count assertion alone would not distinguish from a genuinely empty
-        group the user asked to see."""
+        """The symptom is a row present with a NULL measure — a count assertion alone would not catch it."""
         rows = await self._rows(FILTER_REACHABLE)
         leaked = [
             r for r in rows
@@ -627,10 +454,7 @@ class TestRerootedFilterStillNarrowsTheHost:
         )
 
     async def test_the_surviving_group_keeps_its_own_values(self) -> None:
-        """The other half: narrowing the host must not disturb the row that
-        SHOULD be there. A fix that over-filtered — applying the re-rooted
-        predicate at the host in the TARGET's coordinate system — would empty
-        the result instead, and the two assertions above would both pass."""
+        """The surviving group must keep its own values; an over-filtering fix would empty the result and still pass the two tests above."""
         rows = await self._rows(FILTER_REACHABLE)
         assert len(rows) == 1, rows
         assert rows[0]["orders.rev"] == 11.0, (
@@ -641,9 +465,7 @@ class TestRerootedFilterStillNarrowsTheHost:
         )
 
     async def test_a_host_local_filter_still_narrows_the_host(self) -> None:
-        """The control for the branch that was ALREADY right: a host-local
-        filter never had routing ids, so it must be unaffected. ``status ==
-        'A'`` keeps the two orders of group A, which span two regions."""
+        """Control: a host-local filter never had routing ids, so it is unaffected — ``status == 'A'`` keeps group A's two orders across two regions."""
         rows = await self._rows(FILTER_HOST_LOCAL)
         regions = sorted(
             str(r["orders.customers.regions.name"]) for r in rows
@@ -652,32 +474,17 @@ class TestRerootedFilterStillNarrowsTheHost:
         assert sum(r["orders.rev"] for r in rows) == GROUP_A_AMOUNT, rows
 
     async def test_an_unreachable_filter_still_narrows_the_host(self) -> None:
-        """The filter the re-rooted CTE CANNOT evaluate must still apply at the
-        host — that is what the dropped-filter warning promises ("it still
-        applies at the host"). If the host skipped it too, the warning would be
-        describing a filter that ran nowhere at all."""
+        """An unreachable filter must still apply at the host — that is the promise the dropped-filter warning makes."""
         rows = await self._rows(FILTER_UNREACHABLE)
         regions = sorted(
             str(r["orders.customers.regions.name"]) for r in rows
         )
-        # order_tags 'rush' tags orders 1 (region Alpha) and 2 (region Zulu).
         assert regions == sorted([REGION_A_LOW, REGION_A_HIGH]), regions
 
     async def test_the_rerooted_cte_applies_its_own_copy_of_the_filter(
         self,
     ) -> None:
-        """The half a filtered-DIMENSION test cannot reach (Codex).
-
-        Grouping by the very column the filter names hides whether the CTE
-        applied anything: the host keeps only Alpha, the join-back picks
-        Alpha's row out of the CTE, and Alpha's aggregate is right either way.
-        A filter on a DIFFERENT target attribute separates them — region Alpha
-        survives, but with only its gold customer counted.
-
-        So this fails BOTH ways: if the host stops applying the filter, extra
-        regions come back; if the CTE stops applying it, Alpha's ``cs`` reads
-        the unfiltered 1040 instead of 1000.
-        """
+        """A filter on a DIFFERENT target attribute separates host from CTE: extra regions return if the host stops filtering; Alpha's ``cs`` reads 1040 not 1000 if the CTE does."""
         rows = await self._rows(FILTER_TARGET_ATTRIBUTE)
         by_region = {r["orders.customers.regions.name"]: r for r in rows}
         assert sorted(by_region) == sorted([REGION_A_LOW, REGION_A_HIGH]), (
@@ -692,11 +499,7 @@ class TestRerootedFilterStillNarrowsTheHost:
         )
 
     async def test_no_warning_when_every_filter_is_reachable(self) -> None:
-        """A reachable predicate misclassified as unreachable still produces
-        right-looking rows, because the host applies it either way. The warning
-        is the only place that mistake surfaces. DEV-1836: ``FILTER_HOST_LOCAL``
-        is intentionally NOT here — it is unreachable from the target root and
-        now drops+warns (see ``test_host_local_filter_is_dropped_and_warned``)."""
+        """A misclassified-reachable predicate still yields right-looking rows; the warning is the only tell. ``FILTER_HOST_LOCAL`` is excluded — it drops+warns now."""
         for flt in (FILTER_REACHABLE, FILTER_TARGET_ATTRIBUTE):
             _, dropped = await self._rows_and_warnings(flt)
             assert not dropped, (
@@ -708,25 +511,14 @@ class TestRerootedFilterStillNarrowsTheHost:
         rows, dropped = await self._rows_and_warnings(FILTER_UNREACHABLE)
         assert len(dropped) == 1, [str(w.message) for w in dropped]
         assert "order_tags" in str(dropped[0].message)
-        # And the promise the warning makes — "it still applies at the host" —
-        # holds: only the two 'rush'-tagged orders' regions survive.
         regions = sorted(str(r["orders.customers.regions.name"]) for r in rows)
         assert regions == sorted([REGION_A_LOW, REGION_A_HIGH]), regions
 
 
 class TestRerootedAggregateRefFilter:
-    """The aggregate-phase half, which the ROW-phase tests above cannot reach.
-
-    An AGGREGATE-phase predicate over the isolated aggregate
-    (``customers.spend:sum > 500``) is NOT host-evaluable: the aggregate does
-    not live in ``_base`` at all. DEV-1836 attaches it as an OUTER-SELECT WHERE
-    on the producer's value (divergences.md pattern #3), so this shape — a loud
-    ``NotImplementedError`` before — now executes and restricts rows uniformly.
-    """
+    """An aggregate-phase predicate over the isolated aggregate is not host-evaluable; it attaches as an OUTER-SELECT WHERE on the producer value and restricts rows uniformly."""
 
     def test_the_aggregate_ref_filter_stays_routed(self) -> None:
-        # The predicate is applied at the OUTER SELECT WHERE (on the attached
-        # producer value), and the producer still roots at the target.
         plan = plan_query(query=_query(FILTER_AGGREGATE_REF), bundle=dev1747_bundle())
         assert any(
             a.producer_root_model == "customers"
@@ -735,10 +527,7 @@ class TestRerootedAggregateRefFilter:
         assert plan.outer_where_filter_ids, "the predicate is applied nowhere"
 
     async def test_it_restricts_rows_by_the_aggregate_predicate(self) -> None:
-        """DEV-1836 class-(c): the aggregate-phase predicate now restricts rows
-        uniformly — only region Alpha's ``customers.spend:sum`` clears 500, so
-        it is the sole surviving group (the others are dropped, not returned
-        with a NULL measure)."""
+        """Only Alpha's ``customers.spend:sum`` clears 500, so it is the sole surviving group — others dropped, not returned with a NULL measure."""
         with tempfile.TemporaryDirectory() as d:
             db = os.path.join(d, "dev1747.db")
             seed_dev1747_sqlite(db)
@@ -751,22 +540,7 @@ class TestRerootedAggregateRefFilter:
 
 
 class TestRowPhaseFiltersAlwaysApplyAtTheHost:
-    """B6, second instance — the same defect on the FORWARD route, found by
-    following Codex's prediction that a per-plan fix leaves a cross-plan hole.
-
-    The generator unions ``where_filter_ids`` over EVERY cross-model plan into
-    one ``routed_ids`` set and skips those at the host base. So one plan's
-    routing decided what the host did about a filter another plan needed —
-    and the ``_cm_`` join-back is a LEFT JOIN, which propagates a value but
-    never an exclusion. A host row whose group the CTE filtered away does not
-    disappear; it arrives with a NULL measure.
-
-    Present identically at the merge base, so this is not a regression from the
-    re-rooting work — it is the same bug class one route over, and the fix is
-    that a ROW-phase predicate is applied in BOTH places. It is host-evaluable
-    by construction, and double-applying costs nothing: the CTE's copy narrows
-    the aggregate, the host's copy narrows the rows.
-    """
+    """Same B6 defect on the FORWARD route: unioning ``where_filter_ids`` across plans let one plan's routing unfilter the host for another's filter. A ROW-phase predicate must apply in BOTH the CTE and the host base."""
 
     @staticmethod
     async def _rows(query: SlayerQuery):
@@ -778,11 +552,7 @@ class TestRowPhaseFiltersAlwaysApplyAtTheHost:
                 warnings.simplefilter("ignore", UnreachableFilterDroppedWarning)
                 return (await engine.execute(query)).data
 
-    #: One RE-ROOTED plan (``customers``, because the region dimension sits a
-    #: hop past it) and one FORWARD plan (``regions``, for which that same
-    #: dimension IS the forward path). The filter is reachable from both, so
-    #: the forward plan routes it to WHERE while the re-rooted plan clears —
-    #: and the union used to make the host skip it for both.
+    #: Mixes a re-rooted plan (``customers``) and a forward plan (``regions``); the filter is reachable from both, and the union used to make the host skip it.
     _MIXED_ROUTES = SlayerQuery(
         source_model="orders",
         dimensions=[ColumnRef(name="name", model="customers.regions")],
@@ -795,10 +565,7 @@ class TestRowPhaseFiltersAlwaysApplyAtTheHost:
     )
 
     def test_the_fixture_really_mixes_the_two_routes(self) -> None:
-        """Vacuity guard: the whole point is two cross-model producers rooted at
-        DIFFERENT targets (``customers`` a hop past the region dimension, and
-        ``regions`` for which that dimension is the forward path). If they
-        collapsed to one, the row assertions below would test nothing."""
+        """Vacuity guard: needs two producers rooted at different targets (``customers`` and ``regions``); if they collapse, the rows below test nothing."""
         attaches = plan_query(
             query=self._MIXED_ROUTES, bundle=dev1747_bundle(),
         ).regroup_attach_plans
@@ -818,11 +585,7 @@ class TestRowPhaseFiltersAlwaysApplyAtTheHost:
     async def test_a_row_phase_filter_matches_the_no_cross_model_answer(
         self,
     ) -> None:
-        """P-G, stated over rows rather than SQL: adding a cross-model measure
-        must not change which rows a filter keeps. That is the invariant the
-        skip broke, and it is what makes "apply it in both places" the right
-        rule rather than a patch — the host behaves as it always would.
-        """
+        """Adding a cross-model measure must not change which rows a filter keeps — the invariant the host-skip broke."""
         plain = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="name", model="customers.regions")],
@@ -841,16 +604,7 @@ class TestRowPhaseFiltersAlwaysApplyAtTheHost:
         ), "the sibling local measure changed when a cross-model one was added"
 
     async def test_applying_at_the_host_does_not_fan_out_a_sibling(self) -> None:
-        """The hazard this fix could plausibly introduce, ruled out: the host's
-        copy of a filter on a 1:N path (``order_tags``, where order 1 carries
-        THREE tags) pulls that join into the base FROM, which is exactly how a
-        sibling ``amount:sum`` gets multiplied.
-
-        It does not, and the reason is structural rather than lucky — the host
-        applies host filters on joined paths this way already; the cross-model
-        case now simply agrees with it. Group A must read 24.0, not 46.0
-        (11*3 + 13, the value a three-way fan-out on order 1 would produce).
-        """
+        """Ruled out: the host's copy of a filter on a 1:N path (``order_tags``) must not fan out a sibling ``amount:sum`` — group A reads 24.0, not the 46.0 a three-way fan-out gives."""
         rows = await self._rows(SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],

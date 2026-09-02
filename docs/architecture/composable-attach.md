@@ -170,6 +170,34 @@ literal `_base` / `base` names are reserved in the allocator and renamed
 per-producer. Several complex producers therefore coexist in one query with no
 name collisions on any dialect.
 
+Since stage 4 the same split serves **multi-stage statements**: every stage of
+a DAG renders through one shared generation (one allocator, one
+rendered-producer map), a producer-carrying non-final stage's internal `WITH`
+hoists to the statement's top level, and the assembled multi-stage statement
+always carries exactly one flat `WITH` — never a `WITH` nested inside a CTE
+definition (invalid on SQL Server). A single-stage render returns its statement
+directly and may emit a plain query with no `WITH` at all; the no-nesting rule
+holds there too. Nested attaches inside a producer's sub-plan (a banded grain in a
+filtered-local or host-grain-wrap producer) hoist the same way; a producer
+needed by both the sub-plan and the top level renders once (structural
+interning) and both scopes join it on their own coordinates.
+
+## The render pipeline (stage 4)
+
+One pipeline renders every statement: **base → aggregate → combined → steps →
+post**. Each phase that materialises a relation contributes a `Node` (name,
+select AST, exposed slot schema, dependencies — `slayer/sql/render/nodes.py`);
+the steps phase reads its inputs off the schema of the query-grain node it
+steps over — the combined node when attaches joined, else the aggregated base
+(the chain installs that tail as its `base` node either way). One canonical
+Kahn driver batches transform layers (window batch first, then temporal ops —
+the measured zero-churn order) with the deadlock backstop inside it. **Fusion**
+is an emission decision, never semantic: adjacent phases collapse into one
+SELECT only when no blocker holds (a combined phase, transform steps, or a
+hidden-column trim boundary). A plain query fuses end to end into a single
+SELECT and a ranked / trailing-window kernel producer fuses into a single CTE
+body — the fusion fixed points, pinned byte-for-byte by golden snapshots.
+
 ## Invariants
 
 - **Cardinality neutrality** — attaching a partitioned aggregate never changes
@@ -228,8 +256,14 @@ artifact with an issue attached, never a permanent boundary.
   invariant lands. `classify_isolation` survives only for the host-rooted
   routes (crossing `Column.filter` inputs, host-grain wraps, filtered-local) —
   its retirement moves to stage 4.
-- **Stage 4 (DEV-1838)** — node discipline: the query renders as a chain of
-  nodes (base → aggregate → combined → steps → post), each consuming only the
-  previous node's schema; the CTE-body deferrals lift via the CTE-hoist;
-  `classify_isolation` + the legacy cross-model dispatch retire; exit
-  criterion — the guard list is empty and the matrix has no xfails.
+- **Stage 4 (DEV-1838, this change)** — node discipline: the query renders as
+  one pipeline of nodes (base → aggregate → combined → steps → post) with one
+  Kahn driver and explicit fusion (see "The render pipeline" above); producers
+  intern structurally, so one is computed once however many scopes consume it;
+  the windowed / ranked / cross-model plan classes fold into producer kernels
+  on the attach and `classify_isolation` + the legacy cross-model dispatch are
+  deleted; per-role crossing-input safety fails closed on filter references
+  and arguments over unproven hops; the CTE-body deferrals lift via the
+  CTE-hoist and multi-stage statements flatten to one `WITH`. Exit criterion
+  met — the guard list is empty (pinned by a meta-test) and the matrix has no
+  xfails.

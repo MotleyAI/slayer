@@ -1,18 +1,5 @@
-"""Shared identifier and aggregation-suffix definitions for SLayer references.
-
-DEV-1369 consolidates the identifier-shape regexes and aggregation-suffix
-parsing that previously lived in four different files (``formula.py``,
-``dbt/converter.py``, ``engine/binding.py``, ``memories/resolver.py``).
-Keeping a single source of truth prevents the four copies from drifting
-out of sync.
-
-This module is intentionally side-effect-free and depends only on
-``slayer.core.keys`` (for the ``ColumnKey`` shape ``agg_kwarg_canonical_str``
-canonicalises). It does NOT import ``slayer.core.models`` /
-``slayer.core.query`` so it can be imported from those modules'
-validators without circular import risk. ``slayer.core.keys`` is itself
-free of ``slayer`` imports.
-"""
+"""Shared identifier and aggregation-suffix definitions for SLayer references (single source
+of truth). Depends only on ``slayer.core.keys`` so model/query validators avoid circular imports."""
 from __future__ import annotations
 
 import re
@@ -21,29 +8,20 @@ from typing import Any
 
 from slayer.core.keys import ColumnKey, ColumnSqlKey, TimeTruncKey
 
-# ---------------------------------------------------------------------------
 # Identifier shapes
-# ---------------------------------------------------------------------------
 
-# A bare SQL identifier (no dots, no double underscores constraint at this
-# level — the dunder restriction is applied selectively at user-input time).
+# A bare SQL identifier; the dunder restriction is applied at user-input time.
 IDENTIFIER_RE = re.compile(r"^[a-zA-Z_]\w*$")
 
-# An identifier or a dotted path of identifiers, e.g. ``revenue``,
-# ``customers.revenue``, ``a.b.c.d``. Used to scan formula text for
-# reference candidates.
+# An identifier or dotted path; used to scan formula text for reference candidates.
 IDENT_OR_PATH_RE = re.compile(r"[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*")
 
-# A string that is exactly a chain of ``.``-joined identifiers and nothing
-# else. Distinguishes ``customers.regions.name`` from a SQL fragment that
-# happens to contain a dot.
+# Exactly a chain of ``.``-joined identifiers — distinguishes a dotted ref from a
+# SQL fragment that merely contains a dot.
 DOTTED_IDENT_REF_RE = re.compile(r"^[A-Za-z_]\w*(\.[A-Za-z_]\w*)+$")
 
-# Aggregation colon syntax, e.g. ``revenue:sum``, ``*:count``,
-# ``customers.revenue:weighted_avg(weight=quantity)``. Group 1 is the
-# measure name (``*``, identifier, or dotted path, optionally
-# ``path.*``); group 2 is the aggregation name; group 3 is the optional
-# ``(...)`` arglist.
+# Aggregation colon syntax (``revenue:sum``, ``*:count``). Group 1 measure name,
+# group 2 aggregation name, group 3 optional ``(...)`` arglist.
 AGG_REF_RE = re.compile(
     r"(\*|[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*(?:\.\*)?)"  # measure / *
     r":"
@@ -52,9 +30,7 @@ AGG_REF_RE = re.compile(
 )
 
 
-# ---------------------------------------------------------------------------
 # Aggregation-suffix utilities
-# ---------------------------------------------------------------------------
 
 _NON_IDENT_RE = re.compile(r"\W+")
 
@@ -63,15 +39,7 @@ def agg_signature_suffix(
     agg_args: list[str] | None,
     agg_kwargs: dict | None,
 ) -> str:
-    """Build a deterministic identifier suffix from aggregation args/kwargs.
-
-    Returns the empty string when both are empty so unparameterized
-    aggregations keep their existing canonical names. For parameterized
-    variants (``last(created_at)`` vs ``last(updated_at)``,
-    ``percentile(p=0.5)`` vs ``percentile(p=0.95)``,
-    ``sum(window='90d')`` vs ``sum(window='30d')``) the suffix
-    differentiates them so they don't collapse onto a single hidden alias.
-    """
+    """Deterministic identifier suffix from aggregation args/kwargs (empty when both empty); differentiates parametric variants (``percentile(p=0.5)`` vs ``(p=0.95)``)."""
     args = agg_args or []
     kwargs = agg_kwargs or {}
     if not args and not kwargs:
@@ -104,11 +72,7 @@ def _partition_key_display(key: Any) -> str:
 
 
 def partition_by_suffix(partition_keys) -> str:
-    """Deterministic identifier suffix for an aggregate's ``partition_keys``.
-
-    ``None`` (no partition) -> empty. An explicit empty frozenset (grand total)
-    -> ``_partition_by``. Non-empty -> ``_partition_by`` plus each key's
-    display, sorted."""
+    """Deterministic identifier suffix for ``partition_keys``: ``None`` -> empty; empty frozenset (grand total) -> ``_partition_by``; non-empty -> ``_partition_by`` + sorted displays."""
     if partition_keys is None:
         return ""
     displays = sorted(_partition_key_display(k) for k in partition_keys)
@@ -116,21 +80,7 @@ def partition_by_suffix(partition_keys) -> str:
 
 
 def _decimal_to_plain_str(value: Decimal) -> str:
-    """Return ``value`` as a plain-decimal string with no scientific notation.
-
-    ``str(Decimal("1E-7"))`` yields ``"1E-7"``, which the generator's
-    ``_SAFE_AGG_PARAM_RE`` SQL-injection allowlist rejects. ``f"{x:f}"``
-    forces plain notation but pads short fractional values with extra
-    zeros (``f"{Decimal('0.5'):f}"`` -> ``"0.5"`` is fine, but
-    ``f"{0.5:f}"`` on a float yields ``"0.500000"``). To preserve
-    short forms while expanding exponents, normalize via the Decimal
-    layer's own ``normalize()`` + a fix-up for the
-    ``Decimal('-0E+1')`` "-0" exponent quirk.
-    """
-    # Trip the exponent down so ``Decimal("1E-7")`` becomes
-    # ``Decimal("0.0000001")`` (and ``Decimal("1.0E+3")`` becomes
-    # ``Decimal("1000")``). For sign normalization use the standard
-    # ``f"{value:f}"`` then trim trailing zeros after a decimal point.
+    """``value`` as a plain-decimal string, no scientific notation: ``str(Decimal("1E-7"))`` yields ``"1E-7"``, which the generator's ``_SAFE_AGG_PARAM_RE`` allowlist rejects."""
     s = f"{value:f}"
     if "." in s:
         s = s.rstrip("0").rstrip(".")
@@ -138,42 +88,9 @@ def _decimal_to_plain_str(value: Decimal) -> str:
 
 
 def agg_kwarg_canonical_str(value: Any) -> str:
-    """Canonicalize an AggregateKey kwarg / arg value to SQL-string form.
-
-    Agg kwarg / arg values must reach ``_build_agg`` as SQL strings that
-    ``_validate_agg_param_value`` (``slayer/sql/generator.py``) accepts —
-    identifiers, qualified names, or numeric literals. Sites that build the
-    synth ``AggRenderSpec`` from a typed ``AggregateKey`` -- AND the two
-    canonical-alias renderers that previously called ``str(v)`` directly
-    (``slayer/sql/generator.py`` and ``slayer/engine/cross_model_planner.py``)
-    -- route every kwarg value through this helper instead, so a ``ColumnKey``
-    never surfaces as Pydantic-repr noise.
-
-    Conversion rules:
-
-    * ``bool`` / ``None`` -> ``TypeError`` (legacy never accepted these;
-      ``AggregateKey``'s structural-key normalisation at
-      ``slayer/core/keys.py:139-142`` keeps them distinct from numerics
-      precisely so they fail loudly here).
-    * ``Decimal`` -> ``str(value)`` (Decimal's ``__str__`` matches
-      ``_SAFE_AGG_PARAM_RE`` for the planner's normalised forms; ``0.5``
-      / ``0.95`` / ``100``).
-    * ``int`` / ``float`` -> ``str(value)`` (planner-side normalisation
-      already routes literals through ``Decimal``, but the helper stays
-      total for direct callers).
-    * ``str`` -> returned unchanged. Callers writing strings into the
-      key are responsible for safety; downstream validation catches
-      malformed input at the generator boundary.
-    * ``ColumnKey(path=(), leaf=L)`` -> ``L``.
-    * ``ColumnKey(path=P, leaf=L)`` -> ``".".join(P) + "." + L``.
-    * ``ColumnSqlKey`` (a derived-column arg/kwarg, e.g.
-      ``corr(other=derived_col)`` — DEV-1450 #4a/#4b) -> the same
-      ``[path.]column_name`` form so a parametric agg over a derived
-      column canonicalizes instead of raising.
-
-    Anything else raises ``TypeError`` -- the AggregateKey key shape is
-    closed over these branches.
-    """
+    """Canonicalize an AggregateKey kwarg/arg value to the SQL-string form the generator's
+    ``_validate_agg_param_value`` accepts (so a ``ColumnKey`` never leaks as Pydantic repr).
+    ``bool``/``None`` raise (kept distinct from numerics to fail loudly); ``ColumnKey`` → ``[path.]leaf``."""
     if isinstance(value, bool):
         # bool is-a int, must check first.
         raise TypeError(
@@ -182,18 +99,11 @@ def agg_kwarg_canonical_str(value: Any) -> str:
     if value is None:
         raise TypeError("AggregateKey kwarg cannot be None")
     if isinstance(value, Decimal):
-        # Route through ``_decimal_to_plain_str`` to force plain
-        # decimal notation: ``str(Decimal("1E-7"))`` yields ``"1E-7"``,
-        # which the generator's ``_SAFE_AGG_PARAM_RE`` rejects (no
-        # scientific notation in the SQL-injection allowlist).
         return _decimal_to_plain_str(value)
     if isinstance(value, int):
         return str(value)
     if isinstance(value, float):
-        # Route floats through Decimal(str(float)) so the
-        # human-readable decimal text is preserved (matches the
-        # planner's ``normalize_scalar`` recipe at
-        # ``slayer/core/keys.py:102``).
+        # Decimal(str(float)) preserves human-readable text (matches planner normalize_scalar).
         return _decimal_to_plain_str(Decimal(str(value)))
     if isinstance(value, str):
         return value
@@ -217,12 +127,7 @@ def canonical_agg_name(
     agg_args: list[str] | None = None,
     agg_kwargs: dict | None = None,
 ) -> str:
-    """Canonical hidden-column name for an aggregated measure ref.
-
-    ``revenue:sum`` → ``revenue_sum``; ``*:count`` → ``_count``;
-    ``revenue:percentile(p=0.5)`` → ``revenue_percentile_p_0_5``;
-    ``revenue:sum(window='90d')`` → ``revenue_sum_window_90d``.
-    """
+    """Canonical hidden-column name for an aggregated measure ref (``revenue:sum`` → ``revenue_sum``, ``*:count`` → ``_count``)."""
     suffix = agg_signature_suffix(agg_args, agg_kwargs)
     if measure_name == "*":
         return f"_{aggregation_name}{suffix}"
@@ -230,17 +135,7 @@ def canonical_agg_name(
 
 
 def strip_agg_suffix(raw: str) -> tuple[str, str | None]:
-    """Return ``(prefix, agg_name)`` after stripping a trailing ``:agg``
-    or ``:agg(...)``.
-
-    ``agg`` may be parametric: ``revenue:weighted_avg(weight=qty)`` →
-    ``("revenue", "weighted_avg")``. The args themselves are discarded
-    since the aggregation is not an independent entity.
-
-    Locates the *outermost* colon (one not inside parentheses) so a
-    parametric aggregation like ``revenue:last(created_at)`` doesn't
-    fool the scan.
-    """
+    """Return ``(prefix, agg_name)`` stripping a trailing ``:agg``/``:agg(...)`` (arglist discarded); locates the outermost colon (outside parens) so ``revenue:last(created_at)`` isn't fooled."""
     depth = 0
     for i, ch in enumerate(raw):
         if ch == "(":
@@ -256,16 +151,7 @@ def strip_agg_suffix(raw: str) -> tuple[str, str | None]:
 
 
 def split_agg_suffix(raw: str) -> tuple[str, str | None]:
-    """Return ``(prefix, suffix)`` splitting off a trailing ``:agg`` /
-    ``:agg(...)``, keeping the *full* suffix text (args included).
-
-    Unlike :func:`strip_agg_suffix` (which discards the arglist and returns
-    only the aggregation name), this preserves the entire suffix so callers
-    that re-root a reference can re-attach it verbatim —
-    ``"orders.revenue:weighted_avg(weight=qty)"`` →
-    ``("orders.revenue", "weighted_avg(weight=qty)")``. Returns
-    ``(raw, None)`` when there is no top-level ``:`` aggregation.
-    """
+    """Return ``(prefix, suffix)`` splitting a trailing ``:agg`` but keeping the full suffix (args included) — unlike :func:`strip_agg_suffix`, so a re-rooted reference re-attaches it verbatim."""
     depth = 0
     for i, ch in enumerate(raw):
         if ch == "(":

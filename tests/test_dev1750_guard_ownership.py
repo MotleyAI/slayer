@@ -1,12 +1,11 @@
-"""DEV-1750 / DEV-1836 — where the cross-model work for a ``time_shift`` inner
+"""DEV-1750 / DEV-1836 / DEV-1838 — where the work for a ``time_shift`` inner
 aggregate lives, pinned at the planner level (Codex test-review F1).
 
-A TARGET-GRAIN cross-model inner is migrated onto the regroup primitive by
-DEV-1836 — it becomes a ``RegroupAttachPlan`` and owns NO
-``CrossModelAggregatePlan`` — while a host-rooted inner (``amount:wscaled_sum``)
-still isolates into a ``CrossModelAggregatePlan`` (``cte_root_model`` = the host
-model). These tests pin that structural split, so a regression that reroutes
-either shape is caught here rather than only by an executed-value diff.
+A TARGET-GRAIN inner desugars onto a target-rooted regroup producer; a
+host-rooted crossing-fragment inner (``amount:wscaled_sum``) onto a HOST-rooted
+producer attach; a plain local inner stays inline. These tests pin that
+structural split, so a regression that reroutes any shape is caught here
+rather than only by an executed-value diff.
 """
 
 from __future__ import annotations
@@ -65,23 +64,34 @@ def _time_shift_inner_slot_id(planned) -> str:
     return inner_slot.id
 
 
-def _plan_owning(planned, slot_id: str):
+def _attach_answering(planned, key):
+    """The regroup attach whose substitutions answer ``key``, if any."""
     return next(
-        (p for p in planned.cross_model_aggregate_plans
-         if p.aggregate_slot_id == slot_id),
+        (a for a in planned.regroup_attach_plans
+         if any(sub.original_key == key for sub in a.substitutions)),
         None,
     )
 
 
 class TestGuardOwnership:
     def test_b_host_rooted_inner_is_owned_by_a_host_rooted_plan(self) -> None:
-        """(b) ``time_shift(amount:wscaled_sum)`` — the inner aggregate's plan is
-        HOST-rooted (``cte_root_model`` == the host), the shape the lift renders."""
+        """(b) ``time_shift(amount:wscaled_sum)`` — DEV-1838 D5 migrates the
+        crossing-fragment inner onto the regroup primitive: the shift wraps a
+        placeholder answered by a HOST-rooted producer attach."""
         planned = _plan("time_shift(amount:wscaled_sum, -1)")
-        inner_sid = _time_shift_inner_slot_id(planned)
-        plan = _plan_owning(planned, inner_sid)
-        assert plan is not None, "shape (b) inner aggregate has no cross-model plan"
-        assert plan.cte_root_model == "orders", plan.cte_root_model
+        layer = next(
+            layer for layer in planned.transform_layers if layer.op == "time_shift"
+        )
+        out_slot = next(s for s in _all_slots(planned) if s.id in layer.slot_ids)
+        assert isinstance(out_slot.key, TransformKey), out_slot.key
+        inner = out_slot.key.input
+        assert isinstance(inner, ColumnKey), inner
+        assert inner.leaf.startswith("__regroup__"), inner
+        attach = next(
+            a for a in planned.regroup_attach_plans
+            if any(sub.placeholder == inner for sub in a.substitutions)
+        )
+        assert attach.producer_root_model is None  # rooted at the host
 
     def test_c_target_grain_inner_is_a_regroup_attach(self) -> None:
         """(c) ``time_shift(customers.spend:sum)`` — DEV-1836 migrates the
@@ -89,7 +99,6 @@ class TestGuardOwnership:
         regroup placeholder, the query owns a regroup attach, and no cross-model
         plan is produced."""
         planned = _plan("time_shift(customers.spend:sum, -1)")
-        assert not planned.cross_model_aggregate_plans
         assert planned.regroup_attach_plans
         layer = next(
             layer for layer in planned.transform_layers if layer.op == "time_shift"
@@ -100,10 +109,10 @@ class TestGuardOwnership:
         assert isinstance(inner, ColumnKey), inner
         assert inner.leaf.startswith("__regroup__"), inner
 
-    def test_a_local_inner_has_no_cross_model_plan(self) -> None:
+    def test_a_local_inner_stays_inline(self) -> None:
         """(a) ``time_shift(amount:sum)`` beside a cross-model sibling — the shift's
-        OWN inner aggregate is local, so it owns NO cross-model plan (the guard's
-        ownership lookup misses it, and it renders)."""
+        OWN inner aggregate is local, so no producer attach answers it (it stays
+        an inline ``_base`` aggregate, and it renders)."""
         planned = plan_query(
             query=SlayerQuery(
                 source_model="orders", time_dimensions=month_td(),
@@ -115,6 +124,9 @@ class TestGuardOwnership:
             bundle=_bundle(),
         )
         inner_sid = _time_shift_inner_slot_id(planned)
-        assert _plan_owning(planned, inner_sid) is None
+        inner_key = next(
+            s.key for s in _all_slots(planned) if s.id == inner_sid
+        )
+        assert _attach_answering(planned, inner_key) is None
         # The sibling DID isolate onto the primitive — the query really crosses.
         assert planned.regroup_attach_plans
