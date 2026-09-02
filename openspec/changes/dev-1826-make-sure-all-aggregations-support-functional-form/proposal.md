@@ -58,10 +58,11 @@ retiring colon syntax.
 
 ### Modified Capabilities
 
-(none — the existing `queries/computed-dimensions` and
-`queries/partitioned-aggregates` requirements are spelling-agnostic; this change
-adds an equivalent spelling and an additive expression capability without
-altering any of their requirements)
+(none — the existing corpus capabilities (`queries/computed-dimensions`,
+`queries/partitioned-aggregates`, `queries/cross-model-aggregates`,
+`models/join-cardinality`) are spelling-agnostic; this change adds an equivalent
+spelling and an additive expression capability without altering any of their
+requirements)
 
 ## Impact
 

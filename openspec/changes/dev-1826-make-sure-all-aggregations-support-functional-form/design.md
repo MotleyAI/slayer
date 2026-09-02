@@ -2,13 +2,14 @@
 
 ## Context
 
-(Anchors verified after merging `egor/dev-1835…`, which brought DEV-1740/1743/1824/
-1825/1829/1835/1837/1839 into this branch.)
+(Anchors verified after merging `egor/dev-1835…` and then `origin/main`
+(2026-09-02), which brought DEV-1740/1743/1824/1825/1829/1835/1836/1837/1838/1839
+into this branch.)
 
 Two funcstyle→colon regex rewriters exist: the slack rule `FUNC_STYLE_AGG`
 (`slayer/engine/normalization.py:148`, warning-emitting, covers query
 measures/filters and model measures at save) and a legacy twin
-(`slayer/core/formula.py:246`, used by order coercion at `core/query.py:782-855`
+(`slayer/core/formula.py:246`, used by order coercion at `core/query.py:536`/`:553`
 and the cube/dbt/OSI importers). The parser `parse_expr`
 (`slayer/engine/syntax.py:367`) has no functional-aggregation branch — an
 un-normalized `sum(revenue)` dies as `UnknownFunctionError`
@@ -20,19 +21,19 @@ Positions that miss both rewriters (`ModelExtension` measures via
 
 Post-merge landscape this design builds on:
 - **Computed dimensions** (DEV-1740/1824/1825): `dimensions` entries may be
-  expressions — `ComputedDimension` (`core/query.py:737-756`), parsed by the
-  same `parse_expr` at `query.py:955` (construction) and
-  `stage_planner.py:3451` (binding); inner aggregates must carry
-  `partition_by=` (guard `stage_planner.py:3363-3417`). This is a **new
+  expressions — `ComputedDimension` (`core/query.py:501`), parsed by the
+  same `parse_expr` at `query.py:658` (construction) and
+  `stage_planner.py:3418` (binding); inner aggregates must carry
+  `partition_by=` (guard `stage_planner.py:3358`). This is a **new
   aggregation position** the parity contract must cover.
 - **Row-level expression machinery exists**: `ArithmeticKey` (`keys.py:664`),
   `ScalarCallKey` (`keys.py:692`, `iif` included — no ConditionalKey), rendered
-  by `sql/render/value_expr.py` (`render_arithmetic:497`,
-  `render_scalar_call:542`, iif→CASE `:829`). `CASE WHEN` is a pre-parse text
+  by `sql/render/value_expr.py` (`render_arithmetic:320`,
+  `render_scalar_call:355`, iif→CASE `:596`). `CASE WHEN` is a pre-parse text
   rewrite `_rewrite_case_when` (`syntax.py:218-309`) feeding
   `_preprocess_colons` (`syntax.py:761`).
 - **Computed-dimension auto-naming** exists: `_auto_name_from_expression`
-  (`core/query.py:720-734`).
+  (`core/query.py:489`).
 - `DOT_PATH_IN_SQL` is already retired (DEV-1743, name-only stub);
   `reject_user_dunder` is gone from `refs.py`.
 
@@ -83,20 +84,20 @@ surfaces (unchanged).
 5. **Retire `FUNC_STYLE_AGG` — and the quiet calls become dead code.** Delete
    the rule, helpers, warning emission, and `func_style_agg_to_colon`
    (`normalization.py:75-259`); delete all three quiet call sites — they are
-   no-ops once the parser is native: `stage_planner.py:732`
-   (`_parse_order_formula`), `schema_drift.py:601-609`, and
+   no-ops once the parser is native: `stage_planner.py:519`
+   (`_parse_order_formula`), `schema_drift.py:501`, and
    `memories/resolver.py:598-602` (the latter replaced by the entity-ref
    helper, decision 8). No schema-drift rewiring needed. `core/formula.py`
    untouched — importers keep their internal rewriter (consolidation:
    DEV-1831). `MISPLACED_MEASURE` unchanged; `DOT_PATH_IN_SQL` already retired.
    Save no longer rewrites spelling (author's text preserved).
 6. **Order coercion resolves functional forms at enrichment** (P4):
-   `_order_formula_candidate` / `_coerce_order_column` (`core/query.py:782-855`)
+   `_order_formula_candidate` / `_coerce_order_column` (`core/query.py:536`/`:553`)
    stop importing the legacy rewriter; call-style text → existing
    `_FUNCSTYLE_PENDING` placeholder + `raw_formula` (original spelling), bound
-   later via `_parse_order_formula` (`stage_planner.py:723-738`). Avoids a
+   later via `_parse_order_formula` (`stage_planner.py:517`). Avoids a
    core→engine import. Construction-time filter validation
-   (`_validate_dsl_user_input`, `query.py:1136-1156`) is unaffected: unknown
+   (`_validate_dsl_user_input`, `query.py:789`) is unaffected: unknown
    functional names parse to `AggCall` candidates.
 7. **Custom aggregation names may not shadow scalar functions** (Codex F1):
    extend `Aggregation._reject_transform_names` (`core/models.py:351-364`) to
@@ -104,7 +105,7 @@ surfaces (unchanged).
    exception class impossible instead of warned (alternative binder-time
    resolution rejected: context-dependent meaning).
 8. **Entity refs** (`memories/resolver.py:265`, `:445-460`;
-   `query_engine.py:2107` `split_agg_suffix` in the recommend path): one shared
+   `query_engine.py:1730` `split_agg_suffix` in the recommend path): one shared
    helper parses the ref via `parse_expr` and accepts the result only when it
    is an `AggCall` over a pure column/star source, mapping to the same
    (prefix, agg, suffix) as `split_agg_suffix`; expressions rejected. One
@@ -119,12 +120,12 @@ surfaces (unchanged).
    Hash/equality/serialization come from the canonical bound tree, so
    formatting variants intern to one key. SQL gen renders
    `AGG(<row-level expr>)` through `render_value_key`
-   (`value_expr.py:689`) — percentile/dialect hooks/custom-agg `{value}`
+   (`value_expr.py:471`) — percentile/dialect hooks/custom-agg `{value}`
    templates receive the rendered expression. Boundaries: refs must resolve
    in-scope (no join hops); operands carrying `Column.filter` rejected in v1;
    nested aggs/transforms rejected.
 10. **Expression-agg naming reuses `_auto_name_from_expression`**
-    (`core/query.py:720-734`) — the computed-dimension sanitizer becomes a
+    (`core/query.py:489`) — the computed-dimension sanitizer becomes a
     shared helper; leaf = `<sanitized expr>_<agg>` (e.g. `sum(amount - cost)` →
     `orders.amount_cost_sum`), then the existing `agg_signature_suffix` /
     `partition_by_suffix` machinery appends unchanged. Distinct expressions
@@ -164,7 +165,7 @@ surfaces (unchanged).
 - [Order resolution shifting to enrichment could surprise construction-time
   introspection] → behavior-preserving for user-visible aliases; placeholder
   path already exists for custom aggs. Audit `_canonical_alias_for_formula`'s
-  text fallback (`stage_planner.py:3676-3728`) for functional text.
+  text fallback (`stage_planner.py:3607`) for functional text.
 
 ## Migration Plan
 

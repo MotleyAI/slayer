@@ -20,7 +20,7 @@
 - [ ] 3.2 Reject scalar-colliding custom aggregation names in `core/models.py` (mirror transform rejection); verify 1.3.
 - [ ] 3.3 Expression-source variant on `AggregateKey` (`keys.py:471` `_AggregateSource`): reuse the existing row-level `ValueKey` composites (`ArithmeticKey`/`ScalarCallKey`/…) as the bound tree; canonical serialization, hash/equality; additive to existing serialization; verify 1.4 key-identity cases + full suite serialization round-trips.
 - [ ] 3.4 Binder desugar for expressions: in-scope ref resolution (model scope + `StageSchema`), boundaries (cross-model, filtered operands, nesting), gates-skip + type inference; verify 1.4 binding cases.
-- [ ] 3.5 Naming: extract `_auto_name_from_expression` (`core/query.py:720`) into a shared helper; expression-agg leaf = `<sanitized>_<agg>` wired into `canonical_aggregate_alias` / stage `flat_name`; loud duplicate-key error for colliding distinct expressions; verify 1.4 naming cases.
+- [ ] 3.5 Naming: extract `_auto_name_from_expression` (`core/query.py:489`) into a shared helper; expression-agg leaf = `<sanitized>_<agg>` wired into `canonical_aggregate_alias` / stage `flat_name`; loud duplicate-key error for colliding distinct expressions; verify 1.4 naming cases.
 
 ## 4. SQL generation
 
@@ -28,9 +28,9 @@
 
 ## 5. Retirement and rerouting
 
-- [ ] 5.1 Delete `FUNC_STYLE_AGG` rule, helpers, `func_style_agg_to_colon`, and warning emission from `normalization.py:75-259`; delete the now-dead quiet calls at `stage_planner.py:732` and `schema_drift.py:601-609` (parser covers both); verify 1.5 + schema-drift tests green.
-- [ ] 5.2 Order coercion: placeholder + original-text `raw_formula` for call-style entries, no legacy-rewriter import in `core/query.py` (`:782-855`); audit the `_validate_dsl_user_input` construction check (`query.py:1136`) and the `stage_planner.py:3676` alias fallback for functional text; verify 1.2 order/filter cases.
-- [ ] 5.3 Entity-ref helper (parse-based, `AggCall`-over-column only) used by `memories/resolver.py` (`:265`, `:445-460`, replacing the `:598-602` quiet call) and `query_engine.py:2107`; verify 1.6.
+- [ ] 5.1 Delete `FUNC_STYLE_AGG` rule, helpers, `func_style_agg_to_colon`, and warning emission from `normalization.py:75-259`; delete the now-dead quiet calls at `stage_planner.py:519` and `schema_drift.py:501` (parser covers both); verify 1.5 + schema-drift tests green.
+- [ ] 5.2 Order coercion: placeholder + original-text `raw_formula` for call-style entries, no legacy-rewriter import in `core/query.py` (`:536`/`:553`); audit the `_validate_dsl_user_input` construction check (`query.py:789`) and the `stage_planner.py:3607` alias fallback for functional text; verify 1.2 order/filter cases.
+- [ ] 5.3 Entity-ref helper (parse-based, `AggCall`-over-column only) used by `memories/resolver.py` (`:265`, `:445-460`, replacing the `:598-602` quiet call) and `query_engine.py:1730`; verify 1.6.
 
 ## 6. Full-suite gate
 
