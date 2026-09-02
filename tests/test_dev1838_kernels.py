@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.keys import ColumnKey
+from slayer.core.keys import AggregateKey, ColumnKey, SqlExprKey
 from slayer.core.models import Column, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine import stage_planner
@@ -374,8 +374,6 @@ class TestCrossingInputPathsUnionFilterAndStructural:
     inline."""
 
     def test_filter_and_kwarg_crossings_are_both_reported(self) -> None:
-        from slayer.core.keys import AggregateKey, SqlExprKey
-
         key = AggregateKey(
             agg="sum",
             source=ColumnKey(path=(), leaf="amount"),

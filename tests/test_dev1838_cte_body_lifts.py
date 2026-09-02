@@ -281,7 +281,7 @@ class TestLiftedGuardsLeaveNoResidue:
         needle = re.sub(r"[\s\"']+", "", fragment)
         return [
             str(p) for p in package_root.rglob("*.py")
-            if needle in re.sub(r"[\s\"']+", "", p.read_text())
+            if needle in re.sub(r"[\s\"']+", "", p.read_text(encoding="utf-8"))
         ]
 
     @pytest.mark.parametrize("fragment", [

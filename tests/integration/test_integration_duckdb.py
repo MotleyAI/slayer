@@ -1,12 +1,10 @@
 """Integration tests using a real DuckDB database (in-process, no Docker needed)."""
 
+import math
+import statistics
 import tempfile
 
 import pytest
-
-pytest.importorskip("duckdb")
-
-import duckdb
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
@@ -15,6 +13,8 @@ from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
+
+duckdb = pytest.importorskip("duckdb")
 
 
 @pytest.fixture(scope="module")
@@ -544,7 +544,6 @@ class TestDuckDBStatAggregations:
     """
 
     async def test_stddev_samp_native_duckdb(self, duckdb_env: SlayerQueryEngine) -> None:
-        import statistics
         query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "total:stddev_samp"}],
@@ -556,7 +555,6 @@ class TestDuckDBStatAggregations:
         )
 
     async def test_var_pop_native_duckdb(self, duckdb_env: SlayerQueryEngine) -> None:
-        import statistics
         query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "total:var_pop"}],
@@ -568,7 +566,6 @@ class TestDuckDBStatAggregations:
         )
 
     async def test_corr_native_duckdb(self, duckdb_env: SlayerQueryEngine) -> None:
-        import statistics
         query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "total:corr(other=customer_id)"}],
@@ -615,8 +612,6 @@ class TestDuckDBStatAggregations:
         """DEV-1337: a `log10(amount)` formula must execute correctly on
         DuckDB (native single-arg LOG10) and the emitted SQL must contain
         `log10(...)` rather than the canonicalised `LOG(10, ...)`."""
-        from slayer.core.models import SlayerModel
-
         existing = await duckdb_env.storage.get_model("orders")
         assert existing is not None
         cols = list(existing.columns) + [
@@ -634,10 +629,9 @@ class TestDuckDBStatAggregations:
         result = await duckdb_env.execute(
             SlayerQuery(source_model="orders", measures=[{"formula": "log_amount:max"}])
         )
-        import math as _math
         # max(amount) = 300, log10(300) ≈ 2.4771
         assert float(result.data[0]["orders.log_amount_max"]) == pytest.approx(
-            _math.log10(300.0), rel=1e-9
+            math.log10(300.0), rel=1e-9
         )
 
         dry = await duckdb_env.execute(

@@ -51,7 +51,7 @@ class TestExplicitRejections:
             dimensions=[{"expression": "amount:sum", "name": "d"}],
             measures=[ModelMeasure(formula="amount:sum", name="m")],
         )
-        with pytest.raises(Exception, match="partition_by") as ei:  # noqa: B017 — message is the pin
+        with pytest.raises(ValueError, match="partition_by") as ei:
             await engine.execute(query)
         assert not isinstance(ei.value, AssertionError)
         assert "__regroup__" not in str(ei.value)

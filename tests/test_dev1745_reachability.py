@@ -43,8 +43,18 @@ from slayer.core.keys import (
 )
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
+from slayer.engine.filter_reachability import (
+    UnhandledValueKindError,
+    compute_key_join_paths,
+    filter_reachability_for,
+    recompute_filter_reachability,
+)
 from slayer.engine.source_bundle import ResolvedSourceBundle
-from slayer.engine.stage_planner import plan_query
+from slayer.engine.stage_planner import (
+    _bound_filter_from_key,
+    _cross_model_inherited_filters,
+    plan_query,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -135,8 +145,6 @@ def _bundle() -> ResolvedSourceBundle:
 
 def _paths_for(key):
     """Anchored crossed-join-path set for one ValueKey, at plan time."""
-    from slayer.engine.filter_reachability import compute_key_join_paths
-
     return compute_key_join_paths(
         key=key,
         anchor_model=_orders(),
@@ -291,11 +299,6 @@ class TestCompositeKeyKindsAreTotal:
         """Fails CLOSED on an unhandled kind — and with an error that names the
         offending type, not an incidental AttributeError/TypeError from
         stumbling over an unexpected shape."""
-        from slayer.engine.filter_reachability import (
-            UnhandledValueKindError,
-            compute_key_join_paths,
-        )
-
         class _Bogus:
             pass
 
@@ -326,11 +329,6 @@ class TestProducerInheritanceRouting:
     """
 
     def _split(self, key, *, target_path):
-        from slayer.engine.stage_planner import (
-            _bound_filter_from_key,
-            _cross_model_inherited_filters,
-        )
-
         models = {
             m.name: m
             for m in (_orders(), _customers(), _regions(), _warehouses())
@@ -350,7 +348,8 @@ class TestProducerInheritanceRouting:
             ColumnKey(path=("warehouses", "regions"), leaf="population"),
             target_path=("customers",),
         )
-        assert not inherited and dropped
+        assert not inherited
+        assert dropped
 
     def test_path_deeper_than_target_is_not_inherited(self) -> None:
         """A dependency BELOW the target strips to a remainder the root's own
@@ -361,14 +360,16 @@ class TestProducerInheritanceRouting:
             ),
             target_path=("customers", "regions"),
         )
-        assert not inherited and dropped
+        assert not inherited
+        assert dropped
 
     def test_exact_path_match_is_inherited(self) -> None:
         inherited, dropped = self._split(
             ColumnKey(path=("customers", "regions"), leaf="population"),
             target_path=("customers", "regions"),
         )
-        assert inherited and not dropped
+        assert inherited
+        assert not dropped
 
     def test_mixed_reachable_and_unreachable_drops(self) -> None:
         key = ArithmeticKey(
@@ -379,15 +380,15 @@ class TestProducerInheritanceRouting:
             ),
         )
         inherited, dropped = self._split(key, target_path=("customers",))
-        assert not inherited and dropped, (
-            "reachability is an ALL-dependencies predicate"
-        )
+        assert not inherited, "reachability is an ALL-dependencies predicate"
+        assert dropped
 
     def test_host_local_is_not_inherited(self) -> None:
         inherited, dropped = self._split(
             ColumnKey(path=(), leaf="amount"), target_path=("customers",),
         )
-        assert not inherited and dropped
+        assert not inherited
+        assert dropped
 
     def test_dropped_conjunct_carries_the_filter_text(self) -> None:
         _inherited, dropped = self._split(
@@ -457,8 +458,6 @@ class TestCoordinateSystemInvariant:
         """A key crossing ('customers','regions') from the orders root is
         ('regions',) when the anchor IS customers. A summary that were copied
         rather than recomputed would report the parent's paths."""
-        from slayer.engine.filter_reachability import compute_key_join_paths
-
         key = ColumnKey(path=("customers", "regions"), leaf="population")
         from_orders = compute_key_join_paths(
             key=key, anchor_model=_orders(), anchor_relation="orders",
@@ -479,11 +478,6 @@ class TestCoordinateSystemInvariant:
     def test_nested_plan_recomputes_rather_than_inherits(self) -> None:
         """The nested (rerooted) plan a cross-model CTE compiles must carry its
         OWN summary, not the parent's."""
-        from slayer.engine.filter_reachability import (
-            filter_reachability_for,
-            recompute_filter_reachability,
-        )
-
         host = _orders()
         host.columns.append(
             Column(name="eu_amount", sql="amount",

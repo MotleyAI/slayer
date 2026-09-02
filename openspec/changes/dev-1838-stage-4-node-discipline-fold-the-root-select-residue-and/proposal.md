@@ -22,8 +22,8 @@ After stage 3 every isolation family CAN ride the regroup primitive, but three l
 ### Modified Capabilities
 
 - `queries/computed-dimensions`: the CTE-body coexistence deferral requirement flips to supported behavior (nested attaches render via the hoist).
-- `queries/partitioned-aggregates`: a shared-producer materialization requirement is added (one CTE per distinct producer, no merge across differing producer context).
-- `queries/cross-model-aggregates`: the unsafe-input rule extends to host-rooted producers with a per-input-role decision table. NOTE: this capability enters `openspec/specs/` when DEV-1836 archives, which precedes this change's archive by PR stacking; the delta here is written against that post-1836 corpus.
+- `queries/partitioned-aggregates`: a shared-producer materialization requirement is added (one CTE per distinct producer, no merge across differing producer context); the row/combined coexistence requirement records the keyless-grain cross-model dual-role exclusion.
+- `queries/cross-model-aggregates`: the unsafe-input rule extends to host-rooted producers with a per-input-role decision table; the expression/dimension composition requirement records the same keyless-grain dual-role exclusion. NOTE: this capability enters `openspec/specs/` when DEV-1836 archives, which precedes this change's archive by PR stacking; the delta here is written against that post-1836 corpus.
 
 ## Impact
 

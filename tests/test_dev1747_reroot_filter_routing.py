@@ -492,6 +492,7 @@ class TestFilteredLocalDispatchAccounting:
             bundle=dev1747_bundle(),
         )
         roots = {a.producer_root_model for a in plan.regroup_attach_plans}
+        assert len(plan.regroup_attach_plans) == 1, plan.regroup_attach_plans
         assert roots == {"customers"}, (
             f"the target-grain aggregate must plan ONE target-rooted producer; "
             f"got producer roots {roots}"

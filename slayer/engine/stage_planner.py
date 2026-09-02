@@ -1435,6 +1435,25 @@ def _bound_filter_from_key(vk: ValueKey) -> BoundFilter:
     return BoundFilter(value_key=vk, phase=phase, referenced_keys=refs)
 
 
+def _partitioned_conjunct_scope(
+    cj: ValueKey, *, dim_keys: frozenset, row_agg_set: frozenset,
+    crossing_root: Optional[Callable[[ValueKey], bool]],
+) -> str:
+    """The routing scope of one split conjunct. A cross-model / crossing-input
+    aggregate predicate resolves at the combined SELECT (after its producer
+    joins back) — except a transform-wrapped one (``cumsum(x) > 0``), which is
+    POST-phase: the transform wrapper owns it, never the outer combined WHERE."""
+    cj_refs = list(walk_value_keys(cj))
+    cj_has_transform = any(isinstance(k, TransformKey) for k in cj_refs)
+    if any(_is_cross_model_agg(k) for k in cj_refs) or (
+        not cj_has_transform
+        and crossing_root is not None
+        and any(crossing_root(k) for k in cj_refs)
+    ):
+        return "combined"
+    return conjunct_scope(cj, dim_keys=dim_keys, row_agg_set=row_agg_set)
+
+
 def _split_partitioned_filter_conjuncts(
     prebound: PreboundQuery,
     *,
@@ -1496,22 +1515,10 @@ def _split_partitioned_filter_conjuncts(
             new_texts.append(texts[i])
             continue
         for cj in split_top_level_and(bf.value_key):
-            cj_refs = list(walk_value_keys(cj))
-            # A transform-wrapped conjunct (``cumsum(x) > 0``) is POST-phase:
-            # the transform wrapper owns it, never the outer combined WHERE.
-            cj_has_transform = any(isinstance(k, TransformKey) for k in cj_refs)
-            if any(_is_cross_model_agg(k) for k in cj_refs) or (
-                not cj_has_transform
-                and crossing_root is not None
-                and any(crossing_root(k) for k in cj_refs)
-            ):
-                # A cross-model / crossing-input aggregate predicate resolves at
-                # the combined SELECT (after its producer joins back).
-                scope = "combined"
-            else:
-                scope = conjunct_scope(
-                    cj, dim_keys=dim_keys, row_agg_set=row_agg_set,
-                )
+            scope = _partitioned_conjunct_scope(
+                cj, dim_keys=dim_keys, row_agg_set=row_agg_set,
+                crossing_root=crossing_root,
+            )
             if scope == "combined":
                 combined_idx.append(len(new_filters))
             new_filters.append(_bound_filter_from_key(cj))
@@ -1989,7 +1996,7 @@ def _cross_model_inherited_filters(
 
 def _local_crossing_input_paths(
     *, key: AggregateKey, bundle: ResolvedSourceBundle,
-    host_model: SlayerModel,
+    host_model: SlayerModel, include_source: bool = True,
 ) -> List[Tuple[str, ...]]:
     """Join paths a LOCAL aggregate's inputs cross: typed ``Column.filter``
     references first, then source ``Column.sql`` / args / kwargs / model-default
@@ -2004,6 +2011,7 @@ def _local_crossing_input_paths(
         anchor_model=host_model,
         anchor_relation=host_model.name,
         bundle=bundle,
+        include_source=include_source,
     ):
         if p not in out:
             out.append(tuple(p))
@@ -2081,21 +2089,11 @@ def _assert_local_producer_inputs_safe(
     # SOURCE's own crossings are exempt — a source read through a join
     # consumes the target's values per-match, which is legal (D5; the
     # host-grain wrap's crossing source path is the same carve-out).
-    gated: List[Tuple[str, ...]] = []
-    if agg.column_filter_key is not None:
-        for p in agg.column_filter_key.referenced_join_paths:
-            if tuple(p) not in gated:
-                gated.append(tuple(p))
-    for p in compute_aggregate_input_join_paths(
-        key=agg, anchor_model=host_model, anchor_relation=host_model.name,
-        bundle=bundle, include_source=False,
-    ):
-        if tuple(p) not in gated:
-            gated.append(tuple(p))
+    gated = _local_crossing_input_paths(
+        key=agg, bundle=bundle, host_model=host_model, include_source=False,
+    )
     for path in gated:
-        if not path:
-            continue
-        if not _safe(path):
+        if path and not _safe(path):
             raise ValueError(
                 f"Aggregate {alias!r} reads an input across an unproven join "
                 f"hop to {path[-1]} from {host_model.name}; {remedy}."

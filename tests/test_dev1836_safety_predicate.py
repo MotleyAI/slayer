@@ -10,7 +10,14 @@ from __future__ import annotations
 
 from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.engine.join_safety import provably_to_one, safe_reachable
+from slayer.engine import stage_planner
+from slayer.engine.join_safety import (
+    may_inline_crossing_inputs,
+    provably_to_one,
+    safe_reachable,
+)
+from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.engine.stage_planner import plan_query
 
 from tests._dev1836_fixtures import (
     customers_model,
@@ -224,8 +231,6 @@ class TestMayInlineSeam:
         """Hardcoded ``False``: a crossing input desugars onto a producer,
         always. Inlining one is only safe when the crossed join is provably
         1:N-free for the aggregate — the DEV-1688 cardinality work."""
-        from slayer.engine.join_safety import may_inline_crossing_inputs
-
         assert may_inline_crossing_inputs([("customers",)]) is False
         assert may_inline_crossing_inputs([]) is False
 
@@ -234,11 +239,6 @@ class TestMayInlineSeam:
         decorative, which is exactly what DEV-1688 must not inherit. With it
         returning ``True`` a crossing-input local aggregate stays inline
         instead of desugaring onto a host-rooted producer."""
-        from slayer.core.models import Column
-        from slayer.engine import stage_planner
-        from slayer.engine.source_bundle import ResolvedSourceBundle
-        from slayer.engine.stage_planner import plan_query
-
         host = orders_model()
         host.columns.append(Column(
             name="gold_amount", type=DataType.DOUBLE, sql="amount",

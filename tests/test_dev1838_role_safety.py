@@ -61,39 +61,43 @@ class TestCrossedPredicateFailsClosed:
 
     async def test_filter_over_unproven_second_hop_errors(self, exec_backend):
         _, engine = exec_backend
+        query = q(
+            dimensions=["status"],
+            measures=[ModelMeasure(formula="alpha_amount:sum", name="a")],
+        )
         with pytest.raises(RAISES) as ei:
-            await engine.execute(q(
-                dimensions=["status"],
-                measures=[ModelMeasure(formula="alpha_amount:sum", name="a")],
-            ))
+            await engine.execute(query)
         _assert_clear(ei, "segments", "alpha_amount")
 
     async def test_filter_over_unproven_to_many_hop_errors(self, exec_backend):
         _, engine = exec_backend
+        query = q(
+            dimensions=["status"],
+            measures=[ModelMeasure(formula="rush_amount:sum", name="r")],
+        )
         with pytest.raises(RAISES) as ei:
-            await engine.execute(q(
-                dimensions=["status"],
-                measures=[ModelMeasure(formula="rush_amount:sum", name="r")],
-            ))
+            await engine.execute(query)
         _assert_clear(ei, "tags", "rush_amount")
 
     async def test_ranked_kernel_with_unproven_filter_errors(self, exec_backend):
         _, engine = exec_backend
+        query = q(
+            dimensions=["status"],
+            measures=[ModelMeasure(formula="alpha_amount:last", name="al")],
+        )
         with pytest.raises(RAISES) as ei:
-            await engine.execute(q(
-                dimensions=["status"],
-                measures=[ModelMeasure(formula="alpha_amount:last", name="al")],
-            ))
+            await engine.execute(query)
         _assert_clear(ei, "segments", "alpha_amount")
 
     async def test_windowed_kernel_with_unproven_filter_errors(self, exec_backend):
         _, engine = exec_backend
+        query = q(
+            dimensions=["status"], time_dimensions=month_td(),
+            measures=[ModelMeasure(formula="rush_amount:sum(window='90d')",
+                                   name="rw")],
+        )
         with pytest.raises(RAISES) as ei:
-            await engine.execute(q(
-                dimensions=["status"], time_dimensions=month_td(),
-                measures=[ModelMeasure(formula="rush_amount:sum(window='90d')",
-                                       name="rw")],
-            ))
+            await engine.execute(query)
         _assert_clear(ei, "tags", "rush_amount")
 
 
@@ -102,22 +106,24 @@ class TestCrossedArgumentFailsClosed:
 
     async def test_aggregation_param_over_unproven_hop_errors(self, exec_backend):
         _, engine = exec_backend
+        query = q(
+            dimensions=["status"],
+            measures=[ModelMeasure(formula="amount:tscaled_sum", name="t")],
+        )
         with pytest.raises(RAISES) as ei:
-            await engine.execute(q(
-                dimensions=["status"],
-                measures=[ModelMeasure(formula="amount:tscaled_sum", name="t")],
-            ))
+            await engine.execute(query)
         _assert_clear(ei, "tags")
 
     async def test_ranking_arg_over_unproven_hop_errors(self, exec_backend):
         _, engine = exec_backend
+        query = q(
+            dimensions=["status"],
+            measures=[ModelMeasure(
+                formula="amount:last(customers.segments.updated_at)",
+                name="lu")],
+        )
         with pytest.raises(RAISES) as ei:
-            await engine.execute(q(
-                dimensions=["status"],
-                measures=[ModelMeasure(
-                    formula="amount:last(customers.segments.updated_at)",
-                    name="lu")],
-            ))
+            await engine.execute(query)
         _assert_clear(ei, "segments", "updated_at")
 
 

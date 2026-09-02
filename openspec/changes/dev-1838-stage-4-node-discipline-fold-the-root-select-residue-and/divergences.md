@@ -259,9 +259,13 @@ DuckDB in the same commit.
   With `customers.tier` IN the grain the same dual-role shape executes,
   already shares one producer, and is pinned green
   (`test_same_aggregate_in_both_roles_shares_one_producer`,
-  `test_shared_producer_dropped_filter_warns_once`). The keyless-grain
-  variant likely falls out of stage-1 interning; if not, it needs its own
-  issue.
+  `test_shared_producer_dropped_filter_warns_once`). RESOLVED disposition
+  (review round 1): verified the keyless-grain variant does NOT fall out of
+  stage-1 interning — it still raises the same RuntimeError. Filed DEV-1850
+  (hidden host key slot for the combined join-back); excluded from both spec
+  deltas (`partitioned-aggregates` coexistence, `cross-model-aggregates`
+  composition) and pinned by
+  `test_dual_role_without_partition_key_in_grain_unsupported`.
 
 ## Task 2.0 — legacy plan-class field inventory (destinations)
 

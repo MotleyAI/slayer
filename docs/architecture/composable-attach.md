@@ -173,9 +173,11 @@ name collisions on any dialect.
 Since stage 4 the same split serves **multi-stage statements**: every stage of
 a DAG renders through one shared generation (one allocator, one
 rendered-producer map), a producer-carrying non-final stage's internal `WITH`
-hoists to the statement's top level, and the emitted SQL always carries exactly
-one flat `WITH` — never a `WITH` nested inside a CTE definition (invalid on SQL
-Server). Nested attaches inside a producer's sub-plan (a banded grain in a
+hoists to the statement's top level, and the assembled multi-stage statement
+always carries exactly one flat `WITH` — never a `WITH` nested inside a CTE
+definition (invalid on SQL Server). A single-stage render returns its statement
+directly and may emit a plain query with no `WITH` at all; the no-nesting rule
+holds there too. Nested attaches inside a producer's sub-plan (a banded grain in a
 filtered-local or host-grain-wrap producer) hoist the same way; a producer
 needed by both the sub-plan and the top level renders once (structural
 interning) and both scopes join it on their own coordinates.
@@ -185,7 +187,9 @@ interning) and both scopes join it on their own coordinates.
 One pipeline renders every statement: **base → aggregate → combined → steps →
 post**. Each phase that materialises a relation contributes a `Node` (name,
 select AST, exposed slot schema, dependencies — `slayer/sql/render/nodes.py`);
-the steps phase reads its inputs off the base node's schema. One canonical
+the steps phase reads its inputs off the schema of the query-grain node it
+steps over — the combined node when attaches joined, else the aggregated base
+(the chain installs that tail as its `base` node either way). One canonical
 Kahn driver batches transform layers (window batch first, then temporal ops —
 the measured zero-churn order) with the deadlock backstop inside it. **Fusion**
 is an emission decision, never semantic: adjacent phases collapse into one

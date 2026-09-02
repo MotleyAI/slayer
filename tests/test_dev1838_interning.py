@@ -26,6 +26,7 @@ from tests._dev1838_fixtures import (
     cte_aliases,
     dev1838_models,
     dropped_filter_warnings,
+    gen,
     make_exec_engine,
     month_key,
     month_td,
@@ -161,6 +162,22 @@ class TestSharedAcrossScopes:
             dry.sql, "_cm_", dialect=dialect,
         )
 
+    async def test_dual_role_without_partition_key_in_grain_unsupported(
+        self,
+    ) -> None:
+        """Keyless-grain dual-role (partition key absent from the query
+        dimensions) has no host slot to join the producer back on; pinned
+        unsupported pending its own issue."""
+        query = q(
+            dimensions=[{"expression": SPEND_BAND, "name": "sband"}],
+            measures=[ModelMeasure(
+                formula="customers.spend:sum(partition_by=customers.tier)",
+                name="rt",
+            )],
+        )
+        with pytest.raises(RuntimeError, match="missing a host / producer"):
+            await gen(query)
+
 
 class TestProducersThatMustStaySeparate:
     async def test_different_window_durations_stay_separate(
@@ -245,7 +262,10 @@ class TestProducersThatMustStaySeparate:
         (attach_a,) = base.regroup_attach_plans
         (attach_b,) = filtered.regroup_attach_plans
         assert identity(attach_a) != identity(attach_b)
-        assert identity(attach_a) == identity(attach_a)
+        # Determinism: the same attach yields the same identity twice.
+        first = identity(attach_a)
+        again = identity(attach_a)
+        assert first == again
 
 
 class TestWarningsUnchangedBySharing:
@@ -299,6 +319,6 @@ class TestWarningsUnchangedBySharing:
         resp = await engine.execute(
             _band_wm_query("1y", filters=["status = 'ok'"]),
         )
-        assert not (resp.warnings or []), [
+        assert not resp.warnings, [
             getattr(w, "kind", "?") for w in resp.warnings
         ]

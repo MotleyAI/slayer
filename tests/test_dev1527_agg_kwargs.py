@@ -335,9 +335,10 @@ class TestDev1527F1BasePull:
             source_model="orders",
             measures=[ModelMeasure(formula="amount:weighted_avg(weight=li_weight)")],
         )
+        line_items = _line_items()
         with pytest.raises(ValueError) as ei:
             await _engine_generate(
-                query=query, model=orders, extra_models=[_line_items()],
+                query=query, model=orders, extra_models=[line_items],
             )
         message = str(ei.value)
         assert "line_items" in message

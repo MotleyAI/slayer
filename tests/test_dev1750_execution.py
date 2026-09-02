@@ -185,13 +185,14 @@ class TestSiblingProtectionUnderFanOut:
         the hop and the remedy. Sibling protection under fan-out survives as a
         structural property of producer isolation, pinned by the proven-hop
         shapes above."""
+        query = _q(measures=[
+            ModelMeasure(formula="amount:sum", name="s"),
+            ModelMeasure(formula="amount:liscaled_sum", name="li"),
+            ModelMeasure(
+                formula="time_shift(amount:liscaled_sum, -1)", name="prev"),
+        ])
         with pytest.raises(ValueError) as ei:
-            await exec_engine.execute(_q(measures=[
-                ModelMeasure(formula="amount:sum", name="s"),
-                ModelMeasure(formula="amount:liscaled_sum", name="li"),
-                ModelMeasure(
-                    formula="time_shift(amount:liscaled_sum, -1)", name="prev"),
-            ]))
+            await exec_engine.execute(query)
         message = str(ei.value)
         assert "line_items" in message
         assert any(w in message.lower() for w in ("cardinality", "unique", "declare"))
