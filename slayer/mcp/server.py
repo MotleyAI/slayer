@@ -1384,7 +1384,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         # (the cache populator can override new_data_source).
         if saved_model.data_source != original_data_source:
             await storage.delete_model(
-                saved_model.name, data_source=original_data_source
+                name=saved_model.name, data_source=original_data_source
             )
         # Refresh sampled column values and subtree embeddings. Best-effort —
         # a raise is captured into refresh_warnings so the save still succeeds.
