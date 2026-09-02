@@ -147,16 +147,16 @@ class TestRejectAndAccept:
         self, tmp_path: Path, bad_sql: str
     ) -> None:
         engine, storage = await _make_engine(tmp_path)
+        model = _sql_model(bad_sql, name="invalid_sql_model")
         with pytest.raises(ModelSqlValidationError):
-            await engine.save_model(_sql_model(bad_sql, name="invalid_sql_model"))
+            await engine.save_model(model)
         assert await storage.get_model("invalid_sql_model", data_source=_DS) is None
 
     async def test_error_names_model_and_datasource(self, tmp_path: Path) -> None:
         engine, _ = await _make_engine(tmp_path)
+        model = _sql_model("SELECT id FROM ghosts", name="invalid_sql_model")
         with pytest.raises(ModelSqlValidationError) as excinfo:
-            await engine.save_model(
-                _sql_model("SELECT id FROM ghosts", name="invalid_sql_model")
-            )
+            await engine.save_model(model)
         message = str(excinfo.value)
         assert "invalid_sql_model" in message
         assert _DS in message
@@ -164,10 +164,9 @@ class TestRejectAndAccept:
     async def test_error_reports_ds_type_and_hides_secrets(self, tmp_path: Path) -> None:
         secret = "SENTINEL_SECRET_PW"
         engine, _ = await _make_engine(tmp_path, password=secret)
+        model = _sql_model("SELECT id FROM ghosts", name="secretive")
         with pytest.raises(ModelSqlValidationError) as excinfo:
-            await engine.save_model(
-                _sql_model("SELECT id FROM ghosts", name="secretive")
-            )
+            await engine.save_model(model)
         message = str(excinfo.value)
         assert "sqlite" in message          # ds.type is surfaced
         assert secret not in message        # never repr(ds) — no credential leak
@@ -334,8 +333,7 @@ class TestInconclusiveWarnsAndSaves:
             SlayerSQLClient, "get_column_types",
             _raise(_op_error("permission denied for table orders")),
         )
+        model = _sql_model("SELECT id FROM orders", name="permdenied")
         with pytest.raises(ModelSqlValidationError):
-            await engine.save_model(
-                _sql_model("SELECT id FROM orders", name="permdenied")
-            )
+            await engine.save_model(model)
         assert await storage.get_model("permdenied", data_source=_DS) is None

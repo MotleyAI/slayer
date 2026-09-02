@@ -624,24 +624,33 @@ class TestBuildSqlModelTrialQuery:
 
     def test_wraps_plain_sql(self) -> None:
         assert build_sql_model_trial_query("SELECT a FROM t") == (
-            "SELECT * FROM (SELECT a FROM t) AS _sd_validate WHERE 1=0"
+            "SELECT * FROM (\nSELECT a FROM t\n) AS _sd_validate WHERE 1=0"
         )
 
     def test_strips_trailing_semicolon(self) -> None:
         assert build_sql_model_trial_query("SELECT 1;") == (
-            "SELECT * FROM (SELECT 1) AS _sd_validate WHERE 1=0"
+            "SELECT * FROM (\nSELECT 1\n) AS _sd_validate WHERE 1=0"
         )
 
     def test_strips_trailing_whitespace_and_semicolon(self) -> None:
         assert build_sql_model_trial_query("SELECT 1 ;  \n") == (
-            "SELECT * FROM (SELECT 1) AS _sd_validate WHERE 1=0"
+            "SELECT * FROM (\nSELECT 1\n) AS _sd_validate WHERE 1=0"
         )
 
     def test_strips_only_one_terminator(self) -> None:
         # A second ';' is left inside the wrapper — only one is stripped.
         assert build_sql_model_trial_query("SELECT 1;;") == (
-            "SELECT * FROM (SELECT 1;) AS _sd_validate WHERE 1=0"
+            "SELECT * FROM (\nSELECT 1;\n) AS _sd_validate WHERE 1=0"
         )
+
+    def test_trailing_line_comment_does_not_absorb_wrapper(self) -> None:
+        # A terminal ``-- comment`` must not swallow the closing paren/guard;
+        # the newline before ``)`` keeps the probe valid.
+        wrapped = build_sql_model_trial_query("SELECT a FROM t -- note")
+        assert wrapped == (
+            "SELECT * FROM (\nSELECT a FROM t -- note\n) AS _sd_validate WHERE 1=0"
+        )
+        assert wrapped.rstrip().endswith("WHERE 1=0")
 
 
 def _typed_exc(type_name: str, message: str = "boom") -> Exception:
@@ -662,6 +671,8 @@ class TestIsUnreachableDbError:
         "unable to open database file",
         "connection to server at \"db\" (1.2.3.4), port 5432 failed",
         "Login timeout expired",
+        "(2003, \"Can't connect to MySQL server on 'db:3306' (timed out)\")",
+        "Can't connect to local MySQL server through socket '/tmp/mysql.sock'",
     ])
     def test_connection_messages_are_unreachable(self, orig_message: str) -> None:
         assert _is_unreachable_db_error(_make_op_error(orig_message)) is True
@@ -673,7 +684,9 @@ class TestIsUnreachableDbError:
 
     def test_interface_error_wrapping_connect_failure_is_unreachable(self) -> None:
         exc = sqlalchemy.exc.InterfaceError(
-            "connect", {}, sqlite3.OperationalError("could not connect to server"),
+            statement="connect",
+            params={},
+            orig=sqlite3.OperationalError("could not connect to server"),
         )
         assert _is_unreachable_db_error(exc) is True
 
@@ -714,7 +727,9 @@ class TestIsUnreachableDbErrorBoundaries:
 
     def test_bare_interface_error_is_not_unreachable(self) -> None:
         exc = sqlalchemy.exc.InterfaceError(
-            "stmt", {}, sqlite3.ProgrammingError("cursor already closed"),
+            statement="stmt",
+            params={},
+            orig=sqlite3.ProgrammingError("cursor already closed"),
         )
         assert _is_unreachable_db_error(exc) is False
 

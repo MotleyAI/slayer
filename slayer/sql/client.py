@@ -395,13 +395,15 @@ def build_sql_model_trial_query(inner_sql: str) -> str:
 
     Strips trailing whitespace and a single statement terminator (a persisted
     ``SELECT 1;`` is valid at top level but invalid inside a subquery), then
-    wraps in ``SELECT * FROM (<inner>) AS _sd_validate WHERE 1=0``. Shared by
-    schema-drift's live probe (DEV-1356) and save-time validation (DEV-1843).
+    wraps in ``SELECT * FROM (<inner>) AS _sd_validate WHERE 1=0``. The inner
+    SQL is placed on its own line so a trailing ``-- comment`` cannot absorb the
+    closing paren or the guard. Shared by schema-drift's live probe (DEV-1356)
+    and save-time validation (DEV-1843).
     """
     inner = inner_sql.rstrip()
     if inner.endswith(";"):
         inner = inner[:-1].rstrip()
-    return f"SELECT * FROM ({inner}) AS _sd_validate WHERE 1=0"
+    return f"SELECT * FROM (\n{inner}\n) AS _sd_validate WHERE 1=0"
 
 
 def _apply_type_probe_timeout(conn, db_type: str | None, timeout_seconds: int) -> None:
@@ -785,6 +787,7 @@ def _is_auth_failure(exc: BaseException) -> bool:
 # validation still blocks it, hence no "timed out"/"bad request"/"forbidden".
 _UNREACHABLE_DB_ERROR_SIGNALS = (
     "could not connect",              # libpq / psycopg connect phase
+    "can't connect",                  # MySQL 2002/2003 connect phase (incl. "(timed out)")
     "connection refused",
     "connection to server at",        # libpq host:port dial failure
     "getaddrinfo",                    # host-name resolution failure
