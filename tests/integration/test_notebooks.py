@@ -9,14 +9,13 @@ cross-notebook state (custom models created by one notebook shouldn't
 leak into another).
 """
 
+import re
 import shutil
 import socket
+import sys
 from pathlib import Path
 
 import pytest
-
-nbclient = pytest.importorskip("nbclient")
-nbformat = pytest.importorskip("nbformat")
 
 from slayer.async_utils import run_sync
 from slayer.demo.jaffle_shop import (
@@ -26,6 +25,9 @@ from slayer.demo.jaffle_shop import (
     ensure_demo_datasource,
 )
 from slayer.storage.yaml_storage import YAMLStorage
+
+nbclient = pytest.importorskip("nbclient")
+nbformat = pytest.importorskip("nbformat")
 
 pytestmark = pytest.mark.integration
 
@@ -92,31 +94,11 @@ def _jaffle_models_template(_ensure_jaffle_db, tmp_path_factory) -> Path:
     return snapshot
 
 
-# Notebooks expected to fail under the current typed-pipeline gaps.
+# Notebooks expected to fail under current engine gaps.
 # Map: notebook path relative to EXAMPLES_DIR → Linear issue + reason.
-# Re-enable a notebook by removing its entry once the cited issue lands.
-_KNOWN_FAILING_NOTEBOOKS = {
-    # DEV-1474 (cross-model partition in time_shift CTEs) landed in DEV-1711
-    # Stage 7 — the 04_time QoQ-by-store cell now runs, so that notebook is
-    # un-skipped. 09_lightning_talk stays skipped for a DIFFERENT, downstream
-    # reason: its hero cell issues ONE query with TWO time_shift transforms
-    # (change_pct + an explicit time_shift), which collide on the CTE name
-    # `shifted__time_shift_inner` — the DEV-1692 de-collision gap owned by
-    # Stage 9 (same gap as the 13_osi_import notebooks below).
-    "09_lightning_talk/lightning_talk_nb.ipynb": (
-        "DEV-1713: DEV-1692 duplicate time_shift CTE name "
-        "(`Duplicate CTE name \"shifted__time_shift_inner\"`) — the hero query "
-        "combines change_pct(order_total:sum) with an explicit "
-        "time_shift(order_total:sum, -1, 'month') in one query, so two shifted "
-        "CTEs are emitted under the same name. DEV-1474's cross-model partition "
-        "(the Stage-7 blocker) is fixed; this is the Stage-9 collision gap."
-    ),
-    # DEV-1704 Stage-0 parity gaps surfaced by the integration notebook run.
-    "12_query_cache/query_cache_nb.ipynb": (
-        "DEV-1715: the DEV-1587 per-query cache is not yet wired into the "
-        "typed pipeline (deferred from Stage 0)."
-    ),
-}
+# Re-enable a notebook by removing its entry once the cited issue lands —
+# the marker is STRICT, so a lingering entry fails the suite as XPASS.
+_KNOWN_FAILING_NOTEBOOKS: dict[str, str] = {}
 
 
 @pytest.fixture(params=_NOTEBOOKS, ids=[str(p.relative_to(EXAMPLES_DIR)) for p in _NOTEBOOKS])
@@ -161,16 +143,89 @@ def _bootstrap_failure_is_transient(error_text: str) -> bool:
     what counts as transient. If the helper can't be imported, err toward *not*
     transient so a genuine failure is never silently skipped.
     """
-    import sys
-
     metricflow_dir = EXAMPLES_DIR / _METRICFLOW_NB_DIR
     if str(metricflow_dir) not in sys.path:
         sys.path.insert(0, str(metricflow_dir))
     try:
-        from setup_metricflow import _is_transient_git_error
+        from setup_metricflow import _is_transient_git_error  # ALLOW(import-not-top): sys.path set above at call time
     except ImportError:
         return False
     return _is_transient_git_error(error_text)
+
+
+# The DuckDB example notebooks read a CSV live over httpfs; DuckDB also
+# auto-installs the httpfs extension from its repo on a clean machine. The CDN
+# host serving the CSV is always needed, so the pre-run probe gates on it (over
+# 443). A missing extension repo (served over 80) surfaces only mid-run and is
+# caught by the transient classifier below, which names both hosts. Mirrors the
+# MetricFlow guard: skip (never fail) when the network is down, so offline runs
+# stay green.
+_DUCKDB_NB_DIR = "15_duckdb"
+_DUCKDB_DATA_HOST = "cdn.jsdelivr.net"
+# Remote hosts the DuckDB notebooks reach: the CSV CDN, the httpfs extension
+# repo, and (CLI notebook) the DuckDB CLI installer + version endpoint.
+_DUCKDB_REMOTE_HOSTS = (
+    _DUCKDB_DATA_HOST,
+    "extensions.duckdb.org",
+    "install.duckdb.org",
+    "duckdb.org",
+)
+
+# Substrings marking a mid-run failure as a transient network/server hiccup
+# reaching one of those hosts. Matched case-insensitively and only when the
+# error also names a remote host, so genuine query / ingestion bugs still fail
+# loudly.
+_DUCKDB_TRANSIENT_SIGNATURES = (
+    r"http (?:429|5\d\d)",
+    r"could not resolve host",
+    r"temporary failure in name resolution",
+    r"name or service not known",
+    r"connection reset",
+    r"connection refused",
+    r"connection timed out",
+    r"timed out",
+    r"broken pipe",
+    r"could not establish",
+    r"failed to (?:connect|download)",
+)
+
+
+def _duckdb_data_host_reachable() -> bool:
+    return _github_reachable(host=_DUCKDB_DATA_HOST)
+
+
+def _duckdb_failure_text(nb) -> str:
+    """Error text of whichever cell failed, for transient classification.
+
+    A failing ``%%bash`` cell raises ``CalledProcessError`` whose message only
+    embeds the cell *source* (always contains the CDN URL) — the real error
+    ("could not resolve host", an HTTP 5xx) lands on the cell's stderr *stream*.
+    So classify from the failing cell's captured outputs, not from ``exc``.
+    """
+    parts: list[str] = []
+    for cell in nb.cells:
+        outputs = cell.get("outputs", [])
+        if not any(o.get("output_type") == "error" for o in outputs):
+            continue
+        for out in outputs:
+            if out.get("output_type") == "stream":
+                parts.append(out.get("text", ""))
+            elif out.get("output_type") == "error" and out.get("ename") != "CalledProcessError":
+                # A %%bash failure's CalledProcessError embeds the cell SOURCE
+                # (which carries the remote URLs), so a deterministic error like
+                # "timed out" would spuriously satisfy the host+signature gate.
+                # Classify %%bash cells from their stderr stream only; a real
+                # Python exception carries the actual error in evalue/traceback.
+                parts.append(out.get("evalue", ""))
+                parts.append("\n".join(out.get("traceback", [])))
+    return "\n".join(parts)
+
+
+def _duckdb_network_error_is_transient(error_text: str) -> bool:
+    text = (error_text or "").lower()
+    if not any(host in text for host in _DUCKDB_REMOTE_HOSTS):
+        return False
+    return any(re.search(pattern=pattern, string=text) for pattern in _DUCKDB_TRANSIENT_SIGNATURES)
 
 
 def test_notebook_runs_without_errors(notebook_path, request):
@@ -179,13 +234,17 @@ def test_notebook_runs_without_errors(notebook_path, request):
     if rel in _KNOWN_FAILING_NOTEBOOKS:
         request.applymarker(pytest.mark.xfail(
             reason=_KNOWN_FAILING_NOTEBOOKS[rel],
-            strict=False,
+            strict=True,
         ))
     is_metricflow = _METRICFLOW_NB_DIR in notebook_path.parts
     if is_metricflow:
         complete_marker = notebook_path.parent / ".cache" / ".complete"
         if not complete_marker.exists() and not _github_reachable():
             pytest.skip("GitHub unreachable; cannot bootstrap the MetricFlow notebook")
+
+    is_duckdb = _DUCKDB_NB_DIR in notebook_path.parts
+    if is_duckdb and not _duckdb_data_host_reachable():
+        pytest.skip("jsDelivr CDN unreachable; cannot run the DuckDB httpfs notebook")
 
     with open(notebook_path) as f:
         nb = nbformat.read(f, as_version=4)
@@ -198,6 +257,13 @@ def test_notebook_runs_without_errors(notebook_path, request):
     )
     try:
         client.execute()
+    except nbclient.exceptions.CellTimeoutError as exc:
+        # The DuckDB notebooks normally finish in ~15s; a 600s timeout means a
+        # network hang (stalled CDN, installer, or extension download), not a
+        # code bug. Other notebooks still fail loudly on timeout.
+        if is_duckdb:
+            pytest.skip(f"DuckDB notebook timed out (likely a network hang): {exc}")
+        raise
     except nbclient.exceptions.CellExecutionError as exc:
         # A failing `git fetch` (or a stale/partial cache) surfaces as
         # MetricFlowDemoError mid-run. Skip — rather than report a bootstrap
@@ -209,4 +275,12 @@ def test_notebook_runs_without_errors(notebook_path, request):
             text = str(exc)
             if not _github_reachable() or _bootstrap_failure_is_transient(text):
                 pytest.skip(f"MetricFlow notebook could not bootstrap: {exc}")
+        # Narrow by design: classify the failing cell's captured stderr/error
+        # output, never ``str(exc)`` or a ``%%bash`` ``evalue`` — both embed the
+        # cell source, which always contains the CDN URL, so the host-name gate
+        # would always pass and a real NotImplementedError / assertion / query
+        # bug could be misread as transient. The pre-run probe already covers
+        # "network down at start".
+        if is_duckdb and _duckdb_network_error_is_transient(_duckdb_failure_text(nb)):
+            pytest.skip(f"DuckDB notebook hit a transient network error: {exc}")
         raise

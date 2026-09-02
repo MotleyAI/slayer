@@ -3,10 +3,11 @@
 Lifted direction: a row regroup attach (computed dimension) with a transform
 measure renders in both chains; the old catch-all DEV-1824 arm is gone from the
 source, and the windowed/ranked arm lifted with DEV-1835 (its absence is
-scanned in tests/test_dev1835_guards.py). Remaining deferrals: the narrowed
-arms with exact messages (cross-model → DEV-1836, CTE-body → DEV-1838) plus
-the combined-attach CTE-body arm re-pointed to DEV-1838, and the two stale
-stage_planner DEV-1824 refs re-pointed (D5).
+scanned in tests/test_dev1835_guards.py); the cross-model arm lifted with
+DEV-1836 (row-attach × cross-model now broadcasts); the CTE-body arms lifted
+with DEV-1838 stage 4 (nested attaches hoist — the positive contract below and
+the residue scan in tests/test_dev1838_cte_body_lifts.py). Also pinned: the
+two stale stage_planner DEV-1824 refs re-pointed (D5).
 """
 
 from __future__ import annotations
@@ -15,6 +16,8 @@ import re
 from pathlib import Path
 
 import pytest
+import sqlglot
+from sqlglot import exp
 
 import slayer
 from slayer.engine.source_bundle import ResolvedSourceBundle
@@ -42,6 +45,8 @@ ARM_CROSS_MODEL = (
     "A row regroup attach (computed dimension) combined with a cross-model "
     "measure is not yet supported (DEV-1836)."
 )
+#: The DEV-1838-lifted CTE-body arms — kept only as no-residue scan needles
+#: (tests/test_dev1838_cte_body_lifts.py imports them).
 ARM_ROW_CTE_BODY = (
     "A row regroup attach (computed dimension) nested in a CTE body is not "
     "yet supported (DEV-1838)."
@@ -145,34 +150,51 @@ class TestRemainingArmsExactMessages:
         ))
         assert "__regroup__" not in sql, sql
 
-    async def test_cross_model_measure_arm(self) -> None:
-        query = q(
+    async def test_cross_model_measure_arm_is_lifted(self) -> None:
+        """DEV-1836 lifts the band × cross-model arm: it renders (the cross-model
+        measure broadcasts across the host-derived band) and the old arm message
+        is gone from the sources."""
+        sql = await gen(q(
             dimensions=["region", BAND],
             measures=[
                 ModelMeasure(formula="amount:sum", name="m"),
                 ModelMeasure(formula="customers.spend:sum", name="cm"),
             ],
-        )
-        with pytest.raises(NotImplementedError) as ei:
-            await gen(query)
-        assert str(ei.value) == ARM_CROSS_MODEL
+        ))
+        assert "__regroup__" not in sql, sql
+        assert not _sources_containing(ARM_CROSS_MODEL)
 
 
 class TestCteBodyArms:
-    def test_row_attach_in_cte_body_arm(self) -> None:
+    """DEV-1838 stage 4 — the former CTE-body deferrals lifted: an
+    attach-carrying plan renders as a CTE body whose producer relations hoist
+    into the enclosing statement's flat WITH (the D2 split), leaving a
+    WITH-free body with no leaked placeholder."""
+
+    @staticmethod
+    def _split_cte_body(planned, bundle):
+        generator = SQLGenerator(dialect="postgres")
+        generator.install_generation()
+        sql = generator.generate_from_planned(
+            planned, bundle=bundle, as_cte_body=True, reuse_allocator=True,
+        )
+        return generator._split_statement_ctes(sql)
+
+    def _assert_hoistable(self, hoisted, body: str) -> None:
+        assert any(name.startswith("_cm_") for name, _ in hoisted)
+        parsed = sqlglot.parse_one(body, read="postgres")
+        assert not list(parsed.find_all(exp.With)), body
+        assert "__regroup__" not in body
+
+    def test_row_attach_renders_as_hoistable_cte_body(self) -> None:
         bundle = _bundle()
         planned = plan_query(query=q(
             dimensions=["region", BAND],
             measures=[ModelMeasure(formula="amount:sum", name="m")],
         ), bundle=bundle)
-        generator = SQLGenerator(dialect="postgres")
-        with pytest.raises(NotImplementedError) as ei:
-            generator.generate_from_planned(
-                planned, bundle=bundle, as_cte_body=True,
-            )
-        assert str(ei.value) == ARM_ROW_CTE_BODY
+        self._assert_hoistable(*self._split_cte_body(planned, bundle))
 
-    def test_combined_attach_in_cte_body_arm(self) -> None:
+    def test_combined_attach_renders_as_hoistable_cte_body(self) -> None:
         bundle = _bundle()
         planned = plan_query(query=q(
             dimensions=["region"],
@@ -180,12 +202,7 @@ class TestCteBodyArms:
                 ModelMeasure(formula="amount:sum(partition_by=region)", name="rt"),
             ],
         ), bundle=bundle)
-        generator = SQLGenerator(dialect="postgres")
-        with pytest.raises(NotImplementedError) as ei:
-            generator.generate_from_planned(
-                planned, bundle=bundle, as_cte_body=True,
-            )
-        assert str(ei.value) == ARM_COMBINED_CTE_BODY
+        self._assert_hoistable(*self._split_cte_body(planned, bundle))
 
 
 class TestStalePlannerRefsRepointed:
@@ -199,7 +216,12 @@ class TestStalePlannerRefsRepointed:
         ]
         assert not offenders, offenders
 
-    async def test_cross_model_dim_source_points_at_stage_three(self) -> None:
+    async def test_cross_model_dim_source_unattributable_partition_rejected(
+        self,
+    ) -> None:
+        # DEV-1836 lifts the blanket "cross-model source in a computed dimension"
+        # guard; the residual check is attributability — `region` is a host
+        # column, unreachable from the customers root.
         cband = (
             "CASE WHEN customers.spend:sum(partition_by=region) > 100 "
             "THEN 1 ELSE 0 END"
@@ -208,10 +230,8 @@ class TestStalePlannerRefsRepointed:
             dimensions=["region", {"expression": cband, "name": "cband"}],
             measures=[ModelMeasure(formula="amount:sum", name="m")],
         )
-        with pytest.raises(
-            NotImplementedError,
-            match=r"cross-model aggregate source inside a computed dimension",
-        ) as ei:
+        with pytest.raises(ValueError, match=r"partition_by") as ei:
             await gen(query)
-        assert "DEV-1836" in str(ei.value)
-        assert "DEV-1824" not in str(ei.value)
+        msg = str(ei.value)
+        assert "region" in msg
+        assert "DEV-1824" not in msg

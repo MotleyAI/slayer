@@ -43,6 +43,7 @@ from slayer.core.keys import (
     LiteralKey,
     ScalarCallKey,
 )
+from slayer.core.keys import TimeTruncKey
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import ColumnRef, ModelMeasure, SlayerQuery, TimeDimension
 from slayer.core.time_bounds import is_frame_bound, is_temporal_literal, strip_frame_bounds
@@ -801,13 +802,12 @@ class TestFrameBoundColumnSet:
     async def test_only_non_hidden_time_dimensions_are_strippable(self) -> None:
         """Codex F3, inverted — the ``not s.hidden`` guard is load-bearing.
 
-        ``_build_windowed_plans`` skips hidden row slots when building
+        The windowed emission skips hidden row slots when deriving
         ``other_td_slot_ids``, so a hidden ``TimeTruncKey`` is never
         equality-joined into ``_src``. Stripping a bound on such a column would
         leave that axis wholly unconstrained — an unbounded over-count — so the
         set must contain only columns of NON-hidden time-dimension slots.
         """
-        from slayer.core.keys import TimeTruncKey
 
         plan = await _plan(
             _windowed_query(

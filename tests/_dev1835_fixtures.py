@@ -325,7 +325,36 @@ async def make_shipped_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
         yield SlayerQueryEngine(storage=storage)
 
 
+# Shared executed-value response reducers (the per-dialect exec_backend /
+# shipped_backend fixtures stay inline in each module — pytest fixture imports
+# trip F811 where the fixture name shadows the test-method parameter).
+def _by_region(resp, col: str) -> dict:
+    mapping = {r["orders.region"]: r[f"orders.{col}"] for r in resp.data}
+    assert len(mapping) == len(resp.data), f"duplicate region rows: {resp.data}"
+    return mapping
+
+
+def _by_region_month(resp, col: str) -> dict:
+    mapping = {
+        (r["orders.region"], month_key(r["orders.ordered_at"])): r[f"orders.{col}"]
+        for r in resp.data
+    }
+    assert len(mapping) == len(resp.data), f"duplicate (region, month) rows: {resp.data}"
+    return mapping
+
+
+def _assert_map(got: dict, expected: dict) -> None:
+    assert set(got) == set(expected), sorted(map(str, got))
+    for key, value in expected.items():
+        if value is None:
+            assert got[key] is None, f"{key}"
+        else:
+            assert got[key] is not None, f"{key}: expected {value}, got NULL"
+            assert float(got[key]) == pytest.approx(value), f"{key}"
+
+
 __all__ = [
+    "_by_region", "_by_region_month", "_assert_map",
     "BAND35", "BAND35_OF", "CHANGE_OVER_LAST", "CHANGE_PCT_OVER_LAST",
     "CITY_LAST_RC", "CITY_MONTH_LAST", "CITY_TOTAL", "CITY_WM", "COL_WM",
     "CUMSUM_OVER_W90", "ColumnRef", "FIRST_BY_SHIPPED", "GRAND_TOTAL",

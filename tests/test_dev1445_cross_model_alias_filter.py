@@ -113,9 +113,9 @@ async def test_dev1445_alias_filter_matches_dotted_filter(engine):
     identical results.
 
     Cross-model revenue grouped by the joined ``customers.region`` is
-    ``NA = 150``, ``EU = 70``. A ``>= 80`` filter drops ``EU`` from the
-    isolated ``_cm_`` CTE; the outer LEFT JOIN preserves the ``EU``
-    dimension row with a NULL aggregate (HAVING-on-CTE semantics).
+    ``NA = 150``, ``EU = 70``. DEV-1836 applies the aggregate-phase cross-model
+    filter uniformly with local aggregate filters: ``>= 80`` restricts rows, so
+    the failing ``EU`` group is dropped entirely (not preserved with a NULL).
     """
     eng, _ = engine
 
@@ -142,11 +142,10 @@ async def test_dev1445_alias_filter_matches_dotted_filter(engine):
     assert dotted.columns == alias.columns
     # Both filter forms reference the SAME slot → identical results.
     assert _rowset(alias.data) == _rowset(dotted.data)
-    # The surviving rows: NA keeps 150, EU's aggregate is filtered to NULL.
+    # The surviving rows: NA keeps 150; the failing EU group is dropped.
     assert _rowset(alias.data) == _rowset(
         [
             {"orders.customers.region": "NA", "orders.rev": 150.0},
-            {"orders.customers.region": "EU", "orders.rev": None},
         ]
     )
 
@@ -189,7 +188,7 @@ async def test_dev1445_both_filter_forms_share_one_cte(engine):
     This is the structural counterpart to the result-equality test: a
     regression that minted a duplicate cross-model slot for the dotted vs.
     alias spelling would still return the same rows (both slots compute the
-    same value) but would emit two ``_cm_`` CTEs / two HAVING clauses.
+    same value) but would emit two ``_cm_`` CTEs / two filter predicates.
     """
     eng, _ = engine
     query = SlayerQuery(
@@ -203,14 +202,13 @@ async def test_dev1445_both_filter_forms_share_one_cte(engine):
     assert _rowset(both.data) == _rowset(
         [
             {"orders.customers.region": "NA", "orders.rev": 150.0},
-            {"orders.customers.region": "EU", "orders.rev": None},
         ]
     )
-    # Structural: one shared cross-model CTE, one HAVING.
+    # Structural: one shared cross-model CTE, one outer-WHERE predicate.
     dry = await eng.execute(query, dry_run=True)
     sql = dry.sql
     assert sql is not None
     cm_ctes = [c for c in _cte_names(sql) if c.startswith("_cm_")]
     assert len(cm_ctes) == 1, f"expected one _cm_ CTE; got {_cte_names(sql)}"
-    assert sql.upper().count("HAVING") == 1, sql
+    assert sql.upper().count("HAVING") == 0, sql
     assert sql.count(">= 80") == 1, sql

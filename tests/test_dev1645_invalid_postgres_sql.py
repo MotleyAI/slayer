@@ -223,13 +223,14 @@ class TestFlavorAOrderByUnprojected:
         # of the FROM — legal on Postgres, not everywhere, and ambiguous the
         # moment two scopes project the same name. What this test guards is
         # the WHOLE-QUOTED composite form at the combined-CTE ORDER BY site —
-        # a split ``_cm_x.accts.clusters.score_sum`` names a column that does
-        # not exist.
+        # a split ``_cm_x.clusters.score_sum`` names a column that does
+        # not exist. The producer is target-rooted, so its inner alias is the
+        # CANONICAL ``clusters.score_sum`` (not host-prefixed).
         assert (
-            'ORDER BY _cm_accts__clusters__score_sum."accts.clusters.score_sum" DESC'
+            'ORDER BY _cm_accts__clusters__score_sum."clusters.score_sum" DESC'
         ) in sql, sql
         assert "ORDER BY accts." not in sql, sql
-        assert '"accts.clusters.score_sum"' in sql, sql
+        assert '"clusters.score_sum"' in sql, sql
 
     async def test_orderby_unprojected_joined_column_resolves_host_rooted(
         self,

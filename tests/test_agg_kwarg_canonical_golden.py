@@ -1,9 +1,9 @@
 """DEV-1706 Stage 2 — golden freeze of ``agg_kwarg_canonical_str`` (Codex H2 / D-H).
 
 Stage 2 deletes only the EMISSION round-trip of ``agg_kwarg_canonical_str``
-(``generator.py:9055-9057``). The function survives for the four one-way
-result-key / cross-model-alias sites (``cross_model_planner.py``,
-``planning.py``, ``stage_planner.py``, ``generator.py:5815-5817``), where
+(``generator.py:9055-9057``). The function survives for the one-way
+result-key / cross-model-alias sites (``planning.py``, ``stage_planner.py``,
+``generator.py``), where
 ``ColumnSqlKey`` → bare-name collapse is *correct*. These goldens freeze its
 output for every kwarg variant so removing the emission use cannot silently
 shift a result key. Green now; must stay green through the refactor.

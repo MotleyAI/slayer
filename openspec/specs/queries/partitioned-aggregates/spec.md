@@ -28,7 +28,7 @@ An aggregation SHALL accept `partition_by=` and `window=` together. The value is
 - THEN ranking still uses the model's resolved ranking time column, not the partition key
 
 ### Requirement: Partitioned aggregates nested inside transforms
-A transform (e.g. `cumsum`, `rank`) SHALL accept a partitioned aggregate as its input when used as a measure. The transform evaluates at the query grain over the attached partition-grain value (the grain of its containing context).
+A transform SHALL accept a partitioned aggregate as its input when used as a measure — rank-family transforms and temporal transforms (`time_shift`, `change`, `change_pct`, `lag`, `lead`, `cumsum`, `consecutive_periods`) alike. The transform evaluates at the query grain over the attached partition-grain value (the grain of its containing context) and MUST never fail with an internal error.
 
 #### Scenario: Running total of partition-grain values
 - WHEN a query selects dimensions `[region, city, month(ordered_at)]` and the measure `cumsum(revenue:sum(partition_by=[region, month(ordered_at)]))`
@@ -37,6 +37,10 @@ A transform (e.g. `cumsum`, `rank`) SHALL accept a partitioned aggregate as its 
 #### Scenario: Ranking result rows by an attached total
 - WHEN a query selects the measure `rank(revenue:sum(partition_by=region))`
 - THEN result rows are ranked by their attached region total at the query grain
+
+#### Scenario: Change over a partitioned aggregate executes
+- WHEN a query selects `change(amount:sum(partition_by=region))` or `change_pct(amount:sum(partition_by=region))` over a month time dimension
+- THEN the query executes with the hand-computed bucket-over-previous-bucket difference (or ratio) of the attached value, instead of failing with an internal rendering error
 
 ### Requirement: Filters referencing partitioned aggregates
 Query filters SHALL be able to reference partitioned aggregates. Such predicates apply after attachment: they prune result rows and MUST NOT alter the aggregate values of surviving rows. Each top-level conjunct of a filter routes independently to the earliest scope where all its references resolve; a predicate whose references share no common scope fails with a clear error.
@@ -58,7 +62,7 @@ Query filters SHALL be able to reference partitioned aggregates. Such predicates
 - THEN the query fails with a clear error stating the predicate cannot resolve in one scope and must be rewritten so each top-level AND conjunct's references resolve together (an OR across the two scopes cannot be split into separate filters without changing its meaning), not with an internal error
 
 ### Requirement: Row and combined attachment coexistence
-A query SHALL support partitioned aggregates consumed inside computed dimensions and as measures simultaneously, whether they share the same partition set, use independent partition sets, or are the very same aggregate in both roles.
+A query SHALL support partitioned aggregates consumed inside computed dimensions and as measures simultaneously, whether they share the same partition set, use independent partition sets, or are the very same aggregate in both roles. Exception: a CROSS-MODEL partitioned aggregate in both roles requires its partition key among the query dimensions — without it the combined join-back has no host-side key after aggregation, and the query SHALL fail with a clear error rather than compute wrong values (keyless-grain support is tracked separately).
 
 #### Scenario: Dimension banding and a partitioned measure together
 - WHEN a query has a computed dimension banding `amount:sum(partition_by=city)` and the measure `amount:sum(partition_by=region)`
@@ -72,6 +76,10 @@ A query SHALL support partitioned aggregates consumed inside computed dimensions
 - WHEN a computed dimension bands `amount:sum(partition_by=city)` and `order` names the raw `amount:sum(partition_by=city)`
 - THEN rows sort by the partition-grain value; ordering by the computed dimension's name instead sorts by the banded value; neither form raises an internal placeholder error
 
+#### Scenario: Cross-model dual role without the partition key in the grain is rejected
+- WHEN the same cross-model partitioned aggregate is consumed by a computed dimension and selected as a measure while its partition key is not among the query dimensions
+- THEN the query fails with a clear error instead of silently mis-joining or broadcasting
+
 ### Requirement: Coexistence with other isolated measure kinds
 A partitioned aggregate SHALL be usable in the same query as windowed, `first`/`last`, cross-model, and transform measures, with every measure retaining the value it has when queried alone.
 
@@ -84,7 +92,7 @@ A partitioned aggregate SHALL be usable in the same query as windowed, `first`/`
 - THEN all measures are correct by executed values and the row count is unchanged
 
 ### Requirement: Attachment preserves cardinality structurally
-Attaching a partitioned aggregate MUST never change the query's row count or any other column's values. The planner SHALL verify structurally that the attachment joins on the producer's complete unique key, and that a keyless attachment is provably single-row.
+Attaching a partitioned aggregate MUST never change the query's row count or any other column's values. The planner SHALL verify structurally that the attachment joins on the producer's complete unique key, and that a keyless attachment is provably single-row. The same verification SHALL apply to every nested attachment inside a producer — including attachments nested inside target-rooted (cross-model) producers — so no attach at any depth can multiply rows.
 
 #### Scenario: Adding a partitioned measure is cardinality-neutral
 - WHEN any supported query runs with and without an additional partitioned-aggregate measure
@@ -93,6 +101,10 @@ Attaching a partitioned aggregate MUST never change the query's row count or any
 #### Scenario: Empty partition set attaches the overall total
 - WHEN a measure declares `partition_by=[]`
 - THEN every row carries the overall total and the row count is unchanged
+
+#### Scenario: Nested attachments inside a target-rooted producer are cardinality-checked
+- WHEN a cross-model producer internally attaches a nested producer (e.g. a computed dimension it groups by)
+- THEN the nested attach joins on the nested producer's complete unique key and the outer producer's row count is unchanged by it
 
 ### Requirement: Producers may require their own intermediate relations
 A partitioned aggregate whose computation itself needs intermediate relations (rolling windows, rankings, transform steps) SHALL render correctly, including several such producers in one query, with no name collisions in the generated SQL.
@@ -141,3 +153,79 @@ An arithmetic expression combining aggregates at different declared partition gr
 #### Scenario: Filter over mixed-grain arithmetic
 - WHEN a query filters on `a:sum(partition_by=region) - b:sum(partition_by=city) > 0`
 - THEN only qualifying rows remain and every surviving value equals the unfiltered query's value for that row
+
+### Requirement: Bare windowed and ranked measures compose as full-grain partitioned aggregates
+A windowed aggregation without `partition_by=` and a `first`/`last` aggregation without `partition_by=` SHALL behave as partitioned at the query's full projected grain: they compose with transforms, arithmetic/composite/scalar expressions, and filters exactly as partitioned aggregates do, while keeping their established public result keys, aliases, and executed values. Explicit `partition_by=` on the same aggregation remains a strict generalization; the bare form and an explicit form at the same effective grain are equivalent.
+
+#### Scenario: Transform over a bare windowed measure
+- WHEN a query selects `cumsum(amount:sum(window='90d'))` over a month time dimension
+- THEN the running total of the rolling window executes with hand-computed values
+
+#### Scenario: Bare windowed measure inside arithmetic
+- WHEN a query selects `amount:sum(window='90d') / amount:sum`
+- THEN the composite evaluates per result row over the attached rolling total and the plain aggregate, correct by executed values
+
+#### Scenario: Filter-only reference to a bare windowed measure
+- WHEN a query filters on `amount:sum(window='90d') > 20` without selecting that measure
+- THEN qualifying rows survive with unchanged values and the emitted SQL contains no leaked internal names
+
+#### Scenario: One predicate mixing a bare windowed and a plain aggregate
+- WHEN a single filter predicate combines `amount:sum(window='90d')` with `amount:sum`
+- THEN the whole predicate evaluates after attachment, correct by executed values
+
+#### Scenario: Temporal transform over a bare first/last measure
+- WHEN a query selects `time_shift(amount:last, -1)` over a month time dimension
+- THEN each row carries the previous bucket's last value, correct by executed values
+
+#### Scenario: Bare and explicit partition twins are equivalent
+- WHEN one query selects a bare windowed (or `first`/`last`) measure and another declares the same aggregation with `partition_by=` naming the full projected grain
+- THEN both return identical executed values and render one shared producer relation when combined in a single query
+
+#### Scenario: Migrated families keep their executed values
+- WHEN previously supported bare windowed and `first`/`last` queries run after the migration
+- THEN executed values are identical to before; generated-SQL divergences are individually approved and recorded
+
+### Requirement: Structurally identical producers render once
+When several consumed aggregates resolve to the same producer — same source and root, same effective grain, same normalized aggregate set including per-measure filters and ranking/window kernel context, the same inherited row-filter context, and recursively identical nested producers (a producer whose sub-plan embeds other producers matches only one whose embedded producers are identical by this same rule) — the query SHALL compute that producer once and attach it at every consuming position: across both attach phases (dimension and measure roles) and across nesting scopes, including a producer consumed both at the top level and inside another producer's sub-plan. Producers that differ in any part of that specification — a different inherited filter, a different frame-bound rewrite, a different window duration, measure-level filter, ranking column, or a differing nested sub-plan producer — MUST stay separate. Sharing a producer MUST NOT change, duplicate, or drop any response warning: each warning surfaces once per semantic event regardless of how many scopes consume the producer.
+
+#### Scenario: Same aggregate in both roles shares one producer
+- WHEN the same partitioned aggregate appears inside a computed dimension and as a selected measure
+- THEN the emitted SQL contains a single producer relation for it, with both roles' values correct
+
+#### Scenario: Different producer inputs stay separate
+- WHEN two aggregations differ in window duration, in a measure-level filter, or in an explicit ranking column
+- THEN they render as separate producers and each value is correct
+
+#### Scenario: A producer shared between a nested sub-plan and the top level renders once
+- WHEN a query groups by a dimension banding `amount:sum(partition_by=city)` and selects `amount:sum(window='1y')`, so the city-total producer is needed by both the base's computed dimension and the windowed producer's sub-plan
+- THEN the emitted SQL contains exactly one city-total producer relation, referenced from both scopes, with executed values unchanged
+
+#### Scenario: Differing inherited filter context prevents merging
+- WHEN two structurally identical aggregates are consumed in scopes that inherit different row-filter conjuncts into their producers
+- THEN each scope keeps its own producer relation and each consumer's executed values are correct
+
+#### Scenario: Consumers at different depths keep their own attach coordinates
+- WHEN one shared producer is consumed at two nesting depths whose attach join keys differ in coordinates
+- THEN each consumer joins the shared relation on its own keys and both executed values are correct
+
+#### Scenario: A shared producer's warning surfaces once
+- WHEN a producer that triggers a broadcast or dropped-filter warning is consumed from two scopes
+- THEN the response carries that warning exactly once per semantic event
+
+### Requirement: Measure-local filters stay inside the producer
+An aggregation's own filter SHALL restrict only the rows aggregated by its producer, never the query's result rows; query- and model-level row filters SHALL apply consistently to both the query and the producer.
+
+#### Scenario: A filtered measure is cardinality-neutral
+- WHEN a windowed or `first`/`last` measure carrying its own filter is added beside unfiltered measures
+- THEN the row count and every companion value are unchanged, and only the filtered measure's value reflects the filter
+
+### Requirement: Partition keys are attributable from the aggregate's root
+Every explicit `partition_by=` key SHALL be attributable from the aggregate's root — expressible over join hops that are provably many-to-one. An unattributable partition key is a hard error in both lenient and strict mode, naming the key, the failing hop, and the remedy; the producer MUST never join through an unproven or fanning hop to express a declared grain.
+
+#### Scenario: Joined partition key over a provably safe hop works
+- WHEN a local aggregate declares `partition_by=` naming a dimension reached over a provably many-to-one join
+- THEN the producer computes at that grain with correct executed values
+
+#### Scenario: Partition key over an unproven hop errors
+- WHEN an aggregate declares `partition_by=` naming a dimension reachable only across a join with unproven arity
+- THEN the query fails with a clear error naming the key and the remedy, never silently double-counting inside the producer

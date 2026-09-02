@@ -12,6 +12,36 @@ DuckDB, PostgreSQL 16**. Charts and numbers are regenerated from `out/` by
 
 ---
 
+## DEV-1835 re-audit (stage-2 local-family unification), 2026-08-31
+
+Re-ran correctness + timing on branch `443a7326` (10k + 40k + adversarial; SQLite +
+DuckDB) after migrating the windowed / `first`-`last` families onto the regroup
+primitive. **No entry exceeded the regression thresholds (> 1.3× AND > 20 ms).** The
+migration's predicted cost — one extra source scan per windowed producer group (design
+D3: a windowed producer now derives its own grain rows inline instead of sharing
+`_base`'s scan) — stays below the flag floor at these scales. Correctness is unchanged:
+every value difference vs `0.9.12` is a cumulative fix the oracle attributes to the
+branch, none to this stage.
+
+---
+
+## DEV-1836 re-audit (stage-3 cross-model unification), 2026-09-01
+
+Re-ran correctness + timing on branch `f6d8adc6` (10k + 40k + adversarial; SQLite +
+DuckDB) after migrating the cross-model families onto target-rooted regroup
+producers. **No entry exceeded the regression thresholds (> 1.3× AND > 20 ms).**
+Correctness: the only differences attributable to this stage are the DEV-1836
+divergence-ledger class-(c) flips — cross-model metrics over unprovable join hops
+now **broadcast with a `broadcast` warning** instead of fanning through the join
+(`join_cross_model_rerooted_dim` on the adversarial dataset, plus warning drift on
+the `join_*` cross-model entries; the corpus models declare no join cardinality,
+so their host dims are unprovable by construction). Where the oracle arbitrates a
+mismatch it faults `0.9.12`, never the branch. Shapes whose reverse hops ARE
+provably to-one keep exact values (the Q9 pin,
+`tests/integration/test_integration.py::test_cross_model_measure_with_target_join_filters`).
+
+---
+
 ## TL;DR
 
 - **Correctness: the rewrite is at least as correct as 0.9.12 everywhere.** Where the
@@ -187,3 +217,35 @@ dependency-lock artifact, not the typed pipeline.
 Fix: sqlglot floor raised `>=30.0` → `>=30.17` (lock at 30.17.0). Branch DuckDB dry-run
 on the flagged entries: **20.5 ms → 2.7 ms**, parity with SQLite (2.7 ms); full unit
 suite green (12,820 passed).
+
+---
+
+## Addendum (2026-09-01): DEV-1838 stage-4 re-run — no flags
+
+Re-run after the DEV-1835→1838 unification arc (producer interning, kernel
+migration, legacy plan-class/classifier deletion, node fold with one Kahn
+driver, CTE-body lifts + multi-stage flattening), default scales
+(10k / 40k full corpus + 100k subset), sqlite + duckdb, `--retime`.
+
+**Performance: no entries exceeded the regression thresholds** (> 1.3× AND
+> 20 ms, pooled ABBA medians; 0 flagged rows). Median exec ratios
+(branch ÷ 0.9.12) are ≤ 1 at every backend/scale — the branch is faster
+across the board:
+
+| backend | scale | entries | pypi med (ms) | branch med (ms) | median ratio |
+|---|---|---|---|---|---|
+| sqlite | 10k | 100 | 14.7 | 6.2 | 0.43 |
+| sqlite | 40k | 100 | 19.7 | 15.1 | 0.69 |
+| sqlite | 100k (subset) | 18 | 31.3 | 27.8 | 0.90 |
+| duckdb | 10k | 100 | 13.2 | 11.0 | 0.81 |
+| duckdb | 40k | 100 | 13.2 | 12.5 | 0.95 |
+| duckdb | 100k (subset) | 18 | 18.5 | 16.3 | 0.94 |
+
+Correctness profile unchanged from the blessed audit above: every
+oracle-arbitrated disagreement (`join_filtered_local_isolation`,
+`bench_monthly_change`) has the **pypi side wrong**; the remaining
+VALUE_MISMATCH entries are the documented `time_shift` boundary-fix drift;
+PYPI_ONLY_ERROR entries are features 0.9.12 lacked; the one
+BRANCH_ONLY_ERROR (`var_missing`) is the intentional undefined-variable
+fail-closed. Warning drift is the branch's broadcast/normalization warnings,
+which 0.9.12 did not emit.

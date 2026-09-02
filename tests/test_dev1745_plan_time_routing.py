@@ -114,13 +114,17 @@ class TestPlanCarriesOuterWhereRouting:
         assert list(planned.outer_where_filter_ids) == []
 
     def test_the_isolated_plan_is_the_trigger(self) -> None:
-        """Sanity-pin the shape the routing keys off: a cross-model plan whose
-        cte_root_model is set."""
+        """Sanity-pin the shape the routing keys off — DEV-1838 D5: a
+        HOST-rooted regroup producer, its filter routed to the outer WHERE."""
         planned = plan_query(query=_outer_where_query(), bundle=_bundle())
-        roots = [
-            p.cte_root_model for p in planned.cross_model_aggregate_plans
-        ]
-        assert any(r is not None for r in roots), roots
+        assert any(
+            a.producer_root_model is None and a.attach_phase == "combined"
+            for a in planned.regroup_attach_plans
+        ), planned.regroup_attach_plans
+        assert planned.outer_where_filter_ids, (
+            "the filter over the isolated aggregate must route to the outer "
+            "WHERE"
+        )
 
 
 @pytest.mark.asyncio

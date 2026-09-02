@@ -73,14 +73,12 @@ ATTACH_MEASURES = {
 }
 TD_ATTACH = frozenset({"win_part", "wm"})
 
-#: Still-guarded cells → the stage issue their strict-xfail points at (the
-#: DEV-1835 wm/rk column flipped to supported with the stage-2 migration).
-XFAIL_CELLS = {
-    ("band", "cm"): "DEV-1836: row attach × cross-model measure",
-    ("bare", "cm"): "DEV-1836: row attach × cross-model measure",
-    ("rank", "cm"): "DEV-1836: row attach × cross-model measure",
-    ("mixed", "cm"): "DEV-1836: row attach × cross-model measure",
-}
+#: Still-guarded cells → the stage issue their strict-xfail points at. DEV-1835
+#: flipped the wm/rk column; DEV-1836 flips the last column — the four
+#: ``(family, cm)`` cells (row attach × cross-model measure) are now supported
+#: (target-rooted producers), so they move to the supported table with the
+#: broadcast oracle (``x = CM_TOTAL``). Nothing remains guarded here.
+XFAIL_CELLS: dict[tuple[str, str], str] = {}
 
 DIM_FAMILIES = tuple(DIM_FAMILY_DIMS)
 MEASURE_KEYS = tuple(ATTACH_MEASURES) + tuple(TRANSFORM_FORMULAS)
@@ -209,7 +207,7 @@ class TestMatrix:
 
 class TestCoexistenceTriples:
     """Row attach + combined attach + transform in ONE query (the
-    ``_render_with_cross_model_plans`` chain, task 2.5). Each value must also
+    ``_render_with_combined_attaches`` chain, task 2.5). Each value must also
     equal its value when queried alone (Codex F4 — direct solo runs, not just
     the shared oracle tables)."""
 
@@ -350,8 +348,8 @@ class TestCardinalityNeutrality:
     ) -> None:
         _, engine = exec_backend
         with_month = _needs_td(meas)
-        base = await engine.execute(_cell_query(family, meas, include_x=False))
-        plus = await engine.execute(_cell_query(family, meas))
+        base = await engine.execute(_cell_query(family=family, meas=meas, include_x=False))
+        plus = await engine.execute(_cell_query(family=family, meas=meas))
         base_m = _keyed(base, family=family, with_month=with_month, cols=("m",))
         plus_m = _keyed(plus, family=family, with_month=with_month, cols=("m",))
         assert set(base_m) == set(plus_m)

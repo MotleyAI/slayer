@@ -2,10 +2,10 @@
 primitive's ``attach_phase="combined"`` arm.
 
 Plan-level contracts (fail on the current tree, which still routes a local
-partitioned measure through ``CrossModelAggregatePlan``):
+partitioned measure through the retired cross-model plan):
 
 * a local partitioned MEASURE yields ``RegroupAttachPlan(attach_phase="combined")``
-  and NO ``CrossModelAggregatePlan``; its producer is a host-rooted single SELECT;
+  and NO cross-model plan; its producer is a host-rooted single SELECT;
   the consumer keeps no partitioned aggregate slot (substituted to a placeholder);
 * same-partition-set interning — N distinct aggregates share ONE producer;
 * combined-attach coexistence with an isolated family (cross-model / windowed /
@@ -61,7 +61,6 @@ class TestCombinedAttachReplacesCrossModelPlan:
             ),
             bundle=_bundle(),
         )
-        assert planned.cross_model_aggregate_plans == []
         assert len(planned.regroup_attach_plans) == 1
         assert planned.regroup_attach_plans[0].attach_phase == "combined"
         # The partitioned aggregate no longer reaches the consumer aggregate loop.
@@ -82,10 +81,8 @@ class TestCombinedAttachReplacesCrossModelPlan:
         assert producer.source_relation == "orders"
         assert producer.render_source_model is not None
         assert producer.render_source_model.name == "orders"
-        assert producer.cross_model_aggregate_plans == []
         assert producer.regroup_attach_plans == []
-        assert producer.windowed_aggregate_plans == []
-        assert producer.ranked_aggregate_plans == []
+        assert planned.regroup_attach_plans[0].kernel.kind == "plain"
         assert producer.transform_layers == []
         # One grouped aggregate output at the partition grain.
         assert len(producer.aggregate_slots) == 1
@@ -126,7 +123,6 @@ class TestCombinedAttachReplacesCrossModelPlan:
             ),
             bundle=_bundle(),
         )
-        assert planned.cross_model_aggregate_plans == []
         assert len(planned.regroup_attach_plans) == 1
         rap = planned.regroup_attach_plans[0]
         assert rap.attach_phase == "combined"
@@ -145,7 +141,6 @@ class TestSamePartitionSetInterning:
             ),
             bundle=_bundle(),
         )
-        assert planned.cross_model_aggregate_plans == []
         assert len(planned.regroup_attach_plans) == 1
         rap = planned.regroup_attach_plans[0]
         # One producer, two consumed aggregates, exactly two producer outputs.
@@ -174,7 +169,6 @@ class TestSamePartitionSetInterning:
             ),
             bundle=_bundle(),
         )
-        assert planned.cross_model_aggregate_plans == []
         assert len(planned.regroup_attach_plans) == 1
         rap = planned.regroup_attach_plans[0]
         # One structural aggregate → one producer output, one substitution.
@@ -208,7 +202,6 @@ class TestSamePartitionSetInterning:
             ),
             bundle=_bundle(),
         )
-        assert planned.cross_model_aggregate_plans == []
         assert len(planned.regroup_attach_plans) == 2
         displays = {tuple(rap.partition_display) for rap in planned.regroup_attach_plans}
         assert len(displays) == 2  # distinct grains, distinct producers
@@ -218,7 +211,7 @@ class TestCoexistenceWithIsolatedFamilies:
     """DEV-1824 (D11 / task 3.8) lifts the combined-attach coexistence guards:
     a partitioned MEASURE (combined regroup attach) now composes with a
     cross-model / windowed / ranked / transform measure through the shared
-    ``_render_with_cross_model_plans`` join-back belt (executed-value coverage
+    ``_render_with_combined_attaches`` join-back belt (executed-value coverage
     lives in ``tests/test_dev1824_partitioned_execution.py``). Row+combined
     coexistence stays deferred."""
 
@@ -233,8 +226,14 @@ class TestCoexistenceWithIsolatedFamilies:
             ],
         )
         planned = plan_query(query=q, bundle=_bundle())
-        assert len(planned.regroup_attach_plans) == 1
-        assert len(planned.cross_model_aggregate_plans) == 1
+        # DEV-1836: the cross-model measure now desugars into its OWN
+        # target-rooted regroup producer, so it coexists as a SECOND combined
+        # attach rather than a top-level cross-model plan.
+        assert len(planned.regroup_attach_plans) == 2
+        # One local producer (rooted at the consumer → None) + one target-rooted
+        # cross-model producer rooted at ``customers``.
+        roots = {rap.producer_root_model for rap in planned.regroup_attach_plans}
+        assert roots == {None, "customers"}, roots
         assert "__regroup__" not in await gen(q)
 
     async def test_combined_attach_plus_windowed_measure(self) -> None:
@@ -246,14 +245,13 @@ class TestCoexistenceWithIsolatedFamilies:
             ],
         )
         planned = plan_query(query=q, bundle=_bundle())
-        # DEV-1835: the windowed family desugars into its own regroup producer,
-        # so it coexists as a SECOND combined attach (its windowed plan lives
-        # inside that producer), not as a top-level windowed plan.
+        # DEV-1835/DEV-1838: the windowed family desugars into its own regroup
+        # producer (trailing-window kernel), so it coexists as a SECOND
+        # combined attach, not as a top-level windowed plan.
         assert len(planned.regroup_attach_plans) == 2
-        assert planned.windowed_aggregate_plans == []
         assert sum(
-            len(rap.producer_plan.windowed_aggregate_plans)
-            for rap in planned.regroup_attach_plans
+            1 for rap in planned.regroup_attach_plans
+            if rap.kernel.kind == "trailing-window"
         ) == 1
         assert "__regroup__" not in await gen(q)
 
@@ -266,14 +264,13 @@ class TestCoexistenceWithIsolatedFamilies:
             ],
         )
         planned = plan_query(query=q, bundle=_bundle())
-        # DEV-1835: the ranked (first/last) family desugars into its own regroup
-        # producer, so it coexists as a SECOND combined attach (its ranked plan
-        # lives inside that producer), not as a top-level ranked plan.
+        # DEV-1835/DEV-1838: the ranked (first/last) family desugars into its
+        # own ranked-kernel producer, so it coexists as a SECOND combined
+        # attach, not as a top-level ranked plan.
         assert len(planned.regroup_attach_plans) == 2
-        assert planned.ranked_aggregate_plans == []
         assert sum(
-            len(rap.producer_plan.ranked_aggregate_plans)
-            for rap in planned.regroup_attach_plans
+            1 for rap in planned.regroup_attach_plans
+            if rap.kernel.kind == "ranked"
         ) == 1
         assert "__regroup__" not in await gen(q)
 

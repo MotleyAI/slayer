@@ -91,9 +91,9 @@ def _assembler_spy(monkeypatch) -> list:
     seen: list = []
     original = cte_assembly.assemble_with_chain
 
-    def _recording(*, entries, final):
+    def _recording(*, entries, final, **kwargs):
         seen.extend(entries)
-        return original(entries=entries, final=final)
+        return original(entries=entries, final=final, **kwargs)
 
     monkeypatch.setattr(generator, "assemble_with_chain", _recording)
     return seen

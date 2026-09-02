@@ -12,7 +12,7 @@ Scenario coverage map (spec: openspec …/specs/queries/computed-dimensions):
   Fails cleanly without a time dimension ........ TestWindowInDimension
   Bare aggregate in a dimension is rejected ..... TestDimensionErrorSurface
   Aggregate over an attached value is rejected .. TestDimensionErrorSurface
-  Cross-model aggregate source is rejected ...... TestDimensionErrorSurface
+  Unattributable partition key is rejected ...... TestDimensionErrorSurface
 (Stage-boundary scenarios → tests/test_dev1824_multistage_boundary.py.)
 """
 
@@ -243,7 +243,12 @@ class TestDimensionErrorSurface:
         assert "selfband" in str(ei.value)
         assert "__regroup__" not in str(ei.value)
 
-    async def test_cross_model_aggregate_source_rejected(self, exec_engine) -> None:
+    async def test_cross_model_unattributable_partition_rejected(
+        self, exec_engine,
+    ) -> None:
+        # DEV-1836 lifts the blanket cross-model-source guard; a cross-model
+        # aggregate whose partition key is unreachable from its root still fails
+        # closed, now naming the key.
         cband = (
             "CASE WHEN customers.spend:sum(partition_by=region) > 100 "
             "THEN 1 ELSE 0 END"
@@ -252,8 +257,8 @@ class TestDimensionErrorSurface:
             dimensions=["region", {"expression": cband, "name": "cband"}],
             measures=[ModelMeasure(formula="amount:sum", name="s")],
         )
-        with pytest.raises(
-            NotImplementedError,
-            match=r"cross-model aggregate source inside a computed dimension",
-        ):
+        with pytest.raises(ValueError, match=r"partition_by") as ei:
             await exec_engine.execute(query)
+        msg = str(ei.value)
+        assert "region" in msg
+        assert "__regroup__" not in msg

@@ -41,24 +41,24 @@ def _q(*, measures) -> SlayerQuery:
 
 
 class TestShiftedCteFragmentDefaultParam:
-    """Shape (b): the crossing DEFAULT ``AggregationParam.sql`` fragment pulls
-    its two join hops into the shifted CTE's own FROM."""
+    """Shape (b): DEV-1838 D5 — the crossing-fragment inner is a HOST-rooted
+    producer; the shifted CTE reads the producer's joined-back column, and the
+    fragment's join hops live inside the producer's own ``_cm_`` CTE."""
 
     async def test_shifted_cte_joins_the_fragment_hops(self) -> None:
         sql = await gen(_q(measures=[
             ModelMeasure(formula="time_shift(amount:wscaled_sum, -1)", name="prev"),
         ]))
         shifted = shifted_cte_body(sql)
-        # Both hops of the fragment's path are real join clauses in the shifted
-        # CTE (orders → customers → regions), the second under the __-path alias.
-        assert "JOIN customers" in shifted, shifted
-        assert "regions AS customers__regions" in shifted, shifted
-        # The fragment rendered qualified at the host path (not a bare, unbound
-        # ``regions.weight``), so it binds to the join the CTE now carries.
-        assert "customers__regions.weight" in shifted, shifted
-        # And the re-aggregation actually multiplies by the fragment: the host
-        # ``amount`` operand appears alongside the weight fragment pinned above.
-        assert "orders.amount" in shifted, shifted
+        # The shifted CTE LEFT JOINs the producer (DEV-1835 D7 join-back).
+        assert "JOIN _cm_" in shifted, shifted
+        # The fragment's two hops + the qualified weight fragment + the host
+        # ``amount`` operand all live in the producer's own CTE body.
+        producer = _extract_cte_body(sql, r"_cm_\w+")
+        assert "JOIN customers" in producer, producer
+        assert "regions AS customers__regions" in producer, producer
+        assert "customers__regions.weight" in producer, producer
+        assert "orders.amount" in producer, producer
 
     async def test_host_base_does_not_carry_the_shifted_reaggregation(self) -> None:
         """The shifted re-aggregation belongs to the shifted CTE, not the host
@@ -87,9 +87,11 @@ class TestShiftedCteFragmentUserKwarg:
             ),
         ]))
         shifted = shifted_cte_body(sql)
-        assert "JOIN customers" in shifted, shifted
-        assert "regions AS customers__regions" in shifted, shifted
-        assert "customers__regions.weight" in shifted, shifted
+        assert "JOIN _cm_" in shifted, shifted
+        producer = _extract_cte_body(sql, r"_cm_\w+")
+        assert "JOIN customers" in producer, producer
+        assert "regions AS customers__regions" in producer, producer
+        assert "customers__regions.weight" in producer, producer
 
 
 class TestFragmentRegistrationUnit:

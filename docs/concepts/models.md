@@ -221,6 +221,13 @@ A measure is a saved formula. Its shape is identical to an inline `SlayerQuery.m
 | `type` | DataType | No | Declares the formula's result type (drives outer CAST) |
 | `meta` | dict | No | Arbitrary JSON metadata |
 
+An inferred integer measure type describes the result without narrowing the
+database's native integer range. For example, `"amount:sum"` can return a total
+larger than a 32-bit integer even when each source value fits in one. An explicit
+measure `"type": "INT"` still requests the database's INT cast and can reject
+out-of-range results. Other type casts, including declared derived-column types,
+are unchanged.
+
 Column and measure names share a namespace within a model — you can't have a column `aov` *and* a measure `aov`. A measure can use any other measure by bare name, including inside transforms and arithmetic:
 
 ```json
@@ -314,7 +321,7 @@ joins:
     cardinality: many_to_one   # many orders → one customer
 ```
 
-`cardinality` is one of `one_to_one`, `one_to_many`, `many_to_one`, `many_to_many` (omit it when undetermined). It is **descriptive metadata, orthogonal to the join type** — joins stay LEFT regardless — and is representational today (query results are unaffected).
+`cardinality` is one of `one_to_one`, `one_to_many`, `many_to_one`, `many_to_many` (omit it when undetermined). It is **orthogonal to the join type** — joins stay LEFT regardless — but it is load-bearing for [cross-model measures](queries.md#cross-model-measures): a dimension reached over a hop that is provably to-one (a primary key on the far side, or a declared `one_to_one`/`many_to_one`) gets the **exact** per-group value, while an unproven hop makes the measure **broadcast** across that dimension with a response warning. Declaring cardinality (or primary keys) is how you make such dimensions exact.
 
 Auto-ingestion fills it structurally from key constraints: an FK join defaults to `many_to_one`, upgrading to `one_to_one` when the source key is itself unique. To infer it from the actual data instead, run:
 
@@ -326,6 +333,8 @@ slayer validate-models --datasource mydb --cardinality --persist-cardinality  # 
 Detection full-scans each side of the join and reports the observed arity, a `verdict` (whether it confirms, refines, or hard-contradicts the stored value), and any column declared `unique` that the data shows has duplicates. It is a strong guess, not a guarantee — a duplicate disproves uniqueness with certainty, but the absence of duplicates only suggests it.
 
 A side with no non-null key rows reports `no_evidence` and detects nothing: an empty scan would trivially look unique, and that is not weak evidence — it is none. Re-run once the table has data. A join whose scan fails outright reports `scan_failed` and does not stop the rest of the report. Full verdict table: [CLI reference](../reference/cli.md#slayer-validate-models).
+
+`validate-models` also prints a **Join safety** section flagging every join that is neither declared `many_to_one`/`one_to_one` nor structurally proven (via a primary/unique key on the target side) — cross-model measures crossing such a join [broadcast](queries.md#cross-model-measures) instead of computing per-group values, so each finding names the remedy.
 
 ### Path-based table aliases
 
