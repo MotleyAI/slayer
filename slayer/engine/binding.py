@@ -34,6 +34,7 @@ consumer.
 from __future__ import annotations
 
 import difflib
+from decimal import Decimal
 from typing import Dict, List, Optional, Tuple, Union
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -1084,8 +1085,6 @@ def _fold_to_scalar(parsed: ParsedExpr):
         and parsed.op == "-"
         and isinstance(parsed.operand, Literal)
     ):
-        from decimal import Decimal
-
         inner = parsed.operand.value
         if isinstance(inner, bool):
             # Reject explicitly — ``-True`` is nonsense and bool is an
@@ -1096,12 +1095,10 @@ def _fold_to_scalar(parsed: ParsedExpr):
     return _NOT_SCALAR
 
 
-# Per-op kwarg whitelist for the typed pipeline. Broader than the legacy
-# ``slayer.core.formula._ALLOWED_TRANSFORM_KWARGS`` because the new
-# pipeline allows ``partition_by`` on more than just the rank family
-# (DEV-1450 C6: ``change(measure, partition_by=...)`` threads through to
-# the desugared time_shift). Every transform also implicitly accepts
-# ``partition_by`` — that branch is handled before the whitelist check.
+# Per-op kwarg whitelist for the typed pipeline. ``partition_by`` is accepted
+# only for the rank family (bound above, before this check); every other op —
+# ``time_shift`` and the ``change`` family that desugars onto it included —
+# takes just the kwargs listed here, so their ``partition_keys`` stay empty.
 _TRANSFORM_KWARG_RULES: dict = {
     "cumsum": frozenset(),
     "change": frozenset(),
@@ -1247,8 +1244,6 @@ def _apply_transform_kwarg_defaults(
     integer checks accept ``Decimal`` whose value is integral as well
     as plain ``int``.
     """
-    from decimal import Decimal
-
     def _ensure_positive_integer(value: object, *, kw: str) -> None:
         if isinstance(value, bool):
             raise ValueError(

@@ -519,7 +519,7 @@ def _iter_slot_deps(key: ValueKey):
             if isinstance(
                 arg,
                 _SLOTTABLE_KIND
-                + (ArithmeticKey, ScalarCallKey, BetweenKey),
+                + (ArithmeticKey, ScalarCallKey, BetweenKey, InKey),
             ):
                 yield from _iter_slot_deps(arg)
         return
