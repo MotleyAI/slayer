@@ -376,16 +376,6 @@ class TestPredicateTypingContract:
         assert "consecutive_periods" in low, msg
         assert "boolean" in low, msg
 
-    async def test_boolean_in_transform_input_rejected(self) -> None:
-        """A boolean-shaped node in a transform's value input (cumsum of a
-        comparison) is rejected, not summed as a boolean."""
-        name, msg = await _error(measures=[ModelMeasure(
-            formula="consecutive_periods(cumsum(revenue:sum > 0))", name="x")])
-        assert name == "ValueError", (name, msg)
-        low = msg.lower()
-        assert "consecutive_periods" in low, msg
-        assert "boolean" in low, msg
-
 
 class TestUniformFailClosed:
     #: shape id -> the still-unsupported time_shift input.

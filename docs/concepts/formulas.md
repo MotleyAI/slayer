@@ -311,10 +311,11 @@ The self-join matches on **every projected dimension as well as the shifted time
 
 `consecutive_periods(predicate)` evaluates a predicate at the query grain and
 returns an integer streak length for the current row. False or NULL breaks the
-run and returns 0. The input is any Mode-B value tree — a comparison, `IN`, a
-boolean connective, a nested transform, or a bare value (truthy when non-NULL
-and non-zero) — with a boolean-shaped node legal only at the predicate top level
-or an `iif` condition. The result composes with normal comparisons:
+run and returns 0. The input is a Mode-B predicate or numeric value — a
+comparison, `IN`, a boolean connective, a nested transform, or a bare value
+(truthy when non-NULL and non-zero) — with a boolean-shaped node legal only at
+the predicate top level or an `iif` condition. The result composes with normal
+comparisons:
 
 ```json
 {
