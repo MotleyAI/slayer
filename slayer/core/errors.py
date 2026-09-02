@@ -1,9 +1,5 @@
-"""Public error types raised by the SLayer core/engine/storage layers.
-
-Kept in ``slayer.core`` so callers can catch them without importing engine or
-storage internals. Each class is defined with a stable name and signature; the
-message format is decided by the layer that raises it.
-"""
+"""Public error types raised by the SLayer core/engine/storage layers — kept in
+``slayer.core`` so callers catch them without importing engine/storage internals."""
 
 from __future__ import annotations
 
@@ -14,26 +10,11 @@ if TYPE_CHECKING:
 
 
 class SlayerError(Exception):
-    """Base class for SLayer-specific errors.
-
-    Catching ``SlayerError`` distinguishes our intentional failure modes from
-    unexpected ``Exception`` paths (driver errors, IO errors, etc.).
-    """
+    """Base for SLayer-specific errors — catch to isolate intentional failures from driver/IO errors."""
 
 
 class AmbiguousModelError(SlayerError):
-    """Raised when a bare model name resolves to ≥2 datasources and the
-    datasource priority list does not pick a unique winner.
-
-    The constructor stores the ambiguous name and the list of candidate
-    datasources. The default message is intentionally surface-neutral: it
-    states the fact and a generic remediation, but does not reference any
-    Python-, REST-, MCP-, or CLI-specific invocation form. Each surface
-    appends its own concrete remediation when it catches the error
-    (``data_source=...`` query param for REST, the
-    ``set_datasource_priority`` MCP tool, the ``slayer datasources
-    priority`` CLI subcommand, etc.).
-    """
+    """A bare model name resolves to ≥2 datasources with no priority winner; the surface-neutral message lets each surface append its own remediation."""
 
     def __init__(self, name: str, candidates: list[str]) -> None:
         self.name = name
@@ -46,26 +27,11 @@ class AmbiguousModelError(SlayerError):
 
 
 class EntityResolutionError(SlayerError):
-    """Raised when an entity reference cannot be resolved to a canonical
-    ``<datasource>.<model>[.<leaf>]`` form (DEV-1357).
-
-    Wraps the spec's resolution-failure cases: unknown segment, ambiguous
-    bare column matching multiple models in the priority-winner
-    datasource, ``*:count`` invoked outside a query context, and similar.
-    Distinct from ``AmbiguousModelError`` (which fires for the model leg
-    of bare-name resolution and is reused by the resolver verbatim).
-    """
+    """An entity ref can't resolve to canonical ``<datasource>.<model>[.<leaf>]`` form; distinct from ``AmbiguousModelError`` (the model leg of bare-name resolution)."""
 
 
 class MemoryNotFoundError(SlayerError):
-    """Raised when a memory id does not exist in storage (DEV-1357 /
-    DEV-1428).
-
-    Memory ids are non-empty strings (auto-allocated int-shaped, or
-    user-supplied like ``"kb.policy.42"``). The unified
-    ``forget_memory`` MCP tool / REST endpoint / CLI subcommand surface
-    this error when the requested id is unknown.
-    """
+    """A memory id does not exist in storage."""
 
     def __init__(self, memory_id: str) -> None:
         self.memory_id = str(memory_id)
@@ -75,13 +41,7 @@ class MemoryNotFoundError(SlayerError):
 
 
 class SchemaDriftError(SlayerError):
-    """Raised by ``SlayerQueryEngine.execute()`` when a query fails and the
-    failure was attributed to schema drift via ``validate_models``.
-
-    Carries the touched model names, the structured ``to_delete`` payload
-    (filtered to those models), and the original DBAPI exception (set as
-    ``__cause__`` for tracebacks).
-    """
+    """A query failed and ``validate_models`` blamed schema drift; carries touched models, the filtered ``to_delete`` payload, and the DBAPI cause (as ``__cause__``)."""
 
     def __init__(
         self,
@@ -100,15 +60,7 @@ class SchemaDriftError(SlayerError):
 
 
 class ColumnCycleError(SlayerError, ValueError):
-    """Raised when a derived ``Column.sql`` chain contains a cycle (DEV-1410).
-
-    Carries the cycle as an ordered list of ``(model_name, column_name)``
-    tuples reflecting the recursion order in which the cycle was discovered.
-
-    Multi-inherits ``ValueError`` so existing call sites that catch
-    ``ValueError`` (or use ``pytest.raises(ValueError)`` for the legacy
-    compile-time cycle raise) continue to work unchanged.
-    """
+    """A derived ``Column.sql`` chain contains a cycle; carries it as ordered ``(model, column)`` tuples."""
 
     def __init__(self, cycle: list[tuple[str, str]]) -> None:
         self.cycle: list[tuple[str, str]] = list(cycle)
@@ -116,20 +68,10 @@ class ColumnCycleError(SlayerError, ValueError):
         super().__init__(f"Circular column reference detected: {chain}")
 
 
-# ---------------------------------------------------------------------------
-# DEV-1450 stage-5 errors — typed, stable str() format.
-#
-# All error classes below build their message via ``_format_error_message``
-# so ``str(error)`` follows the documented snapshot-friendly shape::
-#
-#     <ErrorName>: <one-line summary>
-#       at <location>
-#       scope: <short scope summary>
-#       suggestion: <did-you-mean>
-#
-# Each indented line is optional. The first line ALWAYS starts with the
-# class name so log greps and snapshot tests bind to a stable prefix.
-# ---------------------------------------------------------------------------
+# Stage-5 errors below build their message via ``_format_error_message`` for a
+# stable ``str()``: ``ClassName: summary`` first line (grep/snapshot-stable),
+# then optional ``at`` / ``scope`` / ``suggestion`` rows. Those subclassing
+# ``ValueError`` do so for back-compat with ``except ValueError`` call sites.
 
 
 def _format_error_message(
@@ -141,11 +83,7 @@ def _format_error_message(
     suggestion: str | None = None,
     extras: List[Tuple[str, str]] | None = None,
 ) -> str:
-    """Build the stable error-message string used by stage-5 error classes.
-
-    ``extras`` lets a class add bespoke key/value rows after the summary
-    while keeping the leading ``ClassName:`` token intact.
-    """
+    """Build the stable stage-5 error message; ``extras`` adds bespoke key/value rows."""
     lines = [f"{cls_name}: {summary}"]
     if location:
         lines.append(f"  at {location}")
@@ -159,13 +97,7 @@ def _format_error_message(
 
 
 class UnknownReferenceError(SlayerError, ValueError):
-    """A bare or dotted reference cannot be resolved in the current scope.
-
-    Multi-inherits ``ValueError`` (like :class:`ColumnCycleError`) so the
-    pre-existing call sites and tests that catch ``ValueError`` for a failed
-    reference / model resolution keep working after the DEV-1450 cutover
-    replaced the legacy ``ValueError`` resolution paths with this typed error.
-    """
+    """A bare or dotted reference cannot be resolved in the current scope."""
 
     def __init__(
         self,
@@ -187,19 +119,7 @@ class UnknownReferenceError(SlayerError, ValueError):
 
 
 class ModeASqlParseError(SlayerError, ValueError):
-    """A free-SQL (Mode-A) fragment could not be parsed.
-
-    Mode-A text used to fail soft in three places: the fragment was handed
-    through unparsed, or — worse, in the join-path scanner — swallowed into
-    ZERO join paths, so an unparseable predicate emitted a query missing its
-    joins instead of reporting the problem. This is now the single loud
-    failure, carrying the fragment verbatim and the surface it came from
-    (``location``) so the author can find it.
-
-    Multi-inherits ``ValueError`` for back-compat with call sites that already
-    catch ``ValueError`` around SQL text handling (see
-    :class:`UnknownReferenceError`).
-    """
+    """A free-SQL (Mode-A) fragment could not be parsed — now a loud failure (it used to fail soft, silently dropping joins); carries the fragment and its ``location``."""
 
     def __init__(
         self,
@@ -223,11 +143,7 @@ class ModeASqlParseError(SlayerError, ValueError):
 
 
 class AmbiguousReferenceError(SlayerError, ValueError):
-    """A reference matches multiple candidates in scope and can't pick one.
-
-    Multi-inherits ``ValueError`` for back-compat (see
-    :class:`UnknownReferenceError`).
-    """
+    """A reference matches multiple candidates in scope."""
 
     def __init__(self, name: str, candidates: List[str]) -> None:
         self.name = name
@@ -240,15 +156,7 @@ class AmbiguousReferenceError(SlayerError, ValueError):
 
 
 class IllegalScopeReferenceError(SlayerError, ValueError):
-    """A reference is syntactically rejected by the current scope kind.
-
-    Examples: ``__`` in a Mode-B ``ModelScope`` ref (use the dotted form);
-    a dotted ref against a ``StageSchema`` (downstream stages see a flat
-    namespace, no join syntax).
-
-    Multi-inherits ``ValueError`` for back-compat (see
-    :class:`UnknownReferenceError`).
-    """
+    """A reference is syntactically rejected by the scope kind (``__`` in a Mode-B ``ModelScope`` ref; a dotted ref against a flat ``StageSchema``)."""
 
     def __init__(self, name: str, scope_kind: str, reason: str) -> None:
         self.name = name
@@ -263,15 +171,7 @@ class IllegalScopeReferenceError(SlayerError, ValueError):
 
 
 class IllegalWindowInFilterError(SlayerError, ValueError):
-    """A filter contains a raw ``OVER(...)`` window expression, or refers
-    to a ``Column.sql`` whose body contains a window function (DEV-1369 /
-    DEV-1336 — predicate promotion was removed). Use a rank-family
-    transform instead.
-
-    Multi-inherits ``ValueError`` (like :class:`UnknownReferenceError`) so
-    the pre-existing call sites and tests that catch ``ValueError`` for the
-    legacy windowed-filter rejection keep working after the cutover.
-    """
+    """A filter contains a raw ``OVER(...)`` window (directly or via a ``Column.sql``); use a rank-family transform instead."""
 
     def __init__(
         self,
@@ -294,17 +194,7 @@ class IllegalWindowInFilterError(SlayerError, ValueError):
 
 
 class AggregationNotAllowedError(SlayerError, ValueError):
-    """An aggregation cannot apply to a column.
-
-    Covers type-bucket violations (``sum`` on TEXT), primary-key
-    restrictions (only ``count`` / ``count_distinct``), and explicit
-    ``Column.allowed_aggregations`` whitelist violations.
-
-    Subclasses ``ValueError`` (like the other resolution-time errors in
-    this module) so callers wrapping the engine in ``except ValueError``
-    keep catching aggregation-gating failures — the legacy enrichment
-    pipeline raised a bare ``ValueError`` here.
-    """
+    """An aggregation can't apply to a column: type-bucket (``sum`` on TEXT), primary-key, or ``allowed_aggregations`` whitelist violation."""
 
     def __init__(self, column: str, agg: str, reason: str) -> None:
         self.column = column
@@ -318,14 +208,7 @@ class AggregationNotAllowedError(SlayerError, ValueError):
 
 
 class UnknownFunctionError(SlayerError, ValueError):
-    """A function call in Mode B is not in the ``SCALAR_FUNCTIONS`` allowlist,
-    the transform registry, or the model's aggregation set (C12).
-
-    Subclasses ``ValueError`` (like the other binding-time errors here) so
-    the REST ``ValueError -> 400`` mapping and ``except ValueError`` callers
-    keep catching it — the legacy enrichment pipeline raised a bare
-    ``ValueError`` for this case.
-    """
+    """A Mode-B function call is not in the ``SCALAR_FUNCTIONS`` allowlist, transform registry, or model aggregation set (REST maps it to 400)."""
 
     _DEFAULT_SUGGESTION = "move the call to a derived Column.sql (Mode A)."
 
@@ -347,12 +230,7 @@ class UnknownFunctionError(SlayerError, ValueError):
 
 
 class MeasureRecursionLimitError(SlayerError, ValueError):
-    """Named-measure expansion exceeded the configurable depth limit
-    (default 32; ``SLAYER_MEASURE_EXPANSION_DEPTH``).
-
-    ValueError-derived for REST/caller parity with the other binding-time
-    errors (the legacy pipeline raised a bare ``ValueError``).
-    """
+    """Named-measure expansion exceeded the depth limit (default 32; ``SLAYER_MEASURE_EXPANSION_DEPTH``)."""
 
     def __init__(self, chain: List[str], limit: int = 32) -> None:
         self.chain = list(chain)
@@ -365,11 +243,7 @@ class MeasureRecursionLimitError(SlayerError, ValueError):
 
 
 class MeasureCycleError(SlayerError, ValueError):
-    """Named-measure expansion encountered a cycle.
-
-    ValueError-derived for REST/caller parity with the other binding-time
-    errors (the legacy pipeline raised a bare ``ValueError``).
-    """
+    """Named-measure expansion encountered a cycle."""
 
     def __init__(self, chain: List[str]) -> None:
         self.chain = list(chain)
@@ -381,12 +255,7 @@ class MeasureCycleError(SlayerError, ValueError):
 
 
 class DuplicateMeasureNameError(SlayerError, ValueError):
-    """Two measures in the same query declare the same explicit ``name``
-    (DEV-1443).
-
-    ValueError-derived for REST/caller parity with the other binding-time
-    errors (the legacy pipeline raised a bare ``ValueError``).
-    """
+    """Two measures in one query declare the same explicit ``name``."""
 
     def __init__(self, name: str, occurrences: List[str]) -> None:
         self.name = name
@@ -399,13 +268,7 @@ class DuplicateMeasureNameError(SlayerError, ValueError):
 
 
 class MeasureNameCollidesWithColumnError(SlayerError, ValueError):
-    """A declared measure ``name`` matches a source column on the model
-    (DEV-1443) — the alias-form filter would silently bind to the source
-    column instead of the aggregate.
-
-    ValueError-derived for REST/caller parity with the other binding-time
-    errors (the legacy pipeline raised a bare ``ValueError``).
-    """
+    """A declared measure ``name`` matches a source column, so the alias-form filter would bind to the column, not the aggregate."""
 
     def __init__(self, name: str, model: str) -> None:
         self.name = name
@@ -420,12 +283,7 @@ class MeasureNameCollidesWithColumnError(SlayerError, ValueError):
 
 
 class CanonicalAliasShadowsColumnError(SlayerError, ValueError):
-    """A formula's canonical alias (e.g., ``amount_sum`` for ``amount:sum``)
-    shadows a source column on the same model (DEV-1443).
-
-    ValueError-derived for REST/caller parity with the other binding-time
-    errors (the legacy pipeline raised a bare ``ValueError``).
-    """
+    """A formula's canonical alias (``amount_sum`` for ``amount:sum``) shadows a source column on the same model."""
 
     def __init__(self, formula: str, canonical: str, model: str) -> None:
         self.formula = formula
@@ -441,11 +299,7 @@ class CanonicalAliasShadowsColumnError(SlayerError, ValueError):
 
 
 class UnreachableFilterDroppedWarning(UserWarning):
-    """A host filter referenced slots that aren't reachable from a
-    cross-model CTE's root, so the filter was dropped from the CTE.
-    The host query still applies the filter to its own rows; this is a
-    visibility/debug warning, not an error.
-    """
+    """A host filter referenced slots unreachable from a cross-model CTE's root, so it was dropped from the CTE (still applied to host rows). Visibility warning, not an error."""
 
     def __init__(self, filter_text: str, reason: str) -> None:
         self.filter_text = filter_text
@@ -457,12 +311,7 @@ class UnreachableFilterDroppedWarning(UserWarning):
 
 
 class BroadcastGrainWarning(UserWarning):
-    """A cross-model aggregate's implicit grain lost a dimension to
-    broadcasting: the dimension is not attributable from the aggregate's root
-    (an unproven/fanning join hop, or unreachable from the root), so the
-    aggregate is computed without it and its value broadcast across it. The
-    result grain is unchanged; this is a visibility warning, not an error.
-    """
+    """A cross-model aggregate's implicit grain lost a dimension (not attributable from its root) to broadcasting; result grain unchanged. Visibility warning, not an error."""
 
     def __init__(self, measure: str, reason: str) -> None:
         self.measure = measure
@@ -474,11 +323,7 @@ class BroadcastGrainWarning(UserWarning):
 
 
 class RenderContextMissingFacilityError(SlayerError, ValueError):
-    """A ValueKey render needed a facility its render context did not carry.
-
-    The single ValueKey renderer fails closed rather than degrading quietly:
-    silent fallbacks are how the generator's five renderer copies drifted apart.
-    """
+    """A ValueKey render needed a facility its render context lacked; fails closed rather than degrading quietly (silent fallbacks drifted the old renderer copies)."""
 
     def __init__(
         self,
@@ -500,13 +345,7 @@ class RenderContextMissingFacilityError(SlayerError, ValueError):
 
 
 class IdCollisionError(SlayerError, ValueError):
-    """Raised by filename-backed (YAML) storage when saving an entity
-    whose id differs from an existing id only by letter case — such ids
-    collide as filenames on case-insensitive filesystems. ``kind`` is
-    ``"model"`` / ``"datasource"`` / ``"memory"``. Multi-inherits
-    ``ValueError`` so existing ``except ValueError`` call sites continue
-    to work unchanged.
-    """
+    """YAML storage saving an entity whose id differs from an existing one only by case (they collide as filenames on case-insensitive filesystems)."""
 
     _LABELS = {
         "model": "Model name",
@@ -535,12 +374,7 @@ class IdCollisionError(SlayerError, ValueError):
 
 
 class IdentifierCollisionError(SlayerError, ValueError):
-    """Two distinct SLayer-generated names collapse onto one identifier after
-    the dialect's length fitting (DEV-1756).
-
-    Raised loudly rather than left to corrupt a result set. Also covers an
-    already-short name equal to another name's fitted form.
-    """
+    """Two distinct SLayer-generated names collapse onto one identifier after dialect length-fitting — raised loudly rather than corrupting a result set."""
 
     def __init__(
         self,
@@ -567,11 +401,7 @@ class IdentifierCollisionError(SlayerError, ValueError):
 
 
 class ForcedFilterError(SlayerError):
-    """Raised when the session policy's ruleset cannot be safely applied to a query.
-
-    Carries the offending ``table`` and ``column`` for diagnostics; either may be
-    ``None`` (``column`` is, for the unlisted-table and statement-root guards).
-    """
+    """The session policy's ruleset can't be safely applied to a query; carries the offending ``table``/``column`` (either may be ``None``)."""
 
     def __init__(
         self,
@@ -586,38 +416,11 @@ class ForcedFilterError(SlayerError):
 
 
 class DistinctDimensionValuesError(SlayerError, ValueError):
-    """Raised when ``distinct_dimension_values=False`` conflicts with the
-    query shape (DEV-1543).
-
-    ``distinct_dimension_values=False`` asks for raw rows — no top-level
-    ``GROUP BY``. It is incompatible with any aggregation: a non-empty
-    ``measures`` list, a filter / order item referencing a measure
-    (colon-form ``col:agg`` / ``*:count``, a transform call like
-    ``rank(...)``, or a bare saved ``ModelMeasure`` name), or a query
-    with no projected columns at all (both ``dimensions`` and
-    ``time_dimensions`` empty).
-
-    Multi-inherits ``ValueError`` so existing ``except ValueError``
-    call sites continue to work unchanged.
-    """
+    """``distinct_dimension_values=False`` (raw rows, no top-level ``GROUP BY``) conflicts with any aggregation or a query with no projected columns."""
 
 
 class UnresolvableOrderColumnError(SlayerError, ValueError):
-    """Raised when an ``order`` item references a column that cannot be bound
-    to the query's FROM scope (DEV-1645).
-
-    Fires when the sort key is neither a projected output alias, a base-model
-    column, nor a column on a join that the query already pulled into scope
-    (via a dimension, measure, or filter). The common case is ordering by an
-    *unprojected joined column* — e.g. ``order=[{"column":
-    "customers.regions.name"}]`` — whose join was never resolved, so there is
-    no in-scope table to qualify against. Emitting a reference anyway would
-    produce SQL that fails at the database with UndefinedTable/UndefinedColumn;
-    rejecting at compile time surfaces an actionable error instead.
-
-    Multi-inherits ``ValueError`` so existing ``except ValueError`` call sites
-    continue to work unchanged.
-    """
+    """An ``order`` item references a column not bindable to the query's FROM scope (usually an unprojected joined column whose join was never resolved); rejected at compile time rather than emitting failing SQL."""
 
     def __init__(self, *, column: str, qualifier: str) -> None:
         self.column = column
@@ -631,19 +434,8 @@ class UnresolvableOrderColumnError(SlayerError, ValueError):
 
 
 class UnresolvableDimensionJoinError(SlayerError, ValueError):
-    """A dimension / time-dimension dotted path that is not a valid direct-join
-    chain and cannot be uniquely routed to its target model (DEV-1780).
-
-    A dotted path resolves only when every hop is a direct join. A short form
-    (``Consumer.name`` — target model only) auto-resolves when exactly one route
-    reaches the target; otherwise (ambiguous route, unreachable target, or an
-    explicit multi-hop chain with a broken hop) the reference is rejected here
-    rather than emitting SQL that references an unbound table alias.
-
-    Multi-inherits ``ValueError`` (like ``UnresolvableOrderColumnError``) so
-    existing ``except ValueError`` sites keep working. ``__str__`` is computed
-    from the fields so ``suggested_path`` set after construction is reflected.
-    """
+    """A dimension dotted path that is not a valid direct-join chain and can't be uniquely
+    routed to its target. ``__str__`` is computed from the fields so a ``suggested_path`` set after construction shows."""
 
     def __init__(
         self,
@@ -676,18 +468,7 @@ class UnresolvableDimensionJoinError(SlayerError, ValueError):
 
 
 class LegacyDunderAliasError(SlayerError, ValueError):
-    """A ``__``-delimited Mode-A join qualifier that is no longer accepted
-    (DEV-1743 D2).
-
-    The dotted-canonical flip made ``.`` the only chain separator in Mode-A
-    free SQL. A ``__`` qualifier that does not name a real (possibly
-    ``__``-bearing) join target, but whose naive ``split('__')`` still walks the
-    join graph, is the legacy split-alias spelling — a hard error naming the
-    dotted replacement, with no deprecation window.
-
-    Multi-inherits ``ValueError`` so existing ``except ValueError`` sites keep
-    working.
-    """
+    """A ``__``-delimited Mode-A join qualifier that is no longer accepted (``.`` is now the only chain separator) — the legacy split-alias spelling."""
 
     def __init__(self, *, alias: str, dotted: str, model: str) -> None:
         self.alias = alias

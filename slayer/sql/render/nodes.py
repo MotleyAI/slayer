@@ -1,18 +1,5 @@
-"""Renderer pipeline nodes (design D1).
-
-One render pipeline builds every statement: base → aggregate → combined →
-steps → post. Each phase that materialises a relation contributes a
-:class:`Node` — a named member of the statement's one flat WITH chain that
-also carries the slot schema it exposes, so the next phase reads its inputs
-off the node instead of a separately-threaded alias dict. The POST phase
-(projection trim / ORDER / LIMIT) wraps the tail and emits no node.
-
-Fusion (design D2) is an emission decision, never semantic: adjacent phases
-collapse into one SELECT only when no blocker holds (:func:`fusion_blockers`).
-A plain query fuses end to end into a single SELECT; a producer body fuses
-into a single CTE body — those are the fusion fixed points, pinned
-byte-for-byte by the fusion snapshot goldens.
-"""
+"""Renderer pipeline nodes: named WITH-chain relations carrying the slot schema
+each phase exposes to the next. Fusion is an emission decision, never semantic."""
 
 from __future__ import annotations
 
@@ -28,8 +15,7 @@ NodePhase = Literal["producer", "base", "combined", "step"]
 
 
 class Node(CteEntry):
-    """One pipeline node: a relation in the flat WITH chain plus the slot
-    schema it exposes (slot id → the aliases later phases may reference)."""
+    """A WITH-chain relation plus the slot schema it exposes (slot id → aliases)."""
 
     phase: NodePhase = "step"
     schema_by_slot: Dict[str, List[str]] = Field(default_factory=dict)
@@ -41,13 +27,7 @@ def fusion_blockers(
     has_transform_steps: bool,
     trims_hidden_columns: bool,
 ) -> List[str]:
-    """Why the base node may NOT fuse into the final statement (D2).
-
-    Empty means the whole pipeline collapses to a single SELECT with ORDER /
-    LIMIT applied inline — today's plain fast path. Each blocker forces the
-    base into the WITH chain (or, for a hidden-column trim, under a wrapper
-    that re-projects the public schema).
-    """
+    """Reasons the base node cannot fuse into the final statement (empty = one SELECT)."""
     blockers: List[str] = []
     if has_combined_phase:
         blockers.append(

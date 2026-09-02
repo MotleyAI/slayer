@@ -1,46 +1,6 @@
-"""The single ``ValueKey`` → sqlglot-AST renderer (P-G).
-
-The generator grew five renderers that drifted apart: the same
-``ScalarCallKey`` emitted ``IFNULL(...)`` from a filter (invalid on Postgres)
-and ``COALESCE(...)`` from a projection. One function now renders the whole
-closed union, parameterised by :class:`RenderContext` rather than by call site.
-
-Two rules keep it from becoming a sixth copy: column-like leaves anchor through
-``ScopeFrame.resolve`` (which also registers crossed joins and handles
-consumer-scope materialisation), and a missing facility raises
-:class:`RenderContextMissingFacilityError` instead of degrading quietly.
-
-Migration status
-----------------
-All five live render families route through :func:`render_value_key` (DEV-1763,
-byte-identical SQL). The generator's legacy per-path renderers have been
-deleted (DEV-1749). The seams the migration added:
-
-* **Filter** (``_build_where_having_from_planned`` host WHERE / HAVING and
-  ``_shifted_where_part`` the shifted-CTE WHERE) — a render-scoped host
-  ``ScopeFrame`` plus :class:`FilterFacilities` carrying: the HAVING seam
-  (``agg_builder`` renders the aggregate as its EXPRESSION after the renderer's
-  ``slot_by_key`` lookup + ``having_full_alias`` recovery), the filter-side CAST
-  policy (``cast_column_sql``), and the DEV-1539 comparison grouping
-  (``paren_comparison_operands``).
-* **Composite** (``_build_base_select_for_planned`` base SELECT) — the composite
-  STRUCTURE renders here; only the aggregate LEAF goes to
-  :class:`CompositeFacilities`'s ``agg_builder`` → the generator's ``_build_agg``
-  (byte-identical). First/last aggregates render as a planned
-  ranked-kernel producer CTE, not at render time.
-* **Alias-environment / Outer-wrapper** (POST-phase filters, window-transform
-  inputs, consecutive-periods predicates, the cross-model transform chain, and
-  the DEV-1503 outer combined WHERE) — carry :class:`AliasFacilities` and
-  resolve the five slotted kinds ALIAS-EXCLUSIVELY, table-qualified via
-  ``table_by_slot_id`` for the outer wrapper.
-* **Target-scope** (``_collect_routed_filters`` cross-model CTE WHERE / HAVING) —
-  a target-rooted ``ScopeFrame`` with a routed-key reroot to the CTE's local
-  scope.
-
-Two shared leaf policies stay: ScalarCall (:func:`render_scalar_call`, all
-paths) and arithmetic / comparison / boolean composition
-(:func:`render_arithmetic`, now the single arithmetic renderer).
-"""
+"""The single ``ValueKey`` → sqlglot-AST renderer, parameterised by :class:`RenderContext`
+rather than by call site so one key can't render two ways. Column-like leaves anchor through
+``ScopeFrame.resolve``; a missing facility raises instead of degrading quietly."""
 
 from __future__ import annotations
 
@@ -75,13 +35,9 @@ from slayer.sql.render.aggregates import (
     is_builtin_agg,
     resolve_agg_entry,
 )
-# DEV-1784: single log-alias policy — defined once in parse.py, re-exported
-# under this module's historical name for render_scalar_call and the generator.
 from slayer.sql.render.parse import rewrite_log_aliases as rewrite_log_alias
 from slayer.sql.scope import ScopeFrame
 
-# Arithmetic / comparison / boolean operators, as sqlglot node classes. One
-# table instead of the three hand-rolled composers this replaces.
 _BINARY_OPS: Dict[str, Any] = {
     "+": exp.Add, "-": exp.Sub, "*": exp.Mul, "/": exp.Div,
     "%": exp.Mod,
@@ -90,29 +46,17 @@ _BINARY_OPS: Dict[str, Any] = {
 }
 
 
-# Named once: the render context field that carries the generator's aggregate
-# builder, cited by every fail-closed guard below.
 _AGG_BUILDER = "composites.agg_builder"
 
-# The HAVING placeholder full-alias (DEV-1501): the filter family looks the
-# aggregate up in ``slot_by_key`` and recovers the base SELECT's projected
-# alias; when the slot was not materialised there, this placeholder stands in
-# and the ``filtered_rn_map`` lookup misses back to the unfiltered ranked path.
+# Stands in when a HAVING aggregate wasn't materialised in the base SELECT (so the ``filtered_rn_map`` lookup misses to the unfiltered ranked path).
 _HAVING_PLACEHOLDER = "__having_ref__"
 
 
 def _wrap_cast_for_type(
     expr: exp.Expression, dt: Optional[DataType],
 ) -> exp.Expression:
-    """Wrap ``expr`` in ``CAST(expr AS <dt>)`` so a declared SLayer ``DataType``
-    is enforced in emitted SQL (DEV-1361).
-
-    Skipped when ``dt`` is ``None`` / ``TEXT`` / opaque (no such SQL type), or
-    when ``expr`` is a bare ``exp.Column`` (its runtime type already matches, and
-    on SQLite ``CAST(text_timestamp AS TIMESTAMP)`` can truncate to a year).
-    Idempotent against an existing CAST to the same target. The single home for
-    the policy — the generator re-exports it (DEV-1763 P-G).
-    """
+    """Wrap ``expr`` in ``CAST(expr AS <dt>)`` to enforce a declared ``DataType``. Skipped for
+    ``None`` / ``TEXT`` / opaque types and a bare ``exp.Column`` (on SQLite the cast can truncate). Idempotent."""
     if dt is None or dt == DataType.TEXT or dt.is_opaque:
         return expr
     if isinstance(expr, exp.Column):
@@ -126,51 +70,25 @@ def _wrap_cast_for_type(
 
 
 def _filter_cast_type(dt: Optional[DataType]) -> Optional[DataType]:
-    """The CAST target for a derived column inside a WHERE / HAVING predicate
-    (DEV-1450 #4a).
-
-    Temporal types (``DATE`` / ``TIMESTAMP``) are suppressed: in a filter the
-    derived expression is COMPARED, not type-enforced, and
-    ``CAST(text AS TIMESTAMP)`` on SQLite gives it NUMERIC affinity — truncating
-    a string timestamp to its leading year and breaking ``BETWEEN``. A base
-    temporal column in the same position is never cast (it renders as a bare
-    ``exp.Column``), so this keeps the derived form on par. Non-temporal types
-    pass through so a derived numeric / boolean column keeps its enforcing CAST.
-    """
+    """CAST target for a derived column inside WHERE/HAVING; temporal types suppressed
+    (``CAST(text AS TIMESTAMP)`` truncates on SQLite, and a base column here isn't cast either)."""
     if dt in (DataType.DATE, DataType.TIMESTAMP):
         return None
     return dt
 
 
 def _ranked_value_cast_type(dt: Optional[DataType]) -> Optional[DataType]:
-    """The CAST target for a ``first`` / ``last`` (ranked) VALUE (DEV-1824).
-
-    A first/last value IS the raw picked column (``MAX(CASE WHEN rn = 1 THEN
-    col)``), so a temporal (``DATE`` / ``TIMESTAMP``) cast is redundant and, on
-    SQLite, gives it NUMERIC affinity — truncating a string date to its leading
-    year and tying every value to that year. Suppressed here, matching a bare
-    temporal column (which ``_wrap_cast_for_type`` also leaves uncast). A
-    non-temporal type keeps its enforcing cast (``avg`` etc. legitimately change
-    the value's type)."""
+    """CAST target for a ``first`` / ``last`` value; temporal casts suppressed (the value IS
+    the raw picked column, redundant and truncating on SQLite). Non-temporal types keep their cast."""
     if dt in (DataType.DATE, DataType.TIMESTAMP):
         return None
     return dt
 
 
 class FilterFacilities(BaseModel):
-    """What WHERE / HAVING rendering needs beyond the scope.
-
-    ``agg_builder`` is the HAVING seam to the generator's ``_build_agg``: the
-    renderer does the ``slot_by_key`` lookup and the ``having_full_alias``
-    recovery itself, then hands ``(key, slot, having_full_alias)`` to the
-    builder, which resolves agg kwargs and emits the aggregate as its
-    *expression* (``SUM(x)``, not its SELECT alias — Postgres rejects aliases in
-    HAVING). ``cast_column_sql`` applies the filter-side CAST policy to derived
-    ``ColumnSqlKey`` leaves (the filter family casts; target-scope does not).
-    ``paren_comparison_operands`` reproduces the legacy ``_paren_if_binary``
-    grouping (every multi-term comparison operand parenthesised — strictly more
-    grouping than the shared composer derives, never less; DEV-1539).
-    """
+    """What WHERE / HAVING rendering needs. ``agg_builder`` (the HAVING seam) emits the
+    aggregate as an expression, not its alias — Postgres rejects aliases in HAVING;
+    ``cast_column_sql`` casts derived leaves; ``paren_comparison_operands`` over-parenthesises."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -184,13 +102,7 @@ class FilterFacilities(BaseModel):
 
 
 class CompositeFacilities(BaseModel):
-    """What AGGREGATE-phase composite rendering needs beyond the scope.
-
-    ``agg_builder`` is the seam to the generator's ``_build_agg``: building a
-    real aggregate needs model columns, resolved kwargs and dialect hooks that
-    only the generator holds. When it is absent the renderer still handles the
-    simple built-ins directly, and raises for the rest rather than guessing.
-    """
+    """What AGGREGATE-phase composite rendering needs; ``agg_builder`` is the seam to ``_build_agg`` (absent, the renderer handles simple built-ins and raises for the rest)."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -205,16 +117,9 @@ class CompositeFacilities(BaseModel):
 
 
 class AliasFacilities(BaseModel):
-    """What POST-phase rendering needs: the aliases an earlier scope projected.
-
-    Presence of this facility switches the five slotted kinds (column, derived,
-    time-trunc, aggregate, transform) to ALIAS-EXCLUSIVE resolution — they come
-    back as the materialised alias, never rebuilt from source (rebuilding in a
-    CTE that only projects aliases is wrong SQL). ``table_by_slot_id`` carries
-    the qualifier (``_base``, a ``_cm_*`` CTE) for families whose alias is
-    table-qualified; absent means a bare quoted alias. A slot that is not in the
-    maps is a promotion bug and RAISES rather than falling back to the scope.
-    """
+    """The aliases an earlier scope projected; its presence switches the five slotted kinds to
+    ALIAS-EXCLUSIVE resolution (rebuilding from source in an alias-only CTE is wrong SQL). An
+    absent slot RAISES; ``table_by_slot_id`` carries the qualifier."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -224,18 +129,8 @@ class AliasFacilities(BaseModel):
 
 
 class RenderContext(BaseModel):
-    """Everything a render needs that is not the key itself.
-
-    ``consumer`` is the projection-boundary seam: when set, column-like leaves
-    are materialised in ``scope`` and returned to the consumer as bare aliases.
-
-    ``scope`` is Optional: the alias-environment and outer-wrapper families
-    resolve every leaf through the alias maps and carry no scope. A key kind
-    that needs to anchor a reference (column, derived, time-trunc, or a
-    no-builder aggregate) fails closed with
-    :class:`RenderContextMissingFacilityError` when ``scope`` is absent, rather
-    than raising an ``AttributeError`` deep in a branch.
-    """
+    """Everything a render needs beyond the key. ``consumer`` is the projection-boundary seam;
+    ``scope`` is Optional — a reference-anchoring key with none fails closed (not a deep ``AttributeError``)."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -257,12 +152,7 @@ def _require(*, ctx: RenderContext, facility: str, key: Any) -> Any:
 
 
 def _require_scope(ctx: RenderContext, key: Any) -> ScopeFrame:
-    """The scope-carrying door: a key that anchors a reference needs a scope.
-
-    Fails closed rather than dereferencing ``None`` — the alias-environment and
-    outer-wrapper families legitimately carry ``scope=None`` and reach every
-    leaf through the alias maps instead.
-    """
+    """Fail closed when a reference-anchoring key has no scope (alias-environment families carry ``scope=None``)."""
     if ctx.scope is None:
         raise RenderContextMissingFacilityError(
             key_kind=type(key).__name__,
@@ -272,27 +162,18 @@ def _require_scope(ctx: RenderContext, key: Any) -> ScopeFrame:
     return ctx.scope
 
 
-# The comparison operators whose multi-term operands the filter families
-# parenthesise unconditionally (DEV-1539). No letters, so ``.lower()`` is
-# identity — matched against the already-lowered op.
+# Comparison ops whose multi-term operands the filter families parenthesise unconditionally.
 _COMPARISON_OPS = frozenset({"==", "=", "!=", "<>", "<", "<=", ">", ">="})
 
 
 def _paren_if_binary(node: exp.Expression) -> exp.Expression:
-    """Wrap a multi-term operand in ``(...)`` when it is an ``exp.Binary``
-    (arithmetic ``a + b`` or an ``AND`` / ``OR`` connector). Bare columns,
-    literals, function calls, and already-enclosed ``CAST(...)`` / ``Paren``
-    are not ``Binary`` and pass through. The pre-wrap makes the operand
-    self-delimiting, so the shared composer's own precedence grouping is a
-    no-op over it."""
+    """Wrap an ``exp.Binary`` operand in ``(...)`` (self-delimiting); other nodes pass through."""
     return exp.Paren(this=node) if isinstance(node, exp.Binary) else node
 
 
 def _render_via_alias(key: ValueKey, ctx: RenderContext) -> exp.Expression:
-    """Alias-exclusive resolution (POST-phase / outer-wrapper): return the
-    materialised alias for ``key``, table-qualified when the facility carries a
-    qualifier. A slot that is not materialised RAISES — rebuilding it from
-    source in a scope that only projects aliases would be wrong SQL."""
+    """Alias-exclusive resolution: the materialised alias for ``key`` (table-qualified when
+    the facility carries a qualifier); an unmaterialised slot RAISES."""
     facilities = ctx.aliases
     assert facilities is not None  # guarded by the caller
     slot_id = facilities.slot_id_by_key.get(key)
@@ -307,8 +188,6 @@ def _render_via_alias(key: ValueKey, ctx: RenderContext) -> exp.Expression:
             facility="aliases",
             detail=f"{type(key).__name__} is not materialised as a slot",
         )
-    # A non-None ``alias`` guarantees ``slot_id`` was found (it is the lookup
-    # key that produced ``alias``), so the qualifier lookup needs no re-guard.
     col_ident = exp.to_identifier(alias, quoted=True)
     table = facilities.table_by_slot_id.get(slot_id)
     if table:
@@ -316,20 +195,13 @@ def _render_via_alias(key: ValueKey, ctx: RenderContext) -> exp.Expression:
     return exp.Column(this=col_ident)
 
 
-# The five slotted kinds that alias-exclusive mode resolves from the alias maps
-# rather than from source (column, derived, time-trunc, aggregate, transform).
 _ALIAS_SLOTTED_KINDS: Tuple[type, ...] = (
     ColumnKey, ColumnSqlKey, TimeTruncKey, AggregateKey, TransformKey,
 )
 
 
 def _literal(value: Any) -> exp.Expression:
-    """Render a scalar leaf.
-
-    Unsupported types RAISE rather than being stringified: a ``datetime`` or a
-    ``list`` silently becoming a quoted string is a wrong value, not an error,
-    and the generator's equivalent already raises.
-    """
+    """Render a scalar leaf; unsupported types RAISE rather than stringify to a wrong value."""
     if value is None:
         return exp.Null()
     if isinstance(value, bool):
@@ -346,12 +218,8 @@ def _literal(value: Any) -> exp.Expression:
     )
 
 
-# sqlglot does NOT parenthesise by node nesting. ``Mul(Add(a, b), c)`` emits
-# ``a + b * c`` and ``Add(GT(a, b), 1)`` emits ``a > b + 1`` — both parse back
-# with different meaning. Precedence must be materialised as explicit ``Paren``
-# nodes, and the table has to span BOOLEAN and COMPARISON operators too, not
-# just arithmetic: a comparison nested inside arithmetic is the case that bites
-# hardest, because the result still parses and still returns rows.
+# sqlglot does NOT parenthesise by node nesting (``Mul(Add(a,b),c)`` emits ``a + b * c``), so
+# precedence needs explicit ``Paren`` nodes — spanning boolean/comparison ops, since a comparison in arithmetic still parses.
 _PRECEDENCE: Dict[Any, int] = {
     exp.Or: 1,
     exp.And: 2,
@@ -360,57 +228,32 @@ _PRECEDENCE: Dict[Any, int] = {
     exp.Is: 4, exp.In: 4, exp.Like: 4, exp.Between: 4,
     exp.Add: 5, exp.Sub: 5,
     exp.Mul: 6, exp.Div: 6, exp.Mod: 6,
-    # Unary minus binds tighter than any binary arithmetic.
     exp.Neg: 7,
 }
 
 _IS = "is"
 _IS_NOT = "is not"
 
-# Operators taking exactly two operands. Left-folding a comparison would turn
-# ``a < b < c`` into ``(a < b) < c`` — a boolean compared to a number — and
-# reading only the first two would silently DROP the rest.
+# Exactly-two-operand ops: left-folding ``a < b < c`` to ``(a < b) < c`` compares a
+# boolean to a number, and reading only the first two would silently drop the rest.
 _STRICTLY_BINARY = frozenset({
     "=", "==", "!=", "<>", "<", "<=", ">", ">=", _IS, _IS_NOT,
 })
 
-# The comparison family's shared level. Unlike arithmetic, comparisons are
-# NON-ASSOCIATIVE in SQL, so an equal-precedence child needs parens on EITHER
-# side — a left child included. Without that, ``(a = b) is null`` emits
-# ``a = b IS NULL``, which every dialect reads as ``a = (b IS NULL)`` because
-# ``IS`` binds tighter than ``=``; and ``(a < b) = c`` emits ``a < b = c``,
-# which Postgres rejects outright as a non-associative chain.
+# Comparisons are NON-ASSOCIATIVE, so an equal-precedence child needs parens on EITHER side:
+# ``(a = b) is null`` → ``a = (b IS NULL)``, and ``(a < b) = c`` → ``a < b = c`` Postgres rejects.
 _COMPARISON_PREC = 4
 
 
 def _paren_if_lower_prec(
     child: exp.Expression, *, parent_prec: int, is_right: bool,
 ) -> exp.Expression:
-    """Parenthesise ``child`` when dropping its parens would change meaning.
-
-    Lower precedence than the parent always needs parens. So does EVERY
-    equal-precedence right child: checking the parent operator is not enough
-    (``Mul(a, Mod(b, c))`` emits ``a * b % c``, regrouping to ``(a * b) % c``),
-    and even ``+`` and ``*`` are not operationally associative over floats or
-    fixed-precision decimals, where rounding and overflow make ``a + (b + c)``
-    and ``(a + b) + c`` genuinely different. Preserving the tree the binder
-    built costs a pair of parentheses; regrouping costs accuracy.
-
-    At :data:`_COMPARISON_PREC` an equal-precedence LEFT child is parenthesised
-    too, because that family is non-associative.
-
-    A node with no precedence entry — a column, a literal, a function call —
-    is already self-delimiting.
-    """
+    """Parenthesise ``child`` when dropping its parens would change meaning: lower precedence than
+    the parent, or an equal-precedence RIGHT child (a LEFT one too at :data:`_COMPARISON_PREC`).
+    Even ``+`` / ``*`` aren't associative over floats/decimals, so the tree is preserved."""
     if isinstance(child, exp.Mod):
-        # ``%`` is parenthesised unconditionally, because precedence alone is
-        # not enough to survive our own pipeline. SQL puts ``%`` on the
-        # ``*`` / ``/`` tier, and so does the Mode-B parser — but SQLGLOT's
-        # parser puts it on the ``+`` / ``-`` tier, so it reads back
-        # ``a + b % c`` as ``(a + b) % c``. Generated SQL IS re-parsed by
-        # sqlglot downstream (reserved-word pre-quoting, the log-alias
-        # transform), so an unparenthesised ``%`` would be silently regrouped
-        # in flight rather than by any database.
+        # ``%`` parenthesised unconditionally: sqlglot's parser tiers it with ``+``/``-``,
+        # and generated SQL is re-parsed by sqlglot, so ``a + b % c`` would regroup in flight.
         return exp.Paren(this=child)
     child_prec = _PRECEDENCE.get(type(child))
     if child_prec is None:
@@ -423,13 +266,7 @@ def _paren_if_lower_prec(
 
 
 def group_unary_operand(operand: exp.Expression, *, op: str) -> exp.Expression:
-    """Parenthesise a unary operator's operand when precedence requires it.
-
-    Public because the generator's three arithmetic composers built ``exp.Not``
-    / ``exp.Neg`` around a bare operand: ``-(a + b)`` emitted ``-a + b`` and
-    ``not (a and b)`` emitted ``NOT a AND b``. Both parse cleanly and mean
-    something else, so the policy is shared rather than re-derived (P-G).
-    """
+    """Parenthesise a unary operator's operand when precedence requires it (``-(a + b)`` unwrapped emits ``-a + b``)."""
     if op not in ("not", "-"):
         raise NotImplementedError(
             f"group_unary_operand only covers 'not' and '-', got {op!r}.",
@@ -443,13 +280,7 @@ def group_unary_operand(operand: exp.Expression, *, op: str) -> exp.Expression:
 def group_is_operands(
     *, lhs: exp.Expression, rhs: exp.Expression,
 ) -> Tuple[exp.Expression, exp.Expression]:
-    """Parenthesise an ``IS`` / ``IS NOT`` operand when precedence requires it.
-
-    ``IS`` binds tighter than ``=``, so an ungrouped ``(a = 5) is null`` emits
-    ``a = 5 IS NULL`` and every dialect reads it as ``a = (5 IS NULL)`` — a
-    different predicate that still returns rows. Shared with the generator's
-    composers for the same reason as :func:`group_unary_operand`.
-    """
+    """Parenthesise ``IS`` / ``IS NOT`` operands: ``IS`` binds tighter than ``=``, so ungrouped ``(a = 5) is null`` reads as ``a = (5 IS NULL)``."""
     is_prec = _PRECEDENCE[exp.Is]
     return (
         _paren_if_lower_prec(lhs, parent_prec=is_prec, is_right=False),
@@ -458,19 +289,11 @@ def group_is_operands(
 
 
 def _render_unary(*, op: str, operand: exp.Expression) -> exp.Expression:
-    """The single-operand forms.
-
-    The binder represents ``-x`` as a SINGLE-operand ``ArithmeticKey``, so a
-    fold that just returns the operand would turn ``amount > -10`` into
-    ``amount > 10``. The operand needs the same precedence treatment as a
-    binary one: without it ``-(a + b)`` emits ``-a + b`` and ``not (a and b)``
-    emits ``NOT a AND b``.
-    """
+    """Single-operand forms. ``-x`` is a single-operand ``ArithmeticKey``, so dropping the op would turn ``amount > -10`` into ``amount > 10``; the operand gets binary precedence grouping."""
     if op in ("not", "-"):
         grouped = group_unary_operand(operand, op=op)
         return exp.Not(this=grouped) if op == "not" else exp.Neg(this=grouped)
     if op == "+":
-        # Unary plus is a no-op; SQL never needs it spelled out.
         return operand
     raise NotImplementedError(f"Unsupported unary operator {op!r}.")
 
@@ -497,18 +320,11 @@ def _fold_binary(
 def render_arithmetic(
     *, op: str, operands: List[exp.Expression],
 ) -> exp.Expression:
-    """Compose an arithmetic / comparison / boolean operator.
-
-    The single composer: the generator's three call sites delegate here, so
-    one ``ArithmeticKey`` groups the same way wherever it is rendered (P-G).
-    Their hand-rolled versions each knew a different subset of the precedence
-    table and emitted predicates that parse cleanly and mean something else.
-    """
+    """Compose an arithmetic / comparison / boolean operator — the single composer."""
     if not operands:
         raise NotImplementedError(f"Operator {op!r} needs at least one operand.")
 
     if op in ("and", "or") and len(operands) == 1:
-        # Degenerate but well-defined: the conjunction of one term IS that term.
         return operands[0]
 
     if len(operands) == 1:
@@ -520,10 +336,7 @@ def render_arithmetic(
         return exp.or_(*operands)
 
     if op in _STRICTLY_BINARY and len(operands) != 2:
-        # Refuse rather than fold. Left-folding a chained comparison compares a
-        # BOOLEAN against the next operand, and reading only the first two
-        # drops the rest — both silently wrong. The Mode-B parser already
-        # rejects chained comparisons; this is the structural backstop.
+        # Refuse rather than fold: a chained comparison is silently wrong either way.
         raise NotImplementedError(
             f"Operator {op!r} takes exactly two operands, got {len(operands)}.",
         )
@@ -542,28 +355,15 @@ def render_arithmetic(
 def render_scalar_call(
     *, name: str, args: List[exp.Expression], dialect: SqlDialect,
 ) -> exp.Expression:
-    """The one ScalarCall policy: typed node, dialect rewrite, log-alias fix-up.
-
-    Every render path calls this, so one call cannot render two ways.
-
-    The log fix-up is load-bearing: ``exp.func("LOG10", x)`` normalises to a
-    generic ``Log(10, x)`` re-emitting as ``LOG(10, x)``, wrong on dialects with
-    a native single-arg ``LOG10``. Transpiling alone fixes ifnull and breaks
-    log10. ``like`` is the allowlist's only operator rather than function.
-    """
+    """The one ScalarCall policy. The log fix-up is load-bearing: ``exp.func("LOG10", x)`` normalises to ``LOG(10, x)``, wrong where ``LOG10`` is native single-arg."""
     arity_error = check_scalar_arity(name=name, argc=len(args))
     if arity_error is not None:
-        # Checked before building, because sqlglot is inconsistent: a 3-arg
-        # ROUND silently DROPS the third, a 2-arg LENGTH emits SQL the backend
-        # rejects, and a 2-arg LOWER raises a raw sqlglot error.
+        # Checked before building: sqlglot is inconsistent (3-arg ROUND drops the third, etc.).
         raise NotImplementedError(arity_error)
     if name == "like":
         return exp.Like(this=args[0], expression=args[1])
     if name == "mod":
-        # ``%`` is an operator, not a Func: ``exp.func("MOD", …)`` raises at
-        # build time, and a raw ``exp.Mod`` mis-groups a complex operand
-        # (``mod(a + b, c)`` → ``a + b % c``). The ``%`` composer runs the
-        # operand-precedence pass that parenthesises both sides correctly.
+        # ``%`` is an operator, not a Func; the ``%`` composer parenthesises both sides correctly.
         return render_arithmetic(op="%", operands=args)
     node = dialect.rewrite_target_ast(exp.func(name.upper(), *args))
     return rewrite_log_alias(node, dialect=dialect)
@@ -572,12 +372,7 @@ def render_scalar_call(
 def _render_filter_aggregate(
     key: AggregateKey, ctx: RenderContext,
 ) -> exp.Expression:
-    """The HAVING seam: look the aggregate up in ``slot_by_key``, recover the
-    base SELECT's projected full alias (the placeholder when it was not
-    materialised there), and hand ``(key, slot, having_full_alias)`` to the
-    generator's ``_build_agg``. Rendering the aggregate as its expression rather
-    than by output alias is what makes HAVING work on backends that reject
-    SELECT aliases there."""
+    """The HAVING seam: recover the aggregate's base-SELECT alias (or placeholder) and hand it to ``_build_agg``, rendered as an expression so HAVING works where SELECT aliases are rejected."""
     filters = ctx.filters
     assert filters is not None and filters.agg_builder is not None  # caller-guarded
     slot = filters.slot_by_key.get(key)
@@ -590,9 +385,7 @@ def _render_filter_aggregate(
 
 
 def _render_aggregate(key: AggregateKey, ctx: RenderContext) -> exp.Expression:
-    """Dispatch an ``AggregateKey`` by builder precedence: the FILTER HAVING
-    seam, then the COMPOSITE builder, then the built-in fallback."""
-    # A filter context sets ``filters.agg_builder`` and no composites facility.
+    """Dispatch an ``AggregateKey``: filter HAVING seam, then composite builder, then built-in."""
     if ctx.filters is not None and ctx.filters.agg_builder is not None:
         return _render_filter_aggregate(key, ctx)
 
@@ -606,10 +399,7 @@ def _render_aggregate(key: AggregateKey, ctx: RenderContext) -> exp.Expression:
 def _render_builtin_aggregate(  # NOSONAR(S3776) — sequential fail-closed guards over the built-in agg contract (mechanism gate, then the FIELD guards that keep a filtered / parametric / cross-star aggregate from silently rendering as a plain SUM). Each guard IS a distinct wrong-number-vs-error boundary; merging them hides which one fired.
     key: AggregateKey, ctx: RenderContext,
 ) -> exp.Expression:
-    """Render an aggregate that needs no generator builder — the simple /
-    distinct built-ins over a source expression. Everything the built-in path
-    cannot faithfully emit (custom mechanisms, filtered / parametric sources,
-    cross-model stars) refuses rather than emitting something plausible."""
+    """Render a simple / distinct built-in aggregate; anything it can't faithfully emit (custom mechanisms, filtered / parametric sources, cross-model stars) refuses."""
     if not is_builtin_agg(key.agg):
         raise RenderContextMissingFacilityError(
             key_kind=type(key).__name__,
@@ -626,10 +416,7 @@ def _render_builtin_aggregate(  # NOSONAR(S3776) — sequential fail-closed guar
                 f"mechanism, which needs the generator's builder"
             ),
         )
-    # The dispatch gate above refuses aggregations whose MECHANISM needs the
-    # generator. These two refuse a key whose FIELDS do: without them a
-    # filtered aggregate would render as a plain SUM, silently covering rows
-    # the filter excludes — a wrong number rather than an error.
+    # The next guards refuse a key whose FIELDS need the generator (else a filtered aggregate renders as a plain SUM over excluded rows).
     if key.column_filter_key is not None:
         raise RenderContextMissingFacilityError(
             key_kind=type(key).__name__,
@@ -650,9 +437,7 @@ def _render_builtin_aggregate(  # NOSONAR(S3776) — sequential fail-closed guar
         )
     if isinstance(key.source, StarKey):
         if key.source.path:
-            # ``customers.*:count`` counts rows of the JOINED relation, which
-            # needs the join graph. A bare ``*`` here would count host rows —
-            # a wrong number, same class as the two guards above.
+            # ``customers.*:count`` counts the JOINED relation's rows (needs the join graph); a bare ``*`` would count host rows.
             raise RenderContextMissingFacilityError(
                 key_kind=type(key).__name__,
                 facility=_AGG_BUILDER,
@@ -662,10 +447,7 @@ def _render_builtin_aggregate(  # NOSONAR(S3776) — sequential fail-closed guar
                 ),
             )
         if key.agg != "count":
-            # ``COUNT`` is the only aggregation a bare star is defined for.
-            # Without this the dispatch gate happily builds ``SUM(*)`` or
-            # ``COUNT(DISTINCT *)`` — SQL no backend accepts, discovered at
-            # execution time rather than here.
+            # ``COUNT`` is the only aggregation a bare star is defined for (else ``SUM(*)`` etc.).
             raise NotImplementedError(
                 f"Aggregation {key.agg!r} cannot take ``*`` as its source; "
                 f"only 'count' is defined over a bare star.",
@@ -690,10 +472,7 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
     *, key: ValueKey, ctx: RenderContext,
 ) -> exp.Expression:
     """Render ``key`` to sqlglot AST in ``ctx``."""
-    # ALIAS-EXCLUSIVE mode: when a scope projected these earlier, the five
-    # slotted kinds resolve to their materialised alias, never rebuilt from
-    # source (POST-phase / outer-wrapper). Intercepted before every scope-based
-    # branch so a miss RAISES rather than falling back to the scope.
+    # ALIAS-EXCLUSIVE mode: intercepted before every scope branch so a miss RAISES.
     if ctx.aliases is not None and isinstance(key, _ALIAS_SLOTTED_KINDS):
         return _render_via_alias(key, ctx)
 
@@ -703,18 +482,14 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
     if isinstance(key, ColumnSqlKey):
         scope = _require_scope(ctx, key)
         resolved = scope.resolve(key, consumer=ctx.consumer)
-        # Filter-side CAST policy for a DERIVED leaf: the filter family enforces
-        # the declared type (temporal suppressed); target-scope never casts. A
-        # base ``ColumnKey`` above is already a bare column and never cast.
+        # Filter-side CAST for a DERIVED leaf (temporal suppressed); target-scope never casts.
         if ctx.filters is not None and ctx.filters.cast_column_sql:
             col_type = scope.column_type(key)
             resolved = _wrap_cast_for_type(resolved, _filter_cast_type(col_type))
         return resolved
 
     if isinstance(key, StarKey):
-        # Same rule as the aggregate branch: a pathed star names the JOINED
-        # relation's rows, which needs the join graph. Emitting a bare ``*``
-        # would silently count the host's.
+        # Like the aggregate branch: a pathed star needs the join graph; a bare ``*`` counts the host's rows.
         if key.path:
             raise RenderContextMissingFacilityError(
                 key_kind=type(key).__name__,
@@ -733,10 +508,7 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
         column = _require_scope(ctx, key).resolve(
             key.column, consumer=ctx.consumer,
         )
-        # Delegate to the dialect strategy, which owns the per-backend wire
-        # form: STRFTIME on SQLite, DATETRUNC on T-SQL, native WEEK(SUNDAY) on
-        # BigQuery, plus the WEEK_SUNDAY day-shift. Emitting a literal
-        # DATE_TRUNC here would name a function SQLite does not have.
+        # The dialect owns the per-backend wire form; a literal DATE_TRUNC would name a function SQLite lacks.
         return ctx.dialect.build_date_trunc(
             col_expr=column,
             granularity=TimeGranularity(key.granularity),
@@ -748,9 +520,6 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
     if isinstance(key, ArithmeticKey):
         op = key.op.lower()
         operands = [render_value_key(key=o, ctx=ctx) for o in key.operands]
-        # Filter families keep the DEV-1539 extra grouping: every multi-term
-        # COMPARISON operand is parenthesised (strictly more than the composer
-        # derives). Pre-wrapping makes each operand self-delimiting.
         if (
             ctx.filters is not None
             and ctx.filters.paren_comparison_operands
@@ -780,8 +549,7 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
         )
 
     if isinstance(key, InKey):
-        # Backstop for the bind-time rule: SQL's three-valued logic makes a
-        # NULL member a trap, and ``NOT IN`` with one matches no rows at all.
+        # Backstop for the bind-time rule: a NULL member breaks IN, and ``NOT IN`` with one matches no rows.
         if any(v.value is None for v in key.values):
             raise NotImplementedError(
                 "NULL is not allowed inside an IN list: 'NOT IN' with a NULL "
@@ -798,8 +566,7 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
         return _render_aggregate(key, ctx)
 
     if isinstance(key, TransformKey):
-        # POST-phase: the value was materialised by an earlier scope, so it is
-        # referenced by alias rather than rebuilt.
+        # POST-phase: materialised by an earlier scope, referenced by alias.
         facilities = _require(ctx=ctx, facility="aliases", key=key)
         slot_id = facilities.slot_id_by_key.get(key)
         alias = (
@@ -827,8 +594,7 @@ _VALUE_KEY_TYPES: Tuple[type, ...] = (
 
 
 def _render_iif_case(*, key: ScalarCallKey, ctx: "RenderContext") -> exp.Case:
-    """Render an ``iif`` chain as ONE multi-WHEN CASE, flattening nested
-    ``iif`` in the otherwise position (multi-WHEN CASE lowers to that)."""
+    """Render an ``iif`` chain as one multi-WHEN CASE, flattening nested ``iif`` in the otherwise position."""
     def _part(a):
         return (
             render_value_key(key=a, ctx=ctx)
@@ -838,8 +604,7 @@ def _render_iif_case(*, key: ScalarCallKey, ctx: "RenderContext") -> exp.Case:
     ifs: List[exp.If] = []
     node = key
     while isinstance(node, ScalarCallKey) and node.name == "iif":
-        # Fail-closed arity backstop (mirrors render_scalar_call): a directly
-        # constructed malformed key must not surface an opaque IndexError.
+        # Fail-closed arity backstop so a malformed key can't surface an opaque IndexError.
         arity_error = check_scalar_arity(name="iif", argc=len(node.args))
         if arity_error is not None:
             raise NotImplementedError(arity_error)
@@ -849,17 +614,8 @@ def _render_iif_case(*, key: ScalarCallKey, ctx: "RenderContext") -> exp.Case:
 
 
 def contains_aggregate(key: ValueKey) -> bool:
-    """Whether ``key``'s tree CONTAINS an ``AggregateKey``.
-
-    Replaces the ``(expr, any_agg)`` tuple the old renderers threaded by hand,
-    which decides GROUP BY / HAVING placement.
-
-    A structural walk, deliberately NOT ``phase >= AGGREGATE``: phase answers
-    "when is this evaluated", a different question. Every ``TransformKey`` is
-    POST phase whether or not it wraps an aggregate, so the phase test reports
-    True for a transform over a raw column and would route a non-aggregate
-    predicate into HAVING.
-    """
+    """Whether ``key``'s tree contains an ``AggregateKey`` (decides GROUP BY / HAVING). A structural
+    walk, NOT ``phase >= AGGREGATE``: every ``TransformKey`` is POST phase, which would route a transform over a raw column into HAVING."""
     if isinstance(key, AggregateKey):
         return True
     if isinstance(key, ArithmeticKey):
@@ -871,9 +627,7 @@ def contains_aggregate(key: ValueKey) -> bool:
             if isinstance(a, _VALUE_KEY_TYPES)
         )
     if isinstance(key, TransformKey):
-        # partition_keys and time_key are expression dependencies just as
-        # input is: cumsum(x, partition_by=revenue:sum) references an
-        # aggregate even though its input does not.
+        # partition_keys / time_key are dependencies too: cumsum(x, partition_by=revenue:sum).
         return (
             contains_aggregate(key.input)
             or any(contains_aggregate(p) for p in key.partition_keys)
@@ -884,6 +638,5 @@ def contains_aggregate(key: ValueKey) -> bool:
             contains_aggregate(k) for k in (key.column, key.low, key.high)
         )
     if isinstance(key, InKey):
-        # ``values`` are LiteralKeys by type, so only the column can carry one.
         return contains_aggregate(key.column)
     return False

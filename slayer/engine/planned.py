@@ -1,24 +1,4 @@
-"""Stage 7a.1 (DEV-1450) — typed plan shapes consumed by the SQL generator.
-
-A ``PlannedQuery`` is the final, fully resolved plan that the SQL
-generator (stage 7b) compiles to SQL. The plan carries everything a
-renderer needs: row slots, aggregate slots, cross-model aggregate
-sub-plans, transform layers, filter routing, projection / order /
-limit, and an emitted ``StageSchema`` for downstream stages to bind
-against.
-
-Identity-bearing structure is in ``slayer/core/keys.py`` (the
-``ValueKey`` family); the planner here associates each key with a
-``SlotId`` and the rendering metadata (alias, hidden, label).
-
-The planning logic that produces a ``PlannedQuery`` lives in other
-7a substages — ``planning.py`` (ValueRegistry, TransformLowerer,
-ProjectionPlanner) and ``stage_planner.py`` (multi-stage DAG). This
-file is the typed target.
-
-These types are dormant in stage 7a — no engine code consumes them
-yet. Stage 7b's engine cutover routes through them.
-"""
+"""Typed plan shapes (``PlannedQuery`` et al.) the SQL generator compiles to SQL."""
 
 from __future__ import annotations
 
@@ -35,27 +15,10 @@ from slayer.core.scope import StageSchema
 from slayer.engine.binding import BoundExpr  # re-exported below
 
 
-# Opaque identifier types — kept as plain ``str`` for now. SlotId is
-# allocated by the planner's ValueRegistry; BoundFilterId by the
-# FilterBinder. The string form keeps tracebacks readable and lets
-# tests assert on them without exotic comparisons.
 SlotId = str
 BoundFilterId = str
 
 
-# ---------------------------------------------------------------------------
-# BoundExpr — re-exported from slayer.engine.binding (DEV-1450 stage 7b.6).
-# ---------------------------------------------------------------------------
-#
-# Until stage 7b.6 the planned-side BoundExpr was a separate scaffold
-# Pydantic class with an optional ``sql_text`` cache. The binder
-# produced its own ``BoundExpr`` shape, so ``ValueSlot.expression`` and
-# ``FilterPhase.expression`` could not store binder output directly
-# without type unification (Codex HIGH F2 in the earlier round). 7b.6
-# folds the two: the binder's ``BoundExpr(value_key=ValueKey)`` is the
-# canonical shape. The render artifact ``sql_text`` is dropped — the
-# generator renders from the typed ``value_key`` against the slot
-# registry, not a cached string.
 __all__ = [
     "BoundExpr",
     "BoundFilterId",
@@ -79,26 +42,8 @@ __all__ = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# ValueSlot
-# ---------------------------------------------------------------------------
-
-
 class ValueSlot(BaseModel):
-    """One materialised slot in a ``PlannedQuery`` (P6).
-
-    Identity comes from ``key`` (a ``ValueKey`` from
-    ``slayer.core.keys``). Two structurally equal keys share one slot.
-    Rendering metadata (alias, hidden, label, type) lives here, not on
-    the key.
-
-    ``declared_name`` is either the user-supplied ``name`` or the
-    canonical form derived from the formula. ``public_name`` is the
-    user-facing alias when the slot is part of the public projection
-    (None for hidden slots). ``public_aliases`` carries multiple
-    aliases when the same structural key was declared with multiple
-    explicit names (P4 / C13).
-    """
+    """One materialised slot: identity is ``key`` (equal keys share a slot), rendering metadata here."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -112,31 +57,20 @@ class ValueSlot(BaseModel):
     label: Optional[str] = None
     type: Optional[DataType] = None
     type_is_explicit: bool = False
-    # DEV-1740: True for a computed (expression) dimension — a ROW-phase
-    # composite that projects AND groups, distinct from a bare-measure mistake.
     is_dimension: bool = False
     expression: Optional[BoundExpr] = None
-    # DEV-1452 Stage B decision #8 — typed format / description propagated
-    # by the planner from the source ``ModelMeasure`` / ``Column`` and
-    # ``_infer_aggregated_format``. Consumed by the migrated
-    # ``_expand_query_backed_model`` (via the public ``StageSchema``) so
-    # query-backed virtual-model columns carry the same display metadata
-    # the legacy enrichment pipeline produced.
     format: Optional[NumberFormat] = None
     description: Optional[str] = None
 
     @property
     def cast_type(self) -> Optional[DataType]:
-        """Inferred INT is metadata, not a request to narrow an aggregate (#347)."""
+        """Inferred INT is metadata, not a request to narrow an aggregate."""
         if self.type == DataType.INT and not self.type_is_explicit and self.phase != Phase.ROW:
             return None
         return self.type
 
     @model_validator(mode="after")
     def _hidden_invariant(self) -> "ValueSlot":
-        # Hidden slots are materialised but never surfaced — they must
-        # not carry a public_name or public_aliases, otherwise the
-        # generator would emit them in the public projection.
         if self.hidden and (self.public_name is not None or self.public_aliases):
             raise ValueError(
                 f"ValueSlot(id={self.id!r}) is hidden but carries "
@@ -147,19 +81,8 @@ class ValueSlot(BaseModel):
         return self
 
 
-# ---------------------------------------------------------------------------
-# JoinRequirement
-# ---------------------------------------------------------------------------
-
-
 class JoinRequirement(BaseModel):
-    """One hop in a cross-model join chain.
-
-    Mirrors the shape of ``slayer.core.models.ModelJoin`` but is
-    rooted on the typed-plan side — the planner builds these from
-    resolved bundle models so the SQL generator never re-walks the
-    model graph.
-    """
+    """One hop in a cross-model join chain (typed-plan mirror of ``ModelJoin``)."""
 
     source_model: str
     target_model: str
@@ -180,22 +103,8 @@ class JoinRequirement(BaseModel):
         return v
 
 
-# ---------------------------------------------------------------------------
-# SrcFilterRewrite — DEV-1732
-# ---------------------------------------------------------------------------
-
-
 class SrcFilterRewrite(BaseModel):
-    """A ROW filter whose CTE-local form differs from the host's (DEV-1732).
-
-    Emitted when a filter is only PARTLY a frame bound, so it must still apply
-    inside the CTE but with its frame-bound conjuncts removed:
-    ``created_at >= '2024-06-01' and status = 'paid'`` becomes ``status =
-    'paid'``.
-
-    A filter that is ENTIRELY a frame bound needs no rewrite — the planner just
-    leaves its id out of ``where_filter_ids``.
-    """
+    """A ROW filter whose CTE-local form keeps only its population half (frame bounds dropped)."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -203,24 +112,8 @@ class SrcFilterRewrite(BaseModel):
     expression: BoundExpr
 
 
-# ---------------------------------------------------------------------------
-# RankedGrainMember — DEV-1748
-# ---------------------------------------------------------------------------
-
-
 class RankedGrainMember(BaseModel):
-    """One member of a ranked aggregate's grain, in BOTH coordinate systems.
-
-    ``host_slot_id`` names the host row slot the CTE joins back to;
-    ``ranked_key`` is the same value anchored in the RANKED scope, which for a
-    target-rooted plan is a different expression against a different root.
-
-    Carried as one list because the renderer derives two things from it that
-    must agree: the ``PARTITION BY`` the ranking runs over, and the join-back
-    predicate. Deriving them separately is how a partition and a grain drift
-    apart — and a partition COARSER than the grain silently returns more than
-    one row per group, which the LEFT JOIN then multiplies into the host.
-    """
+    """A grain member in both coordinate systems; one list so PARTITION BY and the join-back can't drift."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -228,50 +121,15 @@ class RankedGrainMember(BaseModel):
     ranked_key: ValueKey
 
 
-# ---------------------------------------------------------------------------
-# TransformLayer
-# ---------------------------------------------------------------------------
-
-
 class TransformLayer(BaseModel):
-    """One transform layer in the planned query.
-
-    Window / temporal transforms (``cumsum``, ``time_shift``,
-    ``rank``, ``lag``, ``lead``, ...) are grouped into layers so the
-    SQL generator can emit them in the right order (window functions
-    in an inner SELECT, time_shift as a self-join CTE, etc.). The
-    layer carries the slot ids that belong to it; rendering details
-    are decided by the generator per ``op``.
-    """
+    """Window/temporal transforms grouped so the generator emits them in the right order."""
 
     op: str
     slot_ids: List[SlotId]
 
 
-# ---------------------------------------------------------------------------
-# FilterPhase
-# ---------------------------------------------------------------------------
-
-
 class FilterPhase(BaseModel):
-    """A bound filter expression routed to its phase (P8).
-
-    ``phase`` is the maximum phase of the slots the filter
-    references: ROW → WHERE, AGGREGATE → HAVING, POST → post-filter
-    on the outer SELECT.
-
-    Two carrier modes, mutually exclusive in practice:
-
-    * ``expression`` is a typed ``BoundExpr`` — used for the Mode-B
-      DSL filters bound by ``bind_filter`` and the planner-emitted
-      ``BetweenKey`` for ``TimeDimension.date_range``. The renderer
-      walks the typed value-key tree.
-    * ``text`` is a Mode-A SQL fragment — used for
-      ``SlayerModel.filters`` (always-applied WHERE). The renderer
-      enters it through the source scope's Mode-A door, which
-      qualifies bare-identifier column refs and discovers crossed
-      joins as a side effect of rendering.
-    """
+    """A bound filter routed to its phase (ROW→WHERE, AGGREGATE→HAVING, POST→outer)."""
 
     id: BoundFilterId
     phase: Phase
@@ -279,79 +137,32 @@ class FilterPhase(BaseModel):
     expression: Optional[BoundExpr] = None
 
 
-# ---------------------------------------------------------------------------
-# OrderEntry
-# ---------------------------------------------------------------------------
-
-
 class OrderScope(str, Enum):
-    """WHERE the ordered value lives — the one thing a renderer needs to know
-    to build a sort term (DEV-1747 §5.10).
+    """WHERE the ordered value lives — the one fact a renderer needs to build a sort term."""
 
-    Every render site used to re-derive this, and they disagreed: one
-    dispatched on the slot KIND, one ran a five-way precedence chain over
-    alias maps, and one knew about neither. Naming the producing scope in the
-    plan is what lets a single resolver replace all of them (P-D).
-    """
-
-    #: Materialised in ``_base`` and projected publicly.
     HOST_BASE = "host_base"
-    #: Materialised in ``_base`` but trimmed from the public projection —
-    #: an order-only aggregate or an unprojected host dimension.
+    #: In ``_base`` but trimmed from the public projection (order-only / unprojected).
     HOST_BASE_HIDDEN = "host_base_hidden"
-    #: Lives in a cross-model / host-rooted isolated (``_cm_``) CTE.
     CROSS_MODEL_CTE = "cross_model_cte"
-    #: Lives in a windowed (``_wm_``) CTE.
     WINDOWED_CTE = "windowed_cte"
-    #: Lives in a ranked (``_rk_``) first/last CTE.
     RANKED_CTE = "ranked_cte"
-    #: Produced by a step of the transform chain.
     TRANSFORM_STEP = "transform_step"
-    #: A composite whose operands span scopes, so it can only be evaluated in
-    #: the outer combined SELECT — never inside ``_base``.
     OUTER_COMPOSITE = "outer_composite"
 
 
 class OrderEntry(BaseModel):
-    """One entry in the ORDER BY of a planned query.
-
-    ``scope`` and ``phase`` are REQUIRED and have no default: a planner path
-    that forgets to classify must fail at construction rather than fall through
-    to the ``_base.``-qualified branch, which is how an order term silently
-    attached to the wrong scope.
-    """
+    """One ORDER BY entry. ``scope``/``phase`` are required so an unclassified sort fails loudly."""
 
     slot_id: SlotId
     direction: Literal["asc", "desc"]
     scope: OrderScope
     phase: Phase
-    #: Null-ordering policy. ``"default"`` is NULLs last, which is what SLayer
-    #: means by unstated on every dialect — a semantic layer whose NULLs sort
-    #: first on SQLite and last on Postgres answers the same question two ways.
-    #: The dialect strategy owns the SPELLING (P-H) — an explicit clause, an
-    #: emulation, or T-SQL's native pin where the emulation does not run — so
-    #: no render site emits a NULLS clause of its own.
+    #: ``"default"`` = NULLs last on every dialect; the dialect strategy owns the spelling.
     nulls: Literal["default", "first", "last"] = "default"
 
 
-# ---------------------------------------------------------------------------
-# PlannedQuery
-# ---------------------------------------------------------------------------
-
-
 class FilterReachability(BaseModel):
-    """DEV-1745 (W4 / D9) — one filter's structural reachability summary.
-
-    ``crossed_join_paths`` is every join path the filter's dependency tree is
-    anchored at, in THIS plan's coordinate system. ``has_host_local_ref`` marks
-    a dependency anchored at the plan's own root, which cannot be evaluated
-    inside a CTE rooted elsewhere.
-
-    Carried per filter on the owning ``PlannedQuery`` rather than on
-    ``ColumnSqlKey`` (interned, and rerooting copies unknown fields through
-    stale) or ``ValueSlot`` (slot-less filter-only keys are silently skipped,
-    and slots are copied into nested plans).
-    """
+    """One filter's structural reachability in THIS plan's coordinates (recomputed per plan)."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -361,45 +172,15 @@ class FilterReachability(BaseModel):
 
 
 class EmptyBaseGrainPlan(BaseModel):
-    """The host base has no columns of its own (DEV-1503, §5.12).
-
-    Set when every projected value is an isolated aggregate — no host row
-    slots, no host-local aggregates — so ``_base`` has nothing to project and
-    becomes a one-row spine for the combined ``CROSS JOIN`` to hang off. Its
-    PRESENCE is the discriminator; there is no ``grain_slot_ids`` field because
-    in this shape the grain is empty by definition, which is precisely why the
-    join-back degenerates to a CROSS JOIN.
-
-    ``host_filter_ids`` are the ROW-phase filters that stay host-local (not
-    routed into a ``_cm_*`` CTE or the outer WHERE). When any exist the spine is
-    emitted as ``SELECT 1 AS _placeholder FROM <host> WHERE ... LIMIT 1``;
-    otherwise as a bare ``SELECT 1 AS _placeholder`` with no FROM at all.
-
-    The ``LIMIT 1`` is load-bearing rather than an optimisation: the filtered
-    form keeps the host FROM so the WHERE can gate the result, but a host FROM
-    yields N rows and CROSS JOINing N rows to a one-row scalar aggregate would
-    repeat the answer N times. ``LIMIT 1`` collapses the spine to a single row
-    while an empty match still yields zero rows overall. The unfiltered form
-    drops the FROM entirely for the same reason.
-    """
+    """Host base has no columns of its own — ``_base`` is a one-row spine for the CROSS
+    JOIN. ``host_filter_ids`` (if any) gate it via ``FROM <host> WHERE ... LIMIT 1``, the
+    LIMIT stopping the N filtered rows from repeating the scalar N times."""
 
     host_filter_ids: List[BoundFilterId] = Field(default_factory=list)
 
 
-# ---------------------------------------------------------------------------
-# RegroupAttachPlan — DEV-1825
-# ---------------------------------------------------------------------------
-
-
 class RegroupSubstitution(BaseModel):
-    """One partitioned aggregate consumed from a regroup producer.
-
-    ``placeholder`` is the reserved-leaf ``ColumnKey`` the discovery pass
-    substituted for the ``original_key`` (a partitioned ``AggregateKey``)
-    everywhere it appeared in dimension / filter / order trees.
-    ``producer_slot_id`` names the aggregate slot INSIDE ``producer_plan``
-    whose rendered column the placeholder resolves to at attach time.
-    """
+    """One consumed aggregate: ``placeholder`` resolves to ``producer_slot_id``'s column."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -409,30 +190,23 @@ class RegroupSubstitution(BaseModel):
 
 
 class PlainProducerKernel(BaseModel):
-    """DEV-1838 D4 — a grouped-aggregate producer (the default)."""
+    """A grouped-aggregate producer (the default)."""
 
     kind: Literal["plain"] = "plain"
 
 
 class RankedProducerKernel(BaseModel):
-    """DEV-1838 D4 — a ``first``/``last`` producer: one row per grain group,
-    picked by ranking. Field homes per the task-2.0 inventory
-    (ex-``RankedAggregatePlan``)."""
+    """A ``first``/``last`` producer: one row per grain group, picked by ranking."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     kind: Literal["ranked"] = "ranked"
-    #: ``first`` ranks ascending, ``last`` descending.
     agg: Literal["first", "last"]
-    #: The ranking column, resolved at plan time in PRODUCER-scope coordinates.
     ranking_time_key: ValueKey
 
 
 class TrailingWindowProducerKernel(BaseModel):
-    """DEV-1838 D4 — a trailing-window producer: per output bucket, aggregate
-    source rows in the trailing interval ending at the bucket's end (today's
-    ``_wm_`` interval join). Field homes per the task-2.0 inventory
-    (ex-``WindowedAggregatePlan``)."""
+    """A trailing-window producer: per bucket, aggregate source rows in the trailing interval."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -440,11 +214,9 @@ class TrailingWindowProducerKernel(BaseModel):
     window_raw: str
     window_parts: List[Tuple[int, str]]
     window_granularity: str
-    #: The producer's synthesized active-TD grain slot (the window bucket).
     bucket_slot_id: SlotId
-    #: ROW filters inherited into ``_src`` — frame bounds excluded (DEV-1732).
+    #: ROW filters inherited into ``_src`` — frame bounds excluded.
     src_where_filter_ids: List[BoundFilterId] = Field(default_factory=list)
-    #: Partly-frame-bound filters, rewritten to their population half.
     src_filter_rewrites: List["SrcFilterRewrite"] = Field(default_factory=list)
 
 
@@ -454,69 +226,29 @@ ProducerKernel = Union[
 
 
 class RegroupAttachPlan(BaseModel):
-    """A planner-synthesized producer stage attached on its partition grain.
-
-    An aggregate-then-consume node (DEV-1825): ``producer_plan`` is a full
-    nested ``PlannedQuery`` computing one or more aggregates at
-    ``partition_display``'s grain (finer than / disjoint from the consumer's
-    query grain). It renders as an isolated ``_cm_*`` CTE and attaches into the
-    consumer through the P-I null-safe grain join, so the consumed values are
-    visible to the consumer's expressions without changing its cardinality.
-
-    ``attach_phase`` selects WHERE the join lands. ``"row"`` (the first
-    consumer — DEV-1740 B2 aggregation-based dimensions) joins into the base
-    FROM BEFORE aggregation, so a computed dimension over the value groups the
-    raw rows once. ``"combined"`` (reserved for the DEV-1739 measure migration,
-    DEV-1829) joins at the combined SELECT after aggregation, the position the
-    per-aggregate ``_cm_`` CTEs occupy today.
-
-    ``join_pairs`` pairs each host-coordinate partition key (rendered in the
-    CONSUMER scope) with the producer's matching grain slot; an empty list is a
-    grand-total producer and attaches as a single-row CROSS JOIN.
-    ``substitutions`` is one entry per distinct consumed aggregate — several may
-    share one producer (one partition set, N aggregates).
-    """
+    """A planner-synthesized producer (isolated ``_cm_*`` CTE) attached on its partition
+    grain via the null-safe grain join, without changing consumer cardinality.
+    ``attach_phase`` is ``"row"`` (base FROM, before aggregation) or ``"combined"`` (after)."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     producer_plan: "PlannedQuery"
     alias_hint: str
     attach_phase: Literal["row", "combined"] = "row"
-    # DEV-1838 D4 — the typed producer kernel: how the producer computes its
-    # one row per grain group. ``plain`` is the grouped aggregate;
-    # ``trailing-window`` drives the interval-join emission; ``ranked`` takes
-    # drives the ROW_NUMBER pick emission (ex-RankedAggregatePlan homes).
     kernel: ProducerKernel = Field(
         default_factory=PlainProducerKernel, discriminator="kind",
     )
     join_pairs: List[Tuple[ValueKey, SlotId]] = Field(default_factory=list)
     substitutions: List[RegroupSubstitution] = Field(default_factory=list)
     partition_display: List[str] = Field(default_factory=list)
-    # DEV-1836 — a target-rooted (cross-model) producer roots its FROM at the
-    # aggregate's source model, not the consumer's root. ``None`` = a local
-    # producer rooted at the consumer (today's DEV-1825/1829 behavior).
     producer_root_model: Optional[str] = None
-    # DEV-1836 D6 — silent-semantics events carried on the IR so the collector
-    # walks them recursively (nested producers included). ``dropped_filter_warnings``
-    # are ROW conjuncts excluded from THIS producer (unreachable/unsafe from its
-    # root); ``broadcast_measure`` + ``broadcast_dimensions`` name a metric whose
-    # implicit grain lost dimensions to broadcasting, each with a reason.
     dropped_filter_warnings: List[Any] = Field(default_factory=list)
     broadcast_measure: Optional[str] = None
     broadcast_dimensions: List[Tuple[str, str]] = Field(default_factory=list)
 
 
 class PlannedQuery(BaseModel):
-    """The fully typed plan for one query stage (P7).
-
-    Consumed by the SQL generator (stage 7b). Carries everything
-    needed to emit SQL without re-walking the model graph.
-
-    ``stage_schema`` is the projection emitted by this stage —
-    downstream stages bind against it (P6). Top-level queries that
-    aren't part of a multi-stage DAG can leave ``stage_schema`` as
-    ``None``.
-    """
+    """The fully typed plan for one query stage, consumed by the SQL generator."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -524,9 +256,6 @@ class PlannedQuery(BaseModel):
     join_plan: List[JoinRequirement] = Field(default_factory=list)
     row_slots: List[ValueSlot] = Field(default_factory=list)
     aggregate_slots: List[ValueSlot] = Field(default_factory=list)
-    # DEV-1825 — planner-synthesized regroup producers attached on their
-    # partition grain (aggregation-based dimensions, and later the migrated
-    # partitioned-measure join-backs). One per distinct partition-key set.
     regroup_attach_plans: List["RegroupAttachPlan"] = Field(default_factory=list)
     combined_expression_slots: List[ValueSlot] = Field(default_factory=list)
     transform_layers: List[TransformLayer] = Field(default_factory=list)
@@ -536,79 +265,21 @@ class PlannedQuery(BaseModel):
     limit: Optional[int] = None
     offset: Optional[int] = None
     stage_schema: Optional[StageSchema] = None
-    # Stage 7b.10 — the slot id of the active TD (resolved via
-    # ``_resolve_main_time_dimension``). ``None`` when the stage has no
-    # time dimension. Time-needing transforms (cumsum / lag / lead /
-    # first / last / time_shift / consecutive_periods) carry this slot's
-    # key in ``TransformKey.time_key``; the generator uses it for the
-    # ``ORDER BY`` clause of the OVER expression.
+    # Active-TD slot (None if none); time-needing transforms use it for the OVER ORDER BY.
     active_time_dimension_slot_id: Optional[SlotId] = None
-    # DEV-1450 stage 7b.15d — the concrete ``SlayerModel`` this stage renders
-    # against, carried from the planner so the generator binds the stage's
-    # FROM / joins against the SAME model the binder used. For a multi-stage
-    # DAG this is the stage's OWN source (e.g. ``orders`` for a stage the root
-    # never reads from), a ModelExtension overlay, or a synthetic model over a
-    # sibling stage's CTE. ``None`` for a StageSchema-scoped chain stage (the
-    # generator builds a synthetic model from the upstream schema) and for a
-    # plain single-model query (the generator uses ``bundle.source_model``).
     render_source_model: Optional[SlayerModel] = None
-    # DEV-1543 — pass-through of ``SlayerQuery.distinct_dimension_values``. When
-    # ``False`` the generator skips the dim-only dedup GROUP BY and emits raw
-    # rows for a measure-less dimension query.
     distinct_dimension_values: bool = True
-    # DEV-1732 — raw column keys of this stage's NON-HIDDEN time dimensions: the
-    # set of columns on which an explicit relational bound counts as a FRAME
-    # bound rather than a population filter. Computed once here so the windowed
-    # ``_src`` path (planner) and the ``time_shift`` shifted-CTE path
-    # (generator) cannot drift apart.
-    #
-    # Hidden ``TimeTruncKey`` slots are excluded deliberately: they are not
-    # equality-joined into ``_src`` (``_build_windowed_plans`` skips them), so
-    # stripping a bound on one would leave that axis unconstrained.
+    # Time-dim columns where an explicit bound is a FRAME bound, not a population filter.
     frame_bound_columns: List[ValueKey] = Field(default_factory=list)
-    # DEV-1745 (W3 / P-D) — ids of the AGGREGATE-phase filters that must be
-    # applied as a plain WHERE on the OUTER combined SELECT rather than as
-    # HAVING inside a ``_cm_*`` CTE (DEV-1503).
-    #
-    # A filtered-local ISOLATED aggregate lives in a CTE that LEFT JOINs back
-    # to ``_base``. Applying the comparison as HAVING inside that CTE drops CTE
-    # rows, but the LEFT JOIN then resurfaces the host row with a NULL
-    # aggregate — the wrong semantic. On the outer, non-aggregating SELECT the
-    # same comparison drops the row.
-    #
-    # Decided HERE because it is a routing decision, not an emission detail:
-    # the generator used to re-walk ``filters_by_phase`` at render time to
-    # rediscover it, which is policy chosen during emission. The generator now
-    # reads this field and never re-derives it, so clearing the field removes
-    # the outer WHERE.
+    # AGGREGATE filters applied on the OUTER SELECT, not HAVING in a ``_cm_*`` CTE —
+    # HAVING there + the LEFT JOIN would resurface a NULL-aggregate host row.
     outer_where_filter_ids: List[BoundFilterId] = Field(default_factory=list)
-    # DEV-1745 (W4 / D9) — per-filter structural reachability, in THIS plan's
-    # coordinate system. Recomputed for every plan (including the nested
-    # rerooted plan a cross-model CTE compiles), never copied down from a
-    # parent: the paths only mean anything relative to the root they were
-    # anchored at. Read via ``filter_reachability_for``.
     filter_reachability: List[FilterReachability] = Field(default_factory=list)
-    # DEV-1746 (§5.12) — set when the host base has no columns of its own and
-    # is emitted as a one-row placeholder spine. Decided at plan time; the
-    # generator consumes it and never re-derives the shape.
     empty_base_plan: Optional[EmptyBaseGrainPlan] = None
 
     @model_validator(mode="after")
     def _projection_is_public_and_well_formed(self) -> "PlannedQuery":
-        """``projection`` is the ONE authoritative public column list (§5.2).
-
-        Every renderer consumes it verbatim, which is what makes hidden-slot
-        trimming the absence of a step rather than a step. Two ways that could
-        break, both checked here rather than discovered as wrong SQL:
-
-        * a HIDDEN slot appearing in it — hidden slots carry no public name, so
-          the renderer would have nothing to alias the column as;
-        * a slot appearing MORE times than it has declared names. A slot may
-          legitimately repeat: C13 lets one key be selected under several user
-          names, and the plan lists it once per name, each occurrence consuming
-          the next alias. One occurrence too many means a column emitted twice
-          under the same name.
-        """
+        """``projection`` is the one public column list: no hidden slot, no slot over its declared-name count."""
         by_id = {
             slot.id: slot
             for slot in (
@@ -623,10 +294,6 @@ class PlannedQuery(BaseModel):
         for sid, count in counts.items():
             slot = by_id.get(sid)
             if slot is None:
-                # Slot tables can legitimately be partial in nested plans; the
-                # renderer resolves what it needs. Only slots we can SEE are
-                # checked, so this validator never rejects a plan for a reason
-                # it cannot substantiate.
                 continue
             if slot.hidden:
                 raise ValueError(
@@ -644,5 +311,5 @@ class PlannedQuery(BaseModel):
         return self
 
 
-# ``RegroupAttachPlan.producer_plan`` forward-references ``PlannedQuery`` (DEV-1825).
+# ``producer_plan`` forward-references ``PlannedQuery``.
 RegroupAttachPlan.model_rebuild()
