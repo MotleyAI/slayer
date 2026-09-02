@@ -150,13 +150,13 @@ def dimension_regroup_roots(declared_measures) -> List[ValueKey]:  # NOSONAR(S37
             covered.update(walk_value_keys(t.input))
         for k in all_keys:
             if isinstance(k, TransformKey) and k in transform_roots:
-                pass
+                pass  # keep: transform root, emitted below
             elif (
                 isinstance(k, AggregateKey)
                 and k.partition_keys is not None
                 and k not in covered
             ):
-                pass
+                pass  # keep: uncovered partitioned aggregate, emitted below
             else:
                 continue
             if k not in seen:

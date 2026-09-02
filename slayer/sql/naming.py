@@ -47,7 +47,7 @@ class AliasAllocator(BaseModel):
 
     folds_case: bool = False
 
-    # External names to avoid, stored folded when folds_case. NOSONAR: PrivateAttr idiom.
+    # External names to avoid, stored folded when folds_case.
     _reserved: set[str] = PrivateAttr(default_factory=set)  # NOSONAR(S5890)
     _used: set[str] = PrivateAttr(default_factory=set)  # NOSONAR(S5890)
     # Monotonic (never reset per scope) so sibling scopes can't mint the same ``_val_0``.
