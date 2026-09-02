@@ -1,19 +1,4 @@
-"""DEV-1476 Stage B sub-package — explicit time arg on first/last.
-
-Acceptance tests for the three residual bugs from the 4-bug package
-(bug (a) — ``AggregateKey.args`` schema — landed in Stage A, PR #144):
-
-* (b) ``_build_first_last_base_select`` doesn't honor ``spec.time_column``
-  from ``key.args`` — fires when there's NO time dimension on the query.
-* (c) Cross-model reroot strips path from kwargs but NOT from ``key.args`` —
-  fires for ``customers.amount:last(customers.signup_at)`` cross-model.
-* (d-cross) ``_resolve_explicit_time_col`` cross-model ``ColumnSqlKey``
-  raises ``NotImplementedError`` — fires for ``customers.amount:last(
-  customers.signup_at_alias)`` (derived column).
-
-Each test executes a SQL query end-to-end against a seeded SQLite
-database to prove the row-level ordering is correct.
-"""
+"""Explicit time arg on first/last (bugs b, c, d-cross), end-to-end over SQLite."""
 from __future__ import annotations
 
 import os
@@ -52,10 +37,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 
 def _orders_model(with_amount: bool = False) -> SlayerModel:
-    """Standard orders model joined to customers. ``with_amount`` adds the
-    ``amount`` / ``created_at`` columns for queries that aggregate orders
-    locally; the join-only variant omits them.
-    """
+    """Orders joined to customers; ``with_amount`` adds amount/created_at."""
     columns = [
         Column(name="id", type=DataType.INT, primary_key=True),
         Column(name="status", type=DataType.TEXT),
@@ -84,12 +66,7 @@ async def _engine_from_sql(
     inserts: list[tuple[str, list[tuple]]],
     models: list[SlayerModel],
 ) -> SlayerQueryEngine:
-    """Build a ``SlayerQueryEngine`` over a throwaway SQLite file.
-
-    ``ddl`` statements run verbatim; each ``inserts`` entry is an
-    ``(sql, rows)`` pair fed to ``executemany``; ``models`` are persisted
-    against a ``prod`` SQLite datasource pointing at the seeded file.
-    """
+    """Build a ``SlayerQueryEngine`` over a throwaway seeded SQLite file."""
     d = tempfile.mkdtemp()
     db_path = os.path.join(d, "t.db")
     con = sqlite3.connect(db_path)
@@ -112,12 +89,7 @@ async def _engine_from_sql(
 
 @pytest.fixture
 async def engine_with_seeded_data() -> AsyncIterator[SlayerQueryEngine]:
-    """Real SQLite database with two orders per status, with strictly
-    ordered ``created_at`` so first/last is verifiable.
-
-    ``last(amount, created_at)``: paid → 20, open → 14.
-    ``last(amount, signup_at)``: NA → 50, EU → 70.
-    """
+    """SQLite with two orders per status, ``created_at`` strictly ordered."""
     yield await _engine_from_sql(
         ddl=[
             "CREATE TABLE orders ("
@@ -150,7 +122,6 @@ async def engine_with_seeded_data() -> AsyncIterator[SlayerQueryEngine]:
                     Column(name="region", type=DataType.TEXT),
                     Column(name="amount", type=DataType.DOUBLE),
                     Column(name="signup_at", type=DataType.TIMESTAMP),
-                    # Derived column — used by (d-cross).
                     Column(
                         name="signup_at_alias",
                         sql="signup_at",
@@ -163,18 +134,11 @@ async def engine_with_seeded_data() -> AsyncIterator[SlayerQueryEngine]:
     )
 
 
-# ---------------------------------------------------------------------------
-# (b) — no time dimension on the query, explicit time arg drives ranking
-# ---------------------------------------------------------------------------
 
 
 async def test_b_no_time_dimension_with_explicit_time_arg(
     engine_with_seeded_data,
 ) -> None:
-    """``amount:last(created_at)`` succeeds with no query-level
-    ``time_dimensions``. The explicit positional time arg pre-resolved
-    into ``spec.time_column`` drives the ranked subquery's ORDER BY.
-    """
     engine = engine_with_seeded_data
     resp = await engine.execute(SlayerQuery(
         source_model="orders",
@@ -182,7 +146,6 @@ async def test_b_no_time_dimension_with_explicit_time_arg(
         measures=[{"formula": "amount:last(created_at)"}],
     ))
     assert resp.data, resp.sql
-    # Two rows: one for paid (last amount = 20), one for open (last amount = 14).
     by_status = {row["orders.status"]: row for row in resp.data}
     last_key = next(
         k for k in by_status["paid"].keys() if "last" in k.lower()
@@ -191,18 +154,11 @@ async def test_b_no_time_dimension_with_explicit_time_arg(
     assert by_status["open"][last_key] == pytest.approx(14.0)
 
 
-# ---------------------------------------------------------------------------
-# (c) — cross-model bare column, explicit time arg
-# ---------------------------------------------------------------------------
 
 
 async def test_c_cross_model_bare_column_explicit_time_arg(
     engine_with_seeded_data,
 ) -> None:
-    """``customers.amount:last(customers.signup_at)`` resolves cross-model
-    with explicit time arg; reroot pass must strip the ``customers.``
-    prefix from ``key.args`` symmetrically to kwargs.
-    """
     engine = engine_with_seeded_data
     resp = await engine.execute(SlayerQuery(
         source_model="orders",
@@ -211,8 +167,6 @@ async def test_c_cross_model_bare_column_explicit_time_arg(
     ))
     assert resp.data, resp.sql
     by_region = {row["orders.customers.region"]: row for row in resp.data}
-    # NA last by signup_at: customer 2 signed up 2023-07-01, amount=50.
-    # EU last by signup_at: customer 3 signed up 2023-08-01, amount=70.
     last_key = next(
         k for k in by_region["NA"].keys() if "last" in k.lower()
     )
@@ -220,33 +174,13 @@ async def test_c_cross_model_bare_column_explicit_time_arg(
     assert by_region["EU"][last_key] == pytest.approx(70.0)
 
 
-# ---------------------------------------------------------------------------
-# (d-cross) — cross-model derived time column
-# ---------------------------------------------------------------------------
 
 
 async def test_local_first_last_over_derived_column_expands_inner_refs(
     engine_with_seeded_data,
 ) -> None:
-    """Codex round-3 fix — local ``first``/``last`` over a derived
-    ``ColumnSqlKey`` aggregate source must qualify the inner bare refs
-    in ``Column.sql`` via ``_expand_derived_column_sql``.
-
-    Without bundle threading, the ranked-subquery path bypassed the
-    derived-ref expansion, so e.g. ``net_amount:last(created_at)``
-    where ``net_amount.sql = "amount * 0.9"`` would render the bare
-    ``amount`` inside the CASE expression without qualifying it under
-    the source relation.
-
-    We can't easily inspect the rendered SQL here (the ``MAX(CASE WHEN
-    _last_rn = 1 ...)`` body wraps the derived sql); the end-to-end
-    execute is the strongest pin — if the bare ``amount`` is unqualified
-    and the FROM is the ranked subquery's own alias, SQLite will fail
-    with "no such column".
-    """
+    """Derived ``ColumnSqlKey`` aggregate source must qualify inner bare refs; the execute is the pin (an unqualified ref fails 'no such column')."""
     engine = engine_with_seeded_data
-    # Add a derived ``net_amount`` column on orders so ``net_amount:last``
-    # exercises the ColumnSqlKey aggregate-source path.
     orders = await engine.storage.get_model("orders")
     assert orders is not None
     orders = orders.model_copy(update={
@@ -269,15 +203,6 @@ async def test_local_first_last_over_derived_column_expands_inner_refs(
 
 
 async def test_cross_model_first_last_uses_target_default_time_dimension() -> None:
-    """Codex round-2 fix — cross-model ``customers.amount:last`` with NO
-    explicit positional time arg falls back to the target model's
-    ``default_time_dimension``. Without this fix the rendered SQL
-    references ``_last_rn`` against a bare ``FROM customers`` and the
-    SQLite execute trips.
-
-    Set ``customers.default_time_dimension="signup_at"`` on the fly via
-    a fresh storage so the fallback is exercised.
-    """
     engine = await _engine_from_sql(
         ddl=[
             "CREATE TABLE orders ("
@@ -321,20 +246,12 @@ async def test_cross_model_first_last_uses_target_default_time_dimension() -> No
         measures=[{"formula": "customers.amount:last"}],  # ← NO explicit time arg
     ))
     by_region = {row["orders.customers.region"]: row for row in resp.data}
-    # Only NA appears because no order references the EU customer.
     assert set(by_region) == {"NA"}, resp.sql
     last_key = next(k for k in by_region["NA"].keys() if "last" in k.lower())
-    # NA rows: (100.0 @ 2023-06-01) and (50.0 @ 2023-07-01); ``last`` by
-    # signup_at picks 50.0. Without the default_time_dimension fallback,
-    # this would NULL out or pick by another (non-deterministic) order.
     assert by_region["NA"][last_key] == pytest.approx(50.0), resp.sql
 
 
 async def test_cross_model_first_last_with_no_time_at_all_raises() -> None:
-    """Codex round-2 fix — cross-model first/last with neither an explicit
-    positional time arg NOR a ``target_model.default_time_dimension`` must
-    raise a clear ValueError, not silently emit broken SQL.
-    """
     engine = await _engine_from_sql(
         ddl=[
             "CREATE TABLE orders ("
@@ -348,7 +265,6 @@ async def test_cross_model_first_last_with_no_time_at_all_raises() -> None:
                 name="customers",
                 sql_table="customers",
                 data_source="prod",
-                # default_time_dimension intentionally unset
                 columns=[
                     Column(name="id", type=DataType.INT, primary_key=True),
                     Column(name="region", type=DataType.TEXT),
@@ -383,11 +299,6 @@ async def test_cross_model_first_last_with_no_time_at_all_raises() -> None:
 async def test_d_cross_cross_model_derived_time_arg(
     engine_with_seeded_data,
 ) -> None:
-    """``customers.amount:last(customers.signup_at_alias)`` where
-    ``signup_at_alias`` is a derived column resolves end-to-end.
-    Removes the ``NotImplementedError`` guard from
-    ``_resolve_explicit_time_col`` for cross-model ``ColumnSqlKey``.
-    """
     engine = engine_with_seeded_data
     resp = await engine.execute(SlayerQuery(
         source_model="orders",
@@ -403,18 +314,7 @@ async def test_d_cross_cross_model_derived_time_arg(
 
 
 async def test_cross_model_last_with_target_filter_ranks_filtered_rows() -> None:
-    """Codex fix — cross-model first/last must compute ``_last_rn`` /
-    ``_first_rn`` over the FILTERED row set, not the full target table.
-
-    Without the fix, a target-model filter (``deleted_at IS NULL``)
-    applies on the outer CTE after ranking; a soft-deleted row that is
-    the most-recent by ``signup_at`` still wins ``_last_rn = 1`` inside
-    the subquery, and the outer ``MAX(CASE WHEN _last_rn = 1 ...)`` then
-    returns NULL because that winning row is excluded by the WHERE.
-
-    With the fix, the filter is pushed inside the ranked subquery, so
-    ``_last_rn = 1`` points at the most-recent non-deleted row.
-    """
+    """Target-model filter must be pushed INSIDE the ranked subquery, else the newest-but-excluded row wins ``_last_rn = 1`` and the outer MAX returns NULL."""
     engine = await _engine_from_sql(
         ddl=[
             "CREATE TABLE orders ("
@@ -426,11 +326,6 @@ async def test_cross_model_last_with_target_filter_ranks_filtered_rows() -> None
         inserts=[
             ("INSERT INTO orders VALUES (?,?,?)",
              [(1, "paid", 1), (2, "paid", 2)]),
-            # NA: id=1 is older and active; id=2 is newer but soft-deleted.
-            # With the filter applied BEFORE ranking, last(amount) = 100.0
-            # (the active row). With the buggy post-rank filter, the
-            # newer-but-deleted row wins _last_rn = 1 and the outer
-            # MAX(CASE WHEN _last_rn = 1 ...) is NULL.
             ("INSERT INTO customers VALUES (?,?,?,?,?)", [
                 (1, "NA", 100.0, "2023-06-01", None),
                 (2, "NA", 999.0, "2023-08-01", "2024-01-01"),
@@ -469,17 +364,7 @@ async def test_cross_model_last_with_target_filter_ranks_filtered_rows() -> None
 
 
 async def test_cross_model_last_over_column_filter_uses_filtered_rank() -> None:
-    """Codex round-7 fix — a cross-model ``first``/``last`` over a target
-    column carrying a ``Column.filter`` must use the ranked subquery's
-    dedicated ``_last_rn_fN`` / ``_match_fN`` columns.
-
-    The ranked subquery skips the bare ``_last_rn`` for filtered specs and
-    emits ``_last_rn_f0`` + ``_match_f0`` instead. Before the fix
-    ``_render_cross_model_cte`` built the aggregate with the bare
-    ``_last_rn`` (the filtered maps were discarded), so SQLite tripped on
-    ``no such column: _last_rn``. With the fix the maps are threaded into
-    ``_build_agg`` and ``last`` returns the most-recent ACTIVE row.
-    """
+    """A ``Column.filter`` on the target column makes first/last use ``_last_rn_fN``/``_match_fN``; the bare ``_last_rn`` would be 'no such column'."""
     engine = await _engine_from_sql(
         ddl=[
             "CREATE TABLE orders ("
@@ -490,9 +375,6 @@ async def test_cross_model_last_over_column_filter_uses_filtered_rank() -> None:
         ],
         inserts=[
             ("INSERT INTO orders VALUES (?,?,?)", [(1, "paid", 1)]),
-            # NA: the newest row (300.0 @ 2023-09-01) is inactive; the
-            # newest ACTIVE row is 100.0 @ 2023-06-01. A Column.filter of
-            # status='active' means last(active_amount) = 100.0.
             ("INSERT INTO customers VALUES (?,?,?,?,?)", [
                 (1, "NA", 100.0, "2023-06-01", "active"),
                 (2, "NA", 200.0, "2023-07-01", "inactive"),
@@ -511,9 +393,6 @@ async def test_cross_model_last_over_column_filter_uses_filtered_rank() -> None:
                     Column(name="amount", type=DataType.DOUBLE),
                     Column(name="signup_at", type=DataType.TIMESTAMP),
                     Column(name="status", type=DataType.TEXT),
-                    # Column-level filter: aggregations of active_amount only
-                    # see active rows. This sets synth.filter_sql on the
-                    # cross-model first/last path.
                     Column(
                         name="active_amount",
                         sql="amount",
@@ -534,29 +413,16 @@ async def test_cross_model_last_over_column_filter_uses_filtered_rank() -> None:
     by_region = {row["orders.customers.region"]: row for row in resp.data}
     assert set(by_region) == {"NA"}, resp.sql
     last_key = next(k for k in by_region["NA"].keys() if "last" in k.lower())
-    # Newest active row is 100.0 (2023-06-01); the newer 200/300 rows are
-    # inactive. The filtered ranking must skip them.
     assert by_region["NA"][last_key] == pytest.approx(100.0), resp.sql
 
 
 async def test_local_last_over_derived_complex_time_col_qualifies_under_join() -> None:
-    """Codex fix — a local ``last`` whose explicit time arg is a derived
-    column with a COMPLEX ``Column.sql`` (``date(created_at)``) must qualify
-    the inner bare ``created_at`` to the source relation via
-    ``_expand_derived_column_sql``.
-
-    The query also groups by a joined dimension (``customers.region``), so
-    the ranked subquery's FROM is ``orders LEFT JOIN customers``. Both
-    tables carry a ``created_at`` column, so an UNQUALIFIED inner ref in the
-    ROW_NUMBER ORDER BY is ambiguous and SQLite raises "ambiguous column
-    name: created_at". With the expansion the ref pins to ``orders``.
-    """
+    """Both joined tables carry ``created_at``; a derived complex time arg must qualify the inner ref to ``orders`` or SQLite raises 'ambiguous column'."""
     engine = await _engine_from_sql(
         ddl=[
             "CREATE TABLE orders ("
             "id INTEGER PRIMARY KEY, amount REAL, "
             "created_at TEXT, customer_id INTEGER)",
-            # customers ALSO has a created_at column → the collision.
             "CREATE TABLE customers ("
             "id INTEGER PRIMARY KEY, region TEXT, created_at TEXT)",
         ],
@@ -591,9 +457,6 @@ async def test_local_last_over_derived_complex_time_col_qualifies_under_join() -
                     Column(name="amount", type=DataType.DOUBLE),
                     Column(name="created_at", type=DataType.TIMESTAMP),
                     Column(name="customer_id", type=DataType.INT),
-                    # Derived COMPLEX time column — bare ``created_at`` inside
-                    # a function call, so it can't be cheaply qualified by
-                    # the bare-identifier shortcut.
                     Column(
                         name="created_day",
                         sql="date(created_at)",
@@ -616,26 +479,11 @@ async def test_local_last_over_derived_complex_time_col_qualifies_under_join() -
     assert resp.data, resp.sql
     by_region = {row["orders.customers.region"]: row for row in resp.data}
     last_key = next(k for k in by_region["NA"].keys() if "last" in k.lower())
-    # last(amount) ranked by date(orders.created_at): newest NA order is
-    # id=2 @ 2024-01-05 → 20.0. Picking up customers.created_at instead
-    # would be an ambiguity error, not a wrong number.
     assert by_region["NA"][last_key] == pytest.approx(20.0), resp.sql
 
 
-# ===========================================================================
-# DEV-1710 Stage 6 — explicit first/last time args resolve through the
-# ScopeFrame resolver (Law 1). The join a first/last time arg crosses must be
-# discovered as a SIDE EFFECT of resolving it through the host scope — the same
-# mechanism dimensions / filters / sources / kwargs already use — replacing the
-# bespoke legacy collector branch (``_collect_joined_paths_for_base``'s
-# AGGREGATE arm) and the ad-hoc rendering in ``_resolve_explicit_time_col``.
-# ===========================================================================
 
 
-# --------------------------------------------------------------------------- #
-# Bundle-only fixtures (no storage): the resolver / sub-pass work off a
-# ``ResolvedSourceBundle`` + a planned query, not a live DB.
-# --------------------------------------------------------------------------- #
 def _u_regions() -> SlayerModel:
     return SlayerModel(
         name="regions", sql_table="regions", data_source="prod",
@@ -686,11 +534,6 @@ def _u_bundle(orders: SlayerModel) -> ResolvedSourceBundle:
 
 
 def _planned_slots(query: SlayerQuery, bundle: ResolvedSourceBundle):
-    """Return ``(base_render_order, slots_by_id)`` the way the generator
-    assembles them for a single-stage query — enough to drive the aggregate
-    join-discovery pass. For a public first/last measure the slot is already in
-    ``planned.projection``, so the projection list is a faithful render order.
-    """
     planned = plan_query(query=query, bundle=bundle)
     slots_by_id = {
         s.id: s
@@ -716,12 +559,6 @@ def _host_scope(
     )
 
 
-# --------------------------------------------------------------------------- #
-# Group 1 — ``_explicit_time_arg_of``: the single arg-selection contract shared
-# by the raise-gate, the discovery pass, and the render seam (Codex F1: without
-# one helper the gate scanned all args while the renderer stopped at the first,
-# so a join could register for an arg the renderer ignored).
-# --------------------------------------------------------------------------- #
 class TestExplicitTimeArgOf:
     def _gen(self) -> SQLGenerator:
         return SQLGenerator(dialect="postgres")
@@ -739,8 +576,6 @@ class TestExplicitTimeArgOf:
         assert self._gen()._explicit_time_arg_of(key) == arg
 
     def test_returns_path_bearing_arg_as_is(self) -> None:
-        # The helper only SELECTS the arg; the caller decides what to do with a
-        # residual path (discovery skips it, the render seam raises DEV-1526).
         arg = ColumnKey(path=("customers",), leaf="signup_at")
         key = AggregateKey(source=ColumnKey(leaf="amount"), agg="last", args=(arg,))
         assert self._gen()._explicit_time_arg_of(key) == arg
@@ -757,10 +592,6 @@ class TestExplicitTimeArgOf:
         assert self._gen()._explicit_time_arg_of(key) is None
 
     def test_none_when_first_arg_is_scalar(self) -> None:
-        # F1 degenerate: the first positional arg is a scalar literal, not a
-        # time column. Gate + render + discovery must all treat this as "no
-        # explicit time arg" (so the gate falls back to the default and the
-        # renderer returns None) — proven by them sharing THIS helper.
         key = AggregateKey(
             source=ColumnKey(leaf="amount"), agg="last",
             args=(Decimal("5"),),
@@ -768,21 +599,12 @@ class TestExplicitTimeArgOf:
         assert self._gen()._explicit_time_arg_of(key) is None
 
 
-# --------------------------------------------------------------------------- #
-# Group 2 — the discovery pass in ``_resolve_agg_inputs_via_scope`` registers a
-# first/last time arg's crossed joins into the host scope (Law 1). Pre-impl the
-# pass has no arm for positional args, so these are red until Stage 6 lands.
-# --------------------------------------------------------------------------- #
 class TestTimeArgJoinDiscovery:
     def _gen(self) -> SQLGenerator:
         return SQLGenerator(dialect="postgres")
 
     def _run(self, query: SlayerQuery, orders: SlayerModel) -> ScopeFrame:
         bundle = _u_bundle(orders)
-        # DEV-1835: a LOCAL first/last is desugared into a regroup producer
-        # before isolation, so the ranked aggregate — and the time-arg join to
-        # discover — now live in the producer sub-plan's render order rather than
-        # at the top level. Drive the discovery pass over the producer's slots.
         planned = plan_query(query=query, bundle=bundle)
         sub = (
             planned.regroup_attach_plans[0].producer_plan
@@ -816,8 +638,6 @@ class TestTimeArgJoinDiscovery:
         assert ("customers",) in scope.join_paths.as_list()
 
     def test_multi_hop_time_arg_registers_every_prefix(self) -> None:
-        # Codex F3: a two-hop time arg must register BOTH prefixes so
-        # ``_build_from_and_joins`` emits ``customers`` and ``customers__regions``.
         scope = self._run(
             SlayerQuery(
                 source_model="orders", dimensions=["status"],
@@ -829,8 +649,6 @@ class TestTimeArgJoinDiscovery:
         assert ("customers", "regions") in scope.join_paths.as_list()
 
     def test_local_derived_crossing_time_arg_registers_join(self) -> None:
-        # A LOCAL derived time column whose ``Column.sql`` reaches a joined table
-        # registers that join via the resolver's expansion + scan.
         orders = _u_orders(extra=[
             Column(name="cust_signup", sql="customers.signup_at", type=DataType.TIMESTAMP),
         ])
@@ -844,7 +662,6 @@ class TestTimeArgJoinDiscovery:
         assert ("customers",) in scope.join_paths.as_list()
 
     def test_composite_time_arg_registers_join(self) -> None:
-        # The pass recurses composite (ArithmeticKey) slots for first/last leaves.
         scope = self._run(
             SlayerQuery(
                 source_model="orders", dimensions=["status"],
@@ -857,27 +674,25 @@ class TestTimeArgJoinDiscovery:
         assert ("customers",) in scope.join_paths.as_list()
 
     def test_cross_model_time_arg_not_registered_on_host(self) -> None:
-        # A CROSS-MODEL first/last (source path non-empty) is owned by its
-        # ``_cm_*`` CTE — the aggregate-input pass skips cross-model aggs
-        # entirely, so it must NOT pull the arg's join into the host ``_base``.
         query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "customers.amount:last(customers.signup_at)"}],
         )
         bundle = _u_bundle(_u_orders())
         order, slots = _planned_slots(query, bundle)
-        # Confirm the slot IS a cross-model aggregate (source.path non-empty) —
-        # otherwise ``join_paths == []`` could pass because the agg was never a
-        # cross-model one, not because the pass correctly skipped it (Codex).
-        agg = next(
-            s for s in slots.values()
+        planned = plan_query(query=query, bundle=bundle)
+        attach = next(
+            a for a in planned.regroup_attach_plans
+            if a.producer_root_model == "customers"
+        )
+        prod_agg = next(
+            s for s in attach.producer_plan.aggregate_slots
             if isinstance(s.key, AggregateKey) and s.key.agg == "last"
         )
-        assert getattr(agg.key.source, "path", ()) == ("customers",), agg.key
+        assert prod_agg.key.grain == "target", prod_agg.key
+        assert not any(isinstance(s.key, AggregateKey) for s in slots.values())
         gen = self._gen()
         scope = _host_scope(gen, source_model=_u_orders(), bundle=bundle)
-        # Spy on the resolver: a cross-model agg must never reach ``scope.resolve``
-        # in this pass (so no join can register), proving the skip is structural.
         seen: list = []
         real = ScopeFrame.resolve
 
@@ -893,16 +708,7 @@ class TestTimeArgJoinDiscovery:
         assert seen == [], f"cross-model arg was resolved: {seen!r}"
 
     def test_residual_path_bearing_columnsqlkey_skipped_without_raise(self) -> None:
-        # PINS A DEAD BRANCH. ``_resolve_agg_inputs_via_scope`` still runs, but
-        # its first/last sub-pass never sees one since DEV-1748 — a ranked
-        # aggregate is excluded from ``base_render_order``, which is what this
-        # walker iterates. Kept until PR 6 removes the sub-pass, per P-J, so the
-        # removal is reviewed as a removal rather than smuggled in here.
-        #
-        # A path-bearing ColumnSqlKey time arg (a hop PAST the target, the shape
-        # the render seam raises DEV-1526 on) must be SKIPPED by discovery — no
-        # raise, no bogus registration. Built by hand: this residual shape only
-        # arises post-reroot at generation time, never from ``plan_query``.
+        # Path-bearing ColumnSqlKey time arg (a hop past the target) must be skipped by discovery — no raise, no registration. Built by hand: only arises post-reroot.
         gen = self._gen()
         orders = _u_orders()
         bundle = _u_bundle(orders)
@@ -915,9 +721,6 @@ class TestTimeArgJoinDiscovery:
             phase=Phase.AGGREGATE, type=DataType.DOUBLE,
         )
         scope = _host_scope(gen, source_model=orders, bundle=bundle)
-        # Spy: the residual arg must be recognised (source is local, so the agg
-        # IS walked) yet the path-bearing ColumnSqlKey short-circuits BEFORE
-        # ``scope.resolve`` — so ``resolve`` is never called with it.
         seen: list = []
         real = ScopeFrame.resolve
 
@@ -933,16 +736,6 @@ class TestTimeArgJoinDiscovery:
         assert residual not in seen, f"residual arg was resolved: {seen!r}"
 
 
-# --------------------------------------------------------------------------- #
-# Group 2b — the live ranking-time gate (``ranked_planner.resolve_ranking_time_key``)
-# uses the SAME first-arg-only selection (``explicit_ranking_time_arg``) as every
-# other consumer. A first/last whose FIRST positional arg is a scalar (a later arg
-# being a column) has NO explicit time arg under that contract; with no default
-# time column the gate must raise the clean "ranking time" error rather than skip
-# it and later blow up building the ``ROW_NUMBER`` map.
-# (DEV-1749: migrated off the deleted host-base ``_build_first_last_base_select``
-# gate onto its single-sourced successor.)
-# --------------------------------------------------------------------------- #
 class TestGateUsesSharedArgSelection:
     def _scalar_first_arg_key(self) -> AggregateKey:
         return AggregateKey(
@@ -961,17 +754,7 @@ class TestGateUsesSharedArgSelection:
             resolve_ranking_time_key(key=key, root_model=orders, bundle=bundle)
 
 
-# --------------------------------------------------------------------------- #
-# Group 4 — end-to-end regression pins over a live SQLite DB. The join a
-# first/last time arg crosses must land in the ranked subquery's FROM (so the
-# ORDER BY ref is in scope), whether the arg is a plain joined column, a
-# multi-hop path, a local derived column that reaches a joined table, or a
-# join already introduced by a dimension (dedup).
-# --------------------------------------------------------------------------- #
 async def _multi_hop_engine() -> SlayerQueryEngine:
-    """orders → customers → regions, seeded so ``last`` by a regions-level time
-    column is deterministic per status.
-    """
     return await _engine_from_sql(
         ddl=[
             "CREATE TABLE orders ("
@@ -1007,11 +790,6 @@ async def _multi_hop_engine() -> SlayerQueryEngine:
 
 
 async def test_e2e_noncomposite_local_crossing_time_arg() -> None:
-    """A NON-composite local ``amount:last(customers.signup_at)`` with no time
-    dimension must pull the ``customers`` join into the ranked subquery's FROM
-    (the ORDER BY references ``customers.signup_at``). The existing coverage was
-    the composite ``+ 1`` shape only.
-    """
     engine = await _multi_hop_engine()
     resp = await engine.execute(SlayerQuery(
         source_model="orders",
@@ -1022,17 +800,11 @@ async def test_e2e_noncomposite_local_crossing_time_arg() -> None:
     assert re.search(r"JOIN\s+customers\b", resp.sql, re.I), resp.sql
     by_status = {row["orders.status"]: row for row in resp.data}
     last_key = next(k for k in by_status["paid"].keys() if "last" in k.lower())
-    # paid orders map to customers 1 (signup 2023-06-01) and 2 (2023-07-01);
-    # last by signup_at picks customer 2's order → amount 20.
     assert by_status["paid"][last_key] == pytest.approx(20.0), resp.sql
     assert by_status["open"][last_key] == pytest.approx(7.0), resp.sql
 
 
 async def test_e2e_multi_hop_local_crossing_time_arg() -> None:
-    """Codex F3 e2e: a two-hop local time arg
-    (``amount:last(customers.regions.opened_at)``) pulls BOTH joins into the
-    ranked subquery so the ORDER BY reference is in scope.
-    """
     engine = await _multi_hop_engine()
     resp = await engine.execute(SlayerQuery(
         source_model="orders",
@@ -1044,20 +816,10 @@ async def test_e2e_multi_hop_local_crossing_time_arg() -> None:
     assert re.search(r"customers__regions", resp.sql, re.I), resp.sql
     by_status = {row["orders.status"]: row for row in resp.data}
     last_key = next(k for k in by_status["paid"].keys() if "last" in k.lower())
-    # paid orders: cust 1 → region NA (opened 2020), cust 2 → region EU
-    # (opened 2021). last by regions.opened_at picks EU → order 2 → amount 20.
     assert by_status["paid"][last_key] == pytest.approx(20.0), resp.sql
 
 
 async def test_e2e_local_derived_crossing_time_arg() -> None:
-    """Codex F6 (derived): a LOCAL derived time column whose ``Column.sql``
-    reaches a joined table (``cust_signup`` = ``customers.signup_at``) must pull
-    that join into the ranked subquery and rank by the expanded expression.
-
-    (A derived column that references ANOTHER derived column — nested inlining —
-    is a separate, pre-existing limitation of ``expand_derived_refs_sync`` that
-    affects every consumer, not just time args, and is out of Stage 6 scope.)
-    """
     orders = _u_orders(extra=[
         Column(name="cust_signup", sql="customers.signup_at", type=DataType.TIMESTAMP),
     ])
@@ -1098,17 +860,7 @@ async def test_e2e_local_derived_crossing_time_arg() -> None:
 
 
 async def test_e2e_time_arg_join_dedup_with_dimension() -> None:
-    """Codex F6 dedup: the crossing time arg isolates the aggregate into its own
-    CTE, so the ``customers`` join appears once PER SCOPE — once in the host
-    base (the dimension's row-level pull) and once inside the CTE (the time
-    arg's pull, deduped against the CTE's own dimension pull) — never twice
-    within one scope.
-
-    DEV-1835: a LOCAL first/last is desugared into a regroup producer, so its
-    isolated CTE renders under the uniform ``_cm_`` producer name (carrying the
-    ROW_NUMBER ranking) rather than the ``_rk_`` name it had under DEV-1748 —
-    still one isolated CTE per crossing first/last, one join per scope.
-    """
+    """A crossing time arg isolates the aggregate into its own ``_cm_`` CTE; the ``customers`` join appears once per scope (host base + CTE), never twice within one."""
     engine = await _multi_hop_engine()
     resp = await engine.execute(SlayerQuery(
         source_model="orders",

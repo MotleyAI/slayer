@@ -6,7 +6,7 @@ Defines computed (expression) dimensions: which expressions are legal as dimensi
 ## Requirements
 
 ### Requirement: Measure-dimension symmetry with grain self-containment
-Any measure-legal expression SHALL be legal as a computed dimension provided it is grain-self-contained: every aggregate in it is local to the query's source (not a cross-join source) and carries an explicit `partition_by=`, and every transform in it applies within such an explicitly-grained subexpression. Once declared, a computed dimension behaves everywhere as a plain dimension: it can be grouped by, banded, filtered on, ordered by, and used as a transform partition.
+Any measure-legal expression SHALL be legal as a computed dimension provided it is grain-self-contained: every aggregate in it carries an explicit `partition_by=` whose keys are attributable from that aggregate's root (local or cross-model alike, over provably many-to-one join hops), and every transform in it applies within such an explicitly-grained subexpression. Once declared, a computed dimension behaves everywhere as a plain dimension: it can be grouped by, banded, filtered on, ordered by, and used as a transform partition.
 
 #### Scenario: Banded partitioned aggregate as a dimension
 - WHEN a query declares the dimension `CASE WHEN amount:sum(partition_by=city) > 5000 THEN 'high' ELSE 'low' END`
@@ -15,6 +15,10 @@ Any measure-legal expression SHALL be legal as a computed dimension provided it 
 #### Scenario: Expression over two different partition sets
 - WHEN a dimension expression combines `x:sum(partition_by=region)` and `y:sum(partition_by=country)` arithmetically
 - THEN each aggregate is computed at its own declared grain and the expression is evaluated per row over the two attached values
+
+#### Scenario: Cross-model aggregate source in a dimension expression
+- WHEN a dimension expression bands an aggregate whose source crosses a join (e.g. `customers.spend:sum(partition_by=<customer-level dimension>)`)
+- THEN rows group by the band with correct executed values and unchanged cardinality
 
 ### Requirement: Transforms inside dimension expressions
 A transform inside a dimension expression SHALL evaluate at the union of its inner aggregates' effective grains — the grain of its containing context — unlike the same expression used as a measure, which evaluates at the query grain. An inner aggregate's effective grain is its declared `partition_by=` set, plus the query's active time bucket when the aggregate is windowed (`window=`); a `first`/`last` inner aggregate contributes its declared partition set only. Each inner aggregate is computed at its own effective grain and broadcast to the union-grain rows; when all inner aggregates share one grain the union degenerates to that grain (behavior unchanged). The rule is recursive: a nested transform evaluates at the union of its OWN inner aggregates' grains and its result is broadcast into the containing union like any other grained value. Keyword references on the transform (e.g. an explicit `partition_by=`) SHALL resolve against the union grain. A time-ordered transform (e.g. `cumsum`, `lag`, `time_shift`) inside a dimension expression SHALL fail with a clear error when its evaluation grain does not contain its time-ordering key — never duplicated result rows. When a windowed inner aggregate contributes the active time bucket, that synthesized bucket IS the query's bucketed time dimension — one dimension for all grain purposes (union membership, deduplication, attachment keys) — and a mixed-grain transform with a windowed inner aggregate but no resolvable time dimension SHALL fail with the same time-resolution error as windowed measures; single-grain windowed and `first`/`last` transform inputs remain legal.
@@ -97,21 +101,6 @@ A transform inside a dimension expression SHALL evaluate at the union of its inn
 - WHEN such a dimension is declared in a query with no resolvable time dimension
 - THEN the query fails with the same clear time-resolution error as windowed measures
 
-### Requirement: Dimension expression error surface
-Expressions that are not grain-self-contained SHALL fail with clear errors naming the offending construct: a bare aggregate without `partition_by=`, an aggregate over another attached aggregate value, and a cross-model aggregate source inside a dimension expression.
-
-#### Scenario: Bare aggregate in a dimension is rejected
-- WHEN a dimension expression contains an aggregate with no `partition_by=`
-- THEN the query fails with an error stating that aggregates in dimension expressions must declare `partition_by=`
-
-#### Scenario: Aggregate over an attached value is rejected
-- WHEN a dimension expression aggregates over a subexpression that itself contains a partitioned aggregate
-- THEN the query fails with a clear not-yet-supported error, not an internal error
-
-#### Scenario: Cross-model aggregate source is rejected
-- WHEN a dimension expression contains an aggregate whose source crosses a join path
-- THEN the query fails with a clear not-yet-supported error identifying the joined source
-
 ### Requirement: Computed dimensions cross stage boundaries as plain columns
 A computed dimension derived from aggregation and banding SHALL be consumable by downstream query stages exactly like a stored column, and internal placeholder names MUST never appear in public schemas, response metadata, or emitted SQL column names.
 
@@ -188,17 +177,6 @@ When a query carries an aggregation-derived dimension, top-level AND conjuncts o
 - WHEN one filter string ORs a predicate on the banded dimension with a predicate from another phase
 - THEN the query fails with the established split-the-filter directive
 
-### Requirement: Remaining coexistence deferrals fail closed
-An aggregation-derived dimension combined with a cross-model measure, or nested where the query must render as a single CTE body, SHALL fail with a clear not-yet-supported error naming the unsupported combination — never with wrong numbers or invalid SQL.
-
-#### Scenario: Cross-model measures still guarded
-- WHEN a query combines an aggregation-derived dimension with a cross-model measure
-- THEN the query fails with the exact cross-model-coexistence error
-
-#### Scenario: The lifted windowed/ranked guard leaves no residue
-- WHEN the package sources are scanned for the former windowed/ranked-coexistence error
-- THEN no reference to it remains
-
 ### Requirement: Aggregation-derived dimensions coexist with windowed and ranked measures
 An aggregation-derived dimension (banded, bare partitioned aggregate, or transform-root) SHALL be legal in the same query as bare windowed (`window=` without `partition_by=`) and bare `first`/`last` measures, with correct executed values, unchanged result cardinality, and each measure equal to its value when queried alone.
 
@@ -232,3 +210,45 @@ A bare windowed or `first`/`last` measure SHALL compose with every legal dimensi
 #### Scenario: Scalar-expression dimension with a bare last measure
 - WHEN a query groups by `lower(city)` and selects `amount:last`
 - THEN each expression group carries its value at the latest ranking timestamp, correct by executed values
+
+### Requirement: Grain self-containment error surface
+Expressions that are not grain-self-contained SHALL fail with clear errors naming the offending construct: a bare aggregate without `partition_by=`, an aggregate over another attached aggregate value, and an aggregate whose partition keys or inputs are not attributable from its root.
+
+#### Scenario: Bare aggregate in a dimension is rejected
+- WHEN a dimension expression contains an aggregate with no `partition_by=`
+- THEN the query fails with an error stating that aggregates in dimension expressions must declare `partition_by=`
+
+#### Scenario: Aggregate over an attached value is rejected
+- WHEN a dimension expression aggregates over a subexpression that itself contains a partitioned aggregate
+- THEN the query fails with a clear not-yet-supported error, not an internal error
+
+#### Scenario: Unattributable partition key in a dimension expression is rejected
+- WHEN a dimension expression's aggregate declares a partition key reachable from its root only across a join with unproven arity
+- THEN the query fails with a clear error naming the key and the remedy
+
+### Requirement: Nested attaches render inside CTE bodies
+A row regroup attach (computed dimension), a partitioned-aggregate combined attach, and a re-rooted `first`/`last` sub-plan that itself carries producers SHALL each compile and execute correctly when nested where the plan renders as a single CTE body (a non-final query stage, or inside another producer): their internal relations hoist into the enclosing statement's one flat `WITH`. No not-yet-supported coexistence guard remains for these shapes, and result cardinality is unchanged by the nesting.
+
+#### Scenario: Computed-dimension row attach in a non-final stage executes
+- WHEN a multi-stage query's earlier stage groups by a dimension banding a partitioned aggregate and a later stage consumes the result
+- THEN the query executes with correct values and the earlier stage's producer relations appear in the statement's single flat `WITH`
+
+#### Scenario: Partitioned combined attach in a non-final stage executes
+- WHEN a multi-stage query's earlier stage selects a partitioned-aggregate measure and a later stage consumes the result
+- THEN the query executes with correct values, never the former CTE-body deferral error
+
+#### Scenario: Re-rooted first/last sub-plan with its own producers executes
+- WHEN a `first`/`last` aggregate's sub-plan itself requires producer relations and the whole plan renders as a CTE body
+- THEN the sub-plan's relations hoist and the query executes with correct values
+
+#### Scenario: One flat WITH per emitted statement
+- WHEN any query with nested attaches in CTE bodies renders
+- THEN the emitted SQL contains exactly one flat `WITH` chain — never a `WITH` nested inside a CTE definition
+
+#### Scenario: Nesting is cardinality-neutral
+- WHEN such a multi-stage query's later stage runs with and without the earlier stage's nested attach
+- THEN both runs return the same rows and identical values in all shared columns
+
+#### Scenario: The lifted CTE-body guards leave no residue
+- WHEN the package sources are scanned for the former CTE-body deferral errors
+- THEN no reference to them remains

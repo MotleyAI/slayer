@@ -1,42 +1,10 @@
-"""DEV-1733 — order-only transform / composite / windowed ORDER BY targets.
+"""Order-only transform / composite / windowed ORDER BY targets.
 
-DEV-1712 (Stage 8) shipped hidden-slot ORDER BY for order-only AGGREGATE refs
-and split emission for order-only ROW-COLUMN refs, and rejected inline
-transform / composite order targets with a plan-time ``ValueError``. This
-module pins the full-support contract that replaces that rejection.
-
-The completed table for an ORDER BY ref matching no declared/public slot:
-
-  target (hidden)          | behaviour
-  ------------------------ | --------------------------------------------------
-  local aggregate          | materialise hidden, order, strip     (DEV-1712)
-  cross-model aggregate    | hidden ``_cm_`` CTE, trimmed, CTE-qualified order
-  local row column, raw    | SPLIT emission ``orders.col``        (DEV-1712)
-  local row column, grouped| hidden ``<col>:max`` wrap, order, strip (Phase 1)
-  joined row column, raw   | Law-1 join pull + SPLIT emission     (Phase 1)
-  joined row column, grpd  | UnresolvableOrderColumnError         (DEV-1712)
-  transform                | hidden slot -> step CTE -> outer-wrap order  <- NEW
-  composite / scalar call  | hidden slot materialised -> outer-wrap order <- NEW
-  windowed, top-level      | hidden ``_wm_`` plan, trimmed, CTE-qual order <- NEW
-  windowed in a composite  | outer combined SELECT, inline order term      <- NEW
-
-Two silent-wrong-answer bugs are pinned here as regressions:
-
-* **B1** — an order-only windowed aggregate (``amount:sum(window='90d')`` in
-  ``order`` with ``amount:sum`` not also declared) rendered a PLAIN ``SUM`` and
-  ordered by it, silently dropping the 90-day window. ``OrderItem.raw_formula``
-  preserves the ``window=`` kwarg, so the shape was reachable despite the
-  planner comment asserting otherwise.
-* **B2** — two HIDDEN transform slots of the same op collided on one
-  ``declared_name`` (``_cumsum_inner``), so ``cumsum(a:sum) + cumsum(b:sum)``
-  emitted two step-CTE columns under an identical alias and computed
-  ``cumsum(a) + cumsum(a)``. DEV-1692 fixed this class for ``time_shift`` /
-  ``consecutive_periods`` only; uniqueness now lives in the PLAN (registry
-  intern), not in any one renderer.
-
-Refs: DEV-1733 (this issue), DEV-1712 (Stage 8), DEV-1692 (hidden-alias
-collisions), DEV-1714 (``_wm_`` windowed measures), DEV-1504 (windowed
-composites in ``measures``, windowed + transform — still guarded).
+Full-support contract replacing the earlier plan-time rejection of inline
+transform/composite order targets. Two silent-wrong-answer regressions pinned:
+B1 — an order-only windowed aggregate rendered a plain SUM, dropping the window;
+B2 — two hidden transform slots of the same op collided on one declared_name,
+computing cumsum(a)+cumsum(a). Uniqueness now lives in the plan, not renderers.
 """
 from __future__ import annotations
 
@@ -65,19 +33,11 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 _MONTH = [TimeDimension(dimension="created_at", granularity="month")]
 
-# DEV-1763: the composite renderer routes through ``render_value_key`` on a
-# scope-less context, so a bare ROW-column operand fails closed with
-# ``RenderContextMissingFacilityError`` (a ``ValueError``) rather than the legacy
-# terminal ``NotImplementedError``. Both REJECT — the security-relevant contract
-# is "raises, never stringified" — so the row-operand guards below accept either.
-# (The legacy renderer still raises ``NotImplementedError``; its direct tests
-# stay pinned — P-J state 1.)
+# A bare ROW-column operand must fail closed with either error; both REJECT.
 _ROW_OPERAND_REJECTED = (NotImplementedError, RenderContextMissingFacilityError)
 
 
-# ---------------------------------------------------------------------------
 # SQL-inspection helpers — walk the AST, never match on formatting.
-# ---------------------------------------------------------------------------
 def _outermost_select(sql: str, *, dialect: str = "postgres") -> exp.Select:
     parsed = sqlglot.parse_one(sql, dialect=dialect)
     assert isinstance(parsed, exp.Select), f"not a SELECT:\n{sql}"
@@ -114,21 +74,13 @@ def _all_quoted_idents(sql: str) -> list[str]:
 
 
 def _emitted_aliases(sql: str, *, dialect: str = "postgres") -> list[str]:
-    """Every ``<expr> AS <alias>`` alias emitted anywhere in the statement.
-
-    Duplicates are preserved — a repeated alias inside one SELECT is exactly
-    the B2 collision this module guards against.
-    """
+    """Every ``<expr> AS <alias>`` alias emitted; duplicates preserved (B2)."""
     parsed = sqlglot.parse_one(sql, dialect=dialect)
     return [a.alias for a in parsed.find_all(exp.Alias) if a.alias]
 
 
 def _duplicate_select_aliases(sql: str, *, dialect: str = "postgres") -> list[str]:
-    """Aliases emitted more than once WITHIN a single SELECT projection.
-
-    This is the precise B2 signature: one ``SELECT`` projecting two different
-    expressions under one identifier, so every later reference is ambiguous.
-    """
+    """Aliases emitted more than once within a single SELECT — the B2 signature."""
     parsed = sqlglot.parse_one(sql, dialect=dialect)
     dupes: list[str] = []
     for select in parsed.find_all(exp.Select):
@@ -144,11 +96,7 @@ def _duplicate_select_aliases(sql: str, *, dialect: str = "postgres") -> list[st
 
 
 def _src_subquery_sql(sql: str, *, dialect: str = "sqlite") -> str:
-    """The rendered SQL of the ``_src`` subquery inside a ``_wm_`` CTE.
-
-    AST-based rather than string-split so it survives formatting and CTE
-    renaming: find the ``Subquery``/``Alias`` node whose alias is ``_src``.
-    """
+    """Rendered SQL of the ``_src`` subquery inside a ``_wm_`` CTE."""
     parsed = sqlglot.parse_one(sql, dialect=dialect)
     for node in parsed.find_all(exp.Subquery):
         if node.alias == "_src":
@@ -159,13 +107,7 @@ def _src_subquery_sql(sql: str, *, dialect: str = "sqlite") -> str:
 def _cte_aggregate_sql(
     sql: str, *, cte: str, column: str, dialect: str = "sqlite",
 ) -> list[str]:
-    """Rendered SQL of every aggregate over ``column`` inside the named CTE.
-
-    Selects the CTE from the parsed tree by alias rather than splitting on
-    separator text — a spacing change in the emitter would make a string split
-    silently return the whole statement, and the caller's assertion would stop
-    testing anything while still passing.
-    """
+    """Rendered SQL of every aggregate over ``column`` inside the named CTE."""
     parsed = sqlglot.parse_one(sql, dialect=dialect)
     target = next(
         (c for c in parsed.find_all(exp.CTE) if c.alias == cte), None,
@@ -179,11 +121,7 @@ def _cte_aggregate_sql(
 
 
 def _hidden_order_alias(sql: str, *, dialect: str = "postgres") -> str:
-    """The single outer ORDER BY alias, asserted NOT to be publicly projected.
-
-    That pair — ordered on, but absent from the outermost SELECT — is the Law-2
-    hidden-slot discipline this issue extends to transforms and composites.
-    """
+    """The single outer ORDER BY alias, asserted absent from the projection (Law 2)."""
     names = _outer_order_by_names(sql, dialect=dialect)
     assert len(names) == 1, f"expected exactly one ORDER BY term, got {names}\n{sql}"
     alias = names[0]
@@ -195,9 +133,7 @@ def _hidden_order_alias(sql: str, *, dialect: str = "postgres") -> str:
     return alias
 
 
-# ---------------------------------------------------------------------------
 # Fixtures — orders -> customers / suppliers.
-# ---------------------------------------------------------------------------
 async def _save_models(storage: YAMLStorage) -> None:
     await storage.save_model(SlayerModel(
         name="customers", sql_table="customers", data_source="test",
@@ -246,12 +182,9 @@ INSERT INTO orders VALUES
     (3,101,201,'open','2025-02-01',20.0,4.0),
     (4,101,201,'open','2025-02-02', 5.0,8.0);
 """
-# Monthly rollup:  Jan amount 50 / count 2   Feb amount 25 / count 2
-#   cumsum(amount:sum) -> Jan 50, Feb 75
-#   cumsum(id:count)   -> Jan  2, Feb  4
-#   sum of the two     -> Jan 52, Feb 79      <- the B2 assertion
-# Status rollup:   paid amount 50 / count 2   open amount 25 / count 2
-#   amount:sum / id:count -> paid 25.0, open 12.5
+# Monthly: Jan amount 50 / count 2, Feb amount 25 / count 2.
+#   cumsum(amount:sum) -> 50, 75;  cumsum(id:count) -> 2, 4;  sum -> 52, 79 (B2)
+# Status: paid 50 / count 2, open 25 / count 2;  amount:sum/id:count -> 25.0, 12.5
 
 
 @pytest.fixture
@@ -282,22 +215,16 @@ async def exec_engine(tmp_path):
 
 
 async def _sql(engine: SlayerQueryEngine, query: SlayerQuery) -> str:
-    """Render a query and assert scope closure on every statement this module
-    produces (DEV-1733 acceptance: suite-wide ``assert_scope_closed`` green)."""
+    """Render a query, asserting scope closure on the emitted statement."""
     resp = await engine.execute(query, dry_run=True)
     sql = resp.sql or ""
     assert_scope_closed(sql, dialect="sqlite")
     return sql
 
 
-# ===========================================================================
 # Group 1 — entry point: composite ORDER BY strings become expressible.
-# ===========================================================================
 class TestOrderItemEntryPoint:
     def test_composite_colon_string_yields_placeholder_and_raw_formula(self) -> None:
-        """``revenue:sum / cnt:sum`` is not a ``ColumnRef``; it is carried as a
-        formula. The placeholder marks the column ref as "resolve me from
-        ``raw_formula``" — the same mechanism func-style calls already use."""
         item = OrderItem(column="amount:sum / id:count", direction="desc")
         assert item.column.name == "_expr_pending", item.column
         assert item.raw_formula == "amount:sum / id:count", item.raw_formula
@@ -313,11 +240,7 @@ class TestOrderItemEntryPoint:
         assert item.raw_formula == "change(amount:sum) / 2"
 
     def test_composite_over_declared_aliases_still_rejected(self) -> None:
-        """A composite over declared measure NAMES carries no ``:`` and no
-        func-style call, so it is not a formula candidate. Referencing a
-        declared measure by alias inside an expression is unsupported
-        everywhere in SLayer, so this keeps failing fast at construction with
-        the pre-DEV-1733 message rather than deep in the binder."""
+        """No ``:`` and no func-style call, so it is not a formula candidate."""
         with pytest.raises(pydantic.ValidationError) as ei:
             OrderItem(column="rev / cnt", direction="desc")
         assert "rev / cnt" in str(ei.value)
@@ -330,9 +253,6 @@ class TestOrderItemEntryPoint:
         assert agg.name == "amount_sum"
 
     def test_placeholder_survives_strip_source_model_prefix(self) -> None:
-        """``strip_source_model_prefix`` rebuilds every ``OrderItem``; the
-        placeholder + ``raw_formula`` pair must survive that rebuild or the
-        planner loses the expression."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
@@ -348,10 +268,7 @@ class TestOrderItemEntryPoint:
     async def test_real_column_named_like_placeholder_is_not_hijacked(
         self, tmp_path,
     ) -> None:
-        """The sentinel is a marker, not a magic column name. An ``OrderItem``
-        whose column genuinely IS ``_expr_pending`` (and which carries no
-        ``raw_formula``) must resolve as a normal column, not be routed to
-        formula binding."""
+        """The sentinel is a marker, not a magic column name."""
         storage = YAMLStorage(base_dir=str(tmp_path))
         await storage.save_datasource(
             DatasourceConfig(name="test", type="sqlite", database=":memory:"),
@@ -374,16 +291,12 @@ class TestOrderItemEntryPoint:
         assert "weird_col" in sql, sql
 
     def test_hand_built_order_item_without_raw_formula_is_not_formula_bound(self) -> None:
-        """A manually constructed / deserialized ``OrderItem`` carrying the
-        sentinel but no ``raw_formula`` must not be treated as an expression —
-        the sentinel alone is not the discriminator."""
+        """The sentinel alone is not the discriminator; raw_formula is."""
         item = OrderItem(column=ColumnRef(name="_expr_pending"), direction="asc")
         assert item.raw_formula is None
 
 
-# ===========================================================================
 # Group 2 — order-only plain transforms materialise, order, and are stripped.
-# ===========================================================================
 class TestOrderOnlyTransform:
     async def test_rank_order_only_hidden_and_ordered(self, engine) -> None:
         query = SlayerQuery(
@@ -425,9 +338,7 @@ class TestOrderOnlyTransform:
         assert "NTILE" in sql.upper(), sql
 
     async def test_order_only_transform_alongside_declared_transform(self, engine) -> None:
-        """A declared transform already forces the chain; the order-only
-        transform must join it as another hidden step column rather than
-        disabling either."""
+        """The order-only transform joins the chain as another hidden step column."""
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=_MONTH,
@@ -453,8 +364,7 @@ class TestOrderOnlyTransform:
         _hidden_order_alias(sql)
 
     async def test_order_only_transform_with_post_filter(self, engine) -> None:
-        """A POST filter on the declared transform wraps the chain; the
-        order-only transform's alias must survive that wrap."""
+        """The order-only transform's alias must survive the POST-filter wrap."""
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=_MONTH,
@@ -467,11 +377,8 @@ class TestOrderOnlyTransform:
         _hidden_order_alias(sql)
 
 
-# ===========================================================================
-# Group 3 — change / change_pct: arithmetic-wrapped transforms.
-# Stage 8 dropped these ORDER BY clauses entirely (no slot was interned for
-# the top-level ArithmeticKey, so the order entry was silently discarded).
-# ===========================================================================
+# Group 3 — change / change_pct: arithmetic-wrapped transforms. Stage 8 dropped
+# these ORDER BY clauses entirely (top-level ArithmeticKey interned no slot).
 class TestOrderOnlyChangeFamily:
     @pytest.mark.parametrize("formula", ["change(amount:sum)", "change_pct(amount:sum)"])
     async def test_change_family_order_only_emits_order_by(self, engine, formula: str) -> None:
@@ -515,11 +422,8 @@ class TestOrderOnlyChangeFamily:
         _hidden_order_alias(sql)
 
 
-# ===========================================================================
 # Group 4 — order-only composites / scalar calls, no transform layers.
-# These materialise as a hidden column in the base SELECT and are trimmed by
-# the outer wrap (D4) — the same discipline hidden aggregates already follow.
-# ===========================================================================
+# Materialised as a hidden base-SELECT column, trimmed by the outer wrap (D4).
 class TestOrderOnlyCompositeLocal:
     async def test_composite_arithmetic_order_only(self, engine) -> None:
         query = SlayerQuery(
@@ -548,8 +452,7 @@ class TestOrderOnlyCompositeLocal:
         assert "ABS(" in sql.upper(), sql
 
     async def test_composite_operands_are_not_projected(self, engine) -> None:
-        """Only the composite is ordered on; neither operand may leak into the
-        public projection (Law 2)."""
+        """Neither operand may leak into the public projection (Law 2)."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
@@ -574,14 +477,8 @@ class TestOrderOnlyCompositeLocal:
         _hidden_order_alias(sql)
 
 
-# ===========================================================================
-# Group 5 — composites whose operands cross a join.
-#
-# A cross-model operand lives in a ``_cm_`` CTE, never in ``_base``. The
-# composite must therefore be OWNED by the combined SELECT — promoting it into
-# ``_base`` would reference an operand that is not in scope there. Both
-# operand orders are covered because the routing predicate walks the key tree.
-# ===========================================================================
+# Group 5 — composites whose operands cross a join. A cross-model operand lives
+# in a ``_cm_`` CTE, so the composite must be owned by the combined SELECT.
 class TestOrderOnlyCompositeCrossModel:
     async def test_local_over_cross_model_order_only(self, engine) -> None:
         query = SlayerQuery(
@@ -596,8 +493,7 @@ class TestOrderOnlyCompositeCrossModel:
         assert "_cm_" in sql, sql
 
     async def test_cross_model_over_local_order_only(self, engine) -> None:
-        """Reversed operand order — division is non-commutative, and the
-        routing decision must not depend on which side is remote."""
+        """Reversed operand order — routing must not depend on which side is remote."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
@@ -645,11 +541,8 @@ class TestOrderOnlyCompositeCrossModel:
         _hidden_order_alias(sql)
 
 
-# ===========================================================================
-# Group 6 — hidden-alias uniqueness (B2). Uniqueness is a property of the
-# PLAN: a hidden slot whose canonical name is already taken gets a numeric
-# suffix at intern time, so no renderer can reintroduce the collision.
-# ===========================================================================
+# Group 6 — hidden-alias uniqueness (B2). Uniqueness is a plan property: a hidden
+# slot whose canonical name is taken gets a numeric suffix at intern time.
 class TestHiddenAliasUniqueness:
     async def test_two_hidden_cumsums_get_distinct_aliases(self, engine) -> None:
         """B2 repro. Both hidden slots canonicalise to ``_cumsum_inner``."""
@@ -715,8 +608,7 @@ class TestHiddenAliasUniqueness:
         assert len(set(names)) == 2, f"{names}\n{sql}"
 
     async def test_two_hidden_time_shifts_stay_distinct(self, engine) -> None:
-        """DEV-1692 regression — the time_shift emitter's own allocation must
-        keep working once uniqueness also happens at plan time."""
+        """The time_shift emitter's own allocation must keep working too."""
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=_MONTH,
@@ -729,9 +621,7 @@ class TestHiddenAliasUniqueness:
         assert not _duplicate_select_aliases(sql), sql
 
     async def test_user_measure_named_like_a_hidden_slot(self, engine) -> None:
-        """A user may legitimately name a measure ``_cumsum_inner``. Public
-        names are authoritative; the hidden slot must yield, regardless of
-        which is interned first."""
+        """Public names are authoritative; the hidden slot must yield."""
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=_MONTH,
@@ -748,8 +638,7 @@ class TestHiddenAliasUniqueness:
         assert "orders._cumsum_inner" in _outer_select_columns(sql), sql
 
     async def test_user_measure_named_like_hidden_slot_declared_first(self, engine) -> None:
-        """Reversed declaration order — uniquification must not depend on
-        which slot the registry interns first."""
+        """Reversed declaration order — must not depend on intern order."""
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=_MONTH,
@@ -763,8 +652,7 @@ class TestHiddenAliasUniqueness:
         assert "orders._cumsum_inner" in _outer_select_columns(sql), sql
 
     async def test_public_names_are_never_renamed(self, engine) -> None:
-        """Uniquification touches hidden slots only — a user-declared name is
-        the result-key contract and must survive verbatim."""
+        """A user-declared name is the result-key contract; it survives verbatim."""
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=_MONTH,
@@ -777,13 +665,10 @@ class TestHiddenAliasUniqueness:
         assert _outer_select_columns(sql) == ["orders.created_at", "orders.c1", "orders.c2"], sql
 
 
-# ===========================================================================
 # Group 7 — windowed ORDER BY targets (S-a top-level, S-b inside a composite).
-# ===========================================================================
 class TestWindowedOrderOnly:
     async def test_order_only_windowed_builds_wm_cte(self, engine) -> None:
-        """B1 repro. Before DEV-1733 this rendered a PLAIN ``SUM`` in the base
-        SELECT and ordered by it — the 90-day window silently vanished."""
+        """B1 repro — a plain SUM here would silently drop the 90-day window."""
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=_MONTH,
@@ -791,7 +676,7 @@ class TestWindowedOrderOnly:
             order=[OrderItem(column="amount:sum(window='90d')", direction="desc")],
         )
         sql = await _sql(engine, query)
-        # DEV-1835: windowed producers render under uniform ``_cm_`` naming.
+        # Windowed producers render under uniform ``_cm_`` naming.
         assert "_cm_" in sql, (
             f"an order-only windowed measure needs its own _cm_ range-join CTE "
             f"— a plain SUM silently drops the window.\nSQL:\n{sql}"
@@ -804,9 +689,7 @@ class TestWindowedOrderOnly:
         assert _outer_order_by_sql(sql), f"ORDER BY must be emitted.\n{sql}"
 
     async def test_order_only_windowed_is_cte_qualified_in_order_by(self, engine) -> None:
-        """Trimmed from the projection, so the bare alias no longer names a
-        projected column — the ORDER BY term must be CTE-qualified, exactly as
-        the hidden cross-model aggregate case is."""
+        """Trimmed from the projection, so the ORDER BY term must be CTE-qualified."""
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=_MONTH,
@@ -816,7 +699,6 @@ class TestWindowedOrderOnly:
         sql = await _sql(engine, query)
         terms = _outer_order_by_sql(sql)
         assert len(terms) == 1, terms
-        # DEV-1835: windowed producers render under uniform ``_cm_`` naming.
         assert terms[0].startswith("_cm_"), (
             f"hidden windowed order term must be CTE-qualified: {terms}\n{sql}"
         )
@@ -829,7 +711,6 @@ class TestWindowedOrderOnly:
             order=[OrderItem(column="amount:sum(window='90d') / id:count", direction="desc")],
         )
         sql = await _sql(engine, query)
-        # DEV-1835: windowed producers render under uniform ``_cm_`` naming.
         assert "_cm_" in sql, sql
         assert _outer_select_columns(sql) == ["orders.created_at", "orders.id_count"], (
             f"nothing from the order-only composite may leak into the "
@@ -837,19 +718,13 @@ class TestWindowedOrderOnly:
         )
         terms = _outer_order_by_sql(sql)
         assert len(terms) == 1, f"{terms}\n{sql}"
-        # The load-bearing assertion: the windowed operand must resolve to the
-        # ``_cm_`` CTE column. Asserting only that a `_cm_` CTE EXISTS is not
-        # enough — the composite can be rendered in ``_base`` from a PLAIN
-        # aggregate while the `_cm_` CTE sits joined but unused, which is the
-        # B1 silent-wrong-answer reaching through the composite door.
+        # Load-bearing: the operand must resolve to the ``_cm_`` CTE column, not a
+        # plain ``_base`` aggregate sitting beside an unused ``_cm_`` CTE (B1).
         assert "_cm_" in terms[0], (
             f"the composite must read the ROLLING value from its _cm_ CTE, "
             f"not a plain aggregate.\nORDER BY: {terms[0]}\nSQL:\n{sql}"
         )
         # ... and no plain aggregate may be materialised for it in ``_base``.
-        # AST-selected by CTE name, not string-split on the separator text: a
-        # spacing change would make `split` return the whole statement and this
-        # assertion would silently stop testing anything.
         base_sums = _cte_aggregate_sql(sql, cte="_base", column="amount")
         assert not base_sums, (
             f"a plain SUM of the windowed column must not be emitted in "
@@ -857,8 +732,7 @@ class TestWindowedOrderOnly:
         )
 
     async def test_hidden_and_public_windowed_in_one_query(self, engine) -> None:
-        """A declared windowed measure plus a DIFFERENT order-only windowed
-        one: two ``_wm_`` CTEs, one projected and one trimmed."""
+        """Declared + different order-only windowed: two CTEs, one trimmed."""
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=_MONTH,
@@ -872,9 +746,7 @@ class TestWindowedOrderOnly:
     async def test_declared_windowed_also_used_as_order_target_stays_public(
         self, engine,
     ) -> None:
-        """The same windowed key declared AND ordered on: it is public, so it
-        must stay projected and be referenced by its own alias — not be
-        reclassified hidden by the order pass."""
+        """A windowed key declared AND ordered on stays public, not reclassified hidden."""
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=_MONTH,
@@ -887,8 +759,7 @@ class TestWindowedOrderOnly:
         assert _outer_order_by_names(sql) == ["orders.w90"], sql
 
     async def test_c13_two_aliases_for_one_windowed_key_plus_order(self, engine) -> None:
-        """C13: one windowed value declared under two names. Both must project
-        and the order target must not collapse them."""
+        """One windowed value under two names: both project; order must not collapse them."""
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=_MONTH,
@@ -903,8 +774,7 @@ class TestWindowedOrderOnly:
         assert len(re.findall(r"_cm_\w+ AS \(", sql)) == 1, sql
 
     async def test_order_only_windowed_with_grain_dimension(self, engine) -> None:
-        """The ``_wm_`` grain partition is derived from the PROJECTED row slots;
-        a hidden order target must not add to or remove from that grain."""
+        """A hidden order target must not change the projected-row-slot grain."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
@@ -921,9 +791,7 @@ class TestWindowedOrderOnly:
     async def test_order_only_windowed_inherits_row_filters_but_not_date_range(
         self, engine,
     ) -> None:
-        """DEV-1714 contract: ``_src`` inherits WHERE-phase row filters but NOT
-        the typed ``date_range`` (the trailing window must reach rows before the
-        range start). A hidden plan follows the same rule."""
+        """``_src`` inherits row filters but not date_range — the window reaches earlier rows."""
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
@@ -955,8 +823,7 @@ class TestWindowedOrderOnly:
         assert "LIMIT 1" in sql, sql
 
     async def test_post_filter_and_order_on_same_windowed_key(self, engine) -> None:
-        """A filter on a windowed measure requires it to be selected (G6); the
-        order target then reuses the SAME plan rather than minting a second."""
+        """The order target reuses the filter's plan rather than minting a second."""
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=_MONTH,
@@ -969,13 +836,11 @@ class TestWindowedOrderOnly:
 
 
 class TestWindowedStillGuarded:
-    """DEV-1504 boundaries kept: composite windowed in ``measures``, and any
-    windowed/transform combination."""
+    """Boundaries: composite windowed in ``measures``, windowed/transform combos."""
 
     async def test_windowed_in_declared_composite_measure_still_raises(self, engine) -> None:
-        # DEV-1835: local windowed composite in ``measures`` now renders through
-        # the regroup producers (guard lifted); it must be scope-closed and leak
-        # no ``__regroup__`` marker.
+        # Guard lifted: this now renders (scope-closed, no ``__regroup__`` leak),
+        # despite the legacy "still_raises" name.
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=_MONTH,
@@ -986,8 +851,8 @@ class TestWindowedStillGuarded:
         assert "__regroup__" not in sql
 
     async def test_transform_over_windowed_order_target_still_raises(self, engine) -> None:
-        # DEV-1835: transform over a LOCAL windowed order target now renders
-        # (guard lifted); cross-model windowed is still guarded below.
+        # Guard lifted: transform over a LOCAL windowed order target now renders;
+        # cross-model windowed is still guarded below.
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=_MONTH,
@@ -1005,10 +870,12 @@ class TestWindowedStillGuarded:
             measures=[ModelMeasure(formula="id:count")],
             order=[OrderItem(column="customers.revenue:sum(window='90d')", direction="desc")],
         )
-        with pytest.raises(NotImplementedError) as ei:
+        with pytest.raises(ValueError) as ei:
             await _sql(engine, query)
-        # DEV-1835: cross-model windowed stays guarded, now under DEV-1836.
-        assert "DEV-1836" in str(ei.value), ei.value
+        # Cross-model windowed stays guarded — the host TD is not attributable
+        # from the target root, so the producer refuses the window.
+        assert "Windowed cross-model aggregate" in str(ei.value), ei.value
+        assert "attributable from" in str(ei.value), ei.value
 
     async def test_non_sum_avg_windowed_order_target_still_raises(self, engine) -> None:
         query = SlayerQuery(
@@ -1022,18 +889,13 @@ class TestWindowedStillGuarded:
         assert "sum and avg" in str(ei.value), ei.value
 
 
-# ===========================================================================
-# Group 8 — widening the hidden-order branch must not cross its boundaries:
-# some shapes must KEEP raising; the newly-resolved ones must not change grain.
-# ===========================================================================
+# Group 8 — widening the hidden-order branch must not cross its boundaries: some
+# shapes keep raising; newly-resolved ones must not change grain.
 class TestStillGuarded:
     async def test_joined_row_column_order_resolves_host_rooted(
         self, engine,
     ) -> None:
-        """DEV-1747 D2 replaced this rejection with a host-rooted CTE. What
-        Group 8 still guards is that widening the hidden-order branch did not
-        change the GRAIN: the sort key must not join the base or reach the
-        projection."""
+        """A host-rooted CTE sort key must not change grain or reach the projection."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
@@ -1045,8 +907,7 @@ class TestStillGuarded:
         assert [e.alias_or_name for e in parsed.expressions] == [
             "orders.status", "orders._count",
         ], sql
-        # Grain unchanged: the base CTE still groups on the query dim only —
-        # the joined sort key did NOT widen the base GROUP BY nor join the base.
+        # Grain unchanged: the base CTE still groups on the query dim only.
         base_cte = next(
             (c.this for c in sqlglot.parse_one(sql, dialect="sqlite").find_all(exp.CTE)
              if c.alias == "_base"), None,
@@ -1059,7 +920,7 @@ class TestStillGuarded:
         )
 
     async def test_ungrouped_row_column_still_splits(self, engine) -> None:
-        """The DEV-1712 split-emission path must be untouched."""
+        """The split-emission path must be untouched."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
@@ -1077,19 +938,8 @@ class TestStillGuarded:
     async def test_unslottable_order_expression_raises_not_dropped(
         self, engine,
     ) -> None:
-        """An ORDER BY expression with no materialisable slot must RAISE.
-
-        The entry-point relaxation makes key shapes reachable that
-        ``_iter_slot_deps`` treats as WHERE-inlined and never slots — a
-        top-level ``IN`` predicate is the reachable one. Before this guard the
-        order entry was silently discarded: the query ran UNSORTED and returned
-        the wrong rows with no error, which is the same failure mode as the
-        original ``change(...)`` bug.
-
-        The guard is deliberately shape-agnostic (raise whenever the lookup
-        misses) rather than an ``InKey``/``BetweenKey`` blocklist, so a future
-        key kind cannot silently reintroduce the class.
-        """
+        """An ORDER BY expression with no materialisable slot must raise, not be
+        silently dropped (a top-level ``IN`` predicate is the reachable case)."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
@@ -1101,9 +951,7 @@ class TestStillGuarded:
         assert "not supported" in str(ei.value), ei.value
 
     async def test_comparison_composite_order_still_works(self, engine) -> None:
-        """Control for the guard above: a boolean composite that DOES slot
-        (comparison / boolean arithmetic) must keep working, so the new raise
-        cannot be over-broad."""
+        """Control: a boolean composite that DOES slot must keep working (guard not over-broad)."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
@@ -1123,15 +971,7 @@ class TestStillGuarded:
     async def test_scalar_call_with_row_operand_raises_not_stringified(
         self, engine, formula: str,
     ) -> None:
-        """A row-column operand inside a scalar call must NOT be stringified.
-
-        The scalar-call renderer's trailing ``else`` coerced anything it did
-        not recognise with ``str(a)``, so a ``ColumnKey`` argument rendered as
-        the SQL string literal ``'path=() leaf=''id'''`` — structurally valid
-        SQL that silently compares an aggregate against a literal. The
-        arithmetic path already raised for the same operand; both now behave
-        the same.
-        """
+        """A row-column operand inside a scalar call must raise, not be stringified."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
@@ -1142,8 +982,7 @@ class TestStillGuarded:
             await _sql(engine, query)
 
     async def test_arithmetic_with_row_operand_raises(self, engine) -> None:
-        """The arithmetic sibling of the case above — pinned so the two paths
-        cannot drift back apart."""
+        """The arithmetic sibling of the case above; pinned so the two cannot drift apart."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
@@ -1154,19 +993,9 @@ class TestStillGuarded:
             await _sql(engine, query)
 
     def test_hidden_order_branch_rejects_unlisted_slot_kinds(self) -> None:
-        """The generator's hidden-ORDER-BY branch must dispatch on an EXPLICIT
-        set of key kinds — ``(AggregateKey, ArithmeticKey, ScalarCallKey,
-        TransformKey)`` — not on "any hidden slot that happens to have a
-        materialised alias".
-
-        The behavioural rejections above (grouped row column, joined row
-        column) are caught by plan-time validation, so they would stay green
-        even if this branch were widened too far. This drives the generator
-        directly with a hidden ROW slot that DOES carry an alias: the residual
-        internal invariant must still fire. An over-broad relaxation would
-        silently emit ``ORDER BY "orders.status"`` instead — a row column that
-        is not in the GROUP BY.
-        """
+        """The hidden-ORDER-BY branch must dispatch on an explicit key-kind set,
+        not on "any hidden slot with a materialised alias" — driven here with a
+        hidden ROW slot carrying an alias, which must still be rejected."""
 
         slot = ValueSlot(
             id="s0",
@@ -1180,12 +1009,11 @@ class TestStillGuarded:
             row_slots=[slot],
             order=[OrderEntry(
                 slot_id="s0", direction="asc",
-                # DEV-1747 §5.10 — classification is required on every entry.
+                # Classification is required on every entry.
                 scope=OrderScope.HOST_BASE_HIDDEN, phase=Phase.ROW,
             )],
         )
-        # Everything that can throw is built OUTSIDE the raises block, so the
-        # only invocation under test is the call itself.
+        # Built outside the raises block so only the call under test can throw.
         generator = SQLGenerator(dialect="sqlite")
         select = exp.Select()
         with pytest.raises(NotImplementedError) as ei:
@@ -1201,7 +1029,7 @@ class TestStillGuarded:
         assert "hidden slot" in str(ei.value), ei.value
 
     async def test_local_aggregate_order_only_unchanged(self, engine) -> None:
-        """The DEV-1712 hidden-aggregate contract must be untouched."""
+        """The hidden-aggregate contract must be untouched."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
@@ -1214,10 +1042,8 @@ class TestStillGuarded:
         assert _outer_order_by_names(sql) == ["orders.amount_sum"], sql
 
 
-# ===========================================================================
-# Group 9 — dialect coverage. Identifier quoting differs (MySQL backticks),
-# so a string-built alias would silently degrade to a literal.
-# ===========================================================================
+# Group 9 — dialect coverage. Quoting differs (MySQL backticks), so a
+# string-built alias would silently degrade to a literal.
 class TestDialectEmission:
     @pytest.mark.parametrize(
         "ds_type,dialect", [
@@ -1273,21 +1099,13 @@ class TestDialectEmission:
         ], sql
 
 
-# ===========================================================================
-# Group 10 — execution. Both bugs this issue fixes emitted structurally valid
-# SQL and returned WRONG NUMBERS, which only value assertions catch.
-# ===========================================================================
+# Group 10 — execution. Both bugs emitted valid SQL but wrong numbers, which
+# only value assertions catch.
 class TestExecution:
     async def test_hidden_transform_collision_computes_correct_values(
         self, exec_engine,
     ) -> None:
-        """B2 regression, the assertion that matters.
-
-        Jan: cumsum(amount)=50, cumsum(count)=2 -> 52
-        Feb: cumsum(amount)=75, cumsum(count)=4 -> 79
-        With colliding aliases both operands resolved to cumsum(amount),
-        yielding 100 / 150.
-        """
+        """B2 regression. Jan 50+2->52, Feb 75+4->79; colliding aliases gave 100/150."""
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=_MONTH,
@@ -1298,10 +1116,8 @@ class TestExecution:
         assert values == [52.0, 79.0], f"rows: {resp.data}"
 
     async def test_top_n_by_order_only_transform(self, exec_engine) -> None:
-        """``rank(amount:sum)`` DESC: paid(50) ranks 1, open(25) ranks 2, so
-        ordering by the RANK descending puts ``open`` first — the inverse of
-        ordering by the amount itself, which proves the transform (not its
-        operand) drives the sort."""
+        """rank DESC puts open first — the inverse of ordering by amount, proving
+        the transform (not its operand) drives the sort."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
@@ -1333,21 +1149,9 @@ class TestExecution:
         assert [r["orders.status"] for r in resp.data] == ["open", "paid"], resp.data
 
     async def test_order_only_change_orders_by_the_delta(self, exec_engine) -> None:
-        """``change(amount:sum)``: January has no prior bucket so its delta is
-        NULL; February's is 25 - 50 = -25.
-
-        SLayer sorts NULLs LAST on every dialect (``OrderEntry.nulls`` default;
-        the dialect strategy owns the spelling), so the NULL bucket is last in
-        BOTH directions and February leads either way. That is a real claim
-        rather than an accident of SQLite's native ordering, which puts NULLs
-        first on ASC — the transform chain used to inherit that, so the same
-        query sorted differently depending on whether it carried a transform.
-
-        Non-vacuous because of the CONTROL: the same shape ordered by
-        ``amount:sum`` DESC leads with January. A dropped ORDER BY cannot
-        produce both leaders, so the sort demonstrably runs and reads the term
-        the query asked for.
-        """
+        """change(amount:sum): Jan delta NULL, Feb -25. NULLs sort last on every
+        dialect, so Feb leads both directions; the amount:sum control leads with
+        Jan, proving the sort runs and reads the asked-for term."""
         def _months(rows) -> list[str]:
             return [str(r["orders.created_at"])[:7] for r in rows]
 
@@ -1388,9 +1192,7 @@ class TestExecution:
         assert resp.columns == ["orders.status", "orders._count"], resp.columns
         for row in resp.data:
             assert set(row) == {"orders.status", "orders._count"}, row
-        # ``attributes`` only carries entries for fields with display metadata,
-        # so assert ABSENCE of the hidden operands (the DEV-1712 convention)
-        # rather than an exact key set.
+        # attributes only carries fields with display metadata, so assert absence.
         keys = set(resp.attributes.dimensions) | set(resp.attributes.measures)
         assert not any("amount_sum" in k or "id_count" in k for k in keys), keys
         assert keys <= {"orders.status", "orders._count"}, keys
@@ -1422,9 +1224,7 @@ class TestExecution:
         assert len(resp.data) == 2, resp.data
 
 
-# ===========================================================================
 # Group 11 — multi-stage: the same shapes inside a downstream StageSchema.
-# ===========================================================================
 class TestMultiStage:
     async def test_downstream_stage_order_only_composite(self, exec_engine) -> None:
         inner = SlayerQuery(
@@ -1466,8 +1266,7 @@ class TestMultiStage:
     async def test_downstream_stage_schema_excludes_hidden_order_slot(
         self, exec_engine,
     ) -> None:
-        """A hidden order slot in the INNER stage must not surface in the
-        stage schema the outer stage binds against."""
+        """A hidden inner-stage order slot must not surface in the stage schema."""
         inner = SlayerQuery(
             name="s1",
             source_model="orders",
@@ -1486,10 +1285,7 @@ class TestMultiStage:
     async def test_hidden_windowed_order_slot_absent_from_stage_schema(
         self, exec_engine,
     ) -> None:
-        """Law 2 for the windowed case: an order-only windowed target in the
-        INNER stage must not become a column of the stage schema the outer
-        stage binds against — the goal requires every hidden target to be
-        stripped from response columns AND StageSchema."""
+        """Law 2, windowed: an inner-stage order-only windowed target is not a stage column."""
         inner = SlayerQuery(
             name="s1",
             source_model="orders",
@@ -1508,9 +1304,7 @@ class TestMultiStage:
     async def test_outer_stage_cannot_bind_hidden_windowed_order_slot(
         self, exec_engine,
     ) -> None:
-        """The complement: the hidden windowed column is genuinely NOT in the
-        stage schema, so a downstream reference to it fails to resolve rather
-        than silently reading a leaked column."""
+        """Complement: a downstream reference to the hidden windowed column fails to resolve."""
         inner = SlayerQuery(
             name="s1",
             source_model="orders",
@@ -1524,15 +1318,13 @@ class TestMultiStage:
         )
         with pytest.raises(UnknownReferenceError) as ei:
             await exec_engine.execute(query=[inner, outer])
-        # The message also names the stage's real column set, which is the
-        # positive half of the assertion: the hidden windowed slot is absent.
+        # The error names the stage's real columns — the hidden slot is absent.
         assert "amount_sum_window_90d" in str(ei.value), ei.value
 
     async def test_hidden_alias_rename_does_not_leak_into_stage_schema(
         self, exec_engine,
     ) -> None:
-        """Plan-time hidden renaming must never reach the downstream binding
-        surface — only public slots become stage columns."""
+        """Plan-time hidden renaming must not reach the downstream binding surface."""
         inner = SlayerQuery(
             name="s1",
             source_model="orders",
@@ -1550,29 +1342,13 @@ class TestMultiStage:
         assert float(resp.data[0]["s1.peak"]) == 79.0, resp.data
 
 
-# ===========================================================================
-# Group 9 — two DEV-1733 pins superseded by DEV-1703 Phase 1.
-#
-# DEV-1733 was written against a base that predates Phase 1, so it pinned the
-# Stage-8 contract for two shapes Phase 1 had already changed on the parent
-# branch. Both pins are INVERTED here rather than deleted (the same treatment
-# DEV-1733 itself gave the two DEV-1501-era tests it superseded) so the
+# Group 9 — two pins superseded by Phase 1, inverted here (not deleted) so the
 # supersession stays visible and neither contract can silently regress.
-# ===========================================================================
 class TestSupersededByDev1703Phase1:
     async def test_grouped_row_column_order_max_wraps(self, exec_engine) -> None:
-        """Was ``test_grouped_row_column_order_still_raises`` (ValueError).
-
-        Phase 1 replaced that rejection: a LOCAL row column in a GROUPED query
-        materialises a hidden ``<col>:max`` aggregate and orders on its alias.
-        MAX is order-preserving per group and portable across every Tier-1
-        dialect. Pinned by EXECUTED VALUES, not SQL shape — the failure this
-        guards against is a sort that silently does nothing.
-
-        Seed: ``paid`` max(created_at) = 2025-01-02, ``open`` = 2025-02-02, so
-        ``desc`` puts ``open`` first. Sorting by the wrong thing (or not at
-        all) reverses or scrambles that.
-        """
+        """Phase 1 replaced the rejection: a grouped LOCAL row column orders on a
+        hidden ``<col>:max``. Seed: paid max = 2025-01-02, open = 2025-02-02, so
+        DESC puts open first; a no-op sort would scramble that."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
@@ -1587,17 +1363,8 @@ class TestSupersededByDev1703Phase1:
     async def test_order_only_transform_in_raw_rows_mode_rejected(
         self, engine,
     ) -> None:
-        """Was ``test_order_only_transform_in_raw_rows_mode`` (permissive).
-
-        That test asserted the typed pipeline deliberately does NOT enforce
-        DEV-1543's "no measure references with ``distinct_dimension_values=
-        False``" rule, on the grounds that the check lived only in the legacy
-        ``enrichment.py``. DEV-1703 restored the check on the typed path after
-        the permissive behaviour was shown by execution to return WRONG ROW
-        COUNTS (a 4-row table came back with 2 rows — the inner aggregate
-        induces a GROUP BY, so the caller does not get the raw rows they
-        asked for). Rejecting at compile time matches main.
-        """
+        """Raw-rows mode rejects a measure-referencing order target: the inner
+        aggregate induces a GROUP BY, so a 4-row table came back with 2 rows."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],

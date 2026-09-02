@@ -53,6 +53,8 @@ class TestGrainGuards:
             await gen(q)
 
     async def test_cross_model_partition_outside_derived_grain_raises(self) -> None:
+        # DEV-1836: the key is checked for attributability from the aggregate's
+        # root — `region` is a host column, unreachable from `customers`.
         q = _q(
             dimensions=["region", "customers.tier"],
             measures=[
@@ -61,7 +63,9 @@ class TestGrainGuards:
         )
         with pytest.raises(ValueError, match=r"partition_by") as ei:
             await gen(q)
-        assert "customers.tier" in str(ei.value)
+        msg = str(ei.value)
+        assert "region" in msg
+        assert "attributable from customers" in msg
 
 
 class TestDeferredShapeGuards:

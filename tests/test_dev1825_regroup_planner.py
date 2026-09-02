@@ -196,8 +196,9 @@ class TestFilterClassifier:
 # --------------------------------------------------------------------------- #
 class TestDiscoveryGuards:
     async def test_joined_aggregate_source_raises_stage_three(self) -> None:
-        # The SOURCE crosses a join (would need a target-rooted producer —
-        # Codex F1, stage 3); distinct from the supported joined PARTITION KEY.
+        # DEV-1836: the cross-model SOURCE is now supported via a target-rooted
+        # producer, but the explicit ``partition_by=city`` is unattributable
+        # from the aggregate's root (customers) — a hard error (F4).
         q = _q(
             dimensions=[
                 "region",
@@ -206,7 +207,7 @@ class TestDiscoveryGuards:
             ],
             measures=[ModelMeasure(formula="amount:sum", name="s")],
         )
-        with pytest.raises(NotImplementedError, match=r"DEV-1836"):
+        with pytest.raises(ValueError, match=r"attributable from customers"):
             await gen(q)
 
     async def test_reserved_prefix_column_rejected_when_regroup_active(self) -> None:

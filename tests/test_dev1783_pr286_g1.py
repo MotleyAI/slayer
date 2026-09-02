@@ -27,11 +27,6 @@ from types import SimpleNamespace
 import pytest
 
 from slayer.core.keys import ColumnKey, Phase, TransformKey
-from slayer.engine.binding import BoundFilter
-from slayer.engine.cross_model_planner import (
-    HostFilterRouting,
-    _route_host_rooted_filters,
-)
 from slayer.engine.planned import ValueSlot
 from slayer.sql.generator import SQLGenerator
 
@@ -87,24 +82,3 @@ class TestNtileNIsNormalised:
 # --------------------------------------------------------------------------- #
 # Item 5 — host-rooted routes leave where_ids empty
 # --------------------------------------------------------------------------- #
-class TestHostRootedRoutesLeaveWhereIdsEmpty:
-
-    @staticmethod
-    def _row_routing(fid: str) -> HostFilterRouting:
-        return HostFilterRouting(
-            filter_id=fid,
-            phase=Phase.ROW,
-            text="status = 'paid'",
-            bound=BoundFilter(
-                value_key=ColumnKey(path=(), leaf="status"), phase=Phase.ROW,
-            ),
-        )
-
-    def test_where_ids_is_empty_but_applied_is_populated(self) -> None:
-        routes = _route_host_rooted_filters(host_filters=[self._row_routing("f1")])
-        assert routes.applied == ["f1"], routes
-        # ``where_ids`` is an instruction to the host base to SKIP the filter as
-        # forward-CTE-delegated. A host-rooted CTE has no forward CTE, so it must
-        # stay empty; the sub-plan already carries the predicate.
-        assert routes.where_ids == [], routes
-        assert routes.having_ids == [], routes

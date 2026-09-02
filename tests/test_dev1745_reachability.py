@@ -1,7 +1,7 @@
 """DEV-1745 (W4 / mechanism contract 5.3) — structural crossing metadata and
 ONE reachability rule for every key kind.
 
-``classify_host_filter`` must route EXCLUSIVELY from structural metadata. The
+Filter routing must work EXCLUSIVELY from structural metadata. The
 ``ColumnSqlKey`` model-name-membership heuristic goes: it asked whether the
 derived column's model NAME appeared anywhere in ``target_path`` — a flat
 membership test, not a structural prefix — so a model reachable on a SIBLING
@@ -38,14 +38,23 @@ from slayer.core.keys import (
     ColumnSqlKey,
     InKey,
     LiteralKey,
-    Phase,
     ScalarCallKey,
     SqlExprKey,
 )
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
+from slayer.engine.filter_reachability import (
+    UnhandledValueKindError,
+    compute_key_join_paths,
+    filter_reachability_for,
+    recompute_filter_reachability,
+)
 from slayer.engine.source_bundle import ResolvedSourceBundle
-from slayer.engine.stage_planner import plan_query
+from slayer.engine.stage_planner import (
+    _bound_filter_from_key,
+    _cross_model_inherited_filters,
+    plan_query,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -136,8 +145,6 @@ def _bundle() -> ResolvedSourceBundle:
 
 def _paths_for(key):
     """Anchored crossed-join-path set for one ValueKey, at plan time."""
-    from slayer.engine.filter_reachability import compute_key_join_paths
-
     return compute_key_join_paths(
         key=key,
         anchor_model=_orders(),
@@ -292,11 +299,6 @@ class TestCompositeKeyKindsAreTotal:
         """Fails CLOSED on an unhandled kind — and with an error that names the
         offending type, not an incidental AttributeError/TypeError from
         stumbling over an unexpected shape."""
-        from slayer.engine.filter_reachability import (
-            UnhandledValueKindError,
-            compute_key_join_paths,
-        )
-
         class _Bogus:
             pass
 
@@ -314,87 +316,62 @@ class TestCompositeKeyKindsAreTotal:
 # --------------------------------------------------------------------------- #
 # Routing outcomes
 # --------------------------------------------------------------------------- #
-class TestStructuralRouting:
+class TestProducerInheritanceRouting:
+    """DEV-1838 (2.5) — the ``classify_host_filter`` routing table died with the
+    cross-model planner; producer filter inheritance
+    (``_cross_model_inherited_filters``, design D3) is the one seam that now
+    decides which host ROW conjuncts a target-rooted producer inherits. The
+    structural rules that survive: prefix-strip under the target with a
+    provably-safe remainder, and ALL-dependencies drop. The legacy
+    prefix-of-target and crossing-derived PROPAGATE optimizations do not port —
+    the attributable doctrine (DEV-1836 D3) drops them with a warning instead,
+    pinned behaviorally in ``test_dev1836_filter_inheritance``.
+    """
 
-    def _route(self, key, *, target_path, phase=Phase.ROW):
-        from slayer.engine.cross_model_planner import classify_host_filter
-
-        return classify_host_filter(
-            host_filter=self._routing(key, phase=phase),
-            host_slots=[],
-            target_path=target_path,
+    def _split(self, key, *, target_path):
+        models = {
+            m.name: m
+            for m in (_orders(), _customers(), _regions(), _warehouses())
+        }
+        return _cross_model_inherited_filters(
+            base_filters=[(_bound_filter_from_key(key), "f")],
+            target_path=tuple(target_path),
+            root_model=models[target_path[-1]],
+            models_by_name=models,
         )
 
-    def _routing(self, key, *, phase=Phase.ROW):
-        from slayer.engine.cross_model_planner import HostFilterRouting
-        from slayer.engine.filter_reachability import (
-            compute_key_join_paths,
-            key_has_host_local_ref,
-        )
-
-        kwargs = dict(
-            key=key, anchor_model=_orders(), anchor_relation="orders",
-            bundle=_bundle(),
-        )
-        return HostFilterRouting(
-            filter_id="f1", phase=phase, referenced_slot_ids=[], text="",
-            crossed_join_paths=compute_key_join_paths(**kwargs),
-            has_host_local_ref=key_has_host_local_ref(**kwargs),
-        )
-
-    def test_sibling_branch_is_not_reachable(self) -> None:
-        """`regions` is reachable from BOTH customers and warehouses. Under
-        the old flat membership test, a warehouses->regions reference counted
-        as reachable for target ('customers',). Structurally it is not."""
-        from slayer.engine.cross_model_planner import FilterRoute
-
-        route = self._route(
+    def test_sibling_branch_is_not_inherited(self) -> None:
+        """`regions` is reachable from BOTH customers and warehouses. A flat
+        membership test would count a warehouses->regions reference as
+        reachable for target ('customers',); structurally it is not."""
+        inherited, dropped = self._split(
             ColumnKey(path=("warehouses", "regions"), leaf="population"),
             target_path=("customers",),
         )
-        assert route == FilterRoute.DROP_UNREACHABLE
+        assert not inherited
+        assert dropped
 
-    def test_path_deeper_than_target_is_not_reachable(self) -> None:
-        """A dependency BELOW the target is not available in the target's
-        scope. Note the direction: ``path`` deeper than ``target_path``.
-
-        (The converse — a path that is a proper PREFIX of the target — IS
-        reachable under ``path == target_path[:len(path)]``, and is covered by
-        ``test_prefix_of_target_is_reachable`` below.)
-        """
-        from slayer.engine.cross_model_planner import FilterRoute
-
-        route = self._route(
+    def test_path_deeper_than_target_is_not_inherited(self) -> None:
+        """A dependency BELOW the target strips to a remainder the root's own
+        graph must prove; a hop the root has no edge for drops."""
+        inherited, dropped = self._split(
             ColumnKey(
                 path=("customers", "regions", "subregions"), leaf="population",
             ),
             target_path=("customers", "regions"),
         )
-        assert route == FilterRoute.DROP_UNREACHABLE
+        assert not inherited
+        assert dropped
 
-    def test_prefix_of_target_is_reachable(self) -> None:
-        """The rule is ``path == target_path[:len(path)]`` — a path that is a
-        prefix of the target is reachable, not dropped."""
-        from slayer.engine.cross_model_planner import FilterRoute
-
-        route = self._route(
-            ColumnKey(path=("customers",), leaf="balance"),
-            target_path=("customers", "regions"),
-        )
-        assert route == FilterRoute.PROPAGATE_WHERE
-
-    def test_exact_path_match_is_reachable(self) -> None:
-        from slayer.engine.cross_model_planner import FilterRoute
-
-        route = self._route(
+    def test_exact_path_match_is_inherited(self) -> None:
+        inherited, dropped = self._split(
             ColumnKey(path=("customers", "regions"), leaf="population"),
             target_path=("customers", "regions"),
         )
-        assert route == FilterRoute.PROPAGATE_WHERE
+        assert inherited
+        assert not dropped
 
     def test_mixed_reachable_and_unreachable_drops(self) -> None:
-        from slayer.engine.cross_model_planner import FilterRoute
-
         key = ArithmeticKey(
             op="+",
             operands=(
@@ -402,45 +379,22 @@ class TestStructuralRouting:
                 ColumnKey(path=("warehouses",), leaf="id"),
             ),
         )
-        route = self._route(key, target_path=("customers",))
-        assert route == FilterRoute.DROP_UNREACHABLE, (
-            "reachability is an ALL-dependencies predicate"
-        )
+        inherited, dropped = self._split(key, target_path=("customers",))
+        assert not inherited, "reachability is an ALL-dependencies predicate"
+        assert dropped
 
-    def test_mixed_local_and_crossing_derived_stays_at_host(self) -> None:
-        """A host-declared derived column can be BOTH.
-
-        ``amount * customers.balance`` crosses into ``customers``, so its
-        crossed set is non-empty — but it also depends on the host-local
-        ``amount``, which a customers-rooted CTE cannot bind. Inferring
-        "not host-local" from "it crossed something" would propagate this and
-        emit SQL referencing an unbound ``orders.amount``.
-        """
-        from slayer.engine.cross_model_planner import FilterRoute
-
-        route = self._route(
-            _derived("host_derived_mixed"), target_path=("customers",),
-        )
-        assert route == FilterRoute.DROP_HOST_LOCAL
-
-    def test_purely_crossing_derived_still_propagates(self) -> None:
-        """The counter-case, so the fix above is not just blanket caution:
-        a host-declared derived column whose sql reaches ONLY into the target
-        resolves inside the target's scope and still propagates."""
-        from slayer.engine.cross_model_planner import FilterRoute
-
-        route = self._route(
-            _derived("host_derived_crossing"), target_path=("customers",),
-        )
-        assert route == FilterRoute.PROPAGATE_WHERE
-
-    def test_empty_path_is_host_local(self) -> None:
-        from slayer.engine.cross_model_planner import FilterRoute
-
-        route = self._route(
+    def test_host_local_is_not_inherited(self) -> None:
+        inherited, dropped = self._split(
             ColumnKey(path=(), leaf="amount"), target_path=("customers",),
         )
-        assert route == FilterRoute.DROP_HOST_LOCAL
+        assert not inherited
+        assert dropped
+
+    def test_dropped_conjunct_carries_the_filter_text(self) -> None:
+        _inherited, dropped = self._split(
+            ColumnKey(path=(), leaf="amount"), target_path=("customers",),
+        )
+        assert dropped[0].filter_text == "f"
 
 
 class TestInlineScalarsAreNotReferences:
@@ -504,8 +458,6 @@ class TestCoordinateSystemInvariant:
         """A key crossing ('customers','regions') from the orders root is
         ('regions',) when the anchor IS customers. A summary that were copied
         rather than recomputed would report the parent's paths."""
-        from slayer.engine.filter_reachability import compute_key_join_paths
-
         key = ColumnKey(path=("customers", "regions"), leaf="population")
         from_orders = compute_key_join_paths(
             key=key, anchor_model=_orders(), anchor_relation="orders",
@@ -526,11 +478,6 @@ class TestCoordinateSystemInvariant:
     def test_nested_plan_recomputes_rather_than_inherits(self) -> None:
         """The nested (rerooted) plan a cross-model CTE compiles must carry its
         OWN summary, not the parent's."""
-        from slayer.engine.filter_reachability import (
-            filter_reachability_for,
-            recompute_filter_reachability,
-        )
-
         host = _orders()
         host.columns.append(
             Column(name="eu_amount", sql="amount",
@@ -549,11 +496,11 @@ class TestCoordinateSystemInvariant:
             ),
             bundle=bundle,
         )
-        nested = [
-            p.rerooted_plan for p in planned.cross_model_aggregate_plans
-            if p.rerooted_plan is not None
-        ]
-        assert nested, "fixture must produce a nested rerooted plan"
+        # DEV-1838 D5: the filtered-local nests as a host-rooted regroup
+        # producer; the invariant is the same — the nested plan carries its
+        # OWN summary.
+        nested = [a.producer_plan for a in planned.regroup_attach_plans]
+        assert nested, "fixture must produce a nested producer plan"
         for sub in nested:
             # The summary the nested plan CARRIES must equal a fresh
             # computation anchored at the nested plan's own root. If the parent

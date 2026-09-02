@@ -17,8 +17,6 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.errors import RenderContextMissingFacilityError
-
 from tests._dev1750_fixtures import (
     ColumnRef,
     ModelMeasure,
@@ -144,28 +142,32 @@ class TestChangeDesugars:
         assert float(by["2024-03"]["orders.pct"]) == pytest.approx((18.0 - 24.0) / 24.0)
 
 
-class TestChangeOverCrossModelInnerIsOutOfScope:
-    """``change`` / ``change_pct`` over a CROSS-MODEL/crossing-fragment inner
-    adds an arithmetic layer the combined SELECT renders BEFORE the transform
-    chain, hitting a pre-existing ``RenderContextMissingFacilityError`` (the
-    TransformKey is not yet materialised as a slot). DEV-1750 does not fix that
-    separate gap; the contract is that it stays a loud, SPECIFIC error — never
-    wrong values or unbound SQL. Pinning the exact type stops a real regression
-    (bad-SQL binding error, silent wrong number) from passing as 'expected'."""
+class TestChangeOverCrossingFragmentInner:
+    """``change`` / ``change_pct`` over a crossing-fragment inner used to hit
+    a ``RenderContextMissingFacilityError``; DEV-1838 D5 desugars the inner
+    onto a host-rooted producer, so the transform now composes with the
+    correct values (the closure axiom, one shape over)."""
 
-    async def test_change_of_wscaled_raises_render_context(self, exec_engine) -> None:
-        q = _q(measures=[
+    async def test_change_of_wscaled_composes(self, exec_engine) -> None:
+        """DEV-1838 D5 lifted the gap: the crossing-fragment inner desugars
+        onto a host-rooted producer, so ``change`` composes with the correct
+        month-over-month deltas (48−35, 46−48 from the dataset recap)."""
+        resp = await exec_engine.execute(_q(measures=[
             ModelMeasure(formula="change(amount:wscaled_sum)", name="delta"),
-        ])
-        with pytest.raises(RenderContextMissingFacilityError):
-            await exec_engine.execute(q)
+        ]))
+        by = _by_month(resp)
+        assert by["2024-01"]["orders.delta"] is None
+        assert float(by["2024-02"]["orders.delta"]) == pytest.approx(13.0)
+        assert float(by["2024-03"]["orders.delta"]) == pytest.approx(-2.0)
 
-    async def test_change_pct_of_wscaled_raises_render_context(self, exec_engine) -> None:
-        q = _q(measures=[
+    async def test_change_pct_of_wscaled_composes(self, exec_engine) -> None:
+        resp = await exec_engine.execute(_q(measures=[
             ModelMeasure(formula="change_pct(amount:wscaled_sum)", name="delta"),
-        ])
-        with pytest.raises(RenderContextMissingFacilityError):
-            await exec_engine.execute(q)
+        ]))
+        by = _by_month(resp)
+        assert by["2024-01"]["orders.delta"] is None
+        assert float(by["2024-02"]["orders.delta"]) == pytest.approx(13.0 / 35.0)
+        assert float(by["2024-03"]["orders.delta"]) == pytest.approx(-2.0 / 48.0)
 
 
 class TestSiblingProtectionUnderFanOut:
@@ -175,26 +177,25 @@ class TestSiblingProtectionUnderFanOut:
     own CTEs, so the sibling stays true — a claim only a fan-out dataset can
     actually test (Codex F1)."""
 
-    async def test_local_sibling_not_multiplied_by_one_to_many_fragment(
+    async def test_one_to_many_fragment_fails_closed(
         self, exec_engine
     ) -> None:
-        resp = await exec_engine.execute(_q(measures=[
+        """DEV-1838 D5 (class-(d) crossed-argument ledger row): the 1:N
+        ``line_items`` param fanned the SUM silently — now a hard error naming
+        the hop and the remedy. Sibling protection under fan-out survives as a
+        structural property of producer isolation, pinned by the proven-hop
+        shapes above."""
+        query = _q(measures=[
             ModelMeasure(formula="amount:sum", name="s"),
             ModelMeasure(formula="amount:liscaled_sum", name="li"),
-            ModelMeasure(formula="time_shift(amount:liscaled_sum, -1)", name="prev"),
-        ]))
-        by = _by_month(resp)
-        # Sibling amount:sum stays unmultiplied (order 1 counted ONCE, not twice).
-        assert float(by["2024-01"]["orders.s"]) == pytest.approx(15.0)
-        assert float(by["2024-02"]["orders.s"]) == pytest.approx(24.0)
-        assert float(by["2024-03"]["orders.s"]) == pytest.approx(18.0)
-        # The crossing measure itself keeps the fanned-out weighted sum...
-        assert float(by["2024-01"]["orders.li"]) == pytest.approx(50.0)
-        # ...and its prior-period value (Part 1: the 1:N join is pulled into the
-        # shifted CTE, so the shifted re-aggregation fans out identically).
-        assert by["2024-01"]["orders.prev"] is None
-        assert float(by["2024-02"]["orders.prev"]) == pytest.approx(50.0)
-        assert float(by["2024-03"]["orders.prev"]) == pytest.approx(24.0)
+            ModelMeasure(
+                formula="time_shift(amount:liscaled_sum, -1)", name="prev"),
+        ])
+        with pytest.raises(ValueError) as ei:
+            await exec_engine.execute(query)
+        message = str(ei.value)
+        assert "line_items" in message
+        assert any(w in message.lower() for w in ("cardinality", "unique", "declare"))
 
 
 class TestConsecutivePeriodsExecution:

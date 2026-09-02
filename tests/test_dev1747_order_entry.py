@@ -402,33 +402,48 @@ class TestLaw3TriggerMatrix:
         self, query: SlayerQuery, expect_host_rooted: bool,
     ) -> None:
         plan = _plan(query)
-        assert plan.cross_model_aggregate_plans, (
-            "the Law-3 trigger did not fire for this branch"
-        )
-        cma = plan.cross_model_aggregate_plans[0]
-        assert (cma.cte_root_model is not None) is expect_host_rooted, (
-            f"cte_root_model={cma.cte_root_model!r} — expected "
-            f"{'host' if expect_host_rooted else 'target'}-rooted"
-        )
+        if expect_host_rooted:
+            # DEV-1838 D5: a host-grain wrap / crossing-input wrap is a
+            # HOST-rooted regroup producer (producer_root_model None = rooted
+            # at the consumer, which IS the host).
+            attach = next(
+                (a for a in plan.regroup_attach_plans
+                 if a.producer_root_model is None
+                 and a.attach_phase == "combined"),
+                None,
+            )
+            assert attach is not None, (
+                "the Law-3 trigger did not fire for this branch"
+            )
+        else:
+            # DEV-1836: a target-grain cross-model aggregate now routes to a
+            # TARGET-rooted regroup producer, not a top-level cross-model plan.
+            attach = next(
+                a for a in plan.regroup_attach_plans
+                if a.producer_root_model == "customers"
+            )
+            assert attach.producer_root_model == "customers"
 
-    def test_isolation_disabled_renders_inline_instead_of_recursing(self) -> None:
-        """The recursion guard. The host-rooted sub-plan contains the SAME
-        crossing key, so if the trigger fired again inside it the planner would
-        recurse without bound — which is why ``subplan_builder`` always passes
-        ``disable_host_rooted_isolation=True``.
+    def test_the_wrap_producer_holds_its_key_inline(self) -> None:
+        """The recursion guard. The wrap's own producer plan contains the SAME
+        crossing key as a plain measure, so if the desugar fired again inside
+        it the planner would recurse without bound — which is why producer
+        sub-plans run with local discovery off (DEV-1838 2.5).
 
-        Under that flag the key must render INLINE (base-pull), which is legal
-        there because the CTE is the aggregate's own scope. Observable as: no
-        cross-model plan at all.
-        """
+        Inside its own producer the key renders INLINE (base-pull), which is
+        legal there because the producer is the aggregate's own scope.
+        Observable as: no nested attach inside the wrap producer."""
         plan = plan_query(
             query=_HOST_GRAIN_WITH_PATH,
             bundle=dev1747_bundle(),
-            disable_host_rooted_isolation=True,
         )
-        assert not plan.cross_model_aggregate_plans, (
-            "a host-grain wrap still isolated under "
-            "disable_host_rooted_isolation — the sub-plan would recurse"
+        attach = next(
+            a for a in plan.regroup_attach_plans
+            if a.producer_root_model is None and a.attach_phase == "combined"
+        )
+        assert not attach.producer_plan.regroup_attach_plans, (
+            "the wrap producer desugared its own key again — the sub-plan "
+            "would recurse"
         )
 
     def test_the_disabled_flag_does_not_suppress_target_rooted_plans(self) -> None:
@@ -440,7 +455,11 @@ class TestLaw3TriggerMatrix:
             bundle=dev1747_bundle(),
             disable_host_rooted_isolation=True,
         )
-        assert plan.cross_model_aggregate_plans, (
+        # DEV-1838 (2.5): the target-rooted isolation is a producer attach.
+        assert any(
+            a.producer_root_model is not None
+            for a in plan.regroup_attach_plans
+        ), (
             "disable_host_rooted_isolation wrongly suppressed a target-rooted "
-            "cross-model plan"
+            "producer"
         )

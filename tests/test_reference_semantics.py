@@ -526,9 +526,9 @@ class TestStrictResolution:
     # ``test_unknown_bare_name_dropped_when_lenient``) poked the legacy
     # ``the legacy enrichment entry point(drop_unreachable_filters=True)`` internal flag, which
     # has no public surface on the typed pipeline. The equivalent
-    # lenient-drop now lives in ``cross_model_planner`` and is covered by
-    # ``tests/test_cross_model_planner.py::TestReachability::
-    # test_unreachable_branch_drops_and_warns`` and ``test_classify_unreachable``.
+    # lenient-drop now lives in producer filter inheritance and is covered by
+    # ``tests/test_dev1836_filter_inheritance`` and the dropped-filter
+    # warning pins in ``tests/test_dev1747_reroot_filter_routing``.
 
     async def test_known_filter_name_passes(self) -> None:
         """Control: a filter naming a defined Column enriches without error."""

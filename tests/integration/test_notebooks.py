@@ -94,31 +94,11 @@ def _jaffle_models_template(_ensure_jaffle_db, tmp_path_factory) -> Path:
     return snapshot
 
 
-# Notebooks expected to fail under the current typed-pipeline gaps.
+# Notebooks expected to fail under current engine gaps.
 # Map: notebook path relative to EXAMPLES_DIR → Linear issue + reason.
-# Re-enable a notebook by removing its entry once the cited issue lands.
-_KNOWN_FAILING_NOTEBOOKS = {
-    # DEV-1474 (cross-model partition in time_shift CTEs) landed in DEV-1711
-    # Stage 7 — the 04_time QoQ-by-store cell now runs, so that notebook is
-    # un-skipped. 09_lightning_talk stays skipped for a DIFFERENT, downstream
-    # reason: its hero cell issues ONE query with TWO time_shift transforms
-    # (change_pct + an explicit time_shift), which collide on the CTE name
-    # `shifted__time_shift_inner` — the DEV-1692 de-collision gap owned by
-    # Stage 9 (same gap as the 13_osi_import notebooks below).
-    "09_lightning_talk/lightning_talk_nb.ipynb": (
-        "DEV-1713: DEV-1692 duplicate time_shift CTE name "
-        "(`Duplicate CTE name \"shifted__time_shift_inner\"`) — the hero query "
-        "combines change_pct(order_total:sum) with an explicit "
-        "time_shift(order_total:sum, -1, 'month') in one query, so two shifted "
-        "CTEs are emitted under the same name. DEV-1474's cross-model partition "
-        "(the Stage-7 blocker) is fixed; this is the Stage-9 collision gap."
-    ),
-    # DEV-1704 Stage-0 parity gaps surfaced by the integration notebook run.
-    "12_query_cache/query_cache_nb.ipynb": (
-        "DEV-1715: the DEV-1587 per-query cache is not yet wired into the "
-        "typed pipeline (deferred from Stage 0)."
-    ),
-}
+# Re-enable a notebook by removing its entry once the cited issue lands —
+# the marker is STRICT, so a lingering entry fails the suite as XPASS.
+_KNOWN_FAILING_NOTEBOOKS: dict[str, str] = {}
 
 
 @pytest.fixture(params=_NOTEBOOKS, ids=[str(p.relative_to(EXAMPLES_DIR)) for p in _NOTEBOOKS])
@@ -254,7 +234,7 @@ def test_notebook_runs_without_errors(notebook_path, request):
     if rel in _KNOWN_FAILING_NOTEBOOKS:
         request.applymarker(pytest.mark.xfail(
             reason=_KNOWN_FAILING_NOTEBOOKS[rel],
-            strict=False,
+            strict=True,
         ))
     is_metricflow = _METRICFLOW_NB_DIR in notebook_path.parts
     if is_metricflow:

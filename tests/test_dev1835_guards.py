@@ -5,7 +5,8 @@ the post-projection mixed-filter twin, ``time_shift``-over-ranked, and the
 residual DEV-1839 windowed/first-last union-grain guard — asserted absent from
 the package sources. Preserved verbatim: G1 (sum/avg only), G8 (duration
 syntax), G2 (time resolution), and the ranked no-ranking-column error.
-Re-pointed: G3 (windowed cross-model) now defers to DEV-1836.
+Resolved: G3 (windowed cross-model) is now a precise DEV-1836 attributability
+error naming the unreachable time dimension, no longer a DEV-1504 deferral.
 
 Scenario coverage map (spec: openspec …/specs/queries/computed-dimensions):
   The lifted windowed/ranked guard leaves no residue . TestDeletedGuardResidue
@@ -129,14 +130,20 @@ class TestPreservedGuardsVerbatim:
 
 
 class TestRepointedGuards:
-    async def test_g3_windowed_cross_model_points_at_stage_three(self) -> None:
+    async def test_g3_windowed_cross_model_needs_attributable_time_dimension(
+        self,
+    ) -> None:
+        # DEV-1836 resolves the former blanket G3 deferral into a precise
+        # attributability error: the active time dimension is a host column,
+        # unreachable from the customers root.
         query = q(
             dimensions=["customers.tier"], time_dimensions=month_td(),
             measures=[ModelMeasure(
                 formula="customers.spend:sum(window='90d')", name="w",
             )],
         )
-        with pytest.raises(NotImplementedError, match=r"(?i)cross-model") as ei:
+        with pytest.raises(ValueError, match=r"(?i)cross-model") as ei:
             await _gen(query)
-        assert "DEV-1836" in str(ei.value)
-        assert "DEV-1504" not in str(ei.value)
+        msg = str(ei.value)
+        assert "ordered_at_month" in msg
+        assert "DEV-1504" not in msg

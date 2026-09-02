@@ -124,12 +124,19 @@ visible bucket still gets its prior-period value under either spelling.
 If you genuinely want to clip the underlying rows, apply the bound in an inner
 stage of a multi-stage query so the windowed stage never sees the raw column.
 
+A cross-model windowed measure (`customers.revenue:sum(window=…)`) works when
+the query's active time dimension is *attributable* from the measure's own
+model — reachable from it over provably many-to-one join hops (see
+[cross-model measures](queries.md#cross-model-measures)); the window buckets by
+that time dimension inside the measure's sub-query. When it is not
+attributable, the query errors naming the time dimension and the remedy.
+
 The following windowed-measure shapes raise a clear error rather than returning
 wrong numbers, and are planned follow-ups: a windowed aggregation other than
-`sum`/`avg`; a cross-model windowed measure (`customers.revenue:sum(window=…)`);
-a windowed measure combined with a transform (`cumsum`, `time_shift`, …) in any
-position; a windowed measure nested in an arithmetic/composite expression in
-`measures` (`{"formula": "revenue:sum(window='90d') / 2"}`); or one compared
+`sum`/`avg`; a windowed measure combined with a transform (`cumsum`,
+`time_shift`, …) in any position; a windowed measure nested in an
+arithmetic/composite expression in `measures`
+(`{"formula": "revenue:sum(window='90d') / 2"}`); or one compared
 against a plain aggregate inside one filter
 (`revenue:sum(window='90d') > 100 and revenue:sum > 50`).
 
@@ -165,17 +172,19 @@ grouping by a value derived from an aggregate at a finer grain than the query.
 There, the `partition_by` grain is unconstrained (it may be finer than the query
 dimensions), since it defines the grain of a synthesized internal stage.
 
-A local `partition_by` aggregate composes with the rest of the query: combined
-with `window=` (a rolling total at the partition grain), on `first`/`last`,
-nested inside a transform (`cumsum(revenue:sum(partition_by=region))`), and
-referenced in a filter (`revenue:sum(partition_by=region) > 5000`) — a filter's
-top-level `AND` conjuncts route independently to the earliest scope where their
+A `partition_by` aggregate composes with the rest of the query: combined with
+`window=` (a rolling total at the partition grain), on `first`/`last`, nested
+inside a transform (`cumsum(revenue:sum(partition_by=region))`), and referenced
+in a filter (`revenue:sum(partition_by=region) > 5000`) — a filter's top-level
+`AND` conjuncts route independently to the earliest scope where their
 references resolve, and a predicate whose references share no scope raises a
-"split the filter" error. As a query MEASURE, a `partition_by` column that is not
-a query dimension (or, cross-model, not expressible at the aggregate's root)
-errors at plan time. Cross-model `partition_by` sources in these composed shapes
-remain a planned follow-up and raise a clear error rather than returning wrong
-numbers.
+"split the filter" error. This includes cross-model sources
+(`customers.spend:sum(partition_by=…)`), which compute in a sub-query rooted at
+the measure's model. As a query MEASURE, a `partition_by` column that is not a
+query dimension errors at plan time; for a cross-model source, every explicit
+partition key must additionally be *attributable* from the measure's own model
+(see [cross-model measures](queries.md#cross-model-measures)) — an unprovable
+key errors naming the join remedy rather than fanning the value.
 
 Combining aggregates at **different** grains in one expression is well-defined:
 `amount:sum(partition_by=region) - amount:sum(partition_by=city)` (as a measure,

@@ -1,8 +1,11 @@
 """FastAPI server for SLayer."""
 
 import logging
+import sys
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from typing import Any
+
+from sqlalchemy.exc import SQLAlchemyError
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -18,7 +21,10 @@ from slayer.core.errors import (
 from slayer.core.format import NumberFormat
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
+from slayer.async_utils import run_sync
+from slayer.engine import ingestion as engine_ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.schema_scope import validate_scope_args
 from slayer.inspect.service import InspectService
 from slayer.memories.help_seed import seed_help_memories
 from slayer.memories.service import MemoryService
@@ -58,6 +64,9 @@ class QueryRequest(BaseModel):
     # (``None`` here) keeps the v3 SlayerQuery default (``True``). Set
     # ``False`` to emit raw rows.
     distinct_dimension_values: bool | None = None
+    # DEV-1836: error on any silent-semantics event (implicit-grain broadcast /
+    # dropped producer filter) instead of broadcasting + warning.
+    strict: bool | None = None
     dry_run: bool | None = None
     explain: bool | None = None
     variables: dict[str, Any] | None = None
@@ -118,7 +127,6 @@ class IngestRequest(BaseModel):
 
     @model_validator(mode="after")
     def _validate_scope(self) -> "IngestRequest":
-        from slayer.engine.schema_scope import validate_scope_args
         validate_scope_args(
             schema=self.schema_name,
             schemas=self.schemas,
@@ -231,20 +239,17 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     *,
     ingest_on_startup: bool = False,
 ) -> FastAPI:
-    from slayer.async_utils import run_sync
-
     # DEV-1658: seed conceptual-help memories once here; the embedded MCP
     # server below is created with _seed_help=False so the pass never fires
     # twice (mirrors the ingest_on_startup single-orchestration rule).
     run_sync(seed_help_memories(storage=storage))
 
     if ingest_on_startup:
-        import sys
-
-        from slayer.engine.ingestion import ingest_all_datasources_idempotent
-
         run_sync(
-            ingest_all_datasources_idempotent(storage=storage, stream=sys.stderr)
+            # Via the module so tests can monkeypatch the seam.
+            engine_ingestion.ingest_all_datasources_idempotent(
+                storage=storage, stream=sys.stderr,
+            )
         )
     app = FastAPI(title="SLayer", version=_slayer_version())
     engine = SlayerQueryEngine(storage=storage)
@@ -308,7 +313,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                         request.source_model, request.measures, request.dimensions,
                         request.time_dimensions, request.filters, request.order,
                         request.limit, request.offset, request.whole_periods_only,
-                        request.distinct_dimension_values,
+                        request.distinct_dimension_values, request.strict,
                     ) if f is not None
                 ]
                 if disallowed:
@@ -591,8 +596,6 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                     status_code=404,
                     detail=f"Datasource '{request.data_source}' not found",
                 )
-        from sqlalchemy.exc import SQLAlchemyError
-
         try:
             entries = await engine.validate_models(data_source=request.data_source)
         except SQLAlchemyError as exc:
@@ -664,11 +667,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             raise HTTPException(
                 status_code=404, detail=f"Datasource '{request.datasource}' not found"
             )
-        from sqlalchemy.exc import SQLAlchemyError
-        from slayer.engine.ingestion import ingest_datasource_idempotent
-
         try:
-            result = await ingest_datasource_idempotent(
+            result = await engine_ingestion.ingest_datasource_idempotent(
                 datasource=ds,
                 storage=storage,
                 include_tables=request.include_tables,

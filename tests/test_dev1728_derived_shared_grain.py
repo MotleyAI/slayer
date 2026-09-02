@@ -29,8 +29,9 @@ the gate is now removable. This module pins FULL support (user-approved scope):
 * **Sibling paths** — the re-rooted (target-rooted) and filtered-local
   (host-rooted, DEV-1503/1709) CTE variants join back correctly on a derived
   grain (newly reachable once the gate is gone).
-* **Intermediate-hop** derived grain still raises the pre-existing 7b.12
-  ``NotImplementedError`` (uniform with base columns — out of scope).
+* **Intermediate-hop** derived grain is unattributable from the aggregate's
+  root, so DEV-1836 broadcasts it (CROSS JOIN + grain warning) — the pre-existing
+  7b.12 gate is lifted.
 
 Every SQL-shape test asserts ``assert_scope_closed`` on the emitted statement.
 Executed-value coverage runs on SQLite (this file, unit suite) with a DuckDB
@@ -89,7 +90,7 @@ class TestForwardDerivedGrainShape:
         cm_body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
         # Expanded expression present in SELECT + GROUP BY under the dotted alias.
         assert "customers_v2.lifetime_value * 2" in cm_body, cm_body
-        assert 'AS "orders_x.customers_v2.ltv_x2"' in cm_body, cm_body
+        assert 'AS "customers_v2.ltv_x2"' in cm_body, cm_body
         assert "GROUP BY" in cm_body, cm_body
         # Real shared grain — not the broadcast fallback.
         assert "CROSS JOIN" not in sql, sql
@@ -112,7 +113,7 @@ class TestForwardDerivedGrainShape:
         cm_body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
         assert "LEFT JOIN regions AS regions" in cm_body, cm_body
         assert "regions.population" in cm_body, cm_body
-        assert 'AS "orders_x.customers_v2.deep_pop"' in cm_body, cm_body
+        assert 'AS "customers_v2.deep_pop"' in cm_body, cm_body
         base_body = _norm(_extract_cte_body(sql, r"_base"))
         assert "customers_v2__regions" in base_body, base_body
         assert "CROSS JOIN" not in sql, sql
@@ -131,7 +132,7 @@ class TestForwardDerivedGrainShape:
         assert "LEFT JOIN regions AS regions" in cm_body, cm_body
         assert "LEFT JOIN countries AS regions__countries" in cm_body, cm_body
         assert "regions__countries.gdp" in cm_body, cm_body
-        assert 'AS "orders_x.customers_v2.deep_gdp"' in cm_body, cm_body
+        assert 'AS "customers_v2.deep_gdp"' in cm_body, cm_body
 
     async def test_typed_derived_grain_cast_consistent_base_and_cte(self) -> None:
         """A typed non-bare derived grain (``ltv_third`` = INT arithmetic) is
@@ -164,7 +165,7 @@ class TestForwardDerivedGrainShape:
         assert_scope_closed(sql)
         cm_body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
         assert "SUM(regions.population)" in cm_body, cm_body
-        assert 'AS "orders_x.customers_v2.deep_pop"' in cm_body, cm_body
+        assert 'AS "customers_v2.deep_pop"' in cm_body, cm_body
         assert "LEFT JOIN regions AS regions" in cm_body, cm_body
 
     async def test_non_sum_aggregate_over_derived_grain(self) -> None:
@@ -216,15 +217,18 @@ class TestForwardDerivedGrainShape:
         assert_scope_closed(sql)
         cm_body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
         assert "regions.population" in cm_body, cm_body
-        assert 'AS "orders_x.customers_v2.deep_pop"' in cm_body, cm_body
+        assert 'AS "customers_v2.deep_pop"' in cm_body, cm_body
         # The filter predicate must actually survive into the rendered SQL —
         # without this the test passes even if the generator drops the filter.
         assert "regions.population > 50" in _norm(sql), sql
 
-    async def test_intermediate_hop_derived_grain_still_raises(self) -> None:
-        """A derived grain on an INTERMEDIATE hop of a multi-hop target path
-        still hits the pre-existing 7b.12 NotImplementedError (uniform with base
-        columns — out of scope for DEV-1728)."""
+    async def test_intermediate_hop_derived_grain_executes_and_broadcasts(
+        self,
+    ) -> None:
+        """DEV-1836 lifts the intermediate-hop guard: a derived grain on an
+        intermediate hop of a multi-hop target path is unattributable from the
+        aggregate's root, so the metric broadcasts (CROSS JOIN) with a grain
+        warning instead of raising."""
         # Aggregate targets the TWO-hop path customers_v2 → regions; the grain is
         # a derived dim on the intermediate customers_v2 hop.
         query = SlayerQuery(
@@ -232,8 +236,9 @@ class TestForwardDerivedGrainShape:
             dimensions=["customers_v2.ltv_x2"],
             measures=[ModelMeasure(formula="customers_v2.regions.population:sum")],
         )
-        with pytest.raises(NotImplementedError, match=r"(?i)intermediate|7b\.12"):
-            await _gen(query)
+        sql = await _gen(query)
+        assert_scope_closed(sql)
+        assert "CROSS JOIN" in sql, sql
 
 
 # =========================================================================== #
@@ -258,7 +263,7 @@ class TestFirstLastDerivedGrain:
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
-        cm_body = _norm(_extract_cte_body(sql, r"_rk_\w+"))
+        cm_body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
         outer, inner = _split_at_ranked_subquery(cm_body)
         assert (
             "PARTITION BY CAST(customers_v2.lifetime_value * 2 AS DOUBLE PRECISION)"
@@ -270,7 +275,7 @@ class TestFirstLastDerivedGrain:
             inner,
         ), inner
         assert _re.search(
-            r"_val_\d+ AS \"orders_x\.customers_v2\.ltv_x2\"", outer), outer
+            r"_val_\d+ AS \"customers_v2\.ltv_x2\"", outer), outer
 
     async def test_crossing_grain_materialised_in_ranked_subquery(self) -> None:
         """A first/last aggregate grouped by a CROSSING derived grain
@@ -284,7 +289,7 @@ class TestFirstLastDerivedGrain:
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
-        cm_body = _norm(_extract_cte_body(sql, r"_rk_\w+"))
+        cm_body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
         outer, inner = _split_at_ranked_subquery(cm_body)
         # F1: the crossed join lives INSIDE the ranked subquery, not outside.
         assert "LEFT JOIN regions AS regions" in inner, inner
@@ -296,7 +301,7 @@ class TestFirstLastDerivedGrain:
         assert "regions.population" in inner, inner
         # The outer SELECT/GROUP BY reference the _val_ alias, never bare
         # regions.population (which is out of scope outside the subquery).
-        assert _re.search(r"_val_\d+ AS \"orders_x\.customers_v2\.deep_pop\"", outer), outer
+        assert _re.search(r"_val_\d+ AS \"customers_v2\.deep_pop\"", outer), outer
         assert "regions.population" not in outer, outer
 
     async def test_crossing_time_grain_first_last_regression(self) -> None:
@@ -313,7 +318,7 @@ class TestFirstLastDerivedGrain:
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
-        cm_body = _norm(_extract_cte_body(sql, r"_rk_\w+"))
+        cm_body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
         outer, inner = _split_at_ranked_subquery(cm_body)
         assert "LEFT JOIN regions AS regions" in inner, inner
         # The crossing derived TIME grain is materialised as a _val_ projection
@@ -324,7 +329,7 @@ class TestFirstLastDerivedGrain:
         # The outer SELECT / GROUP BY reference the _val_ alias, never the bare
         # crossing ref (the confirmed live-bug leak).
         assert _re.search(
-            r"_val_\d+ AS \"orders_x\.customers_v2\.region_opened_eff\"", outer), outer
+            r"_val_\d+ AS \"customers_v2\.region_opened_eff_month\"", outer), outer
         assert "regions.opened_at" not in outer, outer
 
     async def test_typed_crossing_grain_first_last_cast(self) -> None:
@@ -339,7 +344,7 @@ class TestFirstLastDerivedGrain:
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
-        cm_body = _norm(_extract_cte_body(sql, r"_rk_\w+"))
+        cm_body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
         outer, inner = _split_at_ranked_subquery(cm_body)
         # The materialised value is the CAST-wrapped arithmetic expression
         # (identical to the host base's wrapping); the outer projection + the
@@ -350,9 +355,9 @@ class TestFirstLastDerivedGrain:
         assert "PARTITION BY" in inner, inner
         assert "CAST(regions.population * 2 AS DOUBLE PRECISION)" in inner, inner
         assert _re.search(
-            r"_val_\d+ AS \"orders_x\.customers_v2\.deep_pop_x2\"", outer), outer
+            r"_val_\d+ AS \"customers_v2\.deep_pop_x2\"", outer), outer
         # No un-cast bare arithmetic leaked past the materialisation.
-        assert "regions.population * 2 AS \"orders_x" not in outer, outer
+        assert "regions.population * 2 AS \"customers_v2" not in outer, outer
 
     async def test_repeated_render_byte_identical(self) -> None:
         """The first/last crossing-grain materialisation is deterministic."""
@@ -379,7 +384,7 @@ class TestFirstLastDerivedGrain:
         )
         sql = await _gen(query, customers_extra=customers_extra)
         assert_scope_closed(sql)
-        cm_body = _norm(_extract_cte_body(sql, r"_rk_\w+"))
+        cm_body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
         # The materialised grain must use a NON-colliding alias (not _val_0).
         vals = _re.findall(r"AS (_val_\d+)", cm_body)
         assert vals, cm_body
@@ -399,7 +404,7 @@ class TestFirstLastDerivedGrain:
         )
         sql = await _gen(query, customers_extra=customers_extra)
         assert_scope_closed(sql)
-        cm_body = _norm(_extract_cte_body(sql, r"_rk_\w+"))
+        cm_body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
         vals = _re.findall(r"AS (_val_\d+)", cm_body)
         assert vals, cm_body
         assert "_val_0" not in vals, cm_body

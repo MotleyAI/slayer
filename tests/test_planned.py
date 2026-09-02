@@ -3,7 +3,7 @@
 `PlannedQuery` is the final output of the planning pipeline that the
 SQL generator (stage 7b) consumes. The shapes here are the typed
 containers; the planning logic that fills them lives in
-`planning.py`, `cross_model_planner.py`, and `stage_planner.py`
+`planning.py` and `stage_planner.py`
 (other 7a substages).
 
 This file pins the field surface so downstream substages have a
@@ -25,7 +25,6 @@ from slayer.core.keys import (
 from slayer.core.scope import StageColumn, StageSchema
 from slayer.engine.planned import (
     BoundExpr,
-    CrossModelAggregatePlan,
     FilterPhase,
     JoinRequirement,
     OrderEntry,
@@ -206,58 +205,6 @@ class TestJoinRequirement:
 
 
 # ---------------------------------------------------------------------------
-# CrossModelAggregatePlan
-# ---------------------------------------------------------------------------
-
-
-class TestCrossModelAggregatePlan:
-    def test_minimal(self):
-        cte_schema = StageSchema(
-            relation_name="cma_customers__rev",
-            columns=[
-                StageColumn(name="customer_id", sql_alias="customer_id"),
-                StageColumn(name="revenue_sum", sql_alias="revenue_sum"),
-            ],
-        )
-        plan = CrossModelAggregatePlan(
-            aggregate_slot_id="a1",
-            target_model="customers",
-            datasource="prod",
-            join_chain=[
-                JoinRequirement(
-                    source_model="orders",
-                    target_model="customers",
-                    join_pairs=[["customer_id", "id"]],
-                ),
-            ],
-            cte_stage_schema=cte_schema,
-            shared_grain_slots=["d_customer_id"],
-            applied_filter_ids=[],
-        )
-        assert plan.aggregate_slot_id == "a1"
-        assert plan.target_model == "customers"
-        assert plan.hidden is False
-        assert plan.public_alias is None
-        assert plan.dropped_filter_warnings == []
-        assert plan.join_back_pairs == []
-
-    def test_hidden_no_public_alias(self):
-        cte_schema = StageSchema(relation_name="cma_h", columns=[])
-        plan = CrossModelAggregatePlan(
-            aggregate_slot_id="a1",
-            target_model="customers",
-            datasource="prod",
-            join_chain=[],
-            cte_stage_schema=cte_schema,
-            shared_grain_slots=[],
-            applied_filter_ids=[],
-            hidden=True,
-        )
-        assert plan.hidden is True
-        assert plan.public_alias is None
-
-
-# ---------------------------------------------------------------------------
 # TransformLayer
 # ---------------------------------------------------------------------------
 
@@ -382,7 +329,6 @@ class TestPlannedQuery:
         assert pq.aggregate_slots == [slot]
         assert pq.row_slots == []
         assert pq.projection == ["a1"]
-        assert pq.cross_model_aggregate_plans == []
         assert pq.transform_layers == []
         assert pq.filters_by_phase == []
         assert pq.order == []
@@ -460,23 +406,6 @@ class TestPlannedQuery:
 
 
 class TestCompose:
-    def test_cross_model_in_planned(self):
-        cte_schema = StageSchema(relation_name="cma1", columns=[])
-        cma = CrossModelAggregatePlan(
-            aggregate_slot_id="a1",
-            target_model="customers",
-            datasource="prod",
-            join_chain=[],
-            cte_stage_schema=cte_schema,
-            shared_grain_slots=[],
-            applied_filter_ids=[],
-        )
-        pq = PlannedQuery(
-            source_relation="orders",
-            cross_model_aggregate_plans=[cma],
-        )
-        assert len(pq.cross_model_aggregate_plans) == 1
-
     def test_transform_layer_in_planned(self):
         layer = TransformLayer(op="cumsum", slot_ids=["t1"])
         pq = PlannedQuery(source_relation="orders", transform_layers=[layer])
