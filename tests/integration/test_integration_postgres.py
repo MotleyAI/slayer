@@ -1,22 +1,24 @@
 """Integration tests using a real PostgreSQL database via pytest-postgresql."""
 
+import math as _math
+import statistics
 import tempfile
 import uuid
 
 import pytest
 
-pytest.importorskip("pytest_postgresql")
-
-import psycopg
-from pytest_postgresql import factories
-
+from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
-from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
-from slayer.async_utils import run_sync
+
+pytest.importorskip("pytest_postgresql")
+
+import psycopg  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
+from pytest_postgresql import factories  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
 
 # Spawn a temporary Postgres process (random port)
 postgresql_proc = factories.postgresql_proc(port=None)
@@ -445,7 +447,6 @@ async def pg_cross_model_env(postgresql):
         host=info.host, port=info.port, database=info.dbname,
         username=info.user, password="",
     ))
-    from slayer.core.models import ModelJoin
     run_sync(storage.save_model(SlayerModel(
         name="orders", sql_table="orders", data_source="testpg",
         default_time_dimension="created_at",
@@ -525,7 +526,6 @@ class TestCrossModelAndMultistage:
 
     async def test_sql_dimension(self, pg_cross_model_env: SlayerQueryEngine) -> None:
         """SQL expression dimension via ModelExtension with Postgres."""
-        from slayer.core.query import ModelExtension
         query = SlayerQuery(
             source_model=ModelExtension(
                 source_name="orders",
@@ -899,7 +899,6 @@ class TestPostgresStatAggregations:
     """
 
     async def test_stddev_samp_native_postgres(self, pg_env: SlayerQueryEngine) -> None:
-        import statistics
         query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "total:stddev_samp"}],
@@ -911,7 +910,6 @@ class TestPostgresStatAggregations:
         )
 
     async def test_stddev_pop_native_postgres(self, pg_env: SlayerQueryEngine) -> None:
-        import statistics
         query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "total:stddev_pop"}],
@@ -923,7 +921,6 @@ class TestPostgresStatAggregations:
         )
 
     async def test_var_samp_native_postgres(self, pg_env: SlayerQueryEngine) -> None:
-        import statistics
         query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "total:var_samp"}],
@@ -935,7 +932,6 @@ class TestPostgresStatAggregations:
         )
 
     async def test_var_pop_native_postgres(self, pg_env: SlayerQueryEngine) -> None:
-        import statistics
         query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "total:var_pop"}],
@@ -954,7 +950,6 @@ class TestPostgresStatAggregations:
         )
         result = await pg_env.execute(query=query)
         # Compute expected via Python's statistics.correlation.
-        import statistics
         xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
         ys = [1.0, 1.0, 2.0, 2.0, 3.0, 3.0]
         expected = statistics.correlation(xs, ys)
@@ -999,8 +994,6 @@ class TestPostgresStatAggregations:
         # Add a Column.sql with log10 to the existing orders model. The
         # fixture's storage already has the table populated, so we just save
         # the model with the extra column.
-        from slayer.core.models import SlayerModel
-
         existing = await pg_env.storage.get_model("orders")
         assert existing is not None
         cols = list(existing.columns) + [
@@ -1019,7 +1012,6 @@ class TestPostgresStatAggregations:
             SlayerQuery(source_model="orders", measures=[{"formula": "log_amount:max"}])
         )
         # max(amount) = 300, log10(300) ≈ 2.4771
-        import math as _math
         assert float(result.data[0]["orders.log_amount_max"]) == pytest.approx(
             _math.log10(300.0), rel=1e-9
         )
@@ -1148,7 +1140,6 @@ async def pg_derived_chain_env(postgresql):
             username=info.user, password="",
         )
     )
-    from slayer.core.models import ModelJoin
     await storage.save_model(
         SlayerModel(
             name="b_tbl",

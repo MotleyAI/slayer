@@ -420,10 +420,12 @@ class TestDev1576UnknownVsDisallowed:
         # any per-column gate, so ``*:bogus`` gets the standard unknown-
         # aggregation error instead of escaping to SQL generation (where it
         # used to surface as the star-specific message).
+        orders = _orders_with_status()
+        customers = _customers_model()
         with pytest.raises(ValueError, match=r"Unknown aggregation 'bogus'"):
             await _generate_sql(
-                orders=_orders_with_status(),
-                customers=_customers_model(),
+                orders=orders,
+                customers=customers,
                 measures=[{"formula": "*:bogus", "name": "result"}],
             )
 

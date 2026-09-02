@@ -34,7 +34,7 @@ from slayer.core.models import (
 from slayer.core.query import OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.binding import walk_value_keys
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.syntax import AggCall, Ref, parse_expr
+from slayer.engine.syntax import AggCall, Ref, canonical_measure_text, parse_expr
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._engine_helpers import _norm
@@ -126,6 +126,15 @@ class TestExpressionParse:
         assert isinstance(node, AggCall)
         assert node.agg == "sum"
         assert node.source == parse_expr("amount - cost")
+
+    def test_expression_source_canonical_text_functional(self) -> None:
+        # An expression source renders functionally, so its canonical text
+        # can't collide with the distinct parse tree ``amount - (cost:sum)``.
+        expr_agg = canonical_measure_text(parse_expr("sum(amount - cost)"))
+        assert expr_agg == "sum(amount - cost)"
+        assert expr_agg != canonical_measure_text(parse_expr("amount - cost:sum"))
+        # Column sources keep their colon spelling (functional/colon parity).
+        assert canonical_measure_text(parse_expr("sum(amount)")) == "amount:sum"
 
     def test_scalar_call_source(self) -> None:
         node = parse_expr("count_distinct(upper(email))")
@@ -263,21 +272,20 @@ class TestExpressionSql:
         assert re.search(r"SUM\s*\(.*?amount.*?-.*?cost.*?\)", _norm(resp.sql)), resp.sql
 
     async def test_bare_expression_agg_in_dimension_needs_partition_by(self) -> None:
+        q = _q(
+            dimensions=[
+                "region",
+                {
+                    "expression": (
+                        "CASE WHEN sum(amount - cost) > 0 THEN 1 ELSE 0 END"
+                    ),
+                    "name": "profitable",
+                },
+            ],
+            measures=[ModelMeasure(formula="amount:sum", name="t")],
+        )
         with pytest.raises(ValueError, match="partition_by"):
-            await _dry(
-                _q(
-                    dimensions=[
-                        "region",
-                        {
-                            "expression": (
-                                "CASE WHEN sum(amount - cost) > 0 THEN 1 ELSE 0 END"
-                            ),
-                            "name": "profitable",
-                        },
-                    ],
-                    measures=[ModelMeasure(formula="amount:sum", name="t")],
-                )
-            )
+            await _dry(q)
 
 
 # ===========================================================================
@@ -340,16 +348,17 @@ class TestExpressionNaming:
             )
         )
         attrs = resp.attributes.measures
-        assert attrs.get("orders.amount_cost_sum") == attrs.get("orders.amount_sum")
+        # Both are preserving-unformatted, so neither gets an entry.
+        assert "orders.amount_cost_sum" not in attrs
+        assert "orders.amount_sum" not in attrs
         count_meta = attrs["orders.upper_email_count_distinct"]
         assert count_meta.format is not None
         assert count_meta.format.type == NumberFormatType.INTEGER
 
     async def test_colliding_derived_keys_fail_loudly(self) -> None:
+        q = _q(measures=["sum(amount - cost)", "sum(amount + cost)"])
         with pytest.raises(ValueError, match="rename") as ei:
-            await _dry(
-                _q(measures=["sum(amount - cost)", "sum(amount + cost)"])
-            )
+            await _dry(q)
         assert "amount_cost_sum" in str(ei.value)
 
 
@@ -405,21 +414,32 @@ class TestExpressionKeyTraversal:
 
 class TestExpressionErrors:
     async def test_cross_model_expression_rejected(self) -> None:
+        q = _q(measures=["sum(amount - customers.discount)"])
         with pytest.raises(ValueError, match="(?i)cross-model"):
-            await _dry(_q(measures=["sum(amount - customers.discount)"]))
+            await _dry(q)
 
     async def test_filtered_column_operand_rejected(self) -> None:
+        q = _q(measures=["sum(ok_amount - cost)"])
         with pytest.raises(ValueError, match="ok_amount") as ei:
-            await _dry(_q(measures=["sum(ok_amount - cost)"]))
+            await _dry(q)
         assert "filter" in str(ei.value).lower()
 
     async def test_nested_aggregation_rejected(self) -> None:
+        q = _q(measures=["sum(sum(amount))"])
         with pytest.raises(ValueError, match="(?i)nest"):
-            await _dry(_q(measures=["sum(sum(amount))"]))
+            await _dry(q)
 
     async def test_nested_transform_rejected(self) -> None:
+        q = _q(measures=["sum(cumsum(amount) - 1)"])
         with pytest.raises(ValueError, match="(?i)nest"):
-            await _dry(_q(measures=["sum(cumsum(amount) - 1)"]))
+            await _dry(q)
+
+    async def test_first_last_over_expression_rejected(self) -> None:
+        # first/last need a plain column — the ranked kernel can't rank an
+        # expression, so reject at binding instead of crashing at SQL time.
+        q = _q(measures=["last(amount - cost, created_at)"])
+        with pytest.raises(ValueError, match="(?i)expression"):
+            await _dry(q)
 
 
 # ===========================================================================
@@ -439,13 +459,23 @@ class TestExpressionGates:
         assert resp.sql
 
     async def test_single_column_functional_still_gated(self) -> None:
+        q_func = _q(measures=["sum(quantity)"])
         with pytest.raises(ValueError) as e_func:
-            await _dry(_q(measures=["sum(quantity)"]))
+            await _dry(q_func)
+        q_colon = _q(measures=["quantity:sum"])
         with pytest.raises(ValueError) as e_colon:
-            await _dry(_q(measures=["quantity:sum"]))
+            await _dry(q_colon)
         assert type(e_func.value) is type(e_colon.value)
         assert str(e_func.value) == str(e_colon.value)
 
     async def test_confidently_non_numeric_rejected(self) -> None:
+        q = _q(measures=["sum(lower(name))"])
         with pytest.raises(ValueError, match="(?i)numeric"):
-            await _dry(_q(measures=["sum(lower(name))"]))
+            await _dry(q)
+
+    async def test_boolean_expression_rejected(self) -> None:
+        # A boolean operand is non-numeric: SUM(<bool>) errors on Postgres /
+        # SQL Server, so reject it like a text operand.
+        q = _q(measures=["sum(True)"])
+        with pytest.raises(ValueError, match="(?i)boolean"):
+            await _dry(q)

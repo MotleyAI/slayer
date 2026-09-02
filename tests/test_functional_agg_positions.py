@@ -567,14 +567,12 @@ class TestComputedDimensionPosition:
         )
 
     async def test_bare_aggregate_guard_parity(self) -> None:
+        q_func = _band_query("CASE WHEN sum(amount) > 5000 THEN 1 ELSE 0 END")
         with pytest.raises(ValueError, match="partition_by") as e_func:
-            await gen40(
-                _band_query("CASE WHEN sum(amount) > 5000 THEN 1 ELSE 0 END")
-            )
+            await gen40(q_func)
+        q_colon = _band_query("CASE WHEN amount:sum > 5000 THEN 1 ELSE 0 END")
         with pytest.raises(ValueError, match="partition_by") as e_colon:
-            await gen40(
-                _band_query("CASE WHEN amount:sum > 5000 THEN 1 ELSE 0 END")
-            )
+            await gen40(q_colon)
         assert str(e_func.value) == str(e_colon.value)
 
     async def test_raw_rows_rejection_parity(self) -> None:
@@ -585,10 +583,12 @@ class TestComputedDimensionPosition:
                 distinct_dimension_values=False,
             )
 
+        q_func = mk(_CASE_FUNC)
         with pytest.raises(DistinctDimensionValuesError) as e_func:
-            await gen40(mk(_CASE_FUNC))
+            await gen40(q_func)
+        q_colon = mk(_CASE_COLON)
         with pytest.raises(DistinctDimensionValuesError) as e_colon:
-            await gen40(mk(_CASE_COLON))
+            await gen40(q_colon)
         assert str(e_func.value) == str(e_colon.value)
 
 

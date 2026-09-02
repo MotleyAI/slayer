@@ -90,8 +90,8 @@ the query's dimensions, repeated across the finer rows (like `SUM(x) OVER
 `partition_by=region` is the region total on every city row; `partition_by=[]` is
 the grand total; a list (`[region, channel]`) or dotted path also work. Computed
 over rows passing row-level filters (HAVING/pagination never change the parent
-total). Not yet supported: with `window=`, on `first`/`last`, nested in a
-transform, or in a filter.
+total). Composes with `window=`, `first`/`last`, transforms, and filters; only
+`partition_by` on a *cross-model* `first`/`last` aggregate is still deferred.
 
 ## Allowed aggregations (whitelist)
 

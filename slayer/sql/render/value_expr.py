@@ -435,7 +435,7 @@ def _render_iif_case(*, key: ScalarCallKey, ctx: "RenderContext") -> exp.Case:
             if isinstance(a, _VALUE_KEY_TYPES) else _literal(a)
         )
 
-    return iif_case_chain(key, _part)
+    return iif_case_chain(key=key, part=_part)
 
 
 def contains_aggregate(key: ValueKey) -> bool:

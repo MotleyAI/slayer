@@ -14,16 +14,14 @@ The CI workflow at .github/workflows/integration-mysql.yml asserts
 in CI surfaces as a workflow failure, not a silent skip.
 """
 
+import math as _math
+import statistics
 import tempfile
 import uuid
 
 import pytest
 
-pytest.importorskip("testcontainers.mysql")
-
-import pymysql
 import sqlalchemy as sa
-from testcontainers.mysql import MySqlContainer
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
@@ -34,11 +32,16 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
-from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
+
+pytest.importorskip("testcontainers.mysql")
+
+import pymysql  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
+from testcontainers.mysql import MySqlContainer  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +58,7 @@ def _docker_available_or_skip():
     Docker; this fixture is a no-op there.
     """
     try:
-        import docker  # noqa: PLC0415
+        import docker  # noqa: PLC0415  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
         docker.from_env().ping()
     except Exception as exc:  # pragma: no cover — exercised on local dev
         pytest.skip(f"Docker not available: {exc}")
@@ -590,7 +593,6 @@ class TestCrossModelAndMultistageMySQL:
         assert result.data[0]["mysql_monthly._count"] == 3
 
     async def test_sql_dimension(self, mysql_cross_model_env: SlayerQueryEngine) -> None:
-        from slayer.core.query import ModelExtension
         query = SlayerQuery(
             source_model=ModelExtension(
                 source_name="orders",
@@ -902,7 +904,6 @@ class TestMySQLStatAggregations:
     """
 
     async def test_stddev_samp_native_mysql(self, mysql_env: SlayerQueryEngine) -> None:
-        import statistics
         query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "total:stddev_samp"}],
@@ -914,7 +915,6 @@ class TestMySQLStatAggregations:
         )
 
     async def test_stddev_pop_native_mysql(self, mysql_env: SlayerQueryEngine) -> None:
-        import statistics
         query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "total:stddev_pop"}],
@@ -929,7 +929,6 @@ class TestMySQLStatAggregations:
         """The MysqlDialect.build_stat_agg_1arg Anonymous wrap means the
         emitted SQL contains literal ``VAR_SAMP(``, not sqlglot's default
         ``VARIANCE``. Pin via dry_run."""
-        import statistics
         query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "total:var_samp"}],
@@ -948,7 +947,6 @@ class TestMySQLStatAggregations:
         )
 
     async def test_var_pop_uses_canonical_mysql_name(self, mysql_env: SlayerQueryEngine) -> None:
-        import statistics
         query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "total:var_pop"}],
@@ -969,7 +967,6 @@ class TestMySQLStatAggregations:
     async def test_corr_variance_decomposition_mysql(self, mysql_env: SlayerQueryEngine) -> None:
         """MySQL CORR is computed via the variance-decomposition formula
         (no native function). Pin both numeric correctness AND SQL shape."""
-        import statistics
         query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "total:corr(other=customer_id)"}],
@@ -1086,7 +1083,6 @@ async def test_log10_round_trip_mysql(mysql_log10_env: SlayerQueryEngine) -> Non
     """MySQL has native LOG10 (MysqlDialect.log10_native=True). The emitted
     SQL must preserve ``log10(...)`` rather than sqlglot's canonical
     ``LOG(10, ...)`` form."""
-    import math as _math
 
     result = await mysql_log10_env.execute(
         SlayerQuery(source_model="orders", measures=[{"formula": "log_amount:max"}])

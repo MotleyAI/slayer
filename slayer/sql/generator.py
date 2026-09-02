@@ -5386,6 +5386,11 @@ class SQLGenerator:
                     column_name=ref.column_name,
                     bundle=bundle,
                 ))
+            if getattr(ref, "path", ()):
+                raise NotImplementedError(
+                    f"Cross-model operand {ref!r} inside an aggregated "
+                    f"expression is not supported (DEV-1832)."
+                )
             return exp.Column(
                 this=self._to_ident(ref.leaf),
                 table=exp.to_identifier(source_relation),

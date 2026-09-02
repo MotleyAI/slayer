@@ -51,6 +51,9 @@ ALLOWED_EXPRESSIVENESS = [
     # DEV-1826 — fail-closed guard on the row-level expression renderer (an
     # aggregate's expression source may not contain phase-crossing keys).
     r"^Row-level expression cannot contain",
+    # DEV-1826/1832 — fail-closed guard: a cross-model operand inside an
+    # aggregated expression is a deferred feature slice.
+    r"^Cross-model operand.*aggregated expression",
 ]
 
 

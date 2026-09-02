@@ -54,7 +54,8 @@ names still raise.
 ## `save_model`
 
 `save_model` runs `normalize_model` (the [slack layer](slack-normalization.md))
-so persisted formulas land canonical, then persists. For a **query-backed** model
+and persists; the author's formula spelling is preserved — functional
+aggregation syntax like `sum(amount)` is no longer rewritten to colon form. For a **query-backed** model
 it rejects user-supplied cache fields and calls `_validate_and_populate_cache`,
 which renders the backing query and stores `columns` / `backing_query_sql` /
 `data_source`.

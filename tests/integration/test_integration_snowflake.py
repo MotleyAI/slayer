@@ -18,27 +18,30 @@ import tomllib
 import uuid
 
 import pytest
+import sqlalchemy as sa
 
-# Skip the entire module if the snowflake extras aren't installed.
-pytest.importorskip("snowflake.connector")
-pytest.importorskip("snowflake.sqlalchemy")
-
-import snowflake.connector  # noqa: E402
-import sqlalchemy as sa  # noqa: E402
-
-from slayer.async_utils import run_sync  # noqa: E402
-from slayer.core.enums import DataType, TimeGranularity  # noqa: E402
-from slayer.core.models import (  # noqa: E402
+from slayer.async_utils import run_sync
+from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.models import (
     Column,
     DatasourceConfig,
     ModelJoin,
     ModelMeasure,
     SlayerModel,
 )
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension  # noqa: E402
-from slayer.engine.ingestion import ingest_datasource  # noqa: E402
-from slayer.engine.query_engine import SlayerQueryEngine  # noqa: E402
-from slayer.storage.yaml_storage import YAMLStorage  # noqa: E402
+from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.engine.ingestion import ingest_datasource
+from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.sql import client, engine_factory
+from slayer.storage.yaml_storage import YAMLStorage
+
+# Skip the entire module if the snowflake extras aren't installed.
+pytest.importorskip("snowflake.connector")
+pytest.importorskip("snowflake.sqlalchemy")
+
+import snowflake.connector  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
+import snowflake.connector.errors as sf_errors  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
+from snowflake.connector.errors import ProgrammingError  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
 
 _TOML_PATH = pathlib.Path("~/.snowflake/connections.toml").expanduser()
 _CONNECTION_NAME = os.environ.get("SLAYER_SNOWFLAKE_CONNECTION", "slayer_test")
@@ -217,7 +220,6 @@ def sf_engine(sf_datasource: DatasourceConfig, sf_transient_schema):
     the test harness. (This is what makes ``SlayerQueryEngine`` execution
     paths land in the right session state too.)
     """
-    from slayer.sql import engine_factory
     yield engine_factory.get_engine(sf_datasource)
 
 
@@ -483,7 +485,6 @@ def test_inline_credentials_path_executes_query(sf_transient_schema) -> None:
     profile = _profile_or_skip()
     if "password" not in profile:
         pytest.skip("Inline path requires a password in the TOML profile")
-    from slayer.sql import engine_factory
 
     ds = DatasourceConfig(
         name="sf_inline",
@@ -525,10 +526,6 @@ def test_statement_timeout_aborts_long_query(sf_engine) -> None:
 
     Uses 5 seconds (not 10) to bound suite latency.
     """
-    import snowflake.connector.errors as sf_errors
-
-    from slayer.sql import client
-
     connection_string = "snowflake://?connection_name=" + _CONNECTION_NAME
     with pytest.raises((sf_errors.ProgrammingError, sa.exc.DBAPIError)) as exc_info:
         client._execute_sql_sync(
@@ -560,8 +557,6 @@ def test_statement_timeout_aborts_long_query(sf_engine) -> None:
 def test_column_types_round_trip(sf_engine) -> None:
     """A SELECT against each Snowflake type code must round-trip through
     ``_get_column_types_sync`` and produce the expected SLayer categories."""
-    from slayer.sql import client
-
     connection_string = "snowflake://?connection_name=" + _CONNECTION_NAME
     sql = """
         SELECT
@@ -712,7 +707,6 @@ def test_quoted_lowercase_identifier_fails(sf_engine) -> None:
     the documented identifier-casing caveat: users writing
     ``"Revenue"`` in Column.sql on Snowflake must match storage exactly.
     '''
-    from snowflake.connector.errors import ProgrammingError
     with sf_engine.connect() as conn:
         with pytest.raises((ProgrammingError, sa.exc.DBAPIError)):
             conn.execute(sa.text('SELECT COUNT(*) FROM "orders"'))

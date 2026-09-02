@@ -1321,7 +1321,14 @@ def canonical_measure_text(parsed: Any) -> str:  # NOSONAR(S3776) — flat per-n
         return f"({', '.join(canonical_measure_text(e) for e in parsed.elements)})"
     if isinstance(parsed, AggCall):
         source = canonical_measure_text(parsed.source)
-        return f"{source}:{parsed.agg}{_canonical_call_params(parsed.args, parsed.kwargs)}"
+        if isinstance(parsed.source, (Ref, DottedRef, StarSource)):
+            return f"{source}:{parsed.agg}{_canonical_call_params(parsed.args, parsed.kwargs)}"
+        # Expression source (``sum(amount - cost)``): render functionally so the
+        # text can't collide with a distinct parse tree like ``amount - cost:sum``.
+        parts = [source]
+        parts += [canonical_measure_text(a) for a in parsed.args]
+        parts += [f"{k}={_canonical_kwarg_text(v)}" for k, v in parsed.kwargs]
+        return f"{parsed.agg}({', '.join(parts)})"
     if isinstance(parsed, TransformCall):
         inner = canonical_measure_text(parsed.input)
         params = _canonical_call_params(parsed.args, parsed.kwargs)

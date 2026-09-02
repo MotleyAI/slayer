@@ -20,16 +20,13 @@ Skipped silently when:
 - The Docker daemon is unreachable (autouse session fixture)
 """
 
+import math as _math
+import statistics
 import tempfile
 import uuid
 
 import pytest
-
-pytest.importorskip("testcontainers.clickhouse")
-pytest.importorskip("clickhouse_sqlalchemy")
-
 import sqlalchemy as sa
-from testcontainers.clickhouse import ClickHouseContainer
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
@@ -40,11 +37,17 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
-from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
+
+pytest.importorskip("testcontainers.clickhouse")
+pytest.importorskip("clickhouse_sqlalchemy")
+
+import docker  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
+from testcontainers.clickhouse import ClickHouseContainer  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +58,6 @@ from slayer.storage.yaml_storage import YAMLStorage
 @pytest.fixture(scope="session", autouse=True)
 def _docker_available_or_skip():
     try:
-        import docker  # noqa: PLC0415
         docker.from_env().ping()
     except Exception as exc:  # pragma: no cover — exercised on local dev
         pytest.skip(f"Docker not available: {exc}")
@@ -609,7 +611,6 @@ class TestCrossModelAndMultistageClickHouse:
         assert result.data[0]["ch_monthly._count"] == 3
 
     async def test_sql_dimension(self, clickhouse_cross_model_env: SlayerQueryEngine) -> None:
-        from slayer.core.query import ModelExtension
         query = SlayerQuery(
             source_model=ModelExtension(
                 source_name="orders",
@@ -734,7 +735,6 @@ class TestClickHouseStatAggregations:
     implementations (no UDF, no decomposition formula)."""
 
     async def test_stddev_samp_native_clickhouse(self, clickhouse_env: SlayerQueryEngine) -> None:
-        import statistics
         query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "total:stddev_samp"}],
@@ -746,7 +746,6 @@ class TestClickHouseStatAggregations:
         )
 
     async def test_stddev_pop_native_clickhouse(self, clickhouse_env: SlayerQueryEngine) -> None:
-        import statistics
         query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "total:stddev_pop"}],
@@ -758,7 +757,6 @@ class TestClickHouseStatAggregations:
         )
 
     async def test_var_samp_native_clickhouse(self, clickhouse_env: SlayerQueryEngine) -> None:
-        import statistics
         query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "total:var_samp"}],
@@ -770,7 +768,6 @@ class TestClickHouseStatAggregations:
         )
 
     async def test_var_pop_native_clickhouse(self, clickhouse_env: SlayerQueryEngine) -> None:
-        import statistics
         query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "total:var_pop"}],
@@ -787,7 +784,6 @@ class TestClickHouseStatAggregations:
             measures=[{"formula": "total:corr(other=customer_id)"}],
         )
         result = await clickhouse_env.execute(query=query)
-        import statistics
         xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
         ys = [1.0, 1.0, 2.0, 2.0, 3.0, 3.0]
         expected = statistics.correlation(xs, ys)
@@ -870,8 +866,6 @@ def clickhouse_log10_env(clickhouse_container):
 async def test_log10_round_trip_clickhouse(clickhouse_log10_env: SlayerQueryEngine) -> None:
     """ClickHouse has native LOG10 (ClickhouseDialect.log10_native=True).
     The emitted SQL must preserve ``log10(...)``."""
-    import math as _math
-
     result = await clickhouse_log10_env.execute(
         SlayerQuery(source_model="orders", measures=[{"formula": "log_amount:max"}])
     )

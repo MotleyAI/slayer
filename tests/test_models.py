@@ -8,7 +8,16 @@ from sqlalchemy.engine import make_url
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Aggregation, Column, DatasourceConfig, ModelMeasure, SlayerModel
-from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.query import (
+    _FUNCSTYLE_PENDING,
+    ColumnRef,
+    ModelExtension,
+    OrderItem,
+    SlayerQuery,
+    TimeDimension,
+    substitute_variables,
+)
+from slayer.storage.migrations import CURRENT_VERSIONS
 
 
 class TestColumnRef:
@@ -74,7 +83,6 @@ class TestOrderItem:
     def test_funcstyle_builtin_agg_preserved(self) -> None:
         """DEV-1826: the functional spelling is preserved verbatim — a
         placeholder defers resolution to binding (like custom aggs)."""
-        from slayer.core.query import _FUNCSTYLE_PENDING
         item = OrderItem(column="sum(revenue)", direction="desc")
         assert item.column.name == _FUNCSTYLE_PENDING
         assert item.raw_formula == "sum(revenue)"
@@ -504,7 +512,6 @@ class TestSlayerModel:
     def test_datasource_name_rejects_dot(self) -> None:
         """DEV-1405: dots in DatasourceConfig.name break canonical-id
         namespace boundaries."""
-        from slayer.core.models import DatasourceConfig
         with pytest.raises(ValueError, match=r"must not contain '\.'"):
             DatasourceConfig(name="prod.legacy", type="postgres")
 
@@ -512,17 +519,14 @@ class TestSlayerModel:
         """``__`` is reserved as a SQL join-path alias separator on
         model/query names, but datasource names never appear in SQL
         alias positions, so they accept ``__`` freely."""
-        from slayer.core.models import DatasourceConfig
         ds = DatasourceConfig(name="prod__staging", type="postgres")
         assert ds.name == "prod__staging"
 
     def test_datasource_name_rejects_path_separator(self) -> None:
-        from slayer.core.models import DatasourceConfig
         with pytest.raises(ValueError, match="must not contain '/'"):
             DatasourceConfig(name="prod/legacy", type="postgres")
 
     def test_datasource_name_rejects_empty(self) -> None:
-        from slayer.core.models import DatasourceConfig
         with pytest.raises(ValueError, match="non-empty string"):
             DatasourceConfig(name="", type="postgres")
 
@@ -531,7 +535,6 @@ class TestSlayerModel:
         (``revenue:sum``) and the ``memory:<int>`` canonical-id prefix.
         Allowing it in a datasource name would let ``memory:42`` collide
         with the memory canonical-id namespace."""
-        from slayer.core.models import DatasourceConfig
         with pytest.raises(ValueError, match="must not contain ':'"):
             DatasourceConfig(name="memory:42", type="sqlite")
 
@@ -777,7 +780,6 @@ class TestSourceQueryStages:
         ``ValueError``), not a raw ``TypeError`` traceback that escapes the
         validator.
         """
-        from pydantic import ValidationError
 
         with pytest.raises(ValidationError):
             SlayerModel(
@@ -787,7 +789,6 @@ class TestSourceQueryStages:
             )
 
     def test_non_list_input_raises_pydantic_validation_error(self) -> None:
-        from pydantic import ValidationError
 
         with pytest.raises(ValidationError):
             SlayerModel.model_validate({
@@ -1310,13 +1311,11 @@ class TestDatasourceConfig:
 
 class TestTimeGranularity:
     def test_period_start_week(self) -> None:
-        import datetime
         # Wednesday 2024-03-13 -> Monday 2024-03-11
         start = TimeGranularity.WEEK.period_start(datetime.date(2024, 3, 13))
         assert start == datetime.date(2024, 3, 11)
 
     def test_period_end_month(self) -> None:
-        import datetime
         end = TimeGranularity.MONTH.period_end(datetime.date(2024, 3, 15))
         assert end == datetime.date(2024, 3, 31)
 
@@ -1487,7 +1486,6 @@ class TestWholePeriodsOnly:
         assert snapped.filters is None
 
     def test_period_start_quarter(self) -> None:
-        import datetime
         start = TimeGranularity.QUARTER.period_start(datetime.date(2024, 5, 15))
         assert start == datetime.date(2024, 4, 1)
 
@@ -1622,7 +1620,6 @@ class TestSubstituteVariables:
     # generic tests use ``escape="python"`` (the Mode-B query-filter lineage);
     # none of the values here contain quotes/backslashes so both modes agree.
     def test_string_variable(self) -> None:
-        from slayer.core.query import substitute_variables
 
         result = substitute_variables(
             filter_str="status = '{status_val}'",
@@ -1632,7 +1629,6 @@ class TestSubstituteVariables:
         assert result == "status = 'active'"
 
     def test_number_variable(self) -> None:
-        from slayer.core.query import substitute_variables
 
         result = substitute_variables(
             filter_str="amount > {min_amount}",
@@ -1642,7 +1638,6 @@ class TestSubstituteVariables:
         assert result == "amount > 100"
 
     def test_float_variable(self) -> None:
-        from slayer.core.query import substitute_variables
 
         result = substitute_variables(
             filter_str="rate < {max_rate}",
@@ -1652,7 +1647,6 @@ class TestSubstituteVariables:
         assert result == "rate < 0.05"
 
     def test_multiple_variables(self) -> None:
-        from slayer.core.query import substitute_variables
 
         result = substitute_variables(
             filter_str="status = '{status}' AND amount > {min}",
@@ -1662,7 +1656,6 @@ class TestSubstituteVariables:
         assert result == "status = 'completed' AND amount > 50"
 
     def test_escaped_braces(self) -> None:
-        from slayer.core.query import substitute_variables
 
         result = substitute_variables(
             filter_str="name LIKE '{{prefix}}%' AND status = '{val}'",
@@ -1672,7 +1665,6 @@ class TestSubstituteVariables:
         assert result == "name LIKE '{prefix}%' AND status = 'ok'"
 
     def test_undefined_variable_raises(self) -> None:
-        from slayer.core.query import substitute_variables
 
         with pytest.raises(ValueError, match="Undefined variable 'missing'"):
             substitute_variables(
@@ -1682,7 +1674,6 @@ class TestSubstituteVariables:
             )
 
     def test_invalid_variable_name_raises(self) -> None:
-        from slayer.core.query import substitute_variables
 
         with pytest.raises(ValueError, match="Invalid variable name"):
             substitute_variables(
@@ -1692,7 +1683,6 @@ class TestSubstituteVariables:
             )
 
     def test_invalid_type_raises(self) -> None:
-        from slayer.core.query import substitute_variables
 
         # A dict is neither scalar nor list/tuple → rejected. (Lists ARE now a
         # valid IN-list body — DEV-1730 — covered in
@@ -1705,7 +1695,6 @@ class TestSubstituteVariables:
             )
 
     def test_list_value_renders_in_list(self) -> None:
-        from slayer.core.query import substitute_variables
 
         result = substitute_variables(
             filter_str="status in ({vals})",
@@ -1715,7 +1704,6 @@ class TestSubstituteVariables:
         assert result == "status in ('a', 'b',)"
 
     def test_no_variables_no_change(self) -> None:
-        from slayer.core.query import substitute_variables
 
         result = substitute_variables(
             filter_str="status = 'active'",
@@ -2015,7 +2003,6 @@ class TestStripSourceModelPrefix:
 
     def test_model_extension_object_source(self) -> None:
         """ModelExtension object uses source_name for stripping."""
-        from slayer.core.query import ModelExtension
 
         q = SlayerQuery(
             source_model=ModelExtension(source_name="orders"),
@@ -2275,8 +2262,6 @@ class TestSlayerModelVersionBump:
     converters."""
 
     def test_slayer_model_version_matches_current(self) -> None:
-        from slayer.core.models import SlayerModel
-        from slayer.storage.migrations import CURRENT_VERSIONS
 
         m = SlayerModel(name="orders", sql_table="orders", data_source="ds")
         assert m.version == CURRENT_VERSIONS["SlayerModel"]

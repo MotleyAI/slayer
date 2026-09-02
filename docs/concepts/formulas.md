@@ -41,7 +41,7 @@ The functional spelling additionally accepts a same-model scalar
 **expression** as the aggregated value — something the colon form cannot
 spell:
 
-```
+```text
 sum(amount - cost)                     — aggregate a row-level expression
 count_distinct(upper(email))           — scalar-allowlist calls compose
 percentile(price * quantity, p=0.5)    — parametric aggs work too

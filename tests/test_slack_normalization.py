@@ -9,7 +9,9 @@ aggregations, multi-hop paths, and stage scoping all resolve at binding).
 
 from __future__ import annotations
 
+import tempfile
 import warnings
+from pathlib import Path
 
 import pytest
 
@@ -17,6 +19,7 @@ from slayer.core.enums import DataType
 from slayer.core.models import (
     Aggregation,
     Column,
+    DatasourceConfig,
     ModelJoin,
     ModelMeasure,
     SlayerModel,
@@ -27,6 +30,8 @@ from slayer.engine.normalization import (
     NormalizationResult,
     normalize_query,
 )
+from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.storage.yaml_storage import YAMLStorage
 
 
 def _orders() -> SlayerModel:
@@ -259,14 +264,8 @@ class TestResult:
 
 class TestEngineWiring:
     async def test_functional_query_executes_without_warnings(self):
-        from slayer.engine.query_engine import SlayerQueryEngine
-        from slayer.storage.yaml_storage import YAMLStorage
-        import tempfile
-        from pathlib import Path
-
         with tempfile.TemporaryDirectory() as td:
             storage = YAMLStorage(base_dir=Path(td) / "models")
-            from slayer.core.models import DatasourceConfig
             await storage.save_datasource(
                 DatasourceConfig(name="prod", type="sqlite", url="sqlite:///:memory:")
             )
@@ -283,14 +282,8 @@ class TestEngineWiring:
             assert "SUM(" in resp.sql.upper()
 
     async def test_clean_query_has_empty_warnings(self):
-        from slayer.engine.query_engine import SlayerQueryEngine
-        from slayer.storage.yaml_storage import YAMLStorage
-        import tempfile
-        from pathlib import Path
-
         with tempfile.TemporaryDirectory() as td:
             storage = YAMLStorage(base_dir=Path(td) / "models")
-            from slayer.core.models import DatasourceConfig
             await storage.save_datasource(
                 DatasourceConfig(name="prod", type="sqlite", url="sqlite:///:memory:")
             )
@@ -308,12 +301,6 @@ class TestEngineWiring:
     async def test_custom_agg_functional_measure_binds(self):
         # A custom aggregation written functionally resolves at binding —
         # no rewrite, no warning, correct SQL.
-        from slayer.engine.query_engine import SlayerQueryEngine
-        from slayer.storage.yaml_storage import YAMLStorage
-        from slayer.core.models import Aggregation, DatasourceConfig
-        import tempfile
-        from pathlib import Path
-
         with tempfile.TemporaryDirectory() as td:
             storage = YAMLStorage(base_dir=Path(td) / "models")
             await storage.save_datasource(
@@ -340,12 +327,6 @@ class TestEngineWiring:
         # leaves dotted refs alone, but the binder classifies a cross-model
         # dotted ref in `measures` as a dimension end-to-end: it must surface
         # in GROUP BY and the projection, with the join emitted.
-        from slayer.engine.query_engine import SlayerQueryEngine
-        from slayer.storage.yaml_storage import YAMLStorage
-        from slayer.core.models import DatasourceConfig, ModelJoin
-        import tempfile
-        from pathlib import Path
-
         with tempfile.TemporaryDirectory() as td:
             storage = YAMLStorage(base_dir=Path(td) / "models")
             await storage.save_datasource(
@@ -378,14 +359,8 @@ class TestEngineWiring:
             assert "JOIN customers" in sql, sql
 
     async def test_save_model_preserves_functional_spelling(self):
-        from slayer.engine.query_engine import SlayerQueryEngine
-        from slayer.storage.yaml_storage import YAMLStorage
-        import tempfile
-        from pathlib import Path
-
         with tempfile.TemporaryDirectory() as td:
             storage = YAMLStorage(base_dir=Path(td) / "models")
-            from slayer.core.models import DatasourceConfig
             await storage.save_datasource(
                 DatasourceConfig(name="prod", type="sqlite", url="sqlite:///:memory:")
             )
@@ -469,13 +444,6 @@ async def _engine_with_prod():
     """A fresh engine over an in-memory-SQLite YAML store. Returns
     ``(engine, storage)``; caller owns the TemporaryDirectory lifetime.
     """
-    import tempfile
-    from pathlib import Path
-
-    from slayer.core.models import DatasourceConfig
-    from slayer.engine.query_engine import SlayerQueryEngine
-    from slayer.storage.yaml_storage import YAMLStorage
-
     td = tempfile.TemporaryDirectory()
     storage = YAMLStorage(base_dir=Path(td.name) / "models")
     await storage.save_datasource(
@@ -596,7 +564,7 @@ class TestJoinedCustomAggFunctional:
                 measures=[{"formula": "rolling_avg(b.c.d.e.score)"}],
             )
             resp = await engine.execute(q, dry_run=True)
-            assert resp.warnings == [], resp.warnings
+            assert not _slack_rewrite_warnings(resp.warnings), resp.warnings
             assert "AVG(" in resp.sql, resp.sql
         finally:
             td.cleanup()

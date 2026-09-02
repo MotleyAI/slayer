@@ -21,8 +21,8 @@ from typing import AsyncIterator
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.errors import IllegalWindowInFilterError
-from slayer.core.keys import StarKey
+from slayer.core.errors import AggregationNotAllowedError, IllegalWindowInFilterError
+from slayer.core.keys import StarKey, TransformKey
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
 from slayer.core.scope import ModelScope
@@ -30,7 +30,7 @@ from slayer.engine.binding import bind_expr
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.schema_drift import _measure_formula_refs
 from slayer.engine.source_bundle import ResolvedSourceBundle
-from slayer.engine.syntax import parse_expr
+from slayer.engine.syntax import parse_expr, parse_expr as _parse, parse_filter_expr
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -62,7 +62,6 @@ def test_in_keyword_inside_escaped_string_literal_not_rewritten():
     # The value of the literal is `x " IN (foo)` — IN must NOT lowercase
     # inside the string. The right operand is a literal compared via ==,
     # not a SQL-style IN clause.
-    from slayer.engine.syntax import parse_filter_expr
     parse_filter_expr(r'label == "x \" IN (foo)"')
 
 
@@ -86,7 +85,6 @@ def test_is_null_filter_parses_and_renders():
     not`` by the filter normalizer but the AST converter rejected the
     resulting ``ast.Is`` / ``ast.IsNot`` nodes. Pins both the parse and
     a downstream render through ``_compose_arithmetic_op``."""
-    from slayer.engine.syntax import parse_filter_expr
     # Parse must accept the SQL-style spelling.
     parse_filter_expr("deleted_at IS NULL")
     parse_filter_expr("deleted_at IS NOT NULL")
@@ -100,8 +98,6 @@ def test_partition_by_multi_column_parses_and_binds():
     a tuple by ``_convert_kwarg_value``, but the binder's
     ``partition_by`` branch only handled a single column ref. Pin that
     a multi-column form binds to a multi-element ``partition_keys``."""
-    from slayer.core.keys import TransformKey
-    from slayer.engine.syntax import parse_expr as _parse
     # Build a model scope and bundle that has the needed columns.
     orders = SlayerModel(
         name="orders", data_source="prod", sql_table="orders",
@@ -132,7 +128,6 @@ def test_aggregation_eligibility_primary_key_rejected():
     """Codex review: a primary-key column is restricted to ``count`` /
     ``count_distinct``. The typed pipeline previously accepted ``id:sum``
     silently — now raises ``AggregationNotAllowedError``."""
-    from slayer.core.errors import AggregationNotAllowedError
     orders = SlayerModel(
         name="orders", data_source="prod", sql_table="orders",
         columns=[
@@ -154,7 +149,6 @@ def test_aggregation_eligibility_primary_key_rejected():
 def test_aggregation_eligibility_type_default_rejected():
     """A TEXT column rejects numeric aggregations (``avg`` / ``sum``)
     per the type-default whitelist."""
-    from slayer.core.errors import AggregationNotAllowedError
     orders = SlayerModel(
         name="orders", data_source="prod", sql_table="orders",
         columns=[
@@ -210,7 +204,6 @@ async def test_is_null_filter_renders_end_to_end(engine):
 def test_aggregation_eligibility_allowed_aggregations_whitelist():
     """An explicit ``allowed_aggregations`` whitelist overrides the
     type-default gate."""
-    from slayer.core.errors import AggregationNotAllowedError
     orders = SlayerModel(
         name="orders", data_source="prod", sql_table="orders",
         columns=[

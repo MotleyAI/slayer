@@ -34,6 +34,7 @@ consumer.
 from __future__ import annotations
 
 import difflib
+from decimal import Decimal
 from typing import Dict, List, Optional, Tuple, Union
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -900,6 +901,26 @@ def _expression_is_confidently_text(key, *, model: Optional[SlayerModel]) -> boo
     return False
 
 
+def _expression_is_confidently_boolean(key, *, model: Optional[SlayerModel]) -> bool:
+    """Best-effort: True only when the expression's value is certainly boolean."""
+    if isinstance(key, LiteralKey):
+        return isinstance(key.value, bool)
+    if isinstance(key, ScalarCallKey):
+        if key.name in _ARG_CLASS_SCALARS:
+            return any(
+                _expression_is_confidently_boolean(a, model=model)
+                for a in key.args
+            )
+        return False
+    if isinstance(key, ColumnKey) and not key.path and model is not None:
+        col = model.get_column(key.leaf)
+        return col is not None and col.type == DataType.BOOLEAN
+    if isinstance(key, ColumnSqlKey) and not key.path and model is not None:
+        col = model.get_column(key.column_name)
+        return col is not None and col.type == DataType.BOOLEAN
+    return False
+
+
 def _reject_non_numeric_expression_agg(
     *, source: ValueKey, agg: str,
     scope: Union[ModelScope, StageSchema],
@@ -914,6 +935,12 @@ def _reject_non_numeric_expression_agg(
             f"Aggregation {agg!r} requires a numeric value, but the "
             f"aggregated expression is non-numeric (text). Use a counting "
             f"or min/max aggregation, or make the expression numeric."
+        )
+    if _expression_is_confidently_boolean(source, model=model):
+        raise ValueError(
+            f"Aggregation {agg!r} requires a numeric value, but the "
+            f"aggregated expression is boolean. Use a counting aggregation, "
+            f"or cast the expression to a number."
         )
 
 
@@ -989,9 +1016,16 @@ def _bind_agg(
     effective_agg = _validate_agg_eligibility(
         source=source, agg=parsed.agg, bundle=bundle,
     )
-    # DEV-1826 expression sources: numeric-only aggregations are rejected when
-    # the expression is confidently non-numeric (per-column gates don't apply).
+    # DEV-1826 expression sources: order-sensitive first/last need a plain
+    # column (the ranked kernel can't rank an expression), and numeric-only
+    # aggregations are rejected when the expression is confidently non-numeric
+    # (per-column gates don't apply).
     if isinstance(source, EXPRESSION_SOURCE_KINDS):
+        if effective_agg in ("first", "last"):
+            raise ValueError(
+                f"Aggregation {effective_agg!r} is not supported over an "
+                f"expression; use a plain column."
+            )
         _reject_non_numeric_expression_agg(
             source=source, agg=effective_agg, scope=scope,
         )
@@ -1226,8 +1260,6 @@ def _fold_to_scalar(parsed: ParsedExpr):
         and parsed.op == "-"
         and isinstance(parsed.operand, Literal)
     ):
-        from decimal import Decimal
-
         inner = parsed.operand.value
         if isinstance(inner, bool):
             # Reject explicitly — ``-True`` is nonsense and bool is an
@@ -1389,7 +1421,6 @@ def _apply_transform_kwarg_defaults(
     integer checks accept ``Decimal`` whose value is integral as well
     as plain ``int``.
     """
-    from decimal import Decimal
 
     def _ensure_positive_integer(value: object, *, kw: str) -> None:
         if isinstance(value, bool):

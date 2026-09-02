@@ -10,6 +10,8 @@ from sqlalchemy.engine import URL as _SA_URL
 
 from slayer.core.enums import (
     BUILTIN_AGGREGATIONS,
+    DEFAULT_AGGREGATIONS_BY_TYPE,
+    PRIMARY_KEY_AGGREGATIONS,
     DataType,
     JoinCardinality,
     JoinType,
@@ -19,6 +21,7 @@ from slayer.core.enums import (
 from slayer.core.format import NumberFormat
 from slayer.core.formula import ALL_TRANSFORMS
 from slayer.core.keys import SCALAR_FUNCTIONS
+from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.sql_predicate import parse_sql_predicate
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 from slayer.storage.migrations import migrate as _migrate_schema
@@ -389,7 +392,7 @@ def _coerce_source_queries(v: Any) -> Any:
         return v
     if not isinstance(v, list):
         raise ValueError(f"source_queries must be a list, got {type(v).__name__}")
-    from slayer.core.query import SlayerQuery
+    from slayer.core.query import SlayerQuery  # ALLOW(import-not-top): breaks the core.query <-> core.models cycle
     result = []
     for i, item in enumerate(v):
         if isinstance(item, SlayerQuery):
@@ -618,11 +621,6 @@ class SlayerModel(BaseModel):
         type/PK eligibility set, so query-time gating reduces to a whitelist
         membership check.
         """
-        from slayer.core.enums import (
-            DEFAULT_AGGREGATIONS_BY_TYPE,
-            PRIMARY_KEY_AGGREGATIONS,
-        )
-
         custom_agg_names = {a.name for a in self.aggregations}
         valid_names = BUILTIN_AGGREGATIONS | custom_agg_names
         for c in self.columns:
@@ -869,7 +867,6 @@ class DatasourceConfig(BaseModel):
         # full snowflake-sqlalchemy URL from inline fields. Tier-1
         # dialects without a custom hook return None and fall through
         # to the standard branches below.
-        from slayer.sql.dialects import dialect_for_ds_type  # noqa: PLC0415
         dialect = dialect_for_ds_type(self.type)
         url_from_dialect = dialect.build_connection_url(self)
         if url_from_dialect is not None:

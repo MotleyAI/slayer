@@ -700,9 +700,8 @@ class TestExtractEntitiesFromQuery:
                 measures=[ModelMeasure(formula="rolling_avg(customers.score)")],
             )
             result = await extract_entities_from_query(q, storage=s)
-            # The funcstyle was rewritten to colon form via the joined-agg
-            # walk, so the joined column surfaces as an entity instead of
-            # falling into the unknown-function whole-formula fallback.
+            # The joined column inside the transform surfaces as an entity
+            # (parsed natively — no funcstyle rewrite).
             assert "dev1500.customers.score" in result.canonical_forms, (
                 result.canonical_forms
             )

@@ -22,6 +22,8 @@ from slayer.core.formula import (
     _rewrite_funcstyle_aggregations,
     parse_filter,
 )
+from slayer.core.models import Aggregation
+from slayer.core.query import _FUNCSTYLE_PENDING, OrderItem
 
 
 class TestParseFilterBooleanLiterals:
@@ -433,23 +435,19 @@ class TestAggregationNameValidation:
     """Custom aggregation names must not conflict with transform names."""
 
     def test_rejects_transform_name(self) -> None:
-        from slayer.core.models import Aggregation
         with pytest.raises(ValueError, match="conflicts with a built-in transform"):
             Aggregation(name="cumsum", formula="SUM({value})")
 
     def test_rejects_time_shift(self) -> None:
-        from slayer.core.models import Aggregation
         with pytest.raises(ValueError, match="conflicts with a built-in transform"):
             Aggregation(name="time_shift", formula="SUM({value})")
 
     def test_allows_non_conflicting_name(self) -> None:
-        from slayer.core.models import Aggregation
         agg = Aggregation(name="rolling_avg", formula="AVG({value})")
         assert agg.name == "rolling_avg"
 
     def test_allows_builtin_override(self) -> None:
         """Built-in names like 'sum' that are also in ALL_TRANSFORMS (first/last) are fine."""
-        from slayer.core.models import Aggregation
         agg = Aggregation(name="sum")  # built-in override, no formula needed
         assert agg.name == "sum"
 
@@ -460,43 +458,36 @@ class TestOrderColumnNormalization:
     def test_funcstyle_sum(self) -> None:
         # DEV-1826: the author's functional spelling is preserved — the item
         # carries a placeholder + raw_formula, resolved at binding.
-        from slayer.core.query import _FUNCSTYLE_PENDING, OrderItem
         item = OrderItem(column="sum(revenue)", direction="desc")
         assert item.column.name == _FUNCSTYLE_PENDING
         assert item.raw_formula == "sum(revenue)"
 
     def test_funcstyle_count_star(self) -> None:
-        from slayer.core.query import _FUNCSTYLE_PENDING, OrderItem
         item = OrderItem(column="count(*)", direction="desc")
         assert item.column.name == _FUNCSTYLE_PENDING
         assert item.raw_formula == "count(*)"
 
     def test_colon_syntax_still_works(self) -> None:
-        from slayer.core.query import OrderItem
         item = OrderItem(column="revenue:sum", direction="desc")
         assert item.column.name == "revenue_sum"
         assert item.raw_formula == "revenue:sum"
 
     def test_star_count_colon_still_works(self) -> None:
-        from slayer.core.query import OrderItem
         item = OrderItem(column="*:count", direction="asc")
         assert item.column.name == "_count"
         assert item.raw_formula == "*:count"
 
     def test_plain_name_unchanged(self) -> None:
-        from slayer.core.query import OrderItem
         item = OrderItem(column="revenue_sum", direction="desc")
         assert item.column.name == "revenue_sum"
         assert item.raw_formula is None
 
     def test_parameterized_agg_stripped(self) -> None:
-        from slayer.core.query import OrderItem
         item = OrderItem(column="revenue:last(ordered_at)", direction="desc")
         assert item.column.name == "revenue_last"
         assert item.raw_formula == "revenue:last(ordered_at)"
 
     def test_weighted_avg_args_stripped(self) -> None:
-        from slayer.core.query import OrderItem
         item = OrderItem(column="price:weighted_avg(weight=qty)", direction="asc")
         assert item.column.name == "price_weighted_avg"
         assert item.raw_formula == "price:weighted_avg(weight=qty)"

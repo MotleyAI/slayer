@@ -208,7 +208,7 @@ def render_scalar_call(
 
 
 def iif_case_chain(
-    key: ScalarCallKey, part: Callable[[Any], exp.Expression],
+    *, key: ScalarCallKey, part: Callable[[Any], exp.Expression],
 ) -> exp.Case:
     """Render an ``iif`` chain as one multi-WHEN CASE, flattening nested ``iif``
     in the otherwise position; ``part`` renders each argument."""
@@ -255,7 +255,7 @@ def render_row_expression(
         )
     if isinstance(key, ScalarCallKey):
         if key.name == "iif":
-            return iif_case_chain(key, _part)
+            return iif_case_chain(key=key, part=_part)
         return render_scalar_call(
             name=key.name, args=[_part(a) for a in key.args], dialect=dialect,
         )

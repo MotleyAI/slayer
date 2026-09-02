@@ -265,7 +265,7 @@ async def resolve_entity(  # NOSONAR(S3776) — single linear dispatch matching 
     # ``sum(a.b)`` resolve identically; expression text is not an entity.
     try:
         prefix, suffix = split_entity_agg_ref(raw)
-    except (ValueError, UnknownFunctionError) as exc:
+    except ValueError as exc:  # UnknownFunctionError is a ValueError subclass
         raise EntityResolutionError(str(exc)) from exc
     agg = suffix.split("(", 1)[0] if suffix is not None else None
 
@@ -433,6 +433,26 @@ async def resolve_entity(  # NOSONAR(S3776) — single linear dispatch matching 
 # ---------------------------------------------------------------------------
 
 
+def _ref_token(node: Ref | DottedRef) -> str:
+    """Textual form of a bare or dotted ref."""
+    return node.name if isinstance(node, Ref) else ".".join(node.parts)
+
+
+def _agg_call_tokens(node: AggCall) -> Iterable[str]:
+    """Entity token(s) for one aggregation call."""
+    source = node.source
+    if isinstance(source, (Ref, DottedRef)):
+        yield f"{_ref_token(source)}:{node.agg}"
+    elif isinstance(source, StarSource):
+        yield f"*:{node.agg}"
+    else:
+        # DEV-1826 expression source (``sum(amount - cost)``): the expression
+        # itself is not an entity — tag each operand ref.
+        for inner in walk_parsed_refs(source):
+            if isinstance(inner, (Ref, DottedRef)):
+                yield _ref_token(inner)
+
+
 def _formula_entity_tokens(parsed: ParsedExpr) -> Iterable[str]:
     """Yield every entity *token* referenced by a parsed Mode-B formula.
 
@@ -449,27 +469,9 @@ def _formula_entity_tokens(parsed: ParsedExpr) -> Iterable[str]:
     """
     for node in walk_parsed_refs(parsed):
         if isinstance(node, AggCall):
-            source = node.source
-            if isinstance(source, StarSource):
-                src_name = "*"
-            elif isinstance(source, Ref):
-                src_name = source.name
-            elif isinstance(source, DottedRef):
-                src_name = ".".join(source.parts)
-            else:
-                # DEV-1826 expression source (``sum(amount - cost)``): the
-                # expression itself is not an entity — tag each operand ref.
-                for inner in walk_parsed_refs(source):
-                    if isinstance(inner, Ref):
-                        yield inner.name
-                    elif isinstance(inner, DottedRef):
-                        yield ".".join(inner.parts)
-                continue
-            yield f"{src_name}:{node.agg}"
-        elif isinstance(node, Ref):
-            yield node.name
-        else:  # DottedRef
-            yield ".".join(node.parts)
+            yield from _agg_call_tokens(node)
+        else:  # Ref or DottedRef
+            yield _ref_token(node)
 
 
 _FILTER_AGG_SUFFIX_RE = re.compile(r":\w+(?:\([^)]*\))?")
