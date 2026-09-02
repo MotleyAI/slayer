@@ -1,28 +1,10 @@
-"""DEV-1846 — composite-input ``time_shift`` / ``consecutive_periods``.
-
-Executed ground truth on SQLite AND DuckDB (both issue-required), every
-expectation hand-computed from ``tests/_dev1846_fixtures.py``. The suite lands
-BEFORE the lift, so:
-
-* the *lift* tests (composite time_shift, non-comparison / boolean / scalar-call
-  cp) fail today with the current fail-closed guard and pass once the lift
-  renders + re-aggregates them;
-* the *typing-contract* tests pin the ``ValueError`` shape the lift must raise
-  for still-unsupported inputs;
-* the *uniform-gate* tests pin that every render path raises the SAME error
-  (today the plain path and the cross-model-sibling path diverge);
-* two comparison-predicate cp cases (``change(x) > 0``, ``round(x) >= 10``)
-  already render — kept as regression anchors the lift must not disturb.
-
-The planner ``_iter_slot_deps`` recursion is unit-tested at the bottom.
-
-One spec predicate family — a top-level ``BETWEEN`` — is NOT reachable through
-the Mode-B DSL (the parser has no ``between`` construct; ``BetweenKey`` is
-produced only internally by ``TimeDimension.date_range``), so it has no
-end-to-end formula test. Its handling is covered structurally: the boolean-vs-
-value classification is exercised by the ``iif`` / ``and`` / ``or`` / ``not`` /
-``IN`` cases here, and ``BetweenKey`` column materialisation by
-``TestIterSlotDepsRecursion``.
+"""DEV-1846 — composite-input ``time_shift`` / ``consecutive_periods``, executed
+on SQLite + DuckDB against ``tests/_dev1846_fixtures.py`` (every expectation
+hand-computed there). Covers the lifted shapes, the ``ValueError`` typing
+contract for still-unsupported inputs, the uniform fail-closed gate, and the
+planner ``_iter_slot_deps`` recursion (bottom). A top-level ``BETWEEN`` is not
+reachable via the Mode-B DSL, so it is covered structurally rather than
+end-to-end.
 """
 
 from __future__ import annotations
@@ -95,9 +77,6 @@ async def _error(measures, dimensions=None):
     raise AssertionError("expected the query to fail closed, but it generated SQL")
 
 
-# --------------------------------------------------------------------------- #
-# Fixture smoke (task 1.1) — the dataset/engine works independently of the lift.
-# --------------------------------------------------------------------------- #
 class TestFixtureSmoke:
     async def test_trivial_query_executes(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(measures=[
@@ -110,9 +89,6 @@ class TestFixtureSmoke:
         assert _f(by["2024-02"]["sales.r"]) == pytest.approx(100.0)
 
 
-# --------------------------------------------------------------------------- #
-# time_shift over composite inputs — executed values (task 1.2).
-# --------------------------------------------------------------------------- #
 class TestTimeShiftCompositeExecution:
     async def test_ratio_shift_by_store(self, exec_engine) -> None:
         """``time_shift(revenue:sum / qty:sum, -1)`` carries each store's prior
@@ -219,9 +195,6 @@ class TestTimeShiftCompositeExecution:
         assert _f(by["2024-03"]["sales.prev"]) == pytest.approx(520.0)
 
 
-# --------------------------------------------------------------------------- #
-# consecutive_periods over composite / value inputs — executed values (1.3).
-# --------------------------------------------------------------------------- #
 class TestConsecutivePeriodsExecution:
     async def test_numeric_delta_truthiness(self, exec_engine) -> None:
         """A bare numeric composite: streak counts consecutive months where the
@@ -353,9 +326,6 @@ class TestConsecutivePeriodsExecution:
         assert int(by[("B", "2024-02")]["sales.streak"]) == 0
 
 
-# --------------------------------------------------------------------------- #
-# consecutive_periods predicate typing contract (task 1.4).
-# --------------------------------------------------------------------------- #
 class TestPredicateTypingContract:
     async def test_iif_condition_position_accepts_predicate(self, exec_engine) -> None:
         """A boolean-shaped node is legal in ``iif``'s condition seat; the value
@@ -376,14 +346,16 @@ class TestPredicateTypingContract:
         assert name == "ValueError", (name, msg)
         low = msg.lower()
         assert "consecutive_periods" in low, msg
-        assert "boolean" in low and ("numeric" in low or "arithmetic" in low), msg
+        assert "boolean" in low, msg
+        assert "numeric" in low or "arithmetic" in low, msg
 
     async def test_boolean_as_scalar_call_argument_rejected(self) -> None:
         name, msg = await _error([ModelMeasure(
             formula="consecutive_periods(coalesce(revenue:sum > 0, 0))", name="x")])
         assert name == "ValueError", (name, msg)
         low = msg.lower()
-        assert "consecutive_periods" in low and "boolean" in low, msg
+        assert "consecutive_periods" in low, msg
+        assert "boolean" in low, msg
 
     async def test_string_family_predicate_rejected(self) -> None:
         name, msg = await _error([ModelMeasure(
@@ -391,13 +363,10 @@ class TestPredicateTypingContract:
         assert name == "ValueError", (name, msg)
         low = msg.lower()
         assert "consecutive_periods" in low, msg
-        assert "string" in low and ("truthiness" in low or "predicate" in low), msg
+        assert "string" in low, msg
+        assert "truthiness" in low or "predicate" in low, msg
 
 
-# --------------------------------------------------------------------------- #
-# Uniform fail-closed errors (task 1.5) — every render path raises the SAME
-# ValueError, and a cross-model sibling never changes which error fires.
-# --------------------------------------------------------------------------- #
 class TestUniformFailClosed:
     #: shape id -> the still-unsupported time_shift input.
     SHAPES = {
@@ -405,6 +374,9 @@ class TestUniformFailClosed:
         "mixed_composite": "time_shift(revenue:sum * weight, -1)",
         "pure_row_composite": "time_shift(weight * qty, -1)",
         "cross_model_leaf": "time_shift(revenue:sum + regions.factor:sum, -1)",
+        # Top-level predicate: no base slot, so the pre-fix guard let it fall
+        # through to a RuntimeError; it must fail closed as a ValueError.
+        "predicate_input": "time_shift(store in ('A', 'B'), -1)",
     }
     #: shape id -> substrings the user-facing message must name.
     TOKENS = {
@@ -412,6 +384,7 @@ class TestUniformFailClosed:
         "mixed_composite": ("time_shift", "row", "source_queries"),
         "pure_row_composite": ("time_shift", "row", "source_queries"),
         "cross_model_leaf": ("time_shift", "cross-model", "source_queries"),
+        "predicate_input": ("time_shift", "inkey", "source_queries"),
     }
 
     @pytest.mark.parametrize("shape", list(SHAPES))
@@ -435,10 +408,6 @@ class TestUniformFailClosed:
         assert plain == with_sibling, (shape, plain, with_sibling)
 
 
-# --------------------------------------------------------------------------- #
-# Planner dep-walk completeness (task 1.6) — _iter_slot_deps must surface the
-# column leaves of BetweenKey / InKey wherever they nest.
-# --------------------------------------------------------------------------- #
 class TestIterSlotDepsRecursion:
     STATUS = ColumnKey(path=(), leaf="status")
     QTY = ColumnKey(path=(), leaf="qty")

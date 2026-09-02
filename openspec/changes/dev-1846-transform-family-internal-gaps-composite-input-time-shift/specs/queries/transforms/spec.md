@@ -62,9 +62,10 @@ without leaking between leaves.
 `time_shift` SHALL reject, with a `ValueError` naming the operation, the
 offending input shape, and the multi-stage `source_queries` remedy: a nested
 transform anywhere in the input tree, a composite with any row-level leaf
-(pure-row or mixed with aggregates), and a composite containing a cross-model
-aggregate leaf. Bare single-leaf inputs (aggregate, column, derived column)
-SHALL keep their existing behavior.
+(pure-row or mixed with aggregates), a composite containing a cross-model
+aggregate leaf, and a top-level predicate (`IN` / `BETWEEN`) that has no
+materialised value slot. Bare single-leaf inputs (aggregate, column, derived
+column) SHALL keep their existing behavior.
 
 #### Scenario: Nested transform inside time_shift rejected
 
@@ -84,6 +85,12 @@ SHALL keep their existing behavior.
   model's column (dotted path)
 - **THEN** the query fails with a `ValueError` naming the cross-model leaf and
   the remedy
+
+#### Scenario: Top-level predicate input rejected
+
+- **WHEN** a query requests `time_shift(store in ('A', 'B'), -1)`
+- **THEN** the query fails with a `ValueError` naming the shape and the remedy,
+  rather than leaking an internal `RuntimeError`
 
 ### Requirement: Composite-input consecutive_periods
 

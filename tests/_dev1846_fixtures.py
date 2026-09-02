@@ -1,43 +1,22 @@
-"""Shared fixtures for DEV-1846 — composite-input ``time_shift`` /
-``consecutive_periods`` (arithmetic / scalar-call trees over aggregate leaves)
-and the predicate typing contract.
+"""Shared fixtures for DEV-1846 composite-input ``time_shift`` /
+``consecutive_periods``. Underscore-prefixed so pytest skips collection.
 
-Topology mirrors ``tests/_dev1750_fixtures.py`` (host → joined model, a
-join-crossing fragment aggregation) but the host carries the columns the
-composite shapes need: ``revenue`` / ``qty`` / ``cost`` for ratios and deltas,
-``weight`` (a plain row-level column) for the mixed-composite rejection, ``sku``
-for a string-family predicate, ``store`` / ``status`` dimensions for
-per-partition resets and IN predicates. ``regions.factor`` is both the crossing
-fragment param and the cross-model aggregate leaf the rejection names.
+sales(id, region_id, store, status, revenue, qty, cost, weight, sku, ordered_at)
+joined to regions(id → factor: r1=2.0, r2=3.0); store A in region 1, B in 2.
+``hi_rev`` = ``revenue`` filtered >15; ``wrevenue_sum`` = SUM(revenue * factor).
 
-Underscore-prefixed so pytest skips collection here (like
-``tests/_engine_helpers.py``).
+  id store status month revenue qty cost region(factor)
+  1  A     a      Jan   10      2   4    1(2)
+  2  A     b      Jan   20      3   6    1(2)
+  3  B     a      Jan   30      5   10   2(3)
+  4  A     a      Feb   40      5   8    1(2)
+  5  B     c      Feb   60      6   30   2(3)
+  6  A     a      Mar   50      5   25   1(2)
+  7  B     b      Mar   10      2   5    2(3)
 
-Dataset — sales (id, region_id, store, status, revenue, qty, cost, weight, sku,
-ordered_at); regions (id → factor): r1=2.0, r2=3.0. Store A rows sit in region 1
-(factor 2), store B in region 2 (factor 3).
-
-  id  store status month  revenue qty cost  region(factor)
-  1   A     a     Jan     10      2   4     1 (2)
-  2   A     b     Jan     20      3   6     1 (2)
-  3   B     a     Jan     30      5   10    2 (3)
-  4   A     a     Feb     40      5   8     1 (2)
-  5   B     c     Feb     60      6   30    2 (3)
-  6   A     a     Mar     50      5   25    1 (2)
-  7   B     b     Mar     10      2   5     2 (3)
-
-All-store monthly aggregates (no dimension):
-  month  revenue:sum qty:sum cost:sum *:count hi_rev:sum wrevenue_sum
-  Jan    60          10      20      3       50         150  (10+20)*2 + 30*3
-  Feb    100         11      38      2       100        260  40*2 + 60*3
-  Mar    60          7       30      2       50         130  50*2 + 10*3
-
-Per-(store, month): revenue:sum / qty:sum / *:count
-  A: Jan 30/5/2   Feb 40/5/1   Mar 50/5/1
-  B: Jan 30/5/1   Feb 60/6/1   Mar 10/2/1
-
-``hi_rev`` is ``revenue`` filtered to ``revenue > 15`` (a column-filtered leaf);
-``wrevenue_sum`` is ``SUM(revenue * regions.factor)`` (a join-crossing leaf).
+Monthly revenue:sum 60/100/60, qty:sum 10/11/7, cost:sum 20/38/30, *:count 3/2/2,
+wrevenue_sum 150/260/130, hi_rev:sum 50/100/50. Per-(store,month) revenue/qty/
+count: A Jan 30/5/2 Feb 40/5/1 Mar 50/5/1; B Jan 30/5/1 Feb 60/6/1 Mar 10/2/1.
 """
 
 from __future__ import annotations
@@ -66,9 +45,6 @@ from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import _engine_generate
 
 
-# --------------------------------------------------------------------------- #
-# Models — sales (host) → regions.
-# --------------------------------------------------------------------------- #
 def regions_model() -> SlayerModel:
     return SlayerModel(
         name="regions", data_source="test", sql_table="regions",
@@ -80,10 +56,8 @@ def regions_model() -> SlayerModel:
 
 
 def sales_model() -> SlayerModel:
-    """Host model. ``wrevenue_sum`` crosses ``sales → regions`` (default param
-    ``regions.factor``) — the join-crossing composite leaf. ``hi_rev`` is a
-    column-filtered projection of ``revenue`` — the second differently-
-    parameterized leaf."""
+    """Host: ``wrevenue_sum`` crosses ``sales → regions`` (join-crossing leaf);
+    ``hi_rev`` is a column-filtered projection of ``revenue``."""
     return SlayerModel(
         name="sales", data_source="test", sql_table="sales",
         default_time_dimension="ordered_at",
@@ -118,9 +92,6 @@ def dev1846_models() -> List[SlayerModel]:
     return [sales_model(), regions_model()]
 
 
-# --------------------------------------------------------------------------- #
-# SQL-shape generation (for the golden matrix).
-# --------------------------------------------------------------------------- #
 async def gen(query: SlayerQuery, *, dialect: str = "duckdb") -> str:
     models = dev1846_models()
     return await _engine_generate(
@@ -136,9 +107,6 @@ def month_td(column: str = "ordered_at") -> List[TimeDimension]:
     )]
 
 
-# --------------------------------------------------------------------------- #
-# Execution dataset — hand-computable (see module docstring).
-# --------------------------------------------------------------------------- #
 _REGIONS_ROWS = [(1, 2.0), (2, 3.0)]
 _SALES_ROWS = [
     # (id, region_id, store, status, revenue, qty, cost, weight, sku, ordered_at)
@@ -192,10 +160,8 @@ async def _engine_for(*, dialect: str, db_path: str) -> SlayerQueryEngine:
 
 
 async def make_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
-    """Body for a ``params=["sqlite", "duckdb"]`` fixture — the issue's required
-    execution backends. A test module wraps this in ``@pytest.fixture`` so the
-    fixture name lives where it is consumed (no cross-module import that would
-    shadow the parameter)."""
+    """Body for a ``params=["sqlite", "duckdb"]`` fixture; a module wraps it in
+    ``@pytest.fixture`` so the name lives where consumed (no F811 shadow)."""
     dialect = request.param
     if dialect == "duckdb":
         pytest.importorskip("duckdb")

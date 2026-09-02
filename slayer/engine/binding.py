@@ -34,6 +34,7 @@ consumer.
 from __future__ import annotations
 
 import difflib
+from decimal import Decimal
 from typing import Dict, List, Optional, Tuple, Union
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -1084,8 +1085,6 @@ def _fold_to_scalar(parsed: ParsedExpr):
         and parsed.op == "-"
         and isinstance(parsed.operand, Literal)
     ):
-        from decimal import Decimal
-
         inner = parsed.operand.value
         if isinstance(inner, bool):
             # Reject explicitly — ``-True`` is nonsense and bool is an
@@ -1245,8 +1244,6 @@ def _apply_transform_kwarg_defaults(
     integer checks accept ``Decimal`` whose value is integral as well
     as plain ``int``.
     """
-    from decimal import Decimal
-
     def _ensure_positive_integer(value: object, *, kw: str) -> None:
         if isinstance(value, bool):
             raise ValueError(

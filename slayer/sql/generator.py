@@ -452,42 +452,52 @@ def _regroup_placeholder_map(planned_query):
     return to_original, to_slot
 
 
+def _composite_operand_children(node) -> tuple:
+    """Sub-keys a composite / predicate node recurses into; ``()`` for a leaf."""
+    if isinstance(node, ArithmeticKey):
+        return tuple(node.operands)
+    if isinstance(node, ScalarCallKey):
+        return tuple(node.args)
+    if isinstance(node, BetweenKey):
+        return (node.column, node.low, node.high)
+    if isinstance(node, InKey):
+        return (node.column,)
+    return ()
+
+
+def _classify_walk(node, *, flags, placeholder_to_original) -> None:
+    """One node of the composite walk; mutates ``flags`` (transform, row_leaf,
+    cross_model). AggregateKey nodes are opaque leaves; a regroup placeholder
+    resolves to its original aggregate (host-grain fine, cross-model not)."""
+    if isinstance(node, TransformKey):
+        flags[0] = True
+    elif isinstance(node, AggregateKey):
+        if getattr(node.source, "path", ()):
+            flags[2] = True
+    elif isinstance(node, ColumnKey) and node.leaf.startswith(REGROUP_LEAF_PREFIX):
+        original = placeholder_to_original.get(node)
+        if original is None:
+            flags[2] = True  # unknown placeholder — fail closed
+        else:
+            _classify_walk(
+                original, flags=flags,
+                placeholder_to_original=placeholder_to_original,
+            )
+    elif isinstance(node, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+        flags[1] = True
+    else:
+        for child in _composite_operand_children(node):
+            _classify_walk(
+                child, flags=flags,
+                placeholder_to_original=placeholder_to_original,
+            )
+
+
 def _classify_time_shift_composite(key, *, placeholder_to_original) -> Tuple[bool, bool, bool]:
-    """Walk a composite ``time_shift`` input as a tree whose AggregateKey nodes
-    are opaque leaves. A regroup placeholder resolves to its original aggregate
-    (a host-grain crossing-fragment leaf is fine; a cross-model one is not).
-    Returns ``(has_transform, has_row_leaf, has_cross_model_agg)``."""
-    flags = [False, False, False]  # transform, row_leaf, cross_model
-
-    def _walk(node) -> None:
-        if isinstance(node, TransformKey):
-            flags[0] = True
-        elif isinstance(node, AggregateKey):
-            if getattr(node.source, "path", ()):
-                flags[2] = True
-        elif isinstance(node, ColumnKey) and node.leaf.startswith(
-            REGROUP_LEAF_PREFIX,
-        ):
-            original = placeholder_to_original.get(node)
-            if original is None:
-                flags[2] = True  # unknown placeholder — fail closed
-            else:
-                _walk(original)
-        elif isinstance(node, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
-            flags[1] = True
-        elif isinstance(node, ArithmeticKey):
-            for o in node.operands:
-                _walk(o)
-        elif isinstance(node, ScalarCallKey):
-            for a in node.args:
-                _walk(a)
-        elif isinstance(node, BetweenKey):
-            for k in (node.column, node.low, node.high):
-                _walk(k)
-        elif isinstance(node, InKey):
-            _walk(node.column)
-
-    _walk(key)
+    """Walk a composite ``time_shift`` input, returning
+    ``(has_transform, has_row_leaf, has_cross_model_agg)``."""
+    flags = [False, False, False]
+    _classify_walk(key, flags=flags, placeholder_to_original=placeholder_to_original)
     return tuple(flags)  # type: ignore[return-value]
 
 
@@ -500,12 +510,20 @@ def _nested_transform_msg(op: str) -> str:
 
 
 def _validate_time_shift_input(*, op: str, inner, placeholder_to_original) -> None:
-    """Fail closed on an unsupported ``time_shift`` input shape. Bare leaves
-    (aggregate / column / derived column) and aggregate-only composites pass."""
+    """Fail closed on an unsupported ``time_shift`` input shape. Only a bare
+    aggregate/column leaf or an aggregate-only composite passes; a predicate
+    (IN / BETWEEN) or other non-leaf raises rather than leaking a RuntimeError."""
     if isinstance(inner, TransformKey):
         raise ValueError(_nested_transform_msg(op))
     if not isinstance(inner, (ArithmeticKey, ScalarCallKey)):
-        return  # bare Aggregate / Column / ColumnSql leaf — legacy-accepted
+        if isinstance(inner, (AggregateKey, ColumnKey, ColumnSqlKey)):
+            return  # bare aggregate → re-aggregate; column → read-and-rebucket
+        raise ValueError(
+            f"{op!r} does not support a {type(inner).__name__} input; only a bare "
+            f"aggregate or column leaf, or an aggregate-only composite, is "
+            f"supported. Compute this value in an earlier stage of a multi-stage "
+            f"`source_queries` model and reference its aggregate here."
+        )
     has_transform, has_row_leaf, has_cross_model = _classify_time_shift_composite(
         inner, placeholder_to_original=placeholder_to_original,
     )
@@ -542,11 +560,8 @@ def _validate_consecutive_periods_input(*, op: str, inner) -> None:
     _walk_cp_predicate(op=op, key=inner, expect="either")
 
 
-def _walk_cp_predicate(*, op: str, key, expect: str) -> None:
-    """Recursively check the boolean-vs-value contract. ``expect`` is 'bool'
-    (must be boolean-shaped), 'value' (must not be), or 'either' (predicate top
-    level / iif condition)."""
-    node_is_bool = _is_boolean_shaped(key)
+def _assert_cp_shape(*, op: str, key, expect: str, node_is_bool: bool) -> None:
+    """Enforce the boolean-vs-value expectation at one node; raise on mismatch."""
     if expect == "bool" and not node_is_bool:
         raise ValueError(
             f"{op!r}: 'and' / 'or' / 'not' require boolean-shaped operands (a "
@@ -560,19 +575,34 @@ def _walk_cp_predicate(*, op: str, key, expect: str) -> None:
             f"condition and the top-level predicate accept a boolean. Got "
             f"{type(key).__name__}."
         )
+
+
+def _walk_cp_scalar_call(*, op: str, key) -> None:
+    """Recurse into a scalar call: an ``iif`` condition accepts either shape;
+    every remaining compound argument must be value-shaped."""
+    if key.name == "iif" and key.args:
+        _walk_cp_predicate(op=op, key=key.args[0], expect="either")
+        rest = key.args[1:]
+    else:
+        rest = key.args
+    for a in rest:
+        if isinstance(a, _COMPOUND_VALUE_KEYS):
+            _walk_cp_predicate(op=op, key=a, expect="value")
+
+
+def _walk_cp_predicate(*, op: str, key, expect: str) -> None:
+    """Recursively check the boolean-vs-value contract. ``expect`` is 'bool'
+    (must be boolean-shaped), 'value' (must not be), or 'either' (predicate top
+    level / iif condition)."""
+    _assert_cp_shape(
+        op=op, key=key, expect=expect, node_is_bool=_is_boolean_shaped(key),
+    )
     if isinstance(key, ArithmeticKey):
         child_expect = "bool" if key.op in _BOOL_CONNECTIVE_OPS else "value"
         for o in key.operands:
             _walk_cp_predicate(op=op, key=o, expect=child_expect)
     elif isinstance(key, ScalarCallKey):
-        if key.name == "iif" and key.args:
-            _walk_cp_predicate(op=op, key=key.args[0], expect="either")
-            rest = key.args[1:]
-        else:
-            rest = key.args
-        for a in rest:
-            if isinstance(a, _COMPOUND_VALUE_KEYS):
-                _walk_cp_predicate(op=op, key=a, expect="value")
+        _walk_cp_scalar_call(op=op, key=key)
 
 
 _WINDOW_UNIT_SQL = {

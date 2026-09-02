@@ -1,14 +1,8 @@
 """DEV-1846 — golden SQL baseline for the composite-input transform shapes.
-
-Same harness and four-step blessing loop as ``tests/test_dev1750_golden_sql.py``
-(read ``tests/_golden_harness.py`` for the mechanics); only the matrix differs.
-
-This pins exactly WHAT the lift emits — the shifted-CTE re-aggregation per
-aggregate leaf and the alias-context predicate render — as a diff a reviewer
-reads, and reaches the dialects execution cannot (Postgres, T-SQL, BigQuery).
-The baseline is first recorded against PRE-lift code, where every lifted case is
-a recorded fail-closed raise; the lift moves those entries to SQL, each
-re-blessed through ``ALLOWED_DELTAS`` with the manifest emptied again.
+Same harness / four-step blessing loop as ``tests/test_dev1750_golden_sql.py``
+(mechanics in ``tests/_golden_harness.py``); only the matrix differs. Pins WHAT
+the lift emits across dialects execution cannot reach (Postgres, T-SQL,
+BigQuery).
 """
 
 from __future__ import annotations
