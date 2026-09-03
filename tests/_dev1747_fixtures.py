@@ -35,6 +35,7 @@ from sqlglot import exp
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.source_bundle import ResolvedSourceBundle
 
 from tests._engine_helpers import make_seeded_sqlite_engine
 
@@ -190,6 +191,10 @@ def _orders_model(*, data_source: str = "test") -> SlayerModel:
         columns=[
             Column(name="id", type=DataType.INT, primary_key=True),
             Column(name="customer_id", type=DataType.INT),
+            # Second FK onto customers: keeps the reverse hop AMBIGUOUS so the
+            # host-local / off-graph filters stay dropped + warned (this
+            # corpus's subject) instead of pushing as a DEV-1840 semi-join.
+            Column(name="billed_customer_id", type=DataType.INT),
             Column(name="status", type=DataType.TEXT),
             Column(name="created_at", type=DataType.TIMESTAMP),
             Column(name="amount", type=DataType.DOUBLE),
@@ -212,6 +217,10 @@ def _orders_model(*, data_source: str = "test") -> SlayerModel:
         ],
         joins=[
             ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
+            ModelJoin(
+                target_model="customers",
+                join_pairs=[["billed_customer_id", "id"]],
+            ),
             ModelJoin(target_model="order_tags", join_pairs=[["id", "order_id"]]),
         ],
     )
@@ -237,8 +246,6 @@ def dev1747_bundle():
     through the engine — §5.10's contract is that the PLAN carries the order
     scope/phase/nulls, so it has to be assertable without rendering.
     """
-    from slayer.engine.source_bundle import ResolvedSourceBundle
-
     models = dev1747_models()
     return ResolvedSourceBundle(
         source_model=models[0], referenced_models=models[1:],

@@ -12,8 +12,8 @@ Two layers (DEV-1705 spec, decision 4A = hybrid):
   asserting the intended post-fix shape so it auto-promotes when the stage lands.
 
 Plus the two flagged semantic pins — **F1** (1:N crossing aggregates keep
-multiply-per-match) and **F4** (scalar cross-model aggregate unaffected by
-host-local filters) — as SQL-shape assertions here; their executed-value
+multiply-per-match) and **F4** (revised by DEV-1840: a host-local filter
+semi-joins into the scalar cross-model CTE) — as SQL-shape assertions here; their executed-value
 counterparts live in ``tests/integration/test_integration_duckdb.py``. And the
 **RLS × isolation-CTE** cells, which exercise the validator's post-RLS
 ``allow_rls_correlation`` allowlist against the session-policy transform.
@@ -64,7 +64,7 @@ from slayer.core.policy import (
     SessionPolicy,
 )
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
-from slayer.sql.scope_check import ScopeLeakError, assert_scope_closed
+from slayer.sql.scope_check import assert_scope_closed
 from slayer.sql.session_policy import apply_session_policy
 from tests._engine_helpers import _engine_generate
 
@@ -266,12 +266,11 @@ class TestScopeClosureInvariant:
 # F1 / F4 semantic pins (SQL-shape). Values pinned in test_integration_duckdb.
 # --------------------------------------------------------------------------- #
 class TestSemanticPinsSqlShape:
-    async def test_f4_scalar_cross_model_agg_ignores_host_local_filter(self) -> None:
-        # No dimensions ⇒ scalar cross-model aggregate. A host-local filter
-        # (orders.status='paid') constrains the host scope only; it must NOT
-        # appear inside the target-rooted _cm_ CTE (F4 decision — current
-        # behavior, made contractual). See the with/without-matching-rows
-        # value pins in test_integration_duckdb.py.
+    async def test_f4_scalar_cross_model_agg_semi_joins_host_local_filter(self) -> None:
+        # No dimensions ⇒ scalar cross-model aggregate. Since DEV-1840 the
+        # host-local filter (orders.status='paid') restricts the target-rooted
+        # _cm_ CTE's population via a correlated EXISTS — never via a
+        # cardinality-changing join of the CTE body.
         query = SlayerQuery(
             source_model="orders",
             measures=[ModelMeasure(formula="customers.balance:sum")],
@@ -279,8 +278,9 @@ class TestSemanticPinsSqlShape:
         )
         sql = await _gen(query, _orders(), extra_models=[_customers(), _regions()])
         cm_body = _cte_body(sql, r"_cm_\w+")
-        assert "paid" not in cm_body, (
-            f"F4: host-local filter leaked into the target-rooted CTE:\n{cm_body}"
+        assert "EXISTS" in cm_body.upper(), cm_body
+        assert "paid" in cm_body, (
+            f"the host-local filter must semi-join into the CTE:\n{cm_body}"
         )
         assert_scope_closed(sql)
 
@@ -344,10 +344,10 @@ class TestRlsIsolationCte:
             has_column=_ALWAYS,
         )
         assert "_rls_src" in wrapped  # intentional correlated EXISTS emitted
-        # Pre-RLS strictness rejects the intentional correlation...
-        with pytest.raises(ScopeLeakError, match=r"_rls_src"):
-            assert_scope_closed(wrapped)
-        # ...the post-RLS allowlist accepts it.
+        # DEV-1840 made the checker correlation-aware (planner-emitted
+        # semi-joins correlate legally), so the RLS correlation passes with
+        # and without the legacy allowlist flag.
+        assert_scope_closed(wrapped)
         assert_scope_closed(wrapped, allow_rls_correlation=True)
 
 

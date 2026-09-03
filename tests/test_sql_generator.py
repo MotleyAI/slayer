@@ -6872,8 +6872,9 @@ Column(name="total_policy_amount", sql="policy_amount", type=DataType.DOUBLE)],
             assert "FROM policy_amount" in cte_section or "FROM\n  policy_amount" in cte_section
 
     async def test_rerooted_unreachable_dims_and_filters_dropped(self, generator):
-        """Unreachable dims/filters are dropped. CTE produces scalar CROSS JOIN."""
-        # orders → customers join, but customers has NO join back to orders. Dimension 'status' is on orders (unreachable from customers). Filter on 'warehouse' is reachable from orders but not customers.
+        """Unattributable dims broadcast; the host-branch filter pushes into the
+        CTE as a correlated EXISTS (DEV-1840). CTE produces scalar CROSS JOIN."""
+        # orders → customers join, but customers has NO join back to orders. Dimension 'status' is on orders (unreachable from customers). Filter on 'warehouse' reaches the CTE root only across the inverted orders hop.
         orders = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
             columns=[
@@ -6910,11 +6911,13 @@ Column(name="score", sql="score", type=DataType.DOUBLE)],
             _assert_valid_sql(sql, dialect=generator.dialect)
             _assert_valid_sql(sql)
 
-            # CTE: FROM customers, no GROUP BY (status unreachable), no warehouse filter
+            # CTE: FROM customers, no GROUP BY (status unreachable); the
+            # warehouse filter restricts the population via EXISTS (DEV-1840).
             cm_cte_start = sql.find("_cm_")
             cte_section = sql[cm_cte_start:sql.find(")\nSELECT", cm_cte_start)]
             assert "FROM customers" in cte_section or "FROM\n  customers" in cte_section
-            assert "warehouse" not in cte_section.lower()
+            assert "EXISTS" in cte_section.upper()
+            assert "warehouse" in cte_section.lower()
             assert "status" not in cte_section.lower()
             # Combined: CROSS JOIN (no shared dims)
             assert "CROSS JOIN" in sql
@@ -7689,12 +7692,14 @@ class TestIsolatedFilteredMeasureCTEs:
         )
         sql = await _generate(generator, query, orders, extra_models=[customers, warehouse])
 
-        # The _cm_ CTE should NOT reference "warehouse" (it only joins orders → customers)
+        # The _cm_ CTE reaches "warehouse" only inside the correlated EXISTS
+        # (DEV-1840) — never as a cardinality-changing join of the CTE body.
         cm_start = sql.index("_cm_")
         cm_end = sql.index("\n)", cm_start)
         cm_body = sql[cm_start:cm_end]
-        assert "warehouse" not in cm_body.lower(), (
-            f"CM CTE references unavailable table 'warehouse':\n{cm_body}"
+        assert "EXISTS" in cm_body.upper(), cm_body
+        assert "JOIN Warehouse" not in cm_body, (
+            f"CM CTE joins 'warehouse' outside the EXISTS:\n{cm_body}"
         )
         base_section = sql[:cm_start]
         assert "warehouse" in base_section.lower()

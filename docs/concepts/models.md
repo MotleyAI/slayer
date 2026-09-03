@@ -312,7 +312,7 @@ joins:
     join_pairs: [["product_id", "id"]]
 ```
 
-Joins enable **cross-model measures** — querying a measure from a joined model alongside the main model's data. See [Cross-Model Measures](queries.md#cross-model-measures). During [auto-ingestion](ingestion.md), joins are generated automatically from foreign-key relationships; multi-hop paths are resolved at query time by walking each intermediate model's own joins.
+Joins enable **cross-model measures** — querying a measure from a joined model alongside the main model's data. See [Cross-Model Measures](queries.md#cross-model-measures). During [auto-ingestion](ingestion.md), joins are generated automatically from foreign-key relationships; multi-hop paths are resolved at query time by walking each intermediate model's own joins. A join targeting the model itself is rejected at validation — joins are addressed by model name, so define the second role as a separate model over the same table (or a view) and join to that.
 
 ### Join cardinality
 

@@ -319,13 +319,12 @@ class TestCompositeKeyKindsAreTotal:
 class TestProducerInheritanceRouting:
     """DEV-1838 (2.5) — the ``classify_host_filter`` routing table died with the
     cross-model planner; producer filter inheritance
-    (``_cross_model_inherited_filters``, design D3) is the one seam that now
-    decides which host ROW conjuncts a target-rooted producer inherits. The
-    structural rules that survive: prefix-strip under the target with a
-    provably-safe remainder, and ALL-dependencies drop. The legacy
-    prefix-of-target and crossing-derived PROPAGATE optimizations do not port —
-    the attributable doctrine (DEV-1836 D3) drops them with a warning instead,
-    pinned behaviorally in ``test_dev1836_filter_inheritance``.
+    (``_cross_model_inherited_filters``) is the one seam that now decides which
+    host ROW conjuncts a target-rooted producer inherits. Since DEV-1840 the
+    disposition is three-way: attributable conjuncts inherit inline,
+    path-resolvable ones push as a correlated EXISTS semi-join, and only
+    genuinely unresolvable ones drop with a warning (pinned behaviorally in
+    ``test_dev1840_disposition``).
     """
 
     def _split(self, key, *, target_path):
@@ -333,45 +332,60 @@ class TestProducerInheritanceRouting:
             m.name: m
             for m in (_orders(), _customers(), _regions(), _warehouses())
         }
+        host = models["orders"]
         return _cross_model_inherited_filters(
             base_filters=[(_bound_filter_from_key(key), "f")],
             target_path=tuple(target_path),
             root_model=models[target_path[-1]],
             models_by_name=models,
+            host_name=host.name,
+            host_model=host,
+            bundle=ResolvedSourceBundle(
+                source_model=host, referenced_models=list(models.values()),
+            ),
         )
 
     def test_sibling_branch_is_not_inherited(self) -> None:
         """`regions` is reachable from BOTH customers and warehouses. A flat
         membership test would count a warehouses->regions reference as
-        reachable for target ('customers',); structurally it is not."""
-        inherited, dropped = self._split(
+        reachable for target ('customers',); structurally it is not — it now
+        pushes as a semi-join along the reverse path instead of inlining."""
+        inherited, pushed, dropped = self._split(
             ColumnKey(path=("warehouses", "regions"), leaf="population"),
             target_path=("customers",),
         )
         assert not inherited
-        assert dropped
+        assert not dropped
+        (sj,) = pushed
+        assert [h.target_model for h in sj.hops] == [
+            "orders", "warehouses", "regions",
+        ]
 
     def test_path_deeper_than_target_is_not_inherited(self) -> None:
         """A dependency BELOW the target strips to a remainder the root's own
         graph must prove; a hop the root has no edge for drops."""
-        inherited, dropped = self._split(
+        inherited, pushed, dropped = self._split(
             ColumnKey(
                 path=("customers", "regions", "subregions"), leaf="population",
             ),
             target_path=("customers", "regions"),
         )
         assert not inherited
+        assert not pushed
         assert dropped
 
     def test_exact_path_match_is_inherited(self) -> None:
-        inherited, dropped = self._split(
+        inherited, pushed, dropped = self._split(
             ColumnKey(path=("customers", "regions"), leaf="population"),
             target_path=("customers", "regions"),
         )
         assert inherited
+        assert not pushed
         assert not dropped
 
-    def test_mixed_reachable_and_unreachable_drops(self) -> None:
+    def test_mixed_reachable_and_unreachable_pushes(self) -> None:
+        """A conjunct mixing a root-local ref with a cross-path ref under pure
+        conjunctive structure pushes; the root-local ref correlates outward."""
         key = ArithmeticKey(
             op="+",
             operands=(
@@ -379,20 +393,27 @@ class TestProducerInheritanceRouting:
                 ColumnKey(path=("warehouses",), leaf="id"),
             ),
         )
-        inherited, dropped = self._split(key, target_path=("customers",))
-        assert not inherited, "reachability is an ALL-dependencies predicate"
-        assert dropped
+        inherited, pushed, dropped = self._split(key, target_path=("customers",))
+        assert not inherited
+        assert not dropped
+        (sj,) = pushed
+        assert [h.target_model for h in sj.hops] == ["orders", "warehouses"]
 
     def test_host_local_is_not_inherited(self) -> None:
-        inherited, dropped = self._split(
+        inherited, pushed, dropped = self._split(
             ColumnKey(path=(), leaf="amount"), target_path=("customers",),
         )
         assert not inherited
-        assert dropped
+        assert not dropped
+        (sj,) = pushed
+        assert [h.target_model for h in sj.hops] == ["orders"]
 
     def test_dropped_conjunct_carries_the_filter_text(self) -> None:
-        _inherited, dropped = self._split(
-            ColumnKey(path=(), leaf="amount"), target_path=("customers",),
+        _inherited, _pushed, dropped = self._split(
+            ColumnKey(
+                path=("customers", "regions", "subregions"), leaf="population",
+            ),
+            target_path=("customers", "regions"),
         )
         assert dropped[0].filter_text == "f"
 

@@ -41,7 +41,7 @@ from typing import Optional
 import sqlglot
 from pydantic import BaseModel, ConfigDict
 from sqlglot import exp
-from sqlglot.optimizer.scope import Scope, traverse_scope
+from sqlglot.optimizer.scope import Scope, ScopeType, traverse_scope
 
 from slayer.sql.naming import assert_unique_cte_names
 
@@ -139,7 +139,12 @@ def _scope_leaks(scope: Scope, *, allow_rls_correlation: bool) -> list[ScopeLeak
             # Unqualified / ambiguous — unverifiable without schema. Never a
             # false positive (J1 = sound-on-corpus).
             continue
-        source = _resolve_source(scope, qualifier)
+        source = _resolve_source(scope=scope, qualifier=qualifier)
+        if source is None:
+            # An expression subquery (EXISTS / IN / scalar) may legally
+            # correlate to an ancestor scope's sources (DEV-1840); derived
+            # tables and CTEs may not.
+            source = _resolve_correlated(scope=scope, qualifier=qualifier)
         if source is None:
             # C1: the qualifier is not bound in this scope.
             if allow_rls_correlation and qualifier == _RLS_SRC:
@@ -170,6 +175,18 @@ def _resolve_source(scope: Scope, qualifier: str):
     for name, src in scope.sources.items():
         if name.casefold() == folded:
             return src
+    return None
+
+
+def _resolve_correlated(scope: Scope, qualifier: str):
+    """Resolve ``qualifier`` against ancestor scopes, crossing only expression-
+    subquery boundaries — the one place SQL permits correlation."""
+    current = scope
+    while current.scope_type == ScopeType.SUBQUERY and current.parent is not None:
+        current = current.parent
+        source = _resolve_source(scope=current, qualifier=qualifier)
+        if source is not None:
+            return source
     return None
 
 

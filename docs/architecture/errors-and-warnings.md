@@ -58,10 +58,10 @@ Two warning types are **not** exceptions:
   [slack layer](slack-normalization.md) on every rewrite. Surfaced both via
   `warnings.warn(...)` and on `SlayerResponse.warnings`.
 - `UnreachableFilterDroppedWarning` (`core/errors.py`) — a `UserWarning` emitted
-  by the [cross-model planner](cross-model-aggregates.md) when a host filter
-  references slots unreachable from a CTE's root, so the filter is dropped from
-  the CTE (the host still applies it to its own rows). A visibility/debug
-  warning, not an error.
+  by the [cross-model planner](cross-model-aggregates.md) when a host filter has
+  no resolvable path from a CTE's root (or falls outside semi-join pushdown
+  scope), so the filter is dropped from the CTE (the host still applies it to
+  its own rows). A visibility/debug warning, not an error.
 
 ## Design rationale
 
