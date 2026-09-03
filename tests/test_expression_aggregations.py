@@ -519,8 +519,7 @@ class TestExpressionPartitionAttribution:
                 measures=["sum(amount, partition_by=customers.discount)"],
             )
         )
-        assert expr[0] != "AttributeError", expr
-        assert expr[0] == col[0], (expr, col)
+        assert expr[0] == col[0] == "ok", (expr, col)
 
     async def test_computed_dim_expr_agg_with_cross_model_measure(self) -> None:
         case = "CASE WHEN {agg} > 0 THEN 'profit' ELSE 'loss' END"
@@ -536,5 +535,4 @@ class TestExpressionPartitionAttribution:
                 measures=["count(customers.id)"],
             )
         )
-        assert expr[0] != "AttributeError", expr
-        assert expr[0] == col[0], (expr, col)
+        assert expr[0] == col[0] == "ok", (expr, col)
