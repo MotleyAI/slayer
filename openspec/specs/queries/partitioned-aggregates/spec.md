@@ -62,7 +62,7 @@ Query filters SHALL be able to reference partitioned aggregates. Such predicates
 - THEN the query fails with a clear error stating the predicate cannot resolve in one scope and must be rewritten so each top-level AND conjunct's references resolve together (an OR across the two scopes cannot be split into separate filters without changing its meaning), not with an internal error
 
 ### Requirement: Row and combined attachment coexistence
-A query SHALL support partitioned aggregates consumed inside computed dimensions and as measures simultaneously, whether they share the same partition set, use independent partition sets, or are the very same aggregate in both roles. Exception: a CROSS-MODEL partitioned aggregate in both roles requires its partition key among the query dimensions — without it the combined join-back has no host-side key after aggregation, and the query SHALL fail with a clear error rather than compute wrong values (keyless-grain support is tracked separately).
+A query SHALL support partitioned aggregates consumed inside computed dimensions and as measures simultaneously, whether they share the same partition set, use independent partition sets, or are the very same aggregate in both roles.
 
 #### Scenario: Dimension banding and a partitioned measure together
 - WHEN a query has a computed dimension banding `amount:sum(partition_by=city)` and the measure `amount:sum(partition_by=region)`
@@ -78,7 +78,7 @@ A query SHALL support partitioned aggregates consumed inside computed dimensions
 
 #### Scenario: Cross-model dual role without the partition key in the grain is rejected
 - WHEN the same cross-model partitioned aggregate is consumed by a computed dimension and selected as a measure while its partition key is not among the query dimensions
-- THEN the query fails with a clear error instead of silently mis-joining or broadcasting
+- THEN the query fails at plan time with the clear partition-key error of the combined-consumer requirement — identical in shape to the local variant — never with an internal join-back failure
 
 ### Requirement: Coexistence with other isolated measure kinds
 A partitioned aggregate SHALL be usable in the same query as windowed, `first`/`last`, cross-model, and transform measures, with every measure retaining the value it has when queried alone.
@@ -229,3 +229,22 @@ Every explicit `partition_by=` key SHALL be attributable from the aggregate's ro
 #### Scenario: Partition key over an unproven hop errors
 - WHEN an aggregate declares `partition_by=` naming a dimension reachable only across a join with unproven arity
 - THEN the query fails with a clear error naming the key and the remedy, never silently double-counting inside the producer
+
+### Requirement: Combined-consumer partition keys are query dimensions
+Every explicit partition key of a partitioned aggregate consumed in a combined position — as a non-dimension measure, inside an arithmetic / scalar-call composite or transform used as a measure, as a raw ORDER BY target, or as a filter-only reference — SHALL be a query dimension or a time dimension's source column (rewritten to its truncated bucket), for local and cross-model aggregates alike. A violation SHALL fail at plan time with a clear error naming the offending key and the remedy, never with an internal join-back failure. A partitioned aggregate consumed only inside computed dimensions keeps the finer-grain exemption (its partition set declares an internal producer grain). A filter or ORDER BY reference to a computed dimension's own aggregate is a row-scope reference, legal at any partition grain: such a filter restricts the aggregated population per base row at the partition grain, and MAY therefore change surviving groups' aggregate values — unlike a combined-scope partitioned-aggregate filter, which only prunes result rows.
+
+#### Scenario: Keyless dual-role measure fails cleanly, local and cross-model alike
+- WHEN the same partitioned aggregate — local or cross-model — is consumed by a computed dimension and selected as a measure while a partition key is not among the query dimensions
+- THEN the query fails at plan time with the same clear error in both variants, naming the key and the remedy (add it to dimensions/time_dimensions), never with an internal error
+
+#### Scenario: Keyless raw ORDER BY target fails cleanly
+- WHEN `order` names the raw partitioned aggregate alongside a computed dimension using it and a partition key is not a query dimension
+- THEN the query fails at plan time with the same clear partition-key error as the measure role, local and cross-model alike
+
+#### Scenario: Composite and transform consumers are combined positions
+- WHEN the keyless partitioned aggregate is consumed inside an arithmetic composite measure or as a transform input used as a measure
+- THEN the query fails at plan time with the same clear partition-key error
+
+#### Scenario: Dimension-only consumption keeps the finer-grain exemption
+- WHEN a partitioned aggregate with partition keys finer than the query grain is consumed only inside computed dimensions (with row-scope filter or ORDER-BY-name references at most)
+- THEN the query plans and executes without any partition-key error

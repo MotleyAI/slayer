@@ -30,6 +30,12 @@ LOCAL_BAND = {
 }
 
 
+def _blind_consumers(*_args, **_kwargs):
+    """Blind the unified combined-consumer discovery (local + cross-model buckets) so
+    an undisposed aggregate must be caught by ``_assert_total_routing``."""
+    return regroup_planner.CombinedConsumers([], [], [], {}, {})
+
+
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def exec_backend(request):
     async for engine in make_exec_engine(request):
@@ -96,13 +102,10 @@ class TestTotalRoutingInvariant:
     def test_unrouted_aggregate_raises_explicit_planner_error(self, monkeypatch):
         """Blind the combined-producer discovery to every partitioned leaf: the
         post-discovery invariant must catch the now-undisposed aggregate."""
-        def _blind(*args, **kwargs):
-            return [], {}
-
         for mod in (regroup_planner, stage_planner):
-            if hasattr(mod, "combined_partitioned_aggregates"):
+            if hasattr(mod, "combined_consumer_aggregates"):
                 monkeypatch.setattr(
-                    mod, "combined_partitioned_aggregates", _blind,
+                    mod, "combined_consumer_aggregates", _blind_consumers,
                 )
         query = q(
             dimensions=["status"],
@@ -125,8 +128,7 @@ class TestTotalRoutingInvariant:
         must be caught by ``_assert_total_routing`` with the explicit
         no-disposition error, not fall through to the legacy dispatch."""
         monkeypatch.setattr(
-            stage_planner, "_discover_cross_model_combined",
-            lambda prebound: ([], {}, {}),
+            stage_planner, "combined_consumer_aggregates", _blind_consumers,
         )
         query = q(
             dimensions=["status"],
@@ -151,8 +153,7 @@ class TestTotalRoutingInvariant:
         """The invariant walks filters and orders too — a hidden cross-model
         leaf in either role must not survive blinded discovery."""
         monkeypatch.setattr(
-            stage_planner, "_discover_cross_model_combined",
-            lambda prebound: ([], {}, {}),
+            stage_planner, "combined_consumer_aggregates", _blind_consumers,
         )
         query = q(
             dimensions=["status"],

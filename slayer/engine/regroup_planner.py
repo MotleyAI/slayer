@@ -4,8 +4,9 @@ shared by discovery and substitution; orchestration lives in ``stage_planner``."
 
 from __future__ import annotations
 
-from typing import Dict, List, Mapping, Tuple
+from typing import Dict, List, Mapping, NamedTuple, Optional, Tuple
 
+from slayer.core.enums import DataType
 from slayer.core.keys import (
     REGROUP_LEAF_PREFIX,
     AggregateKey,
@@ -32,7 +33,8 @@ __all__ = [
     "dimension_partitioned_aggregates",
     "dimension_regroup_roots",
     "regroup_root_grain",
-    "combined_partitioned_aggregates",
+    "CombinedConsumers",
+    "combined_consumer_aggregates",
     "is_local_combined_regroup_ref",
     "split_top_level_and",
     "conjunct_scope",
@@ -165,53 +167,102 @@ def dimension_regroup_roots(declared_measures) -> List[ValueKey]:  # NOSONAR(S37
     return out
 
 
-def combined_partitioned_aggregates(  # NOSONAR(S3776) — one cohesive discovery walk over measures + orders + filters; splitting scatters the shared seen-set / alias-map state.
+class CombinedConsumers(NamedTuple):
+    """Aggregates consumed in a COMBINED position — a non-dimension measure, a
+    composite operand, a transform input, a raw ORDER target, or a filter-only
+    reference — bucketed by routing need. The partitioned buckets (``local`` and
+    ``cross_model``) require query-dimension partition keys for the join-back; the
+    cross-model bare bucket carries no such constraint. ``public_alias`` /
+    ``declared_type`` map a directly-selected aggregate to its measure name / explicit type."""
+
+    local_partitioned: List[AggregateKey]
+    cross_model_partitioned: List[AggregateKey]
+    cross_model_bare: List[AggregateKey]
+    public_alias: Dict[AggregateKey, str]
+    declared_type: Dict[AggregateKey, DataType]
+
+
+def _combined_consumer_kind(k: ValueKey) -> Optional[str]:
+    """Combined-consumer bucket for ``k``, or ``None`` (a local BARE aggregate routes
+    via ``_bare_combined_roots``; a host-grain wrap roots at the host, not here)."""
+    if not isinstance(k, AggregateKey):
+        return None
+    partitioned = k.partition_keys is not None
+    if not getattr(k.source, "path", ()):
+        return "local_partitioned" if partitioned else None
+    if getattr(k, "grain", "target") == "host":
+        return None
+    return "cross_model_partitioned" if partitioned else "cross_model_bare"
+
+
+def combined_consumer_aggregates(  # NOSONAR(S3776) — one cohesive discovery walk over measures + orders + filters; splitting scatters the shared seen-set / bucket / alias-map state.
     declared_measures, order_specs, *, row_agg_set: frozenset,
     bound_filters=(),
-) -> Tuple[List[AggregateKey], Dict[AggregateKey, str]]:
-    """Partitioned ``AggregateKey``s destined for a COMBINED attach: every LOCAL one
-    reachable from a non-dimension measure, order spec, or filter (cross-model excluded).
-    ``row_agg_set`` asymmetric — MEASURE use kept, ORDER/filter ref excluded; 2nd return: alias map."""
-
-    def _is_local_combined(k: ValueKey) -> bool:
-        return (
-            isinstance(k, AggregateKey)
-            and k.partition_keys is not None
-            and not getattr(k.source, "path", ())
-        )
-
+) -> CombinedConsumers:
+    """One walk discovering every partitioned / cross-model ``AggregateKey`` destined
+    for a COMBINED attach, reachable from a non-dimension measure, order spec, or
+    filter. ``row_agg_set`` (partitioned aggregates already carrying a computed-dimension
+    ROW role) is excluded from ORDER-name and filter references — but NOT from measure
+    use — so a row-scope reference stays row-routed while a genuine combined consumer is
+    kept. Local and cross-model partitioned aggregates share these asymmetric exclusions;
+    a cross-model bare aggregate is kept from any position."""
+    buckets: Dict[str, List[AggregateKey]] = {
+        "local_partitioned": [],
+        "cross_model_partitioned": [],
+        "cross_model_bare": [],
+    }
+    public_alias: Dict[AggregateKey, str] = {}
+    declared_type: Dict[AggregateKey, DataType] = {}
     seen: set = set()
-    out: List[AggregateKey] = []
-    public_alias_by_agg: Dict[AggregateKey, str] = {}
+
+    def _add(k: ValueKey) -> None:
+        if k in seen:
+            return
+        kind = _combined_consumer_kind(k)
+        if kind is None:
+            return
+        seen.add(k)
+        buckets[kind].append(k)
+
+    def _walk_excluding_row(vk: ValueKey) -> None:
+        # ORDER-by-name and a filter over the dim's own aggregate are row-scope refs.
+        for k in walk_value_keys(vk):
+            kind = _combined_consumer_kind(k)
+            if kind in ("local_partitioned", "cross_model_partitioned") and k in row_agg_set:
+                continue
+            _add(k)
+
     for dm in declared_measures:
         if dm.is_dimension:
             continue
         vk = dm.bound.value_key
+        # A MEASURE keeps a dual-role partitioned aggregate (no row exclusion) so it is strict-checked.
         for k in walk_value_keys(vk):
-            if _is_local_combined(k) and k not in seen:
-                seen.add(k)
-                out.append(k)
-        if _is_local_combined(vk) and dm.public_name is not None:
-            public_alias_by_agg.setdefault(vk, dm.public_name)
+            _add(k)
+        top = _combined_consumer_kind(vk)
+        if top is not None and dm.public_name is not None:
+            public_alias.setdefault(vk, dm.public_name)
+        if (
+            top in ("cross_model_partitioned", "cross_model_bare")
+            and dm.type_is_explicit and dm.type is not None
+        ):
+            declared_type.setdefault(vk, dm.type)
     for sp in order_specs:
         top = sp.bound.value_key
-        # RAW aggregate → combined attach; the dimension NAME keeps row routing.
-        if _is_local_combined(top):
-            if top not in seen:
-                seen.add(top)
-                out.append(top)
+        # A RAW partitioned aggregate as the order target is a combined consumer (rejected if keyless).
+        if _combined_consumer_kind(top) in ("local_partitioned", "cross_model_partitioned"):
+            _add(top)
             continue
-        for k in walk_value_keys(top):
-            if _is_local_combined(k) and k not in seen and k not in row_agg_set:
-                seen.add(k)
-                out.append(k)
-    # A filtered partitioned aggregate needs its own combined producer (row-attach ref excluded).
+        _walk_excluding_row(top)
     for bf in (bound_filters or ()):
-        for k in walk_value_keys(bf.value_key):
-            if _is_local_combined(k) and k not in seen and k not in row_agg_set:
-                seen.add(k)
-                out.append(k)
-    return out, public_alias_by_agg
+        _walk_excluding_row(bf.value_key)
+    return CombinedConsumers(
+        local_partitioned=buckets["local_partitioned"],
+        cross_model_partitioned=buckets["cross_model_partitioned"],
+        cross_model_bare=buckets["cross_model_bare"],
+        public_alias=public_alias,
+        declared_type=declared_type,
+    )
 
 
 # Non-literal predicate-dependency leaves; a dim-aggregate is terminal but classified apart.
