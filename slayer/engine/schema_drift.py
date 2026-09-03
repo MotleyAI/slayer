@@ -1659,8 +1659,7 @@ async def _live_columns_for_sql_model(
     """Trial-execute ``model.sql`` with a 0-row guard; return cursor types, or None on failure."""
     if not model.sql:
         return None
-    # build_sql_model_trial_query strips a trailing ``;`` before wrapping —
-    # otherwise the subquery syntax error would be misattributed to drift.
+    # Trailing ``;`` stripped before wrapping, else its syntax error looks like drift.
     try:
         cats = await client.get_column_types(build_sql_model_trial_query(model.sql))
     except Exception as exc:

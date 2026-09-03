@@ -12,6 +12,8 @@ import sqlalchemy as sa
 import sqlalchemy.engine.url
 import sqlalchemy.event as sa_event
 import sqlalchemy.exc
+import sqlglot
+from sqlglot import expressions as exp
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -323,6 +325,24 @@ def build_sql_model_trial_query(inner_sql: str) -> str:
     return f"SELECT * FROM (\n{inner}\n) AS _sd_validate WHERE 1=0"
 
 
+_DATA_MODIFYING_NODES = (
+    exp.Insert, exp.Update, exp.Delete, exp.Merge,
+    exp.Create, exp.Drop, exp.Alter, exp.TruncateTable,
+)
+
+
+def is_data_modifying_sql(sql: str, *, dialect: str | None = None) -> bool:
+    """True if ``sql`` holds DML/DDL, even nested in a CTE (parse failure → False)."""
+    try:
+        statements = sqlglot.parse(sql, dialect=dialect)
+    except Exception:
+        return False
+    return any(
+        stmt is not None and stmt.find(*_DATA_MODIFYING_NODES) is not None
+        for stmt in statements
+    )
+
+
 def _apply_type_probe_timeout(conn, db_type: str | None, timeout_seconds: int) -> None:
     """Apply the dialect's statement-timeout SQL before a type probe.
 
@@ -348,19 +368,34 @@ async def _apply_type_probe_timeout_async(conn, db_type: str | None, timeout_sec
 _TYPE_PROBE_TIMEOUT_SECONDS = 60
 
 
+# Dialects whose SET TRANSACTION READ ONLY binds the current txn.
+_READ_ONLY_TXN_DIALECTS = frozenset({"postgres", "redshift", "oracle"})
+
+
+def _read_only_transaction_sql(db_type: str | None) -> str | None:
+    if db_type and dialect_for_ds_type(db_type).sqlglot_name in _READ_ONLY_TXN_DIALECTS:
+        return "SET TRANSACTION READ ONLY"
+    return None
+
+
 def _get_column_types_sync(
     sql: str,
     connection_string: str,
     db_type: str | None,
     engine: sa.Engine | None = None,
 ) -> dict[str, str]:
-    """Infer column types (LIMIT 0; LIMIT 1 for SQLite, SELECT TOP for T-SQL)."""
+    """Infer column types read-only (rolled back) so a trial probe can't mutate."""
     engine = _resolve_sync_engine(connection_string, override_engine=engine)
     limit_sql = _build_type_probe_sql(sql, db_type)
     with engine.connect() as conn:
+        ro_sql = _read_only_transaction_sql(db_type)
+        if ro_sql:
+            conn.execute(sa.text(ro_sql))
         _apply_type_probe_timeout(conn, db_type, _TYPE_PROBE_TIMEOUT_SECONDS)
         result = conn.execute(sa.text(limit_sql))
-        return _extract_types_from_cursor(result, db_type=db_type)
+        types = _extract_types_from_cursor(result, db_type=db_type)
+        conn.rollback()
+    return types
 
 
 def get_column_types_sync(
@@ -375,12 +410,17 @@ async def _get_column_types_async(
     engine,
     db_type: str | None,
 ) -> dict[str, str]:
-    """Async column-type inference (LIMIT 0; LIMIT 1 for SQLite, SELECT TOP for T-SQL)."""
+    """Async type inference read-only (rolled back) so a trial probe can't mutate."""
     limit_sql = _build_type_probe_sql(sql, db_type)
     async with engine.connect() as conn:
+        ro_sql = _read_only_transaction_sql(db_type)
+        if ro_sql:
+            await conn.execute(sa.text(ro_sql))
         await _apply_type_probe_timeout_async(conn, db_type, _TYPE_PROBE_TIMEOUT_SECONDS)
         result = await conn.execute(sa.text(limit_sql))
-        return _extract_types_from_cursor(result, db_type=db_type)
+        types = _extract_types_from_cursor(result, db_type=db_type)
+        await conn.rollback()
+    return types
 
 
 class SlayerSQLClient:

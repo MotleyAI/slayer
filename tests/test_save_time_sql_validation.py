@@ -337,3 +337,43 @@ class TestInconclusiveWarnsAndSaves:
         with pytest.raises(ModelSqlValidationError):
             await engine.save_model(model)
         assert await storage.get_model("permdenied", data_source=_DS) is None
+
+
+class TestNonReadOnlySqlRejected:
+    """A raw-sql model whose SQL is not a read-only query is rejected before any
+    trial-execute, so a save can never mutate the datasource (DEV-1843)."""
+
+    @pytest.mark.parametrize("bad_sql", [
+        "DELETE FROM orders",
+        "UPDATE orders SET amount = 0",
+        "INSERT INTO orders (id, amount, status) VALUES (2, 1.0, 'x')",
+        "WITH x AS (DELETE FROM orders RETURNING *) SELECT * FROM x",
+        "DROP TABLE orders",
+    ])
+    async def test_data_modifying_sql_rejected_without_executing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad_sql: str
+    ) -> None:
+        engine, storage = await _make_engine(tmp_path)
+        executed: list[str] = []
+
+        async def _spy(self, sql: str) -> dict[str, str]:
+            executed.append(sql)
+            return {}
+
+        monkeypatch.setattr(SlayerSQLClient, "get_column_types", _spy)
+        model = _sql_model(bad_sql, name="mutating")
+        with pytest.raises(ModelSqlValidationError):
+            await engine.save_model(model)
+        assert executed == []  # static guard short-circuits before execution
+        assert await storage.get_model("mutating", data_source=_DS) is None
+        conn = sqlite3.connect(str(tmp_path / "live.db"))
+        try:
+            count = conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
+        finally:
+            conn.close()
+        assert count == 1  # datasource untouched
+
+    async def test_read_only_select_still_saves(self, tmp_path: Path) -> None:
+        engine, storage = await _make_engine(tmp_path)
+        await engine.save_model(_sql_model("SELECT id FROM orders", name="ok"))
+        assert await storage.get_model("ok", data_source=_DS) is not None

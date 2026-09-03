@@ -142,3 +142,26 @@ persistence SHALL remain out of scope and unaffected.
 
 - **WHEN** a model is persisted through the ingestion / YAML-load path
 - **THEN** the save-time trial-execute is not performed
+
+### Requirement: Model source SQL must be read-only
+
+A raw-`sql` model's source SHALL be a read-only query. If the SQL contains a
+data-modifying or DDL statement (INSERT / UPDATE / DELETE / MERGE / CREATE /
+DROP / ALTER / TRUNCATE), including inside a CTE, the save SHALL be rejected
+before any trial-execution, so persisting a model can never mutate the
+datasource. The trial-execute itself SHALL run read-only where the dialect
+supports it and SHALL always roll back, as a backstop for SQL that static
+analysis cannot parse.
+
+#### Scenario: Data-modifying model SQL is rejected without executing
+
+- **WHEN** a raw-`sql` model whose `sql` holds a data-modifying statement (e.g.
+  `WITH x AS (DELETE FROM t RETURNING *) SELECT * FROM x`) is saved
+- **THEN** the save fails with an error and the SQL is never executed against
+  the datasource
+
+#### Scenario: The trial-execute cannot persist a mutation
+
+- **WHEN** a raw-`sql` model is trial-executed at save time
+- **THEN** the probe runs in a rolled-back transaction (read-only where the
+  dialect supports it), so nothing it runs is committed

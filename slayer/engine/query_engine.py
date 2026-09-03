@@ -117,6 +117,7 @@ from slayer.sql.client import (
     _is_transient_db_error,
     _is_unreachable_db_error,
     build_sql_model_trial_query,
+    is_data_modifying_sql,
 )
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type, get_dialect
 from slayer.sql import engine_factory
@@ -2628,6 +2629,15 @@ class SlayerQueryEngine:
             if model.data_source
             else None
         )
+        sqlglot_name = dialect_for_ds_type(ds.type).sqlglot_name if ds else None
+        if is_data_modifying_sql(model.sql, dialect=sqlglot_name):
+            raise ModelSqlValidationError(
+                model_name=model.name,
+                data_source=model.data_source or "",
+                ds_type=ds.type if ds else None,
+                reason="model SQL must be a read-only query; it contains a "
+                "data-modifying (DML/DDL) statement",
+            )
         if ds is None:
             logger.warning(
                 "Skipping save-time SQL validation for model %r: datasource "

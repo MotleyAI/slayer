@@ -5,6 +5,7 @@ import sqlite3
 from unittest.mock import AsyncMock, patch
 
 import pytest
+import sqlalchemy as sa
 import sqlalchemy.exc
 
 from slayer.core.models import DatasourceConfig
@@ -14,11 +15,14 @@ from slayer.sql.client import (
     _execute_with_retry_async,
     _execute_with_retry_sync,
     _execute_with_retry_threaded,
+    _get_column_types_sync,
     _is_auth_failure,
     _is_transient_db_error,
     _is_unreachable_db_error,
     _map_type_code,
+    _read_only_transaction_sql,
     build_sql_model_trial_query,
+    is_data_modifying_sql,
 )
 
 
@@ -752,3 +756,73 @@ class TestUnreachableSeparateFromTransient:
         exc = _make_op_error(orig_message)
         assert _is_transient_db_error(exc) is True
         assert _is_unreachable_db_error(exc) is False
+
+
+class TestIsDataModifyingSql:
+    """Static guard: reject DML/DDL (incl. inside CTEs) before any execution."""
+
+    @pytest.mark.parametrize("sql", [
+        "DELETE FROM orders",
+        "UPDATE orders SET amount = 0",
+        "INSERT INTO orders (id) VALUES (1)",
+        "MERGE INTO orders USING src ON orders.id = src.id "
+        "WHEN MATCHED THEN UPDATE SET amount = 0",
+        "DROP TABLE orders",
+        "TRUNCATE TABLE orders",
+        "CREATE TABLE t (a INT)",
+        "ALTER TABLE orders ADD COLUMN x INT",
+        "WITH x AS (DELETE FROM orders RETURNING *) SELECT * FROM x",
+    ])
+    def test_data_modifying_is_flagged(self, sql: str) -> None:
+        assert is_data_modifying_sql(sql, dialect="postgres") is True
+
+    @pytest.mark.parametrize("sql", [
+        "SELECT 1",
+        "SELECT id, amount FROM orders WHERE id IN (SELECT id FROM other)",
+        "WITH c AS (SELECT 1 AS x) SELECT * FROM c",
+    ])
+    def test_read_only_is_not_flagged(self, sql: str) -> None:
+        assert is_data_modifying_sql(sql, dialect="postgres") is False
+
+    def test_unparseable_sql_is_not_flagged(self) -> None:
+        # A parse failure must not be treated as modifying — the read-only
+        # probe transaction is the backstop for what static analysis can't read.
+        assert is_data_modifying_sql("nonsense {var} sql", dialect="postgres") is False
+
+
+class TestReadOnlyTransactionSql:
+    """Dialects whose ``SET TRANSACTION READ ONLY`` binds the current txn."""
+
+    @pytest.mark.parametrize("ds_type", ["postgres", "postgresql", "redshift", "oracle"])
+    def test_read_only_capable_dialects(self, ds_type: str) -> None:
+        assert _read_only_transaction_sql(ds_type) == "SET TRANSACTION READ ONLY"
+
+    @pytest.mark.parametrize("ds_type", ["sqlite", "mysql", "duckdb", "bigquery", None])
+    def test_dialects_without_current_txn_read_only(self, ds_type: str) -> None:
+        assert _read_only_transaction_sql(ds_type) is None
+
+
+class TestProbeRollsBack:
+    """The type probe never commits — it rolls back so a slipped-through
+    mutation cannot persist (SQLite backstop for the read-only guard)."""
+
+    def test_probe_rolls_back_and_still_infers_types(self, tmp_path) -> None:
+        db = str(tmp_path / "probe.db")
+        eng = sa.create_engine(f"sqlite:///{db}")
+        with eng.connect() as conn:
+            conn.execute(sa.text("CREATE TABLE t (a INTEGER, b TEXT)"))
+            conn.execute(sa.text("INSERT INTO t VALUES (1, 'x')"))
+            conn.commit()
+        seen: list[str] = []
+        real_rollback = sa.Connection.rollback
+
+        def _spy_rollback(self):  # noqa: ANN001
+            seen.append("rollback")
+            return real_rollback(self)
+
+        with patch.object(sa.Connection, "rollback", _spy_rollback):
+            types = _get_column_types_sync(
+                "SELECT a, b FROM t", connection_string="", db_type="sqlite", engine=eng,
+            )
+        assert types == {"a": "number", "b": "string"}
+        assert "rollback" in seen
