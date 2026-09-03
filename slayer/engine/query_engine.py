@@ -2632,18 +2632,19 @@ class SlayerQueryEngine:
             lambda m: "(1=1)" if m.group(0).startswith("{?") else "_slayer_ph",
             model.sql, flags=re.DOTALL,
         ) if parameterized else model.sql
+        # Unparseable is rejected too: the query generator parses model.sql the
+        # same way, so SQL that can't be parsed is non-functional anyway.
         safety = classify_model_sql(probe_sql, dialect=sqlglot_name)
-        reason = None
-        if safety == "modifying":
-            reason = "model SQL must be a read-only query; it is not a plain SELECT"
-        elif safety == "unparseable" and not parameterized:
-            reason = "model SQL could not be parsed for a read-only check"
-        if reason:
+        if safety != "read_only":
             raise ModelSqlValidationError(
                 model_name=model.name,
                 data_source=model.data_source or "",
                 ds_type=ds.type if ds else None,
-                reason=reason,
+                reason=(
+                    "model SQL must be a read-only query; it is not a plain SELECT"
+                    if safety == "modifying"
+                    else "model SQL could not be parsed for a read-only check"
+                ),
             )
         if parameterized:
             logger.info(

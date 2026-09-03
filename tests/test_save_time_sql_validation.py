@@ -412,3 +412,12 @@ class TestNonReadOnlySqlRejected:
             await engine.save_model(model)
         assert executed == []
         assert await storage.get_model("param_dml", data_source=_DS) is None
+
+    async def test_parameterized_unparseable_sql_rejected(self, tmp_path: Path) -> None:
+        # Unparseable even after placeholder normalization → non-functional in the
+        # generator too, so it is rejected rather than saved.
+        engine, storage = await _make_engine(tmp_path)
+        model = _sql_model("SELECT ((( {x}", name="param_broken")
+        with pytest.raises(ModelSqlValidationError):
+            await engine.save_model(model)
+        assert await storage.get_model("param_broken", data_source=_DS) is None

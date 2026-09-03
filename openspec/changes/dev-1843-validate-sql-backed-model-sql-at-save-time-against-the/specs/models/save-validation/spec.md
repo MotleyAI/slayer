@@ -154,7 +154,8 @@ all — SHALL be rejected with no database round-trip, so persisting a model can
 never mutate the datasource and SQL the query generator could not run either
 fails fast. Parameterized SQL (`{var}` / `{? ?}`) SHALL still be classified after
 its placeholders are normalized to parse-safe tokens, so a parameterized
-data-modifying statement is rejected even though it is never trial-run. The
+statement that is not a read-only query — or is unparseable — is rejected even
+though it is never trial-run. The
 trial-execute that follows for a parsed read-only query SHALL run read-only where
 the dialect supports it and SHALL always roll back.
 
@@ -167,8 +168,8 @@ the dialect supports it and SHALL always roll back.
 
 #### Scenario: Unparseable model SQL is rejected without a database call
 
-- **WHEN** a raw-`sql` model whose `sql` cannot be parsed (and carries no `{var}`
-  placeholders) is saved
+- **WHEN** a raw-`sql` model whose `sql` cannot be parsed (after normalizing any
+  `{var}` / `{? ?}` placeholders to parse-safe tokens) is saved
 - **THEN** the save fails with an error and no query is run against the datasource
 
 #### Scenario: Parameterized data-modifying SQL is rejected
