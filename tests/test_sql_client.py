@@ -785,6 +785,7 @@ class TestClassifyModelSql:
         "SELECT 1",
         "SELECT id, amount FROM orders WHERE id IN (SELECT id FROM other)",
         "WITH c AS (SELECT 1 AS x) SELECT * FROM c",
+        "VALUES (1, 'a'), (2, 'b')",           # standalone constant table is read-only
     ])
     def test_read_only(self, sql: str) -> None:
         assert classify_model_sql(sql, dialect="postgres") == "read_only"

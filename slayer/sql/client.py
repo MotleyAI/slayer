@@ -329,7 +329,9 @@ def build_sql_model_trial_query(inner_sql: str) -> str:
 # A read-only source parses to a query root with no DML/DDL nested (a
 # data-modifying CTE hides DML under a SELECT root; COPY/GRANT/CALL/etc. are
 # non-query roots the allowlist rejects on its own).
-_READ_ONLY_ROOTS = (exp.Select, exp.Union, exp.Except, exp.Intersect, exp.Subquery)
+_READ_ONLY_ROOTS = (
+    exp.Select, exp.Union, exp.Except, exp.Intersect, exp.Subquery, exp.Values,
+)
 _DATA_MODIFYING_NODES = (
     exp.Insert, exp.Update, exp.Delete, exp.Merge,
     exp.Create, exp.Drop, exp.Alter, exp.TruncateTable,
