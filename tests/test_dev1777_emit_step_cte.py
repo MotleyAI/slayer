@@ -2,9 +2,7 @@
 transform-chain step-CTE sites (window / unmaterialised-POST, in the host and
 cross-model chains). These pin the shell directly and deterministically:
 
-* the multi-slot-in-one-batch body (the caller controls slot order, so unlike
-  an end-to-end golden this is not exposed to the base-CTE column-order
-  non-determinism tracked in DEV-1795);
+* the multi-slot-in-one-batch body, pinned in caller-supplied slot order;
 * the render-before-mutate ordering invariant a later same-step slot relies on;
 * block D (F2 unmaterialised-POST), which no real query reaches — it errors
   earlier in ``_render_outer_composite`` — so it has no golden pin; the shell it
