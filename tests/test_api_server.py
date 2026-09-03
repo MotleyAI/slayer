@@ -2,6 +2,7 @@
 
 import os
 import shutil
+import sqlite3
 import tempfile
 
 import pytest
@@ -677,3 +678,63 @@ class TestOpenAPI400Documentation:
         assert body.get("sql") is not None
         assert "amount" in body["sql"].lower()
         assert execute_calls == 0, "dry_run=True must not execute SQL"
+
+
+class TestSaveTimeSqlValidation:
+    """DEV-1843 — ``POST /models`` trial-executes a raw-``sql`` model against a
+    reachable datasource; a rejection surfaces as HTTP 400 (ValueError→400)."""
+
+    def _register_live_ds(self, client: TestClient, tmp_path) -> None:
+        db_path = str(tmp_path / "live.db")
+        conn = sqlite3.connect(db_path)
+        conn.executescript(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, amount REAL);"
+            "INSERT INTO orders VALUES (1, 100.0);"
+        )
+        conn.commit()
+        conn.close()
+        resp = client.post(
+            "/datasources",
+            json={"name": "livedb", "type": "sqlite", "database": db_path},
+        )
+        assert resp.status_code == 200
+
+    def test_valid_sql_model_created_and_persisted(
+        self, client: TestClient, tmp_path
+    ) -> None:
+        self._register_live_ds(client, tmp_path)
+        resp = client.post("/models", json={
+            "name": "good_model", "sql": "SELECT id FROM orders",
+            "data_source": "livedb",
+            "columns": [{"name": "id", "sql": "id", "type": "number"}],
+        })
+        assert resp.status_code == 200
+        # Acknowledged AND retrievable — not a no-op 200.
+        assert client.get("/models/good_model").status_code == 200
+
+    def test_invalid_sql_model_returns_400(self, client: TestClient, tmp_path) -> None:
+        self._register_live_ds(client, tmp_path)
+        resp = client.post("/models", json={
+            "name": "bad_model", "sql": "SELECT nope FROM ghosts",
+            "data_source": "livedb",
+            "columns": [{"name": "id", "sql": "id", "type": "number"}],
+        })
+        assert resp.status_code == 400
+        assert client.get("/models/bad_model").status_code == 404
+
+    def test_invalid_sql_update_returns_400_and_original_intact(
+        self, client: TestClient, tmp_path
+    ) -> None:
+        self._register_live_ds(client, tmp_path)
+        assert client.post("/models", json={
+            "name": "upd", "sql": "SELECT id FROM orders",
+            "data_source": "livedb",
+            "columns": [{"name": "id", "sql": "id", "type": "number"}],
+        }).status_code == 200
+        resp = client.put("/models/upd", json={
+            "name": "upd", "sql": "SELECT nope FROM ghosts",
+            "data_source": "livedb",
+            "columns": [{"name": "id", "sql": "id", "type": "number"}],
+        })
+        assert resp.status_code == 400
+        assert client.get("/models/upd").json()["sql"] == "SELECT id FROM orders"

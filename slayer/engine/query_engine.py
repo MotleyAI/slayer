@@ -28,6 +28,7 @@ from slayer.core.errors import (
     AmbiguousModelError,
     BroadcastGrainWarning,
     ForcedFilterError,
+    ModelSqlValidationError,
     SchemaDriftError,
     SlayerError,
     UnreachableFilterDroppedWarning,
@@ -54,7 +55,9 @@ from slayer.core.query import (
     _contains_block_delimiter,
     coerce_declared_list_variables,
     declares_variables,
+    extract_variable_refs,
     list_valued_variable_names,
+    render_probe_text,
     substitute_variables,
 )
 from slayer.core.warnings import (
@@ -110,7 +113,14 @@ from slayer.memories.resolver import (
     _all_models_in_datasource,
     resolve_entity,
 )
-from slayer.sql.client import SlayerSQLClient
+from slayer.sql.client import (
+    SlayerSQLClient,
+    _is_auth_failure,
+    _is_transient_db_error,
+    _is_unreachable_db_error,
+    build_sql_model_trial_query,
+    classify_model_sql,
+)
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type, get_dialect
 from slayer.sql import engine_factory
 from slayer.sql.engine_factory import EngineCacheKey, _sql_client_cache_key
@@ -244,6 +254,17 @@ def _model_has_optional_block(model: SlayerModel) -> bool:
 def _model_needs_substitution_pass(model: SlayerModel) -> bool:
     """True if substitution must run with no variables (a ``{? ?}`` block or declared variables)."""
     return _model_has_optional_block(model) or declares_variables(model)
+
+
+def _sql_safety_reject_reason(safety: str, *, parameterized: bool) -> str | None:
+    """Save-time reject reason for a classified ``model.sql``, or None to admit
+    it. Unparseable blocks only when static (a parameterized source may parse
+    only once its identifiers are filled)."""
+    if safety == "modifying":
+        return "model SQL must be a read-only query; it is not a plain SELECT"
+    if safety == "unparseable" and not parameterized:
+        return "model SQL could not be parsed for a read-only check"
+    return None
 
 
 def _substitute_model_sql_surfaces(
@@ -2656,6 +2677,7 @@ class SlayerQueryEngine:
                 )
             model = await self._validate_and_populate_cache(model)
         await self._validate_mode_a_join_paths(model)
+        await self.validate_sql_model_source(model)
         await self.storage.save_model(model)
         # Clean up the stale entry if the model moved datasource.
         if (
@@ -2666,6 +2688,76 @@ class SlayerQueryEngine:
                 model.name, data_source=prior_data_source
             )
         return model
+
+    async def validate_sql_model_source(self, model: SlayerModel) -> None:
+        """Statically classify a raw-``sql`` source, then trial-execute it: a
+        non-read-only or unparseable source is rejected with no DB call; a
+        reachable backend's rejection also blocks. Parameterized SQL is still
+        classified (so a parameterized DML is caught) but not trial-run."""
+        if not model.sql or model.sql_table or model.source_queries:
+            return
+        ds = (
+            await self.storage.get_datasource(model.data_source)
+            if model.data_source
+            else None
+        )
+        sqlglot_name = dialect_for_ds_type(ds.type).sqlglot_name if ds else None
+        bare, blocked = extract_variable_refs(model.sql)
+        parameterized = bool(bare or blocked)
+        # render_probe_text is SLayer's canonical Mode-A probe render (blocks →
+        # (1=1), {var} → 0), so classification matches how model.sql parses.
+        # Unparseable blocks the save only when there are no placeholders — a
+        # parameterized source may parse only once its identifiers are filled.
+        safety = classify_model_sql(render_probe_text(model.sql), dialect=sqlglot_name)
+        reject_reason = _sql_safety_reject_reason(safety, parameterized=parameterized)
+        if reject_reason:
+            raise ModelSqlValidationError(
+                model_name=model.name,
+                data_source=model.data_source or "",
+                ds_type=ds.type if ds else None,
+                reason=reject_reason,
+            )
+        if parameterized:
+            logger.info(
+                "Skipping save-time SQL trial-execute for model %r: model.sql "
+                "carries %d placeholder(s), which cannot be trial-filled.",
+                model.name, len(bare | blocked),
+            )
+            return
+        if ds is None:
+            logger.warning(
+                "Skipping save-time SQL validation for model %r: datasource "
+                "%r is unset or not configured.", model.name, model.data_source,
+            )
+            return
+        await self._trial_execute_sql_source(model, ds)
+
+    async def _trial_execute_sql_source(self, model: SlayerModel, ds) -> None:
+        """Trial-execute read-only ``model.sql`` against ``ds``: raise on a
+        reachable rejection, warn-and-return on an inconclusive verdict."""
+        try:
+            await self._client_for(ds).get_column_types(
+                build_sql_model_trial_query(model.sql)
+            )
+        except Exception as exc:
+            if (
+                _is_transient_db_error(exc)
+                or _is_auth_failure(exc)
+                or _is_unreachable_db_error(exc)
+            ):
+                logger.warning(
+                    "Save-time SQL validation for model %r was inconclusive "
+                    "(datasource %r, type %r): %s. Saving anyway.",
+                    model.name, model.data_source, ds.type,
+                    getattr(exc, "orig", exc),
+                )
+                return
+            raise ModelSqlValidationError(
+                model_name=model.name,
+                data_source=model.data_source,
+                ds_type=ds.type,
+                reason=str(getattr(exc, "orig", exc)),
+            ) from exc
 
     async def _validate_mode_a_join_paths(self, model: SlayerModel) -> None:
         """Reject a broken dotted chain / legacy ``__`` split-alias at save time via the generator's resolver."""

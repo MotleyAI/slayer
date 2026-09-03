@@ -55,7 +55,7 @@ from slayer.engine.syntax import (
     walk_parsed_refs,
 )
 from slayer.sql import engine_factory, sqlite_introspect
-from slayer.sql.client import SlayerSQLClient
+from slayer.sql.client import SlayerSQLClient, build_sql_model_trial_query
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.engine_factory import EngineCacheKey, _sql_client_cache_key
 
@@ -1659,14 +1659,9 @@ async def _live_columns_for_sql_model(
     """Trial-execute ``model.sql`` with a 0-row guard; return cursor types, or None on failure."""
     if not model.sql:
         return None
-    # Strip a trailing ``;`` before wrapping: valid at top level but invalid
-    # inside ``SELECT * FROM (...)``, and the syntax error would look like drift.
-    inner_sql = model.sql.rstrip()
-    if inner_sql.endswith(";"):
-        inner_sql = inner_sql[:-1].rstrip()
+    # Trailing ``;`` stripped before wrapping, else its syntax error looks like drift.
     try:
-        trial_sql = f"SELECT * FROM ({inner_sql}) AS _sd_validate WHERE 1=0"
-        cats = await client.get_column_types(trial_sql)
+        cats = await client.get_column_types(build_sql_model_trial_query(model.sql))
     except Exception as exc:
         logger.info(
             "validate_models: trial-execute on %r failed: %s",
