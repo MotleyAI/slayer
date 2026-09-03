@@ -1387,6 +1387,9 @@ def _reroot_from_root(
     return reroot_value_key(key, target_path=tp)
 
 
+_UNREACHABLE_NO_PATH = "unreachable from the aggregate's root (no join path from it)"
+
+
 def _broadcast_reason(
     *, host_path: Tuple[str, ...], target_path: Tuple[str, ...],
     root_model: SlayerModel, models_by_name: Dict[str, SlayerModel],
@@ -1394,12 +1397,12 @@ def _broadcast_reason(
     """Why a dimension broadcasts: unreachable from the root, or crosses an unproven/fanning join hop."""
     tp, hp = tuple(target_path), tuple(host_path)
     if hp[: len(tp)] != tp:
-        return "unreachable from the aggregate's root (no join path from it)"
+        return _UNREACHABLE_NO_PATH
     current = root_model
     for name in hp[len(tp):]:
         join = next((j for j in current.joins if j.target_model == name), None)
         if join is None:
-            return "unreachable from the aggregate's root (no join path from it)"
+            return _UNREACHABLE_NO_PATH
         tgt = models_by_name.get(name)
         if tgt is None or not provably_to_one(join=join, target_model=tgt):
             return f"crosses an unproven join hop to {name}"
@@ -1984,6 +1987,19 @@ def _remap_ref_path(r: ValueKey, node_path: Tuple[str, ...]) -> ValueKey:
     return r.model_copy(update={"path": node_path})
 
 
+def _child_keys(k: ValueKey) -> List[Any]:
+    """The nested operand keys of a composite ``ValueKey`` node."""
+    if isinstance(k, ArithmeticKey):
+        return list(k.operands)
+    if isinstance(k, ScalarCallKey):
+        return list(k.args)
+    if isinstance(k, BetweenKey):
+        return [k.column, k.low, k.high]
+    if isinstance(k, InKey):
+        return [k.column]
+    return []
+
+
 def _reject_mixed_or_not(cj: ValueKey, cross_by_ref: Dict[ValueKey, bool]) -> None:
     """D2: an OR/NOT subtree mixing a root-anchored ref with a cross-path ref
     changes meaning under EXISTS — such a conjunct stays dropped."""
@@ -1992,17 +2008,8 @@ def _reject_mixed_or_not(cj: ValueKey, cross_by_ref: Dict[ValueKey, bool]) -> No
         if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey)):
             cross = cross_by_ref.get(k, False)
             return (not cross, cross)
-        children: List[Any] = []
-        if isinstance(k, ArithmeticKey):
-            children = list(k.operands)
-        elif isinstance(k, ScalarCallKey):
-            children = list(k.args)
-        elif isinstance(k, BetweenKey):
-            children = [k.column, k.low, k.high]
-        elif isinstance(k, InKey):
-            children = [k.column]
         has_local = has_cross = False
-        for child in children:
+        for child in _child_keys(k):
             if isinstance(child, (Decimal, str, bool, int, float)) or child is None:
                 continue
             local, cross = _walk(child)
@@ -2019,6 +2026,64 @@ def _reject_mixed_or_not(cj: ValueKey, cross_by_ref: Dict[ValueKey, bool]) -> No
         return has_local, has_cross
 
     _walk(cj)
+
+
+def _resolve_ref_anchor(
+    hp: Tuple[str, ...], *, tp: Tuple[str, ...], root_model: SlayerModel,
+    host_model: SlayerModel, lookup: Dict[str, SlayerModel],
+    nodes: Dict[Tuple[str, ...], SemiJoinHop], host_name: Optional[str],
+    host_node: Optional[Tuple[str, ...]],
+) -> Tuple[SlayerModel, Tuple[str, ...], Tuple[str, ...],
+           Optional[Tuple[str, ...]]]:
+    """Where one cross-path ref anchors in the correlation tree:
+    ``(base model, base node, relative path, host node)``."""
+    if hp[: len(tp)] == tp:
+        return root_model, (), hp[len(tp):], host_node
+    if host_name is None or (tp and host_name == tp[0]):
+        raise _PushBlocked(_UNREACHABLE_NO_PATH)
+    if hp and _path_edges_exist(root_model, hp, lookup):
+        return root_model, (), hp, host_node
+    if host_node is None:
+        host_node = _reverse_hops(
+            target_path=tp, root_model=root_model,
+            host_model=host_model, models_by_name=lookup, nodes=nodes,
+        )
+    shared = 0
+    while (
+        shared < len(hp) and shared < len(tp) - 1
+        and hp[shared] == tp[shared]
+    ):
+        shared += 1
+    if shared:
+        # The ref rides the reverse path itself: bind to that chain
+        # node (same related combination, D3) instead of re-walking.
+        return (
+            lookup[tp[shared - 1]], host_node[: len(tp) - shared],
+            hp[shared:], host_node,
+        )
+    return host_model, host_node, hp, host_node
+
+
+def _register_dep_hops(
+    col: ValueKey, *, node_path: Tuple[str, ...], host_model: SlayerModel,
+    lookup: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+    nodes: Dict[Tuple[str, ...], SemiJoinHop],
+) -> bool:
+    """Register the hops a ref's Mode-A dependencies cross; True when any."""
+    dep_rels = _ref_sql_dependency_paths(
+        col, host_model=host_model, models_by_name=lookup, bundle=bundle,
+    )
+    if not dep_rels:
+        return False
+    owner = _owning_model(
+        col.model, host_model=host_model, models_by_name=lookup,
+    )
+    for dep_rel in dep_rels:
+        _forward_hops(
+            start_model=owner, rel_path=tuple(dep_rel),
+            base_node_path=node_path, models_by_name=lookup, nodes=nodes,
+        )
+    return True
 
 
 def _conjunct_push_plan(
@@ -2042,53 +2107,20 @@ def _conjunct_push_plan(
             continue
         col = r.column if isinstance(r, TimeTruncKey) else r
         hp = tuple(getattr(col, "path", ()) or ())
-        if hp[: len(tp)] == tp:
-            base_model, base_node, rel = root_model, (), hp[len(tp):]
-        elif host_name is None or (tp and host_name == tp[0]):
-            raise _PushBlocked(
-                "unreachable from the aggregate's root (no join path from it)"
-            )
-        elif hp and _path_edges_exist(root_model, hp, lookup):
-            base_model, base_node, rel = root_model, (), hp
-        else:
-            if host_node is None:
-                host_node = _reverse_hops(
-                    target_path=tp, root_model=root_model,
-                    host_model=host_model, models_by_name=lookup,
-                    nodes=nodes,
-                )
-            shared = 0
-            while (
-                shared < len(hp) and shared < len(tp) - 1
-                and hp[shared] == tp[shared]
-            ):
-                shared += 1
-            if shared:
-                # The ref rides the reverse path itself: bind to that chain
-                # node (same related combination, D3) instead of re-walking.
-                base_model = lookup[tp[shared - 1]]
-                base_node = host_node[: len(tp) - shared]
-                rel = hp[shared:]
-            else:
-                base_model, base_node, rel = host_model, host_node, hp
+        base_model, base_node, rel, host_node = _resolve_ref_anchor(
+            hp, tp=tp, root_model=root_model, host_model=host_model,
+            lookup=lookup, nodes=nodes, host_name=host_name,
+            host_node=host_node,
+        )
         node_path = _forward_hops(
             start_model=base_model, rel_path=rel, base_node_path=base_node,
             models_by_name=lookup, nodes=nodes,
         )
-        dep_rels = _ref_sql_dependency_paths(
-            col, host_model=host_model, models_by_name=lookup, bundle=bundle,
+        has_deps = _register_dep_hops(
+            col, node_path=node_path, host_model=host_model, lookup=lookup,
+            bundle=bundle, nodes=nodes,
         )
-        if dep_rels:
-            owner = _owning_model(
-                col.model, host_model=host_model, models_by_name=lookup,
-            )
-            for dep_rel in dep_rels:
-                _forward_hops(
-                    start_model=owner, rel_path=tuple(dep_rel),
-                    base_node_path=node_path, models_by_name=lookup,
-                    nodes=nodes,
-                )
-        cross_by_ref[r] = bool(node_path) or bool(dep_rels)
+        cross_by_ref[r] = bool(node_path) or has_deps
         remapped = _remap_ref_path(r, node_path)
         if remapped != r:
             mapping[r] = remapped

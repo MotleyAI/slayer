@@ -135,6 +135,10 @@ class TestRoutedFilterPathE2E:
         _assert_valid_sql(sql)
         cm_body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
         assert "EXISTS" in cm_body.upper(), cm_body
+        assert (
+            "CAST(customers_v2.lifetime_value * 2 AS DOUBLE PRECISION) > 5"
+            in cm_body
+        ), cm_body
         assert not [
             w for w in caught
             if issubclass(w.category, UnreachableFilterDroppedWarning)

@@ -35,6 +35,7 @@ from sqlglot import exp
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.source_bundle import ResolvedSourceBundle
 
 from tests._engine_helpers import make_seeded_sqlite_engine
 
@@ -245,8 +246,6 @@ def dev1747_bundle():
     through the engine — §5.10's contract is that the PLAN carries the order
     scope/phase/nulls, so it has to be assertable without rendering.
     """
-    from slayer.engine.source_bundle import ResolvedSourceBundle
-
     models = dev1747_models()
     return ResolvedSourceBundle(
         source_model=models[0], referenced_models=models[1:],

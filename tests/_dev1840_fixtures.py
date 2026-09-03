@@ -64,6 +64,7 @@ Key hand-computed populations (spend sums by tier over the customers kept):
 all customers:            gold 245 (c1,c3,c6,c7)  silver 230  bronze 40
 ≥1 app order:             gold 160 (c1,c3)        silver 230 (c2,c5)
 ≥1 web order:             gold 130 (c1,c6)        silver 150 (c2)  bronze 40
+≥1 new order:             c1 (2024-01) c2 (2024-02) c4 (2024-03); none in 2024-04
 one ok∧app order:         gold  60 (c3)           silver  80 (c5)
   (split-EXISTS defect: gold 160 / silver 230 — c1 and c2 have an ok order
    and an app order but no single ok app order)
@@ -312,6 +313,9 @@ RENT_SINGLE_PAIR_DEFECT = 1100.0
 SPEND_APP_1Y_BY_SIGNUP_MONTH = {
     "2024-01": 100.0, "2024-02": 250.0, "2024-03": 310.0, "2024-04": 390.0,
 }
+SPEND_NEW_1Y_BY_SIGNUP_MONTH = {
+    "2024-01": 100.0, "2024-02": 250.0, "2024-03": 290.0,
+}
 SPEND_APP_FIRST_BY_TIER = {"gold": 100.0, "silver": 150.0}
 SPEND_APP_LAST_BY_TIER = {"gold": 60.0, "silver": 80.0}
 
@@ -485,7 +489,8 @@ __all__ = [
     "SPEND_LAST_STATUS_OK_INLINE_FAN_GOLD", "RENT_APP",
     "RENT_APP_GOLD_SAMEROW",
     "RENT_APP_GOLD_SPLIT_DEFECT", "RENT_SINGLE_PAIR_DEFECT",
-    "SPEND_APP_1Y_BY_SIGNUP_MONTH", "SPEND_APP_FIRST_BY_TIER",
+    "SPEND_APP_1Y_BY_SIGNUP_MONTH", "SPEND_NEW_1Y_BY_SIGNUP_MONTH",
+    "SPEND_APP_FIRST_BY_TIER",
     "SPEND_APP_LAST_BY_TIER", "SPEND_BAND_170",
     "SlayerQuery", "ModelMeasure", "ColumnRef", "TimeDimension",
     "TimeGranularity", "ModelJoin", "Column", "SlayerModel", "DataType",

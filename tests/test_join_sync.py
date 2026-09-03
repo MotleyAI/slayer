@@ -5,7 +5,7 @@ import tempfile
 import pytest
 
 from slayer.core.enums import DataType, JoinType
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.storage.join_sync import JoinSyncStorage, _mirror_inner_joins
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -81,16 +81,20 @@ class TestMirrorInnerJoins:
     def test_self_join_cannot_reach_the_mirror(self) -> None:
         """A self-join is rejected at SlayerModel construction, so the
         mirror's own self-join skip stays defense-in-depth only."""
+        columns = [
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="manager_id", sql="manager_id", type=DataType.DOUBLE),
+        ]
+        joins = [ModelJoin(target_model="employees",
+                           join_pairs=[["manager_id", "id"]],
+                           join_type=JoinType.INNER)]
         with pytest.raises(ValueError, match="[Ss]elf-join"):
             SlayerModel(
                 name="employees",
                 sql_table="employees",
                 data_source="test",
-                columns=[
-                    Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                    Column(name="manager_id", sql="manager_id", type=DataType.DOUBLE),
-                ],
-                joins=[ModelJoin(target_model="employees", join_pairs=[["manager_id", "id"]], join_type=JoinType.INNER)],
+                columns=columns,
+                joins=joins,
             )
 
     async def test_left_join_not_mirrored(self, raw_storage) -> None:
@@ -328,9 +332,6 @@ class TestReconciliation:
 # — reverse joins never cross a datasource boundary, because cross-datasource
 # joins aren't executable in SLayer's query engine anyway.
 # ---------------------------------------------------------------------------
-
-
-from slayer.core.models import DatasourceConfig  # noqa: E402
 
 
 def _model_in(name: str, data_source: str, *, joins: list[ModelJoin] | None = None) -> SlayerModel:

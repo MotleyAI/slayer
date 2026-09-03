@@ -3152,6 +3152,11 @@ class SQLGenerator:
                 )
         if where is not None:
             base = base.where(where)
+        for cond in self._semi_join_exists_conditions(
+            planned_query=planned_query, source_model=source_model,
+            source_relation=source_relation, bundle=bundle,
+        ):
+            base = base.where(cond)
         for g in group:
             base = base.group_by(g)
         return base
@@ -5987,6 +5992,14 @@ class SQLGenerator:
             )
         return model
 
+    def _hop_table_expr(self, *, hop_model, alias: str) -> exp.Expression:
+        if hop_model.sql and not hop_model.sql_table:
+            return exp.Subquery(
+                this=self._parse(hop_model.sql),
+                alias=exp.to_identifier(alias),
+            )
+        return self._to_table(hop_model.sql_table or hop_model.name, alias=alias)
+
     def _build_semi_join_exists(
         self, *, group, source_model, source_relation: str, bundle, allocator,
     ) -> exp.Exists:
@@ -6007,15 +6020,7 @@ class SQLGenerator:
             alias = _alias(path)
             parent_alias = _alias(path[:-1])
             hop_model = self._hop_model(name=hop.target_model, bundle=bundle)
-            if hop_model.sql and not hop_model.sql_table:
-                table_expr: exp.Expression = exp.Subquery(
-                    this=self._parse(hop_model.sql),
-                    alias=exp.to_identifier(alias),
-                )
-            else:
-                table_expr = self._to_table(
-                    hop_model.sql_table or hop_model.name, alias=alias,
-                )
+            table_expr = self._hop_table_expr(hop_model=hop_model, alias=alias)
             eqs: List[exp.Expression] = [
                 exp.EQ(
                     this=exp.Column(

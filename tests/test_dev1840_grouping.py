@@ -50,7 +50,8 @@ class TestGrouping:
         (sj,) = att.producer_plan.semi_join_filters
         assert len(sj.conjuncts) == 2
         texts = " ".join(t or "" for t in sj.filter_texts)
-        assert "status" in texts and "channel" in texts
+        assert "status" in texts
+        assert "channel" in texts
 
     def test_distinct_first_hops_get_independent_exists(self):
         att = _attach(_plan(

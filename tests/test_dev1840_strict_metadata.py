@@ -108,11 +108,12 @@ class TestStrictNarrows:
         """Scenario: strict still errors on an excluded filter — naming the
         filter and the remedy."""
         _, engine = exec_backend
+        query = q(
+            strict=True, dimensions=["customers.tier"], measures=[CM],
+            filters=["customers.tier = 'gold' OR channel = 'app'"],
+        )
         with pytest.raises(SlayerError) as ei:
-            await engine.execute(q(
-                strict=True, dimensions=["customers.tier"], measures=[CM],
-                filters=["customers.tier = 'gold' OR channel = 'app'"],
-            ))
+            await engine.execute(query)
         message = str(ei.value)
         assert "channel" in message
         assert "cardinality" in message or "unique" in message \
@@ -122,10 +123,9 @@ class TestStrictNarrows:
         self, exec_backend_amb,
     ):
         _, engine = exec_backend_amb
+        query = tq(strict=True, measures=[SM], filters=["effort > 2"])
         with pytest.raises(SlayerError) as ei:
-            await engine.execute(
-                tq(strict=True, measures=[SM], filters=["effort > 2"]),
-            )
+            await engine.execute(query)
         assert "effort" in str(ei.value)
 
     async def test_strict_still_errors_on_an_unreachable_filter(
@@ -134,10 +134,9 @@ class TestStrictNarrows:
         """Scenario: genuinely unreachable filter keeps the established
         behavior under strict."""
         _, engine = exec_backend_amb
+        query = tq(strict=True, measures=[SM], filters=["reviews.stars > 4"])
         with pytest.raises(SlayerError) as ei:
-            await engine.execute(
-                tq(strict=True, measures=[SM], filters=["reviews.stars > 4"]),
-            )
+            await engine.execute(query)
         message = str(ei.value)
         assert "stars" in message
         assert "cardinality" in message or "unique" in message \

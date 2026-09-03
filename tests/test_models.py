@@ -718,15 +718,16 @@ class TestSelfJoinRejected:
     target-model name) and must fail loudly at construction."""
 
     def test_self_join_raises_informative_error(self) -> None:
+        columns = [
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="manager_id", type=DataType.INT),
+        ]
+        joins = [ModelJoin(target_model="staff",
+                           join_pairs=[["manager_id", "id"]])]
         with pytest.raises(ValueError, match="[Ss]elf-join") as ei:
             SlayerModel(
                 name="staff", data_source="ds", sql_table="staff",
-                columns=[
-                    Column(name="id", type=DataType.INT, primary_key=True),
-                    Column(name="manager_id", type=DataType.INT),
-                ],
-                joins=[ModelJoin(target_model="staff",
-                                 join_pairs=[["manager_id", "id"]])],
+                columns=columns, joins=joins,
             )
         message = str(ei.value)
         assert "staff" in message

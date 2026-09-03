@@ -325,18 +325,22 @@ def plan_has_semi_join_filters(planned) -> bool:
     )
 
 
+def _iter_plans_with_producers(planned_list):
+    """Each planned query followed by every nested producer plan."""
+    for planned in planned_list:
+        yield planned
+        for attach in _walk_regroup_attaches(planned):
+            yield attach.producer_plan
+
+
 def _semi_join_filter_texts(planned_list) -> List[str]:
     """Distinct user filter texts pushed as semi-joins, for diagnostics."""
     texts: List[str] = []
-    for planned in planned_list:
-        plans = [planned] + [
-            a.producer_plan for a in _walk_regroup_attaches(planned)
-        ]
-        for plan in plans:
-            for group in getattr(plan, "semi_join_filters", None) or ():
-                for text in group.filter_texts:
-                    if text and text not in texts:
-                        texts.append(text)
+    for plan in _iter_plans_with_producers(planned_list):
+        for group in getattr(plan, "semi_join_filters", None) or ():
+            for text in group.filter_texts:
+                if text and text not in texts:
+                    texts.append(text)
     return texts
 
 

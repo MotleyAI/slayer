@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import pytest
 
+import slayer.sql.scope_check as sc
 from slayer.sql.scope_check import (
     ScopeLeakError,
     assert_scope_closed,
@@ -413,8 +414,6 @@ class TestBigQueryParseCarveOutRemoved:
     def test_typeerror_propagates_for_every_dialect(
         self, monkeypatch, dialect: str,
     ) -> None:
-        import slayer.sql.scope_check as sc
-
         def _boom(*_args, **_kwargs):
             raise TypeError("sqlglot quirk")
 

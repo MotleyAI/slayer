@@ -9,6 +9,8 @@ single-pair correlation, inline-through-1:N) is asserted against explicitly.
 from __future__ import annotations
 
 import pytest
+import sqlglot
+from sqlglot import exp
 
 from slayer.sql.scope_check import assert_scope_closed
 
@@ -30,6 +32,7 @@ from tests._dev1840_fixtures import (
     SPEND_CUST_TIER_GOLD,
     SPEND_LAST_STATUS_OK,
     SPEND_LAST_STATUS_OK_INLINE_FAN_GOLD,
+    SPEND_NEW_1Y_BY_SIGNUP_MONTH,
     SPEND_OK_APP_SAMEROW,
     SPEND_OK_APP_SPLIT_DEFECT,
     SPEND_WEB_AND_BASIC,
@@ -353,6 +356,40 @@ class TestProducerKinds:
                for r in resp.data}
         assert set(got) == set(SPEND_APP_1Y_BY_SIGNUP_MONTH)
         for month, expected in SPEND_APP_1Y_BY_SIGNUP_MONTH.items():
+            assert float(got[month]) == pytest.approx(expected), month
+
+    async def test_windowed_grain_spine_carries_the_exists(self, exec_backend):
+        """Scenario: the pushed filter reaches BOTH windowed-producer legs —
+        the grain spine (``_base``) and the window source (``_src``) — so an
+        excluded bucket vanishes from the producer instead of surfacing with
+        a NULL window value."""
+        dialect, engine = exec_backend
+        dry = await engine.execute(q(
+            time_dimensions=signup_month_td(),
+            measures=[ModelMeasure(formula="customers.spend:sum(window='1y')",
+                                   name="w")],
+            filters=["channel = 'app'"],
+        ), dry_run=True)
+        tree = sqlglot.parse_one(dry.sql, read=dialect)
+        assert len(list(tree.find_all(exp.Exists))) == 2, dry.sql
+
+    async def test_windowed_grain_spine_drops_filtered_out_buckets(
+        self, exec_backend,
+    ):
+        """Scenario: a bucket with no passing customer (2024-04 has no
+        new-status order) vanishes from the result, and surviving window
+        values sum the kept population only."""
+        _, engine = exec_backend
+        resp = await engine.execute(q(
+            time_dimensions=signup_month_td(),
+            measures=[ModelMeasure(formula="customers.spend:sum(window='1y')",
+                                   name="w")],
+            filters=["status = 'new'"],
+        ))
+        got = {month_key(r["orders.customers.signup_at"]): r["orders.w"]
+               for r in resp.data}
+        assert set(got) == set(SPEND_NEW_1Y_BY_SIGNUP_MONTH)
+        for month, expected in SPEND_NEW_1Y_BY_SIGNUP_MONTH.items():
             assert float(got[month]) == pytest.approx(expected), month
 
     async def test_nested_computed_dimension_producer(self, exec_backend):
