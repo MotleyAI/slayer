@@ -56,6 +56,7 @@ from slayer.core.query import (
     declares_variables,
     extract_variable_refs,
     list_valued_variable_names,
+    render_probe_text,
     substitute_variables,
 )
 from slayer.core.warnings import (
@@ -2625,17 +2626,12 @@ class SlayerQueryEngine:
         sqlglot_name = dialect_for_ds_type(ds.type).sqlglot_name if ds else None
         bare, blocked = extract_variable_refs(model.sql)
         parameterized = bool(bare or blocked)
-        # Placeholders can't be trial-filled, but the statement shape still is:
-        # fill them with parse-safe tokens so a parameterized DML is rejected.
-        probe_sql = re.sub(
-            r"\{\?.*?\?\}|\{[^{}]+\}",
-            lambda m: "(1=1)" if m.group(0).startswith("{?") else "_slayer_ph",
-            model.sql, flags=re.DOTALL,
-        ) if parameterized else model.sql
-        # Unparseable is rejected too: the query generator parses model.sql the
-        # same way, so SQL that can't be parsed is non-functional anyway.
-        safety = classify_model_sql(probe_sql, dialect=sqlglot_name)
-        if safety != "read_only":
+        # render_probe_text is SLayer's canonical Mode-A probe render (blocks →
+        # (1=1), {var} → 0), so classification matches how model.sql parses.
+        # Unparseable blocks the save only when there are no placeholders — a
+        # parameterized source may parse only once its identifiers are filled.
+        safety = classify_model_sql(render_probe_text(model.sql), dialect=sqlglot_name)
+        if safety == "modifying" or (safety == "unparseable" and not parameterized):
             raise ModelSqlValidationError(
                 model_name=model.name,
                 data_source=model.data_source or "",

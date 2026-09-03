@@ -152,12 +152,12 @@ a data-modifying CTE). Anything else — a non-query statement (INSERT / UPDATE 
 DELETE / MERGE / DDL / COPY / GRANT / CALL / …) or SQL that cannot be parsed at
 all — SHALL be rejected with no database round-trip, so persisting a model can
 never mutate the datasource and SQL the query generator could not run either
-fails fast. Parameterized SQL (`{var}` / `{? ?}`) SHALL still be classified after
-its placeholders are normalized to parse-safe tokens, so a parameterized
-statement that is not a read-only query — or is unparseable — is rejected even
-though it is never trial-run. The
-trial-execute that follows for a parsed read-only query SHALL run read-only where
-the dialect supports it and SHALL always roll back.
+fails fast. A parameterized source (`{var}` / `{? ?}`) SHALL still be classified
+via SLayer's canonical probe render, so a parameterized non-read-only statement
+is still rejected; but a parameterized source that is merely *unparseable* SHALL
+be skipped rather than rejected, since it may parse only once its identifiers are
+filled at query time. The trial-execute that follows for a parsed read-only query
+SHALL run read-only where the dialect supports it and SHALL always roll back.
 
 #### Scenario: Data-modifying model SQL is rejected without executing
 
@@ -166,11 +166,17 @@ the dialect supports it and SHALL always roll back.
 - **THEN** the save fails with an error and the SQL is never executed against
   the datasource
 
-#### Scenario: Unparseable model SQL is rejected without a database call
+#### Scenario: Unparseable (non-parameterized) model SQL is rejected without a database call
 
-- **WHEN** a raw-`sql` model whose `sql` cannot be parsed (after normalizing any
-  `{var}` / `{? ?}` placeholders to parse-safe tokens) is saved
+- **WHEN** a raw-`sql` model whose `sql` carries no placeholders and cannot be
+  parsed is saved
 - **THEN** the save fails with an error and no query is run against the datasource
+
+#### Scenario: A parameterized source that only parses once filled is skipped, not rejected
+
+- **WHEN** a raw-`sql` model whose `sql` has an identifier-position placeholder
+  (e.g. `SELECT * FROM {table}`) is saved
+- **THEN** the trial-execute is skipped and the model is persisted
 
 #### Scenario: Parameterized data-modifying SQL is rejected
 

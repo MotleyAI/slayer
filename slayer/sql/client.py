@@ -333,6 +333,7 @@ _READ_ONLY_ROOTS = (exp.Select, exp.Union, exp.Except, exp.Intersect, exp.Subque
 _DATA_MODIFYING_NODES = (
     exp.Insert, exp.Update, exp.Delete, exp.Merge,
     exp.Create, exp.Drop, exp.Alter, exp.TruncateTable,
+    exp.Into,  # SELECT ... INTO new_table creates a table under a SELECT root
 )
 
 

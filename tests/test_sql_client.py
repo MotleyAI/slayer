@@ -776,6 +776,7 @@ class TestClassifyModelSql:
         "GRANT SELECT ON orders TO bob",
         "CALL do_stuff()",
         "VACUUM",
+        "SELECT id INTO archived FROM orders",  # SELECT ... INTO creates a table
     ])
     def test_not_read_only(self, sql: str) -> None:
         assert classify_model_sql(sql, dialect="postgres") == "modifying"
