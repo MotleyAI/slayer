@@ -251,6 +251,17 @@ def _model_needs_substitution_pass(model: SlayerModel) -> bool:
     return _model_has_optional_block(model) or declares_variables(model)
 
 
+def _sql_safety_reject_reason(safety: str, *, parameterized: bool) -> str | None:
+    """Save-time reject reason for a classified ``model.sql``, or None to admit
+    it. Unparseable blocks only when static (a parameterized source may parse
+    only once its identifiers are filled)."""
+    if safety == "modifying":
+        return "model SQL must be a read-only query; it is not a plain SELECT"
+    if safety == "unparseable" and not parameterized:
+        return "model SQL could not be parsed for a read-only check"
+    return None
+
+
 def _substitute_model_sql_surfaces(
     *, model: SlayerModel, variables: dict[str, Any], dialect: SqlDialect
 ) -> SlayerModel:
@@ -2631,16 +2642,13 @@ class SlayerQueryEngine:
         # Unparseable blocks the save only when there are no placeholders — a
         # parameterized source may parse only once its identifiers are filled.
         safety = classify_model_sql(render_probe_text(model.sql), dialect=sqlglot_name)
-        if safety == "modifying" or (safety == "unparseable" and not parameterized):
+        reject_reason = _sql_safety_reject_reason(safety, parameterized=parameterized)
+        if reject_reason:
             raise ModelSqlValidationError(
                 model_name=model.name,
                 data_source=model.data_source or "",
                 ds_type=ds.type if ds else None,
-                reason=(
-                    "model SQL must be a read-only query; it is not a plain SELECT"
-                    if safety == "modifying"
-                    else "model SQL could not be parsed for a read-only check"
-                ),
+                reason=reject_reason,
             )
         if parameterized:
             logger.info(
@@ -2655,9 +2663,15 @@ class SlayerQueryEngine:
                 "%r is unset or not configured.", model.name, model.data_source,
             )
             return
-        trial_sql = build_sql_model_trial_query(model.sql)
+        await self._trial_execute_sql_source(model, ds)
+
+    async def _trial_execute_sql_source(self, model: SlayerModel, ds) -> None:
+        """Trial-execute read-only ``model.sql`` against ``ds``: raise on a
+        reachable rejection, warn-and-return on an inconclusive verdict."""
         try:
-            await self._client_for(ds).get_column_types(trial_sql)
+            await self._client_for(ds).get_column_types(
+                build_sql_model_trial_query(model.sql)
+            )
         except Exception as exc:
             if (
                 _is_transient_db_error(exc)
