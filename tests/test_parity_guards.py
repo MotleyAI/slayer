@@ -14,7 +14,7 @@ The gate is this set being empty, so no deferred coverage can rot silently.
 
 This docstring used to name a second file as part of the gate — a companion
 xfail-registry module, which was deliberately deleted along with its
-``pytest_collection_modifyitems`` hook (see ``DECISIONS.md``, 2026-08-04). The
+``pytest_collection_modifyitems`` hook (DEV-1485 decision trail, git history). The
 reference sent readers looking for infrastructure that no longer exists, so it
 is gone. Only the prose changed; the guard's behavior is unchanged.
 """
