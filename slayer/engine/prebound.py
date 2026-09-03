@@ -52,6 +52,7 @@ from slayer.core.keys import (
     join_conditional_branch_types,
 )
 from slayer.core.models import SlayerModel
+from slayer.core.refs import EXPRESSION_SOURCE_KINDS, expression_source_leaf
 from slayer.engine.binding import BoundFilter
 from slayer.engine.planning import DeclaredMeasure, OrderSpec
 from slayer.engine.response_meta import _infer_aggregated_format
@@ -236,15 +237,19 @@ def aggregated_type(
 def _local_aggregate_source_name(key: ValueKey) -> Optional[str]:
     """The source column name of a LOCAL aggregate, or ``None``.
 
-    ``None`` for anything that isn't a bare local aggregate — a non-aggregate
-    key, an unsupported source shape, or a cross-model source (whose metadata
-    is lifted by ``response_meta`` against the target model instead).
+    Expression sources (DEV-1826) surface their derived leaf — never a real
+    column, so PRESERVING type/format lookups miss and fall to the class
+    default (plain numeric), per design. ``None`` for anything else that isn't
+    a bare local aggregate — a non-aggregate key or a cross-model source
+    (whose metadata is lifted by ``response_meta`` against the target model).
     """
     if not isinstance(key, AggregateKey):
         return None
     src = key.source
     if isinstance(src, StarKey):
         return "*"
+    if isinstance(src, EXPRESSION_SOURCE_KINDS):
+        return expression_source_leaf(src)
     if not isinstance(src, (ColumnKey, ColumnSqlKey)):
         return None
     if getattr(src, "path", ()):

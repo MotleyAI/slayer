@@ -40,15 +40,14 @@ from slayer.core.errors import (
 )
 from slayer.core.models import SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
-from slayer.core.refs import strip_agg_suffix as _strip_agg_suffix
-from slayer.engine.agg_registry import collect_reachable_agg_names
-from slayer.engine.normalization import func_style_agg_to_colon
 from slayer.engine.syntax import (
     AggCall,
+    DottedRef,
     ParsedExpr,
     Ref,
     StarSource,
     parse_expr,
+    split_entity_agg_ref,
     walk_parsed_refs,
 )
 from slayer.memories.models import (
@@ -262,7 +261,13 @@ async def resolve_entity(  # NOSONAR(S3776) — single linear dispatch matching 
             )
         return EntityResolution(canonical_forms=[raw])
 
-    prefix, agg = _strip_agg_suffix(raw)
+    # DEV-1826: one shared splitter accepts BOTH spellings — ``a.b:sum`` and
+    # ``sum(a.b)`` resolve identically; expression text is not an entity.
+    try:
+        prefix, suffix = split_entity_agg_ref(raw)
+    except ValueError as exc:  # UnknownFunctionError is a ValueError subclass
+        raise EntityResolutionError(str(exc)) from exc
+    agg = suffix.split("(", 1)[0] if suffix is not None else None
 
     # ``*:count`` special case (§3.1): collapses to the source model.
     # Only ``count`` is valid for the wildcard; ``*:sum`` etc. would
@@ -428,6 +433,26 @@ async def resolve_entity(  # NOSONAR(S3776) — single linear dispatch matching 
 # ---------------------------------------------------------------------------
 
 
+def _ref_token(node: Ref | DottedRef) -> str:
+    """Textual form of a bare or dotted ref."""
+    return node.name if isinstance(node, Ref) else ".".join(node.parts)
+
+
+def _agg_call_tokens(node: AggCall) -> Iterable[str]:
+    """Entity token(s) for one aggregation call."""
+    source = node.source
+    if isinstance(source, (Ref, DottedRef)):
+        yield f"{_ref_token(source)}:{node.agg}"
+    elif isinstance(source, StarSource):
+        yield f"*:{node.agg}"
+    else:
+        # DEV-1826 expression source (``sum(amount - cost)``): the expression
+        # itself is not an entity — tag each operand ref.
+        for inner in walk_parsed_refs(source):
+            if isinstance(inner, (Ref, DottedRef)):
+                yield _ref_token(inner)
+
+
 def _formula_entity_tokens(parsed: ParsedExpr) -> Iterable[str]:
     """Yield every entity *token* referenced by a parsed Mode-B formula.
 
@@ -444,18 +469,9 @@ def _formula_entity_tokens(parsed: ParsedExpr) -> Iterable[str]:
     """
     for node in walk_parsed_refs(parsed):
         if isinstance(node, AggCall):
-            source = node.source
-            if isinstance(source, StarSource):
-                src_name = "*"
-            elif isinstance(source, Ref):
-                src_name = source.name
-            else:  # DottedRef
-                src_name = ".".join(source.parts)
-            yield f"{src_name}:{node.agg}"
-        elif isinstance(node, Ref):
-            yield node.name
-        else:  # DottedRef
-            yield ".".join(node.parts)
+            yield from _agg_call_tokens(node)
+        else:  # Ref or DottedRef
+            yield _ref_token(node)
 
 
 _FILTER_AGG_SUFFIX_RE = re.compile(r":\w+(?:\([^)]*\))?")
@@ -562,44 +578,16 @@ async def extract_entities_from_query(  # NOSONAR(S3776) — straight-line walk 
         warnings.extend(result.warnings)
 
     # 4. measures — parse each formula (Mode-B DSL) and resolve each
-    # referenced entity token. Function-style aggregations are rewritten to
-    # colon syntax first (quiet FUNC_STYLE_AGG slack helper). DEV-1500 — the
-    # custom-agg name set includes aggregations defined on *joined* models
-    # too, so entity extraction over a formula like
-    # ``rolling_avg(customers.score)`` (where ``rolling_avg`` lives on
-    # ``customers``) still produces the ``customers.score`` token instead of
-    # falling through to the unknown-function branch.
-    async def _resolve_join_target_for_resolver(
-        target_model_name: str, named_queries,  # noqa: ARG001
-    ):
-        try:
-            target = await storage.get_model(
-                target_model_name, data_source=source_model.data_source,
-            )
-        except Exception:  # noqa: BLE001 — best-effort; resolver must not raise
-            return None
-        if target is None:
-            return None
-        return (None, target)
-
-    try:
-        reachable_agg_names = await collect_reachable_agg_names(
-            source_model=source_model,
-            resolve_join_target=_resolve_join_target_for_resolver,
-            named_queries={},
-        )
-    except Exception:  # noqa: BLE001 — never let the walk break extraction
-        reachable_agg_names = None
-    custom_agg_names = reachable_agg_names or frozenset()
+    # referenced entity token. The parser accepts both aggregation spellings
+    # natively (DEV-1826), and an unknown functional name — e.g. a custom
+    # aggregation defined on a joined model, ``rolling_avg(customers.score)``
+    # — defers to an ``AggCall`` candidate, so its source token still
+    # surfaces without any custom-aggregation registry walk.
     for m in query.measures or []:
         if m.formula is None:
             continue
         try:
-            parsed = parse_expr(
-                func_style_agg_to_colon(
-                    m.formula, custom_agg_names=custom_agg_names
-                )
-            )
+            parsed = parse_expr(m.formula)
         # IllegalWindowInFilterError is-a ValueError, so ValueError covers it.
         except (ValueError, UnknownFunctionError):
             # Not parseable as Mode-B DSL — fall back to treating the whole

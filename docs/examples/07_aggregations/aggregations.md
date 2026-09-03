@@ -35,6 +35,37 @@ At query time, you pick the aggregation with colon syntax:
 
 `subtotal:sum` means "take the `subtotal` column and SUM it." `order_total:min` means "take the `order_total` column and find the MIN." One column definition, as many aggregations as you need.
 
+## Two equivalent spellings
+
+Every aggregation can equally be written as a function call — `sum(subtotal)`
+is exactly `subtotal:sum`, `count(*)` is `*:count`,
+`percentile(price, p=0.9)` is `price:percentile(p=0.9)` — in every position
+(measures, filters, order, model measures, stage formulas), for every
+aggregation including custom ones. Same SQL, same result keys, same errors;
+saved models keep whichever spelling you wrote. The full mapping table lives
+in [Reference semantics](../../concepts/references.md#aggregation-spelling-equivalence).
+
+The functional spelling can also aggregate a same-model **expression**, which
+colon syntax cannot:
+
+```json
+{
+  "source_model": "orders",
+  "measures": [
+    {"formula": "sum(order_total - tax_paid)", "name": "net_revenue"},
+    "count_distinct(upper(email))",
+    "percentile(subtotal * quantity, p=0.5)"
+  ]
+}
+```
+
+The expression may use bare same-model columns, scalar functions, arithmetic,
+and literals; an unnamed one derives its result key from the expression
+(`sum(order_total - tax_paid)` → `orders.order_total_tax_paid_sum`). Dotted
+joined-model paths inside an expression, filtered columns, and nested
+aggregations are rejected with clear errors — see
+[Formulas → Expression aggregation](../../concepts/formulas.md#expression-aggregation).
+
 ## COUNT(*) and the star measure
 
 COUNT(\*) doesn't aggregate a specific column — it counts rows. In SLayer, `*` is the "all rows" placeholder:

@@ -3,8 +3,13 @@
 Run with: pytest tests/integration/test_integration.py -m integration
 """
 
+import math
+import math as _math
+import os
 import re
 import sqlite3
+import statistics
+import tempfile
 
 import pytest
 
@@ -25,7 +30,10 @@ from slayer.core.query import (
     SlayerQuery,
     TimeDimension,
 )
+from slayer.engine.ingestion import ingest_datasource, ingest_datasource_idempotent
+from slayer.engine.profiling import handle_edit_refresh, refresh_all_table_backed_sampled
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
+from slayer.search.service import SearchService
 from slayer.sql.client import _sync_engines
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -160,6 +168,54 @@ async def test_sum_measure(integration_env):
 
     assert response.row_count == 1
     assert response.data[0]["orders.total_amount_sum"] == pytest.approx(750.0)
+
+
+async def test_functional_aggregation_parity(integration_env):
+    """sum(total_amount) returns the same rows as total_amount:sum (DEV-1826)."""
+    engine = integration_env
+
+    colon = await engine.execute(SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="total_amount:sum")],
+    ))
+    func = await engine.execute(SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="sum(total_amount)")],
+    ))
+
+    assert func.data[0]["orders.total_amount_sum"] == pytest.approx(750.0)
+    assert func.data == colon.data
+    assert list(func.columns) == list(colon.columns)
+
+
+async def test_functional_star_count_parity(integration_env):
+    """count(*) returns the same rows as *:count (DEV-1826)."""
+    engine = integration_env
+
+    colon = await engine.execute(SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="*:count")],
+    ))
+    func = await engine.execute(SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="count(*)")],
+    ))
+
+    assert func.data[0]["orders._count"] == 6
+    assert func.data == colon.data
+
+
+async def test_expression_aggregation_executes(integration_env):
+    """sum(amount + amount) aggregates the row-level expression (DEV-1826)."""
+    engine = integration_env
+
+    response = await engine.execute(SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="sum(amount + amount)")],
+    ))
+
+    assert response.row_count == 1
+    assert response.data[0]["orders.amount_amount_sum"] == pytest.approx(1500.0)
 
 
 async def test_dimensions_groupby(integration_env):
@@ -1284,8 +1340,6 @@ async def test_cross_model_measure_with_target_join_filters(cross_model_env):
     would be stripped from the cross-model CTE, producing wrong aggregates.
     """
     engine = cross_model_env
-    import os
-    import tempfile
     tmp = tempfile.mkdtemp()
     db_path = f"{tmp}/test.db"
     conn = sqlite3.connect(db_path)
@@ -1509,7 +1563,6 @@ async def test_query_list_with_joins(cross_model_env):
     # Main query: monthly orders joined to customer_scores
     # In the virtual model, inner measures become dimensions with auto-generated
     # SUM/AVG measures. Use avg_score_avg to re-average the inner avg_score.
-    from slayer.core.query import ModelExtension
     main = SlayerQuery(
         source_model=ModelExtension(
             source_name="orders",
@@ -1548,8 +1601,6 @@ async def test_sibling_stage_joins_dag(cross_model_env):
     enrichment time because ``the legacy query-backed wrap`` dropped the named_queries
     dict when enriching a non-final stage.
     """
-    from slayer.core.query import ModelExtension
-
     engine = cross_model_env
     queries = [
         SlayerQuery(
@@ -1871,8 +1922,6 @@ async def diamond_env(tmp_path):
     ])
     conn.commit()
     conn.close()
-
-    from slayer.engine.ingestion import ingest_datasource
 
     storage = YAMLStorage(base_dir=str(tmp_path / "slayer_data"))
     ds = DatasourceConfig(name="diamond_db", type="sqlite", database=str(db_path))
@@ -2242,8 +2291,6 @@ async def test_sqlite_udf_pool_reuse(integration_env):
 @pytest.fixture
 async def stat_env(tmp_path):
     """Independent fixture with a richer numeric dataset for stat UDFs."""
-    import statistics
-
     db_path = tmp_path / "stat.db"
     conn = sqlite3.connect(str(db_path))
     cur = conn.cursor()
@@ -2438,8 +2485,6 @@ async def test_scalar_ln_in_column_sql(stat_env):
     """A Column.sql containing `ln(x)` must execute on SQLite (UDF lookup)
     and return the math.log of every row.
     """
-    import math
-
     engine, _ = stat_env
     response = await engine.execute(
         SlayerQuery(
@@ -2452,8 +2497,6 @@ async def test_scalar_ln_in_column_sql(stat_env):
 
 
 async def test_scalar_sqrt_in_column_sql(stat_env):
-    import math
-
     engine, _ = stat_env
     response = await engine.execute(
         SlayerQuery(
@@ -2878,8 +2921,6 @@ async def test_log10_round_trip_sqlite(tmp_path):
     verbatim as `log10(...)` in the emitted SQL — not the canonicalised
     `LOG(10, ...)` form. Same shape for `log2(x)` (which depends on the
     `log2` UDF added in this change)."""
-    import math as _math
-
     db_path = tmp_path / "log_round_trip.db"
     conn = sqlite3.connect(str(db_path))
     cur = conn.cursor()
@@ -3134,8 +3175,6 @@ async def search_env(tmp_path):
     ``ingest_datasource_idempotent`` path so every column gets a real
     ``Column.sampled`` snapshot, plus one seeded memory tagged on
     ``test_sqlite.orders`` for the entity-channel test."""
-    from slayer.engine.ingestion import ingest_datasource_idempotent
-
     db_path = tmp_path / "search.db"
     conn = sqlite3.connect(str(db_path))
     cur = conn.cursor()
@@ -3208,8 +3247,6 @@ async def test_refresh_samples_populates_sampled(search_env):
     ``refresh-samples`` pass writes ``Column.sampled`` for every non-pk
     column. Categorical and numeric columns get different formats —
     spot-check one of each."""
-    from slayer.engine.profiling import refresh_all_table_backed_sampled
-
     engine, storage = search_env
     # After ingest alone, samples are unpopulated.
     orders = await storage.get_model("orders", data_source="test_sqlite")
@@ -3244,8 +3281,6 @@ async def test_refresh_samples_populates_sampled(search_env):
 async def test_search_question_finds_column(search_env):
     """``search(question="amount")`` returns a column hit pointing at
     one of the seeded ``amount``-named columns."""
-    from slayer.search.service import SearchService
-
     _engine, storage = search_env
     response = await SearchService(storage=storage).search(
         question="amount",
@@ -3268,8 +3303,6 @@ async def test_search_question_finds_column(search_env):
 async def test_search_entity_filter_finds_memory(search_env):
     """``search(entities=["test_sqlite.orders"])`` returns the seeded
     memory with ``matched_entities`` listing the orders canonical id."""
-    from slayer.search.service import SearchService
-
     _engine, storage = search_env
     # DEV-1549: opt out of compact-by-default — this test pins the full
     # learning body in ``hit.text``.
@@ -3290,8 +3323,6 @@ async def test_search_edit_model_filter_refreshes_sampled(search_env):
     ``handle_edit_refresh(model_level_change=True)`` which re-profiles
     every column. After the mutation, every column still has a
     ``sampled`` snapshot."""
-    from slayer.engine.profiling import handle_edit_refresh
-
     engine, storage = search_env
     orders_before = await storage.get_model("orders", data_source="test_sqlite")
     assert orders_before is not None
@@ -3788,8 +3819,6 @@ async def test_sqlite_mixed_real_int_ingest_query_no_truncation(tmp_path):
     """End-to-end vaccine-style: ingest a SQLite DB whose INTEGER-declared
     column actually stores REAL values, then run a SUM/AVG measure and
     confirm the result reflects the REAL values (not zero-truncated)."""
-    from slayer.engine.ingestion import ingest_datasource_idempotent
-
     db_path = tmp_path / "vaccine.db"
     conn = sqlite3.connect(str(db_path))
     cur = conn.cursor()

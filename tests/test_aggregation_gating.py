@@ -415,13 +415,17 @@ class TestDev1576UnknownVsDisallowed:
             )
         assert "Unknown aggregation" not in str(exc.value)
 
-    async def test_star_unknown_keeps_star_message(self) -> None:
-        # ``*`` only supports count — keep the dedicated star message rather
-        # than the generic 'Unknown aggregation' wording.
-        with pytest.raises(ValueError, match=r"\*:count"):
+    async def test_star_unknown_gets_standard_message(self) -> None:
+        # DEV-1826: the binder validates the aggregation NAME globally before
+        # any per-column gate, so ``*:bogus`` gets the standard unknown-
+        # aggregation error instead of escaping to SQL generation (where it
+        # used to surface as the star-specific message).
+        orders = _orders_with_status()
+        customers = _customers_model()
+        with pytest.raises(ValueError, match=r"Unknown aggregation 'bogus'"):
             await _generate_sql(
-                orders=_orders_with_status(),
-                customers=_customers_model(),
+                orders=orders,
+                customers=customers,
                 measures=[{"formula": "*:bogus", "name": "result"}],
             )
 

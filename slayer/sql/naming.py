@@ -12,8 +12,10 @@ from sqlglot import exp
 from slayer.core.errors import IdentifierCollisionError
 from slayer.core.keys import StarKey
 from slayer.core.refs import (
+    EXPRESSION_SOURCE_KINDS,
     agg_kwarg_canonical_str,
     canonical_agg_name,
+    expression_source_leaf,
     partition_by_suffix,
 )
 from slayer.sql._identifier_fit import fit_identifier
@@ -224,6 +226,11 @@ def canonical_aggregate_alias(  # NOSONAR(S3776) — sequential dispatch over th
     leaf = getattr(key.source, "leaf", None) or getattr(
         key.source, "column_name", None,
     )
+    if leaf is None and isinstance(key.source, EXPRESSION_SOURCE_KINDS):
+        # DEV-1826 expression source: derived leaf via the shared sanitizer
+        # (``sum(amount - cost)`` → ``amount_cost``), then the ordinary
+        # canonical/parametric/partition machinery below applies unchanged.
+        leaf = expression_source_leaf(key.source)
 
     if profile in ("cross_model_cte", "cte_schema"):
         measure_name: Optional[str] = leaf or "*"

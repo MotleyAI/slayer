@@ -661,12 +661,11 @@ class TestExtractEntitiesFromQuery:
     async def test_funcstyle_joined_custom_agg_extracts_joined_column(
         self,
     ) -> None:
-        # DEV-1500: a funcstyle custom aggregation defined on a joined
-        # model (``rolling_avg(customers.score)`` where ``rolling_avg`` lives
-        # on ``customers``) must be recognised by the quiet FUNC_STYLE_AGG
-        # rewrite the resolver uses for entity extraction, so the joined
-        # column (``customers.score``) ends up tagged. The fix walks the
-        # source model's reachable join graph for custom aggregation names.
+        # DEV-1500 → DEV-1826: a functional custom aggregation defined on a
+        # joined model (``rolling_avg(customers.score)`` where ``rolling_avg``
+        # lives on ``customers``) parses natively to an AggCall candidate, so
+        # the joined column (``customers.score``) ends up tagged — no
+        # custom-aggregation registry walk involved.
         with tempfile.TemporaryDirectory() as tmpdir:
             s = YAMLStorage(base_dir=tmpdir)
             await s.save_datasource(
@@ -701,9 +700,8 @@ class TestExtractEntitiesFromQuery:
                 measures=[ModelMeasure(formula="rolling_avg(customers.score)")],
             )
             result = await extract_entities_from_query(q, storage=s)
-            # The funcstyle was rewritten to colon form via the joined-agg
-            # walk, so the joined column surfaces as an entity instead of
-            # falling into the unknown-function whole-formula fallback.
+            # The joined column inside the transform surfaces as an entity
+            # (parsed natively — no funcstyle rewrite).
             assert "dev1500.customers.score" in result.canonical_forms, (
                 result.canonical_forms
             )

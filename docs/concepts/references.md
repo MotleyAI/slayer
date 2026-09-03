@@ -7,7 +7,7 @@ SLayer has two distinct expression layers and the rules for what each one accept
 | Mode | Fields | Parser | Accepts | Rejects |
 |---|---|---|---|---|
 | **A — SQL** | `Column.sql`, `Column.filter`, each entry of `SlayerModel.filters` | sqlglot | Any valid SQL expression for the underlying dialect — function calls (`json_extract`, `coalesce`, `nullif`, `lower`, `length`, …), arithmetic, `CASE WHEN`, string literals, comparison and boolean operators in SQL spelling (`=`, `<>`, `IS NULL`, `AND`, `OR`, `NOT`, `IN`, `LIKE`). Bare names and dotted join paths (`customers.regions.name`). | Aggregation colon syntax (`revenue:sum`); SLayer transform calls (`cumsum`, `change`, `rank`, …); references to `ModelMeasure` formulas; raw `OVER (...)` window functions inside `Column.filter` / `SlayerModel.filters` (allowed only in `Column.sql`); the legacy `__`-delimited split-alias qualifier (`customers__regions.name`) — now a hard error (`LegacyDunderAliasError`). |
-| **B — DSL** | `ModelMeasure.formula`, `SlayerQuery.measures`, `SlayerQuery.filters`, `SlayerQuery.dimensions`, `SlayerQuery.time_dimensions`, `SlayerQuery.order`, `SlayerQuery.main_time_dimension` | Python AST formula parser | Bare names that resolve to a `Column` or `ModelMeasure` on the model; single-dot dotted paths through joins (`customers.regions.name`, `customers.revenue:sum`); aggregation colon syntax (`<col>:<agg>`, `*:count`, parametric forms); transform calls (`cumsum(revenue:sum)`, `rank(revenue:sum, partition_by=region)`); arithmetic / boolean / comparison operators; the SQL `\|\|` concat operator (folded into `concat(...)`); pattern matching via the `like(value, pattern)` scalar (emits the SQL `LIKE` operator — wrap in `not (...)` for `NOT LIKE`); a closed allowlist of scalar functions (matched case-insensitively) — null handling (`nullif`, `coalesce`, `ifnull`), math (`ln`, `log10`, `log2`, `log`, `exp`, `sqrt`, `pow`, `power`, `abs`, `floor`, `ceil`, `ceiling`, `round`, `sign`, `trunc`, `mod`), scalar min/max (`greatest`, `least`), string hygiene (`lower`, `upper`, `trim`, `ltrim`, `rtrim`, `replace`, `substr`, `substring`, `instr`, `length`, `concat`) and `like`, each with a declared argument count that is validated (`coalesce`, `concat`, `greatest` and `least` are variadic; `trunc` takes exactly one argument); `{variable}` placeholders (filters only). | identifiers using the reserved `__slayer_` prefix; raw SQL function calls outside that allowlist (`json_extract`, `date_trunc`, …), and any allowlisted call with the wrong number of arguments; raw `OVER (...)`; bare names that don't resolve to a Column / ModelMeasure / custom aggregation / query alias; `NULL` inside an `in` / `not in` list (use `is null` / `is not null` instead — see below). |
+| **B — DSL** | `ModelMeasure.formula`, `SlayerQuery.measures`, `SlayerQuery.filters`, `SlayerQuery.dimensions`, `SlayerQuery.time_dimensions`, `SlayerQuery.order`, `SlayerQuery.main_time_dimension` | Python AST formula parser | Bare names that resolve to a `Column` or `ModelMeasure` on the model; single-dot dotted paths through joins (`customers.regions.name`, `customers.revenue:sum`); aggregations in colon syntax (`<col>:<agg>`, `*:count`, parametric forms) or the equivalent functional spelling (`sum(revenue)`, `count(*)`, `percentile(price, p=0.9)`), including same-model expression sources (`sum(amount - cost)`); transform calls (`cumsum(revenue:sum)`, `rank(revenue:sum, partition_by=region)`); arithmetic / boolean / comparison operators; the SQL `\|\|` concat operator (folded into `concat(...)`); pattern matching via the `like(value, pattern)` scalar (emits the SQL `LIKE` operator — wrap in `not (...)` for `NOT LIKE`); a closed allowlist of scalar functions (matched case-insensitively) — null handling (`nullif`, `coalesce`, `ifnull`), math (`ln`, `log10`, `log2`, `log`, `exp`, `sqrt`, `pow`, `power`, `abs`, `floor`, `ceil`, `ceiling`, `round`, `sign`, `trunc`, `mod`), scalar min/max (`greatest`, `least`), string hygiene (`lower`, `upper`, `trim`, `ltrim`, `rtrim`, `replace`, `substr`, `substring`, `instr`, `length`, `concat`) and `like`, each with a declared argument count that is validated (`coalesce`, `concat`, `greatest` and `least` are variadic; `trunc` takes exactly one argument); `{variable}` placeholders (filters only). | identifiers using the reserved `__slayer_` prefix; raw SQL function calls outside that allowlist (`json_extract`, `date_trunc`, …), and any allowlisted call with the wrong number of arguments; raw `OVER (...)`; bare names that don't resolve to a Column / ModelMeasure / custom aggregation / query alias; `NULL` inside an `in` / `not in` list (use `is null` / `is not null` instead — see below). |
 
 ## Identifier resolution
 
@@ -27,8 +27,61 @@ SLayer has two distinct expression layers and the rules for what each one accept
 * A bare name must resolve to a `Column`, a `ModelMeasure`, or a custom `Aggregation` defined on the model. Filters additionally accept `{variable}` placeholders, query-level measure / transform / expression aliases, and synthesised canonical agg names like `revenue_sum`.
 * A single-dot dotted path walks the join graph: `customers.regions.name` traverses `model → customers → regions` and resolves `name` on the regions model. Multi-hop is supported.
 * Aggregation colon syntax: `<col>:<agg>` (e.g. `revenue:sum`), `*:count`, `<col>:<agg>(<args>)` (e.g. `price:weighted_avg(weight=quantity)`), and `<dotted.path>:<agg>` for cross-model aggregations.
+* The **functional spelling** `<agg>(<col>, <args>)` is a first-class exact equivalent of the colon form in every position — see [Aggregation spelling equivalence](#aggregation-spelling-equivalence).
 * Transform calls wrap aggregated refs: `cumsum(revenue:sum)`, `rank(revenue:sum, partition_by=region)`, `change(customers.revenue:sum)`, etc.
 * A `__` token in a name is matched by **exact name**, not split into a join walk — write a single-dot DSL path (`customers.region`) for a join. Only the reserved `__slayer_` prefix is rejected.
+
+## Aggregation spelling equivalence
+
+Every aggregation writable as `col:agg(args)` may equally be written
+`agg(col, args)` — same generated SQL, same result values, same result-column
+keys, same errors. This holds for **every** position that accepts
+aggregations (query measures, filters, order, model measures, model
+extensions, inline models, multi-stage formulas, computed-dimension
+expressions, transform and arithmetic operands) and for **every** aggregation
+— builtin, aliased (`countD(x)` ≡ `x:count_distinct`), and model-defined
+custom aggregations. Neither spelling is rewritten or warned about; a saved
+model keeps the author's spelling.
+
+| Colon form | Functional form |
+|---|---|
+| `revenue:sum` | `sum(revenue)` |
+| `*:count` | `count(*)` |
+| `customers.*:count` | `count(customers.*)` |
+| `customers.regions.name:count` | `count(customers.regions.name)` |
+| `price:percentile(p=0.9)` | `percentile(price, p=0.9)` |
+| `revenue:sum(window='90d')` | `sum(revenue, window='90d')` |
+| `amount:sum(partition_by=city)` | `sum(amount, partition_by=city)` |
+| `balance:last(updated_at)` | `last(balance, updated_at)` |
+| `price:weighted_avg(weight=quantity)` | `weighted_avg(price, weight=quantity)` |
+| `price:my_custom_agg` | `my_custom_agg(price)` |
+
+Both spellings collapse to one parse-tree node, so naming and matching are
+spelling-insensitive: a measure declared `{"formula": "sum(revenue)", "name": "rev"}`
+is matched by a filter written `revenue:sum > 100` (and vice versa), and the
+result key is `revenue_sum` either way.
+
+Disambiguation rules:
+
+* `first` / `last` are both aggregations and transforms. A call whose first
+  argument contains **no** aggregation is the aggregation
+  (`last(balance)` ≡ `balance:last`); a call over an aggregated expression is
+  the transform (`last(sum(revenue))` ≡ `last(revenue:sum)`).
+* An unknown call name whose first argument is aggregatable defers to binding
+  exactly like `x:whatever` — custom aggregations resolve there, and genuinely
+  unknown names get the standard unknown-aggregation error.
+* Scalar-allowlist names always stay scalar calls (`round(price)` is the
+  scalar); a custom aggregation may not shadow a scalar-function name
+  (rejected at model validation).
+* SQL's `DISTINCT` keyword is not part of the grammar: write
+  `count_distinct(user_id)` / `user_id:count_distinct`, never
+  `count(distinct user_id)`.
+* Mode-A surfaces are unchanged — `SUM(amount)` inside `Column.sql` stays raw
+  SQL.
+
+The functional form also accepts a same-model scalar **expression** as its
+value — `sum(amount - cost)` — which the colon form cannot spell. See
+[Expression aggregation](formulas.md#expression-aggregation).
 
 ## `__` in identifiers
 

@@ -462,10 +462,15 @@ class TestOperators:
 
 
 class TestRejection:
-    def test_unknown_function_call_raises(self):
-        # `random_func` is not in SCALAR_FUNCTIONS / transforms / aggregations.
+    def test_unknown_function_defers_to_binding(self):
+        # DEV-1826: an unknown name with an aggregatable first argument is an
+        # AggCall candidate (parity with `revenue:random_func`); only a call
+        # with no aggregatable first arg still raises.
+        assert parse_expr("random_func(revenue)") == parse_expr(
+            "revenue:random_func"
+        )
         with pytest.raises(UnknownFunctionError):
-            parse_expr("random_func(revenue)")
+            parse_expr("random_func(p=1)")
 
     def test_raw_over_clause_raises(self):
         # `SUM(x) OVER (...)` is a window expression — DSL rejects.
@@ -515,17 +520,13 @@ class TestRejection:
         with pytest.raises(ValueError, match="__slayer_"):
             parse_expr("__slayer_agg_0__")
 
-    def test_function_style_aggregation_rejected(self):
-        # `sum(revenue)` is canonicalised by the slack normalization layer
-        # before the parser sees it. If it still reaches the parser, that's
-        # a contract violation — reject with a clear error pointing to
-        # colon syntax.
-        with pytest.raises((UnknownFunctionError, ValueError)):
-            parse_expr("sum(revenue)")
+    def test_function_style_aggregation_first_class(self):
+        # DEV-1826: the functional spelling is native grammar — it collapses
+        # to the SAME AggCall as colon syntax, no normalization involved.
+        assert parse_expr("sum(revenue)") == parse_expr("revenue:sum")
 
-    def test_function_style_count_star_rejected(self):
-        with pytest.raises((UnknownFunctionError, ValueError)):
-            parse_expr("count(*)")
+    def test_function_style_count_star_first_class(self):
+        assert parse_expr("count(*)") == parse_expr("*:count")
 
     def test_chained_comparison_rejected(self):
         # `1 < x < 10` in Python is a chained comparison — DSL rejects

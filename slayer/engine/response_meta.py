@@ -24,6 +24,7 @@ from slayer.core.keys import (
     column_path,
 )
 from slayer.core.models import Column, SlayerModel
+from slayer.core.refs import EXPRESSION_SOURCE_KINDS, expression_source_leaf
 from slayer.engine.planned import PlannedQuery, ValueSlot
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects import get_dialect
@@ -160,6 +161,11 @@ def _measure_format(
         src = key.source
         if isinstance(src, StarKey):
             measure_name: Optional[str] = "*"
+        elif isinstance(src, EXPRESSION_SOURCE_KINDS):
+            # DEV-1826: an expression source classifies by its aggregation's
+            # value class alone (the derived leaf is never a real column, so
+            # PRESERVING inherits nothing — plain numeric by default).
+            measure_name = expression_source_leaf(src)
         else:
             measure_name = getattr(src, "leaf", None) or getattr(
                 src, "column_name", None
