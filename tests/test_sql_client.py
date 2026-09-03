@@ -22,7 +22,7 @@ from slayer.sql.client import (
     _map_type_code,
     _read_only_transaction_sql,
     build_sql_model_trial_query,
-    is_data_modifying_sql,
+    classify_model_sql,
 )
 
 
@@ -758,8 +758,8 @@ class TestUnreachableSeparateFromTransient:
         assert _is_unreachable_db_error(exc) is False
 
 
-class TestIsDataModifyingSql:
-    """Static guard: reject DML/DDL (incl. inside CTEs) before any execution."""
+class TestClassifyModelSql:
+    """Static classification gating the save-time trial-execute."""
 
     @pytest.mark.parametrize("sql", [
         "DELETE FROM orders",
@@ -773,21 +773,22 @@ class TestIsDataModifyingSql:
         "ALTER TABLE orders ADD COLUMN x INT",
         "WITH x AS (DELETE FROM orders RETURNING *) SELECT * FROM x",
     ])
-    def test_data_modifying_is_flagged(self, sql: str) -> None:
-        assert is_data_modifying_sql(sql, dialect="postgres") is True
+    def test_data_modifying(self, sql: str) -> None:
+        assert classify_model_sql(sql, dialect="postgres") == "modifying"
 
     @pytest.mark.parametrize("sql", [
         "SELECT 1",
         "SELECT id, amount FROM orders WHERE id IN (SELECT id FROM other)",
         "WITH c AS (SELECT 1 AS x) SELECT * FROM c",
     ])
-    def test_read_only_is_not_flagged(self, sql: str) -> None:
-        assert is_data_modifying_sql(sql, dialect="postgres") is False
+    def test_read_only(self, sql: str) -> None:
+        assert classify_model_sql(sql, dialect="postgres") == "read_only"
 
-    def test_unparseable_sql_is_not_flagged(self) -> None:
-        # A parse failure must not be treated as modifying — the read-only
-        # probe transaction is the backstop for what static analysis can't read.
-        assert is_data_modifying_sql("nonsense {var} sql", dialect="postgres") is False
+    @pytest.mark.parametrize("sql", ["SELECT (((", "totally not sql", ""])
+    def test_unparseable(self, sql: str) -> None:
+        # Unparseable SQL is rejected without a DB call — the generator can't
+        # parse it either, so the model would be non-functional anyway.
+        assert classify_model_sql(sql, dialect="postgres") == "unparseable"
 
 
 class TestReadOnlyTransactionSql:

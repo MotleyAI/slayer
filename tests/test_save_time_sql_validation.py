@@ -377,3 +377,20 @@ class TestNonReadOnlySqlRejected:
         engine, storage = await _make_engine(tmp_path)
         await engine.save_model(_sql_model("SELECT id FROM orders", name="ok"))
         assert await storage.get_model("ok", data_source=_DS) is not None
+
+    async def test_unparseable_sql_rejected_without_db_call(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        engine, storage = await _make_engine(tmp_path)
+        executed: list[str] = []
+
+        async def _spy(self, sql: str) -> dict[str, str]:
+            executed.append(sql)
+            return {}
+
+        monkeypatch.setattr(SlayerSQLClient, "get_column_types", _spy)
+        model = _sql_model("SELECT ((( not valid", name="broken")
+        with pytest.raises(ModelSqlValidationError):
+            await engine.save_model(model)
+        assert executed == []  # no DB round-trip when the SQL cannot be parsed
+        assert await storage.get_model("broken", data_source=_DS) is None

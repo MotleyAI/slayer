@@ -22,6 +22,7 @@ from slayer.engine import timing
 from slayer.sql import engine_factory
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.dialects.sqlite import SqliteDialect
+from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 
 # Shared SQLite dialect; its register_udfs is the SQLAlchemy connect-event hook.
 _SQLITE_DIALECT = SqliteDialect()
@@ -331,16 +332,21 @@ _DATA_MODIFYING_NODES = (
 )
 
 
-def is_data_modifying_sql(sql: str, *, dialect: str | None = None) -> bool:
-    """True if ``sql`` holds DML/DDL, even nested in a CTE (parse failure → False)."""
+def classify_model_sql(sql: str, *, dialect: str | None = None) -> str:
+    """'unparseable', 'modifying' (DML/DDL, even nested in a CTE), or 'read_only'.
+
+    Mirrors the query generator's parse (prequote + parse_one): SQL it can't read
+    is non-functional there too, so the save rejects it without a DB round-trip
+    rather than trial-executing unvetted SQL.
+    """
+    d = dialect or "postgres"
     try:
-        statements = sqlglot.parse(sql, dialect=dialect)
+        tree = sqlglot.parse_one(prequote_reserved_identifiers(sql, dialect=d), dialect=d)
     except Exception:
-        return False
-    return any(
-        stmt is not None and stmt.find(*_DATA_MODIFYING_NODES) is not None
-        for stmt in statements
-    )
+        return "unparseable"
+    if tree is None:
+        return "unparseable"
+    return "modifying" if tree.find(*_DATA_MODIFYING_NODES) is not None else "read_only"
 
 
 def _apply_type_probe_timeout(conn, db_type: str | None, timeout_seconds: int) -> None:

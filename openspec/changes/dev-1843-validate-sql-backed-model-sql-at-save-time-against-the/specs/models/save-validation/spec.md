@@ -145,13 +145,14 @@ persistence SHALL remain out of scope and unaffected.
 
 ### Requirement: Model source SQL must be read-only
 
-A raw-`sql` model's source SHALL be a read-only query. If the SQL contains a
-data-modifying or DDL statement (INSERT / UPDATE / DELETE / MERGE / CREATE /
-DROP / ALTER / TRUNCATE), including inside a CTE, the save SHALL be rejected
-before any trial-execution, so persisting a model can never mutate the
-datasource. The trial-execute itself SHALL run read-only where the dialect
-supports it and SHALL always roll back, as a backstop for SQL that static
-analysis cannot parse.
+A raw-`sql` model's source SHALL be a read-only query. Before any trial-execution
+the source SHALL be statically parsed: if it contains a data-modifying or DDL
+statement (INSERT / UPDATE / DELETE / MERGE / CREATE / DROP / ALTER / TRUNCATE),
+including inside a CTE, OR it cannot be parsed at all, the save SHALL be rejected
+with no database round-trip — so persisting a model can never mutate the
+datasource, and SQL the query generator could not run either fails fast. The
+trial-execute that follows for a parsed read-only query SHALL run read-only where
+the dialect supports it and SHALL always roll back.
 
 #### Scenario: Data-modifying model SQL is rejected without executing
 
@@ -159,6 +160,12 @@ analysis cannot parse.
   `WITH x AS (DELETE FROM t RETURNING *) SELECT * FROM x`) is saved
 - **THEN** the save fails with an error and the SQL is never executed against
   the datasource
+
+#### Scenario: Unparseable model SQL is rejected without a database call
+
+- **WHEN** a raw-`sql` model whose `sql` cannot be parsed (and carries no `{var}`
+  placeholders) is saved
+- **THEN** the save fails with an error and no query is run against the datasource
 
 #### Scenario: The trial-execute cannot persist a mutation
 

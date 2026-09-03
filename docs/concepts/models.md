@@ -46,7 +46,7 @@ A query then asks for `revenue:sum` (aggregate the `revenue` column), `aov` (the
 A model has exactly one source — set by one of three mutually exclusive fields:
 
 - **`sql_table`** — a physical database table or view.
-- **`sql`** — an explicit SQL subquery (a `SELECT` statement); it must be read-only and is trial-executed against the datasource at save time, so a data-modifying statement — or SQL a reachable backend rejects — is refused before the model persists. Useful when the model's underlying shape requires cleaning or joining beyond what SLayer expresses natively.
+- **`sql`** — an explicit SQL subquery (a `SELECT` statement). Useful when the model's underlying shape requires cleaning or joining beyond what SLayer expresses natively.
 - **`source_queries`** — one or more saved `SlayerQuery` stages. Makes the model **query-backed**: see [Query-backed models](#query-backed-models).
 
 Validators reject empty `source_queries=[]`, multiple sources, or missing names on non-final stages.
