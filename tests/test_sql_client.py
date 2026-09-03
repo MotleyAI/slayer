@@ -777,6 +777,7 @@ class TestClassifyModelSql:
         "CALL do_stuff()",
         "VACUUM",
         "SELECT id INTO archived FROM orders",  # SELECT ... INTO creates a table
+        "SELECT id FROM orders FOR UPDATE",     # locking read (write-intent locks)
     ])
     def test_not_read_only(self, sql: str) -> None:
         assert classify_model_sql(sql, dialect="postgres") == "modifying"
