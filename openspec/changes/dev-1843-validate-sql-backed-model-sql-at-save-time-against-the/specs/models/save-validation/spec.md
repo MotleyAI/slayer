@@ -146,11 +146,15 @@ persistence SHALL remain out of scope and unaffected.
 ### Requirement: Model source SQL must be read-only
 
 A raw-`sql` model's source SHALL be a read-only query. Before any trial-execution
-the source SHALL be statically parsed: if it contains a data-modifying or DDL
-statement (INSERT / UPDATE / DELETE / MERGE / CREATE / DROP / ALTER / TRUNCATE),
-including inside a CTE, OR it cannot be parsed at all, the save SHALL be rejected
-with no database round-trip — so persisting a model can never mutate the
-datasource, and SQL the query generator could not run either fails fast. The
+the source SHALL be statically parsed and admitted only when its root is a query
+(SELECT / set-operation / subquery) with no data-modifying statement nested (e.g.
+a data-modifying CTE). Anything else — a non-query statement (INSERT / UPDATE /
+DELETE / MERGE / DDL / COPY / GRANT / CALL / …) or SQL that cannot be parsed at
+all — SHALL be rejected with no database round-trip, so persisting a model can
+never mutate the datasource and SQL the query generator could not run either
+fails fast. Parameterized SQL (`{var}` / `{? ?}`) SHALL still be classified after
+its placeholders are normalized to parse-safe tokens, so a parameterized
+data-modifying statement is rejected even though it is never trial-run. The
 trial-execute that follows for a parsed read-only query SHALL run read-only where
 the dialect supports it and SHALL always roll back.
 
@@ -165,6 +169,12 @@ the dialect supports it and SHALL always roll back.
 
 - **WHEN** a raw-`sql` model whose `sql` cannot be parsed (and carries no `{var}`
   placeholders) is saved
+- **THEN** the save fails with an error and no query is run against the datasource
+
+#### Scenario: Parameterized data-modifying SQL is rejected
+
+- **WHEN** a raw-`sql` model whose `sql` is data-modifying but carries a
+  placeholder (e.g. `DELETE FROM orders WHERE id = {id}`) is saved
 - **THEN** the save fails with an error and no query is run against the datasource
 
 #### Scenario: The trial-execute cannot persist a mutation

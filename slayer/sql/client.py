@@ -326,6 +326,10 @@ def build_sql_model_trial_query(inner_sql: str) -> str:
     return f"SELECT * FROM (\n{inner}\n) AS _sd_validate WHERE 1=0"
 
 
+# A read-only source parses to a query root with no DML/DDL nested (a
+# data-modifying CTE hides DML under a SELECT root; COPY/GRANT/CALL/etc. are
+# non-query roots the allowlist rejects on its own).
+_READ_ONLY_ROOTS = (exp.Select, exp.Union, exp.Except, exp.Intersect, exp.Subquery)
 _DATA_MODIFYING_NODES = (
     exp.Insert, exp.Update, exp.Delete, exp.Merge,
     exp.Create, exp.Drop, exp.Alter, exp.TruncateTable,
@@ -333,12 +337,9 @@ _DATA_MODIFYING_NODES = (
 
 
 def classify_model_sql(sql: str, *, dialect: str | None = None) -> str:
-    """'unparseable', 'modifying' (DML/DDL, even nested in a CTE), or 'read_only'.
-
-    Mirrors the query generator's parse (prequote + parse_one): SQL it can't read
-    is non-functional there too, so the save rejects it without a DB round-trip
-    rather than trial-executing unvetted SQL.
-    """
+    """'unparseable', 'modifying' (anything not a proven read-only query), or
+    'read_only'. Parses like the generator (prequote + parse_one), so SQL it
+    rejects is non-functional there too — rejected with no DB round-trip."""
     d = dialect or "postgres"
     try:
         tree = sqlglot.parse_one(prequote_reserved_identifiers(sql, dialect=d), dialect=d)
@@ -346,6 +347,8 @@ def classify_model_sql(sql: str, *, dialect: str | None = None) -> str:
         return "unparseable"
     if tree is None:
         return "unparseable"
+    if not isinstance(tree, _READ_ONLY_ROOTS):
+        return "modifying"
     return "modifying" if tree.find(*_DATA_MODIFYING_NODES) is not None else "read_only"
 
 

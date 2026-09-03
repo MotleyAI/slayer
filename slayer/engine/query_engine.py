@@ -2611,18 +2611,11 @@ class SlayerQueryEngine:
         return model
 
     async def validate_sql_model_source(self, model: SlayerModel) -> None:
-        """Trial-execute a raw-``sql`` source before it persists: raise only when a
-        reachable datasource rejects it, else warn (inconclusive never blocks).
-        Skips ``sql_table`` / query-backed / parameterized SQL."""
+        """Statically classify a raw-``sql`` source, then trial-execute it: a
+        non-read-only or unparseable source is rejected with no DB call; a
+        reachable backend's rejection also blocks. Parameterized SQL is still
+        classified (so a parameterized DML is caught) but not trial-run."""
         if not model.sql or model.sql_table or model.source_queries:
-            return
-        bare, blocked = extract_variable_refs(model.sql)
-        if bare or blocked:
-            logger.info(
-                "Skipping save-time SQL validation for model %r: model.sql "
-                "carries %d placeholder(s), which cannot be trial-filled.",
-                model.name, len(bare | blocked),
-            )
             return
         ds = (
             await self.storage.get_datasource(model.data_source)
@@ -2630,19 +2623,35 @@ class SlayerQueryEngine:
             else None
         )
         sqlglot_name = dialect_for_ds_type(ds.type).sqlglot_name if ds else None
-        safety = classify_model_sql(model.sql, dialect=sqlglot_name)
-        if safety != "read_only":
+        bare, blocked = extract_variable_refs(model.sql)
+        parameterized = bool(bare or blocked)
+        # Placeholders can't be trial-filled, but the statement shape still is:
+        # fill them with parse-safe tokens so a parameterized DML is rejected.
+        probe_sql = re.sub(
+            r"\{\?.*?\?\}|\{[^{}]+\}",
+            lambda m: "(1=1)" if m.group(0).startswith("{?") else "_slayer_ph",
+            model.sql, flags=re.DOTALL,
+        ) if parameterized else model.sql
+        safety = classify_model_sql(probe_sql, dialect=sqlglot_name)
+        reason = None
+        if safety == "modifying":
+            reason = "model SQL must be a read-only query; it is not a plain SELECT"
+        elif safety == "unparseable" and not parameterized:
+            reason = "model SQL could not be parsed for a read-only check"
+        if reason:
             raise ModelSqlValidationError(
                 model_name=model.name,
                 data_source=model.data_source or "",
                 ds_type=ds.type if ds else None,
-                reason=(
-                    "model SQL must be a read-only query; it contains a "
-                    "data-modifying (DML/DDL) statement"
-                    if safety == "modifying"
-                    else "model SQL could not be parsed for a read-only check"
-                ),
+                reason=reason,
             )
+        if parameterized:
+            logger.info(
+                "Skipping save-time SQL trial-execute for model %r: model.sql "
+                "carries %d placeholder(s), which cannot be trial-filled.",
+                model.name, len(bare | blocked),
+            )
+            return
         if ds is None:
             logger.warning(
                 "Skipping save-time SQL validation for model %r: datasource "

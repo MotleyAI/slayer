@@ -394,3 +394,21 @@ class TestNonReadOnlySqlRejected:
             await engine.save_model(model)
         assert executed == []  # no DB round-trip when the SQL cannot be parsed
         assert await storage.get_model("broken", data_source=_DS) is None
+
+    async def test_parameterized_data_modifying_sql_rejected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        engine, storage = await _make_engine(tmp_path)
+        executed: list[str] = []
+
+        async def _spy(self, sql: str) -> dict[str, str]:
+            executed.append(sql)
+            return {}
+
+        monkeypatch.setattr(SlayerSQLClient, "get_column_types", _spy)
+        # Parameterized SQL is not trial-run, but its shape is still classified.
+        model = _sql_model("DELETE FROM orders WHERE id = {id}", name="param_dml")
+        with pytest.raises(ModelSqlValidationError):
+            await engine.save_model(model)
+        assert executed == []
+        assert await storage.get_model("param_dml", data_source=_DS) is None

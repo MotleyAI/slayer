@@ -772,8 +772,12 @@ class TestClassifyModelSql:
         "CREATE TABLE t (a INT)",
         "ALTER TABLE orders ADD COLUMN x INT",
         "WITH x AS (DELETE FROM orders RETURNING *) SELECT * FROM x",
+        "COPY orders FROM '/tmp/x.csv'",       # non-query root the allowlist rejects
+        "GRANT SELECT ON orders TO bob",
+        "CALL do_stuff()",
+        "VACUUM",
     ])
-    def test_data_modifying(self, sql: str) -> None:
+    def test_not_read_only(self, sql: str) -> None:
         assert classify_model_sql(sql, dialect="postgres") == "modifying"
 
     @pytest.mark.parametrize("sql", [
