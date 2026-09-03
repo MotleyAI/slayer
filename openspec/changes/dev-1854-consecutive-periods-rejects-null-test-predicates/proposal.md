@@ -54,5 +54,6 @@ scalar values there) and redundant everywhere it is used — every use site is a
 - `tests/test_dev1854_null_test_predicates.py` (new),
   `tests/test_dev1846_golden_sql.py` + `tests/golden/dev1846_sql_baseline.json`
   (two new cases; existing cp entries re-blessed),
+  `tests/golden/dev1750_sql_baseline.json` (existing cp entries re-blessed),
   `tests/integration/test_integration_sqlserver.py` (xfail marker, conditional
   on live verification).
