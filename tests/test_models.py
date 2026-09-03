@@ -7,7 +7,14 @@ from pydantic import ValidationError
 from sqlalchemy.engine import make_url
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import Aggregation, Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.models import (
+    Aggregation,
+    Column,
+    DatasourceConfig,
+    ModelJoin,
+    ModelMeasure,
+    SlayerModel,
+)
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 
 
@@ -699,6 +706,36 @@ class TestSourceModeExclusivity:
     def test_rejects_empty_source_queries_list(self) -> None:
         with pytest.raises(ValueError, match="cannot be an empty list"):
             SlayerModel(name="orders", source_queries=[], data_source="ds")
+
+
+class TestSelfJoinRejected:
+    """A join targeting the model itself is unaddressable (joins resolve by
+    target-model name) and must fail loudly at construction."""
+
+    def test_self_join_raises_informative_error(self) -> None:
+        with pytest.raises(ValueError, match="[Ss]elf-join") as ei:
+            SlayerModel(
+                name="staff", data_source="ds", sql_table="staff",
+                columns=[
+                    Column(name="id", type=DataType.INT, primary_key=True),
+                    Column(name="manager_id", type=DataType.INT),
+                ],
+                joins=[ModelJoin(target_model="staff",
+                                 join_pairs=[["manager_id", "id"]])],
+            )
+        message = str(ei.value)
+        assert "staff" in message
+        # The remedy is named, not just the ban.
+        assert "separate model" in message
+
+    def test_distinct_target_still_accepted(self) -> None:
+        m = SlayerModel(
+            name="staff", data_source="ds", sql_table="staff",
+            columns=[Column(name="team_id", type=DataType.INT)],
+            joins=[ModelJoin(target_model="teams",
+                             join_pairs=[["team_id", "id"]])],
+        )
+        assert m.joins[0].target_model == "teams"
 
 
 class TestSourceQueryStages:

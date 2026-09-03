@@ -469,6 +469,20 @@ class SlayerModel(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _reject_self_joins(self) -> "SlayerModel":
+        """Joins resolve by target-model name, so a self-join is unaddressable."""
+        if any(j.target_model == self.name for j in self.joins):
+            raise ValueError(
+                f"Model '{self.name}': join target_model '{self.name}' is the "
+                f"model itself. Self-joins are not supported — dotted "
+                f"references resolve by model name, so a self-join can never "
+                f"be addressed from a query. Define the second role as a "
+                f"separate model over the same table (or a view) and join to "
+                f"that."
+            )
+        return self
+
+    @model_validator(mode="after")
     def _validate_allowed_aggregations(self) -> "SlayerModel":
         """Enforce that ``Column.allowed_aggregations`` is a subset of the type/PK eligibility set."""
         custom_agg_names = {a.name for a in self.aggregations}

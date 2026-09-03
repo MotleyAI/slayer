@@ -1,10 +1,11 @@
 """DEV-1836 task 1.6 — broadcast metadata and strict mode (design D6/D9, F8).
 
 Spec: openspec …/specs/queries/cross-model-aggregates — "Broadcast metadata",
-"Strict mode". A silent-semantics event (implicit-grain broadcast, dropped
+"Strict mode". A silent-semantics event (implicit-grain broadcast, excluded
 producer filter) is reported per distinct aggregate in lenient mode and errors
 under ``SlayerQuery.strict``; explicit ``partition_by=`` broadcasting neither
-warns nor errors.
+warns nor errors, and a filter pushed down by semi-join (DEV-1840) is
+correctly applied — neither warned nor a strict error.
 """
 
 from __future__ import annotations
@@ -154,11 +155,26 @@ class TestStrictMode:
         # The remedy names the metadata fix.
         assert "cardinality" in message or "unique" in message
 
-    async def test_strict_dropped_filter_errors(self, exec_backend):
+    async def test_strict_passes_on_pushable_filter(self, exec_backend):
+        """DEV-1840: the host filter pushes down by semi-join, so strict has
+        nothing to flag; the metric covers the app customers (c1, c3)."""
+        _, engine = exec_backend
+        resp = await engine.execute(q(
+            strict=True, dimensions=["customers.tier"], measures=[M, CM],
+            filters=["channel = 'app'"],
+        ))
+        by = rows_by(resp, "orders.customers.tier")
+        assert set(by) == {("gold",)}
+        assert float(by[("gold",)]["orders.m"]) == pytest.approx(30.0)
+        assert float(by[("gold",)]["orders.cm"]) == pytest.approx(160.0)
+
+    async def test_strict_still_errors_on_excluded_filter(self, exec_backend):
+        """A conjunct outside pushdown scope (root-local OR cross-path) is
+        still excluded, and strict still errors on it."""
         _, engine = exec_backend
         query = q(
             strict=True, dimensions=["customers.tier"], measures=[M, CM],
-            filters=["channel = 'app'"],
+            filters=["customers.tier = 'gold' OR channel = 'app'"],
         )
         with pytest.raises((SlayerError, ValueError)) as ei:
             await engine.execute(query)

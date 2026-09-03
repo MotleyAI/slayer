@@ -78,22 +78,20 @@ class TestMirrorInnerJoins:
         assert b_reloaded.joins[0].join_type == JoinType.INNER
         assert b_reloaded.joins[0].join_pairs == [["id", "fk_id"]]
 
-    async def test_self_join_not_mirrored(self, raw_storage) -> None:
-        model = SlayerModel(
-            name="employees",
-            sql_table="employees",
-            data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="manager_id", sql="manager_id", type=DataType.DOUBLE),
-            ],
-            joins=[ModelJoin(target_model="employees", join_pairs=[["manager_id", "id"]], join_type=JoinType.INNER)],
-        )
-        await raw_storage.save_model(model)
-        await _mirror_inner_joins(model, raw_storage)
-
-        reloaded = await raw_storage.get_model("employees")
-        assert len(reloaded.joins) == 1
+    def test_self_join_cannot_reach_the_mirror(self) -> None:
+        """A self-join is rejected at SlayerModel construction, so the
+        mirror's own self-join skip stays defense-in-depth only."""
+        with pytest.raises(ValueError, match="[Ss]elf-join"):
+            SlayerModel(
+                name="employees",
+                sql_table="employees",
+                data_source="test",
+                columns=[
+                    Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                    Column(name="manager_id", sql="manager_id", type=DataType.DOUBLE),
+                ],
+                joins=[ModelJoin(target_model="employees", join_pairs=[["manager_id", "id"]], join_type=JoinType.INNER)],
+            )
 
     async def test_left_join_not_mirrored(self, raw_storage) -> None:
         a = _model("a", joins=[_left_join("b")])
