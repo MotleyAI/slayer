@@ -1,18 +1,22 @@
 # Parsing
 
 **Modules:** `slayer/engine/syntax.py` (Mode B), `slayer/sql/sql_expr.py`
-(Mode A), `slayer/engine/measure_expansion.py` (pre-bind expansion)
+(Mode A)
 
 Parsing turns expression strings into typed `ParsedExpr` trees. It is **pure
-syntax** — no scope resolution, no named-measure expansion, no function-style
-rewriting. Those are separate stages (the [slack layer](slack-normalization.md)
-does function-style → colon; the [binder](binding.md) does scope; expansion is
-its own step). This separation is what keeps each stage small.
+syntax** — no scope resolution and no saved-measure resolution. Those are
+separate stages (the [binder](binding.md) does scope *and* saved-measure
+resolution). This separation is what keeps each stage small. Both aggregation
+spellings — colon (`amount:sum`) and functional (`sum(amount)`) — are native
+grammar and collapse to the SAME `AggCall` node (DEV-1826), so everything
+downstream is spelling-insensitive by construction.
 
 ```mermaid
 flowchart LR
-    text["expr string<br/>'change(amount:sum) > 0'"] --> pp["_preprocess_colons<br/>amount:sum → placeholder"]
-    pp --> ast["ast.parse(mode='eval')"]
+    text["expr string<br/>'change(amount:sum) > 0'"] --> cw["_rewrite_case_when<br/>CASE → iif(...)"]
+    cw --> pp["_preprocess_colons<br/>amount:sum → placeholder"]
+    pp --> star["_preprocess_star_args<br/>count(*) → star token"]
+    star --> ast["ast.parse(mode='eval')"]
     ast --> conv["_convert<br/>AST → ParsedExpr"]
     conv --> tree["ParsedExpr tree"]
 ```
@@ -28,7 +32,7 @@ Eleven frozen Pydantic node types with value-based equality (so tests assert via
 | `DottedRef` | `parts` — a dotted path |
 | `StarSource` | `*` |
 | `Literal` | `value` (`Decimal` / `str` / `bool` / `None`) |
-| `AggCall` | `source, agg, args, kwargs` — colon aggregation |
+| `AggCall` | `source, agg, args, kwargs` — an aggregation, either spelling; `source` is a column / star / aggregation-free scalar expression |
 | `TransformCall` | `op, input, args, kwargs` |
 | `ScalarCall` | `name, args` |
 | `Arith` | `op, left, right` |
@@ -48,6 +52,13 @@ work:
    capturing the source kind (`*` / `Ref` / `DottedRef`) and agg name in a side
    map. Any trailing `(args)` is left in place so Python parses it as a `Call`
    naturally. String-literal spans are skipped so quoted contents aren't touched.
+1b. **`_preprocess_star_args`** (DEV-1826) runs AFTER the colon pass: a
+   token-aware, string-literal-safe scan replaces a call's first-argument `*`
+   / trailing `path.*` (`count(*)`, `count(customers.*)`) with the reserved
+   `__slayer_star__` token — Python's AST cannot parse a bare `*` expression —
+   which `_convert` maps back to `StarSource` / a `*`-tailed `DottedRef`.
+   Multiplication is untouched (a multiplying `*` never directly follows a
+   call's `(` or a `.`).
 2. **`_reject_reserved_expr_token`** (DEV-1743) scans the raw text — with
    string-literal spans blanked, and *before* `_preprocess_colons` runs — for the
    reserved `__slayer_` prefix, raising `ValueError` if a user token uses it. The
@@ -57,17 +68,38 @@ work:
    the `__` ban); only the `__slayer_` namespace is reserved.
 
 `_convert` then maps AST nodes to `ParsedExpr` nodes. A `Call` dispatches in a
-fixed order: aggregation placeholder → transform (in `ALL_TRANSFORMS`, requires
-≥1 positional) → scalar (in `SCALAR_FUNCTIONS`, rejects kwargs) → otherwise
-`UnknownFunctionError`. List/tuple kwarg values (e.g. `partition_by=[a, b]`)
-convert to a tuple of converted elements.
+fixed order (DEV-1826):
+
+1. **colon-aggregation placeholder** → `AggCall`;
+2. **functional builtin aggregation** — the callee heals through
+   `normalize_aggregation_name` (case + alias: `SUM`, `countD`), and the raw
+   token is stored as `agg` so both spellings produce the identical node.
+   `first` / `last` are also transform names and dispatch by first-arg shape:
+   an aggregated input falls through to the transform branch, anything else is
+   the aggregation. The first argument becomes the `AggCall.source` — a
+   column, a star, or an aggregation-free scalar expression
+   (`sum(amount - cost)`); nested aggregations/transforms inside it are
+   rejected here;
+3. **transform** (in `ALL_TRANSFORMS`, requires ≥1 positional);
+4. **scalar** (in `SCALAR_FUNCTIONS`, rejects kwargs);
+5. **unknown name with an aggregatable first argument** → an `AggCall`
+   candidate deferred to the binder, exactly like `x:whatever` — custom
+   aggregations resolve at binding with no parser plumbing, and genuinely
+   unknown names get the standard unknown-aggregation error there;
+6. otherwise `UnknownFunctionError`.
+
+List/tuple kwarg values (e.g. `partition_by=[a, b]`) convert to a tuple of
+converted elements.
 
 ### Rejections (P1)
 
 The parser is where the Mode-B contract is enforced:
 
-- a function call not in `SCALAR_FUNCTIONS` / `ALL_TRANSFORMS` / aggregations →
-  `UnknownFunctionError`;
+- a function call that is neither scalar / transform / aggregation NOR an
+  aggregation candidate (no aggregatable first argument — e.g. kwargs-only
+  `bogus(p=1)`) → `UnknownFunctionError`;
+- SQL's `DISTINCT` keyword inside a call (`count(distinct x)`) → syntax error
+  (write `count_distinct(x)` / `x:count_distinct`);
 - a raw `OVER(...)` clause anywhere in the text → `IllegalWindowInFilterError`
   (checked by regex before AST parsing);
 - the reserved `__slayer_` prefix in a user token → `ValueError` (DEV-1743);
@@ -117,44 +149,49 @@ parses it — necessary because sqlglot's SQLite/MySQL parser otherwise falls ba
 to a `Command` node for a top-level `replace(...)`. `has_window_function` is the
 predicate the binder uses to reject filters that touch a windowed `Column.sql`
 (DEV-1369). Mode A keeps full SQL expressiveness; the typed pipeline only needs
-to detect windows and (in the slack layer) rewrite multi-dot paths.
+to detect windows — a Mode-A `SUM(amount)` stays raw SQL, untouched by the
+Mode-B aggregation grammar.
 
-## Pre-bind measure expansion — `measure_expansion.py`
+## Saved-measure resolution — in the binder
 
-The binder raises `UnknownReferenceError` for a bare *measure* name (measures
-aren't columns). `expand_model_measures` runs *before* binding: it is an
-AST → AST rewrite that replaces every `Ref(name=X)` whose `X` is a saved
-`ModelMeasure` with the recursively-expanded `parse_expr(measure.formula)` tree,
-turning measure refs into binder-resolvable column/aggregation nodes.
+There is no pre-bind expansion pass; the binder (`binding.py`) is the single
+saved-measure resolution authority. A bare name resolves in `_resolve_ref`
+(`alias_map` → column → saved measure); a saved measure inlines as
+`parse_expr(measure.formula)` re-bound at the same scope, and recursion resolves
+nesting. A dotted name resolves in `_resolve_dotted` (`alias_map` on the full
+dotted text → join walk to the terminal model → leaf column → saved measure): a
+dotted measure is bound against `ModelScope(source_model=terminal)` then
+prepend-rerooted into host coordinates (`keys.py`), so `customers.aov` from an
+`orders` query is bound-tree-identical to the hand-expanded `customers.`-prefixed
+formula and inherits DEV-1836 cross-model semantics for free.
 
-```mermaid
-flowchart LR
-    r["Ref('aov')"] -->|aov is a ModelMeasure| sub["parse_expr(aov.formula)"]
-    sub --> walk["recursively expand its refs"]
-    walk --> out["expanded ParsedExpr"]
-```
-
-Eligibility is principled: expansion fires at the root and in `Arith` / `UnaryOp`
-/ `Cmp` / `BoolOp` operands, `ScalarCall.args`, and `TransformCall.input` / args
-/ kwarg values. It does **not** fire on `DottedRef` segments (those resolve
-through joins), `AggCall` in any position (sources/args/kwargs are column-level
-by contract), or function-name slots. Recursion is bounded: depth limit 32
-(configurable via `SLAYER_MEASURE_EXPANSION_DEPTH`) raising
-`MeasureRecursionLimitError`, plus per-chain cycle detection raising
-`MeasureCycleError` with the offending chain. A `parse_cache` memoizes each
-measure's parse. The node-type tuple is derived from the `ParsedExpr` union via
-`get_args`, so a new node type added to `syntax.py` is automatically walked.
+Eligibility is an explicit bind context (`MeasureResolutionCtx`), threaded like
+`in_filter` and enabled only at the two eligible call sites (measure formulas and
+computed-dimension expressions). It is dropped on aggregation-level edges —
+`_bind_agg` source/args/kwargs, `partition_by`, transform scalar args — each
+pinned by a test, so a measure never resolves inside an aggregation position.
+Recursion is bounded: a depth cap (default 32, `SLAYER_MEASURE_EXPANSION_DEPTH`)
+raising `MeasureRecursionLimitError`, plus per-chain cycle detection raising
+`MeasureCycleError` naming the offending (model, measure) chain.
 
 ## Design rationale
 
 - **Why reuse Python's AST for Mode B?** The DSL was always a Python-expression
   subset; `ast.parse` gives precedence, grouping, and operator handling for free,
-  and the conversion layer stays small. The colon preprocessor is the only piece
-  that bridges the one construct Python doesn't have.
-- **Why is parsing pure (no scope)?** So the same parser serves the binder, the
-  measure expander, and the scope-free extractors. Mixing in resolution would
-  re-couple parsing to the model graph — the coupling the redesign removes.
-- **Why a separate expansion pass instead of expanding in the binder?** Expansion
-  is an AST → AST rewrite with its own recursion/cycle concerns; keeping it
-  before binding means the binder only ever sees column/aggregation refs and can
-  stay a straight scope lookup.
+  and the conversion layer stays small. The colon and star preprocessors are the
+  only pieces that bridge the two constructs Python doesn't have.
+- **Why parse the functional spelling natively instead of normalizing it to
+  colon first?** The old `FUNC_STYLE_AGG` rewrite had to be replicated per text
+  surface, and every missed surface (ModelExtension measures, hand-authored
+  YAML) was a parity bug. One dispatch branch covers every position by
+  construction, and collapsing both spellings to one node makes identity,
+  naming, and cross-spelling measure/filter matching free. See
+  [slack normalization](slack-normalization.md) for the retirement.
+- **Why is parsing pure (no scope)?** So the same parser serves the binder and
+  the scope-free extractors. Mixing in resolution would re-couple parsing to the
+  model graph — the coupling the redesign removes.
+- **Why resolve saved measures in the binder, not a separate pass?** Resolution
+  is inherently scope-bound (it needs the model graph the binder already holds),
+  so a pre-bind pass would duplicate that scope machinery; inlining
+  `parse_expr(measure.formula)` at the same scope keeps recursion, cycle, and
+  depth handling in one place.

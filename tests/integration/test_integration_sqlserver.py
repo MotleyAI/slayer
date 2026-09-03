@@ -41,17 +41,14 @@ Skipped silently when:
 - The Docker daemon is unreachable (autouse session fixture)
 """
 
+import math as _math
+import re as _re
+import statistics
 import tempfile
 import uuid
 
 import pytest
-
-pytest.importorskip("testcontainers.mssql")
-pytest.importorskip("pyodbc")
-
-import pyodbc
 import sqlalchemy as sa
-from testcontainers.mssql import SqlServerContainer
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
@@ -62,11 +59,19 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
-from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
+
+pytest.importorskip("testcontainers.mssql")
+pytest.importorskip("pyodbc")
+
+import pyodbc  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
+from testcontainers.mssql import SqlServerContainer  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
+
+import docker  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +82,6 @@ from slayer.storage.yaml_storage import YAMLStorage
 @pytest.fixture(scope="session", autouse=True)
 def _docker_available_or_skip():
     try:
-        import docker  # noqa: PLC0415
         docker.from_env().ping()
     except Exception as exc:  # pragma: no cover — exercised on local dev
         pytest.skip(f"Docker not available: {exc}")
@@ -287,6 +291,15 @@ class TestSQLServerQueries:
         query = SlayerQuery(source_model="orders", measures=[{"formula": "total:sum"}])
         result = await sqlserver_env.execute(query=query)
         assert float(result.data[0]["orders.total_sum"]) == 875.0  # NOSONAR(S1244) — sum of integer cents, exact-representable
+
+    async def test_functional_aggregation_parity(self, sqlserver_env: SlayerQueryEngine) -> None:
+        colon = await sqlserver_env.execute(
+            query=SlayerQuery(source_model="orders", measures=[{"formula": "total:sum"}])
+        )
+        func = await sqlserver_env.execute(
+            query=SlayerQuery(source_model="orders", measures=[{"formula": "sum(total)"}])
+        )
+        assert float(func.data[0]["orders.total_sum"]) == float(colon.data[0]["orders.total_sum"])
 
     async def test_avg_measure(self, sqlserver_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(source_model="orders", measures=[{"formula": "avg_amount:avg"}])
@@ -611,7 +624,6 @@ class TestCrossModelAndMultistageSQLServer:
         assert result.data[0]["ss_monthly._count"] == 3
 
     async def test_sql_dimension(self, sqlserver_cross_model_env: SlayerQueryEngine) -> None:
-        from slayer.core.query import ModelExtension
         query = SlayerQuery(
             source_model=ModelExtension(
                 source_name="orders",
@@ -921,7 +933,6 @@ class TestSQLServerStatAggregations:
     name set (VAR / VARP / STDEV)."""
 
     async def test_stddev_samp_native_sqlserver(self, sqlserver_env: SlayerQueryEngine) -> None:
-        import statistics
         query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "total:stddev_samp"}],
@@ -941,7 +952,6 @@ class TestSQLServerStatAggregations:
         )
 
     async def test_stddev_pop_native_sqlserver(self, sqlserver_env: SlayerQueryEngine) -> None:
-        import statistics
         query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "total:stddev_pop"}],
@@ -961,7 +971,6 @@ class TestSQLServerStatAggregations:
 
     async def test_var_samp_uses_canonical_tsql_name(self, sqlserver_env: SlayerQueryEngine) -> None:
         """T-SQL: var_samp must emit ``VAR(`` not ``VAR_SAMP(``."""
-        import statistics
         query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "total:var_samp"}],
@@ -980,7 +989,6 @@ class TestSQLServerStatAggregations:
         )
 
     async def test_var_pop_uses_canonical_tsql_name(self, sqlserver_env: SlayerQueryEngine) -> None:
-        import statistics
         query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "total:var_pop"}],
@@ -1001,7 +1009,6 @@ class TestSQLServerStatAggregations:
     async def test_corr_variance_decomposition_sqlserver(self, sqlserver_env: SlayerQueryEngine) -> None:
         """T-SQL CORR uses variance-decomposition with VAR / STDEV (not
         VAR_SAMP / STDDEV_SAMP). Pin numeric + SQL shape."""
-        import statistics
         query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "total:corr(other=customer_id)"}],
@@ -1120,8 +1127,6 @@ def sqlserver_log10_env(sqlserver_container):
 async def test_log10_round_trip_sqlserver(sqlserver_log10_env: SlayerQueryEngine) -> None:
     """T-SQL has native LOG10 (TsqlDialect.log10_native = True). The emitted
     SQL must preserve ``LOG10(...)``."""
-    import math as _math
-
     result = await sqlserver_log10_env.execute(
         SlayerQuery(source_model="orders", measures=[{"formula": "log_amount:max"}])
     )
@@ -1188,7 +1193,6 @@ async def test_sqlserver_time_shift_uses_dateadd(sqlserver_env: SlayerQueryEngin
     )
     # No INTERVAL keyword (not valid T-SQL) — check word boundary to avoid
     # false-positives on column names containing 'interval'.
-    import re as _re
     assert not _re.search(r"\bINTERVAL\b", sql_upper), (
         f"T-SQL must not emit INTERVAL keyword. Got:\n{dry.sql}"
     )

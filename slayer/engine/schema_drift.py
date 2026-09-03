@@ -7,7 +7,6 @@ import logging
 from typing import (
     Annotated,
     Any,
-    List,
     Literal,
     Optional,
     Set,
@@ -47,7 +46,6 @@ from slayer.engine.ingestion import (
     _sa_type_to_data_type,
 )
 from slayer.engine.column_expansion import resolve_ref_target
-from slayer.engine.normalization import func_style_agg_to_colon
 from slayer.engine.syntax import (
     AggCall,
     DottedRef,
@@ -484,7 +482,9 @@ def _parsed_ref_name(node: Union[Ref, DottedRef, AggCall]) -> Optional[str]:
     """Textual name of a reference-bearing parse node; AggCall collapses to its source name, ``*:count`` (StarSource) yields None."""
     if isinstance(node, AggCall):
         source = node.source
-        if isinstance(source, StarSource):
+        if not isinstance(source, (Ref, DottedRef)):
+            # Star, or a DEV-1826 expression source (the caller walks its
+            # operand refs itself).
             return None
         node = source
     if isinstance(node, Ref):
@@ -492,23 +492,26 @@ def _parsed_ref_name(node: Union[Ref, DottedRef, AggCall]) -> Optional[str]:
     return ".".join(node.parts)
 
 
-def _measure_formula_refs(
-    formula: str, *, custom_agg_names: Optional[Set[str]] = None,
-) -> Set[str]:
-    """Column/measure names in a Mode-B formula (dotted for cross-model); textual only, function-style aggs / ``custom_agg_names`` rewritten to colon first else refs are lost."""
+def _measure_formula_refs(formula: str) -> Set[str]:
+    """Column/measure names in a Mode-B formula (dotted for cross-model);
+    textual only. Both aggregation spellings parse natively (DEV-1826), and an
+    unknown functional name defers as an ``AggCall`` candidate, so custom
+    aggregations — joined-model ones included — need no registry walk."""
     try:
-        parsed = parse_expr(
-            func_style_agg_to_colon(
-                formula,
-                custom_agg_names=(
-                    frozenset(custom_agg_names) if custom_agg_names else None
-                ),
-            )
-        )
+        parsed = parse_expr(formula)
     except Exception:
         return set()
     out: Set[str] = set()
     for node in walk_parsed_refs(parsed):
+        if isinstance(node, AggCall) and not isinstance(
+            node.source, (Ref, DottedRef, StarSource)
+        ):
+            # DEV-1826 expression source: attribute each operand ref.
+            for inner in walk_parsed_refs(node.source):
+                inner_name = _parsed_ref_name(inner)
+                if inner_name is not None:
+                    out.add(inner_name)
+            continue
         name = _parsed_ref_name(node)
         if name is not None:
             out.add(name)
@@ -777,21 +780,11 @@ def _measure_refs_on_base(
     stage: SlayerQuery, base_name: str, graph: _StageGraph
 ) -> Set[str]:
     out: Set[str] = set()
-    # Custom aggs from models reachable from the stage source, so function-style
-    # custom aggs rewrite to colon form. Scoped to reachable (not the whole
-    # registry) so an unrelated agg name can't normalize a coincidental call.
-    custom_agg_names: Set[str] = set()
-    for model_name in graph.reachable:
-        model = graph.models_by_name.get(model_name)
-        if model is not None:
-            custom_agg_names.update(a.name for a in (model.aggregations or []))
     for m in stage.measures or []:
         formula = getattr(m, "formula", None)
         if not formula:
             continue
-        for ref in _measure_formula_refs(
-            formula, custom_agg_names=custom_agg_names,
-        ):
+        for ref in _measure_formula_refs(formula):
             attributed = _attribute_ref_to_base(
                 ref=ref, base_name=base_name, graph=graph
             )
@@ -1168,40 +1161,14 @@ def _first_dropped_cause(
     return None
 
 
-def _reachable_agg_names_from_state(
-    *, start: SlayerModel, state: "_CascadeState",
-) -> Set[str]:
-    """Custom aggregation names reachable from ``start`` via the join graph, so the measure cascade recognises function-style refs to custom aggs on joined models."""
-    names: Set[str] = set()
-    visited: Set[str] = set()
-    queue: List[SlayerModel] = [start]
-    while queue:
-        current = queue.pop(0)
-        if current.name in visited:
-            continue
-        visited.add(current.name)
-        if current.aggregations:
-            names.update(a.name for a in current.aggregations)
-        for join in current.joins:
-            if join.target_model in visited:
-                continue
-            nxt = state.models_by_name.get(join.target_model)
-            if nxt is not None:
-                queue.append(nxt)
-    return names
-
-
 def _cascade_measures(*, model: SlayerModel, state: _CascadeState) -> bool:
     """Rule 2: ``ModelMeasure.formula`` referencing a dropped column or measure."""
     changed = False
     dropped_set = state.dropped_measures.get(model.name, set())
-    custom_agg_names = _reachable_agg_names_from_state(start=model, state=state)
     for measure in model.measures:
         if measure.name is None or measure.name in dropped_set:
             continue
-        refs = _measure_formula_refs(
-            measure.formula, custom_agg_names=custom_agg_names,
-        )
+        refs = _measure_formula_refs(measure.formula)
         cause = _first_dropped_cause(refs=refs, model=model, state=state)
         if cause is None:
             continue

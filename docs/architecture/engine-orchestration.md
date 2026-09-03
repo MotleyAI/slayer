@@ -31,10 +31,10 @@ build_response_metadata`. Storage is consulted once, in
 `build_resolved_source_bundle` (P11).
 
 `_normalize_stage` resolves each stage's source model from the bundle so
-`MISPLACED_MEASURE` and custom-aggregation-aware `FUNC_STYLE_AGG` see the right
-column / aggregation names; a sibling-sourced stage normalizes with `model=None`.
-Slack warnings from every stage are collected and surface on
-`SlayerResponse.warnings`.
+`MISPLACED_MEASURE` sees the right column names; a sibling-sourced stage
+normalizes with `model=None`. (`FUNC_STYLE_AGG` is retired — functional
+aggregations parse natively since DEV-1826.) Slack warnings from every stage
+are collected and surface on `SlayerResponse.warnings`.
 
 `_touched_models_for_plan` collects the model names a query-time DBAPI error
 could be attributed to (bundle referenced models + cross-model targets +
@@ -53,8 +53,9 @@ names still raise.
 
 ## `save_model`
 
-`save_model` runs `normalize_model` (the [slack layer](slack-normalization.md))
-so persisted formulas land canonical, then persists. For a **query-backed** model
+`save_model` validates the model and persists it **verbatim** — the author's
+formula spelling is preserved, and functional aggregation syntax like
+`sum(amount)` is not rewritten to colon form. For a **query-backed** model
 it rejects user-supplied cache fields and calls `_validate_and_populate_cache`,
 which renders the backing query and stores `columns` / `backing_query_sql` /
 `data_source`.

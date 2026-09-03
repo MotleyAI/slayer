@@ -25,6 +25,61 @@ customers.score:avg  — cross-model: AVG of "score" from the joined "customers"
 
 Colon syntax is used everywhere measures appear: in `measures`, in arithmetic expressions, in transform function arguments, and in filters.
 
+### Functional spelling
+
+Every colon aggregation may equally be written as a function call —
+`sum(revenue)` ≡ `revenue:sum`, `count(*)` ≡ `*:count`,
+`percentile(price, p=0.9)` ≡ `price:percentile(p=0.9)` — in every position,
+with identical SQL, results, result-column keys, and errors. Neither spelling
+is rewritten: a saved model keeps the author's text. The full mapping table
+and the `first`/`last` disambiguation rules are in
+[Reference semantics → Aggregation spelling equivalence](references.md#aggregation-spelling-equivalence).
+
+### Expression aggregation
+
+The functional spelling additionally accepts a same-model scalar
+**expression** as the aggregated value — something the colon form cannot
+spell:
+
+```text
+sum(amount - cost)                     — aggregate a row-level expression
+count_distinct(upper(email))           — scalar-allowlist calls compose
+percentile(price * quantity, p=0.5)    — parametric aggs work too
+my_agg(price * quantity)               — as do model-defined custom aggs
+sum(amount - cost, partition_by=region)  — reserved kwargs compose
+count(1)                               — a constant is a valid expression
+```
+
+The expression may use bare host-model columns (derived `Column.sql` columns
+included), scalar-allowlist functions, arithmetic, and literals. It works in
+every functional-aggregation position — measures, post-aggregation filters
+(`sum(amount - cost) > 0` routes to HAVING), order, computed-dimension
+expressions — and composes with `rename`.
+
+**Naming.** The result key derives from the expression via the same sanitizer
+used for computed dimensions: `sum(amount - cost)` on `orders` →
+`orders.amount_cost_sum`, formatting-insensitively (`sum(amount-cost)` is the
+same key). Very long expressions fold to a stable-hash key. An explicit
+`name` overrides the derived key; two *different* expressions whose derived
+keys collide (`sum(amount - cost)` and `sum(amount + cost)`) fail with a
+duplicate-key error asking for a rename.
+
+**Boundaries** (rejected with clear errors):
+
+* joined-model refs / dotted paths inside the expression
+  (`sum(amount - customers.discount)`) — cross-model expression aggregation
+  is not yet supported;
+* operands whose column carries a column-level `filter` — define a derived
+  model column instead;
+* nested aggregations or transforms (`sum(sum(x))`, `sum(cumsum(x) - 1)`).
+
+**Gates.** Per-column `allowed_aggregations` / primary-key / type-default
+gates apply to *columns*, not expressions — `sum(price * quantity)` succeeds
+even when `quantity` whitelists only `min`/`max`, because the expression is a
+new derived quantity owned by the query author. Global validation still
+applies: the aggregation name must be known, and numeric-only aggregations
+reject a confidently non-numeric expression (`sum(lower(name))`).
+
 ### Windowed sum and average
 
 `sum` and `avg` accept an optional `window` parameter for trailing time-window
@@ -180,11 +235,17 @@ in a filter (`revenue:sum(partition_by=region) > 5000`) — a filter's top-level
 references resolve, and a predicate whose references share no scope raises a
 "split the filter" error. This includes cross-model sources
 (`customers.spend:sum(partition_by=…)`), which compute in a sub-query rooted at
-the measure's model. As a query MEASURE, a `partition_by` column that is not a
-query dimension errors at plan time; for a cross-model source, every explicit
-partition key must additionally be *attributable* from the measure's own model
-(see [cross-model measures](queries.md#cross-model-measures)) — an unprovable
-key errors naming the join remedy rather than fanning the value.
+the measure's model. Consumed in a **combined position** — a query measure, an
+arithmetic/scalar composite, a transform input, or a raw `order` target — every
+explicit partition key must be a query dimension (or a query time dimension's
+bucket), for local and cross-model sources alike, else it errors at plan time
+naming the key and the remedy. Only the computed-dimension consumer keeps the
+finer-grain freedom; a filter over, or `order` by the *name* of, that dimension's
+own aggregate is a row-scope reference that stays legal at any partition grain.
+For a cross-model source, every explicit partition key must additionally be
+*attributable* from the measure's own model (see
+[cross-model measures](queries.md#cross-model-measures)) — an unprovable key
+errors naming the join remedy rather than fanning the value.
 
 Combining aggregates at **different** grains in one expression is well-defined:
 `amount:sum(partition_by=region) - amount:sum(partition_by=city)` (as a measure,
@@ -246,9 +307,7 @@ All three forms below — bare name, transform, arithmetic — work as query mea
 ]
 ```
 
-Bare-name references are inline-expanded at parse time into the saved formula's text, so queries that use the saved name produce the same SQL as queries with the formula written out longhand. Saved formulas can reference other saved formulas (transitively) — cycles like `a → b → a` are detected and rejected with the chain in the error message.
-
-The bare name resolves only when it appears as a standalone identifier — a name that's part of colon syntax (`revenue:sum`), preceded by `.` (cross-model: `customers.aov`), or followed by `(` (a transform call) is not expanded. Saved-measure names that would shadow built-in transform names (`cumsum`, `change`, `time_shift`, `lag`, `lead`, `rank`, `percent_rank`, `dense_rank`, `ntile`, `first`, `last`, `change_pct`, `consecutive_periods`) are rejected at model construction time.
+A saved measure reused by name — bare `aov` or another model's `customers.aov` — expands to the same SQL as its longhand formula and is legal only in a measure formula or computed-dimension expression (see [Models → Reusing another model's saved measure](models.md#reusing-another-models-saved-measure-customersaov)).
 
 Transforms work on cross-model measures: `"cumsum(customers.score:avg)"`, `"first(customers.score:avg)"`, `"last(customers.score:avg)"`. The cross-model measure is computed first (as a sub-query CTE), then the transform is applied on the joined result.
 
@@ -296,6 +355,8 @@ errors (their partition is fixed to the query's dimensions). To coarsen the
 
 The self-join matches on **every projected dimension as well as the shifted time column** — plain columns, joined columns (`stores.name`), derived columns, and any secondary time dimension all take part in the join grain (e.g. `ON base.month IS NOT DISTINCT FROM shifted.month AND base.store IS NOT DISTINCT FROM shifted.store`). So these transforms are partition-safe: each group's series is compared only against itself, and per-group series reset cleanly. One store's first month is never diffed against another store's last month. The grain match is **null-safe** (`IS NOT DISTINCT FROM`, or the dialect equivalent), so a group with a NULL dimension value — for example rows with no matching row across a LEFT join — still lines up against its own prior period instead of dropping to a NULL shifted value.
 
+`time_shift` (and `change` / `change_pct`) also accepts a composite input whose leaves are all aggregates (e.g. `time_shift(revenue:sum / qty:sum, -1)`), re-aggregating each leaf in the shifted period, while a nested transform, a row-level column, or a cross-model leaf *inside the composite* is rejected (a bare cross-model input like `time_shift(customers.spend:sum, -1)` renders).
+
 **Intent recipes:**
 
 - Month-over-month / period-over-period growth → `change_pct(revenue:sum)` with a `time_dimensions` entry at the desired granularity. Prefer this over hand-building the ratio from `time_shift`.
@@ -309,7 +370,11 @@ The self-join matches on **every projected dimension as well as the shifted time
 
 `consecutive_periods(predicate)` evaluates a predicate at the query grain and
 returns an integer streak length for the current row. False or NULL breaks the
-run and returns 0. The result composes with normal comparisons:
+run and returns 0. The input is a Mode-B predicate or numeric value — a
+comparison, `IN`, a boolean connective, a nested transform, or a bare value
+(truthy when non-NULL and non-zero) — with a boolean-shaped node legal only at
+the predicate top level or an `iif` condition. The result composes with normal
+comparisons:
 
 ```json
 {
@@ -323,7 +388,7 @@ run and returns 0. The result composes with normal comparisons:
 
 ### Nesting
 
-Field formulas support nesting — window transforms can wrap self-join transforms (but not vice versa):
+Field formulas support nesting — window transforms can wrap self-join transforms (but not vice versa, though `consecutive_periods` may nest a transform in its predicate):
 
 ```json
 "measures": [

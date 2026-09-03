@@ -26,7 +26,6 @@ from tests._dev1838_fixtures import (
     cte_aliases,
     dev1838_models,
     dropped_filter_warnings,
-    gen,
     make_exec_engine,
     month_key,
     month_td,
@@ -161,22 +160,6 @@ class TestSharedAcrossScopes:
         assert _cm_count(dry.sql, dialect) == 1, cte_aliases(
             dry.sql, "_cm_", dialect=dialect,
         )
-
-    async def test_dual_role_without_partition_key_in_grain_unsupported(
-        self,
-    ) -> None:
-        """Keyless-grain dual-role (partition key absent from the query
-        dimensions) has no host slot to join the producer back on; pinned
-        unsupported pending its own issue."""
-        query = q(
-            dimensions=[{"expression": SPEND_BAND, "name": "sband"}],
-            measures=[ModelMeasure(
-                formula="customers.spend:sum(partition_by=customers.tier)",
-                name="rt",
-            )],
-        )
-        with pytest.raises(RuntimeError, match="missing a host / producer"):
-            await gen(query)
 
 
 class TestProducersThatMustStaySeparate:

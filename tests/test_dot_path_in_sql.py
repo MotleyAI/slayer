@@ -1,26 +1,34 @@
 """DEV-1743 — the DOT_PATH_IN_SQL dotted→``__`` rewrite is RETIRED.
 
 Mode-A free SQL (``Column.sql`` / ``Column.filter`` / ``SlayerModel.filters``)
-is now dotted-canonical: a dotted join path (``customers.regions.name``) is
-PRESERVED verbatim by ``normalize_model`` / ``normalize_query`` and resolved
-structurally at bind/generation time (and the save-time door). No
-DOT_PATH_IN_SQL warning is ever emitted. These tests pin that preservation
-and confirm Mode-B fields are untouched.
+is dotted-canonical: a dotted join path (``customers.regions.name``) is
+PRESERVED verbatim through the save path and resolved structurally at
+bind/generation time. Since DEV-1826 retired the last text-rewriting slack
+rule (FUNC_STYLE_AGG), no normalization pass touches model text at all —
+these tests pin verbatim save-path preservation and that ``normalize_query``
+leaves Mode-B filter text alone.
 """
 
 from __future__ import annotations
 
+import tempfile
+
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
-from slayer.core.query import SlayerQuery
-from slayer.engine.normalization import (
-    normalize_model,
-    normalize_query,
+from slayer.core.models import (
+    Column,
+    DatasourceConfig,
+    ModelJoin,
+    ModelMeasure,
+    SlayerModel,
 )
+from slayer.core.query import SlayerQuery
+from slayer.engine.normalization import normalize_query
+from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.storage.yaml_storage import YAMLStorage
 
 
-def _orders_with_customers_join() -> SlayerModel:
-    return SlayerModel(
+def _orders_with_customers_join(**overrides) -> SlayerModel:
+    fields = dict(
         name="orders",
         data_source="prod",
         sql_table="orders",
@@ -33,133 +41,115 @@ def _orders_with_customers_join() -> SlayerModel:
             ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
         ],
     )
+    fields.update(overrides)
+    return SlayerModel(**fields)
 
 
-# ---------------------------------------------------------------------------
-# Wiring tests — normalize_model walks all three Mode-A surfaces
-# ---------------------------------------------------------------------------
+def _customers() -> SlayerModel:
+    return SlayerModel(
+        name="customers",
+        data_source="prod",
+        sql_table="customers",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="name", type=DataType.TEXT),
+            Column(name="region_id", type=DataType.INT),
+        ],
+        joins=[
+            ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]]),
+        ],
+    )
 
 
-def _set_raw_column_sql(column: Column, *, raw: str) -> Column:
-    """Set ``Column.sql`` to a raw slack-form string for the normalize pass.
-
-    Construction no longer rewrites multi-dot refs (the legacy validator is
-    gone), so the raw form survives until ``normalize_model`` runs. Assigning
-    after construction keeps these helpers symmetric with the ``.filter`` /
-    ``.filters`` setters below, which set fields directly to feed the same
-    normalize pass.
-    """
-    column.sql = raw
-    return column
-
-
-def _set_raw_column_filter(column: Column, *, raw: str) -> Column:
-    column.filter = raw
-    return column
+def _regions() -> SlayerModel:
+    return SlayerModel(
+        name="regions",
+        data_source="prod",
+        sql_table="regions",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="name", type=DataType.TEXT),
+        ],
+    )
 
 
-def _set_raw_model_filters(model: SlayerModel, *, raw_filters: list[str]) -> SlayerModel:
-    model.filters = raw_filters
-    return model
+async def _save_and_reload(model: SlayerModel) -> SlayerModel:
+    with tempfile.TemporaryDirectory() as d:
+        storage = YAMLStorage(base_dir=d)
+        await storage.save_datasource(
+            DatasourceConfig(name="prod", type="postgres")
+        )
+        await storage.save_model(_regions())
+        await storage.save_model(_customers())
+        engine = SlayerQueryEngine(storage=storage)
+        await engine.save_model(model)
+        stored = await storage.get_model("orders", data_source="prod")
+    assert stored is not None
+    return stored
 
 
-class TestNormalizeModelWiresDotPath:
-    # DEV-1743: the DOT_PATH_IN_SQL dotted->dunder rewrite is RETIRED. Mode-A
-    # free SQL is now dotted-canonical, so ``normalize_model`` PRESERVES the
-    # dotted join path verbatim (structural resolution moved to bind/generation
-    # and the save-time door). No DOT_PATH_IN_SQL warning is emitted.
-    def test_column_sql_surface_preserved(self):
+class TestModeASurfacesPreservedVerbatim:
+    async def test_column_sql_surface_preserved(self):
         m = _orders_with_customers_join()
-        col = Column(name="region_name", type=DataType.TEXT)
-        col = _set_raw_column_sql(col, raw="customers.regions.name")
-        m.columns = list(m.columns) + [col]
-
-        result = normalize_model(m)
-        out_col = next(c for c in result.model.columns if c.name == "region_name")
+        m.columns = list(m.columns) + [
+            Column(
+                name="region_name",
+                type=DataType.TEXT,
+                sql="customers.regions.name",
+            )
+        ]
+        stored = await _save_and_reload(m)
+        out_col = next(c for c in stored.columns if c.name == "region_name")
         assert out_col.sql == "customers.regions.name"
 
-        dot_ws = [w for w in result.warnings if w.rule_id == "DOT_PATH_IN_SQL"]
-        assert dot_ws == []
-
-    def test_column_filter_surface_preserved(self):
+    async def test_column_filter_surface_preserved(self):
         m = _orders_with_customers_join()
-        col = Column(name="region_amount", type=DataType.DOUBLE)
-        col = _set_raw_column_filter(col, raw="customers.regions.name = 'EU'")
-        m.columns = list(m.columns) + [col]
-
-        result = normalize_model(m)
-        out_col = next(c for c in result.model.columns if c.name == "region_amount")
-        assert out_col.filter is not None
+        m.columns = list(m.columns) + [
+            Column(
+                name="region_amount",
+                type=DataType.DOUBLE,
+                sql="amount",
+                filter="customers.regions.name = 'EU'",
+            )
+        ]
+        stored = await _save_and_reload(m)
+        out_col = next(c for c in stored.columns if c.name == "region_amount")
         # Verbatim: the dotted-canonical input is preserved exactly (operator +
         # literal too), not merely "contains the path / lacks the legacy token".
         assert out_col.filter == "customers.regions.name = 'EU'"
 
-        dot_ws = [w for w in result.warnings if w.rule_id == "DOT_PATH_IN_SQL"]
-        assert dot_ws == []
-
-    def test_model_filters_surface_preserved(self):
-        m = _orders_with_customers_join()
-        m = _set_raw_model_filters(
-            m, raw_filters=["customers.regions.name IS NOT NULL"],
+    async def test_model_filters_surface_preserved(self):
+        m = _orders_with_customers_join(
+            filters=["customers.regions.name IS NOT NULL"],
         )
-        result = normalize_model(m)
-        # Verbatim preservation of the whole filter, not a substring probe.
-        assert result.model.filters == ["customers.regions.name IS NOT NULL"]
+        stored = await _save_and_reload(m)
+        assert stored.filters == ["customers.regions.name IS NOT NULL"]
 
-        dot_ws = [w for w in result.warnings if w.rule_id == "DOT_PATH_IN_SQL"]
-        assert dot_ws == []
-
-    def test_canonical_input_no_warnings(self):
-        m = _orders_with_customers_join()
-        col = Column(
-            name="region_name",
-            type=DataType.TEXT,
-            sql="customers__regions.name",  # already canonical, passes validator
+    async def test_model_measure_formula_preserved(self):
+        # ModelMeasure.formula is Mode-B (DSL); the dotted colon form is a
+        # join-path reference and must survive save verbatim.
+        m = _orders_with_customers_join(
+            measures=[
+                ModelMeasure(
+                    name="region_count",
+                    formula="customers.regions.name:count",
+                )
+            ],
         )
-        m.columns = list(m.columns) + [col]
-        result = normalize_model(m)
-        assert not any(w.rule_id == "DOT_PATH_IN_SQL" for w in result.warnings)
-
-    def test_no_joins_means_no_dot_path_warnings(self):
-        m = SlayerModel(
-            name="standalone", data_source="prod", sql_table="standalone",
-            columns=[Column(name="id", type=DataType.INT, primary_key=True)],
-        )
-        result = normalize_model(m)
-        assert not any(w.rule_id == "DOT_PATH_IN_SQL" for w in result.warnings)
-
-
-# ---------------------------------------------------------------------------
-# Boundary: Mode-B fields must NOT be touched by DOT_PATH_IN_SQL
-# ---------------------------------------------------------------------------
-
-
-class TestDotPathInSqlIsModeAOnly:
-    def test_model_measure_formula_not_rewritten(self):
-        # ModelMeasure.formula is Mode-B (DSL). The dotted form there is a
-        # join-path reference (the dotted-join Mode-B convention) and must
-        # NOT be rewritten by DOT_PATH_IN_SQL.
-        m = _orders_with_customers_join()
-        mm = ModelMeasure(name="region_count", formula="customers.regions.name:count")
-        m.measures = list(m.measures) + [mm]
-        result = normalize_model(m)
-        # Mode-B form unchanged.
-        out_mm = next(x for x in result.model.measures if x.name == "region_count")
+        stored = await _save_and_reload(m)
+        out_mm = next(x for x in stored.measures if x.name == "region_count")
         assert out_mm.formula == "customers.regions.name:count"
-        # No DOT_PATH_IN_SQL warning fired against a Mode-B surface.
-        for w in result.warnings:
-            assert w.rule_id != "DOT_PATH_IN_SQL" or "formula" not in w.location
 
+
+class TestNormalizeQueryLeavesModeBText:
     def test_query_filters_mode_b_not_rewritten(self):
-        # SlayerQuery.filters is Mode-B. normalize_query must not run
-        # DOT_PATH_IN_SQL over its filters.
         m = _orders_with_customers_join()
         q = SlayerQuery(
             source_model="orders",
             filters=["customers.regions.name = 'EU'"],
         )
         result = normalize_query(q, model=m)
-        # Mode-B dotted form preserved verbatim.
+        # Mode-B dotted form preserved verbatim, and no rewrite warning of any
+        # kind (DOT_PATH_IN_SQL and FUNC_STYLE_AGG are both retired).
         assert result.query.filters[0] == "customers.regions.name = 'EU'"
-        # And no DOT_PATH_IN_SQL warning.
-        assert not any(w.rule_id == "DOT_PATH_IN_SQL" for w in result.warnings)
+        assert result.warnings == []

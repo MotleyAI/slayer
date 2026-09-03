@@ -26,15 +26,12 @@ COEXISTENCE_MARKERS = ("combined with", "nested in a CTE body", "coexist")
 ALLOWED_EXPRESSIVENESS = [
     r"not supported on (MySQL|T-SQL)",
     r"^Ranked CTE cannot anchor",
-    r"transform op .*(slice scope|deferred to a follow-up slice)",
+    r"window-transform dispatch has no arm for op",
     r"query-backed models \(source_queries\) deferred",
     r"^Unsupported TimeTruncKey column type",
     r"^AggregateKey source",
     r"ORDER BY references a hidden slot",
-    r"composite-input transforms",
-    r"^time_shift partition on",
     r"cross-model aggregate operand inside an AGGREGATE-phase composite",
-    r"consecutive_periods input",
     r"unsupported filter phase",
     r"cross-model aggregate ref in filter",
     r"reached the local base SELECT path",
@@ -48,6 +45,12 @@ ALLOWED_EXPRESSIVENESS = [
     r"cannot take ``\*`` as its source",
     r"NULL is not allowed inside an IN list",
     r"ScopeFrame\.resolve does not yet handle",
+    # DEV-1826 — fail-closed guard on the row-level expression renderer (an
+    # aggregate's expression source may not contain phase-crossing keys).
+    r"^Row-level expression cannot contain",
+    # DEV-1826/1832 — fail-closed guard: a cross-model operand inside an
+    # aggregated expression is a deferred feature slice.
+    r"^Cross-model operand.*aggregated expression",
 ]
 
 
