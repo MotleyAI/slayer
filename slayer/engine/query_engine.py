@@ -2610,17 +2610,9 @@ class SlayerQueryEngine:
         return model
 
     async def validate_sql_model_source(self, model: SlayerModel) -> None:
-        """Trial-execute a raw-``sql`` model's source before it is persisted
-        (DEV-1843).
-
-        Applies only to raw-``sql`` models (not ``sql_table`` / query-backed).
-        Parameterized ``model.sql`` (a ``{var}`` / ``{? ?}`` placeholder) is
-        skipped — a placeholder in identifier position cannot be safely filled.
-        Raises :class:`ModelSqlValidationError` only when a *reachable*
-        datasource rejects the SQL; every inconclusive verdict (unreachable /
-        transient / auth failure / unconfigured datasource) warns and returns,
-        so a valid author is never blocked on an outage.
-        """
+        """Trial-execute a raw-``sql`` source before it persists: raise only when a
+        reachable datasource rejects it, else warn (inconclusive never blocks).
+        Skips ``sql_table`` / query-backed / parameterized SQL."""
         if not model.sql or model.sql_table or model.source_queries:
             return
         bare, blocked = extract_variable_refs(model.sql)

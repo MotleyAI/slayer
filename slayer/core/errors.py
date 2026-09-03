@@ -69,14 +69,10 @@ class ColumnCycleError(SlayerError, ValueError):
 
 
 class ModelSqlValidationError(SlayerError, ValueError):
-    """A raw-``sql`` model's source was rejected by its reachable datasource at
-    save time (DEV-1843).
+    """Raw-``sql`` model source rejected by its reachable datasource at save time.
 
-    Multi-inherits ``ValueError`` so the REST ``ValueError -> 400`` mapping and
-    ``except ValueError`` callers (CLI / MCP) catch it. The message names the
-    model, its datasource, and the datasource *type* only — never ``repr(ds)`` —
-    so connection secrets never leak into logs or responses.
-    """
+    ``ValueError`` subclass so REST 400 / ``except ValueError`` callers catch it;
+    names the datasource *type* only, never ``repr(ds)`` (no secret leak)."""
 
     def __init__(
         self,
