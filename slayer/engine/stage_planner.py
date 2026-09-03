@@ -1413,7 +1413,10 @@ def _assert_partition_key_attributable(
     host_m = scope.source_model if isinstance(scope, ModelScope) else None
     if host_m is None:
         return
-    agg_target = tuple(key.source.path) if isinstance(key, AggregateKey) else ()
+    agg_target = (
+        tuple(getattr(key.source, "path", ()) or ())
+        if isinstance(key, AggregateKey) else ()
+    )
     models_by_name = {m.name: m for m in bundle.referenced_models}
     root = walk_key_path(model=host_m, path=agg_target, bundle=bundle) or host_m
     if _attributable_from_root(
@@ -1460,7 +1463,7 @@ def _grain_member_attributable(
         if isinstance(r, AggregateKey):
             saw = True
             if not _attributable_from_root(
-                host_path=tuple(r.source.path), target_path=target_path,
+                host_path=tuple(getattr(r.source, "path", ()) or ()), target_path=target_path,
                 root_model=root_model, models_by_name=models_by_name,
             ):
                 return False

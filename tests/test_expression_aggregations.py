@@ -492,3 +492,49 @@ class TestExpressionGates:
         # iif with numeric branches stays numeric — must not be over-rejected.
         resp = await _dry(_q(measures=["sum(iif(amount, 1, 0))"]))
         assert resp.sql
+
+
+async def _classify(query) -> tuple[str, str]:
+    """Dry-run outcome as (kind, msg): 'ok' or the exception type name. AttributeError surfaces the crash."""
+    try:
+        await _dry(query)
+        return ("ok", "")
+    except Exception as e:  # noqa: BLE001 - parity harness classifies by exception type
+        return (type(e).__name__, str(e))
+
+
+class TestExpressionPartitionAttribution:
+    """Partition-key attribution over joins must treat expression sources like their plain-column twin (no AttributeError)."""
+
+    async def test_joined_partition_by_matches_column_twin(self) -> None:
+        expr = await _classify(
+            _q(
+                dimensions=["customers.discount"],
+                measures=["sum(amount - cost, partition_by=customers.discount)"],
+            )
+        )
+        col = await _classify(
+            _q(
+                dimensions=["customers.discount"],
+                measures=["sum(amount, partition_by=customers.discount)"],
+            )
+        )
+        assert expr[0] != "AttributeError", expr
+        assert expr[0] == col[0], (expr, col)
+
+    async def test_computed_dim_expr_agg_with_cross_model_measure(self) -> None:
+        case = "CASE WHEN {agg} > 0 THEN 'profit' ELSE 'loss' END"
+        expr = await _classify(
+            _q(
+                dimensions=[case.format(agg="sum(amount - cost, partition_by=region)"), "region"],
+                measures=["count(customers.id)"],
+            )
+        )
+        col = await _classify(
+            _q(
+                dimensions=[case.format(agg="sum(amount, partition_by=region)"), "region"],
+                measures=["count(customers.id)"],
+            )
+        )
+        assert expr[0] != "AttributeError", expr
+        assert expr[0] == col[0], (expr, col)
