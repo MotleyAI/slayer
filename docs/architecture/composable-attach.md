@@ -109,20 +109,36 @@ join-fan-proof: the aggregate runs over the target's rows once, never through a
   the pipeline stage, and `dimensions`, each with its `reason`). An *explicit*
   `partition_by=` key that is unattributable is a hard error instead (the
   author asked for a grain the engine cannot prove safe).
-- **Filter inheritance.** Each ROW-phase conjunct of the query's filters whose
-  references are all attributable from the root inherits into the producer
-  (re-rooted to target coordinates); an unreachable/unsafe conjunct is excluded
-  from that producer and warned (`unreachable_filter_dropped` — the host base still applies
-  it to local measures). An AGGREGATE-phase predicate over the cross-model value
-  applies at the outer SELECT's WHERE on the attached column, restricting rows
-  uniformly with local aggregate filters.
+- **Filter inheritance.** Each ROW-phase conjunct of the query's filters routes
+  three ways, classified over its full dependency set (a SQL-defined column
+  counts the models its definition actually reads):
+
+  | Conjunct | Disposition |
+  | --- | --- |
+  | Every reference attributable from the root (provably to-one hops only) | Inherits inline into the producer, re-rooted to target coordinates |
+  | Path-resolvable from the root but crossing a hop that is not provably to-one | Pushed into the producer as a **correlated `EXISTS` semi-join**: the producer keeps exactly the root rows related to at least one row (combination) passing the conjunct — silent, uniform with inline |
+  | Genuinely unreachable, ambiguous reverse path, or mixing root-local with cross-path references under `OR`/`NOT`, or spanning several join branches | Excluded and warned (`unreachable_filter_dropped` — the host base still applies it to local measures) |
+
+  Pushed conjuncts sharing their first reverse hop share one `EXISTS` (the same
+  related row must satisfy all of them); distinct branches are satisfied
+  independently. The reverse path resolves through stored join edges and, for
+  correlation only, by inverting a unique stored forward edge — inversion never
+  classifies a conjunct as safely inlineable. On a provably to-one hop the
+  semi-join is semantically identical to inline application, so inline remains a
+  pure optimization of one uniform semantics. An AGGREGATE-phase predicate over
+  the cross-model value applies at the outer SELECT's WHERE on the attached
+  column, restricting rows uniformly with local aggregate filters.
 - **Unsafe inputs are hard errors.** A source expression, aggregation argument,
   ranking key, or `Column.filter` that crosses an unproven hop from the root
   raises with the offending hop and the remedy (declare join cardinality or a
   covering unique key) — never a silently fanned value.
 - **Strict mode.** `"strict": true` on the query turns every implicit broadcast
-  and dropped producer filter into an error, for callers that need exactness or
-  nothing.
+  and genuinely excluded producer filter into an error, for callers that need
+  exactness or nothing; a semi-join-pushed filter is correctly applied and never
+  errors.
+- **ClickHouse gate.** Correlated `EXISTS` needs ClickHouse ≥ 25.4
+  (`allow_experimental_correlated_subqueries`, attached automatically); on older
+  or undeterminable servers a semi-join query fails closed with a clear error.
 
 Inside the producer the aggregate keeps its **canonical alias** in target
 coordinates (`"customers.revenue_sum"`); the consumer's public name lands on the

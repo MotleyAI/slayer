@@ -35,6 +35,8 @@ __all__ = [
     "RankedProducerKernel",
     "RegroupAttachPlan",
     "RegroupSubstitution",
+    "SemiJoinFilter",
+    "SemiJoinHop",
     "SlotId",
     "TrailingWindowProducerKernel",
     "TransformLayer",
@@ -179,6 +181,34 @@ class EmptyBaseGrainPlan(BaseModel):
     host_filter_ids: List[BoundFilterId] = Field(default_factory=list)
 
 
+class SemiJoinHop(BaseModel):
+    """One node of a semi-join correlation tree, joined from its parent node (the
+    producer root for a first hop) on oriented ``join_pairs`` (parent_col, hop_col).
+    ``node_path`` is the node's identity — repeated models bind distinct aliases."""
+
+    model_config = ConfigDict(frozen=True)
+
+    target_model: str
+    join_pairs: Tuple[Tuple[str, str], ...]
+    node_path: Tuple[str, ...]
+
+    @property
+    def node_id(self) -> str:
+        return "/".join(self.node_path)
+
+
+class SemiJoinFilter(BaseModel):
+    """One correlated EXISTS pushed into a producer: ``hops`` (parents first) form
+    the subquery's join tree; ``conjuncts`` (producer-root coordinates, paths =
+    tree-node paths) AND together inside it; ``filter_texts`` are diagnostics."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    hops: List[SemiJoinHop]
+    conjuncts: List[ValueKey]
+    filter_texts: List[Optional[str]] = Field(default_factory=list)
+
+
 class RegroupSubstitution(BaseModel):
     """One consumed aggregate: ``placeholder`` resolves to ``producer_slot_id``'s column."""
 
@@ -276,6 +306,8 @@ class PlannedQuery(BaseModel):
     outer_where_filter_ids: List[BoundFilterId] = Field(default_factory=list)
     filter_reachability: List[FilterReachability] = Field(default_factory=list)
     empty_base_plan: Optional[EmptyBaseGrainPlan] = None
+    # Filters pushed into this (producer) plan as correlated EXISTS semi-joins.
+    semi_join_filters: List[SemiJoinFilter] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _projection_is_public_and_well_formed(self) -> "PlannedQuery":

@@ -262,7 +262,9 @@ class TestWarningsUnchangedBySharing:
         resp = await engine.execute(q(
             dimensions=[{"expression": SPEND_BAND, "name": "sband"}],
             measures=[M, ModelMeasure(formula="customers.spend:sum", name="cm")],
-            filters=["city = 'CityA'"],
+            # Mixed OR keeps the filter outside DEV-1840 pushdown scope (still
+            # dropped from the producer); spine-equivalent to city = 'CityA'.
+            filters=["city = 'CityA' OR customers.tier = '__none__'"],
         ))
         dropped = dropped_filter_warnings(resp)
         assert len(dropped) == 1, [w.filter_text for w in dropped]
@@ -284,7 +286,9 @@ class TestWarningsUnchangedBySharing:
             measures=[M, ModelMeasure(
                 formula="customers.spend:sum(partition_by=customers.tier)",
                 name="rt")],
-            filters=["city = 'CityA'"],
+            # Mixed OR keeps the filter outside DEV-1840 pushdown scope (still
+            # dropped from the producer); spine-equivalent to city = 'CityA'.
+            filters=["city = 'CityA' OR customers.tier = '__none__'"],
         ))
         dropped = dropped_filter_warnings(resp)
         assert len(dropped) == 1, [w.filter_text for w in dropped]

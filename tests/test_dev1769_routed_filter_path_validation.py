@@ -50,7 +50,11 @@ class TestRoutedFilterPathE2E:
         cm_body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
         assert "CAST(regions.population * 2 AS DOUBLE PRECISION) > 5" in cm_body, cm_body
 
-    async def test_intermediate_hop_plain_column_filter_dropped(self) -> None:
+    async def test_intermediate_hop_plain_column_filter_pushes(self) -> None:
+        """DEV-1840: a plain-column filter on the INTERMEDIATE hop
+        (``customers_v2.status``) binds to the reverse-path node and pushes
+        into the producer as a correlated EXISTS — silently, superseding the
+        DEV-1836 drop+warn."""
         query = SlayerQuery(
             source_model="orders_x",
             measures=[_TWO_HOP_AGG],
@@ -61,14 +65,17 @@ class TestRoutedFilterPathE2E:
             sql = await _gen(query, regions_extra=_REGIONS_EXTRA)
         _assert_valid_sql(sql)
         cm_body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
-        assert "status" not in cm_body, cm_body
-        assert any(
-            issubclass(w.category, UnreachableFilterDroppedWarning)
-            and "customers_v2.status" in str(w.message)
-            for w in caught
-        ), [str(w.message) for w in caught]
+        assert "EXISTS" in cm_body.upper(), cm_body
+        assert "status" in cm_body, cm_body
+        assert not [
+            w for w in caught
+            if issubclass(w.category, UnreachableFilterDroppedWarning)
+        ], [str(w.message) for w in caught]
 
-    async def test_derived_column_owned_by_other_model_filter_dropped(self) -> None:
+    async def test_derived_column_owned_by_other_model_filter_pushes(self) -> None:
+        """DEV-1840: a derived-column filter owned by the intermediate model
+        (``customers_v2.ltv_x2``) expands at the reverse-path node inside the
+        pushed EXISTS — silently, superseding the DEV-1836 drop+warn."""
         query = SlayerQuery(
             source_model="orders_x",
             measures=[_TWO_HOP_AGG],
@@ -79,9 +86,12 @@ class TestRoutedFilterPathE2E:
             sql = await _gen(query, regions_extra=_REGIONS_EXTRA)
         _assert_valid_sql(sql)
         cm_body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
-        assert "ltv_x2" not in cm_body, cm_body
-        assert any(
-            issubclass(w.category, UnreachableFilterDroppedWarning)
-            and "customers_v2.ltv_x2" in str(w.message)
-            for w in caught
-        ), [str(w.message) for w in caught]
+        assert "EXISTS" in cm_body.upper(), cm_body
+        assert (
+            "CAST(customers_v2.lifetime_value * 2 AS DOUBLE PRECISION) > 5"
+            in cm_body
+        ), cm_body
+        assert not [
+            w for w in caught
+            if issubclass(w.category, UnreachableFilterDroppedWarning)
+        ], [str(w.message) for w in caught]
