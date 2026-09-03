@@ -186,7 +186,7 @@ class TestUnreachableWarns:
     def test_warning_carries_a_reason(self) -> None:
         warning = _sole_attach(FILTER_UNREACHABLE).dropped_filter_warnings[0]
         assert warning.reason, "the warning carries no reason at all"
-        assert "reach" in warning.reason.lower(), warning.reason
+        assert "reverse join" in warning.reason.lower(), warning.reason
 
     async def test_exactly_one_warning_per_filter_per_execute(self) -> None:
         """The boundary dedups per filter identity: two cross-model measures classify one filter twice, user sees it once."""

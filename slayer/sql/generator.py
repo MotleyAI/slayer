@@ -1414,6 +1414,11 @@ class SQLGenerator:
 
         if where_clause is not None:
             base_select = base_select.where(where_clause)
+        for cond in self._semi_join_exists_conditions(
+            planned_query=planned_query, source_model=source_model,
+            source_relation=source_relation, bundle=bundle,
+        ):
+            base_select = base_select.where(cond)
 
         # dim-only dedup emits GROUP BY before LIMIT so unique dim tuples aren't dropped past row N;
         # distinct_dimension_values=False opts out.
@@ -2666,6 +2671,11 @@ class SQLGenerator:
                 )
         if src_where is not None:
             src_select = src_select.where(src_where)
+        for cond in self._semi_join_exists_conditions(
+            planned_query=planned_query, source_model=source_model,
+            source_relation=source_relation, bundle=bundle,
+        ):
+            src_select = src_select.where(cond)
         src_subq = exp.Subquery(
             this=src_select, alias=exp.TableAlias(this=exp.to_identifier("_src")),
         )
@@ -2999,6 +3009,10 @@ class SQLGenerator:
         )
         if routed is not None:
             parts.append(routed)
+        parts.extend(self._semi_join_exists_conditions(
+            planned_query=planned_query, source_model=root_model,
+            source_relation=root_relation, bundle=bundle,
+        ))
         return parts
 
     def _render_kernel_producer_body(self, *, planned_query, bundle, kernel) -> str:
@@ -3421,6 +3435,11 @@ class SQLGenerator:
             )
             if base_where is not None:
                 base_select = base_select.where(base_where)
+            for cond in self._semi_join_exists_conditions(
+                planned_query=planned_query, source_model=source_model,
+                source_relation=source_relation, bundle=bundle,
+            ):
+                base_select = base_select.where(cond)
             base_dim_only_dedup = (
                 planned_query.distinct_dimension_values
                 and bool(base_group_by)
@@ -3779,7 +3798,14 @@ class SQLGenerator:
                 f"Target-rooted regroup producer names root model {root_name!r}, "
                 f"absent from the bundle's referenced models."
             )
-        return bundle.model_copy(update={"source_model": root})
+        referenced = list(bundle.referenced_models)
+        host = bundle.source_model
+        if host is not None and bundle.get_referenced_model(host.name) is None:
+            # A semi-join reverse hop can target the host (DEV-1840).
+            referenced.append(host)
+        return bundle.model_copy(
+            update={"source_model": root, "referenced_models": referenced},
+        )
 
     def _render_producer_split(
         self, *, producer, bundle, kernel=None,
@@ -5930,6 +5956,108 @@ class SQLGenerator:
         raise NotImplementedError(
             f"AggregateKey source {type(source).__name__} not supported.",
         )
+
+    def _semi_join_exists_conditions(
+        self, *, planned_query, source_model, source_relation: str, bundle,
+    ) -> "List[exp.Expression]":
+        """One correlated ``EXISTS`` per semi-join group pushed into this
+        producer plan (DEV-1840, D6); empty for plans without pushdown."""
+        groups = getattr(planned_query, "semi_join_filters", None) or []
+        if not groups:
+            return []
+        allocator = self._gen_allocator or self._new_allocator()
+        return [
+            self._build_semi_join_exists(
+                group=group, source_model=source_model,
+                source_relation=source_relation, bundle=bundle,
+                allocator=allocator,
+            )
+            for group in groups
+        ]
+
+    def _hop_model(self, *, name: str, bundle):
+        model = bundle.get_referenced_model(name)
+        if model is None and bundle.source_model is not None \
+                and bundle.source_model.name == name:
+            model = bundle.source_model
+        if model is None:
+            raise ValueError(
+                f"Semi-join hop target {name!r} is not in the resolved "
+                f"source bundle."
+            )
+        return model
+
+    def _build_semi_join_exists(
+        self, *, group, source_model, source_relation: str, bundle, allocator,
+    ) -> exp.Exists:
+        """Build one correlated EXISTS: the first hop's table as the subquery
+        FROM correlating to the producer body's root alias, later hops as inner
+        joins along the tree, the group's conjuncts AND-ed as predicates."""
+        limit = self._dialect.max_identifier_bytes
+
+        def _alias(path) -> str:
+            return allocator.alias_for(
+                root=source_relation, path=tuple(path), limit=limit,
+            )
+
+        inner = exp.select(exp.Literal.number(1))
+        correlation: List[exp.Expression] = []
+        for hop in group.hops:
+            path = tuple(hop.node_path)
+            alias = _alias(path)
+            parent_alias = _alias(path[:-1])
+            hop_model = self._hop_model(name=hop.target_model, bundle=bundle)
+            if hop_model.sql and not hop_model.sql_table:
+                table_expr: exp.Expression = exp.Subquery(
+                    this=self._parse(hop_model.sql),
+                    alias=exp.to_identifier(alias),
+                )
+            else:
+                table_expr = self._to_table(
+                    hop_model.sql_table or hop_model.name, alias=alias,
+                )
+            eqs: List[exp.Expression] = [
+                exp.EQ(
+                    this=exp.Column(
+                        this=self._to_ident(parent_col),
+                        table=exp.to_identifier(parent_alias),
+                    ),
+                    expression=exp.Column(
+                        this=self._to_ident(hop_col),
+                        table=exp.to_identifier(alias),
+                    ),
+                )
+                for parent_col, hop_col in hop.join_pairs
+            ]
+            if len(path) == 1:
+                inner = inner.from_(table_expr)
+                correlation.extend(eqs)
+            else:
+                inner = inner.join(
+                    table_expr,
+                    on=exp.and_(*eqs) if len(eqs) > 1 else eqs[0],
+                    join_type="inner",
+                )
+        for eq in correlation:
+            inner = inner.where(eq)
+        # Conjunct refs carry tree-node paths, so the same allocator resolves
+        # them to the hop aliases; root-local refs correlate to the outer body.
+        ctx = RenderContext(
+            scope=self._scope_frame(
+                model=source_model, relation=source_relation,
+                bundle=bundle, allocator=allocator,
+            ),
+            dialect=self._dialect,
+            filters=FilterFacilities(
+                cast_column_sql=True, paren_comparison_operands=True,
+            ),
+        )
+        for key in group.conjuncts:
+            rendered = render_value_key(key=key, ctx=ctx)
+            if isinstance(rendered, (exp.And, exp.Or)):
+                rendered = exp.Paren(this=rendered)
+            inner = inner.where(rendered)
+        return exp.Exists(this=inner)
 
     def _build_where_having_from_planned(  # NOSONAR(S3776) — one cohesive pass over filters_by_phase routing each entry to WHERE / HAVING / POST by phase, with the per-carrier (typed vs Mode-A text) rendering and the HAVING grouped-column guard inline. The complexity is pre-existing; DEV-1732 added only the `filters_override` list selection. Splitting the phase routing from the rendering would thread slot_by_key / first_last_state / where_parts / having_parts through helpers without simplifying anything.
         self,

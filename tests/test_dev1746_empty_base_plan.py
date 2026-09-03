@@ -281,9 +281,9 @@ class TestEmptyBaseExecution:
     async def test_host_filter_gates_the_whole_result(
         self, exec_engine: SlayerQueryEngine,
     ) -> None:
-        """A host-local filter that MATCHES still yields the full scalar
-        aggregate (the filter gates the spine, it does not restrict the
-        isolated CTE)."""
+        """A host-local filter that MATCHES gates the spine AND (DEV-1840)
+        restricts the isolated CTE by semi-join: only customer 100 has a paid
+        order, so the scalar is 1000, not the unfiltered 1325."""
         query = SlayerQuery(
             source_model="orders",
             measures=[ModelMeasure(formula="customers.spend:sum", name="total")],
@@ -291,7 +291,7 @@ class TestEmptyBaseExecution:
         )
         resp = await exec_engine.execute(query)
         assert len(resp.data) == 1, resp.data
-        assert resp.data[0]["orders.total"] == pytest.approx(1325.0), resp.data
+        assert resp.data[0]["orders.total"] == pytest.approx(1000.0), resp.data
 
     async def test_host_filter_matching_nothing_yields_no_rows(
         self, exec_engine: SlayerQueryEngine,

@@ -3,6 +3,7 @@ Topo-sorted stages; downstream binds against the upstream flat ``StageSchema``."
 
 from __future__ import annotations
 
+from decimal import Decimal
 from enum import Enum
 from typing import (
     AbstractSet,
@@ -52,9 +53,11 @@ from slayer.core.keys import (
 from slayer.core.errors import UnreachableFilterDroppedWarning
 from slayer.core.models import ModelMeasure, SlayerModel
 from slayer.engine.aggregate_input_paths import compute_aggregate_input_join_paths
+from slayer.engine.column_filter_paths import compute_column_filter_join_paths
 from slayer.engine.join_safety import (
     may_inline_crossing_inputs,
     provably_to_one,
+    resolve_correlation_hop,
     safe_reachable,
 )
 from slayer.core.query import (
@@ -93,6 +96,8 @@ from slayer.engine.planned import (
     RankedProducerKernel,
     RegroupAttachPlan,
     RegroupSubstitution,
+    SemiJoinFilter,
+    SemiJoinHop,
     SlotId,
     SrcFilterRewrite,
     TrailingWindowProducerKernel,
@@ -1539,23 +1544,49 @@ def _cross_model_inherited_filters(
     *, base_filters: List[Tuple[BoundFilter, Optional[str]]],
     target_path: Tuple[str, ...], root_model: SlayerModel,
     models_by_name: Dict[str, SlayerModel], host_name: Optional[str] = None,
-) -> Tuple[List[BoundFilter], List[UnreachableFilterDroppedWarning]]:
-    """Split base ROW filters into conjuncts; a fully-attributable one inherits (re-rooted) into the producer, an unreachable one is dropped and warned."""
+    host_model: Optional[SlayerModel] = None,
+    bundle: Optional[ResolvedSourceBundle] = None,
+) -> Tuple[List[BoundFilter], List[SemiJoinFilter], List[UnreachableFilterDroppedWarning]]:
+    """Split base ROW filters into conjuncts and dispose each three ways: fully
+    attributable → inherits inline (re-rooted); reachable across an unproven hop →
+    pushed as a correlated EXISTS semi-join (one group per first reverse hop, D3);
+    else dropped and warned."""
     inherited: List[BoundFilter] = []
     dropped: List[UnreachableFilterDroppedWarning] = []
+    groups: Dict[Tuple[str, Tuple[Tuple[str, str], ...]], Dict[str, Any]] = {}
     for bf, text in base_filters:
         if bf.phase != Phase.ROW:
             continue
         for cj in split_top_level_and(bf.value_key):
-            inherited_bf, dropped_w = _conjunct_disposition(
+            inherited_bf, pushed, dropped_w = _conjunct_disposition(
                 cj, text=text, target_path=target_path, root_model=root_model,
                 models_by_name=models_by_name, host_name=host_name,
+                host_model=host_model, bundle=bundle,
             )
             if inherited_bf is not None:
                 inherited.append(inherited_bf)
+            elif pushed is not None:
+                key_rewritten, conj_text, nodes = pushed
+                first = next(h for p, h in nodes.items() if len(p) == 1)
+                group = groups.setdefault(
+                    (first.target_model, first.join_pairs),
+                    {"nodes": {}, "conjuncts": [], "texts": []},
+                )
+                for path, hop in nodes.items():
+                    group["nodes"].setdefault(path, hop)
+                group["conjuncts"].append(key_rewritten)
+                group["texts"].append(conj_text)
             else:
                 dropped.append(dropped_w)
-    return inherited, dropped
+    semi_joins = [
+        SemiJoinFilter(
+            hops=sorted(g["nodes"].values(), key=lambda h: len(h.node_path)),
+            conjuncts=g["conjuncts"],
+            filter_texts=g["texts"],
+        )
+        for g in groups.values()
+    ]
+    return inherited, semi_joins, dropped
 
 
 def _local_crossing_input_paths(
@@ -1802,20 +1833,307 @@ def _synthesize_wrap_attach(
     )
 
 
+class _PushBlocked(Exception):
+    """A conjunct outside semi-join pushdown scope; the message is the warning reason."""
+
+
+def _owning_model(
+    name: str, *, host_model: Optional[SlayerModel],
+    models_by_name: Dict[str, SlayerModel],
+) -> Optional[SlayerModel]:
+    if host_model is not None and name == host_model.name:
+        return host_model
+    return models_by_name.get(name)
+
+
+def _ref_sql_dependency_paths(
+    col: ValueKey, *, host_model: Optional[SlayerModel],
+    models_by_name: Dict[str, SlayerModel], bundle: Optional[ResolvedSourceBundle],
+) -> Tuple[Tuple[str, ...], ...]:
+    """Owner-relative join paths a derived column's ``Column.sql`` actually reads."""
+    if not isinstance(col, ColumnSqlKey) or bundle is None:
+        return ()
+    owner = _owning_model(
+        col.model, host_model=host_model, models_by_name=models_by_name,
+    )
+    if owner is None:
+        return ()
+    column = next((c for c in owner.columns if c.name == col.column_name), None)
+    if column is None or not column.sql:
+        return ()
+    scan_bundle = bundle
+    if host_model is not None and bundle.get_referenced_model(host_model.name) is None:
+        # A dep can point back at the host, which some bundles keep only as source.
+        scan_bundle = bundle.model_copy(update={
+            "referenced_models": [*bundle.referenced_models, host_model],
+        })
+    return compute_column_filter_join_paths(
+        canonical_sql=column.sql, anchor_model=owner,
+        anchor_relation=owner.name, bundle=scan_bundle,
+    )
+
+
+def _ref_effective_paths(
+    r: ValueKey, *, host_model: Optional[SlayerModel],
+    models_by_name: Dict[str, SlayerModel], bundle: Optional[ResolvedSourceBundle],
+) -> List[Tuple[str, ...]]:
+    """Host-coordinate paths the ref's evaluation reads: its declared path plus,
+    for a SQL-defined column, its definition's crossed paths (owner-relative)."""
+    col = r.column if isinstance(r, TimeTruncKey) else r
+    own = tuple(getattr(col, "path", ()) or ())
+    out = [own]
+    for rel in _ref_sql_dependency_paths(
+        col, host_model=host_model, models_by_name=models_by_name, bundle=bundle,
+    ):
+        out.append(own + tuple(rel))
+    return out
+
+
+def _path_edges_exist(
+    model: SlayerModel, path: Tuple[str, ...],
+    models_by_name: Dict[str, SlayerModel],
+) -> bool:
+    current = model
+    for name in path:
+        join = next((j for j in current.joins if j.target_model == name), None)
+        nxt = models_by_name.get(name)
+        if join is None or nxt is None:
+            return False
+        current = nxt
+    return True
+
+
+def _register_hop(
+    nodes: Dict[Tuple[str, ...], SemiJoinHop], *, node_path: Tuple[str, ...],
+    target_model: str, pairs: List[Tuple[str, str]],
+) -> None:
+    nodes.setdefault(node_path, SemiJoinHop(
+        target_model=target_model,
+        join_pairs=tuple((s, t) for s, t in pairs),
+        node_path=node_path,
+    ))
+
+
+def _forward_hops(
+    *, start_model: SlayerModel, rel_path: Tuple[str, ...],
+    base_node_path: Tuple[str, ...], models_by_name: Dict[str, SlayerModel],
+    nodes: Dict[Tuple[str, ...], SemiJoinHop],
+) -> Tuple[str, ...]:
+    """Register forward stored hops along ``rel_path``; returns the final node path."""
+    current = start_model
+    node_path = base_node_path
+    for hop_name in rel_path:
+        join = next(
+            (j for j in current.joins if j.target_model == hop_name), None,
+        )
+        target = models_by_name.get(hop_name)
+        if join is None or target is None:
+            raise _PushBlocked(
+                f"unreachable from the aggregate's root (no stored join from "
+                f"{current.name} to {hop_name})"
+            )
+        node_path = (*node_path, hop_name)
+        _register_hop(
+            nodes, node_path=node_path, target_model=hop_name,
+            pairs=[(s, t) for s, t in join.join_pairs],
+        )
+        current = target
+    return node_path
+
+
+def _reverse_hops(
+    *, target_path: Tuple[str, ...], root_model: SlayerModel,
+    host_model: SlayerModel, models_by_name: Dict[str, SlayerModel],
+    nodes: Dict[Tuple[str, ...], SemiJoinHop],
+) -> Tuple[str, ...]:
+    """Register the reverse chain root → … → host; returns the host node's path."""
+    chain: List[SlayerModel] = [host_model]
+    for name in target_path[:-1]:
+        nxt = models_by_name.get(name)
+        if nxt is None:
+            raise _PushBlocked(
+                f"unreachable from the aggregate's root (join path model "
+                f"{name!r} is unresolved)"
+            )
+        chain.append(nxt)
+    node_path: Tuple[str, ...] = ()
+    frm = root_model
+    for to_model in reversed(chain):
+        pairs = resolve_correlation_hop(from_model=frm, to_model=to_model)
+        if pairs is None:
+            # Root-agnostic wording: several producers dropping one filter must
+            # agree on the reason (the boundary dedup asserts it).
+            raise _PushBlocked(
+                f"no unambiguous reverse join edge onto {to_model.name} for "
+                f"the semi-join correlation (several stored joins target it, "
+                f"or none can be inverted; declare a reverse join)"
+            )
+        node_path = (*node_path, to_model.name)
+        _register_hop(
+            nodes, node_path=node_path, target_model=to_model.name, pairs=pairs,
+        )
+        frm = to_model
+    return node_path
+
+
+def _remap_ref_path(r: ValueKey, node_path: Tuple[str, ...]) -> ValueKey:
+    if isinstance(r, TimeTruncKey):
+        return r.model_copy(update={
+            "column": r.column.model_copy(update={"path": node_path}),
+        })
+    return r.model_copy(update={"path": node_path})
+
+
+def _reject_mixed_or_not(cj: ValueKey, cross_by_ref: Dict[ValueKey, bool]) -> None:
+    """D2: an OR/NOT subtree mixing a root-anchored ref with a cross-path ref
+    changes meaning under EXISTS — such a conjunct stays dropped."""
+
+    def _walk(k) -> Tuple[bool, bool]:  # (has_local, has_cross)
+        if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey)):
+            cross = cross_by_ref.get(k, False)
+            return (not cross, cross)
+        children: List[Any] = []
+        if isinstance(k, ArithmeticKey):
+            children = list(k.operands)
+        elif isinstance(k, ScalarCallKey):
+            children = list(k.args)
+        elif isinstance(k, BetweenKey):
+            children = [k.column, k.low, k.high]
+        elif isinstance(k, InKey):
+            children = [k.column]
+        has_local = has_cross = False
+        for child in children:
+            if isinstance(child, (Decimal, str, bool, int, float)) or child is None:
+                continue
+            local, cross = _walk(child)
+            has_local, has_cross = has_local or local, has_cross or cross
+        if (
+            isinstance(k, ArithmeticKey)
+            and k.op.lower() in ("or", "not")
+            and has_local and has_cross
+        ):
+            raise _PushBlocked(
+                "mixes a root-anchored predicate with a cross-path predicate "
+                "under OR/NOT, which a semi-join cannot preserve"
+            )
+        return has_local, has_cross
+
+    _walk(cj)
+
+
+def _conjunct_push_plan(
+    cj: ValueKey, *, target_path: Tuple[str, ...], root_model: SlayerModel,
+    host_model: SlayerModel, models_by_name: Dict[str, SlayerModel],
+    bundle: ResolvedSourceBundle, host_name: Optional[str],
+) -> Tuple[ValueKey, Dict[Tuple[str, ...], SemiJoinHop]]:
+    """Resolve a not-fully-attributable conjunct into a correlation-tree plan:
+    the conjunct rewritten into producer-root coordinates (ref paths = tree-node
+    paths, root-local refs correlate as outer references) plus the hop registry.
+    Raises :class:`_PushBlocked` when outside pushdown scope (D2/D4)."""
+    tp = tuple(target_path)
+    lookup = dict(models_by_name)
+    lookup.setdefault(host_model.name, host_model)
+    nodes: Dict[Tuple[str, ...], SemiJoinHop] = {}
+    mapping: Dict[ValueKey, ValueKey] = {}
+    cross_by_ref: Dict[ValueKey, bool] = {}
+    host_node: Optional[Tuple[str, ...]] = None
+    for r in walk_value_keys(cj):
+        if not isinstance(r, (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey)):
+            continue
+        col = r.column if isinstance(r, TimeTruncKey) else r
+        hp = tuple(getattr(col, "path", ()) or ())
+        if hp[: len(tp)] == tp:
+            base_model, base_node, rel = root_model, (), hp[len(tp):]
+        elif host_name is None or (tp and host_name == tp[0]):
+            raise _PushBlocked(
+                "unreachable from the aggregate's root (no join path from it)"
+            )
+        elif hp and _path_edges_exist(root_model, hp, lookup):
+            base_model, base_node, rel = root_model, (), hp
+        else:
+            if host_node is None:
+                host_node = _reverse_hops(
+                    target_path=tp, root_model=root_model,
+                    host_model=host_model, models_by_name=lookup,
+                    nodes=nodes,
+                )
+            shared = 0
+            while (
+                shared < len(hp) and shared < len(tp) - 1
+                and hp[shared] == tp[shared]
+            ):
+                shared += 1
+            if shared:
+                # The ref rides the reverse path itself: bind to that chain
+                # node (same related combination, D3) instead of re-walking.
+                base_model = lookup[tp[shared - 1]]
+                base_node = host_node[: len(tp) - shared]
+                rel = hp[shared:]
+            else:
+                base_model, base_node, rel = host_model, host_node, hp
+        node_path = _forward_hops(
+            start_model=base_model, rel_path=rel, base_node_path=base_node,
+            models_by_name=lookup, nodes=nodes,
+        )
+        dep_rels = _ref_sql_dependency_paths(
+            col, host_model=host_model, models_by_name=lookup, bundle=bundle,
+        )
+        if dep_rels:
+            owner = _owning_model(
+                col.model, host_model=host_model, models_by_name=lookup,
+            )
+            for dep_rel in dep_rels:
+                _forward_hops(
+                    start_model=owner, rel_path=tuple(dep_rel),
+                    base_node_path=node_path, models_by_name=lookup,
+                    nodes=nodes,
+                )
+        cross_by_ref[r] = bool(node_path) or bool(dep_rels)
+        remapped = _remap_ref_path(r, node_path)
+        if remapped != r:
+            mapping[r] = remapped
+    first_hops = [p for p in nodes if len(p) == 1]
+    if len(first_hops) != 1:
+        raise _PushBlocked(
+            "its cross-path references span multiple join branches from "
+            f"{root_model.name}, so no single semi-join tree covers them"
+        )
+    _reject_mixed_or_not(cj, cross_by_ref)
+    return substitute_value_keys(cj, mapping), nodes
+
+
 def _conjunct_disposition(
     cj: ValueKey, *, text: Optional[str], target_path: Tuple[str, ...],
     root_model: SlayerModel, models_by_name: Dict[str, SlayerModel],
-    host_name: Optional[str],
-) -> Tuple[Optional[BoundFilter], Optional[UnreachableFilterDroppedWarning]]:
+    host_name: Optional[str], host_model: Optional[SlayerModel] = None,
+    bundle: Optional[ResolvedSourceBundle] = None,
+) -> Tuple[
+    Optional[BoundFilter],
+    Optional[Tuple[ValueKey, Optional[str], Dict[Tuple[str, ...], SemiJoinHop]]],
+    Optional[UnreachableFilterDroppedWarning],
+]:
+    """Three-way ROW-conjunct disposition (D1): inline / semi-join pushed / dropped."""
     refs = [
         k for k in walk_value_keys(cj)
         if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey))
     ]
-    unsafe = next((r for r in refs if not _attributable_from_root(
-        host_path=_key_host_path(r), target_path=target_path,
-        root_model=root_model, models_by_name=models_by_name,
-        host_name=host_name,
-    )), None)
+    unsafe = next(
+        (
+            r for r in refs
+            if any(
+                not _attributable_from_root(
+                    host_path=ep, target_path=target_path,
+                    root_model=root_model, models_by_name=models_by_name,
+                    host_name=host_name,
+                )
+                for ep in _ref_effective_paths(
+                    r, host_model=host_model, models_by_name=models_by_name,
+                    bundle=bundle,
+                )
+            )
+        ),
+        None,
+    )
     if unsafe is None:
         rerooted = (
             _reroot_from_root(
@@ -1825,13 +2143,26 @@ def _conjunct_disposition(
             if host_name is not None
             else reroot_value_key(cj, target_path=target_path)
         )
-        return _bound_filter_from_key(rerooted), None
+        return _bound_filter_from_key(rerooted), None, None
+    display = text or _canonical_name(cj)
+    if host_model is not None and bundle is not None:
+        try:
+            key_rewritten, nodes = _conjunct_push_plan(
+                cj, target_path=target_path, root_model=root_model,
+                host_model=host_model, models_by_name=models_by_name,
+                bundle=bundle, host_name=host_name,
+            )
+            return None, (key_rewritten, display, nodes), None
+        except _PushBlocked as exc:
+            return None, None, UnreachableFilterDroppedWarning(
+                filter_text=display, reason=str(exc),
+            )
     reason = _broadcast_reason(
         host_path=_key_host_path(unsafe), target_path=target_path,
         root_model=root_model, models_by_name=models_by_name,
     )
-    return None, UnreachableFilterDroppedWarning(
-        filter_text=text or _canonical_name(cj), reason=reason,
+    return None, None, UnreachableFilterDroppedWarning(
+        filter_text=display, reason=reason,
     )
 
 
@@ -1953,10 +2284,10 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
             models_by_name=models_by_name, host_name=host_model.name,
         )
 
-    inherited, dropped = _cross_model_inherited_filters(
+    inherited, semi_joins, dropped = _cross_model_inherited_filters(
         base_filters=base_filters_with_text, target_path=target_path,
         root_model=root_model, models_by_name=models_by_name,
-        host_name=host_model.name,
+        host_name=host_model.name, host_model=host_model, bundle=bundle,
     )
 
     root_bundle = bundle.model_copy(update={"source_model": root_model})
@@ -1992,6 +2323,10 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         prebound=producer_prebound,
         producer_registry=producer_registry,
     )
+    if semi_joins:
+        producer_plan = producer_plan.model_copy(
+            update={"semi_join_filters": semi_joins},
+        )
     producer_answer_ids = list(producer_plan.projection)[len(ordered_pks):]
     answer_slot = _regroup_answer_slot_id(
         value_slots=[

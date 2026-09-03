@@ -574,9 +574,9 @@ async def test_execute_invokes_clickhouse_preflight(rls_join_storage, monkeypatc
     seen = {"n": 0}
     real = engine._preflight_clickhouse_correlated
 
-    async def spy(*, dialect, datasource):
+    async def spy(*, dialect, datasource, needed=False):
         seen["n"] += 1
-        return await real(dialect=dialect, datasource=datasource)
+        return await real(dialect=dialect, datasource=datasource, needed=needed)
 
     monkeypatch.setattr(engine, "_preflight_clickhouse_correlated", spy)
     await engine.execute(
@@ -592,9 +592,9 @@ async def test_get_column_types_invokes_clickhouse_preflight(
     seen = {"n": 0}
     real = engine._preflight_clickhouse_correlated
 
-    async def spy(*, dialect, datasource):
+    async def spy(*, dialect, datasource, needed=False):
         seen["n"] += 1
-        return await real(dialect=dialect, datasource=datasource)
+        return await real(dialect=dialect, datasource=datasource, needed=needed)
 
     monkeypatch.setattr(engine, "_preflight_clickhouse_correlated", spy)
     await engine.get_column_types(model_name="orders", data_source="rls_sqlite")

@@ -40,6 +40,12 @@ CM = ModelMeasure(formula="customers.spend:sum", name="cm")
 POP = ModelMeasure(formula="customers.regions.pop:sum", name="pop")
 
 
+#: Outside DEV-1840 pushdown scope for EVERY producer root here (the OR mixes
+#: root-local with cross-path refs / spans branches), yet spine-equivalent to
+#: ``channel = 'app'`` — no region is named ``__none__`` — so the value pins hold.
+_EXCLUDED_APP = "channel = 'app' OR customers.regions.name = '__none__'"
+
+
 class TestDroppedFilterDedup:
     async def test_same_filter_dropped_by_two_producers_warns_once(
         self, exec_backend,
@@ -49,7 +55,7 @@ class TestDroppedFilterDedup:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["customers.tier"], measures=[M, CM, POP],
-            filters=["channel = 'app'"],
+            filters=[_EXCLUDED_APP],
         ))
         dropped = dropped_filter_warnings(resp)
         assert len(dropped) == 1
@@ -65,7 +71,7 @@ class TestDroppedFilterDedup:
         resp = await engine.execute(q(
             dimensions=[{"expression": SPEND_BAND, "name": "sband"}],
             measures=[M, CM],
-            filters=["channel = 'app'"],
+            filters=[_EXCLUDED_APP],
         ))
         assert len(dropped_filter_warnings(resp)) == 1
         by = rows_by(resp, "orders.sband")
@@ -91,10 +97,11 @@ class TestDroppedFilterDedup:
                 "name": "pband",
             }],
             measures=[M],
-            filters=["customers.tier = 'gold'"],
+            filters=["customers.tier = 'gold' OR customers.regions.name = '__none__'"],
         ))
-        # tier is unreachable from the regions-rooted producer → dropped there
-        # (it still restricts the result spine to gold customers' orders).
+        # The OR mixes a regions-local ref with the cross-path tier ref →
+        # excluded from the regions-rooted producer (DEV-1840 D2) and dropped
+        # there (it still restricts the result spine to gold customers' orders).
         dropped = dropped_filter_warnings(resp)
         assert len(dropped) == 1
         assert "tier" in dropped[0].filter_text

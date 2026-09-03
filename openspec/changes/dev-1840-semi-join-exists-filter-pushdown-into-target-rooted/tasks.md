@@ -13,15 +13,15 @@
 
 ## 2. Implementation
 
-- [ ] 2.1 `SemiJoinFilter` + hop-descriptor models in `slayer/engine/planned.py`, field threaded through producer synthesis to the producer `PlannedQuery` (nested included); verify 1.3 IR tests pass.
-- [ ] 2.2 Scoped inversion helper in `slayer/engine/join_safety.py` (stored edge, else unique forward-edge inversion, via-host instance path; ambiguity → None) — correlation-only, unused by safe classification; verify its unit tests and 1.2 ambiguity cases pass.
-- [ ] 2.3 Three-way `_conjunct_disposition` + expanded-dependency resolution + D2 scope walk + D3 first-hop grouping in `slayer/engine/stage_planner.py`; verify 1.2/1.3 pass.
-- [ ] 2.4 EXISTS emission in `slayer/sql/generator.py` (producer base WHERE; allocator aliases; correlated outer refs; scope-closure asserts); verify 1.4 SQLite/DuckDB and 1.6 goldens pass.
-- [ ] 2.5 Metadata/strict flip in `slayer/engine/query_engine.py` (pushed conjuncts leave dropped-filter surfaces); verify 1.5 passes.
-- [ ] 2.6 ClickHouse: recursive predicate + generalized preflight/guard + plan-driven settings finalization shared with `session_policy`; verify 1.7 passes.
-- [ ] 2.7 Full non-integration suite green (`poetry run pytest -m "not integration"`) and lint clean (`poetry run ruff check slayer/ tests/`).
+- [x] 2.1 `SemiJoinFilter` + hop-descriptor models in `slayer/engine/planned.py`, field threaded through producer synthesis to the producer `PlannedQuery` (nested included); verify 1.3 IR tests pass.
+- [x] 2.2 Scoped inversion helper in `slayer/engine/join_safety.py` (stored edge, else unique forward-edge inversion, via-host instance path; ambiguity → None) — correlation-only, unused by safe classification; verify its unit tests and 1.2 ambiguity cases pass.
+- [x] 2.3 Three-way `_conjunct_disposition` + expanded-dependency resolution + D2 scope walk + D3 first-hop grouping in `slayer/engine/stage_planner.py`; verify 1.2/1.3 pass.
+- [x] 2.4 EXISTS emission in `slayer/sql/generator.py` (producer base WHERE; allocator aliases; correlated outer refs; scope-closure asserts); verify 1.4 SQLite/DuckDB and 1.6 goldens pass.
+- [x] 2.5 Metadata/strict flip in `slayer/engine/query_engine.py` (pushed conjuncts leave dropped-filter surfaces); verify 1.5 passes.
+- [x] 2.6 ClickHouse: recursive predicate + generalized preflight/guard + plan-driven settings finalization shared with `session_policy`; verify 1.7 passes.
+- [x] 2.7 Full non-integration suite green (`poetry run pytest -m "not integration"`) and lint clean (`poetry run ruff check slayer/ tests/`).
 
 ## 3. Docs & corpus
 
-- [ ] 3.1 Rewrite the filter-inheritance bullet in `docs/architecture/composable-attach.md` (three-way table) and the cross-model filter/strict/warnings text in `docs/concepts/queries.md`; verify no stale "dropped" wording for pushable filters remains (grep).
-- [ ] 3.2 `openspec validate dev-1840-semi-join-exists-filter-pushdown-into-target-rooted --strict` green; divergence ledger of value/error flips recorded in the change folder for approval.
+- [x] 3.1 Rewrite the filter-inheritance bullet in `docs/architecture/composable-attach.md` (three-way table) and the cross-model filter/strict/warnings text in `docs/concepts/queries.md`; verify no stale "dropped" wording for pushable filters remains (grep).
+- [x] 3.2 `openspec validate dev-1840-semi-join-exists-filter-pushdown-into-target-rooted --strict` green; divergence ledger of value/error flips recorded in the change folder for approval.
