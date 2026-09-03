@@ -196,13 +196,18 @@ def _cases() -> dict:
                 {"formula": "consecutive_periods(amount:sum)", "name": "streak_b"},
             ],
         ),
+        # DEV-1795: two aggregates of one column in the base CTE surface in
+        # plan order, not hash-seed order (fixed by DEV-1839).
+        "chain/multi_agg_base_order": _q(
+            time_dimensions=_MONTH,
+            measures=[
+                {"formula": "cumsum(amount:sum)", "name": "c1"},
+                {"formula": "cumsum(amount:max)", "name": "c2"},
+            ],
+        ),
         # --- DEV-1777 A0: dependency-split step-CTE shapes (Codex finding 2). ---
         # A window over a window -> two dependent batches -> step1 then step2
         # (the dependency-split the extracted helper's ordering invariant guards).
-        # Single aggregate per case, so the base CTE has one column and the
-        # emitted SQL is deterministic across processes (multi-aggregate base
-        # column order is hash-seed dependent — see the _emit_step_cte unit test,
-        # which pins the multi-slot batch body deterministically instead).
         "chain/local_nested_window": _q(
             time_dimensions=_MONTH,
             measures=[{"formula": "cumsum(cumsum(amount:sum))", "name": "cc"}],
@@ -312,6 +317,7 @@ _CHAIN_STEP_EXPECTATIONS: dict[str, dict[str, bool]] = {
     "chain/local_multi_step": {"step1": True, "step2": True},
     "chain/transform_two_names": {"step1": True, "step2": False},
     "chain/consecutive_periods_two_names": {"cp": True},
+    "chain/multi_agg_base_order": {"step1": True, "step2": False},
     "chain/local_consecutive_periods": {"cp": True},
     "chain/cross_model_window": {"step1": True, "step2": False},
     "chain/local_nested_window": {"step1": True, "step2": True},
