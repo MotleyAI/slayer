@@ -364,13 +364,13 @@ class TestProducerKinds:
         excluded bucket vanishes from the producer instead of surfacing with
         a NULL window value."""
         dialect, engine = exec_backend
-        dry = await engine.execute(q(
+        dry = await engine.execute(query=q(
             time_dimensions=signup_month_td(),
             measures=[ModelMeasure(formula="customers.spend:sum(window='1y')",
                                    name="w")],
             filters=["channel = 'app'"],
         ), dry_run=True)
-        tree = sqlglot.parse_one(dry.sql, read=dialect)
+        tree = sqlglot.parse_one(sql=dry.sql, read=dialect)
         assert len(list(tree.find_all(exp.Exists))) == 2, dry.sql
 
     async def test_windowed_grain_spine_drops_filtered_out_buckets(
@@ -380,7 +380,7 @@ class TestProducerKinds:
         new-status order) vanishes from the result, and surviving window
         values sum the kept population only."""
         _, engine = exec_backend
-        resp = await engine.execute(q(
+        resp = await engine.execute(query=q(
             time_dimensions=signup_month_td(),
             measures=[ModelMeasure(formula="customers.spend:sum(window='1y')",
                                    name="w")],

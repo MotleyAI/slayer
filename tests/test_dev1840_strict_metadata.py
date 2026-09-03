@@ -113,7 +113,7 @@ class TestStrictNarrows:
             filters=["customers.tier = 'gold' OR channel = 'app'"],
         )
         with pytest.raises(SlayerError) as ei:
-            await engine.execute(query)
+            await engine.execute(query=query)
         message = str(ei.value)
         assert "channel" in message
         assert "cardinality" in message or "unique" in message \
@@ -125,7 +125,7 @@ class TestStrictNarrows:
         _, engine = exec_backend_amb
         query = tq(strict=True, measures=[SM], filters=["effort > 2"])
         with pytest.raises(SlayerError) as ei:
-            await engine.execute(query)
+            await engine.execute(query=query)
         assert "effort" in str(ei.value)
 
     async def test_strict_still_errors_on_an_unreachable_filter(
@@ -136,7 +136,7 @@ class TestStrictNarrows:
         _, engine = exec_backend_amb
         query = tq(strict=True, measures=[SM], filters=["reviews.stars > 4"])
         with pytest.raises(SlayerError) as ei:
-            await engine.execute(query)
+            await engine.execute(query=query)
         message = str(ei.value)
         assert "stars" in message
         assert "cardinality" in message or "unique" in message \

@@ -5998,7 +5998,9 @@ class SQLGenerator:
                 this=self._parse(hop_model.sql),
                 alias=exp.to_identifier(alias),
             )
-        return self._to_table(hop_model.sql_table or hop_model.name, alias=alias)
+        return self._to_table(
+            name=hop_model.sql_table or hop_model.name, alias=alias,
+        )
 
     def _build_semi_join_exists(
         self, *, group, source_model, source_relation: str, bundle, allocator,
