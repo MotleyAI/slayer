@@ -782,6 +782,10 @@ class TestClassifyModelSql:
     def test_not_read_only(self, sql: str) -> None:
         assert classify_model_sql(sql, dialect="postgres") == "modifying"
 
+    def test_next_value_for_is_not_read_only(self) -> None:
+        # SELECT NEXT VALUE FOR seq advances sequence state (T-SQL).
+        assert classify_model_sql("SELECT NEXT VALUE FOR s", dialect="tsql") == "modifying"
+
     @pytest.mark.parametrize("sql", [
         "SELECT 1",
         "SELECT id, amount FROM orders WHERE id IN (SELECT id FROM other)",
