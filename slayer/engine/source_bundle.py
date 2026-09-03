@@ -55,31 +55,6 @@ class ResolvedSourceBundle(BaseModel):
                 return m
         return None
 
-    def reachable_aggregation_names(
-        self, *, start: SlayerModel,
-    ) -> Optional[frozenset[str]]:
-        """Custom aggregation names reachable from ``start`` via the join graph.
-
-        BFS over this bundle's pre-loaded ``referenced_models`` (absent targets
-        skipped). Returns ``None`` (not an empty frozenset) when none reachable.
-        """
-        names: set[str] = set()
-        visited: set[str] = set()
-        queue: list[SlayerModel] = [start]
-        while queue:
-            current = queue.pop(0)
-            if current.name in visited:
-                continue
-            visited.add(current.name)
-            if current.aggregations:
-                names.update(a.name for a in current.aggregations)
-            for join in current.joins:
-                if join.target_model in visited:
-                    continue
-                nxt = self.get_referenced_model(join.target_model)
-                if nxt is not None:
-                    queue.append(nxt)
-        return frozenset(names) if names else None
 
 
 # Anything accepted as ``SlayerQuery.source_model``.

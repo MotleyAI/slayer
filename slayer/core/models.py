@@ -20,6 +20,7 @@ from slayer.core.enums import (
 )
 from slayer.core.format import NumberFormat
 from slayer.core.formula import ALL_TRANSFORMS
+from slayer.core.keys import SCALAR_FUNCTIONS
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.sql_predicate import parse_sql_predicate
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
@@ -287,6 +288,16 @@ class Aggregation(BaseModel):
                 f"Aggregation name '{self.name}' conflicts with a built-in "
                 f"transform function. Reserved names: "
                 f"{', '.join(sorted(transform_only))}"
+            )
+        # DEV-1826: scalar-function names would shadow the scalar in functional
+        # form (``round(x)`` must stay the scalar call), so every legal
+        # aggregation stays reachable as ``agg(col)``. Case-insensitive to
+        # match the parser's scalar dispatch.
+        if self.name.lower() in SCALAR_FUNCTIONS:
+            raise ValueError(
+                f"Aggregation name '{self.name}' conflicts with a scalar "
+                f"function. Scalar-allowlist names are reserved: "
+                f"{', '.join(sorted(SCALAR_FUNCTIONS))}"
             )
         return self
 

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import datetime
-import hashlib
 import logging
 import math
 import re
@@ -19,9 +18,9 @@ from pydantic import (
 
 from slayer.core.enums import TimeGranularity
 from slayer.core.errors import DistinctDimensionValuesError
-from slayer.core.formula import _rewrite_funcstyle_aggregations
 from slayer.core.models import ModelMeasure, SlayerModel, _validate_model_name
-from slayer.engine.syntax import parse_expr
+from slayer.core.refs import auto_name_from_expression
+from slayer.engine.syntax import AggCall, parse_expr, walk_parsed_refs
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 from slayer.storage.migrations import migrate as _migrate_schema
 
@@ -486,18 +485,6 @@ class ColumnRef(BaseModel):
         return cls(name=s)
 
 
-def _auto_name_from_expression(expression: str) -> str:
-    """Deterministic identifier for an unnamed computed dimension; long names fold to ``<head>_<hash8>_<tail>`` to avoid prefix collisions."""
-    base = re.sub(r"\W+", "_", expression.strip()).strip("_").lower() or "expr"
-    if base[0].isdigit():
-        base = f"e_{base}"
-    if len(base) > 48:
-        digest = hashlib.sha256(expression.encode("utf-8")).hexdigest()[:8]
-        base = f"{base[:28]}_{digest}_{base[-8:]}"
-    # No ``__`` — reserved for join-path aliases in generated SQL.
-    return re.sub(r"_+", "_", base).strip("_")
-
-
 class ComputedDimension(BaseModel):
     """A dimension defined by a Mode-B ``expression`` (grouped by and projected); an aggregate inside must carry ``partition_by=`` (aggregate-then-regroup path)."""
 
@@ -509,7 +496,7 @@ class ComputedDimension(BaseModel):
     @model_validator(mode="after")
     def _fill_name(self) -> "ComputedDimension":
         if self.name is None:
-            self.name = _auto_name_from_expression(self.expression)
+            self.name = auto_name_from_expression(self.expression)
         _validate_model_name(self.name, "Computed dimension")
         return self
 
@@ -534,10 +521,23 @@ ORDER_PLACEHOLDER_NAMES = frozenset({_FUNCSTYLE_PENDING, _EXPR_PENDING})
 
 
 def _order_formula_candidate(v: str) -> str | None:
-    """Func-style-rewritten form of ``v`` if it carries a measure expression, else ``None``; shared by ``_capture_raw_formula`` and ``_coerce_order_column`` so they can't drift."""
-    rewritten = _rewrite_funcstyle_aggregations(v)
-    if ":" in rewritten or _FUNCSTYLE_CALL_PATTERN.match(rewritten):
-        return rewritten
+    """``v`` verbatim if it carries a measure expression (colon aggregation,
+    call-style text, or an expression containing an aggregation), else
+    ``None``; shared by ``_capture_raw_formula`` and ``_coerce_order_column``
+    so they can't drift. The author's spelling is preserved — resolution
+    happens at binding via the native parser (DEV-1826). Bare-alias
+    arithmetic (``rev / cnt``) is deliberately NOT a candidate — it falls
+    through to ColumnRef validation and fails fast (DEV-1733)."""
+    if ":" in v or _FUNCSTYLE_CALL_PATTERN.match(v):
+        return v
+    if _is_valid_column_ref_name(v):
+        return None
+    try:
+        parsed = parse_expr(v)
+    except Exception:
+        return None
+    if any(isinstance(node, AggCall) for node in walk_parsed_refs(parsed)):
+        return v
     return None
 
 
@@ -551,30 +551,23 @@ def _is_valid_column_ref_name(name: str) -> bool:
 
 
 def _coerce_order_column(v: Any) -> Any:
-    """Coerce an ORDER BY column, normalizing aggregation to the underscore form (``revenue:sum``
-    → ``revenue_sum``). A formula that doesn't canonicalise to a column ref emits a placeholder whose
-    ``raw_formula`` the planner binds; arithmetic over aliases (``rev / cnt``) falls through, failing fast."""
+    """Coerce an ORDER BY column. Colon aggregations normalize to the underscore
+    form (``revenue:sum`` → ``revenue_sum``); call-style entries (``sum(revenue)``,
+    ``my_agg(price)``) emit a placeholder whose ``raw_formula`` the planner binds;
+    other non-column expressions carry ``raw_formula`` under ``_EXPR_PENDING``."""
     if isinstance(v, str):
         candidate = _order_formula_candidate(v)
-        rewritten = (
-            candidate if candidate is not None
-            else _rewrite_funcstyle_aggregations(v)
-        )
-        if _FUNCSTYLE_CALL_PATTERN.match(rewritten):
-            # Unrewritten function-style call (custom aggregation): enrichment
-            # re-parses raw_formula and overwrites column.name, so a placeholder is fine.
+        if candidate is None:
+            return {"name": v}
+        if _FUNCSTYLE_CALL_PATTERN.match(v):
             return {"name": _FUNCSTYLE_PENDING}
-        if ":" in rewritten:
-            base, agg = rewritten.rsplit(":", 1)
+        if ":" in v:
+            base, agg = v.rsplit(":", 1)
             agg_name = agg.split("(", 1)[0]
-            if base == "*":
-                rewritten = f"_{agg_name}"
-            else:
-                rewritten = f"{base}_{agg_name}"
-        if candidate is not None and not _is_valid_column_ref_name(rewritten):
-            # Formula that doesn't canonicalise to a column ref; raw_formula carries it.
-            return {"name": _EXPR_PENDING}
-        return {"name": rewritten}
+            rewritten = f"_{agg_name}" if base == "*" else f"{base}_{agg_name}"
+            if _is_valid_column_ref_name(rewritten):
+                return {"name": rewritten}
+        return {"name": _EXPR_PENDING}
     return v
 
 

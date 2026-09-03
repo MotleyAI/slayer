@@ -5,22 +5,28 @@ Public entry point: ``parse_expr(text: str) -> ParsedExpr``.
 The parser consumes a Mode-B expression string (the SLayer DSL used in
 ``ModelMeasure.formula``, ``SlayerQuery.measures``,
 ``SlayerQuery.filters``, …) and emits a typed ``ParsedExpr`` tree. It
-is PURE syntax — no scope resolution, no named-measure expansion, no
-function-style aggregation rewriting (those are upstream concerns: the
-slack normalization layer does function-style → colon; the binder
-handles scope and named-measure expansion).
+is PURE syntax — no scope resolution, no named-measure expansion
+(those are the binder's concerns).
 
 Pipeline order (per query / model save):
 
-    raw → slack normalize → parse_expr → bind → plan → SQL
+    raw → parse_expr → bind → plan → SQL
 
 Mode-B grammar:
 
 * bare identifier (``revenue``)
 * dotted path (``customers.regions.name``)
-* colon aggregation (``revenue:sum``, ``*:count``,
-  ``price:weighted_avg(weight=qty)``, ``revenue:last(ordered_at)``)
-* transform call (``cumsum``, ``lag``, ``rank``, ``time_shift``, …)
+* aggregation, colon or functional spelling — both collapse to the SAME
+  ``AggCall`` (DEV-1826): ``revenue:sum`` / ``sum(revenue)``,
+  ``*:count`` / ``count(*)``, ``price:weighted_avg(weight=qty)`` /
+  ``weighted_avg(price, weight=qty)``, ``revenue:last(ordered_at)`` /
+  ``last(revenue, ordered_at)``. An unknown call name whose first
+  argument is aggregatable defers to binding as an ``AggCall``
+  candidate, exactly like ``x:whatever``. A functional aggregation may
+  take a same-model scalar EXPRESSION source (``sum(amount - cost)``).
+* transform call (``cumsum``, ``lag``, ``rank``, ``time_shift``, …);
+  ``first`` / ``last`` dispatch by first-arg shape — an aggregated
+  input makes them transforms, anything else the aggregation
 * scalar function (closed allowlist from ``SCALAR_FUNCTIONS``)
 * arithmetic / comparison / boolean / unary
 * parenthesised grouping
@@ -53,9 +59,11 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
 from pydantic import BaseModel, ConfigDict
 
+from slayer.core.enums import BUILTIN_AGGREGATIONS, normalize_aggregation_name
 from slayer.core.errors import IllegalWindowInFilterError, UnknownFunctionError
 from slayer.core.formula import ALL_TRANSFORMS
 from slayer.core.keys import SCALAR_FUNCTIONS
+from slayer.core.refs import split_agg_suffix
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +106,11 @@ class TupleLit(_BaseNode):
 
 
 class AggCall(_BaseNode):
-    source: Union[Ref, DottedRef, StarSource]
+    # Beyond column/star sources, an aggregation may take an aggregation-free
+    # same-model scalar EXPRESSION source (``sum(amount - cost)``, DEV-1826).
+    source: Union[
+        Ref, DottedRef, StarSource, Literal, "ScalarCall", "Arith", "UnaryOp",
+    ]
     agg: str
     args: Tuple[Any, ...] = ()
     kwargs: Tuple[Tuple[str, Any], ...] = ()
@@ -144,6 +156,10 @@ ParsedExpr = Union[
     Arith, UnaryOp, Cmp, BoolOp,
 ]
 
+# ``AggCall.source`` forward-references ScalarCall / Arith / UnaryOp (defined
+# below it) for expression aggregation sources.
+AggCall.model_rebuild()
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -164,6 +180,10 @@ _RESERVED_EXPR_PREFIX = "__slayer_"
 _RESERVED_EXPR_PREFIX_RE = re.compile(r"(?<!\w)__slayer_")
 _PLACEHOLDER_PREFIX = "__slayer_agg_"
 _PLACEHOLDER_RE = re.compile(rf"^{_PLACEHOLDER_PREFIX}(\d+)__$")
+# Token minted by ``_preprocess_star_args`` for a call's first-argument ``*`` /
+# ``path.*`` (``count(*)``, ``count(customers.*)``) — Python's AST cannot parse
+# a bare ``*`` expression. Always means "star"; no numbering map needed.
+_STAR_ARG_TOKEN = "__slayer_star__"
 _OVER_RE = re.compile(r"\bOVER\s*\(", re.IGNORECASE)
 # Python-string-literal matcher (handles backslash escapes). Mode-B expressions
 # use Python string syntax, so a SQL-style ('' / "") doubling matcher would
@@ -398,6 +418,10 @@ def parse_expr(text: str) -> ParsedExpr:
         )
 
     preprocessed, agg_map = _preprocess_colons(_rewrite_case_when(text))
+    # AFTER the colon pass — ``customers.*:count`` must become a colon
+    # placeholder first, so the only ``*`` left in call-first-arg position is
+    # the functional spelling (``count(*)`` / ``count(customers.*)``).
+    preprocessed = _preprocess_star_args(preprocessed)
 
     try:
         py_ast = ast.parse(preprocessed, mode="eval").body
@@ -798,6 +822,64 @@ def _preprocess_colons(
     return _COLON_AGG_RE.sub(_replace, text), agg_map
 
 
+def _preprocess_star_args(text: str) -> str:  # NOSONAR(S3776) — one token-scan with two star shapes (bare ``(*``, dotted ``path.*``); the prev/next-significant-token checks ARE the grammar being recognised, and splitting them hides the call-first-argument contract.
+    """Replace a call's first-argument ``*`` / ``path.*`` with the reserved
+    star token (``count(*)`` → ``count(__slayer_star__)``) so Python's AST can
+    parse it. Token-aware, string-literal-safe; multiplication is untouched
+    (a multiplying ``*`` never directly follows a call's ``(`` or a ``.``).
+    """
+    if "*" not in text:
+        return text
+    toks = [(m.lastgroup, m.group(0)) for m in _SCAN_TOKEN_RE.finditer(text)]
+    n = len(toks)
+
+    def _prev(i: int) -> int:
+        j = i - 1
+        while j >= 0 and toks[j][0] == "ws":
+            j -= 1
+        return j
+
+    def _next(i: int) -> int:
+        j = i + 1
+        while j < n and toks[j][0] == "ws":
+            j += 1
+        return j
+
+    def _is_call_lparen(i: int) -> bool:
+        p = _prev(i)
+        return p >= 0 and toks[p][0] == "ident"
+
+    def _dotted_star_opens_call(dot_idx: int) -> bool:
+        # Walk ``ident(.ident)*`` back from the ``.`` before the star; the
+        # path must open a call's first argument (directly after ``ident(``).
+        j = dot_idx
+        while True:
+            q = _prev(j)
+            if q < 0 or toks[q][0] != "ident":
+                return False
+            r = _prev(q)
+            if r >= 0 and toks[r] == ("other", "."):
+                j = r
+                continue
+            return r >= 0 and toks[r][0] == "lparen" and _is_call_lparen(r)
+
+    out: List[str] = []
+    for i, (kind, val) in enumerate(toks):
+        if kind == "other" and val == "*":
+            nx = _next(i)
+            closes_arg = nx < n and toks[nx][1] in (",", ")")
+            p = _prev(i)
+            if closes_arg and p >= 0:
+                if toks[p][0] == "lparen" and _is_call_lparen(p):
+                    out.append(_STAR_ARG_TOKEN)
+                    continue
+                if toks[p] == ("other", ".") and _dotted_star_opens_call(p):
+                    out.append(_STAR_ARG_TOKEN)
+                    continue
+        out.append(val)
+    return "".join(out)
+
+
 def _convert(node: ast.AST, *, agg_map: Dict, original: str) -> ParsedExpr:  # NOSONAR(S3776) — one-pass dispatch over ast node kinds (Constant/Name/Compare/BinOp/UnaryOp/BoolOp/Call/Attribute…) producing typed ParsedExpr; the branches are flat and short, and splitting hides the exhaustive ast-kind coverage one read scans for. Surfaces ParsedExpr.kind contract directly.
     if isinstance(node, ast.Constant):
         return _convert_constant(node, original=original)
@@ -808,6 +890,8 @@ def _convert(node: ast.AST, *, agg_map: Dict, original: str) -> ParsedExpr:  # N
             idx = int(m.group(1))
             source, agg = agg_map[idx]
             return AggCall(source=source, agg=agg)
+        if node.id == _STAR_ARG_TOKEN:
+            return StarSource()
         # SQL-cased boolean literals (PR #316): Python's ast only treats
         # True/False as constants, so `true`/`FALSE`/... arrive as names.
         # Both are reserved words in every target dialect, never columns.
@@ -817,6 +901,9 @@ def _convert(node: ast.AST, *, agg_map: Dict, original: str) -> ParsedExpr:  # N
 
     if isinstance(node, ast.Attribute):
         parts = _flatten_attribute(node, original=original)
+        # ``count(customers.*)`` — the star pre-pass turned the trailing ``*``
+        # into the star token; restore it so the DottedRef matches colon form.
+        parts = ["*" if p == _STAR_ARG_TOKEN else p for p in parts]
         return DottedRef(parts=tuple(parts))
 
     if isinstance(node, ast.Call):
@@ -1026,7 +1113,68 @@ def _convert_kwarg_value(node: ast.AST, *, agg_map: Dict, original: str):
     return _convert(node, agg_map=agg_map, original=original)
 
 
-def _convert_call(
+# The node kinds an ``AggCall.source`` may take (column, star, or an
+# aggregation-free scalar expression). Cmp / BoolOp / TupleLit are excluded —
+# a predicate is not an aggregatable value.
+_AGG_SOURCE_KINDS = (Ref, DottedRef, StarSource, Literal, ScalarCall, Arith, UnaryOp)
+# Names that are BOTH a builtin aggregation and a transform; dispatched by
+# first-arg shape (aggregated input → transform, else aggregation).
+_FIRST_LAST = frozenset({"first", "last"})
+
+
+def _contains_agg_or_transform(node: Any) -> bool:
+    """Whether a parsed subtree contains any AggCall / TransformCall."""
+    if isinstance(node, (AggCall, TransformCall)):
+        return True
+    if isinstance(node, ScalarCall):
+        return any(_contains_agg_or_transform(a) for a in node.args)
+    if isinstance(node, (Arith, Cmp)):
+        return _contains_agg_or_transform(node.left) or _contains_agg_or_transform(
+            node.right
+        )
+    if isinstance(node, UnaryOp):
+        return _contains_agg_or_transform(node.operand)
+    if isinstance(node, BoolOp):
+        return any(_contains_agg_or_transform(o) for o in node.operands)
+    return False
+
+
+def _validated_agg_source(source: Any, *, func_name: str, original: str) -> Any:
+    """Validate a functional aggregation's first argument as its source."""
+    if _contains_agg_or_transform(source):
+        raise ValueError(
+            f"Invalid Mode-B expression {original!r}: aggregations and "
+            f"transforms cannot be nested inside the expression aggregated "
+            f"by {func_name!r}."
+        )
+    if not isinstance(source, _AGG_SOURCE_KINDS):
+        raise ValueError(
+            f"Invalid Mode-B expression {original!r}: {func_name!r} cannot "
+            f"aggregate a {type(source).__name__}; the aggregated expression "
+            f"must be built from columns, literals, arithmetic, and scalar "
+            f"functions."
+        )
+    return source
+
+
+def _reject_bare_star_args(
+    args: Tuple[Any, ...],
+    kwargs: Tuple[Tuple[str, Any], ...],
+    *,
+    func_name: str,
+    original: str,
+) -> None:
+    """``*`` is only an aggregation source — reject it as a plain call arg."""
+    values = list(args) + [v for _, v in kwargs]
+    if any(isinstance(v, StarSource) for v in values):
+        raise ValueError(
+            f"Invalid Mode-B expression {original!r}: '*' is only valid as "
+            f"an aggregation source (e.g. count(*)), not as an argument to "
+            f"{func_name!r}."
+        )
+
+
+def _convert_call(  # NOSONAR(S3776) — the one call-dispatch ladder (colon placeholder → builtin functional aggregation → transform → scalar → unknown-name AggCall deferral); each rung IS the documented dispatch order and splitting them hides it.
     node: ast.Call, *, agg_map: Dict, original: str,
 ) -> ParsedExpr:
     if not isinstance(node.func, ast.Name):
@@ -1053,12 +1201,31 @@ def _convert_call(
         if kw.arg is not None  # guarded above; narrows kw.arg to str
     )
 
-    # Aggregation placeholder?
+    # Colon-aggregation placeholder?
     m = _PLACEHOLDER_RE.match(func_name)
     if m:
         idx = int(m.group(1))
         source, agg = agg_map[idx]
         return AggCall(source=source, agg=agg, args=args, kwargs=kwargs)
+
+    # Functional builtin aggregation? Matched via alias/case healing, exactly
+    # like colon names heal at binding; ``agg`` stores the RAW token so both
+    # spellings collapse to the identical AggCall. ``first``/``last`` over an
+    # aggregated input fall through to the transform branch.
+    healed = normalize_aggregation_name(func_name)
+    if healed in BUILTIN_AGGREGATIONS and not (
+        healed in _FIRST_LAST and args and _contains_agg_or_transform(args[0])
+    ):
+        if not args:
+            raise ValueError(
+                f"Invalid Mode-B expression {original!r}: aggregation "
+                f"{func_name!r} requires a value argument, e.g. "
+                f"{func_name}(column)."
+            )
+        source = _validated_agg_source(
+            args[0], func_name=func_name, original=original,
+        )
+        return AggCall(source=source, agg=func_name, args=args[1:], kwargs=kwargs)
 
     # Transform?
     if func_name in ALL_TRANSFORMS:
@@ -1068,6 +1235,7 @@ def _convert_call(
                 f"{func_name!r} requires at least one positional argument "
                 f"(the value to transform)."
             )
+        _reject_bare_star_args(args, kwargs, func_name=func_name, original=original)
         return TransformCall(
             op=func_name,
             input=args[0],
@@ -1089,18 +1257,152 @@ def _convert_call(
                 f"{func_name!r} does not accept keyword arguments. Pass "
                 f"values positionally."
             )
+        _reject_bare_star_args(args, kwargs, func_name=func_name, original=original)
         return ScalarCall(name=func_name.lower(), args=args)
+
+    # Unknown name with an aggregatable first argument → AggCall candidate,
+    # validated at binding — parity with ``x:whatever`` (custom aggregations
+    # need no parser plumbing; genuinely unknown names get the standard
+    # unknown-aggregation error from the binder).
+    if args and isinstance(args[0], _AGG_SOURCE_KINDS) and not _contains_agg_or_transform(args[0]):
+        return AggCall(source=args[0], agg=func_name, args=args[1:], kwargs=kwargs)
 
     # Otherwise — unknown.
     raise UnknownFunctionError(
         name=func_name,
         location=original,
         suggestion=(
-            f"Mode-B accepts only the closed scalar allowlist "
+            f"Mode-B accepts the closed scalar allowlist "
             f"({sorted(SCALAR_FUNCTIONS)}), transforms "
-            f"({sorted(ALL_TRANSFORMS)}), and colon-syntax aggregations "
-            f"(e.g. `revenue:sum`). Function-style aggregations like "
-            f"`sum(revenue)` are normalised by the slack layer; if you "
-            f"see this error for one, slack normalization was bypassed."
+            f"({sorted(ALL_TRANSFORMS)}), and aggregations in colon or "
+            f"functional form (`revenue:sum` / `sum(revenue)`); custom "
+            f"aggregation names must be defined on the model."
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Canonical text rendering + entity-ref splitting (DEV-1826)
+# ---------------------------------------------------------------------------
+
+
+def _canonical_call_params(
+    args: Tuple[Any, ...], kwargs: Tuple[Tuple[str, Any], ...],
+) -> str:
+    parts = [canonical_measure_text(a) for a in args]
+    parts += [f"{k}={_canonical_kwarg_text(v)}" for k, v in kwargs]
+    return f"({', '.join(parts)})" if parts else ""
+
+
+def _canonical_kwarg_text(value: Any) -> str:
+    if isinstance(value, tuple):
+        return f"[{', '.join(canonical_measure_text(v) for v in value)}]"
+    return canonical_measure_text(value)
+
+
+def canonical_measure_text(parsed: Any) -> str:  # NOSONAR(S3776) — flat per-node-kind rendering table; each branch is one spelling rule.
+    """Render a ``ParsedExpr`` back to canonical colon-spelling text.
+
+    Used for alias derivation so the functional and colon spellings of one
+    formula sanitize to the SAME public name (DEV-1826). Deterministic, not a
+    verbatim round-trip: grouping parens are dropped and spacing normalised.
+    """
+    if isinstance(parsed, Ref):
+        return parsed.name
+    if isinstance(parsed, DottedRef):
+        return ".".join(parsed.parts)
+    if isinstance(parsed, StarSource):
+        return "*"
+    if isinstance(parsed, Literal):
+        if isinstance(parsed.value, str):
+            return f"'{parsed.value}'"
+        return str(parsed.value)
+    if isinstance(parsed, TupleLit):
+        return f"({', '.join(canonical_measure_text(e) for e in parsed.elements)})"
+    if isinstance(parsed, AggCall):
+        source = canonical_measure_text(parsed.source)
+        if isinstance(parsed.source, (Ref, DottedRef, StarSource)):
+            return f"{source}:{parsed.agg}{_canonical_call_params(parsed.args, parsed.kwargs)}"
+        # Expression source (``sum(amount - cost)``): render functionally so the
+        # text can't collide with a distinct parse tree like ``amount - cost:sum``.
+        parts = [source]
+        parts += [canonical_measure_text(a) for a in parsed.args]
+        parts += [f"{k}={_canonical_kwarg_text(v)}" for k, v in parsed.kwargs]
+        return f"{parsed.agg}({', '.join(parts)})"
+    if isinstance(parsed, TransformCall):
+        inner = canonical_measure_text(parsed.input)
+        params = _canonical_call_params(parsed.args, parsed.kwargs)
+        return f"{parsed.op}({inner}{', ' + params[1:-1] if params else ''})"
+    if isinstance(parsed, ScalarCall):
+        return f"{parsed.name}({', '.join(canonical_measure_text(a) for a in parsed.args)})"
+    if isinstance(parsed, (Arith, Cmp)):
+        left = canonical_measure_text(parsed.left)
+        right = canonical_measure_text(parsed.right)
+        return f"{left} {parsed.op} {right}"
+    if isinstance(parsed, UnaryOp):
+        operand = canonical_measure_text(parsed.operand)
+        return f"not {operand}" if parsed.op == "not" else f"{parsed.op}{operand}"
+    if isinstance(parsed, BoolOp):
+        return f" {parsed.op} ".join(
+            canonical_measure_text(o) for o in parsed.operands
+        )
+    return str(parsed)
+
+
+def _functional_suffix_text(raw: str, *, agg: str) -> str:
+    """Rebuild the ``agg`` / ``agg(rest-args)`` suffix of a functional entity
+    ref, preserving any extra-arg text verbatim (``last(balance, updated_at)``
+    → ``last(updated_at)``)."""
+    open_idx = raw.index("(")
+    depth = 0
+    split_idx = None
+    for i in range(open_idx, len(raw)):
+        ch = raw[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                split_idx = i
+                break
+        elif ch == "," and depth == 1:
+            split_idx = i
+            break
+    if split_idx is None or raw[split_idx] == ")":
+        return agg
+    rest = raw[split_idx + 1:].strip()
+    if rest.endswith(")"):
+        rest = rest[:-1].strip()
+    return f"{agg}({rest})"
+
+
+def split_entity_agg_ref(raw: str) -> Tuple[str, Optional[str]]:
+    """``(prefix, agg_suffix)`` of a single aggregated-column entity
+    reference, accepting BOTH spellings: ``orders.amount:sum`` and
+    ``sum(orders.amount)`` split identically (DEV-1826).
+
+    Colon and call-free text splits exactly like
+    :func:`slayer.core.refs.split_agg_suffix`. Functional text must parse to
+    an ``AggCall`` over a pure column / star source; multi-column expression
+    text (``sum(a - b)``) raises ``ValueError`` — an expression is not an
+    entity.
+    """
+    prefix, suffix = split_agg_suffix(raw)
+    if suffix is not None or "(" not in raw:
+        return prefix, suffix
+    parsed = parse_expr(raw)
+    if not isinstance(parsed, AggCall) or not isinstance(
+        parsed.source, (Ref, DottedRef, StarSource)
+    ):
+        raise ValueError(
+            f"{raw!r} is not a single aggregated column reference; only "
+            f"`agg(column)` / `column:agg` forms name an entity."
+        )
+    source = parsed.source
+    if isinstance(source, StarSource):
+        prefix = "*"
+    elif isinstance(source, Ref):
+        prefix = source.name
+    else:
+        prefix = ".".join(source.parts)
+    return prefix, _functional_suffix_text(raw, agg=parsed.agg)

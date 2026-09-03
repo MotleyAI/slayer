@@ -50,7 +50,11 @@ from slayer.core.keys import (
     substitute_value_keys,
 )
 from slayer.core.models import Aggregation
-from slayer.core.refs import agg_kwarg_canonical_str
+from slayer.core.refs import (
+    EXPRESSION_SOURCE_KINDS as _EXPRESSION_SOURCE_KINDS,
+    agg_kwarg_canonical_str,
+    expression_source_leaf,
+)
 from slayer.core.time_bounds import strip_frame_bounds
 from slayer.core.window_duration import parse_window_duration as _parse_window_duration
 from slayer.engine.binding import walk_value_keys
@@ -115,6 +119,7 @@ from slayer.sql.render.value_expr import (
     render_value_key,
     rewrite_log_alias,
 )
+from slayer.sql.render.row_expr import render_row_expression
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 from slayer.sql.scope import ScopeFrame
 from slayer.sql.scope_check import maybe_validate_scopes
@@ -2153,9 +2158,11 @@ class SQLGenerator:
             )
 
         def _resolve_source(key) -> None:
-            if isinstance(key.source, ColumnSqlKey) or getattr(
-                key.source, "path", (),
-            ):
+            # Expression sources (DEV-1826) resolve too: a ColumnSqlKey operand
+            # whose derived SQL crosses joins must register them (Law 1).
+            if isinstance(
+                key.source, (ColumnSqlKey, *_EXPRESSION_SOURCE_KINDS),
+            ) or getattr(key.source, "path", ()):
                 scope.resolve(key.source)
 
         def _resolve_kwargs(key) -> None:
@@ -5562,6 +5569,37 @@ class SQLGenerator:
         )
         return expanded if expanded is not None else col.sql
 
+    def _render_expression_source_sql(
+        self, *, source, source_model, source_relation: str, bundle,
+    ) -> str:
+        """Render an aggregate's row-level expression source (DEV-1826) to
+        qualified SQL text: plain columns anchor at ``source_relation``,
+        derived columns expand through ``_expand_derived_column_sql``."""
+        def _column_ast(ref) -> exp.Expression:
+            # Fail closed for a joined operand before any dispatch, so a pathed
+            # ColumnSqlKey can't expand against the host relation (DEV-1832).
+            if getattr(ref, "path", ()):
+                raise NotImplementedError(
+                    f"Cross-model operand {ref!r} inside an aggregated "
+                    f"expression is not supported (DEV-1832)."
+                )
+            if isinstance(ref, ColumnSqlKey):
+                return self._parse(self._expand_derived_column_sql(
+                    source_model=source_model,
+                    source_relation=source_relation,
+                    column_name=ref.column_name,
+                    bundle=bundle,
+                ))
+            return exp.Column(
+                this=self._to_ident(ref.leaf),
+                table=exp.to_identifier(source_relation),
+            )
+
+        node = render_row_expression(
+            key=source, dialect=self._dialect, resolve_column=_column_ast,
+        )
+        return node.sql(dialect=self.dialect)
+
     def _joined_paths_in_sql(
         self, *, sql_expr: exp.Expression, source_relation: str, source_model,
         bundle,
@@ -5850,6 +5888,41 @@ class SQLGenerator:
                 type=slot_type,
                 column_type=col.type,
                 filter_sql=filter_sql,
+                agg_kwargs=agg_kwargs_str,
+                aggregation_def=agg_def,
+                time_column=None,
+            )
+        if isinstance(source, _EXPRESSION_SOURCE_KINDS):
+            # DEV-1826: same-model expression source — render the row-level
+            # expression to SQL text; every dispatch kind downstream
+            # (simple / distinct / percentile / dialect hook / formula
+            # ``{value}``) receives it exactly like a derived-column body.
+            expr_leaf = expression_source_leaf(source)
+            agg_def = self._resolve_aggregation_def(
+                key=key, source_model=source_model, src_leaf=expr_leaf,
+            )
+            sql_text = self._render_expression_source_sql(
+                source=source,
+                source_model=source_model,
+                source_relation=source_relation,
+                bundle=bundle,
+            )
+            resolved_kw = resolved_agg_kwargs or {}
+            agg_kwargs_str = {
+                k: (resolved_kw[k] if k in resolved_kw else agg_kwarg_canonical_str(v))
+                for k, v in key.kwargs
+            }
+            for _name, _resolved in resolved_kw.items():
+                agg_kwargs_str.setdefault(_name, _resolved)
+            return AggRenderSpec(
+                name=expr_leaf,
+                sql=sql_text,
+                aggregation=key.agg,
+                alias=full_alias,
+                model_name=source_relation,
+                type=slot_type,
+                column_type=None,
+                filter_sql=None,
                 agg_kwargs=agg_kwargs_str,
                 aggregation_def=agg_def,
                 time_column=None,

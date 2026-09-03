@@ -8,50 +8,19 @@ The pipeline begins (principle **P0**) with a single pass that rewrites
 stage sees only the canonical shape. Each rewrite is returned as a typed
 `NormalizationWarning` and surfaced two ways at once.
 
-This is how SLayer stays tolerant of the natural things agents type
-(`sum(revenue)`, a bare column listed under `measures`) without letting that
-tolerance leak into the resolution logic — the parser, binder, and planner never
-have to know that `sum(revenue)` is even a thing.
+The layer has shrunk over time as slack forms were promoted to first-class
+grammar: `DOT_PATH_IN_SQL` retired when dots became the canonical Mode-A join
+separator (DEV-1743), and `FUNC_STYLE_AGG` retired when the parser made the
+functional aggregation spelling a first-class equivalent of colon syntax
+(DEV-1826). What remains are *shape* rules — rules about where a value
+belongs, not how it is spelled. Formula **text** is never rewritten.
 
-## The two rules
+## The active rules
 
-```mermaid
-flowchart LR
-    subgraph "Mode B (DSL fields)"
-        f["FUNC_STYLE_AGG<br/>sum(revenue) → revenue:sum<br/>count(*) → *:count"]
-    end
-    subgraph "Query shape"
-        m["MISPLACED_MEASURE<br/>bare column in query.measures<br/>→ moved to query.dimensions"]
-    end
-```
-
-| Rule | Mode | Detects | Rewrites to |
+| Rule | Kind | Detects | Effect |
 | --- | --- | --- | --- |
-| `FUNC_STYLE_AGG` | Mode B | `sum(col)`, `count(*)`, `percentile(amount, p=0.5)` | colon form (`col:sum`, `*:count`, `amount:percentile(p=0.5)`) |
 | `MISPLACED_MEASURE` | query shape | a bare (no colon, no call) entry in `query.measures` that names a column | moved to `query.dimensions` |
-
-> **DEV-1743 — the `DOT_PATH_IN_SQL` rule is RETIRED.** Mode-A free SQL is now
-> dotted-canonical: a dotted join path (`customers.regions.name`) is the
-> canonical form and is left untouched by normalization; the legacy `__`
-> split-alias input form (`customers__regions.name`) is no longer produced by a
-> rewrite — it is a hard error (`LegacyDunderAliasError`) raised by the shared
-> resolver in `column_expansion.py` at generation time and by the save-time door
-> in `query_engine.py`. See below.
-
-### `FUNC_STYLE_AGG`
-
-Applies to Mode-B fields (`ModelMeasure.formula`, `SlayerQuery.measures[].formula`,
-`SlayerQuery.filters`). It scans for `<agg>(` where `<agg>` is a builtin or
-custom aggregation name (and not already preceded by `:`), finds the balanced
-close paren (string-literal-aware), and rewrites the first argument into colon
-form, keeping any remaining args as the parametric tail. `first` / `last` are
-also transform names, so the rewrite skips them when the inner is already a
-colon-form aggregate (`_AMBIGUOUS_AGG_TRANSFORMS`). Custom aggregation names are
-threaded in via `custom_agg_names` so model-defined aggregations are recognized.
-
-`func_style_agg_to_colon` is the **quiet** variant for read-only consumers
-(schema-drift attribution, memory entity tagging) that need the rewrite but must
-not re-surface slack advice to the user — it suppresses the warning.
+| `MALFORMED_DATE_RANGE` | report-only | a `time_dimensions[i].date_range` that is not two elements | warning only — the planner's silent drop becomes visible |
 
 ### `MISPLACED_MEASURE`
 
@@ -61,6 +30,25 @@ stays a measure; one that names a column moves to `dimensions`; an unknown token
 is left for the downstream resolver to error on. It is a no-op when the stage has
 no resolved model (a sibling-sourced stage), because column classification needs
 the model's column names.
+
+### `FUNC_STYLE_AGG` (retired — DEV-1826)
+
+Historically this rule rewrote functional aggregations (`sum(revenue)`,
+`count(*)`, `percentile(amount, p=0.5)`) into colon form before parsing, with
+a warning nudging agents toward the colon spelling. DEV-1826 inverted the
+premise: the functional spelling is now **first-class grammar** — `parse_expr`
+dispatches it natively to the same `AggCall` node as colon syntax (see
+[Parsing](parsing.md)), unknown names defer to the binder exactly like
+`x:whatever`, and a same-model expression source (`sum(amount - cost)`) is
+legal. There is nothing to rewrite and nothing to warn about; saved models
+keep the author's spelling. The rule, its helpers, and the quiet
+`func_style_agg_to_colon` variant (formerly used by schema-drift attribution
+and memory entity tagging, which now parse natively) were deleted, along with
+the reachable-custom-aggregation BFS that existed only to feed the rewrite.
+
+The legacy regex rewriter in `slayer/core/formula.py` still serves the
+importer pipelines (cube/dbt/OSI); consolidating those onto the native parser
+is DEV-1831.
 
 ### `DOT_PATH_IN_SQL` (retired — DEV-1743)
 
@@ -86,11 +74,11 @@ storage migration.
 
 ```python
 class NormalizationWarning(BaseModel):       # slayer/core/warnings.py
-    rule_id: str                 # "FUNC_STYLE_AGG"
-    original: str                # "sum(revenue)"
-    normalized: str              # "revenue:sum"
+    rule_id: str                 # "MISPLACED_MEASURE"
+    original: str                # "status"
+    normalized: str              # "dimensions += 'status'"
     location: str                # "measures[2].formula"
-    rule_doc_url: Optional[str]  # "docs/agent_input_slack.md#func-style-agg"
+    rule_doc_url: Optional[str]  # "docs/agent_input_slack.md#misplaced-measure"
 
 class SlayerNormalizationWarning(UserWarning):
     """Carrier UserWarning around a NormalizationWarning payload."""
@@ -107,29 +95,26 @@ engine code.
 
 ## Entry points and boundaries
 
-- `normalize_query(query, *, model, custom_agg_names)` — runs `FUNC_STYLE_AGG`
-  over Mode-B fields and `MISPLACED_MEASURE` over the query shape, returning a
+- `normalize_query(query, *, model)` — runs `MISPLACED_MEASURE` over the query
+  shape and `MALFORMED_DATE_RANGE` over time dimensions, returning a
   `NormalizationResult(query, warnings)`.
-- `normalize_model(model)` — runs `FUNC_STYLE_AGG` over `ModelMeasure.formula`,
-  returning `NormalizationResult(model, warnings)`. (Since DEV-1743 it no longer
-  rewrites Mode-A `Column.sql` / `Column.filter` / `SlayerModel.filters` — those
-  are dotted-canonical and pass through untouched.)
 
-These are invoked at the engine boundaries: `engine.execute` (per stage, via
-`_normalize_stage`) and `engine.save_model`. CLI / REST / MCP go through those
-entry points automatically. See [Engine orchestration](engine-orchestration.md)
-for the call sites.
+It is invoked at one engine boundary: `engine.execute` (per stage, via
+`_normalize_stage`). `engine.save_model` persists the model **verbatim** —
+since DEV-1826 no normalization pass touches model text at all. CLI / REST /
+MCP go through those entry points automatically. See
+[Engine orchestration](engine-orchestration.md) for the call sites.
 
 ## Design rationale
 
-- **Why normalize before parsing rather than teaching the parser to accept slack
-  forms?** Keeping the slack rules in one pass means the rest of the pipeline has
-  exactly one shape to reason about. If `parse_expr` accepted `sum(revenue)`, the
-  binder and planner would each have to handle both spellings.
+- **Why did FUNC_STYLE_AGG move into the parser instead of staying a rewrite?**
+  The rewrite had to be replicated at every text surface (query measures,
+  filters, model measures at save, order coercion, schema drift, memory
+  tagging) and each missed surface was a bug — `ModelExtension` measures and
+  hand-authored YAML never passed through it. One parser branch covers every
+  position by construction, and both spellings collapse to one node so
+  identity, naming, and matching are spelling-insensitive for free.
 - **Why typed warnings rather than logging?** Agents (and the REST/MCP consumers
-  driving them) need to *see* that their input was rewritten, structurally, so
+  driving them) need to *see* that their input was reshaped, structurally, so
   they can learn the canonical form. A log line is invisible to them; the
   `rule_doc_url` points at the canonical-form documentation.
-The reference page for the rules (with the `#func-style-agg` /
-`#misplaced-measure` anchors that `rule_doc_url` points at) is
-`docs/agent_input_slack.md`, authored as part of the user-facing docs update.

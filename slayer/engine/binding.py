@@ -22,12 +22,14 @@ from slayer.core.errors import (
 from slayer.core.enums import (
     BUILTIN_AGGREGATIONS,
     DEFAULT_AGGREGATIONS_BY_TYPE,
+    NUMERIC_ONLY_AGGREGATIONS,
     PRIMARY_KEY_AGGREGATIONS,
     DataType,
     format_unknown_aggregation,
     normalize_aggregation_name,
 )
 from slayer.core.formula import RANK_FAMILY_TRANSFORMS
+from slayer.core.refs import EXPRESSION_SOURCE_KINDS
 from slayer.core.keys import (
     SCALAR_FUNCTIONS,
     check_scalar_arity,
@@ -70,6 +72,7 @@ from slayer.engine.syntax import (
     TupleLit,
     UnaryOp,
     parse_expr,
+    walk_parsed_refs,
 )
 from slayer.sql.sql_expr import has_window_function
 
@@ -895,6 +898,153 @@ def _bind_agg_partition_keys(
     return frozenset(pks)
 
 
+def _bind_expression_agg_source(
+    parsed_source: ParsedExpr, *,
+    scope: Union[ModelScope, StageSchema],
+    bundle: ResolvedSourceBundle,
+) -> ValueKey:
+    """Bind a same-model scalar-expression aggregate source (DEV-1826).
+
+    Boundaries with clear errors (cross-model semantics: DEV-1832): dotted
+    paths inside the expression are cross-model; operands carrying
+    ``Column.filter`` are rejected; nested aggregations / transforms were
+    already rejected at parse time.
+    """
+    for node in walk_parsed_refs(parsed_source):
+        if isinstance(node, DottedRef):
+            raise ValueError(
+                f"Cross-model expression aggregation is not supported: the "
+                f"aggregated expression references the dotted path "
+                f"{'.'.join(node.parts)!r}. Only bare same-model columns may "
+                f"appear inside an aggregated expression (DEV-1832)."
+            )
+    bound = _bind(parsed_source, scope=scope, bundle=bundle, in_filter=False)
+    if not isinstance(bound, EXPRESSION_SOURCE_KINDS):
+        raise ValueError(
+            f"Aggregation source must resolve to a column, star, or a "
+            f"row-level expression; got {type(bound).__name__}."
+        )
+    _reject_filtered_expression_operands(bound, scope=scope)
+    return bound
+
+
+def _reject_filtered_expression_operands(
+    bound: ValueKey, *, scope: Union[ModelScope, StageSchema],
+) -> None:
+    """A ``Column.filter`` applies at aggregation time over ONE column; inside
+    a multi-operand expression its semantics are undefined until DEV-1832."""
+    if not isinstance(scope, ModelScope) or scope.source_model is None:
+        return  # StageSchema outputs carry no Column.filter
+    model = scope.source_model
+    for k in walk_value_keys(bound):
+        if isinstance(k, ColumnKey) and not k.path:
+            leaf = k.leaf
+        elif isinstance(k, ColumnSqlKey) and not k.path:
+            leaf = k.column_name
+        else:
+            continue
+        col = next((c for c in model.columns if c.name == leaf), None)
+        if col is not None and col.filter:
+            raise ValueError(
+                f"Column {leaf!r} carries a column-level filter "
+                f"({col.filter!r}) and cannot be used inside an aggregated "
+                f"expression. Define a derived model column for the "
+                f"expression and aggregate it with the colon form instead "
+                f"(DEV-1832)."
+            )
+
+
+# Scalar functions whose result is certainly text, for the best-effort
+# expression type inference (DEV-1826).
+_TEXT_RESULT_SCALARS = frozenset({
+    "lower", "upper", "trim", "ltrim", "rtrim", "replace", "substr",
+    "substring", "concat",
+})
+# Null-handling / min-max scalars whose result class follows their arguments.
+_ARG_CLASS_SCALARS = frozenset({
+    "coalesce", "ifnull", "nullif", "greatest", "least",
+})
+# Comparison-family scalars whose result is certainly boolean (DEV-1826).
+_BOOL_RESULT_SCALARS = frozenset({"like"})
+
+
+def _expression_is_confidently_text(key, *, model: Optional[SlayerModel]) -> bool:
+    """Best-effort: True only when the expression's value is certainly text."""
+    if isinstance(key, str):
+        return True
+    if isinstance(key, ScalarCallKey):
+        if key.name in _TEXT_RESULT_SCALARS:
+            return True
+        if key.name in _ARG_CLASS_SCALARS:
+            return any(
+                _expression_is_confidently_text(a, model=model)
+                for a in key.args
+            )
+        return False
+    if isinstance(key, LiteralKey):
+        return isinstance(key.value, str)
+    if isinstance(key, ColumnKey) and not key.path and model is not None:
+        col = model.get_column(key.leaf)
+        return col is not None and col.type == DataType.TEXT
+    if isinstance(key, ColumnSqlKey) and not key.path and model is not None:
+        col = model.get_column(key.column_name)
+        return col is not None and col.type == DataType.TEXT
+    # Arithmetic coerces numeric; anything unresolved defaults to numeric.
+    return False
+
+
+def _expression_is_confidently_boolean(key, *, model: Optional[SlayerModel]) -> bool:
+    """Best-effort: True only when the expression's value is certainly boolean."""
+    if isinstance(key, LiteralKey):
+        return isinstance(key.value, bool)
+    if isinstance(key, ScalarCallKey):
+        if key.name in _BOOL_RESULT_SCALARS:
+            return True
+        if key.name == "iif":
+            # iif's result follows its two branches, not the condition (arg 0).
+            branches = key.args[1:3]
+            return len(branches) == 2 and all(
+                _expression_is_confidently_boolean(a, model=model)
+                for a in branches
+            )
+        if key.name in _ARG_CLASS_SCALARS:
+            return any(
+                _expression_is_confidently_boolean(a, model=model)
+                for a in key.args
+            )
+        return False
+    if isinstance(key, ColumnKey) and not key.path and model is not None:
+        col = model.get_column(key.leaf)
+        return col is not None and col.type == DataType.BOOLEAN
+    if isinstance(key, ColumnSqlKey) and not key.path and model is not None:
+        col = model.get_column(key.column_name)
+        return col is not None and col.type == DataType.BOOLEAN
+    return False
+
+
+def _reject_non_numeric_expression_agg(
+    *, source: ValueKey, agg: str,
+    scope: Union[ModelScope, StageSchema],
+) -> None:
+    if agg not in NUMERIC_ONLY_AGGREGATIONS:
+        return
+    model = (
+        scope.source_model if isinstance(scope, ModelScope) else None
+    )
+    if _expression_is_confidently_text(source, model=model):
+        raise ValueError(
+            f"Aggregation {agg!r} requires a numeric value, but the "
+            f"aggregated expression is non-numeric (text). Use a counting "
+            f"or min/max aggregation, or make the expression numeric."
+        )
+    if _expression_is_confidently_boolean(source, model=model):
+        raise ValueError(
+            f"Aggregation {agg!r} requires a numeric value, but the "
+            f"aggregated expression is boolean. Use a counting aggregation, "
+            f"or cast the expression to a number."
+        )
+
+
 def _bind_agg(
     parsed: AggCall, *,
     scope: Union[ModelScope, StageSchema],
@@ -912,7 +1062,7 @@ def _bind_agg(
         source = _resolve_dotted_star(
             parsed.source.parts, scope=scope, bundle=bundle,
         )
-    else:
+    elif isinstance(parsed.source, (Ref, DottedRef)):
         bound_source = _bind(
             parsed.source, scope=scope, bundle=bundle, in_filter=False,
         )
@@ -922,6 +1072,11 @@ def _bind_agg(
                 f"got {type(bound_source).__name__}."
             )
         source = bound_source
+    else:
+        # DEV-1826: same-model scalar EXPRESSION source (``sum(amount - cost)``).
+        source = _bind_expression_agg_source(
+            parsed.source, scope=scope, bundle=bundle,
+        )
 
     # ``partition_by`` is lifted out of kwargs onto ``partition_keys``
     # (``None`` means no partition, ``[]`` means grand total).
@@ -947,6 +1102,19 @@ def _bind_agg(
     effective_agg = _validate_agg_eligibility(
         source=source, agg=parsed.agg, bundle=bundle,
     )
+    # DEV-1826 expression sources: order-sensitive first/last need a plain
+    # column (the ranked kernel can't rank an expression), and numeric-only
+    # aggregations are rejected when the expression is confidently non-numeric
+    # (per-column gates don't apply).
+    if isinstance(source, EXPRESSION_SOURCE_KINDS):
+        if effective_agg in ("first", "last"):
+            raise ValueError(
+                f"Aggregation {effective_agg!r} is not supported over an "
+                f"expression; use a plain column."
+            )
+        _reject_non_numeric_expression_agg(
+            source=source, agg=effective_agg, scope=scope,
+        )
     return AggregateKey(
         source=source,
         agg=effective_agg,
@@ -994,53 +1162,78 @@ def _resolve_column_filter_key(
     return SqlExprKey(canonical_sql=col.filter, referenced_join_paths=paths)
 
 
-def _resolve_gate_owner(
+def _resolve_agg_owner(
     source, bundle: ResolvedSourceBundle,
-) -> "Optional[tuple[SlayerModel, str]]":
-    """Resolve the ``(owning_model, leaf)`` an aggregation gate applies to;
-    ``None`` when the target can't be confirmed (caller best-effort skips)."""
-    if isinstance(source, StarKey):
-        return None
-    leaf = getattr(source, "leaf", None) or getattr(source, "column_name", None)
-    if leaf is None:
-        return None
+) -> "tuple[Optional[SlayerModel], Optional[str]]":
+    """``(owning_model, gate_leaf)`` for an aggregate source.
+
+    Star and expression sources own no column (``leaf`` is ``None``) but still
+    resolve an owning model for custom-aggregation names — the join-path
+    terminal for a pathed star, the host otherwise. ``(None, None)`` when the
+    model can't be confirmed (no host model, unresolved join hop): the caller
+    best-effort skips validation there (the compile-time path validator
+    catches truly broken refs).
+    """
     host = bundle.source_model
     if host is None:
-        return None
+        return None, None
+    leaf = getattr(source, "leaf", None) or getattr(source, "column_name", None)
     current: SlayerModel = host
     for hop in tuple(getattr(source, "path", ())):
         nxt = bundle.get_referenced_model(hop)
         if nxt is None:
-            return None
+            return None, None
         current = nxt
     return current, leaf
+
+
+def _unknown_aggregation_message(name: str, known) -> str:
+    """The standard unknown-aggregation error, plus a scalar-allowlist hint
+    when the name is a near-miss for a scalar function (typo UX, DEV-1826)."""
+    msg = format_unknown_aggregation(name, known)
+    scalar_match = difflib.get_close_matches(
+        word=name.lower(), possibilities=sorted(SCALAR_FUNCTIONS), n=1,
+    )
+    if scalar_match:
+        msg += (
+            f" Note: {scalar_match[0]!r} is a scalar function, not an "
+            f"aggregation (scalar allowlist: {sorted(SCALAR_FUNCTIONS)})."
+        )
+    return msg
 
 
 def _validate_agg_eligibility(
     *, source, agg: str, bundle: ResolvedSourceBundle,
 ) -> str:
-    """Heal the aggregation name and enforce per-column eligibility gates,
-    returning the effective (alias-healed) name for ``AggregateKey.agg``.
+    """Heal the aggregation name, validate it globally, and enforce per-column
+    eligibility gates, returning the effective (alias-healed) name for
+    ``AggregateKey.agg``.
 
     Healing is skipped when the raw token exactly matches a custom aggregation
     on the owning model (a custom ``countd`` wins over the alias). Gate order:
-    0. unknown-name-first (before PK / whitelist / type, so a misspelling isn't
-    mislabelled a type restriction); 1. PK columns restricted to count /
-    count_distinct; 2. explicit ``Column.allowed_aggregations`` whitelist;
-    3. else ``DEFAULT_AGGREGATIONS_BY_TYPE`` (custom aggregations exempt).
-    ``StarKey`` and unresolvable targets pass through (best-effort)."""
-    owner = _resolve_gate_owner(source, bundle)
-    if owner is None:
+    0. unknown-name-first, for EVERY source shape (column, star, expression —
+    DEV-1826), so ``*:bogus`` / ``bogus(*)`` never escape to SQL generation;
+    1. PK columns restricted to count / count_distinct; 2. explicit
+    ``Column.allowed_aggregations`` whitelist; 3. else
+    ``DEFAULT_AGGREGATIONS_BY_TYPE`` (custom aggregations exempt).
+
+    Star and expression sources have no column, so the per-column gates (1-3)
+    don't apply (gate 0 still validates the name); unresolvable targets pass
+    through (best-effort).
+    """
+    owner_model, leaf = _resolve_agg_owner(source, bundle)
+    if owner_model is None:
         return normalize_aggregation_name(agg)
-    current, leaf = owner
-    # Alias healing — custom aggregation named like an alias wins.
-    custom_names = {a.name for a in (current.aggregations or [])}
+    # DEV-1576 alias healing — custom aggregation named like an alias wins.
+    custom_names = {a.name for a in (owner_model.aggregations or [])}
     effective = agg if agg in custom_names else normalize_aggregation_name(agg)
     # Gate 0: unknown-name-first (precedence over PK / whitelist / type).
     known = BUILTIN_AGGREGATIONS | custom_names
     if effective not in known:
-        raise ValueError(format_unknown_aggregation(effective, known))
-    col = next((c for c in current.columns if c.name == leaf), None)
+        raise ValueError(_unknown_aggregation_message(effective, known))
+    if leaf is None:
+        return effective
+    col = next((c for c in owner_model.columns if c.name == leaf), None)
     if col is None:
         return effective
     if col.primary_key:

@@ -1,6 +1,10 @@
 # Aggregations
 
-An aggregation is picked at query time via colon syntax: `measure:agg`. It is
+An aggregation is picked at query time via colon syntax (`measure:agg`) or
+the equivalent functional spelling (`agg(measure)` — e.g. `sum(revenue)`,
+`count(*)`, `percentile(price, p=0.9)`); both produce identical SQL and
+result keys, and the functional form also accepts a same-model expression
+(`sum(amount - cost)`). It is
 not baked into the measure definition.
 
 ## Built-in aggregations
@@ -86,8 +90,8 @@ the query's dimensions, repeated across the finer rows (like `SUM(x) OVER
 `partition_by=region` is the region total on every city row; `partition_by=[]` is
 the grand total; a list (`[region, channel]`) or dotted path also work. Computed
 over rows passing row-level filters (HAVING/pagination never change the parent
-total). Not yet supported: with `window=`, on `first`/`last`, nested in a
-transform, or in a filter.
+total). Composes with `window=`, `first`/`last`, transforms, and filters; only
+`partition_by` on a *cross-model* `first`/`last` aggregate is still deferred.
 
 ## Allowed aggregations (whitelist)
 

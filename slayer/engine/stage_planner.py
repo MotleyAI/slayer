@@ -127,7 +127,7 @@ from slayer.engine.regroup_planner import (
     REGROUP_LEAF_PREFIX,
     RegroupPlaceholderRegistry,
     classify_regroup_filter,
-    combined_partitioned_aggregates,
+    combined_consumer_aggregates,
     conjunct_scope,
     dimension_partitioned_aggregates,
     dimension_regroup_roots,
@@ -144,12 +144,13 @@ from slayer.engine.source_bundle import (
     stage_bundle_with_siblings,
     synthetic_model_from_stage_schema,
 )
-from slayer.engine.normalization import func_style_agg_to_colon
 from slayer.engine.syntax import (
     AggCall,
     DottedRef,
+    ParsedExpr,
     Ref,
     TransformCall,
+    canonical_measure_text,
     parse_expr,
     parse_filter_expr,
 )
@@ -480,16 +481,12 @@ def _reject_measure_refs_for_raw_rows(
     measure_names: FrozenSet[str] = frozenset(
         m.name for m in (getattr(src, "measures", None) or []) if m.name
     )
-    custom_agg_names: FrozenSet[str] = frozenset(
-        a.name for a in (getattr(src, "aggregations", None) or []) if a.name
-    )
     _reject_measure_refs_in_filters(
         query=query, measure_names=measure_names, scope=scope, bundle=bundle,
     )
     _reject_measure_refs_in_order(
         query=query,
         measure_names=measure_names,
-        custom_agg_names=custom_agg_names,
         source_name=getattr(src, "name", None),
         scope=scope,
         bundle=bundle,
@@ -516,13 +513,9 @@ def _reject_measure_refs_in_filters(
             )
 
 
-def _parse_order_formula(raw: str, *, custom_agg_names: FrozenSet[str]):
+def _parse_order_formula(raw: str):
     try:
-        text = func_style_agg_to_colon(raw, custom_agg_names=custom_agg_names)
-    except Exception:  # noqa: BLE001 — fall back to the original text
-        text = raw
-    try:
-        return parse_expr(text)
+        return parse_expr(raw)
     except Exception:  # noqa: BLE001 — binder reports parse errors properly
         return None
 
@@ -531,7 +524,6 @@ def _reject_measure_refs_in_order(
     *,
     query: SlayerQuery,
     measure_names: FrozenSet[str],
-    custom_agg_names: FrozenSet[str],
     source_name: Optional[str],
     scope,
     bundle: ResolvedSourceBundle,
@@ -539,7 +531,7 @@ def _reject_measure_refs_in_order(
     for item in (query.order or []):
         raw = getattr(item, "raw_formula", None)
         if raw:
-            parsed = _parse_order_formula(raw, custom_agg_names=custom_agg_names)
+            parsed = _parse_order_formula(raw)
             if parsed is not None and _expr_has_measure_ref(
                 parsed, measure_names=measure_names, scope=scope, bundle=bundle,
             ):
@@ -832,12 +824,14 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     _available_dims = [dm.declared_name for dm in (*_dim_dms, *_td_dms)]
     # A partitioned aggregate inside a computed dimension declares a producer grain (partition_by may be finer than the query).
     _dim_agg_keys = frozenset(dimension_partitioned_aggregates(declared_measures))
-    # A COMBINED-position partitioned aggregate needs query-dimension partition keys for the join-back.
+    # A COMBINED-position partitioned aggregate needs query-dimension partition keys
+    # for the join-back; local and cross-model partitioned consumers alike.
+    _consumers = combined_consumer_aggregates(
+        declared_measures=declared_measures, order_specs=order_specs,
+        row_agg_set=_dim_agg_keys, bound_filters=bound_filters,
+    )
     _combined_consumer_keys = frozenset(
-        combined_partitioned_aggregates(
-            declared_measures, order_specs,
-            row_agg_set=_dim_agg_keys, bound_filters=bound_filters,
-        )[0]
+        [*_consumers.local_partitioned, *_consumers.cross_model_partitioned]
     )
 
     def _validate_partition_keys(key: ValueKey) -> frozenset:
@@ -1102,9 +1096,12 @@ def _partitioned_conjunct_scope(
     """The routing scope of one split conjunct: a cross-model / crossing-input aggregate predicate resolves at the combined SELECT (transform-wrapped → POST-phase)."""
     cj_refs = list(walk_value_keys(cj))
     cj_has_transform = any(isinstance(k, TransformKey) for k in cj_refs)
+    # A row-role aggregate (the computed dimension's own) stays row-scoped even when
+    # cross-model; only non-row refs take the combined-SELECT shortcut.
+    combined_refs = [k for k in cj_refs if k not in row_agg_set]
     if not cj_has_transform and (
-        any(_is_cross_model_agg(k) for k in cj_refs)
-        or (crossing_root is not None and any(crossing_root(k) for k in cj_refs))
+        any(_is_cross_model_agg(k) for k in combined_refs)
+        or (crossing_root is not None and any(crossing_root(k) for k in combined_refs))
     ):
         return "combined"
     return conjunct_scope(cj, dim_keys=dim_keys, row_agg_set=row_agg_set)
@@ -1416,7 +1413,10 @@ def _assert_partition_key_attributable(
     host_m = scope.source_model if isinstance(scope, ModelScope) else None
     if host_m is None:
         return
-    agg_target = tuple(key.source.path) if isinstance(key, AggregateKey) else ()
+    agg_target = (
+        tuple(getattr(key.source, "path", ()) or ())
+        if isinstance(key, AggregateKey) else ()
+    )
     models_by_name = {m.name: m for m in bundle.referenced_models}
     root = walk_key_path(model=host_m, path=agg_target, bundle=bundle) or host_m
     if _attributable_from_root(
@@ -1463,7 +1463,7 @@ def _grain_member_attributable(
         if isinstance(r, AggregateKey):
             saw = True
             if not _attributable_from_root(
-                host_path=tuple(r.source.path), target_path=target_path,
+                host_path=tuple(getattr(r.source, "path", ()) or ()), target_path=target_path,
                 root_model=root_model, models_by_name=models_by_name,
             ):
                 return False
@@ -2042,39 +2042,6 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     )
 
 
-def _discover_cross_model_combined(
-    prebound: PreboundQuery,
-) -> Tuple[List[AggregateKey], Dict[AggregateKey, str], Dict[AggregateKey, DataType]]:
-    seen: set = set()
-    out: List[AggregateKey] = []
-    alias: Dict[AggregateKey, str] = {}
-    declared_type: Dict[AggregateKey, DataType] = {}
-    for dm in prebound.declared_measures:
-        if dm.is_dimension:
-            continue
-        vk = dm.bound.value_key
-        _accumulate_cross_model_leaves(vk, seen=seen, out=out)
-        if _is_cross_model_agg(vk):
-            if dm.public_name is not None:
-                alias.setdefault(vk, dm.public_name)
-            if dm.type_is_explicit and dm.type is not None:
-                declared_type.setdefault(vk, dm.type)
-    for sp in prebound.order_specs:
-        _accumulate_cross_model_leaves(sp.bound.value_key, seen=seen, out=out)
-    for bf in prebound.bound_filters:
-        _accumulate_cross_model_leaves(bf.value_key, seen=seen, out=out)
-    return out, alias, declared_type
-
-
-def _accumulate_cross_model_leaves(
-    vk: ValueKey, *, seen: set, out: List[AggregateKey],
-) -> None:
-    for k in walk_value_keys(vk):
-        if _is_cross_model_agg(k) and k not in seen:
-            seen.add(k)
-            out.append(k)
-
-
 def _assert_total_routing(prebound: PreboundQuery) -> None:
     """Post-discovery total-routing invariant: every cross-model / partitioned aggregate leaf must be disposed; a survivor is an unrouted shape and raises."""
     roles: Tuple[Tuple[str, List[ValueKey]], ...] = (
@@ -2167,14 +2134,18 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
         row_inner_aggs = dimension_partitioned_aggregates(
             prebound.declared_measures,
         )
-        combined_aggs, public_alias_by_agg = combined_partitioned_aggregates(
-            prebound.declared_measures, prebound.order_specs,
-            row_agg_set=frozenset(row_inner_aggs),
-            bound_filters=prebound.bound_filters,
-        )
     else:
         row_aggs, row_inner_aggs = [], []
-        combined_aggs, public_alias_by_agg = [], {}
+    # One unified combined-consumer walk (local + cross-model); ``row_agg_set`` is empty
+    # in a producer sub-plan, matching the pre-unification cross-model discovery.
+    consumers = combined_consumer_aggregates(
+        declared_measures=prebound.declared_measures,
+        order_specs=prebound.order_specs,
+        row_agg_set=frozenset(row_inner_aggs),
+        bound_filters=prebound.bound_filters,
+    )
+    combined_aggs = list(consumers.local_partitioned) if local_discovery else []
+    public_alias_by_agg: Dict[AggregateKey, str] = dict(consumers.public_alias)
     # Bare windowed / first-last measures join the COMBINED roots at the full projected grain.
     dim_dms, td_dms, _ = partition_declared_measures(
         declared_measures=prebound.declared_measures,
@@ -2228,9 +2199,10 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
     # Cross-model aggregates become target-rooted producers; a cross-model root inside a computed dimension is a ROW-phase producer.
     cm_row = [k for k in row_aggs if _is_cross_model_agg(k)]
     row_aggs = [k for k in row_aggs if not _is_cross_model_agg(k)]
-    cm_combined, cm_alias, cm_type = _discover_cross_model_combined(prebound)
-    for agg, name in cm_alias.items():
-        public_alias_by_agg.setdefault(agg, name)
+    cm_combined = [
+        *consumers.cross_model_partitioned, *consumers.cross_model_bare,
+    ]
+    cm_type = dict(consumers.declared_type)
     if not row_aggs and not combined_aggs and not cm_combined and not cm_row:
         return None
     # A real column sharing the reserved placeholder prefix would shadow a placeholder at render; reject while a regroup is active.
@@ -3427,6 +3399,7 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
             label=td.label,
             type=DataType.TIMESTAMP,
         ))
+    seen_measure_keys: Dict[str, Tuple[str, ValueKey]] = {}
     for m in (query.measures or []):
         formula = m.formula
         explicit_name = m.name
@@ -3439,7 +3412,11 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
             _reraise_nested_attach(
                 err, computed_dim_names=_computed_dim_names(query),
             )
-        canonical = _canonical_alias_for_formula(formula, bound=bound)
+        # The parsed tree drives text-shape alias derivation, so both spellings
+        # of one formula share an alias (DEV-1826).
+        canonical = _canonical_alias_for_formula(
+            formula, bound=bound, parsed=parsed,
+        )
         # A bare/dotted saved-ModelMeasure reference surfaces under the formula text (explicit query name still wins).
         saved_name = _saved_measure_public_name(
             scope=scope, bundle=bundle, formula=formula,
@@ -3447,6 +3424,20 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
         alias_name = explicit_name or saved_name
         declared_name = alias_name or canonical
         public_name = alias_name or canonical
+        # Two DIFFERENT values whose DERIVED keys collide would silently share
+        # a column (e.g. ``sum(amount - cost)`` vs ``sum(amount + cost)`` both
+        # sanitize to ``amount_cost_sum``, DEV-1826) — fail loudly. Scoped to
+        # unnamed entries: explicit-name collisions keep their dedicated
+        # declared-more-than-once errors downstream.
+        if alias_name is None:
+            prior = seen_measure_keys.get(public_name)
+            if prior is not None and prior[1] != bound.value_key:
+                raise ValueError(
+                    f"Measures {prior[0]!r} and {formula!r} both derive the "
+                    f"result key {public_name!r} but compute different "
+                    f"values; rename one (set 'name') to disambiguate."
+                )
+            seen_measure_keys[public_name] = (formula, bound.value_key)
         fmt, desc = _format_description_for_measure_formula(
             scope=scope, bound=bound,
         )
@@ -3519,8 +3510,13 @@ def _canonical_alias_for_formula(
     formula: str,
     *,
     bound: Optional[BinderBoundExpr] = None,
+    parsed: Optional[ParsedExpr] = None,
 ) -> str:
-    """Canonical public alias for a measure formula: ``canonical_aggregate_alias`` for an AggregateKey root, else text-shape recognition sanitised to a valid identifier."""
+    """Canonical public alias for a measure formula: ``canonical_aggregate_alias``
+    for an AggregateKey root, else text-shape recognition sanitised to a valid
+    identifier. The text shape runs over the CANONICAL colon-spelling rendering
+    of ``parsed`` when given (DEV-1826), so ``cumsum(sum(revenue))`` and
+    ``cumsum(revenue:sum)`` derive one alias."""
     if bound is not None and isinstance(bound.value_key, AggregateKey):
         # stage_formula profile prefixes the join path relative to the stage (``customers.*:count`` → ``customers._count``).
         alias = canonical_aggregate_alias(
@@ -3529,7 +3525,9 @@ def _canonical_alias_for_formula(
         if alias is not None:
             return alias
         # None means the source exposes no leaf/column name; use the text-shape path.
-    text = formula.strip()
+    text = (
+        canonical_measure_text(parsed) if parsed is not None else formula.strip()
+    )
     if ":" in text and "(" not in text:
         base, agg = text.rsplit(":", 1)
         return canonical_agg_name(
