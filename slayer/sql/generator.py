@@ -401,7 +401,7 @@ def _first_bare_column_name(key) -> Optional[str]:
 # gate and the consecutive_periods emitter. ---
 
 _PREDICATE_COMPARISON_OPS = frozenset(
-    {"==", "=", "!=", "<>", "<", "<=", ">", ">="}
+    {"==", "=", "!=", "<>", "<", "<=", ">", ">=", "is", "is not"}
 )
 _BOOL_CONNECTIVE_OPS = frozenset({"and", "or", "not"})
 
@@ -421,9 +421,10 @@ _COMPOUND_VALUE_KEYS = (
 
 def _is_boolean_shaped(key) -> bool:
     """Whether ``key`` renders as a SQL predicate (truth value) rather than a
-    numeric/text value: a comparison, BETWEEN, IN, or an ``and`` / ``or`` /
-    ``not`` connective. Recursive by construction — a connective's operands are
-    themselves boolean-shaped (enforced by the typing contract)."""
+    numeric/text value: a comparison, a null test (``is`` / ``is not``),
+    BETWEEN, IN, or an ``and`` / ``or`` / ``not`` connective. Recursive by
+    construction — a connective's operands are themselves boolean-shaped
+    (enforced by the typing contract)."""
     if isinstance(key, ArithmeticKey):
         return (
             key.op in _PREDICATE_COMPARISON_OPS
@@ -570,7 +571,7 @@ def _assert_cp_shape(*, op: str, key, expect: str, node_is_bool: bool) -> None:
     if expect == "bool" and not node_is_bool:
         raise ValueError(
             f"{op!r}: 'and' / 'or' / 'not' require boolean-shaped operands (a "
-            f"comparison, BETWEEN, IN, or another connective); got "
+            f"comparison, a null test, BETWEEN, IN, or another connective); got "
             f"{type(key).__name__}."
         )
     if expect == "value" and node_is_bool:
@@ -5186,13 +5187,6 @@ class SQLGenerator:
                 ),
             )
 
-        if predicate_is_boolean:
-            pred_in_case: exp.Expression = exp.Coalesce(
-                this=predicate, expressions=[exp.false()],
-            )
-        else:
-            pred_in_case = predicate
-
         partition_aliases: list[str] = []
         for sid in self._transform_grain_slot_ids(
             planned_query=planned_query, slots_by_id=slots_by_id,
@@ -5225,7 +5219,7 @@ class SQLGenerator:
             args: Dict[str, Any] = {
                 "this": exp.Sum(this=exp.Case(
                     ifs=[exp.If(
-                        this=pred_in_case.copy(),
+                        this=predicate.copy(),
                         true=exp.Literal.number(then),
                     )],
                     default=exp.Literal.number(other),
@@ -5255,7 +5249,7 @@ class SQLGenerator:
 
         value_outer_case = exp.Case(
             ifs=[exp.If(
-                this=pred_in_case.copy(),
+                this=predicate.copy(),
                 true=_running_sum(
                     then=1, other=0,
                     partitions=partition_aliases + [cp_reset_alias],
