@@ -149,7 +149,12 @@ def _rewrite_sql_like(text: str) -> str:
     spans = [(m.start(), m.end()) for m in _PY_STRING_LITERAL_RE.finditer(text)]
 
     def _sub(m: "re.Match[str]") -> str:
-        if any(s <= m.start() < e for s, e in spans):
+        # Skip a match inside a string literal, or one whose LHS is fused into a
+        # Unicode identifier the ``\b``/``\w`` LHS token splits (``℘name``,
+        # decomposed ``éname``) — that name is a reference, not a LIKE operand.
+        if any(s <= m.start() < e for s, e in spans) or _is_ident_adjacent(
+            text, m.start() - 1
+        ):
             return m.group(0)
         lhs, neg, pat = m.group(1), m.group(2), m.group(3)
         call = f"like({lhs}, {pat})"
@@ -182,6 +187,19 @@ def _is_ident_adjacent(text: str, pos: int) -> bool:
     """Whether ``text[pos]`` is identifier material the ``\\w`` token class
     misses (combining marks, ``Other_ID_Start`` symbols like ``℘``)."""
     return 0 <= pos < len(text) and ("a" + text[pos]).isidentifier()
+
+
+def _sub_keyword_isolated(pattern: "re.Pattern[str]", repl: str, text: str) -> str:
+    """``pattern.sub(repl, text)`` but leaving a keyword match fused into a
+    Unicode identifier untouched — combining marks or ``Other_ID_Start`` symbols
+    (``℘``) on either side that ``\\b``/``\\w`` cannot see would otherwise
+    rewrite ``℘NULL`` → ``℘None`` or ``℘AND`` → ``℘and``, silently rebinding the
+    reference (mirrors ``_case_keyword``'s adjacency guard)."""
+    def _guard(m: "re.Match[str]") -> str:
+        if _is_ident_adjacent(text, m.start() - 1) or _is_ident_adjacent(text, m.end()):
+            return m.group(0)
+        return repl
+    return pattern.sub(_guard, text)
 
 
 def _case_keyword(text: str, tok: Tuple[Optional[str], str, int, int]) -> Optional[str]:
@@ -380,8 +398,13 @@ def parse_expr(text: str) -> ParsedExpr:
     _reject_reserved_expr_token(text)
 
     # Scan for raw ``OVER(`` after blanking string literals so a quoted value
-    # (``status == 'OVER('``) isn't mistaken for window usage.
-    if _OVER_RE.search(_PY_STRING_LITERAL_RE.sub("", text)):
+    # (``status == 'OVER('``) isn't mistaken for window usage. Skip an ``OVER``
+    # fused into a Unicode identifier (``℘OVER(x)``) the leading ``\b`` splits.
+    blanked = _PY_STRING_LITERAL_RE.sub("", text)
+    if any(
+        not _is_ident_adjacent(blanked, m.start() - 1)
+        for m in _OVER_RE.finditer(blanked)
+    ):
         raise IllegalWindowInFilterError(
             filter_expr=text,
             source="raw OVER(...) is not allowed in Mode-B DSL",
@@ -444,9 +467,9 @@ def _normalize_sql_filter_operators(text: str) -> str:
     literals = _PY_STRING_LITERAL_RE.findall(text)
     result: List[str] = []
     for i, part in enumerate(parts):
-        part = _SQL_NULL_RE.sub("None", part)
+        part = _sub_keyword_isolated(_SQL_NULL_RE, "None", part)
         for kw_re, kw in _SQL_KEYWORD_RES:
-            part = kw_re.sub(kw, part)
+            part = _sub_keyword_isolated(kw_re, kw, part)
         part = part.replace("<>", "!=")
         # SQL ``||`` → Python ``|`` (BitOr), desugared to ``concat`` in
         # ``_convert``; same precedence relative to comparisons.

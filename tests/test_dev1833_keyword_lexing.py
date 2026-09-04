@@ -12,7 +12,9 @@ from decimal import Decimal
 
 import pytest
 
+from slayer.core.errors import IllegalWindowInFilterError
 from slayer.engine.syntax import (
+    AggCall,
     Arith,
     BoolOp,
     Cmp,
@@ -282,3 +284,58 @@ class TestLikeStillWorks:
     def test_double_quoted_pattern_rejected(self) -> None:
         with pytest.raises(ValueError, match=r"Invalid Mode-B expression"):
             parse_filter_expr('col like "p%"')
+
+
+# --------------------------------------------------------------------------- #
+# Sibling keyword rewriters (NULL / IS / OVER / LIKE) hardened alongside CASE
+# --------------------------------------------------------------------------- #
+class TestSiblingRewriterUnicode:
+    """The NULL / IS-NOT-AND-OR-IN / OVER / LIKE rewrites share CASE's
+    identifier-adjacency guard, so a keyword spelling fused into a Unicode
+    identifier the ``\\b``/``\\w`` token class splits — ``Other_ID_Start`` ``℘``
+    or a combining mark — is never rewritten out from under the reference.
+    """
+
+    def test_null_keyword_fused_into_other_id_start(self) -> None:
+        # ``℘NULL`` is one identifier; without the guard NULL → None rebinds it.
+        assert parse_filter_expr("℘NULL is None") == Cmp(
+            op="is", left=Ref(name="℘NULL"), right=Literal(value=None),
+        )
+
+    def test_null_keyword_fused_after_combining_mark(self) -> None:
+        # e + COMBINING ACUTE then NULL; NFKC composes the ref back to ``éNULL``.
+        assert parse_filter_expr("éNULL is None") == Cmp(
+            op="is", left=Ref(name="éNULL"), right=Literal(value=None),
+        )
+
+    def test_operator_keyword_fused_not_lowercased(self) -> None:
+        # ``℘IS`` is a name; case-normalisation must not fold it to ``℘is``.
+        assert parse_filter_expr("℘IS") == Ref(name="℘IS")
+
+    def test_null_still_normalizes_when_standalone(self) -> None:
+        assert parse_filter_expr("amount is NULL") == Cmp(
+            op="is", left=Ref(name="amount"), right=Literal(value=None),
+        )
+
+    def test_over_fused_into_identifier_is_not_window(self) -> None:
+        # ``℘OVER(x)`` calls a keyword-named function, not raw OVER(); it defers
+        # to binding as a custom aggregation instead of being rejected outright.
+        node = parse_expr("℘OVER(x)")
+        assert isinstance(node, AggCall)
+        assert node.agg == "℘OVER"
+        assert node.source == Ref(name="x")
+
+    def test_real_over_still_rejected(self) -> None:
+        with pytest.raises(IllegalWindowInFilterError):
+            parse_expr("amount OVER (partition_by)")
+
+    def test_like_lhs_fused_never_corrupts(self) -> None:
+        # A fused LHS can't lex as a LIKE operand; rather than the old
+        # ``℘like(name, …)`` corruption it now errors cleanly.
+        for expr in ("℘name LIKE 'x%'", "éname LIKE 'x%'"):
+            with pytest.raises(ValueError):
+                parse_filter_expr(expr)
+
+    def test_like_unit_leaves_fused_lhs_untouched(self) -> None:
+        for text in ("℘name LIKE 'x%'", "éname LIKE 'x%'"):
+            assert _rewrite_sql_like(text) == text
