@@ -509,7 +509,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             format: Output format — "markdown" (default, compact and LLM-friendly), "json" (structured), or "csv" (most compact). Case-insensitive.
             distinct_dimension_values: Default True (Cube.js-style auto-dedup for dim-only queries — emits GROUP BY <dim aliases>). Set False to emit raw rows: no top-level GROUP BY, just SELECT <dimensions/time_dimensions> with the usual WHERE/ORDER BY/LIMIT. Any measure reference (in measures, filters, or order) raises an error in this mode.
 
-        Example: query(source_model="orders", measures=[{"formula": "*:count"}], dimensions=["status"], filters=["status == 'completed'"])
+        Example: query(query={"source_model": "orders", "measures": [{"formula": "*:count"}], "dimensions": ["status"], "filters": ["status == 'completed'"]})
 
         Before calling this tool, run ``search`` first, supplying the entities you're thinking of using (and/or the query itself via the ``query`` arg, or a free-text ``question``). Read the returned memories and consider any matching example queries before formulating the final query.
         """
