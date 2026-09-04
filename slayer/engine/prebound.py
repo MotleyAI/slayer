@@ -54,6 +54,7 @@ from slayer.core.keys import (
 from slayer.core.models import SlayerModel
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, expression_source_leaf
 from slayer.engine.binding import BoundFilter
+from slayer.engine.introspect_utils import is_exact_numeric_db_type
 from slayer.engine.planning import DeclaredMeasure, OrderSpec
 from slayer.engine.response_meta import _infer_aggregated_format
 
@@ -322,10 +323,9 @@ def measure_key_preserves_native_type(*, model: SlayerModel, key: ValueKey) -> b
     if name is None:
         return False
     col = model.get_column(name)
-    if col is None or col.db_type is None:
+    if col is None:
         return False
-    db_type = col.db_type.split("(")[0].upper().strip()
-    return db_type in {"DECIMAL", "NUMERIC"}
+    return is_exact_numeric_db_type(col.db_type)
 
 
 def measure_key_format_description(

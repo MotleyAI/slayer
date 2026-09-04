@@ -38,8 +38,11 @@ from slayer.engine.introspect_utils import (  # noqa: F401  (re-exported for bac
     _clean_comment,
     _get_columns_fallback,
     _parse_info_schema_is_float,
+    _resolve_fallback_ref,
     _safe_get_columns,
+    is_exact_numeric_db_type,
 )
+from slayer.sql import engine_factory, sqlite_introspect
 from slayer.engine.schema_scope import (
     SchemaRef,
     SkippedSchema,
@@ -216,9 +219,6 @@ _FLOAT_LIKE_SA_TYPES = frozenset(
 _CLICKHOUSE_WRAPPER_NAMES = frozenset({"NULLABLE", "LOWCARDINALITY"})
 _CLICKHOUSE_WRAPPER_MAX_DEPTH = 8
 
-# NUMERIC/DECIMAL type names — float-like only when scale > 0
-_NUMERIC_DECIMAL_TYPES = frozenset({"NUMERIC", "DECIMAL"})
-
 # INFORMATION_SCHEMA type maps + ``_safe_get_columns`` / ``_get_columns_fallback``
 # now live in the dependency-free ``introspect_utils`` leaf module (DEV-1578);
 # imported + re-exported at the top of this file for back-compat.
@@ -264,7 +264,7 @@ def _sa_type_to_data_type(sa_type: sa.types.TypeEngine) -> DataType:
         return DataType.UNKNOWN
     # DEV-1361: NUMERIC/DECIMAL with scale=0 are integer-shaped → INT.
     # Anything float-like (scale>0 or unknown) → DOUBLE.
-    if type_name in _NUMERIC_DECIMAL_TYPES or type_str in _NUMERIC_DECIMAL_TYPES:
+    if is_exact_numeric_db_type(type_name) or is_exact_numeric_db_type(type_str):
         return DataType.DOUBLE if _sa_type_is_float(sa_type) else DataType.INT
     if type_name in _SA_TYPE_MAP:
         return _SA_TYPE_MAP[type_name]
@@ -305,9 +305,9 @@ def _raw_db_type_str(sa_type: sa.types.TypeEngine) -> str | None:
 def _sa_type_is_exact_numeric(sa_type: sa.types.TypeEngine) -> bool:
     """Whether ``sa_type`` is an exact NUMERIC/DECIMAL database type."""
     sa_type = _unwrap_clickhouse_wrappers(sa_type)
-    type_name = type(sa_type).__name__.upper()
-    type_str = str(sa_type).split("(")[0].upper().strip()
-    return type_name in _NUMERIC_DECIMAL_TYPES or type_str in _NUMERIC_DECIMAL_TYPES
+    return is_exact_numeric_db_type(type(sa_type).__name__) or is_exact_numeric_db_type(
+        str(sa_type)
+    )
 
 
 def _sa_type_is_float(sa_type: sa.types.TypeEngine) -> bool:
@@ -321,13 +321,13 @@ def _sa_type_is_float(sa_type: sa.types.TypeEngine) -> bool:
     type_name = type(sa_type).__name__.upper()
     if type_name in _FLOAT_LIKE_SA_TYPES:
         return True
-    if type_name in _NUMERIC_DECIMAL_TYPES:
+    if is_exact_numeric_db_type(type_name):
         scale = getattr(sa_type, "scale", None)
         return scale is None or scale > 0
     type_str = str(sa_type).split("(")[0].upper().strip()
     if type_str in _FLOAT_LIKE_SA_TYPES:
         return True
-    if type_str in _NUMERIC_DECIMAL_TYPES:
+    if is_exact_numeric_db_type(type_str):
         scale = getattr(sa_type, "scale", None)
         return scale is None or scale > 0
     return False
@@ -773,7 +773,6 @@ def _get_pk_constraint_fallback(
     is scoped to ``ref``'s schema and (where present) catalog. A ``ref=None``
     request resolves to the connection default on catalog-qualifying dialects.
     """
-    from slayer.engine.introspect_utils import _resolve_fallback_ref
     ref = _resolve_fallback_ref(sa_engine, ref)
     schema = ref.name if ref else None
     catalog = ref.catalog if ref else None
@@ -909,7 +908,7 @@ def _introspect_query_columns_via_inspector(
             data_type = _sa_type_to_data_type(col_type)
             is_float = _sa_type_is_float(col_type)
             if data_type.is_opaque or _sa_type_is_exact_numeric(col_type):
-                db_type = _raw_db_type_str(col_type)
+                db_type = _raw_db_type_str(_unwrap_clickhouse_wrappers(col_type))
         results.append(IntrospectedColumn(
             name=col_name,
             type=data_type,
@@ -963,7 +962,7 @@ def _introspect_query_columns_via_inspector(
                 data_type = _sa_type_to_data_type(col_type)
                 is_float = _sa_type_is_float(col_type)
                 if data_type.is_opaque or _sa_type_is_exact_numeric(col_type):
-                    ref_db_type = _raw_db_type_str(col_type)
+                    ref_db_type = _raw_db_type_str(_unwrap_clickhouse_wrappers(col_type))
             results.append(IntrospectedColumn(
                 name=alias,
                 type=data_type,
@@ -1079,8 +1078,6 @@ def _sqlite_probe_integer_columns(
     if sa_engine.dialect.name != "sqlite":
         return columns
 
-    from slayer.sql.sqlite_introspect import probe_sqlite_integer_column
-
     schema, table = _parse_qualified_sql_table(sql_table)
     out: list[IntrospectedColumn] = []
     with sa_engine.connect() as conn:
@@ -1089,7 +1086,7 @@ def _sqlite_probe_integer_columns(
                 out.append(col)
                 continue
             try:
-                verdict = probe_sqlite_integer_column(
+                verdict = sqlite_introspect.probe_sqlite_integer_column(
                     conn=conn,
                     table=table,
                     column=col.name,
@@ -1704,7 +1701,6 @@ def ingest_datasource_report(
     validate_scope_args(schema=schema, schemas=schemas, all_schemas=all_schemas)
     requested = _requested_list(schema, schemas)
 
-    from slayer.sql import engine_factory
     sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
     try:
         inspector = sa.inspect(sa_engine)
@@ -2170,7 +2166,7 @@ async def _process_one_table(
     qualified persisted ``sql_table`` is never rewritten, and a contested bare
     default model is left alone with a skip.
     """
-    from slayer.engine.schema_drift import ModelAddition
+    from slayer.engine.schema_drift import ModelAddition  # ALLOW(import-not-top): circular — schema_drift imports ingestion
 
     persisted = await storage.get_model(table_name, data_source=datasource.name)
     if persisted is None:
@@ -2456,7 +2452,6 @@ def _default_schema_membership(
     a default-schema table. ``None`` object-set means the listing failed, so the
     guard fails closed (never repoint on a guess).
     """
-    from slayer.sql import engine_factory
     sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
     try:
         inspector = sa.inspect(sa_engine)
@@ -2496,7 +2491,7 @@ async def _run_additive_pass(
 ):
     """Save / merge every freshly-introspected model, isolating per-model
     failures. Returns ``(additions, errors, merge_skipped)``."""
-    from slayer.engine.schema_drift import IngestionError, ModelAddition
+    from slayer.engine.schema_drift import IngestionError, ModelAddition  # ALLOW(import-not-top): circular — schema_drift imports ingestion
 
     additions: list[ModelAddition] = []
     errors: list[IngestionError] = []
@@ -2557,8 +2552,7 @@ async def ingest_datasource_idempotent(
     """
     validate_scope_args(schema=schema, schemas=schemas, all_schemas=all_schemas)
 
-    # Local import to avoid an import cycle with engine.schema_drift.
-    from slayer.engine.schema_drift import (
+    from slayer.engine.schema_drift import (  # ALLOW(import-not-top): circular — schema_drift imports ingestion
         IdempotentIngestResult,
         IngestionError,
         validate_datasource,
@@ -2742,7 +2736,6 @@ def _friendly_db_error(exc: Exception) -> str:
 def _get_schemas(ds: DatasourceConfig) -> list[str]:
     """List a datasource's schemas. Best-effort; empty means no hint."""
     try:
-        from slayer.sql import engine_factory
         engine = engine_factory.get_engine(ds.resolve_env_vars())
         inspector = sa.inspect(engine)
         return inspector.get_schema_names()
@@ -3230,9 +3223,7 @@ async def _refresh_datasource_embeddings(
     doc) used by ``ingest_datasource_idempotent`` to route per-entity
     failures to the matching ``IngestionError``.
     """
-    # Local import: keep the search module off the cold-start path
-    # when the optional embedding extra isn't installed.
-    from slayer.search.service import SearchService
+    from slayer.search.service import SearchService  # ALLOW(import-not-top): optional embedding extra off the cold-start path
 
     search = SearchService(storage=storage)
     model_warnings, models_in_ds = await _refresh_models_for_datasource(

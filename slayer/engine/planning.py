@@ -166,7 +166,7 @@ class ValueRegistry:
                 model=self._host_model_name,
             )
 
-    def intern(
+    def intern(  # NOSONAR(S107) — keyword-only slot metadata, not positional sprawl
         self,
         *,
         key: ValueKey,

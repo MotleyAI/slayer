@@ -24,6 +24,7 @@ import math as _math
 import statistics
 import tempfile
 import uuid
+from decimal import Decimal
 
 import pytest
 import sqlalchemy as sa
@@ -1206,3 +1207,88 @@ class TestClickHouseModeAEscaping:
             variables={"v": "x\\' OR '1'='1"},
         ))
         assert int(resp.data[0]["esc._count"]) == 0
+
+
+# ---------------------------------------------------------------------------
+# Decimal native-type preservation (#364)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def _clickhouse_decimal_storage(clickhouse_container, tmp_path_factory):
+    """Module-scoped: ingested table with wrapped and short decimal columns."""
+    db_name = _create_module_db(clickhouse_container)
+    try:
+        engine = sa.create_engine(_ds_url_for_db(clickhouse_container, db_name))
+        try:
+            with engine.begin() as conn:
+                conn.execute(sa.text("""
+                    CREATE TABLE decimal_orders (
+                        id Int32,
+                        amount Nullable(Decimal(18, 2)),
+                        short_amount Decimal64(4)
+                    ) ENGINE = MergeTree() ORDER BY id
+                """))
+                conn.execute(sa.text("""
+                    INSERT INTO decimal_orders VALUES
+                        (1, '90071992547409.91', '900719925474.0992'),
+                        (2, '0.02', '0.0001')
+                """))
+        finally:
+            engine.dispose()
+
+        datasource = _ds_config(clickhouse_container, db_name)
+        model = next(
+            m for m in ingest_datasource(datasource=datasource)
+            if m.name == "decimal_orders"
+        )
+        amount = model.get_column("amount")
+        short_amount = model.get_column("short_amount")
+        assert amount is not None and short_amount is not None
+        # Bare inner type retained — wrapper text must not defeat preservation.
+        assert amount.db_type == "Decimal(18, 2)"
+        assert short_amount.db_type is not None
+        assert "Decimal" in short_amount.db_type
+
+        tmpdir = str(tmp_path_factory.mktemp("clickhouse_decimal"))
+        storage = YAMLStorage(base_dir=tmpdir)
+        run_sync(storage.save_datasource(datasource))
+        run_sync(storage.save_model(model))
+        yield storage
+    finally:
+        _drop_module_db(clickhouse_container, db_name)
+
+
+@pytest.fixture
+def clickhouse_decimal_env(_clickhouse_decimal_storage) -> SlayerQueryEngine:
+    return SlayerQueryEngine(storage=_clickhouse_decimal_storage)
+
+
+@pytest.mark.integration
+class TestClickHouseDecimalPreservation:
+    @pytest.mark.parametrize(
+        "measure,result_key,expected",
+        [
+            (
+                "amount:sum",
+                "decimal_orders.amount_sum",
+                Decimal("90071992547409.93"),
+            ),
+            (
+                "short_amount:sum",
+                "decimal_orders.short_amount_sum",
+                Decimal("900719925474.0993"),
+            ),
+        ],
+    )
+    async def test_inferred_decimal_sum_preserves_exact_value(
+        self, clickhouse_decimal_env: SlayerQueryEngine, measure, result_key, expected
+    ) -> None:
+        query = SlayerQuery(source_model="decimal_orders", measures=[{"formula": measure}])
+        result = await clickhouse_decimal_env.execute(query=query)
+        sql = (await clickhouse_decimal_env.execute(query=query, dry_run=True)).sql
+
+        assert " AS DOUBLE" not in sql and "Float64" not in sql, sql
+        value = result.data[0][result_key]
+        assert isinstance(value, Decimal)
+        assert value == expected

@@ -6,19 +6,22 @@ remain unconditional.
 """
 
 import logging
+from unittest.mock import MagicMock
 
 import pytest
 import sqlalchemy as sa
 
-ch_types = pytest.importorskip("clickhouse_sqlalchemy.types")
-
 from slayer.core.enums import DataType
 from slayer.engine import ingestion
 from slayer.engine.ingestion import (
+    _introspect_query_columns_via_inspector,
+    _sa_type_is_exact_numeric,
     _sa_type_is_float,
     _sa_type_to_data_type,
     _unwrap_clickhouse_wrappers,
 )
+
+ch_types = pytest.importorskip("clickhouse_sqlalchemy.types")
 
 
 @pytest.fixture(autouse=True)
@@ -157,6 +160,77 @@ class TestUnwrapHelper:
     def test_unwrap_non_wrapper_returns_self(self):
         sa_type = ch_types.Int32()
         assert _unwrap_clickhouse_wrappers(sa_type) is sa_type
+
+
+class TestClickHouseExactNumericDetection:
+    @pytest.mark.parametrize(
+        "sa_type",
+        [
+            ch_types.Decimal(18, 2),
+            ch_types.Nullable(ch_types.Decimal(18, 2)),
+            ch_types.LowCardinality(ch_types.Nullable(ch_types.Decimal(10, 4))),
+        ],
+    )
+    def test_wrapped_decimal_is_exact_numeric(self, sa_type):
+        assert _sa_type_is_exact_numeric(sa_type) is True
+
+    @pytest.mark.parametrize(
+        "sa_type",
+        [
+            ch_types.Float64(),
+            ch_types.Nullable(ch_types.Float64()),
+            ch_types.Nullable(ch_types.Int32()),
+        ],
+    )
+    def test_non_decimal_is_not_exact_numeric(self, sa_type):
+        assert _sa_type_is_exact_numeric(sa_type) is False
+
+
+def _introspect_columns(columns, referenced_tables=()):
+    inspector = MagicMock()
+    inspector.get_columns.return_value = columns
+    inspector.get_pk_constraint.return_value = {"constrained_columns": []}
+    results = _introspect_query_columns_via_inspector(
+        sa_engine=MagicMock(),
+        inspector=inspector,
+        table_name="t",
+        ref=None,
+        rollup_sql=None,
+        referenced_tables=set(referenced_tables),
+        fk_columns_by_table={},
+    )
+    return {c.name: c for c in results}
+
+
+class TestWrappedDbTypeCapture:
+    """Inspector-path db_type must store the bare inner type, no wrapper text."""
+
+    def test_wrapped_decimal_stores_bare_inner_string(self):
+        by_name = _introspect_columns([
+            {"name": "amount", "type": ch_types.Nullable(ch_types.Decimal(18, 2))},
+            {"name": "rate", "type": ch_types.LowCardinality(
+                ch_types.Nullable(ch_types.Decimal(10, 4))
+            )},
+        ])
+        assert by_name["amount"].type is DataType.DOUBLE
+        assert by_name["amount"].db_type == "Decimal(18, 2)"
+        assert by_name["rate"].type is DataType.DOUBLE
+        assert by_name["rate"].db_type == "Decimal(10, 4)"
+
+    def test_wrapped_opaque_stores_unwrapped_string(self):
+        by_name = _introspect_columns([
+            {"name": "payload", "type": ch_types.Nullable(sa.JSON())},
+        ])
+        assert by_name["payload"].type is DataType.UNKNOWN
+        assert by_name["payload"].db_type == "JSON"
+
+    def test_wrapped_decimal_on_referenced_table_stores_bare_inner_string(self):
+        by_name = _introspect_columns(
+            [{"name": "amount", "type": ch_types.Nullable(ch_types.Decimal(18, 2))}],
+            referenced_tables={"refs"},
+        )
+        assert by_name["refs.amount"].type is DataType.DOUBLE
+        assert by_name["refs.amount"].db_type == "Decimal(18, 2)"
 
 
 class _FakeUnknownType(sa.types.TypeEngine):
