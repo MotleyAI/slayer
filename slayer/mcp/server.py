@@ -502,12 +502,15 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             limit: Max rows to return.
             offset: Number of rows to skip.
             whole_periods_only: When true, snap date filters to time bucket boundaries based on granularity, exclude the current incomplete time bucket.
-            show_sql: When true, include the generated SQL in the response for debugging.
             strict: Error instead of warn when a cross-model measure would broadcast or a producer filter would be dropped. Rejected with run-by-name execution — declare it on the stored query instead.
+            distinct_dimension_values: Default True (Cube.js-style auto-dedup for dim-only queries — emits GROUP BY <dim aliases>). Set False to emit raw rows: no top-level GROUP BY, just SELECT <dimensions/time_dimensions> with the usual WHERE/ORDER BY/LIMIT. Any measure reference (in measures, filters, or order) raises an error in this mode.
+
+        Top-level arguments (siblings of ``query``, NOT fields inside it):
+            variables: Values for {placeholder} substitutions in filters / model SQL.
+            show_sql: When true, include the generated SQL in the response for debugging.
             dry_run: When true, generate and return the SQL without executing it.
             explain: When true, run EXPLAIN ANALYZE and return the query plan.
             format: Output format — "markdown" (default, compact and LLM-friendly), "json" (structured), or "csv" (most compact). Case-insensitive.
-            distinct_dimension_values: Default True (Cube.js-style auto-dedup for dim-only queries — emits GROUP BY <dim aliases>). Set False to emit raw rows: no top-level GROUP BY, just SELECT <dimensions/time_dimensions> with the usual WHERE/ORDER BY/LIMIT. Any measure reference (in measures, filters, or order) raises an error in this mode.
 
         Example: query(query={"source_model": "orders", "measures": [{"formula": "*:count"}], "dimensions": ["status"], "filters": ["status == 'completed'"]})
 
