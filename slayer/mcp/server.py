@@ -27,6 +27,7 @@ from slayer.core.models import (
 )
 from slayer.core.query import ModelExtension, SlayerQuery
 from slayer.core.recommend import render_recommendation_markdown
+from slayer.core.warnings import ResponseTruncationWarning
 from slayer import async_utils
 from slayer.engine import ingestion as engine_ingestion
 from slayer.engine.ingestion import (
@@ -71,6 +72,11 @@ logger = logging.getLogger(__name__)
 
 VALID_DIMENSION_TYPES = {"string", "time", "date", "boolean", "number"}
 _UNSET = object()  # Sentinel to distinguish "not provided" from "explicitly set to None"
+
+# Response row cap when the caller passes no limit; an explicit limit is trusted verbatim.
+_MCP_ROW_CAP = 20
+_CAP_HINT = "pass a higher 'limit' to get more rows"
+_NESTED_CAP_HINT = "pass a higher 'limit' on the root query to get more rows"
 
 # Shared remedy for every mcp-import failure below.
 _MCP_REMEDY = (
@@ -500,7 +506,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 "change(revenue:sum) > 0", "last(change(revenue:sum)) < 0".
             time_dimensions: Time grouping. Format: {"dimension": "created_at", "granularity": "day|week|month|quarter|year", "date_range": ["2024-01-01", "2024-12-31"]}.
             order: Sorting. Format: {"column": "measure_or_dim_name", "direction": "asc|desc"}.
-            limit: Max rows to return.
+            limit: Max rows to return, trusted verbatim; without it the response is capped at 20 rows with a truncation notice.
             offset: Number of rows to skip.
             whole_periods_only: When true, snap date filters to time bucket boundaries based on granularity, exclude the current incomplete time bucket.
             show_sql: When true, include the generated SQL in the response for debugging.
@@ -572,6 +578,8 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                     )
                     if dry_run:
                         return f"SQL:\n{result.sql}"
+                    # Push-down can't reach the stored SQL; cap response-side.
+                    _cap_rows(result, hint=_CAP_HINT)
                     if explain:
                         output = f"SQL:\n{result.sql}\n\nQuery Plan:\n"
                         output += _format_output(result=result, fmt=fmt)
@@ -580,6 +588,11 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                     if show_sql and result.sql:
                         output = f"SQL:\n{result.sql}\n\n{output}"
                     return output
+            # No explicit limit: push down cap+1 so truncation is detectable
+            # without fetching the full result, then slice to the cap.
+            capped = limit is None
+            if capped:
+                data["limit"] = _MCP_ROW_CAP + 1
             slayer_query = SlayerQuery.model_validate(data)
             result = await engine.execute(
                 query=slayer_query,
@@ -589,6 +602,8 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             )
             if dry_run:
                 return f"SQL:\n{result.sql}"
+            if capped:
+                _cap_rows(result, hint=_CAP_HINT)
             if explain:
                 output = f"SQL:\n{result.sql}\n\nQuery Plan:\n"
                 output += _format_output(result=result, fmt=fmt)
@@ -635,7 +650,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
         Args:
             queries: Ordered list of stage dicts. Earlier stages must be
-                named; the last stage is the one whose rows return.
+                named; the last stage is the one whose rows return. Without
+                a root-stage ``limit`` the response is capped at 20 rows
+                with a truncation notice.
             variables: Variable values for ``{var}`` placeholder
                 substitution in filters. Runtime kwarg precedence:
                 ``runtime > stage.variables > outer query.variables >
@@ -662,14 +679,22 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 raise ValueError(f"Invalid format '{format}'. Must be one of: json, csv, markdown")
             if not queries:
                 raise ValueError("'queries' must be a non-empty list of query dicts.")
+            # Cap keys on the root (last) stage only; copy its dict — never
+            # mutate caller input.
+            capped = queries[-1].get("limit") is None
+            exec_queries = list(queries)
+            if capped:
+                exec_queries[-1] = {**exec_queries[-1], "limit": _MCP_ROW_CAP + 1}
             result = await engine.execute(
-                query=list(queries),
+                query=exec_queries,
                 variables=variables,
                 dry_run=dry_run,
                 explain=explain,
             )
             if dry_run:
                 return f"SQL:\n{result.sql}"
+            if capped:
+                _cap_rows(result, hint=_NESTED_CAP_HINT)
             if explain:
                 output = f"SQL:\n{result.sql}\n\nQuery Plan:\n"
                 output += _format_output(result=result, fmt=fmt)
@@ -2136,6 +2161,17 @@ def _format_csv(data: list[dict[str, Any]], columns: list[str]) -> str:
             values.append(v)
         lines.append(",".join(values))
     return "\n".join(lines)
+
+
+def _cap_rows(result: SlayerResponse, *, hint: str) -> None:
+    """Slice past-cap rows and append the truncation notice. No-limit paths only."""
+    if len(result.data) <= _MCP_ROW_CAP:
+        return
+    result.data = result.data[:_MCP_ROW_CAP]
+    result.warnings = [
+        *result.warnings,
+        ResponseTruncationWarning(returned_rows=_MCP_ROW_CAP, hint=hint),
+    ]
 
 
 def _csv_warning_comments(result: SlayerResponse) -> str:
