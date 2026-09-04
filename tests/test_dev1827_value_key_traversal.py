@@ -176,14 +176,16 @@ class TestProtocolTotality:
             assert out is sample
 
     def test_base_default_children_raises_naming_the_protocol(self) -> None:
+        key = DummyOpaqueKey()
         with pytest.raises(NotImplementedError) as ei:
-            DummyOpaqueKey().children()
+            key.children()
         assert "children" in str(ei.value)
         assert "DummyOpaqueKey" in str(ei.value)
 
     def test_base_default_map_children_raises_naming_the_protocol(self) -> None:
+        key = DummyOpaqueKey()
         with pytest.raises(NotImplementedError) as ei:
-            DummyOpaqueKey().map_children(lambda c: c)
+            key.map_children(lambda c: c)
         assert "map_children" in str(ei.value)
 
 
@@ -357,7 +359,8 @@ class TestDummyFlowsThroughGenericVisitors:
 
     def test_rank_rewrite_reaches_a_nested_rank(self) -> None:
         out = rewrite_rank_partition_keys(
-            DummyKey(child=RANK_TR), rewrite_fn=lambda k: frozenset({REGION}),
+            key=DummyKey(child=RANK_TR),
+            rewrite_fn=lambda k: frozenset({REGION}),
         )
         assert out.child.partition_keys == frozenset({REGION})
 
@@ -368,7 +371,9 @@ class TestDummyFlowsThroughGenericVisitors:
         assert out.child == ColumnKey(path=(), leaf="balance")
 
     def test_substitute_reaches_the_dummy_child(self) -> None:
-        out = substitute_value_keys(DummyKey(child=CITY), {CITY: REGION})
+        out = substitute_value_keys(
+            key=DummyKey(child=CITY), mapping={CITY: REGION},
+        )
         assert out.child == REGION
 
     def test_having_walk_finds_the_local_column_inside(self) -> None:
@@ -378,34 +383,39 @@ class TestDummyFlowsThroughGenericVisitors:
 
 class TestOpaqueDummyFailsClosed:
     def test_walk_value_keys_raises(self) -> None:
+        walk = walk_value_keys(DummyOpaqueKey())
         with pytest.raises(NotImplementedError):
-            list(walk_value_keys(DummyOpaqueKey()))
+            list(walk)
 
     def test_contains_aggregate_raises(self) -> None:
+        key = DummyOpaqueKey()
         with pytest.raises(NotImplementedError):
-            contains_aggregate(DummyOpaqueKey())
+            contains_aggregate(key)
 
     def test_lower_sugar_raises(self) -> None:
+        key = DummyOpaqueKey()
         with pytest.raises(NotImplementedError):
-            lower_sugar_transforms(DummyOpaqueKey())
+            lower_sugar_transforms(key)
 
     def test_rank_rewrite_raises(self) -> None:
+        key = DummyOpaqueKey()
         with pytest.raises(NotImplementedError):
-            rewrite_rank_partition_keys(
-                DummyOpaqueKey(), rewrite_fn=lambda k: frozenset(),
-            )
+            rewrite_rank_partition_keys(key=key, rewrite_fn=lambda k: frozenset())
 
     def test_reroot_raises(self) -> None:
+        key = DummyOpaqueKey()
         with pytest.raises(NotImplementedError):
-            reroot_value_key(DummyOpaqueKey(), target_path=("customers",))
+            reroot_value_key(key, target_path=("customers",))
 
     def test_substitute_raises(self) -> None:
+        key = DummyOpaqueKey()
         with pytest.raises(NotImplementedError):
-            substitute_value_keys(DummyOpaqueKey(), {CITY: REGION})
+            substitute_value_keys(key=key, mapping={CITY: REGION})
 
     def test_having_walk_raises(self) -> None:
+        key = DummyOpaqueKey()
         with pytest.raises(NotImplementedError):
-            SQLGenerator._direct_local_column_keys(DummyOpaqueKey())
+            SQLGenerator._direct_local_column_keys(key)
 
 
 # ---------------------------------------------------------------------------
@@ -414,7 +424,7 @@ class TestOpaqueDummyFailsClosed:
 class TestKindDispatchVisitorsRaise:
     def test_iter_slot_deps_raises_on_both(self) -> None:
         for dummy in (DummyKey(child=CITY), DummyOpaqueKey()):
-            with pytest.raises((NotImplementedError, TypeError)):
+            with pytest.raises(TypeError):
                 list(_iter_slot_deps(dummy))
 
     def test_iter_slot_deps_still_skips_star_and_literal(self) -> None:
@@ -424,7 +434,7 @@ class TestKindDispatchVisitorsRaise:
     def test_render_raises_on_both_at_top_level(self) -> None:
         ctx = RenderContext(dialect=get_dialect("postgres"))
         for dummy in (DummyKey(child=CITY), DummyOpaqueKey()):
-            with pytest.raises((NotImplementedError, TypeError)):
+            with pytest.raises(NotImplementedError):
                 render_value_key(key=dummy, ctx=ctx)
 
     def test_scalar_call_arg_raises_as_a_key_not_a_literal(self) -> None:
@@ -432,7 +442,7 @@ class TestKindDispatchVisitorsRaise:
         key = ScalarCallKey.model_construct(
             name="coalesce", args=(DummyOpaqueKey(), "x"),
         )
-        with pytest.raises((NotImplementedError, TypeError)) as ei:
+        with pytest.raises(NotImplementedError) as ei:
             render_value_key(key=key, ctx=ctx)
         assert "literal" not in str(ei.value)
 
@@ -442,7 +452,7 @@ class TestKindDispatchVisitorsRaise:
             name="iif",
             args=(Decimal("1"), DummyOpaqueKey(), Decimal("0")),
         )
-        with pytest.raises((NotImplementedError, TypeError)) as ei:
+        with pytest.raises(NotImplementedError) as ei:
             render_value_key(key=key, ctx=ctx)
         assert "literal" not in str(ei.value)
 
@@ -481,8 +491,9 @@ class TestCollectBaseAuxSlotIds:
         assert _aux_slot_ids(DummyKey(child=AGG)) == ["s1"]
 
     def test_opaque_dummy_raises(self) -> None:
+        key = DummyOpaqueKey()
         with pytest.raises(NotImplementedError):
-            _aux_slot_ids(DummyOpaqueKey())
+            _aux_slot_ids(key)
 
     def test_time_trunc_is_the_slot_not_its_column(self) -> None:
         # B1: the widened traversal must not surface the wrapped raw column
@@ -575,7 +586,7 @@ class TestRankRewriteContract:
             seen.append(k)
             return frozenset({REGION})
 
-        out = rewrite_rank_partition_keys(outer, rewrite_fn=fn)
+        out = rewrite_rank_partition_keys(key=outer, rewrite_fn=fn)
         assert seen[0] is inner
         assert seen[1] is outer
         assert seen[1].input is inner
@@ -587,14 +598,14 @@ class TestRankRewriteContract:
             source=AMOUNT, agg="sum", partition_keys=frozenset({CITY}),
         )
         out = rewrite_rank_partition_keys(
-            agg, rewrite_fn=lambda k: frozenset({REGION}),
+            key=agg, rewrite_fn=lambda k: frozenset({REGION}),
         )
         assert out.partition_keys == frozenset({REGION})
 
     def test_identity_preserved_without_rank_keys(self) -> None:
         tree = ArithmeticKey(op="+", operands=(AGG, CITY))
         out = rewrite_rank_partition_keys(
-            tree, rewrite_fn=lambda k: frozenset({REGION}),
+            key=tree, rewrite_fn=lambda k: frozenset({REGION}),
         )
         assert out is tree
 
@@ -608,8 +619,8 @@ class TestSubstituteAtomicity:
             op="+", operands=(CITY, LiteralKey(value=Decimal("1"))),
         )
         out = substitute_value_keys(
-            ArithmeticKey(op="+", operands=(CITY, AMOUNT)),
-            {CITY: replacement},
+            key=ArithmeticKey(op="+", operands=(CITY, AMOUNT)),
+            mapping={CITY: replacement},
         )
         assert out.operands[0] is replacement
         assert out.operands[0].operands[0] == CITY
@@ -745,8 +756,9 @@ class TestHavingValidationWiring:
             measures=[ModelMeasure(formula="*:count")],
             filters=["_count > 1 and status == 'completed'"],
         )
+        model = _status_orders_model()
         with pytest.raises(ValueError, match="dimensions / GROUP BY"):
-            await _engine_generate(query=query, model=_status_orders_model())
+            await _engine_generate(query=query, model=model)
 
     async def test_grouped_column_in_having_still_accepted(self) -> None:
         query = SlayerQuery(
