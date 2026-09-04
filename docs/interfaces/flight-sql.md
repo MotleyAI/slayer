@@ -102,7 +102,7 @@ SLayer accepts a single-`FROM` `SELECT` that translates to a `SlayerQuery`:
 | `SELECT <metric> [, ...]` | Each item must be a metric, dimension, or time-grain expression on the resolved table. |
 | `month(<col>)`, `quarter(...)`, etc. | Time-grain wrappers on time-typed columns. Equivalent to `date_trunc('month', <col>)`. |
 | `WHERE <col> BETWEEN '...' AND '...'` | On time-typed columns, lifts to `time_dimensions[*].date_range`. |
-| `WHERE <col> >= '...'` / `<=` / `>` / `<` | Same lift for time bounds. |
+| `WHERE <col> >= '...'` / `<=` / `>` / `<` | Passed verbatim into `SlayerQuery.filters`; comparators are never lifted, since a one-sided bound can't form a range. |
 | `WHERE ...` (everything else) | Passed verbatim into `SlayerQuery.filters`. |
 | `GROUP BY` | Strict on extras, lenient on omissions. User items must be in the derived dimension set; missing ones are silently filled in from the projection. |
 | `ORDER BY <col> [DESC \| ASC]` | Resolved against projected names. |
