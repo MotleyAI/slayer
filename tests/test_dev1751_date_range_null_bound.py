@@ -72,8 +72,9 @@ class TestNullBoundFailsClosed:
         query = _query(
             source_model="orders", measure="amount:sum", date_range=date_range,
         )
+        model = _orders()
         with pytest.raises(ValueError) as exc_info:
-            await _engine_generate(query=query, model=_orders())
+            await _engine_generate(query=query, model=model)
         _assert_names_dimension_range_and_fix(str(exc_info.value))
 
     @pytest.mark.parametrize("date_range", BAD_RANGES)
@@ -81,10 +82,9 @@ class TestNullBoundFailsClosed:
         query = _query(
             source_model="daily", measure="rev:max", date_range=date_range,
         )
+        model, extra = _orders(), [_daily()]
         with pytest.raises(ValueError) as exc_info:
-            await _engine_generate(
-                query=query, model=_orders(), extra_models=[_daily()],
-            )
+            await _engine_generate(query=query, model=model, extra_models=extra)
         _assert_names_dimension_range_and_fix(str(exc_info.value))
 
 
