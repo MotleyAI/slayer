@@ -608,11 +608,11 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 output = f"SQL:\n{result.sql}\n\nQuery Plan:\n"
                 output += _format_output(result=result, fmt=fmt)
                 return output
-            output = _format_output(result=result, fmt=fmt)
+            output = _format_output(
+                result=result, fmt=fmt, footer=_attributes_footer(result.attributes),
+            )
             if show_sql and result.sql:
                 output = f"SQL:\n{result.sql}\n\n{output}"
-            if result.attributes and (result.attributes.dimensions or result.attributes.measures):
-                output += "\n\n" + _format_attributes(attributes=result.attributes)
             return output
         except Exception as e:
             if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
@@ -699,11 +699,11 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 output = f"SQL:\n{result.sql}\n\nQuery Plan:\n"
                 output += _format_output(result=result, fmt=fmt)
                 return output
-            output = _format_output(result=result, fmt=fmt)
+            output = _format_output(
+                result=result, fmt=fmt, footer=_attributes_footer(result.attributes),
+            )
             if show_sql and result.sql:
                 output = f"SQL:\n{result.sql}\n\n{output}"
-            if result.attributes and (result.attributes.dimensions or result.attributes.measures):
-                output += "\n\n" + _format_attributes(attributes=result.attributes)
             return output
         except Exception as e:
             if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
@@ -2186,24 +2186,25 @@ def _format_warnings(result: SlayerResponse) -> str:
     return "" if not lines else "\n\nWarnings:\n" + "\n".join(lines)
 
 
-def _format_output(result: SlayerResponse, fmt: str) -> str:
+def _format_output(result: SlayerResponse, fmt: str, *, footer: str = "") -> str:
     """Format query output in the requested format.
 
     Warnings stay machine-safe: inside the json payload, leading `#` lines for
-    csv, a prose block only for markdown.
+    csv, a prose block only for markdown. ``footer`` (the attributes block) sits
+    before the markdown warnings so the warnings stay the trailing block.
     """
     if fmt == "csv":
         # Leading `#` lines, never trailing prose — trailing rows break the
         # column count for every CSV reader.
         return _csv_warning_comments(result) + _format_csv(
             data=result.data, columns=result.columns,
-        )
+        ) + footer
     if fmt == "markdown":
-        return result.to_markdown() + _format_warnings(result)
+        return result.to_markdown() + footer + _format_warnings(result)
     return _format_json(
         data=result.data,
         warnings=[w.model_dump(mode="json") for w in (result.warnings or [])],
-    )
+    ) + footer
 
 
 def _format_field_meta(entries: dict[str, Any]) -> list[str]:
@@ -2237,3 +2238,10 @@ def _format_attributes(attributes) -> str:
         lines.append("Measure attributes:")
         lines.extend(measure_lines)
     return "\n".join(lines)if lines else ""
+
+
+def _attributes_footer(attributes) -> str:
+    """Attributes block as a trailing footer, or empty when there's nothing to show."""
+    if attributes and (attributes.dimensions or attributes.measures):
+        return "\n\n" + _format_attributes(attributes=attributes)
+    return ""

@@ -15,7 +15,12 @@ from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.core.warnings import NormalizationWarning, ResponseTruncationWarning
-from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
+from slayer.engine.query_engine import (
+    FieldMetadata,
+    ResponseAttributes,
+    SlayerQueryEngine,
+    SlayerResponse,
+)
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -375,6 +380,27 @@ class TestNoticeRendering:
         assert len(comment_lines) == 2
         assert "[R1]" in comment_lines[0]
         assert NOTICE in comment_lines[1]
+
+    async def test_markdown_notice_trails_attributes(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        """Field attributes render before the trailing Warnings block, so the
+        notice stays last even when the response carries metadata."""
+        server = await _make_server(tmp_path)
+        attrs = ResponseAttributes(dimensions={"nums.id": FieldMetadata(label="ID")})
+        _patch_execute(
+            monkeypatch,
+            make_response=lambda: SlayerResponse(
+                data=[{"nums.id": i} for i in range(1, 25)],
+                columns=["nums.id"], sql="SELECT 1", attributes=attrs,
+            ),
+        )
+        result = await _call(server, name="query", arguments={
+            "source_model": "nums", "dimensions": ["id"],
+        })
+        assert "Dimension attributes:" in result
+        assert result.index("Dimension attributes:") < result.index("Warnings:")
+        assert NOTICE in result.rstrip().splitlines()[-1]
 
     def test_union_round_trip(self) -> None:
         resp = SlayerResponse(
