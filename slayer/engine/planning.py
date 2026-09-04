@@ -20,13 +20,16 @@ from slayer.core.keys import (
     ColumnKey,
     ColumnSqlKey,
     InKey,
+    KIND_POLICY,
     LiteralKey,
     Phase,
     REGROUP_LEAF_PREFIX,
     ScalarCallKey,
+    SqlExprKey,
     StarKey,
     TimeTruncKey,
     TransformKey,
+    VALUE_KEY_TYPES,
     ValueKey,
     column_leaf,
     column_path,
@@ -329,99 +332,33 @@ def desugar_change(key: TransformKey) -> ArithmeticKey:
 
 
 def lower_sugar_transforms(key: ValueKey) -> ValueKey:
-    """Recursively lower ``change``/``change_pct`` TransformKeys to desugared arithmetic, preserving the inner aggregate's identity."""
-    if isinstance(key, TransformKey):
-        new_input = lower_sugar_transforms(key.input)
-        if new_input is not key.input:
-            key = key.model_copy(update={"input": new_input})
-        if key.op == "change":
-            return desugar_change(key)
-        if key.op == "change_pct":
-            return desugar_change_pct(key)
-        return key
-    if isinstance(key, ArithmeticKey):
-        new_ops = tuple(lower_sugar_transforms(op) for op in key.operands)
-        if all(a is b for a, b in zip(new_ops, key.operands)):
-            return key
-        return ArithmeticKey(op=key.op, operands=new_ops)
-    if isinstance(key, ScalarCallKey):
-        new_args = tuple(
-            lower_sugar_transforms(a)
-            if isinstance(
-                a, _SLOTTABLE_KIND + (ArithmeticKey, ScalarCallKey, BetweenKey),
-            )
-            else a
-            for a in key.args
-        )
-        if all(a is b for a, b in zip(new_args, key.args)):
-            return key
-        return ScalarCallKey(name=key.name, args=new_args)
-    if isinstance(key, BetweenKey):
-        new_col = lower_sugar_transforms(key.column)
-        new_low = lower_sugar_transforms(key.low)
-        new_high = lower_sugar_transforms(key.high)
-        if (
-            new_col is key.column
-            and new_low is key.low
-            and new_high is key.high
-        ):
-            return key
-        return BetweenKey(column=new_col, low=new_low, high=new_high)
-    if isinstance(key, InKey):
-        # InKey.values is literal-only; only the LHS column can host a transform.
-        new_col = lower_sugar_transforms(key.column)
-        if new_col is key.column:
-            return key
-        return InKey(column=new_col, values=key.values, negated=key.negated)
-    return key
+    """Recursively lower ``change``/``change_pct`` TransformKeys to desugared arithmetic, preserving the inner aggregate's identity. Post-order over ``map_children``."""
+    lowered = key.map_children(lower_sugar_transforms)
+    if isinstance(lowered, TransformKey):
+        if lowered.op == "change":
+            return desugar_change(lowered)
+        if lowered.op == "change_pct":
+            return desugar_change_pct(lowered)
+    return lowered
 
 
-def rewrite_rank_partition_keys(  # NOSONAR(S3776) — sequential isinstance dispatch over the closed ValueKey union; each branch is the per-type identity-preserving rebuild contract, mirroring lower_sugar_transforms. Extracting per-type helpers would scatter the contract across the module.
+def rewrite_rank_partition_keys(
     key: ValueKey, *, rewrite_fn: Callable[[TransformKey], FrozenSet],
 ) -> ValueKey:
-    """Replace every rank-family ``TransformKey`` with an explicit ``partition_by`` via ``rewrite_fn``; identity-preserving, runs before interning."""
-    def _rec(k: ValueKey) -> ValueKey:
-        return rewrite_rank_partition_keys(key=k, rewrite_fn=rewrite_fn)
-
-    if isinstance(key, TransformKey):
-        new_input = _rec(key.input)
-        new_pk = key.partition_keys
-        if key.op in RANK_FAMILY_TRANSFORMS and key.partition_keys:
-            new_pk = rewrite_fn(key)
-        if new_input is key.input and new_pk == key.partition_keys:
-            return key
-        return key.model_copy(update={"input": new_input, "partition_keys": new_pk})
-    if isinstance(key, AggregateKey):
-        if key.partition_keys:
-            new_pk = rewrite_fn(key)
-            if new_pk != key.partition_keys:
-                return key.model_copy(update={"partition_keys": new_pk})
-        return key
-    if isinstance(key, ArithmeticKey):
-        new_ops = tuple(_rec(op) for op in key.operands)
-        unchanged = all(a is b for a, b in zip(new_ops, key.operands))
-        return key if unchanged else ArithmeticKey(op=key.op, operands=new_ops)
-    if isinstance(key, ScalarCallKey):
-        rewritable = _SLOTTABLE_KIND + (ArithmeticKey, ScalarCallKey, BetweenKey)
-        new_args = tuple(
-            _rec(a) if isinstance(a, rewritable) else a for a in key.args
-        )
-        unchanged = all(a is b for a, b in zip(new_args, key.args))
-        return key if unchanged else ScalarCallKey(name=key.name, args=new_args)
-    if isinstance(key, BetweenKey):
-        new_col, new_low, new_high = _rec(key.column), _rec(key.low), _rec(key.high)
-        unchanged = (
-            new_col is key.column and new_low is key.low and new_high is key.high
-        )
-        return key if unchanged else BetweenKey(
-            column=new_col, low=new_low, high=new_high,
-        )
-    if isinstance(key, InKey):
-        new_col = _rec(key.column)
-        return key if new_col is key.column else InKey(
-            column=new_col, values=key.values, negated=key.negated,
-        )
-    return key
+    """Replace every rank-family ``TransformKey``'s / partitioned aggregate's ``partition_keys`` via ``rewrite_fn``; identity-preserving, runs before interning. Post-order; ``rewrite_fn`` receives the pre-rebuild node."""
+    rebuilt = key.map_children(
+        lambda c: rewrite_rank_partition_keys(key=c, rewrite_fn=rewrite_fn),
+    )
+    wants_rewrite = (
+        isinstance(key, TransformKey)
+        and key.op in RANK_FAMILY_TRANSFORMS
+        and key.partition_keys
+    ) or (isinstance(key, AggregateKey) and key.partition_keys)
+    if wants_rewrite:
+        new_pk = rewrite_fn(key)
+        if new_pk != rebuilt.partition_keys:
+            rebuilt = rebuilt.model_copy(update={"partition_keys": new_pk})
+    return rebuilt
 
 
 def desugar_change_pct(key: TransformKey) -> ArithmeticKey:
@@ -487,52 +424,38 @@ class ProjectionPlan(BaseModel):
     order: List["OrderSpec"] = Field(default_factory=list)
 
 
-_SLOTTABLE_KIND = (
-    ColumnKey, ColumnSqlKey, AggregateKey, TransformKey, TimeTruncKey,
-)
+_SLOTTABLE_KIND = tuple(k for k in VALUE_KEY_TYPES if KIND_POLICY[k].slottable)
 
 
 def _iter_slot_deps(key: ValueKey):
-    """Yield only ``ValueKey``s needing a materialised slot; TimeTruncKey is itself the slot (its inner column isn't yielded, so a time dimension doesn't auto-add the raw column)."""
+    """Yield only ``ValueKey``s needing a materialised slot. Deliberately
+    asymmetric kind-dispatch (any unclassified kind raises): stops at
+    ``AggregateKey``, and yields ``TimeTruncKey`` without its inner column (a
+    time dimension must not auto-add the raw column)."""
     if isinstance(key, AggregateKey):
         yield key
         return
     if isinstance(key, TransformKey):
+        # input / partition_keys / time_key get their own slots so the generator
+        # renders PARTITION BY / ORDER BY against named projections.
         yield key
-        yield from _iter_slot_deps(key.input)
-        # partition_keys / time_key get their own slots so the generator renders
-        # PARTITION BY / ORDER BY against named projections.
-        for pk in key.partition_keys:
-            yield from _iter_slot_deps(pk)
-        if key.time_key is not None:
-            yield from _iter_slot_deps(key.time_key)
+        for child in key.children():
+            yield from _iter_slot_deps(child)
         return
     if isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
         yield key
         return
-    if isinstance(key, ArithmeticKey):
-        for op in key.operands:
-            yield from _iter_slot_deps(op)
+    if isinstance(key, (StarKey, LiteralKey, SqlExprKey)):
+        return  # never slottable on their own
+    if isinstance(key, (ArithmeticKey, ScalarCallKey, BetweenKey, InKey)):
+        # Inlined composites: surface their slot-worthy children.
+        for child in key.children():
+            yield from _iter_slot_deps(child)
         return
-    if isinstance(key, ScalarCallKey):
-        for arg in key.args:
-            if isinstance(
-                arg,
-                _SLOTTABLE_KIND
-                + (ArithmeticKey, ScalarCallKey, BetweenKey, InKey),
-            ):
-                yield from _iter_slot_deps(arg)
-        return
-    if isinstance(key, BetweenKey):
-        # BetweenKey is inlined into WHERE; recurse so its ColumnKey surfaces as
-        # a referenced slot.
-        yield from _iter_slot_deps(key.column)
-        yield from _iter_slot_deps(key.low)
-        yield from _iter_slot_deps(key.high)
-    if isinstance(key, InKey):
-        # InKey is inlined into WHERE; surface its LHS column (RHS literals aren't slottable).
-        yield from _iter_slot_deps(key.column)
-    # StarKey, LiteralKey — never slottable on their own.
+    raise TypeError(
+        f"_iter_slot_deps has no case for {type(key).__name__!r}: classify the "
+        f"kind explicitly (slot-worthy, inlined composite, or never slottable)."
+    )
 
 
 def _regroup_substituted_composite_phase(value_key: ValueKey) -> Optional[Phase]:
