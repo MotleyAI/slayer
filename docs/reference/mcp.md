@@ -91,8 +91,8 @@ claude mcp list
 
 | Tool | Description |
 |------|-------------|
-| `query` | Execute a semantic query. See [Queries](../concepts/queries.md) for format. |
-| `query_nested` | Execute a multi-stage DAG of named sub-queries that can reference one another via `source_model` or `joins.target_model`. Companion to `query`; the engine auto-sorts the list (Kahn's algorithm), so order doesn't matter. Params: `queries: List[Dict[str, Any]]`, plus `variables` / `show_sql` / `dry_run` / `explain` / `format` mirroring `query`. See [Multistage Queries](../examples/06_multistage_queries/multistage_queries.md). |
+| `query` | Execute a semantic query. See [Queries](../concepts/queries.md) for format. Without an explicit `limit` the response is capped at 20 rows (the generated SQL carries `LIMIT 21` so truncation is detectable) and a truncation notice is appended via the warnings channel. |
+| `query_nested` | Execute a multi-stage DAG of named sub-queries that can reference one another via `source_model` or `joins.target_model`. Companion to `query`; the engine auto-sorts the list (Kahn's algorithm), so order doesn't matter. Params: `queries: List[Dict[str, Any]]`, plus `variables` / `show_sql` / `dry_run` / `explain` / `format` mirroring `query`. The 20-row cap keys on the ROOT (last) stage's `limit` only — non-root limits neither lift nor lower it. See [Multistage Queries](../examples/06_multistage_queries/multistage_queries.md). |
 
 **`query` parameters:**
 
@@ -104,7 +104,7 @@ claude mcp list
 | `filters` | list[str] | Filter formula strings, e.g. `["status = 'active'", "amount > 100"]`. Supports operators (`=`, `<>`, `>`, `>=`, `<`, `<=`, `IN`, `IS NULL`, `IS NOT NULL`, `LIKE`, `NOT LIKE`), boolean logic (`AND`, `OR`, `NOT`), and inline transform expressions (`"change(revenue) > 0"`). Filters on measures are automatically routed to HAVING. |
 | `time_dimensions` | list[dict] | Time grouping. Each entry supports an optional `label` for display. |
 | `order` | list[dict] | Sorting, e.g. `[{"column": "count", "direction": "desc"}]` |
-| `limit` | int | Max rows |
+| `limit` | int | Max rows, trusted verbatim; without it the response is capped at 20 rows with a truncation notice |
 | `offset` | int | Skip rows |
 | `whole_periods_only` | bool | Snap date filters to time bucket boundaries, exclude the current incomplete time bucket |
 | `distinct_dimension_values` | bool | Default `true` — auto-dedup dim-only queries (`GROUP BY <dim/td aliases>`). Set `false` to emit raw rows (no top-level `GROUP BY`); rejects any measure reference in `measures` / `filters` / `order`. |
@@ -112,7 +112,7 @@ claude mcp list
 | `show_sql` | bool | Include the generated SQL in the response for debugging |
 | `dry_run` | bool | Generate and return the SQL without executing it |
 | `explain` | bool | Run EXPLAIN ANALYZE and return the query plan |
-| `format` | string | Output format: `"markdown"` (default, compact), `"json"` (structured), or `"csv"` (most compact). Case-insensitive |
+| `format` | string | Output format: `"markdown"` (default, compact), `"json"` (structured), or `"csv"` (most compact). Case-insensitive. Warnings (including the truncation notice) render as a trailing `Warnings:` block in markdown, leading `#` comment lines in csv, and turn the json payload into `{"data", "warnings"}` instead of a bare array |
 
 ### Memories + semantic search
 

@@ -81,10 +81,28 @@ class BroadcastGrainWarningPayload(SlayerWarning):
         )
 
 
+class ResponseTruncationWarning(SlayerWarning):
+    """A response sliced to a row cap; ``hint`` tells the caller how to get more rows. Emitted by the MCP layer only, never by the engine."""
+
+    kind: Literal["truncated"] = "truncated"
+    returned_rows: int
+    hint: str
+
+    def human_message(self) -> str:
+        return (
+            f"showing first {self.returned_rows} rows — more rows exist; {self.hint}"
+        )
+
+
 # Discriminated union, not the bare base: a ``List[SlayerWarning]`` would validate
 # down to the base type and drop subclass fields. Keyed on ``kind``, each round-trips.
 AnySlayerWarning = Annotated[
-    Union[NormalizationWarning, DroppedFilterWarning, BroadcastGrainWarningPayload],
+    Union[
+        NormalizationWarning,
+        DroppedFilterWarning,
+        BroadcastGrainWarningPayload,
+        ResponseTruncationWarning,
+    ],
     Field(discriminator="kind"),
 ]
 
