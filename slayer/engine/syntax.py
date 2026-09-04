@@ -149,10 +149,11 @@ def _rewrite_sql_like(text: str) -> str:
     spans = [(m.start(), m.end()) for m in _PY_STRING_LITERAL_RE.finditer(text)]
 
     def _sub(m: "re.Match[str]") -> str:
-        # Skip a match inside a string literal, or one whose LHS is fused into a
-        # Unicode identifier the ``\b``/``\w`` LHS token splits (``℘name``,
-        # decomposed ``éname``) — that name is a reference, not a LIKE operand.
-        if any(s <= m.start() < e for s, e in spans) or _is_ident_adjacent(
+        # Skip a match inside a string literal, or one whose LHS is only part of
+        # a larger reference the ``\b``/``\w`` LHS token can't lex whole — a
+        # ``.``-rooted dotted path (``℘.name``) or a Unicode-fused prefix
+        # (``℘name``, decomposed ``éname``); that name is not a LIKE operand.
+        if any(s <= m.start() < e for s, e in spans) or _continues_ref(
             text, m.start() - 1
         ):
             return m.group(0)
@@ -189,14 +190,22 @@ def _is_ident_adjacent(text: str, pos: int) -> bool:
     return 0 <= pos < len(text) and ("a" + text[pos]).isidentifier()
 
 
+def _continues_ref(text: str, pos: int) -> bool:
+    """Whether ``text[pos]`` extends a reference token past a keyword span — a
+    ``.`` join separator, or identifier material the ``\\w`` class misses. A
+    keyword touching such a char is a name component (``a.NULL``, ``℘case``),
+    not a keyword."""
+    return _is_ident_adjacent(text, pos) or (0 <= pos < len(text) and text[pos] == ".")
+
+
 def _sub_keyword_isolated(pattern: "re.Pattern[str]", repl: str, text: str) -> str:
-    """``pattern.sub(repl, text)`` but leaving a keyword match fused into a
-    Unicode identifier untouched — combining marks or ``Other_ID_Start`` symbols
-    (``℘``) on either side that ``\\b``/``\\w`` cannot see would otherwise
-    rewrite ``℘NULL`` → ``℘None`` or ``℘AND`` → ``℘and``, silently rebinding the
-    reference (mirrors ``_case_keyword``'s adjacency guard)."""
+    """``pattern.sub(repl, text)`` but leaving a keyword match that is really a
+    reference component untouched — a dotted leaf/root (``a.NULL`` → keeps
+    ``NULL``) or one fused to ``Other_ID_Start`` / combining marks the ``\\b``
+    boundary splits (``℘NULL`` → ``℘None``, ``℘AND`` → ``℘and``). Both would
+    silently rebind the reference (mirrors ``_case_keyword``'s guard)."""
     def _guard(m: "re.Match[str]") -> str:
-        if _is_ident_adjacent(text, m.start() - 1) or _is_ident_adjacent(text, m.end()):
+        if _continues_ref(text, m.start() - 1) or _continues_ref(text, m.end()):
             return m.group(0)
         return repl
     return pattern.sub(_guard, text)
@@ -399,10 +408,11 @@ def parse_expr(text: str) -> ParsedExpr:
 
     # Scan for raw ``OVER(`` after blanking string literals so a quoted value
     # (``status == 'OVER('``) isn't mistaken for window usage. Skip an ``OVER``
-    # fused into a Unicode identifier (``℘OVER(x)``) the leading ``\b`` splits.
+    # that only continues a reference — a Unicode-fused (``℘OVER(``) or dotted
+    # (``a.OVER(``) name the leading ``\b`` splits.
     blanked = _PY_STRING_LITERAL_RE.sub("", text)
     if any(
-        not _is_ident_adjacent(blanked, m.start() - 1)
+        not _continues_ref(blanked, m.start() - 1)
         for m in _OVER_RE.finditer(blanked)
     ):
         raise IllegalWindowInFilterError(

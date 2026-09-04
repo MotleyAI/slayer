@@ -339,3 +339,17 @@ class TestSiblingRewriterUnicode:
     def test_like_unit_leaves_fused_lhs_untouched(self) -> None:
         for text in ("℘name LIKE 'x%'", "éname LIKE 'x%'"):
             assert _rewrite_sql_like(text) == text
+
+    def test_keyword_named_dotted_leaf_preserved(self) -> None:
+        # ``a.NULL`` is a dotted ref; the NULL sub must not rewrite the leaf to
+        # ``a.None`` (parity with the CASE lexer keeping ``customers.end``).
+        assert parse_filter_expr("a.NULL is None") == Cmp(
+            op="is", left=DottedRef(parts=("a", "NULL")), right=Literal(value=None),
+        )
+
+    def test_dotted_root_other_id_start_not_a_like_operand(self) -> None:
+        # ``\u2118.name`` roots at an Other_ID_Start component the ``\w`` LHS can't
+        # lex whole; LIKE must not slice the leaf off into ``\u2118.like(name, \u2026)``.
+        assert _rewrite_sql_like("\u2118.name LIKE 'x%'") == "\u2118.name LIKE 'x%'"
+        with pytest.raises(ValueError):
+            parse_filter_expr("\u2118.name LIKE 'x%'")
