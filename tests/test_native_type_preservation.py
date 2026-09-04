@@ -109,7 +109,7 @@ class TestSqliteKeepsInferredCast:
         result = await engine.execute(query=query)
         sql = (await engine.execute(query=query, dry_run=True)).sql
 
-        assert "CAST(SUM(" in sql, sql
+        assert "CAST(SUM(orders.amount) AS REAL)" in sql, sql
         assert isinstance(result.data[0]["orders.amount_sum"], float)
 
 
