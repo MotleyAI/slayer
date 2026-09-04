@@ -31,16 +31,13 @@ from slayer.memories.models import (
 from slayer.memories.service import MemoryService
 from slayer.search.service import SearchResponse, SearchService
 
-# httpx / pandas are the optional ``client`` extra; keep them import-safe so
-# local-engine mode loads without them.
+# httpx is the optional ``client`` extra; keep it import-safe so local-engine
+# mode loads without it. pandas is heavier and only ``query_df`` needs it, so it
+# stays a lazy import inside that method.
 try:
     import httpx
 except ImportError:
     httpx = None
-try:
-    import pandas as pd
-except ImportError:
-    pd = None
 
 if TYPE_CHECKING:
     from slayer.core.policy import SessionPolicy
@@ -568,8 +565,10 @@ class SlayerClient:
 
     def query_df(self, query: QueryInput):
         """Execute a query and return a pandas DataFrame (sync; same input union)."""
-        if pd is None:
-            raise ImportError("DataFrame support requires pandas: pip install motley-slayer[client]")
+        try:
+            import pandas as pd  # ALLOW(import-not-top): heavy optional dep, only this method needs it
+        except ImportError as e:
+            raise ImportError("DataFrame support requires pandas: pip install motley-slayer[client]") from e
         result = self.query_sync(query=query)
         return pd.DataFrame(result.data)
 
