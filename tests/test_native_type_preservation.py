@@ -111,6 +111,7 @@ class TestSqliteKeepsInferredCast:
 
         assert "CAST(SUM(orders.amount) AS REAL)" in sql, sql
         assert isinstance(result.data[0]["orders.amount_sum"], float)
+        assert result.data[0]["orders.amount_sum"] == 3.0
 
 
 def _model_with_amount(db_type):
