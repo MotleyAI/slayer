@@ -616,14 +616,14 @@ class TestUnmappedTypeBecomesOpaque:
         # The explicit isinstance guard must survive the UNKNOWN fallback.
         assert _sa_type_to_data_type(MSSQL_TIMESTAMP()) is DataType.TEXT
 
-    def test_ingest_populates_db_type_only_for_opaque_columns(self) -> None:
+    def test_ingest_retains_db_type_when_logical_type_loses_information(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = os.path.join(tmpdir, "opaque.db")
             engine = sa.create_engine(f"sqlite:///{db_path}")
             with engine.connect() as c:
                 c.execute(sa.text(
                     "CREATE TABLE t (id INTEGER PRIMARY KEY, "
-                    "name VARCHAR(64), payload JSON, blob_col BLOB)"
+                    "name VARCHAR(64), amount NUMERIC(18,2), payload JSON, blob_col BLOB)"
                 ))
                 c.commit()
             engine.dispose()
@@ -636,7 +636,12 @@ class TestUnmappedTypeBecomesOpaque:
             assert by_name["payload"].type is DataType.UNKNOWN
             assert by_name["payload"].db_type == "JSON"
 
-            # Mapped types are untouched and carry no db_type.
+            # Exact NUMERIC is represented by logical DOUBLE, so retain the
+            # physical type needed to avoid lossy inferred aggregate casts.
+            assert by_name["amount"].type is DataType.DOUBLE
+            assert by_name["amount"].db_type == "NUMERIC(18, 2)"
+
+            # Fully represented mapped types carry no db_type.
             assert by_name["name"].type is DataType.TEXT
             assert by_name["name"].db_type is None
             assert by_name["id"].type is DataType.INT

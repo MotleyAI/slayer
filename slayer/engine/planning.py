@@ -178,6 +178,7 @@ class ValueRegistry:
         label: Optional[str] = None,
         type: Optional[DataType] = None,
         type_is_explicit: bool = False,
+        preserve_native_type: bool = False,
         expression: Optional["BoundExpr"] = None,
         format: Optional[NumberFormat] = None,
         description: Optional[str] = None,
@@ -200,6 +201,7 @@ class ValueRegistry:
                 label=label,
                 type=type,
                 type_is_explicit=type_is_explicit,
+                preserve_native_type=preserve_native_type,
                 format=format,
                 description=description,
             )
@@ -236,6 +238,7 @@ class ValueRegistry:
             label=label,
             type=type,
             type_is_explicit=type_is_explicit,
+            preserve_native_type=preserve_native_type,
             is_dimension=is_dimension,
             expression=expression if expression is not None else BoundExpr(value_key=key),
             format=format,
@@ -257,6 +260,7 @@ class ValueRegistry:
         label: Optional[str] = None,
         type: Optional[DataType] = None,
         type_is_explicit: bool = False,
+        preserve_native_type: bool = False,
         format: Optional[NumberFormat] = None,
         description: Optional[str] = None,
     ) -> SlotId:
@@ -292,6 +296,8 @@ class ValueRegistry:
         )
         if type_is_explicit and type is not None and slot.type in (None, type):
             updates["type_is_explicit"] = True
+        if preserve_native_type and not slot.preserve_native_type:
+            updates["preserve_native_type"] = True
         if updates:
             new_slot = slot.model_copy(update=updates)
             self._slots[existing_sid] = new_slot
@@ -460,6 +466,7 @@ class DeclaredMeasure(BaseModel):
     canonical_alias: Optional[str] = None
     type: Optional[DataType] = None
     type_is_explicit: bool = False
+    preserve_native_type: bool = False
     format: Optional[NumberFormat] = None
     description: Optional[str] = None
     # A computed dimension is a ROW-phase composite projected AND grouped; the
@@ -602,6 +609,7 @@ class ProjectionPlanner:
                 label=m.label,
                 type=m.type,
                 type_is_explicit=m.type_is_explicit,
+                preserve_native_type=m.preserve_native_type,
                 format=m.format,
                 description=m.description,
                 is_dimension=m.is_dimension,

@@ -296,7 +296,9 @@ def _get_columns_fallback(
     result = []
     for col_name, data_type_str in rows:
         sa_type, is_float = _info_schema_type(data_type_str)
-        result.append({"name": col_name, "type": sa_type, "is_float": is_float})
+        base_type = data_type_str.split("(")[0].upper().strip()
+        db_type = data_type_str if "DECIMAL" in base_type or "NUMERIC" in base_type else None
+        result.append({"name": col_name, "type": sa_type, "is_float": is_float, "db_type": db_type})
     comments = _get_column_comments_fallback(
         sa_engine=sa_engine, table_name=table_name, ref=ref,
     )

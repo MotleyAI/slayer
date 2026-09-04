@@ -65,6 +65,7 @@ __all__ = [
     "partition_declared_measures",
     "dimension_key_metadata",
     "measure_key_format_description",
+    "measure_key_preserves_native_type",
     "measure_key_type",
     "walk_key_path",
 ]
@@ -313,6 +314,18 @@ def measure_key_type(
     return aggregated_type(
         model=model, measure_name=name, aggregation=key.agg,
     )
+
+
+def measure_key_preserves_native_type(*, model: SlayerModel, key: ValueKey) -> bool:
+    """Whether an aggregate's inferred type would erase exact DB precision."""
+    name = _local_aggregate_source_name(key)
+    if name is None:
+        return False
+    col = model.get_column(name)
+    if col is None or col.db_type is None:
+        return False
+    db_type = col.db_type.split("(")[0].upper().strip()
+    return db_type in {"DECIMAL", "NUMERIC"}
 
 
 def measure_key_format_description(

@@ -302,6 +302,14 @@ def _raw_db_type_str(sa_type: sa.types.TypeEngine) -> str | None:
     return name or None
 
 
+def _sa_type_is_exact_numeric(sa_type: sa.types.TypeEngine) -> bool:
+    """Whether ``sa_type`` is an exact NUMERIC/DECIMAL database type."""
+    sa_type = _unwrap_clickhouse_wrappers(sa_type)
+    type_name = type(sa_type).__name__.upper()
+    type_str = str(sa_type).split("(")[0].upper().strip()
+    return type_name in _NUMERIC_DECIMAL_TYPES or type_str in _NUMERIC_DECIMAL_TYPES
+
+
 def _sa_type_is_float(sa_type: sa.types.TypeEngine) -> bool:
     """Return True if the SQLAlchemy type is float-like.
 
@@ -874,11 +882,10 @@ def _introspect_query_columns_via_inspector(
     """Introspect columns from a rollup query or plain table.
 
     Returns a list of :class:`IntrospectedColumn`. ``db_type`` is the raw
-    database type string and is only populated when ``DataType`` came out
-    opaque (``UNKNOWN``) — for mapped types the declared ``DataType`` already
-    carries everything, so leaving it ``None`` keeps stored models and golden
-    tests clean. ``comment`` is the column's DB comment when the driver
-    surfaces one.
+    database type string and is populated when ``DataType`` loses information:
+    opaque (``UNKNOWN``) columns and exact NUMERIC/DECIMAL columns represented
+    by the coarser INT/DOUBLE logical types. ``comment`` is the column's DB
+    comment when the driver surfaces one.
 
     For rollup queries, uses per-table inspector data since LIMIT 0
     type inference can be unreliable across databases.
@@ -897,10 +904,11 @@ def _introspect_query_columns_via_inspector(
         if isinstance(col_type, DataType):
             data_type = col_type
             is_float = col.get("is_float", False)
+            db_type = col.get("db_type")
         else:
             data_type = _sa_type_to_data_type(col_type)
             is_float = _sa_type_is_float(col_type)
-            if data_type.is_opaque:
+            if data_type.is_opaque or _sa_type_is_exact_numeric(col_type):
                 db_type = _raw_db_type_str(col_type)
         results.append(IntrospectedColumn(
             name=col_name,
@@ -950,10 +958,11 @@ def _introspect_query_columns_via_inspector(
             if isinstance(col_type, DataType):
                 data_type = col_type
                 is_float = col.get("is_float", False)
+                ref_db_type = col.get("db_type")
             else:
                 data_type = _sa_type_to_data_type(col_type)
                 is_float = _sa_type_is_float(col_type)
-                if data_type.is_opaque:
+                if data_type.is_opaque or _sa_type_is_exact_numeric(col_type):
                     ref_db_type = _raw_db_type_str(col_type)
             results.append(IntrospectedColumn(
                 name=alias,

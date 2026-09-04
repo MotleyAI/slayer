@@ -124,6 +124,7 @@ from slayer.engine.prebound import (
     StrictQueryCarrier,
     dimension_key_metadata,
     measure_key_format_description,
+    measure_key_preserves_native_type,
     measure_key_type,
     partition_declared_measures,
     walk_key_path,
@@ -593,6 +594,7 @@ def _map_bound_keys(
             canonical_alias=dm.canonical_alias,
             type=dm.type,
             type_is_explicit=dm.type_is_explicit,
+            preserve_native_type=dm.preserve_native_type,
             format=dm.format,
             description=dm.description,
             is_dimension=dm.is_dimension,
@@ -980,6 +982,11 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
             declared_name=canonical, public_name=canonical,
             type=explicit_types.get(agg, a_type), format=a_fmt, description=a_desc,
             type_is_explicit=agg in explicit_types,
+            preserve_native_type=(
+                model is not None
+                and agg not in explicit_types
+                and measure_key_preserves_native_type(model=model, key=agg)
+            ),
         ))
     prebound = PreboundQuery(
         declared_measures=[*grain_dms, *agg_dms],
@@ -2813,6 +2820,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
                 canonical_alias=dm.canonical_alias,
                 type=dm.type,
                 type_is_explicit=dm.type_is_explicit,
+                preserve_native_type=dm.preserve_native_type,
                 format=dm.format,
                 description=dm.description,
                 is_dimension=dm.is_dimension,
@@ -3823,6 +3831,14 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
             canonical_alias=canonical if alias_name else None,
             type=m_type,
             type_is_explicit=explicit_type is not None,
+            preserve_native_type=(
+                explicit_type is None
+                and isinstance(scope, ModelScope)
+                and scope.source_model is not None
+                and measure_key_preserves_native_type(
+                    model=scope.source_model, key=bound.value_key,
+                )
+            ),
             format=fmt,
             description=desc,
         ))
