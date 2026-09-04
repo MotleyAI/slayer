@@ -52,5 +52,5 @@
 
 ## 3. Review convergence (spec-review stage)
 
-- [ ] 3.1 `/process-reviews` loop until CI, Sonar, CodeRabbit, Codex, and the
+- [x] 3.1 `/process-reviews` loop until CI, Sonar, CodeRabbit, Codex, and the
       conventions gate are all green; ClickHouse workflow green on the PR.
