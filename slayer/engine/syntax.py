@@ -154,7 +154,7 @@ def _rewrite_sql_like(text: str) -> str:
         # ``.``-rooted dotted path (``℘.name``) or a Unicode-fused prefix
         # (``℘name``, decomposed ``éname``); that name is not a LIKE operand.
         if any(s <= m.start() < e for s, e in spans) or _continues_ref(
-            text, m.start() - 1
+            text=text, pos=m.start() - 1
         ):
             return m.group(0)
         lhs, neg, pat = m.group(1), m.group(2), m.group(3)
@@ -195,7 +195,9 @@ def _continues_ref(text: str, pos: int) -> bool:
     ``.`` join separator, or identifier material the ``\\w`` class misses. A
     keyword touching such a char is a name component (``a.NULL``, ``℘case``),
     not a keyword."""
-    return _is_ident_adjacent(text, pos) or (0 <= pos < len(text) and text[pos] == ".")
+    return _is_ident_adjacent(text=text, pos=pos) or (
+        0 <= pos < len(text) and text[pos] == "."
+    )
 
 
 def _sub_keyword_isolated(pattern: "re.Pattern[str]", repl: str, text: str) -> str:
@@ -205,7 +207,9 @@ def _sub_keyword_isolated(pattern: "re.Pattern[str]", repl: str, text: str) -> s
     boundary splits (``℘NULL`` → ``℘None``, ``℘AND`` → ``℘and``). Both would
     silently rebind the reference (mirrors ``_case_keyword``'s guard)."""
     def _guard(m: "re.Match[str]") -> str:
-        if _continues_ref(text, m.start() - 1) or _continues_ref(text, m.end()):
+        if _continues_ref(text=text, pos=m.start() - 1) or _continues_ref(
+            text=text, pos=m.end()
+        ):
             return m.group(0)
         return repl
     return pattern.sub(_guard, text)
@@ -412,7 +416,7 @@ def parse_expr(text: str) -> ParsedExpr:
     # (``a.OVER(``) name the leading ``\b`` splits.
     blanked = _PY_STRING_LITERAL_RE.sub("", text)
     if any(
-        not _continues_ref(blanked, m.start() - 1)
+        not _continues_ref(text=blanked, pos=m.start() - 1)
         for m in _OVER_RE.finditer(blanked)
     ):
         raise IllegalWindowInFilterError(
