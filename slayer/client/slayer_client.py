@@ -13,27 +13,41 @@ from typing import (
 )
 from urllib.parse import quote
 
+from slayer.async_utils import run_sync
+from slayer.core.format import NumberFormat
 from slayer.core.query import SlayerQuery
-from slayer.engine.query_engine import FieldMetadata, ResponseAttributes, SlayerResponse
+from slayer.core.recommend import RootModelRecommendation
+from slayer.engine.query_engine import (
+    FieldMetadata,
+    ResponseAttributes,
+    SlayerQueryEngine,
+    SlayerResponse,
+)
+from slayer.inspect.service import InspectService
 from slayer.memories.models import (
     ForgetMemoryResponse,
     SaveMemoryResponse,
 )
+from slayer.memories.service import MemoryService
+from slayer.search.service import SearchResponse, SearchService
+
+# httpx is the optional ``client`` extra; keep it import-safe so local-engine
+# mode loads without it. pandas is heavier and only ``query_df`` needs it, so it
+# stays a lazy import inside that method.
+try:
+    import httpx
+except ImportError:
+    httpx = None
 
 if TYPE_CHECKING:
     from slayer.core.policy import SessionPolicy
-    from slayer.core.recommend import RootModelRecommendation
-    from slayer.search.service import SearchResponse
 
 logger = logging.getLogger(__name__)
 
 
-# DEV-1437: the full input union accepted by every public query entry point,
-# mirroring ``SlayerQueryEngine.execute`` / ``execute_sync``. The list form is
-# the multi-stage DAG that ``query_nested`` (MCP) and ``POST /query`` with
-# ``{"queries": [...]}`` (REST) also accept; ``str`` runs a query-backed model
-# by name. ``Mapping``/``Sequence`` (not ``Dict``/``List``) so callers passing
-# ``list[dict[str, str]]`` aren't rejected by pyright's invariance check.
+# Input union for every public query entry point (mirrors ``engine.execute``):
+# ``str`` = run-by-name, list = multi-stage DAG. ``Mapping``/``Sequence`` keep
+# pyright's invariance check from rejecting ``list[dict[str, str]]``.
 QueryInput = (
     SlayerQuery
     | Mapping[str, Any]
@@ -43,21 +57,11 @@ QueryInput = (
 
 
 class SlayerClient:
-    """Async-first client for the SLayer REST API, or direct local mode (no server).
+    """Async-first client for the SLayer REST API, or direct local mode.
 
-    Usage:
-        # Remote mode (connects to running server)
-        client = SlayerClient(url="http://localhost:5143")
-
-        # Local mode (no server needed)
-        from slayer.storage.yaml_storage import YAMLStorage
-        client = SlayerClient(storage=YAMLStorage(base_dir="./my_models"))
-
-        # Async usage
-        result = await client.query(query)
-
-        # Sync usage (notebooks, scripts)
-        result = client.query_sync(query)
+    Remote: ``SlayerClient(url=...)``. Local (no server):
+    ``SlayerClient(storage=YAMLStorage(...))``. Async ``query`` / sync
+    ``query_sync``.
     """
 
     def __init__(
@@ -71,13 +75,10 @@ class SlayerClient:
         self._storage = storage
         self._engine = None
         if storage is not None:
-            from slayer.engine.query_engine import SlayerQueryEngine
-
             self._engine = SlayerQueryEngine(storage=storage, policy=policy)
         elif policy is not None:
-            # DEV-1578: forced-filter policy is enforced in the local engine
-            # only. Silently ignoring it in HTTP mode would disable a security
-            # control, so fail fast instead.
+            # Forced-filter policy is local-engine only; fail fast rather than
+            # silently disable a security control over HTTP.
             raise ValueError(
                 "policy= is only supported in local-engine mode (pass "
                 "storage=...); server-side policy over HTTP is not yet "
@@ -91,9 +92,7 @@ class SlayerClient:
         json: dict | None = None,
         params: dict | None = None,
     ) -> Any:
-        try:
-            import httpx
-        except ImportError:
+        if httpx is None:
             raise ImportError("Client requires httpx: pip install motley-slayer[client]")
         async with httpx.AsyncClient() as client:
             resp = await client.request(
@@ -109,9 +108,7 @@ class SlayerClient:
         json: dict | None = None,
         params: dict | None = None,
     ) -> Any:
-        try:
-            import httpx
-        except ImportError:
+        if httpx is None:
             raise ImportError("Client requires httpx: pip install motley-slayer[client]")
         with httpx.Client() as client:
             resp = client.request(
@@ -122,14 +119,8 @@ class SlayerClient:
 
     @staticmethod
     def _validated_dump(payload: Mapping[str, Any]) -> dict[str, Any]:
-        """Round-trip a single-query payload through ``SlayerQuery`` so
-        the server sees the normalised JSON-mode shape. Necessary because
-        the server's ``QueryRequest`` declares ``measures`` /
-        ``dimensions`` as ``List[Dict[str, Any]]`` and FastAPI rejects
-        string-shorthand entries with HTTP 422 before the server can
-        re-coerce them — whereas ``SlayerQuery`` itself accepts shorthand
-        and normalises it to dict form.
-        """
+        """Normalise a single-query payload through ``SlayerQuery`` so the
+        server's ``QueryRequest`` accepts string-shorthand measures/dimensions."""
         return SlayerQuery.model_validate(dict(payload)).model_dump(
             mode="json", exclude_none=True
         )
@@ -141,25 +132,9 @@ class SlayerClient:
         dry_run: bool = False,
         explain: bool = False,
     ) -> dict[str, Any]:
-        """Convert any accepted input shape into the JSON body for
-        ``POST /query``. Single source of truth shared by sync + async
-        transports. Never mutates caller-owned dicts or lists.
-
-        Shapes (mirroring ``engine.execute``):
-
-        * ``str`` → ``{"name": <str>}`` (run-by-name)
-        * ``Sequence`` (list/tuple/...) → ``{"queries": [<item-dict>, ...]}``
-          — each item is either a ``SlayerQuery`` or a ``Mapping``; both
-          are normalised through ``SlayerQuery`` so string-shorthand
-          measures / dimensions round-trip cleanly.
-        * ``Mapping`` (dict/MappingProxyType/...) → normalised
-          ``SlayerQuery`` JSON dump (same reason as above).
-        * ``SlayerQuery`` → ``model_dump(mode="json", exclude_none=True)``
-
-        ``dry_run`` and ``explain`` are appended at the top of the body
-        when truthy (the server's ``QueryRequest`` and ``QueryListRequest``
-        both accept them).
-        """
+        """Build the ``POST /query`` JSON body from any accepted input shape
+        (``str`` run-by-name, list DAG, ``Mapping``, or ``SlayerQuery``); never
+        mutates caller-owned data. Shared by sync + async transports."""
         if isinstance(query, str):
             body: dict[str, Any] = {"name": query}
         elif isinstance(query, SlayerQuery):
@@ -167,8 +142,7 @@ class SlayerClient:
         elif isinstance(query, ABCSequence) and not isinstance(
             query, (bytes, bytearray)
         ):
-            # ``str`` is also a Sequence but already handled above; guard the
-            # binary string types here too so they raise via the else-branch.
+            # bytes are Sequences too; route them to the else-branch below.
             serialised: list[dict[str, Any]] = []
             for i, item in enumerate(query):
                 if isinstance(item, SlayerQuery):
@@ -198,14 +172,8 @@ class SlayerClient:
 
     @staticmethod
     def _normalize_for_engine(query: QueryInput) -> Any:
-        """Coerce ``Mapping``/``Sequence`` inputs to concrete ``dict`` /
-        ``list`` before forwarding to ``engine.execute`` / ``execute_sync``.
-        The engine's dispatch uses ``isinstance(query, dict)`` and
-        ``isinstance(query, list)`` directly, so a tuple or
-        ``MappingProxyType`` would fall through to the SlayerQuery branch
-        and crash. Mirrors the runtime contract advertised by
-        ``QueryInput`` on both local and HTTP transports.
-        """
+        """Coerce ``Mapping``/``Sequence`` inputs to concrete ``dict``/``list``
+        so ``engine.execute``'s ``isinstance`` dispatch resolves them correctly."""
         if isinstance(query, str) or isinstance(query, SlayerQuery):
             return query
         if isinstance(query, ABCSequence) and not isinstance(
@@ -224,8 +192,6 @@ class SlayerClient:
     @staticmethod
     def _parse_response(result: dict) -> SlayerResponse:
         """Parse an API JSON response into a SlayerResponse."""
-        from slayer.core.format import NumberFormat
-
         def _parse_meta_dict(d: dict) -> dict[str, FieldMetadata]:
             out = {}
             for k, v in (d or {}).items():
@@ -256,10 +222,8 @@ class SlayerClient:
         dry_run: bool = False,
         explain: bool = False,
     ) -> SlayerResponse:
-        """Execute a query asynchronously. Accepts ``SlayerQuery``, ``dict``,
-        ``list[SlayerQuery | dict]`` (multi-stage DAG; last element is the
-        root), or ``str`` (run a query-backed model by name).
-        """
+        """Execute a query. Accepts ``SlayerQuery`` / ``dict`` / list-DAG /
+        ``str`` (run-by-name) — the same union as ``engine.execute``."""
         if self._engine is not None:
             return await self._engine.execute(
                 query=self._normalize_for_engine(query),
@@ -273,17 +237,11 @@ class SlayerClient:
         return self._parse_response(result)
 
     async def sql(self, query: QueryInput) -> str:
-        """Generate SQL for a query without executing it.
-
-        Accepts the same input union as ``query``.
-        """
+        """Generate SQL for a query without executing it (same input union)."""
         return (await self.query(query=query, dry_run=True)).sql
 
     async def explain(self, query: QueryInput) -> SlayerResponse:
-        """Run EXPLAIN ANALYZE on a query.
-
-        Accepts the same input union as ``query``.
-        """
+        """Run EXPLAIN ANALYZE on a query (same input union)."""
         return await self.query(query=query, explain=True)
 
     async def list_models(self, data_source: str | None = None) -> list[str]:
@@ -331,10 +289,6 @@ class SlayerClient:
     # ----- Memory API (DEV-1357 v2) -----
 
     def _memory_service(self):
-        # Lazy import to avoid pulling MemoryService into the client's
-        # remote-only dependency graph (httpx-only deployments).
-        from slayer.memories.service import MemoryService
-
         if self._storage is None:
             raise RuntimeError(
                 "Memory operations need a storage backend; remote-mode "
@@ -344,8 +298,7 @@ class SlayerClient:
 
     @staticmethod
     def _coerce_linked_entities(value):
-        # SlayerQuery → dict for JSON serialisation; lists / dicts pass
-        # through. The service layer revalidates at the boundary.
+        # SlayerQuery → dict; lists/dicts pass through (service revalidates).
         if isinstance(value, SlayerQuery):
             return value.model_dump(mode="json", exclude_none=True)
         return value
@@ -358,13 +311,9 @@ class SlayerClient:
         id: str | None = None,  # noqa: A002 — public kwarg matching MCP / REST
         description: str | None = None,
     ) -> SaveMemoryResponse:
-        """Save a memory: a learning text + linked entities (or an
-        inline SlayerQuery to extract entities from). DEV-1428:
-        optional ``id`` lets callers pin the canonical memory id.
-
-        DEV-1549: optional ``description`` is a ≤ 500-char preview
-        surfaced by ``search(compact=True)`` and ``inspect_model``.
-        """
+        """Save a memory (learning + linked entities, or an inline SlayerQuery
+        to extract them from). ``id`` pins the canonical id; ``description`` is
+        a ≤500-char preview surfaced by search/inspect."""
         if self._storage is not None:
             response = await self._memory_service().save_memory(
                 learning=learning,
@@ -391,9 +340,8 @@ class SlayerClient:
             return await self._memory_service().forget_memory(
                 identifier=identifier
             )
-        # DEV-1428: ids are arbitrary strings (subject to the charset
-        # validator). Percent-encode the path segment so reserved URL
-        # characters in valid ids don't break the request.
+        # Percent-encode: ids are arbitrary strings that may hold reserved
+        # URL characters.
         encoded = quote(str(identifier), safe="")
         result = await self._request(
             method="DELETE", path=f"/memories/{encoded}",
@@ -413,35 +361,10 @@ class SlayerClient:
         cypher_filter: str | None = None,
         compact: bool = True,
     ) -> "SearchResponse":
-        """Up to three-channel semantic search over memories + canonical
-        entities.
-
-        Channels: (1) entity-overlap BM25 over memories; (2) tantivy
-        full-text over memories ∪ entities; (3) optional dense embedding
-        similarity (gated by the ``advanced_search`` extra and a
-        configured provider API key). All hits are fused via Reciprocal
-        Rank Fusion (``k=60``) into a single ranked ``results`` list.
-
-        ``datasource`` (DEV-1409, optional): when set, scope memories and
-        entities to that one datasource. Entity hits are limited to docs
-        rooted at the datasource (exact match or dotted-path descendant).
-        Memories surface when any of their tagged entities is rooted at
-        the datasource.
-
-        Error contract for an unknown ``datasource``:
-
-        * **Local mode** (constructed with ``storage=...``): the in-process
-          ``SearchService.search`` raises ``ValueError`` synchronously.
-        * **Remote mode** (constructed with ``base_url=...``): the server
-          returns HTTP 400 and ``httpx``'s ``raise_for_status`` raises an
-          ``HTTPStatusError`` here — it does NOT propagate as ``ValueError``.
-        """
-        # Local imports: slayer.search.service transitively imports tantivy,
-        # which is not part of the client extras (httpx + pandas). Remote-only
-        # client installs that never call .search() should not blow up at
-        # module-import time.
-        from slayer.search.service import SearchResponse, SearchService
-
+        """Up-to-three-channel semantic search (BM25 + full-text + optional
+        embeddings, RRF-fused) over memories and canonical entities.
+        ``datasource`` scopes results to one datasource; an unknown one raises
+        ``ValueError`` in local mode, HTTP 400 in remote mode."""
         coerced_query: Any = None
         if query is not None:
             coerced_query = (
@@ -487,27 +410,11 @@ class SlayerClient:
         sections: list[str] | None = None,
         descriptions_max_chars: int | None = None,
     ) -> str:
-        """Inspect EXACTLY one entity by reference and kind (DEV-1588), a
-        homogeneous-kind BATCH when ``reference`` is a list (DEV-1612), or the
-        whole COLLECTION at a kind when ``reference`` is ``None`` / ``[]``
-        (DEV-1667).
-
-        A point-lookup (no fusion / ranking / bundled memories).
-        ``entity_type`` is required, one of
-        ``datasource``/``model``/``column``/``measure``/``aggregation``/
-        ``memory``, and applies to every id in a list. A single ``str`` keeps
-        its byte-for-byte single output; a list returns, in input order, one
-        ``## <canonical>`` block per id under ``format="markdown"`` or a JSON
-        array under ``format="json"``, with per-id error isolation. ``None`` /
-        ``[]`` lists the whole collection (``model`` / ``datasource`` only).
-        """
+        """Point-lookup one entity, a same-kind batch (``reference`` a list), or
+        a whole collection (``reference`` ``None``/``[]``; ``model``/
+        ``datasource`` only). ``entity_type`` is required and applies to every
+        id; a list returns one block per id with per-id error isolation."""
         if self._storage is not None:
-            # Local import: slayer.inspect.service transitively imports the
-            # search render stack (tantivy), which is not part of the client
-            # extras. Remote-only installs that never call .inspect() must
-            # not blow up at module-import time.
-            from slayer.inspect.service import InspectService
-
             return await InspectService(
                 storage=self._storage, engine=self._engine,
             ).inspect(
@@ -568,10 +475,7 @@ class SlayerClient:
         dry_run: bool = False,
         explain: bool = False,
     ) -> SlayerResponse:
-        """Execute a query synchronously. Accepts ``SlayerQuery``, ``dict``,
-        ``list[SlayerQuery | dict]`` (multi-stage DAG; last element is the
-        root), or ``str`` (run a query-backed model by name).
-        """
+        """Execute a query synchronously (same input union as ``query``)."""
         if self._engine is not None:
             return self._engine.execute_sync(
                 query=self._normalize_for_engine(query),
@@ -585,17 +489,11 @@ class SlayerClient:
         return self._parse_response(result)
 
     def sql_sync(self, query: QueryInput) -> str:
-        """Generate SQL synchronously.
-
-        Accepts the same input union as ``query_sync``.
-        """
+        """Generate SQL synchronously (same input union)."""
         return self.query_sync(query=query, dry_run=True).sql
 
     def explain_sync(self, query: QueryInput) -> SlayerResponse:
-        """Run EXPLAIN ANALYZE synchronously.
-
-        Accepts the same input union as ``query_sync``.
-        """
+        """Run EXPLAIN ANALYZE synchronously (same input union)."""
         return self.query_sync(query=query, explain=True)
 
     def inspect_sync(
@@ -610,11 +508,8 @@ class SlayerClient:
         sections: list[str] | None = None,
         descriptions_max_chars: int | None = None,
     ) -> str:
-        """Synchronous variant of :meth:`inspect` (DEV-1588; batch DEV-1612;
-        collection DEV-1667)."""
+        """Synchronous variant of :meth:`inspect`."""
         if self._storage is not None:
-            from slayer.async_utils import run_sync
-
             return run_sync(self.inspect(
                 reference=reference,
                 entity_type=entity_type,
@@ -642,14 +537,9 @@ class SlayerClient:
         self, items: list[str], *, data_source: str | None = None,
         root_hint: str | None = None,
     ) -> "RootModelRecommendation":
-        """Recommend the query ``source_model`` (root) for a set of
-        ``model.column`` / ``model.metric`` items, plus each item's
-        join-qualified path from that root (DEV-1626).
-
-        ``root_hint`` forces the intended root when it reaches every item
-        (else the auto-pick is used with an explanatory warning)."""
-        from slayer.core.recommend import RootModelRecommendation
-
+        """Recommend the query root (``source_model``) for a set of
+        ``model.column``/``model.metric`` items, plus each item's path from it.
+        ``root_hint`` forces the root when it reaches every item."""
         if self._engine is not None:
             return await self._engine.recommend_root_model(
                 items, data_source=data_source, root_hint=root_hint
@@ -669,21 +559,16 @@ class SlayerClient:
         root_hint: str | None = None,
     ) -> "RootModelRecommendation":
         """Synchronous variant of :meth:`recommend_root_model`."""
-        from slayer.async_utils import run_sync
-
         return run_sync(self.recommend_root_model(
             items, data_source=data_source, root_hint=root_hint
         ))
 
     def query_df(self, query: QueryInput):
-        """Execute a query and return a pandas DataFrame (sync).
-
-        Accepts the same input union as ``query_sync``.
-        """
+        """Execute a query and return a pandas DataFrame (sync; same input union)."""
         try:
-            import pandas as pd
-        except ImportError:
-            raise ImportError("DataFrame support requires pandas: pip install motley-slayer[client]")
+            import pandas as pd  # ALLOW(import-not-top): heavy optional dep, only this method needs it
+        except ImportError as e:
+            raise ImportError("DataFrame support requires pandas: pip install motley-slayer[client]") from e
         result = self.query_sync(query=query)
         return pd.DataFrame(result.data)
 

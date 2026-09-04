@@ -25,7 +25,7 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
-from slayer.core.query import ModelExtension, SlayerQuery
+from slayer.core.query import SlayerQuery
 from slayer.core.recommend import render_recommendation_markdown
 from slayer.core.warnings import ResponseTruncationWarning
 from slayer import async_utils
@@ -452,27 +452,26 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     mcp._slayer_engine = engine
 
     @mcp.tool()
-    async def query(  # NOSONAR S107 — FastMCP introspects this signature to expose each query option as a typed MCP tool argument; collapsing into a dict would degrade the agent-facing schema
-        source_model: str | ModelExtension | SlayerModel,
-        measures: list[dict[str, str]] | None = None,
-        dimensions: list[str] | None = None,
-        filters: list[str] | None = None,
-        time_dimensions: list[dict[str, Any]] | None = None,
-        order: list[dict[str, str]] | None = None,
-        limit: int | None = None,
-        offset: int | None = None,
-        whole_periods_only: bool = False,
+    async def query(
+        query: str | SlayerQuery | list[SlayerQuery],
+        variables: dict[str, Any] | None = None,
         show_sql: bool = False,
         dry_run: bool = False,
         explain: bool = False,
         format: str = "markdown",
-        variables: dict[str, Any] | None = None,
-        distinct_dimension_values: bool = True,
-        strict: bool = False,
     ) -> str:
         """Query data from a semantic model. Call inspect(reference="<ds>.<model>", entity_type="model") first to see available columns and measures.
 
-        Args:
+        The ``query`` argument mirrors the engine's accepted input — one of three forms:
+
+        - **Model name** (string) — run a query-backed model by name, e.g. ``"monthly_revenue"``.
+          Its stored backing query runs (honoring ``variables``). A model that is not
+          query-backed raises an error naming the ``source_model=`` remedy.
+        - **Query object** (dict) — a single query (fields below).
+        - **Multi-stage list** (list of query objects) — a DAG of stages (rules below);
+          the last entry is the root whose rows are returned.
+
+        Query object fields:
             source_model: One of three forms:
                 - **Model name** (string) — name of a saved model from models_summary, e.g. ``"orders"``.
                 - **Inline ModelExtension** (dict) — extend an existing model with extra columns/joins/measures
@@ -509,93 +508,32 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             limit: Max rows to return, trusted verbatim; without it the response is capped at 20 rows with a truncation notice.
             offset: Number of rows to skip.
             whole_periods_only: When true, snap date filters to time bucket boundaries based on granularity, exclude the current incomplete time bucket.
-            show_sql: When true, include the generated SQL in the response for debugging.
             strict: Error instead of warn when a cross-model measure would broadcast or a producer filter would be dropped. Rejected with run-by-name execution — declare it on the stored query instead.
+            distinct_dimension_values: Default True (Cube.js-style auto-dedup for dim-only queries — emits GROUP BY <dim aliases>). Set False to emit raw rows: no top-level GROUP BY, just SELECT <dimensions/time_dimensions> with the usual WHERE/ORDER BY/LIMIT. Any measure reference (in measures, filters, or order) raises an error in this mode.
+
+        Top-level arguments (siblings of ``query``, NOT fields inside it):
+            variables: Values for {placeholder} substitutions in filters / model SQL.
+            show_sql: When true, include the generated SQL in the response for debugging.
             dry_run: When true, generate and return the SQL without executing it.
             explain: When true, run EXPLAIN ANALYZE and return the query plan.
             format: Output format — "markdown" (default, compact and LLM-friendly), "json" (structured), or "csv" (most compact). Case-insensitive.
-            distinct_dimension_values: Default True (Cube.js-style auto-dedup for dim-only queries — emits GROUP BY <dim aliases>). Set False to emit raw rows: no top-level GROUP BY, just SELECT <dimensions/time_dimensions> with the usual WHERE/ORDER BY/LIMIT. Any measure reference (in measures, filters, or order) raises an error in this mode.
 
-        Example: query(source_model="orders", measures=[{"formula": "*:count"}], dimensions=["status"], filters=["status == 'completed'"])
+        Example: query(query={"source_model": "orders", "measures": [{"formula": "*:count"}], "dimensions": ["status"], "filters": ["status == 'completed'"]})
 
         Before calling this tool, run ``search`` first, supplying the entities you're thinking of using (and/or the query itself via the ``query`` arg, or a free-text ``question``). Read the returned memories and consider any matching example queries before formulating the final query.
         """
-        data: dict[str, Any] = {"source_model": source_model}
-        if dimensions:
-            data["dimensions"] = list(dimensions)
-        if filters:
-            data["filters"] = filters
-        if time_dimensions:
-            data["time_dimensions"] = list(time_dimensions)
-        if order:
-            data["order"] = list(order)
-        if limit is not None:
-            data["limit"] = limit
-        if offset is not None:
-            data["offset"] = offset
-        if whole_periods_only:
-            data["whole_periods_only"] = True
-        if measures:
-            data["measures"] = measures
-        if variables:
-            data["variables"] = dict(variables)
-        # DEV-1543: only emit when non-default so tool calls stay compact.
-        if distinct_dimension_values is False:
-            data["distinct_dimension_values"] = False
-        # DEV-1836: strict = error on any silent broadcast / dropped filter.
-        if strict:
-            data["strict"] = True
         try:
             fmt = format.lower().strip()
             if fmt not in ("json", "csv", "markdown"):
                 raise ValueError(f"Invalid format '{format}'. Must be one of: json, csv, markdown")
-            # Run-by-name shortcut: a bare stored-model name with no overrides
-            # dispatches through engine.execute(str) for run-by-name variable
-            # precedence (runtime_kwarg > stage > model.query_variables).
-            # Inline ModelExtension / SlayerModel values fall through below.
-            no_overrides = (
-                not measures and not dimensions and not filters
-                and not time_dimensions and not order
-                and limit is None and offset is None
-                and not whole_periods_only
-                # Explicit False is a real override; default True falls through.
-                and distinct_dimension_values
-            )
-            if isinstance(source_model, str) and no_overrides:
-                model_name = source_model
-                target = await storage.get_model(model_name)
-                if target is not None and target.source_queries:
-                    if strict:
-                        raise ValueError(
-                            "'strict' is not supported with run-by-name "
-                            "execution; declare it on the stored query instead."
-                        )
-                    result = await engine.execute(
-                        query=model_name,
-                        variables=variables or {},
-                        dry_run=dry_run,
-                        explain=explain,
-                    )
-                    if dry_run:
-                        return f"SQL:\n{result.sql}"
-                    # Push-down can't reach the stored SQL; cap response-side.
-                    _cap_rows(result, hint=_CAP_HINT)
-                    if explain:
-                        output = f"SQL:\n{result.sql}\n\nQuery Plan:\n"
-                        output += _format_output(result=result, fmt=fmt)
-                        return output
-                    output = _format_output(result=result, fmt=fmt)
-                    if show_sql and result.sql:
-                        output = f"SQL:\n{result.sql}\n\n{output}"
-                    return output
-            # No explicit limit: push down cap+1 so truncation is detectable
-            # without fetching the full result, then slice to the cap.
-            capped = limit is None
-            if capped:
-                data["limit"] = _MCP_ROW_CAP + 1
-            slayer_query = SlayerQuery.model_validate(data)
+            # Response row cap (spec: mcp/response-row-cap): with no explicit
+            # limit on the root query, push down cap+1 so truncation is
+            # detectable, then slice response-side. A run-by-name string is
+            # opaque (its stored SQL can't take a pushed-down limit) — cap
+            # response-side only.
+            exec_query, capped, cap_hint = _apply_mcp_row_cap(query)
             result = await engine.execute(
-                query=slayer_query,
+                query=exec_query,
                 variables=variables,
                 dry_run=dry_run,
                 explain=explain,
@@ -603,98 +541,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             if dry_run:
                 return f"SQL:\n{result.sql}"
             if capped:
-                _cap_rows(result, hint=_CAP_HINT)
-            if explain:
-                output = f"SQL:\n{result.sql}\n\nQuery Plan:\n"
-                output += _format_output(result=result, fmt=fmt)
-                return output
-            output = _format_output(
-                result=result, fmt=fmt, footer=_attributes_footer(result.attributes),
-            )
-            if show_sql and result.sql:
-                output = f"SQL:\n{result.sql}\n\n{output}"
-            return output
-        except Exception as e:
-            if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
-                return _friendly_db_error(e)
-            raise
-
-    @mcp.tool()
-    async def query_nested(
-        queries: list[dict[str, Any]],
-        variables: dict[str, Any] | None = None,
-        show_sql: bool = False,
-        dry_run: bool = False,
-        explain: bool = False,
-        format: str = "markdown",
-    ) -> str:
-        """Run a multi-stage query as a DAG. Use this when one stage depends on the output of another.
-
-        ``queries`` is a list of query dicts forming a DAG. Each entry has the
-        same shape as the regular ``query`` tool's arguments
-        (``source_model``, ``measures``, ``dimensions``, ``filters``,
-        ``time_dimensions``, ``order``, ``limit``, ``offset``,
-        ``whole_periods_only``) plus an optional ``name``. Stages reference
-        each other by name via ``source_model: "<sibling_name>"`` or
-        ``joins.target_model``.
-
-        Order doesn't matter — the engine auto-sorts so every stage
-        appears after the siblings it references. The **last entry of
-        the input is always the entry point / DAG root** (its result is
-        what's returned); only the non-final entries are reordered.
-        Every non-final entry must have a ``name``. Cycles,
-        self-references, and a non-final stage referencing the root are
-        rejected with a clear error. Stages that aren't reachable from
-        the root are accepted as utility sub-queries — they're silently
-        dropped from the emitted SQL.
-
-        Args:
-            queries: Ordered list of stage dicts. Earlier stages must be
-                named; the last stage is the one whose rows return. Without
-                a root-stage ``limit`` the response is capped at 20 rows
-                with a truncation notice.
-            variables: Variable values for ``{var}`` placeholder
-                substitution in filters. Runtime kwarg precedence:
-                ``runtime > stage.variables > outer query.variables >
-                model.query_variables``.
-            show_sql: When true, include the generated SQL in the response.
-            dry_run: When true, generate the SQL without executing it.
-            explain: When true, run EXPLAIN ANALYZE and return the plan.
-            format: ``markdown`` (default), ``json``, or ``csv``.
-
-        Example:
-            queries=[
-                {"name": "monthly", "source_model": "orders",
-                 "measures": [{"formula": "*:count"}, {"formula": "revenue:sum"}],
-                 "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]},
-                {"source_model": "monthly", "measures": [{"formula": "*:count"}]}
-            ]
-
-        For a single-stage query, prefer the regular ``query`` tool — its
-        typed arguments give a more discoverable schema.
-        """
-        try:
-            fmt = format.lower().strip()
-            if fmt not in ("json", "csv", "markdown"):
-                raise ValueError(f"Invalid format '{format}'. Must be one of: json, csv, markdown")
-            if not queries:
-                raise ValueError("'queries' must be a non-empty list of query dicts.")
-            # Cap keys on the root (last) stage only; copy its dict — never
-            # mutate caller input.
-            capped = queries[-1].get("limit") is None
-            exec_queries = list(queries)
-            if capped:
-                exec_queries[-1] = {**exec_queries[-1], "limit": _MCP_ROW_CAP + 1}
-            result = await engine.execute(
-                query=exec_queries,
-                variables=variables,
-                dry_run=dry_run,
-                explain=explain,
-            )
-            if dry_run:
-                return f"SQL:\n{result.sql}"
-            if capped:
-                _cap_rows(result, hint=_NESTED_CAP_HINT)
+                _cap_rows(result, hint=cap_hint)
             if explain:
                 output = f"SQL:\n{result.sql}\n\nQuery Plan:\n"
                 output += _format_output(result=result, fmt=fmt)
@@ -2172,6 +2019,40 @@ def _cap_rows(result: SlayerResponse, *, hint: str) -> None:
         *result.warnings,
         ResponseTruncationWarning(returned_rows=_MCP_ROW_CAP, hint=hint),
     ]
+
+
+def _apply_mcp_row_cap(
+    query: "str | SlayerQuery | list[SlayerQuery]",
+):
+    """Push the default row cap into the root query when the caller set no limit.
+
+    Returns ``(query_to_execute, capped, hint)``. A run-by-name string is opaque,
+    so it can't be pushed down — cap response-side. A single query object or the
+    root (last) stage of a multi-stage list gets ``limit = cap + 1`` so truncation
+    is detectable; an explicit limit is trusted verbatim.
+    """
+    if isinstance(query, str):
+        return query, True, _CAP_HINT
+    if isinstance(query, SlayerQuery):
+        if query.limit is None:
+            return query.model_copy(update={"limit": _MCP_ROW_CAP + 1}), True, _CAP_HINT
+        return query, False, _CAP_HINT
+    if isinstance(query, dict):
+        if query.get("limit") is None:
+            return {**query, "limit": _MCP_ROW_CAP + 1}, True, _CAP_HINT
+        return query, False, _CAP_HINT
+    if isinstance(query, list) and query:
+        root = query[-1]
+        root_limit = root.limit if isinstance(root, SlayerQuery) else root.get("limit")
+        if root_limit is None:
+            capped_root = (
+                root.model_copy(update={"limit": _MCP_ROW_CAP + 1})
+                if isinstance(root, SlayerQuery)
+                else {**root, "limit": _MCP_ROW_CAP + 1}
+            )
+            return [*query[:-1], capped_root], True, _NESTED_CAP_HINT
+        return query, False, _NESTED_CAP_HINT
+    return query, False, _CAP_HINT
 
 
 def _csv_warning_comments(result: SlayerResponse) -> str:

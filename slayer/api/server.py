@@ -76,8 +76,8 @@ class QueryListRequest(BaseModel):
     """Body shape for multi-stage DAG queries at ``POST /query``.
 
     ``queries`` is a non-empty list of query dicts forming a DAG —
-    same shape as ``engine.execute(query=[...])`` and the MCP
-    ``query_nested`` tool. Order doesn't matter; the engine auto-sorts.
+    same shape as ``engine.execute(query=[...])`` and the MCP ``query``
+    tool's list form. Order doesn't matter; the engine auto-sorts.
     Top-level ``variables`` / ``dry_run`` / ``explain`` apply to the
     whole execution.
     """
@@ -286,8 +286,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     ) -> QueryResponse:
         try:
             # Multi-stage DAG: body is ``{"queries": [...], "variables": ...,
-            # "dry_run": ..., "explain": ...}``. Mirrors the MCP
-            # ``query_nested`` tool and ``engine.execute(query=[...])``.
+            # "dry_run": ..., "explain": ...}``. Mirrors the MCP ``query``
+            # tool's list form and ``engine.execute(query=[...])``.
             # Engine auto-sorts the list and validates DAG invariants.
             if isinstance(request, QueryListRequest):
                 if not request.queries:
