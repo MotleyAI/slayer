@@ -33,7 +33,9 @@ from pydantic import BaseModel, ConfigDict, field_validator
 from slayer.core.errors import AggregationNotAllowedError
 from slayer.core.formula import RANK_FAMILY_TRANSFORMS
 from slayer.core.keys import (
+    KIND_POLICY,
     REGROUP_LEAF_PREFIX,
+    VALUE_KEY_TYPES,
     AggregateKey,
     ArithmeticKey,
     BetweenKey,
@@ -316,6 +318,14 @@ def _ranked_emission_from_kernel(*, planned_query, kernel) -> _RankedEmission:
 
 
 logger = logging.getLogger(__name__)
+
+# Consumer policy from the kind registry (core/keys.KIND_POLICY records intent).
+_SLOT_COMPOSITE_KINDS = tuple(
+    k for k in VALUE_KEY_TYPES if KIND_POLICY[k].slot_composite
+)
+_MATERIALISED_ORDER_KINDS = tuple(
+    k for k in VALUE_KEY_TYPES if KIND_POLICY[k].materialised_order
+)
 
 # corr/covar_samp/covar_pop are 2-arg (other= kwarg); MySQL has no native form, so _build_stat_agg raises there.
 _TWO_ARG_STAT_AGGS: frozenset[str] = frozenset({"corr", "covar_samp", "covar_pop"})
@@ -1984,6 +1994,9 @@ class SQLGenerator:
                 out.append(sid)
 
         def _collect_from(key) -> None:
+            # Slot-worthy kinds are terminal (an aggregate's internals render
+            # inside it; a TimeTruncKey IS the slot, not its wrapped column);
+            # everything else descends via children().
             if isinstance(key, base_kinds):
                 sid = slot_id_by_key.get(key)
                 if sid is not None:
@@ -1993,37 +2006,8 @@ class SQLGenerator:
                 key, (ColumnKey, ColumnSqlKey, TimeTruncKey),
             ):
                 return
-            if isinstance(key, TransformKey):
-                _collect_from(key.input)
-                for p in key.partition_keys:
-                    _collect_from(p)
-                if key.time_key is not None:
-                    _collect_from(key.time_key)
-                return
-            if isinstance(key, ArithmeticKey):
-                for o in key.operands:
-                    _collect_from(o)
-                return
-            if isinstance(key, ScalarCallKey):
-                for a in key.args:
-                    if isinstance(
-                        a,
-                        (
-                            TransformKey, ArithmeticKey, ScalarCallKey,
-                            BetweenKey, InKey, ColumnKey,
-                            ColumnSqlKey, TimeTruncKey, AggregateKey,
-                        ),
-                    ):
-                        _collect_from(a)
-                return
-            if isinstance(key, BetweenKey):
-                _collect_from(key.column)
-                _collect_from(key.low)
-                _collect_from(key.high)
-                return
-            if isinstance(key, InKey):
-                _collect_from(key.column)
-                return
+            for child in key.children():
+                _collect_from(child)
 
         for layer in planned_query.transform_layers:
             for slot_id in layer.slot_ids:
@@ -2084,32 +2068,13 @@ class SQLGenerator:
         )
 
         def _ready(key) -> bool:
+            # Slotted kinds are terminal; composites descend via children().
             if isinstance(key, slotted_kinds):
                 sid = slot_id_by_key.get(key)
                 if sid is None:
                     return True
                 return sid in available_alias_by_slot_id
-            if isinstance(key, ArithmeticKey):
-                return all(_ready(o) for o in key.operands)
-            if isinstance(key, ScalarCallKey):
-                for a in key.args:
-                    if isinstance(
-                        a,
-                        (
-                            TransformKey, ArithmeticKey, ScalarCallKey,
-                            BetweenKey, InKey, ColumnKey, ColumnSqlKey,
-                            TimeTruncKey, AggregateKey,
-                        ),
-                    ) and not _ready(a):
-                        return False
-                return True
-            if isinstance(key, BetweenKey):
-                return all(
-                    _ready(k) for k in (key.column, key.low, key.high)
-                )
-            if isinstance(key, InKey):
-                return _ready(key.column)
-            return True
+            return all(_ready(child) for child in key.children())
 
         for slot_id in layer.slot_ids:
             slot = slots_by_id.get(slot_id)
@@ -3235,7 +3200,7 @@ class SQLGenerator:
         ]
         # A composite whose tree walks an isolated cross-model aggregate must not render in _base (inline rendering
         # pulls filter-target joins in and corrupts both aggregates); route it outward.
-        composite_kinds = (ArithmeticKey, ScalarCallKey)
+        composite_kinds = _SLOT_COMPOSITE_KINDS
         outer_composite_slot_ids: Set[str] = set()
         # Route a composite outward when the projection OR an ORDER BY entry references it — a hidden ORDER BY composite
         # would otherwise render inline in _base.
@@ -6256,20 +6221,12 @@ class SQLGenerator:
                 if k.path == ():
                     out.append(k)
                 return
-            if isinstance(k, (AggregateKey, TransformKey)):
-                return  # inner refs are aggregated / windowed, not grouped
-            if isinstance(k, ArithmeticKey):
-                for o in k.operands:
-                    _walk(o)
-            elif isinstance(k, ScalarCallKey):
-                for a in k.args:
-                    _walk(a)
-            elif isinstance(k, BetweenKey):
-                _walk(k.column)
-                _walk(k.low)
-                _walk(k.high)
-            elif isinstance(k, InKey):
-                _walk(k.column)
+            if isinstance(k, (AggregateKey, TransformKey, TimeTruncKey)):
+                # Aggregated / windowed inner refs aren't grouped; a
+                # TimeTruncKey IS the grouped slot, not its wrapped column.
+                return
+            for child in k.children():
+                _walk(child)
 
         _walk(key)
         return out
@@ -6377,12 +6334,6 @@ class SQLGenerator:
         aliases_by_slot_id: Optional[Dict[str, List[str]]],
     ) -> exp.Expression:
         """How one slot's value is NAMED in the base SELECT."""
-
-        # The hidden key kinds that resolve to a materialised alias are enumerated deliberately, so a hidden aliased ROW
-        # slot hits the split-emission branch instead of ordering as an ungrouped bare column.
-        _MATERIALISED_ORDER_KINDS = (
-            AggregateKey, ArithmeticKey, ScalarCallKey, TransformKey,
-        )
 
         if not slot.hidden:
             # Order on the SAME full dotted alias the projection emits, not the flat declared_name, which names a column

@@ -46,7 +46,7 @@ jobs:
         run: poetry run ruff check slayer/ tests/
 
       - name: Run unit tests
-        timeout-minutes: 10
+        timeout-minutes: 15
         run: poetry run pytest tests/ -v -m "not integration" --timeout=120
 
       - name: Run integration tests

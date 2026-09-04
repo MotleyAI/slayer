@@ -25,6 +25,7 @@ from slayer.core.keys import (
     ColumnSqlKey,
     LiteralKey,
     ScalarCallKey,
+    _FrozenKey,
     check_scalar_arity,
 )
 from slayer.sql.dialects.base import SqlDialect
@@ -238,7 +239,9 @@ def render_row_expression(
     any other row-level position.
     """
     def _part(a: Any) -> exp.Expression:
-        if isinstance(a, (ColumnKey, ColumnSqlKey, LiteralKey, ArithmeticKey, ScalarCallKey)):
+        # ANY key routes as a key (the tail raise owns unsupported kinds); only
+        # true scalars render as literals.
+        if isinstance(a, _FrozenKey):
             return render_row_expression(
                 key=a, dialect=dialect, resolve_column=resolve_column,
             )
