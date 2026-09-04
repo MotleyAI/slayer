@@ -20,7 +20,6 @@ from sqlglot import exp
 from sqlglot.optimizer.scope import Scope, traverse_scope
 
 from slayer.core.enums import DataType
-from slayer.core.formula import parse_filter
 from slayer.core.models import (
     Column,
     DatasourceConfig,
@@ -49,9 +48,11 @@ from slayer.engine.column_expansion import resolve_ref_target
 from slayer.engine.syntax import (
     AggCall,
     DottedRef,
+    ParsedExpr,
     Ref,
     StarSource,
     parse_expr,
+    parse_filter_expr,
     walk_parsed_refs,
 )
 from slayer.sql import engine_factory, sqlite_introspect
@@ -492,6 +493,24 @@ def _parsed_ref_name(node: Union[Ref, DottedRef, AggCall]) -> Optional[str]:
     return ".".join(node.parts)
 
 
+def _walk_ref_names(parsed: ParsedExpr):
+    """Yield the name of each reference in a parsed Mode-B tree; an ``AggCall``
+    collapses to its source name, a DEV-1826 expression source attributes each
+    operand ref, ``*`` sources yield nothing."""
+    for node in walk_parsed_refs(parsed):
+        if isinstance(node, AggCall) and not isinstance(
+            node.source, (Ref, DottedRef, StarSource)
+        ):
+            for inner in walk_parsed_refs(node.source):
+                inner_name = _parsed_ref_name(inner)
+                if inner_name is not None:
+                    yield inner_name
+            continue
+        name = _parsed_ref_name(node)
+        if name is not None:
+            yield name
+
+
 def _measure_formula_refs(formula: str) -> Set[str]:
     """Column/measure names in a Mode-B formula (dotted for cross-model);
     textual only. Both aggregation spellings parse natively (DEV-1826), and an
@@ -501,21 +520,7 @@ def _measure_formula_refs(formula: str) -> Set[str]:
         parsed = parse_expr(formula)
     except Exception:
         return set()
-    out: Set[str] = set()
-    for node in walk_parsed_refs(parsed):
-        if isinstance(node, AggCall) and not isinstance(
-            node.source, (Ref, DottedRef, StarSource)
-        ):
-            # DEV-1826 expression source: attribute each operand ref.
-            for inner in walk_parsed_refs(node.source):
-                inner_name = _parsed_ref_name(inner)
-                if inner_name is not None:
-                    out.add(inner_name)
-            continue
-        name = _parsed_ref_name(node)
-        if name is not None:
-            out.add(name)
-    return out
+    return set(_walk_ref_names(parsed))
 
 
 def _filter_refs(filter_str: str) -> list[str]:
@@ -528,15 +533,13 @@ def _filter_refs(filter_str: str) -> list[str]:
 
 
 def _filter_refs_dsl(filter_str: str) -> list[str]:
-    """Column/measure references in a DSL (Mode B) filter; recovers base measures from ``agg_refs`` and strips synthesized colon aliases (``*`` excluded)."""
+    """Column/measure references in a DSL (Mode B) filter, in expression order
+    (deduplicated); ``[]`` on parse failure."""
     try:
-        pf = parse_filter(filter_str)
+        parsed = parse_filter_expr(filter_str)
     except Exception:
         return []
-    measure_names = [ref.measure_name for ref in pf.agg_refs if ref.measure_name != "*"]
-    canonical_aliases = set(pf.synthesized_aliases)
-    raw_columns = [c for c in pf.columns if c not in canonical_aliases]
-    return list(dict.fromkeys(measure_names + raw_columns))
+    return list(dict.fromkeys(_walk_ref_names(parsed)))
 
 
 def _walk_alias_to_target_model(

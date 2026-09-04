@@ -647,7 +647,7 @@ class TestFilterOperatorNormalization:
     def test_sql_like_operator_normalised(self):
         # DEV-1704: a SQL ``LIKE`` operator (e.g. from the pg-facade WHERE
         # translation) normalises to the ``like(col, pattern)`` scalar the DSL
-        # already emits as SQL LIKE — matching formula._preprocess_like.
+        # already emits as SQL LIKE.
         result = parse_filter_expr("name LIKE 'do%'")
         assert isinstance(result, ScalarCall)
         assert result.name == "like"

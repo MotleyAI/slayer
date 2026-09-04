@@ -22,7 +22,7 @@ pass.
 
 from __future__ import annotations
 
-from slayer.engine.schema_drift import _measure_formula_refs
+from slayer.engine.schema_drift import _filter_refs_dsl, _measure_formula_refs
 from slayer.engine.syntax import (
     AggCall,
     DottedRef,
@@ -228,4 +228,67 @@ class TestMeasureFormulaRefs:
         # (DEV-1450 C11).
         assert _measure_formula_refs("robot__details:sum") == {
             "robot__details"
+        }
+
+
+class TestFilterRefsDslParity:
+    """DEV-1833 parity suite pinned while migrating ``_filter_refs_dsl`` onto
+    ``parse_filter_expr`` (verified green on the legacy implementation first).
+    Set equality only: reference order is expression order."""
+
+    def test_colon_agg(self) -> None:
+        assert set(_filter_refs_dsl("revenue:sum > 100")) == {"revenue"}
+
+    def test_funcstyle_builtin_agg(self) -> None:
+        assert set(_filter_refs_dsl("sum(revenue) > 100")) == {"revenue"}
+
+    def test_colon_agg_alias(self) -> None:
+        assert set(_filter_refs_dsl("revenue:countd > 5")) == {"revenue"}
+
+    def test_colon_custom_agg(self) -> None:
+        assert set(_filter_refs_dsl("revenue:my_custom_agg > 5")) == {"revenue"}
+
+    def test_dotted_path(self) -> None:
+        assert set(_filter_refs_dsl("customers.regions.name == 'EU'")) == {
+            "customers.regions.name"
+        }
+
+    def test_dotted_colon_agg(self) -> None:
+        assert set(_filter_refs_dsl("customers.revenue:sum > 10")) == {
+            "customers.revenue"
+        }
+
+    def test_star_count_excluded(self) -> None:
+        assert set(_filter_refs_dsl("*:count > 3")) == set()
+
+    def test_like_filter(self) -> None:
+        assert set(_filter_refs_dsl("name LIKE 'a%'")) == {"name"}
+
+    def test_plain_columns(self) -> None:
+        assert set(_filter_refs_dsl("status == 'x' and amount > 5")) == {
+            "status",
+            "amount",
+        }
+
+    def test_agg_and_column_mixed(self) -> None:
+        assert set(_filter_refs_dsl("amount:sum > 100 and region == 'EU'")) == {
+            "amount",
+            "region",
+        }
+
+    def test_unparseable_returns_empty(self) -> None:
+        assert _filter_refs_dsl("this is (( not parseable") == []
+
+
+class TestFilterRefsDslMigrationGains:
+    """Refs only the migrated ``parse_filter_expr`` implementation surfaces
+    (DEV-1833); red until the migration lands."""
+
+    def test_funcstyle_custom_agg(self) -> None:
+        assert set(_filter_refs_dsl("my_custom_agg(revenue) > 5")) == {"revenue"}
+
+    def test_expression_agg_source(self) -> None:
+        assert set(_filter_refs_dsl("sum(amount - cost) > 0")) == {
+            "amount",
+            "cost",
         }
