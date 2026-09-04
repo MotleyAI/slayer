@@ -97,8 +97,10 @@ async def _query_count(server, *, source_model: str) -> int:
     text = await _call(
         server, name="query",
         arguments={
-            "source_model": source_model,
-            "measures": [{"formula": "*:count"}],
+            "query": {
+                "source_model": source_model,
+                "measures": [{"formula": "*:count"}],
+            },
             "format": "json",
         },
     )
@@ -138,11 +140,11 @@ class TestContractAttribute:
 
         assert captured["self"] is server._slayer_engine
 
-    async def test_slayer_engine_is_the_object_query_nested_uses(
+    async def test_slayer_engine_is_the_object_query_list_uses(
         self, workspace: Path, monkeypatch,
     ) -> None:
-        """query_nested shares the same closure engine (plan: one engine
-        across query/query_nested/validate_models/recommend_root_model)."""
+        """The list (multi-stage) form shares the same closure engine (plan:
+        one engine across query/validate_models/recommend_root_model)."""
         storage = await _seed_storage(workspace)
         server = create_mcp_server(storage=storage)
 
@@ -155,8 +157,8 @@ class TestContractAttribute:
 
         monkeypatch.setattr(SlayerQueryEngine, "execute", _spy)
         await _call(
-            server, name="query_nested",
-            arguments={"queries": [{"source_model": "t", "measures": [{"formula": "*:count"}]}]},
+            server, name="query",
+            arguments={"query": [{"source_model": "t", "measures": [{"formula": "*:count"}]}]},
         )
 
         assert captured["self"] is server._slayer_engine

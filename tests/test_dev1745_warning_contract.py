@@ -574,14 +574,16 @@ class TestMcpEntryPoint:
             for m in (_orders(), _customers(), _warehouses()):
                 await storage.save_model(m, _validate=False)
             server = create_mcp_server(storage=storage)
-            # The MCP query tool takes the query fields as its own typed
-            # arguments — no nested "query" envelope, and `dimensions` is a
-            # list of plain strings rather than the SlayerQuery dict form.
+            # The MCP query tool takes one polymorphic `query` argument (model
+            # name, single query object, or list of stage objects) plus the
+            # execution wrappers.
             result = await server.call_tool("query", {
-                "source_model": "orders",
-                "dimensions": ["status"],
-                "measures": [{"formula": "customers.revenue:sum"}],
-                "filters": [DROPPED_FILTER],
+                "query": {
+                    "source_model": "orders",
+                    "dimensions": ["status"],
+                    "measures": [{"formula": "customers.revenue:sum"}],
+                    "filters": [DROPPED_FILTER],
+                },
                 "dry_run": True,
             })
         text = str(result)

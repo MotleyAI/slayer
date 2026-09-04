@@ -91,12 +91,22 @@ claude mcp list
 
 | Tool | Description |
 |------|-------------|
-| `query` | Execute a semantic query. See [Queries](../concepts/queries.md) for format. |
-| `query_nested` | Execute a multi-stage DAG of named sub-queries that can reference one another via `source_model` or `joins.target_model`. Companion to `query`; the engine auto-sorts the list (Kahn's algorithm), so order doesn't matter. Params: `queries: List[Dict[str, Any]]`, plus `variables` / `show_sql` / `dry_run` / `explain` / `format` mirroring `query`. See [Multistage Queries](../examples/06_multistage_queries/multistage_queries.md). |
+| `query` | Execute a semantic query. The `query` argument mirrors the engine: a model name (run a query-backed model by name), a single query object, or a list of query objects — a multi-stage DAG whose stages reference one another via `source_model` or `joins.target_model`, auto-sorted by the engine (order doesn't matter), with the last entry the returned root. Plus the wrappers `variables` / `show_sql` / `dry_run` / `explain` / `format`. See [Queries](../concepts/queries.md) and [Multistage Queries](../examples/06_multistage_queries/multistage_queries.md). |
 
-**`query` parameters:**
+**`query` tool arguments:**
 
 | Param | Type | Description |
+|-------|------|-------------|
+| `query` | string \| object \| list[object] | A model name, a single query object (fields below), or a list of query objects forming a multi-stage DAG (each stage takes the same fields plus an optional `name`). Required. |
+| `variables` | dict | Values for `{var}` placeholder substitution in filters. Precedence: runtime > named-stage > outer-query > model `query_variables`. |
+| `show_sql` | bool | Include the generated SQL in the response for debugging |
+| `dry_run` | bool | Generate and return the SQL without executing it |
+| `explain` | bool | Run EXPLAIN ANALYZE and return the query plan |
+| `format` | string | Output format: `"markdown"` (default, compact), `"json"` (structured), or `"csv"` (most compact). Case-insensitive |
+
+**Query object fields** (the shape of `query`, and of each stage in the list form):
+
+| Field | Type | Description |
 |-------|------|-------------|
 | `source_model` | string \| ModelExtension \| SlayerModel | Model name (string), inline `ModelExtension` dict (`{"source_name": "orders", "columns": [...], "joins": [...], "measures": [...]}` — extend a saved model with extras for this query), or inline `SlayerModel` dict (`{"name": "ad_hoc", "sql_table": "...", "data_source": "...", "columns": [...]}` — define a model ad-hoc). Required. |
 | `measures` | list | Aggregated values: column-aggregations, arithmetic, transforms. E.g. `["*:count", {"formula": "revenue:sum / *:count", "name": "aov", "label": "Average Order Value"}, "cumsum(revenue:sum)"]`. Each entry has an optional `label` for human-readable display. Supports nesting: `"change(cumsum(revenue:sum))"`. Bare names resolve to saved `ModelMeasure` formulas on the model. |
@@ -108,11 +118,8 @@ claude mcp list
 | `offset` | int | Skip rows |
 | `whole_periods_only` | bool | Snap date filters to time bucket boundaries, exclude the current incomplete time bucket |
 | `distinct_dimension_values` | bool | Default `true` — auto-dedup dim-only queries (`GROUP BY <dim/td aliases>`). Set `false` to emit raw rows (no top-level `GROUP BY`); rejects any measure reference in `measures` / `filters` / `order`. |
-| `strict` | bool | Default `false` — error instead of warn when a [cross-model measure broadcasts](../concepts/queries.md#cross-model-measures) or a filter is excluded from its producer. Rejected with the run-by-name shortcut — declare it on the stored query instead |
-| `show_sql` | bool | Include the generated SQL in the response for debugging |
-| `dry_run` | bool | Generate and return the SQL without executing it |
-| `explain` | bool | Run EXPLAIN ANALYZE and return the query plan |
-| `format` | string | Output format: `"markdown"` (default, compact), `"json"` (structured), or `"csv"` (most compact). Case-insensitive |
+| `strict` | bool | Default `false` — error instead of warn when a [cross-model measure broadcasts](../concepts/queries.md#cross-model-measures) or a filter is excluded from its producer. |
+| `name` | string | List form only — names a stage so sibling stages can reference it via `source_model` (every non-final stage must be named). |
 
 ### Memories + semantic search
 
@@ -205,7 +212,7 @@ To explore first without auto-ingesting:
 1. list_datasources()                              # pick a datasource
 2. models_summary(datasource_name="mydb")      # discover its models
 3. inspect_model(model_name="orders")          # see schema + sample data
-4. query(source_model="orders", measures=["*:count"], dimensions=["status"], limit=10)
+4. query(query={"source_model": "orders", "measures": ["*:count"], "dimensions": ["status"], "limit": 10})
 ```
 
 ### Customize a model

@@ -366,7 +366,7 @@ Filters can reference names of computed measures — transforms and arithmetic e
 
 When a query measure is renamed via `{"formula": "col:agg", "name": "alias"}`, the filter in the same node may reference EITHER form — the raw colon formula `col:agg` OR the user alias `alias`. Both resolve to the user alias, and a colon-form filter is classified as HAVING on the underlying aggregate. Renaming never changes the legal filter form. Two enrichment-time validations apply: (1) a query measure `name` that collides with a source column on the source model is rejected (alias-form filters would otherwise silently bind to the source column); (2) a rename whose canonical alias literally shadows a source column on the same model is also rejected (the colon-form filter would otherwise be ambiguous).
 
-Renaming also works for *cross-model* aggregated measures (`{"formula": "customers.revenue:sum", "name": "cust_rev"}`). Only the canonical leaf of the dotted path swaps to the user name; the hop path is preserved — same dot-syntax shape every other multi-hop caller-facing key uses. The result-column key becomes `orders.customers.cust_rev` (one-hop) or `orders.customers.regions.region_pop` (multi-hop). In any *downstream* stage of a `query_nested` DAG, the column is exposed under the BARE user name — type `cust_rev:max` (or `region_pop:max`) in stage 2 to consume the value, not the dotted hop-path form. Filters referencing a renamed cross-model measure in the SAME stage resolve in both forms — the bare user alias (`filters=["cust_rev > 100"]`) and the raw colon form (`"customers.revenue:sum > 100"`) — and restrict the result rows on the attached value, as does ORDER BY via the bare user alias (`order=[{"column": "cust_rev"}]`).
+Renaming also works for *cross-model* aggregated measures (`{"formula": "customers.revenue:sum", "name": "cust_rev"}`). Only the canonical leaf of the dotted path swaps to the user name; the hop path is preserved — same dot-syntax shape every other multi-hop caller-facing key uses. The result-column key becomes `orders.customers.cust_rev` (one-hop) or `orders.customers.regions.region_pop` (multi-hop). In any *downstream* stage of a multi-stage query list, the column is exposed under the BARE user name — type `cust_rev:max` (or `region_pop:max`) in stage 2 to consume the value, not the dotted hop-path form. Filters referencing a renamed cross-model measure in the SAME stage resolve in both forms — the bare user alias (`filters=["cust_rev > 100"]`) and the raw colon form (`"customers.revenue:sum > 100"`) — and restrict the result rows on the attached value, as does ORDER BY via the bare user alias (`order=[{"column": "cust_rev"}]`).
 
 ```json
 {
@@ -498,7 +498,7 @@ REST equivalent: `POST /query` with `{"name": "<model>", "variables": {...}}`. R
 
 CLI equivalent: `slayer query <model_name> [--variables k=v ...] [--dry-run] [--explain]` — when the positional argument doesn't look like JSON (doesn't start with `{` or `[`) and isn't a `@file` reference, it's interpreted as a model name.
 
-MCP equivalent: `query(source_model="<model>", variables={...}, dry_run=True/False, explain=True/False)` — when only `source_model` (and optional flags) is supplied, the call dispatches through the run-by-name shortcut.
+MCP equivalent: `query(query="<model>", variables={...}, dry_run=True/False, explain=True/False)` — a bare model-name string is run-by-name execution (a non-query-backed name raises the same error as `execute(str)`).
 
 ---
 
@@ -783,10 +783,8 @@ Sibling stages can also reference each other — any non-final stage may use a *
 
 - Python SDK: `engine.execute(query=[...])` and `SlayerClient.query`/`query_sync`/`sql`/`sql_sync`/`explain`/`explain_sync`/`query_df` all accept `SlayerQuery | dict | list[SlayerQuery | dict] | str` (str = run-by-name).
 - CLI: `slayer query @file.json` — accepts both a single object and a top-level list.
-- MCP: the `query_nested` tool, `queries=[...]` argument.
+- MCP: the `query` tool with `query=[...]` (a list of stage objects); the same tool also accepts a model name or a single query object.
 - REST: `POST /query` with body `{"queries": [...], "variables": {...}, "dry_run": ..., "explain": ...}` (the single-query body shape is also still accepted).
-
-The single-stage MCP tool `query` stays single-query only — use it when the typed per-field schema fits a one-shot query; reach for `query_nested` for multi-stage.
 
 ### ModelExtension
 
