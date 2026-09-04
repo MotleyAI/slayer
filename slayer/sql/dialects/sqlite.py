@@ -406,6 +406,8 @@ class SqliteDialect(SqlDialect):
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
+    # Numeric affinity stores INTEGER/REAL — nothing exact to preserve.
+    exact_decimal_native: bool = False
     max_identifier_bytes: int | None = None  # unbounded
 
     def build_null_safe_eq(

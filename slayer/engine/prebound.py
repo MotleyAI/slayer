@@ -54,6 +54,7 @@ from slayer.core.keys import (
 from slayer.core.models import SlayerModel
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, expression_source_leaf
 from slayer.engine.binding import BoundFilter
+from slayer.engine.introspect_utils import is_exact_numeric_db_type
 from slayer.engine.planning import DeclaredMeasure, OrderSpec
 from slayer.engine.response_meta import _infer_aggregated_format
 
@@ -65,6 +66,7 @@ __all__ = [
     "partition_declared_measures",
     "dimension_key_metadata",
     "measure_key_format_description",
+    "measure_key_preserves_native_type",
     "measure_key_type",
     "walk_key_path",
 ]
@@ -313,6 +315,17 @@ def measure_key_type(
     return aggregated_type(
         model=model, measure_name=name, aggregation=key.agg,
     )
+
+
+def measure_key_preserves_native_type(*, model: SlayerModel, key: ValueKey) -> bool:
+    """Whether an aggregate's inferred type would erase exact DB precision."""
+    name = _local_aggregate_source_name(key)
+    if name is None:
+        return False
+    col = model.get_column(name)
+    if col is None:
+        return False
+    return is_exact_numeric_db_type(col.db_type)
 
 
 def measure_key_format_description(
