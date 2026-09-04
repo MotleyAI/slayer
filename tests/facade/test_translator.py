@@ -9,12 +9,15 @@ mapping, command_tag, dialect-only parse acceptance) is exercised explicitly.
 from __future__ import annotations
 
 import logging
+import time
 
 import pytest
+from pydantic import BaseModel
 
 from slayer.core.enums import DataType, JoinType, TimeGranularity
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ModelExtension
+from slayer.engine.syntax import Cmp, Ref, parse_filter_expr
 from slayer.facade.catalog import FacadeCatalog, build_catalog
 from slayer.facade.rows import FacadeColumn, RowBatch
 from slayer.facade.translator import (
@@ -28,6 +31,7 @@ from slayer.facade.translator import (
     ResetSettingOp,
     SetSettingOp,
     TranslationError,
+    _classify_transaction_open,
     translate,
 )
 
@@ -141,8 +145,6 @@ def test_show_statement_is_noop_with_tag(dialect) -> None:
 
 
 def test_transaction_open_shim_does_not_over_match() -> None:
-    from slayer.facade.translator import _classify_transaction_open
-
     # Not transaction-opens: a word merely starting with "begin", and real SQL.
     assert _classify_transaction_open("BEGINNER") is None
     assert _classify_transaction_open("SELECT * FROM begin_events") is None
@@ -158,10 +160,6 @@ def test_transaction_open_regex_is_linear_on_pathological_input() -> None:
     client string could stall the asyncio loop. The possessive quantifier
     makes matching linear; assert a large pathological input classifies
     fast (well under a timeout the old regex would have blown)."""
-    import time
-
-    from slayer.facade.translator import _classify_transaction_open
-
     evil = "BEGIN" + " " * 200_000 + ";" + "x" * 5
     start = time.perf_counter()
     result = _classify_transaction_open(evil)
@@ -514,7 +512,6 @@ def test_classify_begin_commit_rollback_have_no_setting_capture(dialect) -> None
 
 
 def _row_batch(name: str, value: str) -> RowBatch:
-    from slayer.core.enums import DataType
     return RowBatch(
         columns=[FacadeColumn(name=name, type=DataType.TEXT)],
         rows=[{name: value}],
@@ -574,14 +571,12 @@ def test_probe_result_settings_mutation_defaults_none(dialect) -> None:
 def test_set_setting_op_is_pydantic_model() -> None:
     """SetSettingOp must be a Pydantic BaseModel (frozen-ish; equal by value).
     Per project convention — never dataclasses."""
-    from pydantic import BaseModel
     assert issubclass(SetSettingOp, BaseModel)
     assert SetSettingOp(name="x", value="y") == SetSettingOp(name="x", value="y")
     assert SetSettingOp(name="x", value="y") != SetSettingOp(name="x", value="z")
 
 
 def test_reset_setting_op_is_pydantic_model() -> None:
-    from pydantic import BaseModel
     assert issubclass(ResetSettingOp, BaseModel)
     assert ResetSettingOp(reset_all=True) == ResetSettingOp(reset_all=True)
     assert (
@@ -1021,8 +1016,9 @@ def test_double_quoted_column_in_where_becomes_column_not_string_literal(dialect
     # Emitted as a bare column, NOT a double-quoted string-literal lookalike.
     assert filters[0] == "status = 'paid'"
     # The Mode B DSL must read ``status`` as a column, not a literal.
-    from slayer.core.formula import parse_filter
-    assert parse_filter(filters[0]).columns == ["status"]
+    parsed = parse_filter_expr(filters[0])
+    assert isinstance(parsed, Cmp)
+    assert parsed.left == Ref(name="status")
 
 
 def test_double_quoted_qualified_column_in_where_unquotes(dialect) -> None:

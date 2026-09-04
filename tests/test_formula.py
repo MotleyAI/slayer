@@ -1,12 +1,13 @@
-"""Tests for the retained formula helpers — ``parse_filter`` (filter
-injection + string-hygiene scalars) and ``_rewrite_funcstyle_aggregations``
-(function-style -> colon rewrite + ORDER BY normalization).
+"""Tests for the retained formula helpers — ``_rewrite_funcstyle_aggregations``
+(function-style -> colon rewrite + ORDER BY normalization) — plus the typed
+filter parser's injection hardening.
 
-The legacy free-function formula parser and its AST node types were removed
-when the typed pipeline took over; their coverage now lives in
-``test_syntax.py`` (parse shape), ``test_binding.py`` /
-``test_transforms_planner.py`` (bind-time validation),
-``test_transform_lowerer.py`` (change/change_pct desugar),
+The legacy free-function formula parser, its AST node types, and the legacy
+``parse_filter`` were removed when the typed pipeline took over; their
+coverage now lives in ``test_syntax.py`` (parse shape, LIKE / ``||`` / scalar
+calls in filters), ``test_sql_boolean_literal_filters.py`` (SQL-cased boolean
+literals), ``test_binding.py`` / ``test_transforms_planner.py`` (bind-time
+validation), ``test_transform_lowerer.py`` (change/change_pct desugar),
 ``test_named_measures.py`` (named-measure expansion, end-to-end),
 ``test_model_measure_expansion.py`` (bind-time expansion, cycles, scoping),
 ``test_measure_expansion.py`` (expansion eligibility), and
@@ -18,235 +19,52 @@ import warnings
 
 import pytest
 
-from slayer.core.formula import (
-    _rewrite_funcstyle_aggregations,
-    parse_filter,
-)
+from slayer.core.formula import _rewrite_funcstyle_aggregations
 from slayer.core.models import Aggregation
 from slayer.core.query import _FUNCSTYLE_PENDING, OrderItem
+from slayer.engine.syntax import BoolOp, parse_filter_expr
 
 
-class TestParseFilterBooleanLiterals:
-    """SQL's lowercase ``true`` / ``false`` arrive as ``ast`` names, not
-    constants, so without special handling they'd be read as column refs."""
+class TestFilterInjection:
+    """SQL-injection hardening for ``parse_filter_expr`` — the choke-point for
+    all user-supplied Mode-B filter expressions. Payloads must be rejected at
+    parse time; literal SQL emission is dialect-owned (sqlglot) and covered by
+    the SQL-generator round-trip suites."""
 
     @pytest.mark.parametrize(
-        ("expression", "expected"),
+        "payload",
         [
-            ("is_active = true", "is_active = TRUE"),
-            ("is_active = false", "is_active = FALSE"),
-            ("is_active = TRUE", "is_active = TRUE"),
-            ("is_active <> false", "is_active != FALSE"),
+            # Classic "break out of string, run DROP, comment rest".
+            "status = 'a'; DROP TABLE orders; --'",
+            # SQL block comment.
+            "status = 'a' /* foo */ OR 1=1",
+            # Stacked UNION SELECT.
+            "status = 'a' UNION SELECT * FROM users --'",
+            # Stacked statement via semicolon.
+            "status = 'a'; SELECT 1",
+            # DROP smuggled where an identifier is expected.
+            "status; DROP TABLE users; --",
         ],
     )
-    def test_boolean_literal_renders_as_sql(
-        self, expression: str, expected: str,
-    ) -> None:
-        parsed = parse_filter(expression)
-        assert parsed.sql == expected
-        # The literal is a value, not a reference — it must not land in columns.
-        assert parsed.columns == ["is_active"]
-
-    def test_python_cased_literals_keep_working(self) -> None:
-        # ``True`` / ``False`` are ``ast`` constants, so they skip the name path.
-        assert parse_filter("is_active = True").sql == "is_active = True"
-        assert parse_filter("is_active = False").sql == "is_active = False"
-
-    def test_bare_literal_is_not_a_column_reference(self) -> None:
-        # ``true`` wins over a same-named column — moot, it's a reserved word.
-        assert parse_filter("true").columns == []
-
-
-class TestParseFilterInjection:
-    """SQL-injection hardening for ``parse_filter``.
-
-    ``parse_filter`` is the single choke-point for all user-supplied filter
-    expressions (measure-level ``filter``, model-level ``filters``, and
-    query-level filters). These tests assert each injection payload is either
-    rejected at parse time (``ValueError``) or neutralised — i.e. the payload
-    appears in the output SQL only as a properly-quoted string literal, never
-    as executable SQL tokens.
-    """
-
-    # --- Payloads rejected outright by ast.parse ---------------------------
-
-    def test_rejects_statement_terminator_dropout(self) -> None:
-        """Classic "break out of string, run DROP, comment rest" payload.
-
-        Trailing ``--`` terminates with a single-quoted ``D`` followed by an
-        unclosed apostrophe, which cannot parse as a Python expression.
-        """
-        with pytest.raises(ValueError, match="Invalid filter syntax"):
-            parse_filter("status = 'a'; DROP TABLE orders; --'")
-
-    def test_rejects_block_comment(self) -> None:
-        """SQL block-comment tokens must not survive — ``/`` without a RHS
-        operand yields a Python SyntaxError."""
-        with pytest.raises(ValueError, match="Invalid filter syntax"):
-            parse_filter("status = 'a' /* foo */ OR 1=1")
-
-    def test_rejects_union_select(self) -> None:
-        """Stacked UNION SELECT payload — ``SELECT`` is not a Python operand."""
-        with pytest.raises(ValueError, match="Invalid filter syntax"):
-            parse_filter("status = 'a' UNION SELECT * FROM users --'")
-
-    def test_rejects_stacked_semicolon(self) -> None:
-        """A bare semicolon separates Python statements; ``eval`` mode rejects."""
-        with pytest.raises(ValueError, match="Invalid filter syntax"):
-            parse_filter("status = 'a'; SELECT 1")
-
-    def test_rejects_unknown_function_call(self) -> None:
-        """Only the internal ``__like__`` / ``__notlike__`` helpers are allowed."""
-        with pytest.raises(ValueError, match="Unknown filter function"):
-            parse_filter("pg_sleep(10)")
-
-    # --- Payloads that are legitimate expressions ---------------------------
+    def test_payload_rejected_at_parse(self, payload: str) -> None:
+        with pytest.raises(ValueError, match="Invalid Mode-B expression"):
+            parse_filter_expr(payload)
 
     def test_allows_tautology_with_literal(self) -> None:
-        """``1 = 1`` is a legal, user-authored tautology — not injection per se.
-
-        A measure filter written by the model author is by design trusted to
-        express arbitrary boolean logic; this test pins the intended semantics
-        so we don't accidentally over-restrict the grammar.
-        """
-        result = parse_filter("status = 'a' or 1 = 1")
-        assert "OR" in result.sql
-        assert "1 = 1" in result.sql
-
-    # --- Payloads that must be neutralised in the emitted SQL --------------
-
-    def test_embedded_quote_is_doubled(self) -> None:
-        """Single quote inside a string literal must emit as ``''`` (SQL standard)."""
-        # The runtime filter value here contains an embedded apostrophe.
-        result = parse_filter("name = 'O\\'Brien'")
-        # Emitted literal must have a doubled quote, never a bare ``'``.
-        assert "'O''Brien'" in result.sql
-
-    def test_backslash_in_string_literal_is_escaped(self) -> None:
-        """A backslash inside a string literal must not be able to escape the
-        closing quote in MySQL-family dialects.
-
-        Before the fix: ``parse_filter`` emits ``'a\\'`` (single backslash
-        inside single quotes). In MySQL default mode, ``\\'`` is a literal
-        apostrophe and the string remains open, letting trailing tokens be
-        read as string content. After the fix: the backslash is doubled so
-        the emitted literal is ``'a\\\\'`` (two backslashes = one literal
-        backslash in MySQL's escape-aware string parsing).
-        """
-        # Runtime filter string is:  name = 'a\'       (six chars)
-        # Python source:              "name = 'a\\\\'"  (escape both backslashes)
-        result = parse_filter("name = 'a\\\\'")
-        # The emitted SQL must not contain an unescaped trailing ``\'`` that
-        # MySQL would read as a literal quote.
-        assert "'a\\\\'" in result.sql, (
-            f"Expected backslash-escaped literal, got {result.sql!r}"
-        )
-
-    def test_backslash_mid_string_is_escaped(self) -> None:
-        """Backslash anywhere inside a string literal must be doubled so that
-        subsequent characters can't be (mis)interpreted as escape sequences.
-        """
-        # Runtime string:  name = 'a\b' and x = 1
-        result = parse_filter("name = 'a\\\\b' and x = 1")
-        assert "'a\\\\b'" in result.sql
-        # Sanity: the surrounding AND clause is preserved intact.
-        assert "x = 1" in result.sql
-
-    def test_backslash_in_like_pattern_is_escaped(self) -> None:
-        """The ``LIKE`` pattern path runs through ``_get_string_arg`` — make
-        sure it applies the same backslash protection as ``_filter_node_to_sql``.
-        """
-        # Runtime string:  name like 'a\'
-        result = parse_filter("name like 'a\\\\'")
-        assert "LIKE" in result.sql
-        assert "'a\\\\'" in result.sql
-
-    def test_identifier_cannot_inject_sql(self) -> None:
-        """Bare column names are constrained to valid Python identifiers.
-
-        A name containing a space / punctuation can't even reach the AST as
-        an ``ast.Name``, so there's no way to sneak ``DROP`` in via a name.
-        """
-        with pytest.raises(ValueError, match="Invalid filter syntax"):
-            parse_filter("status; DROP TABLE users; --")
+        # ``1 = 1`` is a legal, user-authored tautology — not injection per se.
+        result = parse_filter_expr("status = 'a' or 1 = 1")
+        assert isinstance(result, BoolOp)
+        assert result.op == "or"
 
     def test_deeply_nested_boolean_does_not_crash(self) -> None:
-        """A very deep boolean expression must either parse bounded or raise
-        cleanly — never crash the interpreter / exhaust the stack."""
+        # 200 chained ORs must parse bounded or raise cleanly — never crash.
         payload = " or ".join(["x = 1"] * 200)
-        # Either accepted (returns SQL containing many ORs) or rejected with
-        # a normal ValueError; both are acceptable outcomes.
         try:
-            result = parse_filter(payload)
+            result = parse_filter_expr(payload)
         except ValueError:
             return
-        assert result.sql.count("OR") >= 100
-
-    # --- DEV-1376: path-qualified LIKE / NOT LIKE ---------------------------
-
-    def test_like_path_qualified_simple_literal(self) -> None:
-        """``<joined_model>.<col> like '...'`` must parse — agents reach for
-        this shape because dotted refs work in dimensions/measures."""
-        result = parse_filter("infrastructure.wateraccess like '%yes%'")
-        assert "infrastructure.wateraccess LIKE '%yes%'" in result.sql
-
-    def test_like_path_qualified_messy_literal(self) -> None:
-        """Literal content (commas, spaces, mixed case) must not affect
-        whether path-qualified LIKE parses. Reproduces the original
-        benchmark failure (households_14)."""
-        result = parse_filter(
-            "infrastructure.wateraccess like '%Yes, available at least in one room%'"
-        )
-        assert (
-            "infrastructure.wateraccess LIKE "
-            "'%Yes, available at least in one room%'"
-        ) in result.sql
-
-    def test_not_like_path_qualified(self) -> None:
-        """NOT LIKE on a dotted path mirrors the LIKE fix."""
-        result = parse_filter("customers.email not like '%spam.com'")
-        assert "customers.email NOT LIKE '%spam.com'" in result.sql
-
-    # --- Scalar-call LHS for LIKE / NOT LIKE --------------------------------
-
-    def test_like_scalar_call_lhs(self) -> None:
-        """``lower(name) like 'a%'`` and friends — LIKE preprocessor must
-        match scalar calls on the LHS, not just bare/dotted identifiers."""
-        result = parse_filter("lower(name) like 'a%'")
-        assert "lower(name) LIKE 'a%'" in result.sql
-
-    def test_not_like_scalar_call_lhs(self) -> None:
-        result = parse_filter("trim(email) not like '%@test.com'")
-        assert "trim(email) NOT LIKE '%@test.com'" in result.sql
-
-    def test_like_scalar_call_dotted_arg(self) -> None:
-        """The scalar call's argument can be a dotted ref."""
-        result = parse_filter("lower(customers.email) like '%@motley.ai'")
-        assert "lower(customers.email) LIKE '%@motley.ai'" in result.sql
-
-    # --- DEV-1376: subquery-in-filter helpful error -------------------------
-
-    def test_filter_subquery_in_clause_raises(self) -> None:
-        """``IN (SELECT ...)`` should surface the targeted error instead of
-        Python's misleading "Perhaps you forgot a comma" advice."""
-        with pytest.raises(ValueError, match="Subqueries are not allowed"):
-            parse_filter("housenum in (select houselink from properties)")
-
-    def test_filter_subquery_not_in_clause_raises(self) -> None:
-        """``NOT IN (SELECT ...)`` is also a subquery shape."""
-        with pytest.raises(ValueError, match="Subqueries are not allowed"):
-            parse_filter("id not in (select id from t)")
-
-    def test_filter_exists_subquery_raises(self) -> None:
-        """``EXISTS (SELECT ...)`` is also a subquery shape."""
-        with pytest.raises(ValueError, match="Subqueries are not allowed"):
-            parse_filter("exists (select 1 from t)")
-
-    def test_filter_subquery_shape_inside_string_literal_does_not_raise(self) -> None:
-        """The subquery sniff must ignore SQL-shaped text that lives inside a
-        string-literal RHS of a comparison — it's data, not syntax."""
-        result = parse_filter("note = 'in (select 1 from t)'")
-        assert "note = 'in (select 1 from t)'" in result.sql
+        assert isinstance(result, BoolOp)
+        assert len(result.operands) >= 100
 
 
 # ---------------------------------------------------------------------------
@@ -494,102 +312,31 @@ class TestOrderColumnNormalization:
 
 
 class TestStringHygieneFilters:
-    """DEV-1378: lowercase string-hygiene scalar functions accepted inline
-    in Mode B (DSL) filters: ``lower``, ``upper``, ``trim``, ``replace``,
-    ``substr``, ``instr``, ``length``, ``concat``. The SQL ``||``
-    operator is rewritten to ``concat(...)`` by ``_preprocess_concat``.
-    """
-
-    @pytest.mark.parametrize("op", ["lower", "upper", "trim", "length"])
-    def test_unary_op_round_trips(self, op: str) -> None:
-        pf = parse_filter(f"{op}(name) = 'eu'")
-        assert pf.sql == f"{op}(name) = 'eu'"
-        assert "name" in pf.columns
-
-    def test_replace_three_arg(self) -> None:
-        pf = parse_filter("replace(x, ',', '') = 'foo'")
-        assert pf.sql == "replace(x, ',', '') = 'foo'"
-        assert "x" in pf.columns
-
-    def test_substr_three_arg(self) -> None:
-        pf = parse_filter("substr(s, 1, 5) = 'abcde'")
-        assert pf.sql == "substr(s, 1, 5) = 'abcde'"
-        assert "s" in pf.columns
-
-    def test_substr_two_arg(self) -> None:
-        pf = parse_filter("substr(s, 3) = 'abc'")
-        assert pf.sql == "substr(s, 3) = 'abc'"
-
-    def test_instr_with_string_literal(self) -> None:
-        pf = parse_filter("instr(s, ',') > 0")
-        assert pf.sql == "instr(s, ',') > 0"
-        assert "s" in pf.columns
-
-    def test_concat_explicit_call(self) -> None:
-        pf = parse_filter("concat(a, b, c) = 'abc'")
-        assert pf.sql == "concat(a, b, c) = 'abc'"
-        assert {"a", "b", "c"}.issubset(set(pf.columns))
-
-    def test_nested_length_replace(self) -> None:
-        pf = parse_filter("length(replace(x, ',', '')) > 0")
-        assert pf.sql == "length(replace(x, ',', '')) > 0"
-        assert "x" in pf.columns
-
-    def test_substr_instr_pairing(self) -> None:
-        # Canonical "first delimited token" pattern from the issue.
-        pf = parse_filter("substr(s, 1, instr(s, ',') - 1) = 'first'")
-        assert pf.sql == "substr(s, 1, instr(s, ',') - 1) = 'first'"
-
-    def test_pipe_pipe_two_operands(self) -> None:
-        pf = parse_filter("a || b = 'foo'")
-        assert pf.sql == "concat(a, b) = 'foo'"
-        assert {"a", "b"}.issubset(set(pf.columns))
+    """DEV-1378 string-hygiene shapes on the typed filter parser; single
+    scalar calls and the two-operand ``||`` are covered by
+    ``test_syntax.py::TestScalarFunctions`` /
+    ``TestFilterOperatorNormalization``."""
 
     def test_pipe_pipe_chain_three_operands(self) -> None:
-        # Chained `||` folds into a flat n-ary concat.
-        pf = parse_filter("a || b || c = 'foo'")
-        assert pf.sql == "concat(a, b, c) = 'foo'"
+        # Chained `||` desugars left-associatively to nested concat calls.
+        result = parse_filter_expr("a || b || c = 'foo'")
+        outer = result.left
+        assert outer.name == "concat"
+        assert outer.args[0].name == "concat"
 
     def test_pipe_pipe_no_spaces(self) -> None:
-        pf = parse_filter("a||b = 'foo'")
-        assert pf.sql == "concat(a, b) = 'foo'"
+        result = parse_filter_expr("a||b = 'foo'")
+        assert result.left.name == "concat"
 
     def test_pipe_pipe_with_function_call_operands(self) -> None:
-        pf = parse_filter("lower(name) || ' ' || trim(addr) = 'eu london'")
-        assert pf.sql == "concat(lower(name), ' ', trim(addr)) = 'eu london'"
+        result = parse_filter_expr("lower(name) || ' ' || trim(addr) = 'eu london'")
+        assert result.left.name == "concat"
 
-    def test_pipe_pipe_preserves_string_literal(self) -> None:
+    def test_pipe_pipe_preserved_in_string_literal(self) -> None:
         # `||` inside a string literal must NOT be rewritten.
-        pf = parse_filter("note = 'a||b'")
-        assert pf.sql == "note = 'a||b'"
+        result = parse_filter_expr("note = 'a||b'")
+        assert result.right.value == "a||b"
 
     def test_function_name_preserved_in_string_literal(self) -> None:
-        pf = parse_filter("note = 'lower(x)'")
-        assert pf.sql == "note = 'lower(x)'"
-
-    def test_uppercase_function_name_accepted(self) -> None:
-        # SCALAR_PASSTHROUGH lookup is case-insensitive, matching the
-        # formula-side policy. The user-written casing is preserved on
-        # emission so sqlglot can re-spell per dialect.
-        pf = parse_filter("LOWER(name) = 'eu'")
-        assert "LOWER(name)" in pf.sql
-
-    def test_substring_synonym_accepted(self) -> None:
-        # Both ``substr`` (SQLite) and ``substring`` (Postgres/ANSI) are
-        # in the unified SCALAR_PASSTHROUGH set.
-        pf = parse_filter("substring(s, 1, 5) = 'abcde'")
-        assert "substring(s, 1, 5)" in pf.sql
-
-
-class TestUnifiedScalarPassthrough:
-    """The canonical SCALAR_PASSTHROUGH set drives the retained filter
-    surface. The formula-side half of this class was deleted with the legacy
-    parser; the typed parser's allowlist is covered by
-    ``test_syntax.py::TestScalarFunctions`` and
-    ``test_keys.py::TestScalarFunctionsAllowlist``."""
-
-    def test_filter_uses_same_set(self) -> None:
-        # The filter walker consults SCALAR_PASSTHROUGH so things like
-        # coalesce / greatest are accepted in filters too.
-        pf = parse_filter("coalesce(name, 'unknown') = 'foo'")
-        assert "coalesce" in pf.sql.lower()
+        result = parse_filter_expr("note = 'lower(x)'")
+        assert result.right.value == "lower(x)"
