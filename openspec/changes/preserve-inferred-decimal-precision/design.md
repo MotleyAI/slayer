@@ -31,6 +31,14 @@ Detection currently lives in five call sites across `ingestion.py`,
   _raw_db_type_str(_unwrap_clickhouse_wrappers(col_type))` for both the
   exact-numeric and opaque branches: one code path, and it converges with what
   the info_schema fallback path produces (bare inner type string).
+- **SQLite keeps the inferred cast.** Numeric affinity stores INTEGER/REAL —
+  no exact decimal exists to preserve, and an un-cast integral SUM flips the
+  result type to int (Codex review catch). Gated by
+  `SqlDialect.exact_decimal_native`, consumed in the generator.
+- **Wrapper unwrap also covers the info-schema fallback.** ClickHouse
+  metadata strings (`Nullable(Decimal(...))`) are peeled by a string twin of
+  the SA-level unwrap before type mapping and `db_type` capture (CodeRabbit
+  review catch).
 - **Import hygiene via hoist + targeted waivers.** Hoist the mechanically safe
   in-function imports; waive only `schema_drift` (genuine cycle —
   `schema_drift` imports `ingestion` at module top) and `search.service`

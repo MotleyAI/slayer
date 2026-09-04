@@ -180,6 +180,22 @@ class TestGetColumnsFallback:
         assert by_name["big_amount"]["type"] is DataType.DOUBLE
         assert by_name["big_amount"]["db_type"] == "BIGNUMERIC"
 
+    def test_wrapped_decimals_unwrap_and_capture_db_type(self):
+        """ClickHouse wrapper text must not defeat the fallback mapping (CodeRabbit)."""
+        engine, _ = _setup_mock_engine(
+            [
+                ("amount", "Nullable(Decimal(18, 2))"),
+                ("ratio", "LowCardinality(Nullable(Decimal(10, 4)))"),
+            ]
+        )
+        result = _get_columns_fallback(sa_engine=engine, table_name="orders", ref=None)
+
+        by_name = {col["name"]: col for col in result}
+        assert by_name["amount"]["type"] is DataType.DOUBLE
+        assert by_name["amount"]["db_type"] == "Decimal(18, 2)"
+        assert by_name["ratio"]["type"] is DataType.DOUBLE
+        assert by_name["ratio"]["db_type"] == "Decimal(10, 4)"
+
 
 class TestGetPkConstraintFallback:
     """Tests for _get_pk_constraint_fallback parameterized queries."""

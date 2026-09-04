@@ -63,7 +63,7 @@ from slayer.engine.column_expansion import (
     collect_root_scope_joined_paths,
     expand_derived_refs_sync,
 )
-from slayer.engine.planned import RankedGrainMember
+from slayer.engine.planned import RankedGrainMember, ValueSlot
 from slayer.engine.stage_planner import regroup_producer_identity
 from slayer.engine.source_bundle import (
     stage_bundle_with_siblings,
@@ -783,6 +783,12 @@ class SQLGenerator:
     def dialect(self) -> str:
         """The sqlglot dialect name. Read-only — derived from"""
         return self._dialect.sqlglot_name
+
+    def _slot_cast_type(self, slot: ValueSlot) -> Optional[DataType]:
+        """Without native exact decimals (SQLite), preservation is a no-op — keep the inferred cast."""
+        if slot.preserve_native_type and not self._dialect.exact_decimal_native:
+            return slot.model_copy(update={"preserve_native_type": False}).cast_type
+        return slot.cast_type
 
     def _new_allocator(self) -> AliasAllocator:
         """Build an ``AliasAllocator`` carrying this generator's dialect"""
@@ -1703,7 +1709,7 @@ class SQLGenerator:
             names = list(slot.public_aliases) or [slot.declared_name]
             rendered = render(slot)
             if slot.type is not None:
-                rendered = _wrap_cast_for_type(expr=rendered, dt=slot.cast_type)
+                rendered = _wrap_cast_for_type(expr=rendered, dt=self._slot_cast_type(slot))
             # One column per declared name (C13); as_ copies its child, so the rendered node is safely reused.
             for alias in names:
                 full_alias = f"{source_relation}.{alias}"
@@ -2449,7 +2455,7 @@ class SQLGenerator:
                         ),
                     )
                     if contains_aggregate(key):
-                        composite = _wrap_cast_for_type(composite, slot.cast_type)
+                        composite = _wrap_cast_for_type(composite, self._slot_cast_type(slot))
                         has_aggregation = True
                     select_columns.append(composite.copy().as_(full_alias))
                     _record_alias(sid, full_alias)
@@ -2477,7 +2483,7 @@ class SQLGenerator:
                 )
                 agg_expr, is_agg = self._build_agg(synth)
                 if is_agg:
-                    agg_expr = _wrap_cast_for_type(agg_expr, slot.cast_type)
+                    agg_expr = _wrap_cast_for_type(agg_expr, self._slot_cast_type(slot))
                     has_aggregation = True
                 select_columns.append(agg_expr.copy().as_(full_alias))
                 _record_alias(sid, full_alias)
@@ -2714,7 +2720,7 @@ class SQLGenerator:
         # instead.
         agg_cls = window_agg_class(plan.agg)
         agg_expr = _wrap_cast_for_type(
-            agg_cls(this=_src_col("_w_value")), agg_slot.cast_type,
+            agg_cls(this=_src_col("_w_value")), self._slot_cast_type(agg_slot),
         )
 
         outer = exp.Select()
@@ -2968,7 +2974,7 @@ class SQLGenerator:
         # affinity, truncating a date to its year).
         pick = _wrap_cast_for_type(
             build_ranked_pick(value_ref=value_ref),
-            _ranked_value_cast_type(agg_slot.cast_type),
+            _ranked_value_cast_type(self._slot_cast_type(agg_slot)),
         )
         return build_ranked_cte_select(
             inner=inner, grain=grain, pick=pick, agg_alias=full_agg_alias,
@@ -3500,7 +3506,7 @@ class SQLGenerator:
                     ),
                 )
                 if cslot.type is not None:
-                    rendered = _wrap_cast_for_type(rendered, cslot.cast_type)
+                    rendered = _wrap_cast_for_type(rendered, self._slot_cast_type(cslot))
                 return rendered
 
             # Cycle public_aliases per projection occurrence: emitting public_aliases[0] twice would drop the second C13
@@ -4938,7 +4944,7 @@ class SQLGenerator:
                 resolved_agg_kwargs=leaf_frag_kwargs or None,
             )
             agg_expr, _ = self._build_agg(synth)
-            return _wrap_cast_for_type(agg_expr, leaf_slot.cast_type)
+            return _wrap_cast_for_type(agg_expr, self._slot_cast_type(leaf_slot))
 
         # Shift granularity is the explicit 3rd arg else the TD granularity, so a year-shift over a month bucket yields
         # 'same month, previous year' (YoY).

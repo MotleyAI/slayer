@@ -226,7 +226,8 @@ database's native integer range. For example, `"amount:sum"` can return a total
 larger than a 32-bit integer even when each source value fits in one. An explicit
 measure `"type": "INT"` still requests the database's INT cast and can reject
 out-of-range results. Auto-ingested NUMERIC/DECIMAL columns likewise retain the
-database's exact aggregate type instead of being coerced through floating point.
+database's exact aggregate type instead of being coerced through floating point
+(except on SQLite, whose numeric affinity has no exact decimal type to retain).
 An explicit measure `"type": "DOUBLE"` still requests a floating-point cast.
 Other type casts, including declared derived-column types, are unchanged.
 

@@ -245,6 +245,21 @@ def _info_schema_columns_query(
     return sql + "ORDER BY ordinal_position", params
 
 
+_CLICKHOUSE_WRAPPER_NAMES = frozenset({"NULLABLE", "LOWCARDINALITY"})
+_CLICKHOUSE_WRAPPER_MAX_DEPTH = 8
+
+
+def unwrap_clickhouse_wrapper_str(db_type: str) -> str:
+    """Peel nested ``Nullable(...)``/``LowCardinality(...)`` wrapper text (string twin of the SA-level unwrap)."""
+    current = db_type.strip()
+    for _ in range(_CLICKHOUSE_WRAPPER_MAX_DEPTH):
+        head, sep, _rest = current.partition("(")
+        if not sep or head.strip().upper() not in _CLICKHOUSE_WRAPPER_NAMES or not current.endswith(")"):
+            return current
+        current = current[len(head) + 1 : -1].strip()
+    return current
+
+
 def is_exact_numeric_db_type(db_type: Optional[str]) -> bool:
     """Whether a raw DB type string is exact-numeric (DECIMAL/NUMERIC family).
 
@@ -308,8 +323,11 @@ def _get_columns_fallback(
         rows = conn.execute(sa.text(sql), params).fetchall()
     result = []
     for col_name, data_type_str in rows:
-        sa_type, is_float = _info_schema_type(data_type_str)
-        db_type = data_type_str if is_exact_numeric_db_type(data_type_str) else None
+        # ClickHouse metadata carries wrapper text (Nullable(...)); unwrap so
+        # type mapping and db_type capture see the inner type.
+        unwrapped = unwrap_clickhouse_wrapper_str(data_type_str) if data_type_str else data_type_str
+        sa_type, is_float = _info_schema_type(unwrapped)
+        db_type = unwrapped if is_exact_numeric_db_type(unwrapped) else None
         result.append({"name": col_name, "type": sa_type, "is_float": is_float, "db_type": db_type})
     comments = _get_column_comments_fallback(
         sa_engine=sa_engine, table_name=table_name, ref=ref,

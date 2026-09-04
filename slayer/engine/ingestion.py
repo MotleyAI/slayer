@@ -33,6 +33,8 @@ from slayer.engine.cardinality import (
 )
 from slayer.engine.internal_tables import internal_table_rule
 from slayer.engine.introspect_utils import (  # noqa: F401  (re-exported for back-compat)
+    _CLICKHOUSE_WRAPPER_MAX_DEPTH,
+    _CLICKHOUSE_WRAPPER_NAMES,
     _FLOAT_LIKE_INFO_SCHEMA_TYPES,
     _INFO_SCHEMA_TYPE_MAP,
     _clean_comment,
@@ -213,11 +215,6 @@ _FLOAT_LIKE_SA_TYPES = frozenset(
         "SMALLMONEY",
     }
 )
-
-# ClickHouse SA wrapper class names — peeled before type lookup.
-# clickhouse-sqlalchemy exposes the inner type via .nested_type on both.
-_CLICKHOUSE_WRAPPER_NAMES = frozenset({"NULLABLE", "LOWCARDINALITY"})
-_CLICKHOUSE_WRAPPER_MAX_DEPTH = 8
 
 # INFORMATION_SCHEMA type maps + ``_safe_get_columns`` / ``_get_columns_fallback``
 # now live in the dependency-free ``introspect_utils`` leaf module (DEV-1578);

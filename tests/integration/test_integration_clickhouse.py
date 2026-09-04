@@ -1244,7 +1244,8 @@ def _clickhouse_decimal_storage(clickhouse_container, tmp_path_factory):
         )
         amount = model.get_column("amount")
         short_amount = model.get_column("short_amount")
-        assert amount is not None and short_amount is not None
+        assert amount is not None
+        assert short_amount is not None
         # Bare inner type retained — wrapper text must not defeat preservation.
         assert amount.db_type == "Decimal(18, 2)"
         assert short_amount.db_type is not None
@@ -1288,7 +1289,8 @@ class TestClickHouseDecimalPreservation:
         result = await clickhouse_decimal_env.execute(query=query)
         sql = (await clickhouse_decimal_env.execute(query=query, dry_run=True)).sql
 
-        assert " AS DOUBLE" not in sql and "Float64" not in sql, sql
+        assert " AS DOUBLE" not in sql, sql
+        assert "Float64" not in sql, sql
         value = result.data[0][result_key]
         assert isinstance(value, Decimal)
         assert value == expected

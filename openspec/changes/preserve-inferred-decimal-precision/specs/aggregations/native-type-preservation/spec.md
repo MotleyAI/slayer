@@ -20,7 +20,10 @@ and result values SHALL retain the database's exact-numeric representation.
 Database-specific nullability/cardinality wrappers around the physical type
 (e.g. ClickHouse `Nullable(...)`, `LowCardinality(...)`, arbitrarily nested)
 SHALL be transparent to this behaviour. An explicitly declared result type
-SHALL still be cast as requested.
+SHALL still be cast as requested. On dialects without native exact decimal
+storage (SQLite's numeric affinity), the inferred cast SHALL be kept — there is
+no exact value to preserve, and an un-cast aggregate would have an unstable
+result type.
 
 #### Scenario: Plain decimal column aggregates without a lossy cast
 
@@ -58,3 +61,10 @@ SHALL still be cast as requested.
   `MONEY`)
 - THEN aggregate cast behaviour is unchanged from the inferred logical type's
   rules
+
+#### Scenario: Dialects without exact decimal storage keep the inferred cast
+
+- WHEN a SQLite model column is declared `DECIMAL(18,2)` (numeric affinity) and
+  a query requests `amount:sum` with no explicit type
+- THEN the generated SQL keeps the inferred float cast and the result value is
+  a float even when every stored value is integral
