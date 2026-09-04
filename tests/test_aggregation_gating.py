@@ -492,6 +492,29 @@ class TestDev1576UnknownVsDisallowed:
         )
         assert "COUNT(DISTINCT" in sql.upper()
 
+    @pytest.mark.parametrize(
+        "raw,sql_fn", [("countd", "COUNT(DISTINCT"), ("stddev", "STDDEV")],
+    )
+    async def test_healed_alias_in_filter_reaches_having(
+        self, raw: str, sql_fn: str,
+    ) -> None:
+        # Binding-time healing must also fire on the filter path (DEV-1833
+        # migrated filters onto the typed parser): an aliased aggregation in a
+        # HAVING predicate heals just like a measure.
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=["status"],
+            measures=[{"formula": "amount:sum", "name": "total"}],
+            filters=[f"amount:{raw} > 5"],
+        )
+        sql = await _engine_generate(
+            query=query, model=_orders_with_status(),
+            extra_models=[_customers_model()], dialect="postgres",
+        )
+        up = sql.upper()
+        assert "HAVING" in up
+        assert sql_fn in up
+
 
 class TestDev1576RoundAbsGeneration:
     """DEV-1576 §2 — round()/abs() compile in a formula; Postgres needs a

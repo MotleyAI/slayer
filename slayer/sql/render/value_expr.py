@@ -25,6 +25,7 @@ from slayer.core.keys import (
     TimeTruncKey,
     TransformKey,
     ValueKey,
+    _FrozenKey,
 )
 from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.render.aggregates import (
@@ -365,9 +366,11 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
     if isinstance(key, ScalarCallKey):
         if key.name == "iif":
             return _render_iif_case(key=key, ctx=ctx)
+        # ANY key routes as a key (the tail raise owns unsupported kinds); only
+        # true scalars render as literals.
         args = [
             render_value_key(key=a, ctx=ctx)
-            if isinstance(a, _VALUE_KEY_TYPES)
+            if isinstance(a, _FrozenKey)
             else _literal(a)
             for a in key.args
         ]
@@ -421,18 +424,12 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
     )
 
 
-_VALUE_KEY_TYPES: Tuple[type, ...] = (
-    ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey, LiteralKey, AggregateKey,
-    TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey, InKey,
-)
-
-
 def _render_iif_case(*, key: ScalarCallKey, ctx: "RenderContext") -> exp.Case:
     """Render an ``iif`` chain as one multi-WHEN CASE, flattening nested ``iif`` in the otherwise position."""
     def _part(a):
         return (
             render_value_key(key=a, ctx=ctx)
-            if isinstance(a, _VALUE_KEY_TYPES) else _literal(a)
+            if isinstance(a, _FrozenKey) else _literal(a)
         )
 
     return iif_case_chain(key=key, part=_part)
@@ -440,28 +437,7 @@ def _render_iif_case(*, key: ScalarCallKey, ctx: "RenderContext") -> exp.Case:
 
 def contains_aggregate(key: ValueKey) -> bool:
     """Whether ``key``'s tree contains an ``AggregateKey`` (decides GROUP BY / HAVING). A structural
-    walk, NOT ``phase >= AGGREGATE``: every ``TransformKey`` is POST phase, which would route a transform over a raw column into HAVING."""
+    walk over ``children()``, NOT ``phase >= AGGREGATE``: every ``TransformKey`` is POST phase, which would route a transform over a raw column into HAVING."""
     if isinstance(key, AggregateKey):
         return True
-    if isinstance(key, ArithmeticKey):
-        return any(contains_aggregate(o) for o in key.operands)
-    if isinstance(key, ScalarCallKey):
-        return any(
-            contains_aggregate(a)
-            for a in key.args
-            if isinstance(a, _VALUE_KEY_TYPES)
-        )
-    if isinstance(key, TransformKey):
-        # partition_keys / time_key are dependencies too: cumsum(x, partition_by=revenue:sum).
-        return (
-            contains_aggregate(key.input)
-            or any(contains_aggregate(p) for p in key.partition_keys)
-            or (key.time_key is not None and contains_aggregate(key.time_key))
-        )
-    if isinstance(key, BetweenKey):
-        return any(
-            contains_aggregate(k) for k in (key.column, key.low, key.high)
-        )
-    if isinstance(key, InKey):
-        return contains_aggregate(key.column)
-    return False
+    return any(contains_aggregate(c) for c in key.children())

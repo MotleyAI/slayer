@@ -526,6 +526,9 @@ Any formula, filter, or field expression can branch with SQL `CASE`:
 - **Searched** (`CASE WHEN c1 THEN v1 [WHEN c2 THEN v2 …] [ELSE d] END`) and
   **simple** (`CASE x WHEN v1 THEN r1 … END`, lowered to `x = v1`) forms are both
   accepted; keywords are case-insensitive and CASE nests anywhere.
+- Identifiers named after, containing, or qualified by SQL keywords (`case`,
+  `customers.end`, `écase`) always parse as ordinary references — `CASE` starts
+  a conditional only when a `WHEN` follows it.
 - A missing `ELSE` yields `NULL`. `iif(cond, then, otherwise)` is an equivalent
   spelling — an allowlisted scalar function taking exactly three arguments.
   Everything renders to a portable SQL `CASE` on every Tier-1 dialect.

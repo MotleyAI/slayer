@@ -672,6 +672,15 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     for td in (query.time_dimensions or []):
         if not td.date_range or len(td.date_range) != 2:
             continue
+        # A null bound is inexpressible as a range — fail loudly rather than emit
+        # `BETWEEN x AND NULL` (never true, silent zero rows). Checked before the
+        # scope skip so non-ModelScope stages raise too.
+        if any(bound is None for bound in td.date_range):
+            raise ValueError(
+                f"TimeDimension {td.dimension.full_name!r} has a date_range with a "
+                f"null bound ({td.date_range!r}); a null bound cannot be expressed "
+                f"as a range. Use a one-sided filter (e.g. '>=' / '<=') instead."
+            )
         if not isinstance(scope, ModelScope):
             continue
         bf = _build_date_range_filter(td=td, scope=scope, bundle=bundle)
@@ -1249,6 +1258,7 @@ def _effective_root_grain(
 
 
 def _scalar_free_columns(node: ValueKey, out: set) -> None:
+    # Asymmetric on purpose: aggregate subtrees are bound, not free.
     if isinstance(node, ColumnKey):
         out.add(node)
     elif isinstance(node, ArithmeticKey):
@@ -1375,7 +1385,8 @@ def _reroot_from_root(
     tp = tuple(target_path)
     mapping: Dict[ValueKey, ValueKey] = {}
     for r in walk_value_keys(key):
-        # walk_value_keys does NOT descend into TimeTruncKey.column; reroot whole.
+        # The walk also yields TimeTruncKey.column, but substitute matches the
+        # whole TimeTruncKey pre-order, so the inner-column entry is inert.
         rerooted = _reroot_leaf_via_host(
             r, target_path=tp, root_model=root_model,
             models_by_name=models_by_name, host_name=host_name,
@@ -1988,7 +1999,9 @@ def _remap_ref_path(r: ValueKey, node_path: Tuple[str, ...]) -> ValueKey:
 
 
 def _child_keys(k: ValueKey) -> List[Any]:
-    """The nested operand keys of a composite ``ValueKey`` node."""
+    """The nested operand keys of a composite ``ValueKey`` node. Asymmetric on
+    purpose: aggregates/transforms/truncs are scope boundaries here, not
+    ``children()`` — the push-down classifies whole refs."""
     if isinstance(k, ArithmeticKey):
         return list(k.operands)
     if isinstance(k, ScalarCallKey):

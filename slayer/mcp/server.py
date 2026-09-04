@@ -27,6 +27,7 @@ from slayer.core.models import (
 )
 from slayer.core.query import SlayerQuery
 from slayer.core.recommend import render_recommendation_markdown
+from slayer.core.warnings import ResponseTruncationWarning
 from slayer import async_utils
 from slayer.engine import ingestion as engine_ingestion
 from slayer.engine.ingestion import (
@@ -71,6 +72,11 @@ logger = logging.getLogger(__name__)
 
 VALID_DIMENSION_TYPES = {"string", "time", "date", "boolean", "number"}
 _UNSET = object()  # Sentinel to distinguish "not provided" from "explicitly set to None"
+
+# Response row cap when the caller passes no limit; an explicit limit is trusted verbatim.
+_MCP_ROW_CAP = 20
+_CAP_HINT = "pass a higher 'limit' to get more rows"
+_NESTED_CAP_HINT = "pass a higher 'limit' on the root query to get more rows"
 
 # Shared remedy for every mcp-import failure below.
 _MCP_REMEDY = (
@@ -499,7 +505,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 "change(revenue:sum) > 0", "last(change(revenue:sum)) < 0".
             time_dimensions: Time grouping. Format: {"dimension": "created_at", "granularity": "day|week|month|quarter|year", "date_range": ["2024-01-01", "2024-12-31"]}.
             order: Sorting. Format: {"column": "measure_or_dim_name", "direction": "asc|desc"}.
-            limit: Max rows to return.
+            limit: Max rows to return, trusted verbatim; without it the response is capped at 20 rows with a truncation notice.
             offset: Number of rows to skip.
             whole_periods_only: When true, snap date filters to time bucket boundaries based on granularity, exclude the current incomplete time bucket.
             strict: Error instead of warn when a cross-model measure would broadcast or a producer filter would be dropped. Rejected with run-by-name execution — declare it on the stored query instead.
@@ -520,23 +526,31 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             fmt = format.lower().strip()
             if fmt not in ("json", "csv", "markdown"):
                 raise ValueError(f"Invalid format '{format}'. Must be one of: json, csv, markdown")
+            # Response row cap (spec: mcp/response-row-cap): with no explicit
+            # limit on the root query, push down cap+1 so truncation is
+            # detectable, then slice response-side. A run-by-name string is
+            # opaque (its stored SQL can't take a pushed-down limit) — cap
+            # response-side only.
+            exec_query, capped, cap_hint = _apply_mcp_row_cap(query)
             result = await engine.execute(
-                query=query,
+                query=exec_query,
                 variables=variables,
                 dry_run=dry_run,
                 explain=explain,
             )
             if dry_run:
                 return f"SQL:\n{result.sql}"
+            if capped:
+                _cap_rows(result, hint=cap_hint)
             if explain:
                 output = f"SQL:\n{result.sql}\n\nQuery Plan:\n"
                 output += _format_output(result=result, fmt=fmt)
                 return output
-            output = _format_output(result=result, fmt=fmt)
+            output = _format_output(
+                result=result, fmt=fmt, footer=_attributes_footer(result.attributes),
+            )
             if show_sql and result.sql:
                 output = f"SQL:\n{result.sql}\n\n{output}"
-            if result.attributes and (result.attributes.dimensions or result.attributes.measures):
-                output += "\n\n" + _format_attributes(attributes=result.attributes)
             return output
         except Exception as e:
             if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
@@ -1996,6 +2010,51 @@ def _format_csv(data: list[dict[str, Any]], columns: list[str]) -> str:
     return "\n".join(lines)
 
 
+def _cap_rows(result: SlayerResponse, *, hint: str) -> None:
+    """Slice past-cap rows and append the truncation notice. No-limit paths only."""
+    if len(result.data) <= _MCP_ROW_CAP:
+        return
+    result.data = result.data[:_MCP_ROW_CAP]
+    result.warnings = [
+        *result.warnings,
+        ResponseTruncationWarning(returned_rows=_MCP_ROW_CAP, hint=hint),
+    ]
+
+
+def _apply_mcp_row_cap(
+    query: "str | SlayerQuery | list[SlayerQuery]",
+):
+    """Push the default row cap into the root query when the caller set no limit.
+
+    Returns ``(query_to_execute, capped, hint)``. A run-by-name string is opaque,
+    so it can't be pushed down — cap response-side. A single query object or the
+    root (last) stage of a multi-stage list gets ``limit = cap + 1`` so truncation
+    is detectable; an explicit limit is trusted verbatim.
+    """
+    if isinstance(query, str):
+        return query, True, _CAP_HINT
+    if isinstance(query, SlayerQuery):
+        if query.limit is None:
+            return query.model_copy(update={"limit": _MCP_ROW_CAP + 1}), True, _CAP_HINT
+        return query, False, _CAP_HINT
+    if isinstance(query, dict):
+        if query.get("limit") is None:
+            return {**query, "limit": _MCP_ROW_CAP + 1}, True, _CAP_HINT
+        return query, False, _CAP_HINT
+    if isinstance(query, list) and query:
+        root = query[-1]
+        root_limit = root.limit if isinstance(root, SlayerQuery) else root.get("limit")
+        if root_limit is None:
+            capped_root = (
+                root.model_copy(update={"limit": _MCP_ROW_CAP + 1})
+                if isinstance(root, SlayerQuery)
+                else {**root, "limit": _MCP_ROW_CAP + 1}
+            )
+            return [*query[:-1], capped_root], True, _NESTED_CAP_HINT
+        return query, False, _NESTED_CAP_HINT
+    return query, False, _CAP_HINT
+
+
 def _csv_warning_comments(result: SlayerResponse) -> str:
     """Warnings as leading `#` comment lines for CSV output (uniform column count)."""
     lines = [f"# warning: {w.human_message()}" for w in (result.warnings or [])]
@@ -2008,24 +2067,25 @@ def _format_warnings(result: SlayerResponse) -> str:
     return "" if not lines else "\n\nWarnings:\n" + "\n".join(lines)
 
 
-def _format_output(result: SlayerResponse, fmt: str) -> str:
+def _format_output(result: SlayerResponse, fmt: str, *, footer: str = "") -> str:
     """Format query output in the requested format.
 
     Warnings stay machine-safe: inside the json payload, leading `#` lines for
-    csv, a prose block only for markdown.
+    csv, a prose block only for markdown. ``footer`` (the attributes block) sits
+    before the markdown warnings so the warnings stay the trailing block.
     """
     if fmt == "csv":
         # Leading `#` lines, never trailing prose — trailing rows break the
         # column count for every CSV reader.
         return _csv_warning_comments(result) + _format_csv(
             data=result.data, columns=result.columns,
-        )
+        ) + footer
     if fmt == "markdown":
-        return result.to_markdown() + _format_warnings(result)
+        return result.to_markdown() + footer + _format_warnings(result)
     return _format_json(
         data=result.data,
         warnings=[w.model_dump(mode="json") for w in (result.warnings or [])],
-    )
+    ) + footer
 
 
 def _format_field_meta(entries: dict[str, Any]) -> list[str]:
@@ -2059,3 +2119,10 @@ def _format_attributes(attributes) -> str:
         lines.append("Measure attributes:")
         lines.extend(measure_lines)
     return "\n".join(lines)if lines else ""
+
+
+def _attributes_footer(attributes) -> str:
+    """Attributes block as a trailing footer, or empty when there's nothing to show."""
+    if attributes and (attributes.dimensions or attributes.measures):
+        return "\n\n" + _format_attributes(attributes=attributes)
+    return ""

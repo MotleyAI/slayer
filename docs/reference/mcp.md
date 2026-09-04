@@ -91,7 +91,7 @@ claude mcp list
 
 | Tool | Description |
 |------|-------------|
-| `query` | Execute a semantic query. The `query` argument mirrors the engine: a model name (run a query-backed model by name), a single query object, or a list of query objects — a multi-stage DAG whose stages reference one another via `source_model` or `joins.target_model`, auto-sorted by the engine (order doesn't matter), with the last entry the returned root. Plus the wrappers `variables` / `show_sql` / `dry_run` / `explain` / `format`. See [Queries](../concepts/queries.md) and [Multistage Queries](../examples/06_multistage_queries/multistage_queries.md). |
+| `query` | Execute a semantic query. The `query` argument mirrors the engine: a model name (run a query-backed model by name), a single query object, or a list of query objects — a multi-stage DAG whose stages reference one another via `source_model` or `joins.target_model`, auto-sorted by the engine (order doesn't matter), with the last entry the returned root. Plus the wrappers `variables` / `show_sql` / `dry_run` / `explain` / `format`. Without an explicit `limit` on the root query the response is capped at 20 rows (the generated SQL carries `LIMIT 21` so truncation is detectable) with a truncation notice via the warnings channel. See [Queries](../concepts/queries.md) and [Multistage Queries](../examples/06_multistage_queries/multistage_queries.md). |
 
 **`query` tool arguments:**
 
@@ -102,7 +102,7 @@ claude mcp list
 | `show_sql` | bool | Include the generated SQL in the response for debugging |
 | `dry_run` | bool | Generate and return the SQL without executing it |
 | `explain` | bool | Run EXPLAIN ANALYZE and return the query plan |
-| `format` | string | Output format: `"markdown"` (default, compact), `"json"` (structured), or `"csv"` (most compact). Case-insensitive |
+| `format` | string | Output format: `"markdown"` (default, compact), `"json"` (structured), or `"csv"` (most compact). Case-insensitive. Warnings (including the truncation notice) render as a trailing `Warnings:` block in markdown, leading `#` comment lines in csv, and turn the json payload into `{"data", "warnings"}` instead of a bare array |
 
 **Query object fields** (the shape of `query`, and of each stage in the list form):
 
@@ -114,11 +114,11 @@ claude mcp list
 | `filters` | list[str] | Filter formula strings, e.g. `["status = 'active'", "amount > 100"]`. Supports operators (`=`, `<>`, `>`, `>=`, `<`, `<=`, `IN`, `IS NULL`, `IS NOT NULL`, `LIKE`, `NOT LIKE`), boolean logic (`AND`, `OR`, `NOT`), and inline transform expressions (`"change(revenue) > 0"`). Filters on measures are automatically routed to HAVING. |
 | `time_dimensions` | list[dict] | Time grouping. Each entry supports an optional `label` for display. |
 | `order` | list[dict] | Sorting, e.g. `[{"column": "count", "direction": "desc"}]` |
-| `limit` | int | Max rows |
+| `limit` | int | Max rows, trusted verbatim; without it the response is capped at 20 rows with a truncation notice |
 | `offset` | int | Skip rows |
 | `whole_periods_only` | bool | Snap date filters to time bucket boundaries, exclude the current incomplete time bucket |
 | `distinct_dimension_values` | bool | Default `true` — auto-dedup dim-only queries (`GROUP BY <dim/td aliases>`). Set `false` to emit raw rows (no top-level `GROUP BY`); rejects any measure reference in `measures` / `filters` / `order`. |
-| `strict` | bool | Default `false` — error instead of warn when a [cross-model measure broadcasts](../concepts/queries.md#cross-model-measures) or a filter is excluded from its producer. |
+| `strict` | bool | Default `false` — error instead of warn when a [cross-model measure broadcasts](../concepts/queries.md#cross-model-measures) or a filter is excluded from its producer. Rejected when running a model by name — declare it on the stored query instead. |
 | `name` | string | List form only — names a stage so sibling stages can reference it via `source_model` (every non-final stage must be named). |
 
 ### Memories + semantic search

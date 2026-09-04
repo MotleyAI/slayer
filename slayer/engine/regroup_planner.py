@@ -15,8 +15,10 @@ from slayer.core.keys import (
     ColumnKey,
     ColumnSqlKey,
     InKey,
+    LiteralKey,
     Phase,
     ScalarCallKey,
+    SqlExprKey,
     StarKey,
     TimeTruncKey,
     TransformKey,
@@ -269,7 +271,7 @@ def combined_consumer_aggregates(  # NOSONAR(S3776) — one cohesive discovery w
 _REF_LEAVES = (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey, AggregateKey)
 
 
-def _top_level_refs(  # NOSONAR(S3776) — one flat structural walk over the ValueKey union (arithmetic / scalar-call / between / in / transform / leaves); each arm is independently trivial and splitting would fragment a single recursive dispatch
+def _top_level_refs(
     vk: ValueKey, dim_agg_set: frozenset,
 ) -> Tuple[List[AggregateKey], List[ValueKey]]:
     """Split ``vk``'s refs into (dim-aggregates, other non-literal refs), not descending into a dim-aggregate's subtree."""
@@ -281,25 +283,23 @@ def _top_level_refs(  # NOSONAR(S3776) — one flat structural walk over the Val
             dim_hits.append(k)
             return
         if isinstance(k, _REF_LEAVES):
+            # Asymmetric: a ref leaf is terminal (TimeTruncKey IS the ref, an
+            # aggregate's subtree is its own scope).
             other.append(k)
             return
-        if isinstance(k, ArithmeticKey):
-            for o in k.operands:
-                _walk(o)
-        elif isinstance(k, ScalarCallKey):
-            for a in k.args:
-                if isinstance(a, (ArithmeticKey, ScalarCallKey, BetweenKey, InKey,
-                                  TransformKey, *_REF_LEAVES)):
-                    _walk(a)
-        elif isinstance(k, BetweenKey):
-            _walk(k.column)
-            _walk(k.low)
-            _walk(k.high)
-        elif isinstance(k, InKey):
-            _walk(k.column)
-        elif isinstance(k, TransformKey):
+        if isinstance(k, TransformKey):
+            # Asymmetric: partition/time keys are transform machinery, not refs.
             _walk(k.input)
-        # LiteralKey / unknown scalars: not a reference.
+            return
+        if isinstance(k, (ArithmeticKey, ScalarCallKey, BetweenKey, InKey)):
+            for child in k.children():
+                _walk(child)
+            return
+        if not isinstance(k, (LiteralKey, SqlExprKey)):
+            raise TypeError(
+                f"_top_level_refs has no case for {type(k).__name__!r}: "
+                f"classify the kind as a ref, a composite, or a non-reference."
+            )
 
     _walk(vk)
     return dim_hits, other

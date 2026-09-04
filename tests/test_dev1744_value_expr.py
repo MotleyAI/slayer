@@ -1917,9 +1917,9 @@ class TestParserAndBinderScalarSetsAgree:
         assert SCALAR_PASSTHROUGH - SCALAR_FUNCTIONS == set()
 
     def test_binder_only_names_are_like_and_iif(self) -> None:
-        """``like`` is an operator (the parser handles it through its internal
-        ``__like__`` form) and ``iif`` is the CASE-rewrite target (DEV-1740);
-        neither is a legacy-formula pass-through name."""
+        """``like`` is the LIKE-operator rewrite target and ``iif`` the
+        CASE-rewrite target (DEV-1740); neither is a legacy-formula
+        pass-through name."""
         assert SCALAR_FUNCTIONS - SCALAR_PASSTHROUGH == {"like", "iif"}
 
 

@@ -185,6 +185,8 @@ A time dimension with a required granularity and an optional date range. Support
 
 `week` is Monday-anchored (ISO-8601); `week_sunday` is Sunday-anchored (weeks start Sunday, end Saturday) for tools that use Sunday weeks. Both are model granularities you set on a `TimeDimension` — `week_sunday` is the SLayer value, not a wire keyword sent by a BI tool.
 
+`date_range` must be exactly two non-null string bounds and filters inclusively (`[start, end]`); a one-sided range isn't expressible here, so use an explicit comparator filter (`"created_at >= '2024-01-01'"`) for an open-ended bound.
+
 `date_range` and an equivalent explicit filter (`"created_at >= '2024-01-01' and created_at <= '2024-12-31'"`) are interchangeable — including for trailing-window measures and `time_shift`, which still read rows from before the range so the earliest bucket isn't short-changed. See [Time bounds do not clip the window](formulas.md#time-bounds-do-not-clip-the-window) for exactly which predicates count as a time bound.
 
 ## OrderItem
