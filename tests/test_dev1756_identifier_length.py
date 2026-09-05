@@ -36,7 +36,7 @@ _FIT_MARKER_RE = re.compile(r"_[0-9a-f]{8}_")
 # virtual-model shorts — there is no ``engine._query_as_model`` / ``_fit_short``
 # on this branch (query-backed shorts flow through ``source_bundle`` expansion),
 # so TestVirtualModelShorts below exercises removed internals. Tracked as a
-# DEV-1756 follow-up on DEV-1450 (see DECISIONS.md).
+# DEV-1756 follow-up on DEV-1450 (decision trail in git history).
 _UNPORTED_SURFACE = (
     "DEV-1756 virtual-model-short fitting not ported to the DEV-1450 pipeline "
     "(no engine._query_as_model / _fit_short); tests exercise removed internals."

@@ -1,0 +1,48 @@
+# Cross-walk between the LikeC4 model, import-linter contracts, arc42 files,
+# and OpenSpec specs. Checked by tools/arch_check.py; schema in system.arc42.md.
+
+nodes:
+  core:
+    package: slayer.core
+    claims: [slayer.async_utils]
+  sql:
+    package: slayer.sql
+    children: [render, dialects]
+    arc42: architecture/sql.arc42.md
+  engine:
+    package: slayer.engine
+  storage:
+    package: slayer.storage
+  importers:
+    virtual: true
+    packages: [slayer.dbt, slayer.cube, slayer.osi, slayer.ingest_report]
+  search:
+    virtual: true
+    packages: [slayer.search, slayer.embeddings]
+  memories:
+    virtual: true
+    packages: [slayer.memories]
+  protocols:
+    virtual: true
+    packages: [slayer.flight, slayer.pg_facade, slayer.facade]
+  surfaces:
+    virtual: true
+    packages:
+      - slayer.api
+      - slayer.mcp
+      - slayer.cli
+      - slayer.client
+      - slayer.inspect
+      - slayer.demo
+      - slayer.__main__
+
+# Grandfathered-edge ceilings per import-linter contract; arch_check fails if a
+# contract's ignore_imports count exceeds its baseline. Only ever lower these.
+contracts:
+  layers: {baseline: 15}
+  forbidden: {baseline: 2}
+
+cross_cutting_specs:
+  queries: {touches: [core, engine, sql]}
+  models: {touches: [core, storage, engine]}
+  aggregations: {touches: [core, engine, sql]}

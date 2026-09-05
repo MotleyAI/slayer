@@ -22,6 +22,10 @@ REST; `slayer/mcp` MCP server; `slayer/flight` / `slayer/pg_facade` / `slayer/fa
 BI wire protocols; `slayer/memories` + `slayer/search` agent memory & semantic search;
 `slayer/cli.py` CLI.
 
+Cross-cutting structure and principles live in `architecture/` (LikeC4 model + arc42 +
+`index.yaml`); enforcement bundle: `poetry run lint-imports`, `poetry run python
+tools/arch_check.py`, `npx -y likec4@1.47.0 validate architecture`, `poetry run basedpyright`.
+
 ## Common Commands
 
 ```bash
