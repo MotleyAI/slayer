@@ -9,7 +9,7 @@ The generator renders a `PlannedQuery` (or a list of them) to a SQL string via
 sqlglot AST building, never string concatenation. It is organised around ten
 principles (P-A – P-J); the invariant, the code that enforces it, and the key
 mechanism are described together under each. The consolidation that arrived at
-these is logged in `DECISIONS.md` (DEV-1742).
+these is the DEV-1742 decision trail (git history); principles also in `architecture/sql.arc42.md`.
 
 ## Entry points
 
