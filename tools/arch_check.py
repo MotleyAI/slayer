@@ -104,32 +104,65 @@ def _parse_relations(root: Path) -> tuple[set[tuple[str, str]], list[str]]:
     return relations, findings
 
 
+def _param_names(args: ast.arguments) -> set[str]:
+    params = [*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg]
+    return {a.arg for a in params if a is not None}
+
+
+def _assignment_targets(node: ast.AST) -> list[ast.expr]:
+    if isinstance(node, (ast.Assign, ast.Delete)):
+        return node.targets
+    if isinstance(node, (ast.AugAssign, ast.AnnAssign, ast.For, ast.AsyncFor, ast.NamedExpr)):
+        return [node.target]
+    if isinstance(node, ast.comprehension):
+        return [node.target]
+    if isinstance(node, ast.withitem) and node.optional_vars is not None:
+        return [node.optional_vars]
+    return []
+
+
 def _bound_names(node: ast.AST) -> set[str]:
     """Names (re)bound by a non-import node — used to invalidate typing aliases."""
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return {node.name, *_param_names(node.args)}
+    if isinstance(node, ast.Lambda):
+        return _param_names(node.args)
+    if isinstance(node, ast.ClassDef):
         return {node.name}
-    if isinstance(node, ast.Delete):
-        return {t.id for t in node.targets if isinstance(t, ast.Name)}
-    targets: list[ast.expr] = []
-    if isinstance(node, ast.Assign):
-        targets = node.targets
-    elif isinstance(node, (ast.AugAssign, ast.AnnAssign, ast.For, ast.AsyncFor, ast.NamedExpr)):
-        targets = [node.target]
-    elif isinstance(node, ast.withitem) and node.optional_vars is not None:
-        targets = [node.optional_vars]
-    return {sub.id for t in targets for sub in ast.walk(t) if isinstance(sub, ast.Name)}
+    if isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)):
+        return {node.name} if node.name else set()
+    if isinstance(node, ast.MatchMapping):
+        return {node.rest} if node.rest else set()
+    return {sub.id for t in _assignment_targets(node) for sub in ast.walk(t) if isinstance(sub, ast.Name)}
+
+
+def _import_bindings(node: ast.Import, modules: set[str], rebound: set[str]) -> None:
+    for a in node.names:
+        if a.name == "typing":
+            modules.add(a.asname or "typing")
+        else:
+            rebound.add(a.asname or a.name.split(".")[0])
+
+
+def _import_from_bindings(node: ast.ImportFrom, flags: set[str], rebound: set[str]) -> None:
+    from_typing = node.level == 0 and node.module == "typing"
+    for a in node.names:
+        if from_typing and a.name == "TYPE_CHECKING":
+            flags.add(a.asname or "TYPE_CHECKING")
+        else:
+            rebound.add(a.asname or a.name)
 
 
 def _typing_bindings(tree: ast.Module) -> tuple[set[str], set[str]]:
-    """Names bound to the typing module and to typing.TYPE_CHECKING, minus any rebound later."""
+    """Names bound to typing / typing.TYPE_CHECKING, minus names rebound by anything else."""
     modules: set[str] = set()
     flags: set[str] = set()
     rebound: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            modules.update(a.asname or a.name for a in node.names if a.name == "typing")
-        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module == "typing":
-            flags.update(a.asname or a.name for a in node.names if a.name == "TYPE_CHECKING")
+            _import_bindings(node, modules, rebound)
+        elif isinstance(node, ast.ImportFrom):
+            _import_from_bindings(node, flags, rebound)
         else:
             rebound |= _bound_names(node)
     return modules - rebound, flags - rebound
