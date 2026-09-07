@@ -22,8 +22,8 @@ Contributor-level pipeline docs: `docs/architecture/`.
 All code, old and new, MUST obey these.
 
 1. **Target layering**: `engine` → `sql` → `core`; a future `slayer/ir` slots in
-   between `sql` and `core` when extracted. The 15 grandfathered edges are dying,
-   never growing. [enforced: layers]
+   between `sql` and `core` when extracted. The grandfathered edges (count = the
+   `layers` baseline in index.yaml) are dying, never growing. [enforced: layers]
 2. **`core` imports no other SLayer node.** The 3 remaining edge classes
    (`core → engine/sql/storage`) are grandfathered and slated to die.
    [enforced: layers] [enforced: forbidden]

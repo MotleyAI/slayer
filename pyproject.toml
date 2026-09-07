@@ -153,7 +153,6 @@ layers = ["slayer.engine", "slayer.sql", "slayer.core"]
 unmatched_ignore_imports_alerting = "error"
 ignore_imports = [
     "slayer.core.query -> slayer.engine.syntax",
-    "slayer.core.formula -> slayer.sql.window_detect",
     "slayer.core.models -> slayer.sql.dialects",
     "slayer.core.models -> slayer.sql.sql_predicate",
     "slayer.core.models -> slayer.sql.window_detect",

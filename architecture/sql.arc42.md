@@ -5,7 +5,7 @@
 `slayer/sql` turns a `PlannedQuery` (built by `engine`) into dialect-correct SQL
 text. Children: `render` (AST assembly: value keys, order terms, joins, CTE
 assembly) and `dialects` (per-dialect emission strategies). It must not know how
-plans are made — the 9 grandfathered `sql → engine` edges die with the
+plans are made — the grandfathered `sql → engine` edges die with the
 `slayer/ir` extraction slice.
 
 ## 2. Building blocks
@@ -46,7 +46,7 @@ principles document) and `docs/architecture/scopes-and-bundle.md`.
 The single-door / single-renderer / single-namer shape is the end state of the
 DEV-1742 consolidation (6 PRs, 2026-08), which replaced five per-path renderers,
 four ORDER BY resolvers, and regex-based join discovery — each a source of
-silent divergence. The layering target (`engine` → `sql` → `core`) still has 15
+silent divergence. The layering target (`engine` → `sql` → `core`) still has
 grandfathered edges because `generator.py` consumes engine plan types directly;
 the `slayer/ir` extraction slice moves those types into a shared IR package.
 Recent structural trail in the archive: e.g.

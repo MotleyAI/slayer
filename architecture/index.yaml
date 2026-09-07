@@ -25,8 +25,10 @@ nodes:
   protocols:
     virtual: true
     packages: [slayer.flight, slayer.pg_facade, slayer.facade]
+    specs: [facade]
   surfaces:
     virtual: true
+    specs: [mcp]
     packages:
       - slayer.api
       - slayer.mcp
@@ -39,7 +41,7 @@ nodes:
 # Grandfathered-edge ceilings per import-linter contract; arch_check fails if a
 # contract's ignore_imports count exceeds its baseline. Only ever lower these.
 contracts:
-  layers: {baseline: 15}
+  layers: {baseline: 14}
   forbidden: {baseline: 2}
 
 cross_cutting_specs:
