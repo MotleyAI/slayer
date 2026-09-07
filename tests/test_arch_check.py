@@ -199,6 +199,14 @@ def test_aliased_typing_type_checking_attr_is_not_an_edge(tmp_path):
     assert any("engine -> core" in f for f in findings_for(root, "model-truth"))
 
 
+def test_rebound_typing_alias_still_measured(tmp_path):
+    root = make_repo(tmp_path)
+    (root / "pkg" / "engine" / "b.py").write_text(
+        "import typing as t\nt = object\nif t.TYPE_CHECKING:\n    import pkg.core\n", encoding="utf-8"
+    )
+    assert findings_for(root, "model-truth") == []
+
+
 def test_unrelated_type_checking_attr_still_measured(tmp_path):
     root = make_repo(tmp_path)
     (root / "pkg" / "engine" / "b.py").write_text(

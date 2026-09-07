@@ -104,16 +104,35 @@ def _parse_relations(root: Path) -> tuple[set[tuple[str, str]], list[str]]:
     return relations, findings
 
 
+def _bound_names(node: ast.AST) -> set[str]:
+    """Names (re)bound by a non-import node — used to invalidate typing aliases."""
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return {node.name}
+    if isinstance(node, ast.Delete):
+        return {t.id for t in node.targets if isinstance(t, ast.Name)}
+    targets: list[ast.expr] = []
+    if isinstance(node, ast.Assign):
+        targets = node.targets
+    elif isinstance(node, (ast.AugAssign, ast.AnnAssign, ast.For, ast.AsyncFor, ast.NamedExpr)):
+        targets = [node.target]
+    elif isinstance(node, ast.withitem) and node.optional_vars is not None:
+        targets = [node.optional_vars]
+    return {sub.id for t in targets for sub in ast.walk(t) if isinstance(sub, ast.Name)}
+
+
 def _typing_bindings(tree: ast.Module) -> tuple[set[str], set[str]]:
-    """Names bound to the typing module and to typing.TYPE_CHECKING."""
+    """Names bound to the typing module and to typing.TYPE_CHECKING, minus any rebound later."""
     modules: set[str] = set()
     flags: set[str] = set()
+    rebound: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             modules.update(a.asname or a.name for a in node.names if a.name == "typing")
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module == "typing":
             flags.update(a.asname or a.name for a in node.names if a.name == "TYPE_CHECKING")
-    return modules, flags
+        else:
+            rebound |= _bound_names(node)
+    return modules - rebound, flags - rebound
 
 
 def _is_type_checking_test(test: ast.expr, modules: set[str], flags: set[str]) -> bool:

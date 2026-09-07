@@ -197,7 +197,8 @@ Five consequences worth knowing:
   DuckDB, SQL Server, ClickHouse 24.12+ and Snowflake (where the generated SQL
   uses `GREATEST_IGNORE_NULLS`/`LEAST_IGNORE_NULLS`) *ignore* `NULL` arguments
   (returning `NULL` only when every argument is `NULL`), while SQLite (scalar
-  `MAX`/`MIN`), MySQL, BigQuery and pre-24.12 ClickHouse *propagate* `NULL`
+  `MAX`/`MIN`), MySQL, BigQuery and pre-24.12 ClickHouse (or 24.12+ with the
+  `least_greatest_legacy_null_behavior` setting) *propagate* `NULL`
   (any `NULL` argument makes the result `NULL`). SLayer does not normalise this — wrap arguments in
   `ifnull(...)` / `coalesce(...)` if you need one behaviour on every backend.
   On SQL Server, `GREATEST` / `LEAST` require SQL Server 2022 or newer; earlier
