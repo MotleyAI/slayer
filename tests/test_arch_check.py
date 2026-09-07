@@ -7,7 +7,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 _spec = importlib.util.spec_from_file_location("arch_check", REPO_ROOT / "tools" / "arch_check.py")
-assert _spec is not None and _spec.loader is not None
+assert _spec is not None
+assert _spec.loader is not None
 arch_check = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(arch_check)
 
@@ -188,6 +189,29 @@ def test_type_checking_import_is_not_an_edge(tmp_path):
         "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    import pkg.core\n", encoding="utf-8"
     )
     assert any("engine -> core" in f for f in findings_for(root, "model-truth"))
+
+
+def test_aliased_typing_type_checking_attr_is_not_an_edge(tmp_path):
+    root = make_repo(tmp_path)
+    (root / "pkg" / "engine" / "b.py").write_text(
+        "import typing as t\nif t.TYPE_CHECKING:\n    import pkg.core\n", encoding="utf-8"
+    )
+    assert any("engine -> core" in f for f in findings_for(root, "model-truth"))
+
+
+def test_unrelated_type_checking_attr_still_measured(tmp_path):
+    root = make_repo(tmp_path)
+    (root / "pkg" / "engine" / "b.py").write_text(
+        "import os\nif os.TYPE_CHECKING:\n    import pkg.core\n", encoding="utf-8"
+    )
+    assert findings_for(root, "model-truth") == []
+
+
+def test_baseline_slack_is_flagged(tmp_path):
+    root = make_repo(tmp_path)
+    index = (root / "architecture" / "index.yaml").read_text()
+    (root / "architecture" / "index.yaml").write_text(index.replace("baseline: 1", "baseline: 2"))
+    assert findings_for(root, "baseline-ratchet")
 
 
 def test_unknown_enforced_tag(tmp_path):

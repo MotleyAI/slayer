@@ -34,9 +34,10 @@ All code, old and new, MUST obey these.
    node-level import edges at every commit — the model describes the code as it
    IS, `#legacy` marks edges slated to die. [enforced: arch_check:model-truth]
 5. **Ratchet**: `ignore_imports` entries are only ever removed; per-contract
-   counts never exceed the `index.yaml` baselines. Wanting to add one means the
-   architecture is changing — change model + contract + arc42 deliberately, with
-   explicit user OK. [enforced: arch_check:baseline-ratchet]
+   counts always equal the `index.yaml` baselines, so removing an entry lowers
+   its baseline in the same commit. Wanting to add one means the architecture
+   is changing — change model + contract + arc42 deliberately, with explicit
+   user OK. [enforced: arch_check:baseline-ratchet]
 6. **SQL is built as sqlglot AST**, never by string concatenation of fragments.
    [review]
 7. **Async-first**: engine and storage methods are async; sync entry points

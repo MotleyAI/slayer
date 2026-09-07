@@ -38,8 +38,8 @@ nodes:
       - slayer.demo
       - slayer.__main__
 
-# Grandfathered-edge ceilings per import-linter contract; arch_check fails if a
-# contract's ignore_imports count exceeds its baseline. Only ever lower these.
+# Grandfathered-edge counts per import-linter contract; arch_check fails if a
+# contract's ignore_imports count differs from its baseline. Only ever lower these.
 contracts:
   layers: {baseline: 14}
   forbidden: {baseline: 2}

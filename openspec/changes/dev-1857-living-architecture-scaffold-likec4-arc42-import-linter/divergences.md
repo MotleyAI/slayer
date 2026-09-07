@@ -18,3 +18,7 @@
    references" sweep covered live docs/tests; the two pre-OpenSpec historical
    plan documents mention DECISIONS.md as part of their completed-plan narrative
    and were left as history.
+5. **Baseline check tightened from ≤ to ==** (review round): a count below the
+   baseline would leave slack for a different grandfathered edge to appear
+   later, so arch_check now requires the exact count and a removal must lower
+   the baseline in the same commit.

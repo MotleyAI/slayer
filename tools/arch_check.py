@@ -25,8 +25,9 @@ CHECK_IDS = frozenset(
 )
 
 _ELEMENT_RE = re.compile(r"^\s*(\w+)\s*=\s*(\w+)\s+'[^']*'")
-_RELATION_RE = re.compile(r"^\s*(\w+)\s*->\s*(\w+)\s*(#legacy)?\s*$")
-_ENFORCED_RE = re.compile(r"\[enforced:\s*([^\]]+)\]")
+_RELATION_RE = re.compile(r"^(\w+)\s*->\s*(\w+)(?:\s+#legacy)?$")
+_ENFORCED_RE = re.compile(r"\[enforced:\s*([^\]\s][^\]]*)\]")
+_INIT_PY = "__init__.py"
 
 
 def _load_index(root: Path) -> dict:
@@ -51,7 +52,7 @@ def _node_claims(nodes: dict) -> dict[str, list[str]]:
 
 def _module_path(root: Path, dotted: str) -> Path | None:
     base = root / Path(*dotted.split("."))
-    if (base / "__init__.py").is_file():
+    if (base / _INIT_PY).is_file():
         return base
     py = base.with_suffix(".py")
     if py.is_file():
@@ -66,9 +67,9 @@ def _top_level_units(root: Path, root_package: str) -> set[str]:
     for child in pkg_dir.iterdir():
         if child.name == "__pycache__":
             continue
-        if child.is_dir() and (child / "__init__.py").is_file():
+        if child.is_dir() and (child / _INIT_PY).is_file():
             units.add(f"{root_package}.{child.name}")
-        elif child.is_file() and child.suffix == ".py" and child.name != "__init__.py":
+        elif child.is_file() and child.suffix == ".py" and child.name != _INIT_PY:
             units.add(f"{root_package}.{child.stem}")
     return units
 
@@ -95,7 +96,7 @@ def _parse_relations(root: Path) -> tuple[set[tuple[str, str]], list[str]]:
         for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             if "->" not in line or line.lstrip().startswith("//"):
                 continue
-            m = _RELATION_RE.match(line)
+            m = _RELATION_RE.match(line.strip())
             if m:
                 relations.add((m.group(1), m.group(2)))
             else:
@@ -103,41 +104,82 @@ def _parse_relations(root: Path) -> tuple[set[tuple[str, str]], list[str]]:
     return relations, findings
 
 
-def _is_type_checking_test(test: ast.expr) -> bool:
-    return (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or (
-        isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
+def _typing_bindings(tree: ast.Module) -> tuple[set[str], set[str]]:
+    """Names bound to the typing module and to typing.TYPE_CHECKING."""
+    modules: set[str] = set()
+    flags: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules.update(a.asname or a.name for a in node.names if a.name == "typing")
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module == "typing":
+            flags.update(a.asname or a.name for a in node.names if a.name == "TYPE_CHECKING")
+    return modules, flags
+
+
+def _is_type_checking_test(test: ast.expr, modules: set[str], flags: set[str]) -> bool:
+    if isinstance(test, ast.Name):
+        return test.id in flags
+    return (
+        isinstance(test, ast.Attribute)
+        and test.attr == "TYPE_CHECKING"
+        and isinstance(test.value, ast.Name)
+        and test.value.id in modules
     )
 
 
+def _import_from_base(node: ast.ImportFrom, module_parts: list[str], is_pkg_init: bool) -> str:
+    if node.level == 0:
+        return node.module or ""
+    ctx = module_parts if is_pkg_init else module_parts[:-1]
+    ctx = ctx[: len(ctx) - (node.level - 1)]
+    return ".".join(ctx + ([node.module] if node.module else []))
+
+
+def _stmt_import_targets(node: ast.AST, module_parts: list[str], is_pkg_init: bool) -> set[str]:
+    if isinstance(node, ast.Import):
+        return {alias.name for alias in node.names}
+    if isinstance(node, ast.ImportFrom):
+        base = _import_from_base(node, module_parts, is_pkg_init)
+        if not base:
+            return set()
+        return {base, *(f"{base}.{alias.name}" for alias in node.names)}
+    return set()
+
+
 def _runtime_import_targets(tree: ast.Module, module_parts: list[str], is_pkg_init: bool) -> set[str]:
-    """Absolute dotted targets of runtime imports; TYPE_CHECKING-guarded bodies excluded."""
+    """Absolute dotted targets of runtime imports; typing.TYPE_CHECKING-guarded bodies excluded."""
+    modules, flags = _typing_bindings(tree)
     targets: set[str] = set()
-
-    def visit(node: ast.AST) -> None:
-        if isinstance(node, ast.If) and _is_type_checking_test(node.test):
-            for child in node.orelse:
-                visit(child)
-            return
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                targets.add(alias.name)
-        elif isinstance(node, ast.ImportFrom):
-            if node.level == 0:
-                base = node.module or ""
-            else:
-                ctx = module_parts if is_pkg_init else module_parts[:-1]
-                ctx = ctx[: len(ctx) - (node.level - 1)]
-                base = ".".join(ctx + ([node.module] if node.module else []))
-            if base:
-                targets.add(base)
-                for alias in node.names:
-                    targets.add(f"{base}.{alias.name}")
-        for child in ast.iter_child_nodes(node):
-            visit(child)
-
-    for stmt in tree.body:
-        visit(stmt)
+    stack: list[ast.AST] = list(tree.body)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, ast.If) and _is_type_checking_test(node.test, modules, flags):
+            stack.extend(node.orelse)
+            continue
+        targets |= _stmt_import_targets(node, module_parts, is_pkg_init)
+        stack.extend(ast.iter_child_nodes(node))
     return targets
+
+
+def _source_unit(rel: Path, root_package: str, top_to_node: dict[str, str]) -> tuple[list[str], bool, str] | None:
+    """(module_parts, is_pkg_init, src_node) for a repo-relative .py path, or None if node-less."""
+    parts = list(rel.with_suffix("").parts)
+    is_pkg_init = parts[-1] == "__init__"
+    if is_pkg_init:
+        parts = parts[:-1]
+    if parts == [root_package]:
+        return None
+    src_node = top_to_node.get(parts[1])
+    if src_node is None:
+        return None
+    return parts, is_pkg_init, src_node
+
+
+def _target_node(target: str, root_package: str, top_to_node: dict[str, str]) -> str | None:
+    tparts = target.split(".")
+    if tparts[0] != root_package or len(tparts) < 2:
+        return None
+    return top_to_node.get(tparts[1])
 
 
 def measure_runtime_node_edges(root: Path, root_package: str, top_to_node: dict[str, str]) -> set[tuple[str, str]]:
@@ -147,21 +189,13 @@ def measure_runtime_node_edges(root: Path, root_package: str, top_to_node: dict[
         rel = py.relative_to(root)
         if "__pycache__" in rel.parts:
             continue
-        parts = list(rel.with_suffix("").parts)
-        is_pkg_init = parts[-1] == "__init__"
-        if is_pkg_init:
-            parts = parts[:-1]
-        if parts == [root_package]:
+        unit = _source_unit(rel, root_package, top_to_node)
+        if unit is None:
             continue
-        src_node = top_to_node.get(parts[1])
-        if src_node is None:
-            continue
+        parts, is_pkg_init, src_node = unit
         tree = ast.parse(py.read_text(encoding="utf-8"))
         for target in _runtime_import_targets(tree, parts, is_pkg_init):
-            tparts = target.split(".")
-            if tparts[0] != root_package or len(tparts) < 2:
-                continue
-            dst_node = top_to_node.get(tparts[1])
+            dst_node = _target_node(target, root_package, top_to_node)
             if dst_node is not None and dst_node != src_node:
                 edges.add((src_node, dst_node))
     return edges
@@ -224,8 +258,8 @@ def _check_model_identity(root: Path, nodes: dict) -> list[str]:
     return findings
 
 
-def _check_spec_mapping(root: Path, index: dict) -> list[str]:
-    findings: list[str] = []
+def _mapped_spec_groups(index: dict, findings: list[str]) -> dict[str, str]:
+    """Spec group -> owning node (or cross_cutting_specs), appending duplicate-mapping findings."""
     nodes = index.get("nodes", {})
     mapped: dict[str, str] = {}
     for node_id, spec in nodes.items():
@@ -240,6 +274,12 @@ def _check_spec_mapping(root: Path, index: dict) -> list[str]:
         for touched in spec.get("touches", []):
             if touched not in nodes:
                 findings.append(f"spec-mapping: {group} touches unknown node {touched}")
+    return mapped
+
+
+def _check_spec_mapping(root: Path, index: dict) -> list[str]:
+    findings: list[str] = []
+    mapped = _mapped_spec_groups(index, findings)
     specs_dir = root / "openspec" / "specs"
     on_disk = {p.name for p in specs_dir.iterdir() if p.is_dir()} if specs_dir.is_dir() else set()
     for group in sorted(on_disk - set(mapped)):
@@ -261,7 +301,7 @@ def _check_baselines(index: dict, importlinter: dict) -> list[str]:
             continue  # reported by contracts-known
         actual = len(contract.get("ignore_imports", []))
         baseline = spec.get("baseline", 0)
-        if actual > baseline:
+        if actual != baseline:
             findings.append(
                 f"baseline-ratchet: contract {name} has {actual} ignore_imports, baseline is {baseline}"
             )
