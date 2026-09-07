@@ -8,7 +8,17 @@ from __future__ import annotations
 
 from decimal import Decimal
 from enum import IntEnum
-from typing import Literal, Mapping, Optional, Tuple, TypeVar, Union, cast
+from typing import (
+    Callable,
+    Literal,
+    Mapping,
+    Optional,
+    Tuple,
+    TypeVar,
+    Union,
+    cast,
+    get_args,
+)
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
@@ -127,9 +137,59 @@ def normalize_scalar(value):
 
 
 class _FrozenKey(BaseModel):
-    """Common config for the typed-key family: frozen (hashable, immutable)."""
+    """Common config for the typed-key family: frozen (hashable, immutable).
+
+    Every kind overrides the total-traversal protocol: ``children()`` yields the
+    directly embedded value keys (scalars and the Mode-A-opaque
+    ``AggregateKey.column_filter_key`` are never children); ``map_children``
+    rebuilds one level with ``fn`` applied at each ``children()`` position,
+    returning ``self`` when no child changed identity (``is``).
+    """
 
     model_config = ConfigDict(frozen=True)
+
+    def children(self) -> Tuple["ValueKey", ...]:
+        raise NotImplementedError(
+            f"{type(self).__name__} must override children(): every value-key "
+            f"kind implements the total-traversal protocol."
+        )
+
+    def map_children(
+        self, fn: Callable[["ValueKey"], "ValueKey"],
+    ) -> "_FrozenKey":
+        raise NotImplementedError(
+            f"{type(self).__name__} must override map_children(): every "
+            f"value-key kind implements the total-traversal protocol."
+        )
+
+
+class _ChildMapper:
+    """``map_children`` helper: applies ``fn`` to keys, passes scalars through,
+    and records whether any result changed identity."""
+
+    def __init__(self, fn: Callable[["ValueKey"], "ValueKey"]) -> None:
+        self._fn = fn
+        self.changed = False
+
+    def __call__(self, value):
+        if not isinstance(value, _FrozenKey):
+            return value
+        new = self._fn(value)
+        if new is not value:
+            self.changed = True
+        return new
+
+
+class _LeafKey(_FrozenKey):
+    """Traversal leaf: no embedded keys."""
+
+    def children(self) -> Tuple["ValueKey", ...]:
+        return ()
+
+    def map_children(
+        self, fn: Callable[["ValueKey"], "ValueKey"],
+    ) -> "_LeafKey":
+        return self
 
 
 def _typed_leaf(v):
@@ -155,7 +215,7 @@ def _typed_kwargs(kwargs):
     return tuple((k, _typed_leaf(v)) for k, v in kwargs)
 
 
-class ColumnKey(_FrozenKey):
+class ColumnKey(_LeafKey):
     """Row-level reference to a base column on a model.
 
     ``path`` is the join walk from the query's source model to the terminal
@@ -171,7 +231,7 @@ class ColumnKey(_FrozenKey):
         return Phase.ROW
 
 
-class ColumnSqlKey(_FrozenKey):
+class ColumnSqlKey(_LeafKey):
     """Reference to a derived column (whose ``Column.sql`` is set).
 
     The expansion AST is recovered from the model at binding time — the key only
@@ -202,6 +262,16 @@ class TimeTruncKey(_FrozenKey):
     def phase(self) -> Phase:
         return Phase.ROW
 
+    def children(self) -> Tuple["ValueKey", ...]:
+        return (self.column,)
+
+    def map_children(
+        self, fn: Callable[["ValueKey"], "ValueKey"],
+    ) -> "TimeTruncKey":
+        m = _ChildMapper(fn)
+        column = m(self.column)
+        return self.model_copy(update={"column": column}) if m.changed else self
+
 
 def column_leaf(col: Union["ColumnKey", "ColumnSqlKey"]) -> str:
     """Leaf column name of a ``TimeTruncKey.column`` regardless of kind."""
@@ -213,7 +283,7 @@ def column_path(col: Union["ColumnKey", "ColumnSqlKey"]) -> Tuple[str, ...]:
     return col.path
 
 
-class StarKey(_FrozenKey):
+class StarKey(_LeafKey):
     """Sentinel source for ``*:count`` aggregations.
 
     ``path`` is empty for the local star and non-empty for a cross-model star
@@ -227,7 +297,7 @@ class StarKey(_FrozenKey):
         return Phase.ROW
 
 
-class LiteralKey(_FrozenKey):
+class LiteralKey(_LeafKey):
     """Identity for a literal value inside an expression tree.
 
     Scalar normalization happens at the call site via ``normalize_scalar`` so
@@ -250,7 +320,7 @@ class LiteralKey(_FrozenKey):
         return _typed_leaf(self.value) == _typed_leaf(other.value)
 
 
-class SqlExprKey(_FrozenKey):
+class SqlExprKey(_LeafKey):
     """Identity for a Mode-A SQL fragment.
 
     Used as ``AggregateKey.column_filter_key`` so an attached ``Column.filter``
@@ -345,6 +415,32 @@ class AggregateKey(_FrozenKey):
     def phase(self) -> Phase:
         return Phase.AGGREGATE
 
+    def children(self) -> Tuple["ValueKey", ...]:
+        # column_filter_key is Mode-A opaque — never a child (A1).
+        embedded = [
+            c
+            for c in (self.source, *self.args, *(v for _, v in self.kwargs))
+            if isinstance(c, _FrozenKey)
+        ]
+        if self.partition_keys is not None:
+            embedded.extend(self.partition_keys)
+        return tuple(embedded)
+
+    def map_children(
+        self, fn: Callable[["ValueKey"], "ValueKey"],
+    ) -> "AggregateKey":
+        m = _ChildMapper(fn)
+        update = {
+            "source": m(self.source),
+            "args": tuple(m(a) for a in self.args),
+            "kwargs": tuple((k, m(v)) for k, v in self.kwargs),
+            "partition_keys": (
+                None if self.partition_keys is None
+                else frozenset(m(p) for p in self.partition_keys)
+            ),
+        }
+        return self.model_copy(update=update) if m.changed else self
+
     def __hash__(self) -> int:
         return hash((
             "AggregateKey",
@@ -426,6 +522,24 @@ class TransformKey(_FrozenKey):
     def phase(self) -> Phase:
         return Phase.POST
 
+    def children(self) -> Tuple["ValueKey", ...]:
+        # args/kwargs are scalar-only, never children.
+        embedded = [self.input, *self.partition_keys]
+        if self.time_key is not None:
+            embedded.append(self.time_key)
+        return tuple(embedded)
+
+    def map_children(
+        self, fn: Callable[["ValueKey"], "ValueKey"],
+    ) -> "TransformKey":
+        m = _ChildMapper(fn)
+        update = {
+            "input": m(self.input),
+            "partition_keys": frozenset(m(p) for p in self.partition_keys),
+            "time_key": None if self.time_key is None else m(self.time_key),
+        }
+        return self.model_copy(update=update) if m.changed else self
+
     def __hash__(self) -> int:
         return hash((
             "TransformKey",
@@ -464,6 +578,19 @@ class ArithmeticKey(_FrozenKey):
     def phase(self) -> Phase:
         return max((o.phase for o in self.operands), default=Phase.ROW)
 
+    def children(self) -> Tuple["ValueKey", ...]:
+        return self.operands
+
+    def map_children(
+        self, fn: Callable[["ValueKey"], "ValueKey"],
+    ) -> "ArithmeticKey":
+        m = _ChildMapper(fn)
+        operands = tuple(m(o) for o in self.operands)
+        return (
+            self.model_copy(update={"operands": operands})
+            if m.changed else self
+        )
+
 
 _ScalarCallArg = Union["ValueKey", Decimal, str, bool, None]
 
@@ -487,6 +614,16 @@ class ScalarCallKey(_FrozenKey):
     def phase(self) -> Phase:
         phases = [p for a in self.args if (p := _arg_phase(a)) is not None]
         return max(phases) if phases else Phase.ROW
+
+    def children(self) -> Tuple["ValueKey", ...]:
+        return tuple(a for a in self.args if isinstance(a, _FrozenKey))
+
+    def map_children(
+        self, fn: Callable[["ValueKey"], "ValueKey"],
+    ) -> "ScalarCallKey":
+        m = _ChildMapper(fn)
+        args = tuple(m(a) for a in self.args)
+        return self.model_copy(update={"args": args}) if m.changed else self
 
     def __hash__(self) -> int:
         return hash(("ScalarCallKey", self.name, _typed_args(self.args)))
@@ -516,6 +653,18 @@ class BetweenKey(_FrozenKey):
     @property
     def phase(self) -> Phase:
         return Phase.ROW
+
+    def children(self) -> Tuple["ValueKey", ...]:
+        return (self.column, self.low, self.high)
+
+    def map_children(
+        self, fn: Callable[["ValueKey"], "ValueKey"],
+    ) -> "BetweenKey":
+        m = _ChildMapper(fn)
+        update = {
+            "column": m(self.column), "low": m(self.low), "high": m(self.high),
+        }
+        return self.model_copy(update=update) if m.changed else self
 
 
 class InKey(_FrozenKey):
@@ -548,6 +697,19 @@ class InKey(_FrozenKey):
     def phase(self) -> Phase:
         return Phase.ROW
 
+    def children(self) -> Tuple["ValueKey", ...]:
+        return (self.column, *self.values)
+
+    def map_children(
+        self, fn: Callable[["ValueKey"], "ValueKey"],
+    ) -> "InKey":
+        m = _ChildMapper(fn)
+        update = {
+            "column": m(self.column),
+            "values": tuple(m(v) for v in self.values),
+        }
+        return self.model_copy(update=update) if m.changed else self
+
 
 ValueKey = Union[
     ColumnKey,
@@ -575,6 +737,35 @@ TimeTruncKey.model_rebuild()
 AggregateKey.model_rebuild()
 
 
+VALUE_KEY_TYPES: Tuple[type, ...] = get_args(ValueKey)
+
+
+class KindPolicy(BaseModel):
+    """Consumer-named per-kind policy flags; membership is a conscious
+    classification asserted by tests, not derived from structure."""
+
+    model_config = ConfigDict(frozen=True)
+
+    slottable: bool = False
+    slot_composite: bool = False
+    materialised_order: bool = False
+
+
+KIND_POLICY: dict[type, KindPolicy] = {
+    ColumnKey: KindPolicy(slottable=True),
+    ColumnSqlKey: KindPolicy(slottable=True),
+    TimeTruncKey: KindPolicy(slottable=True),
+    StarKey: KindPolicy(),
+    LiteralKey: KindPolicy(),
+    AggregateKey: KindPolicy(slottable=True, materialised_order=True),
+    TransformKey: KindPolicy(slottable=True, materialised_order=True),
+    ArithmeticKey: KindPolicy(slot_composite=True, materialised_order=True),
+    ScalarCallKey: KindPolicy(slot_composite=True, materialised_order=True),
+    BetweenKey: KindPolicy(),
+    InKey: KindPolicy(),
+}
+
+
 def _map_sql_expr_key(key: SqlExprKey, *, map_path) -> SqlExprKey:
     """Apply ``map_path`` to a standalone fragment's referenced paths.
 
@@ -588,87 +779,30 @@ def _map_sql_expr_key(key: SqlExprKey, *, map_path) -> SqlExprKey:
     )
 
 
-def _map_partition_keys(partition_keys, *, map_path):
-    """Map an ``AggregateKey.partition_keys`` frozenset, keeping None (absent) vs empty."""
-    if partition_keys is None:
-        return None
-    return frozenset(
-        _map_value_key(p, map_path=map_path) for p in partition_keys
-    )
-
-
 def _map_value_key(key: _RerootableT, *, map_path) -> _RerootableT:
     """Rewrite every embedded join ``path`` in ``key`` through ``map_path``.
 
-    The one total, fail-closed visitor behind :func:`reroot_value_key` and
-    :func:`prepend_value_key`; an unhandled kind raises ``TypeError``.
-    ``AggregateKey.column_filter_key`` is copied unchanged (owner-anchored), while
-    a standalone ``SqlExprKey`` is root-anchored and does map.
+    Total & fail-closed behind :func:`reroot_value_key` / :func:`prepend_value_key`:
+    path-carrying leaves map here, every other kind routes through
+    ``map_children`` (a protocol-less kind raises). ``AggregateKey.column_filter_key``
+    is copied unchanged (owner-anchored), while a standalone ``SqlExprKey`` is
+    root-anchored and does map.
     """
-    def _recurse(value):
-        return _map_value_key(value, map_path=map_path)
-
     # Scalars ride through untouched (ScalarCallKey args, AggregateKey kwargs).
     if key is None or isinstance(key, (Decimal, str, bool, int, float)):
         return key
-
-    # --- leaves ---------------------------------------------------------
     if isinstance(key, (ColumnKey, ColumnSqlKey, StarKey)):
         return cast(_RerootableT, _map_path_ref(key, map_path=map_path))
-    if isinstance(key, LiteralKey):
-        return key
-    if isinstance(key, TimeTruncKey):
-        # Path lives on the wrapped column.
-        return key.model_copy(update={"column": _recurse(key.column)})
     if isinstance(key, SqlExprKey):
         return cast(_RerootableT, _map_sql_expr_key(key, map_path=map_path))
-
-    # --- composites -----------------------------------------------------
-    if isinstance(key, AggregateKey):
-        return key.model_copy(update={
-            "source": _recurse(key.source),
-            "args": tuple(_recurse(a) for a in key.args),
-            "kwargs": tuple((n, _recurse(v)) for n, v in key.kwargs),
-            "partition_keys": _map_partition_keys(
-                key.partition_keys, map_path=map_path,
-            ),
-        })
-    if isinstance(key, TransformKey):
-        # args/kwargs are Tuple[Scalar, ...] — no ValueKey to traverse there.
-        return key.model_copy(update={
-            "input": _recurse(key.input),
-            "partition_keys": frozenset(
-                _recurse(p) for p in key.partition_keys
-            ),
-            "time_key": (
-                None if key.time_key is None else _recurse(key.time_key)
-            ),
-        })
-    if isinstance(key, ArithmeticKey):
-        return key.model_copy(update={
-            "operands": tuple(_recurse(o) for o in key.operands),
-        })
-    if isinstance(key, ScalarCallKey):
-        return key.model_copy(update={
-            "args": tuple(_recurse(a) for a in key.args),
-        })
-    if isinstance(key, BetweenKey):
-        return key.model_copy(update={
-            "column": _recurse(key.column),
-            "low": _recurse(key.low),
-            "high": _recurse(key.high),
-        })
-    if isinstance(key, InKey):
-        return key.model_copy(update={
-            "column": _recurse(key.column),
-            "values": tuple(_recurse(v) for v in key.values),
-        })
-
-    raise TypeError(
-        f"the value-key path visitor has no case for {type(key).__name__!r}. "
-        f"The visitor is total over ValueKey by design: add an explicit case "
-        f"rather than letting an unmapped key through, which the SQL generator "
-        f"cannot distinguish from a correctly-anchored one."
+    if not isinstance(key, _FrozenKey):
+        raise TypeError(
+            f"the value-key path visitor has no case for {type(key).__name__!r}: "
+            f"only value keys and scalars are mappable."
+        )
+    return cast(
+        _RerootableT,
+        key.map_children(lambda c: _map_value_key(c, map_path=map_path)),
     )
 
 
@@ -719,67 +853,25 @@ def substitute_value_keys(
 ) -> _RerootableT:
     """Replace whole sub-keys named in ``mapping`` by identity, structurally.
 
-    Match-before-recurse: a key equal to a ``mapping`` entry is replaced
-    atomically (children never traversed). Total & fail-closed: an unhandled kind
-    raises ``TypeError``. ``AggregateKey.column_filter_key`` is NOT traversed (a
-    Mode-A ``SqlExprKey``); ``TimeTruncKey.column`` IS.
+    Pre-order match-before-recurse: a key equal to a ``mapping`` entry is
+    replaced atomically (children never traversed, replacements never
+    re-substituted); everything else routes through ``map_children`` (a
+    protocol-less kind raises). ``AggregateKey.column_filter_key`` is NOT
+    traversed (a Mode-A ``SqlExprKey``); ``TimeTruncKey.column`` IS.
     """
-    def _recurse(value):
-        return substitute_value_keys(key=value, mapping=mapping)
-
     # Scalars ride through untouched (ScalarCallKey args, AggregateKey kwargs).
     if key is None or isinstance(key, (Decimal, str, bool, int, float)):
         return key
-
-    # Whole-key match wins before any structural descent.
+    if not isinstance(key, _FrozenKey):
+        raise TypeError(
+            f"substitute_value_keys has no case for {type(key).__name__!r}: "
+            f"only value keys and scalars are substitutable."
+        )
     if key in mapping:
         return cast(_RerootableT, mapping[key])
-
-    # --- leaves ---------------------------------------------------------
-    if isinstance(key, (ColumnKey, ColumnSqlKey, StarKey, LiteralKey, SqlExprKey)):
-        return key
-    if isinstance(key, TimeTruncKey):
-        return key.model_copy(update={"column": _recurse(key.column)})
-
-    # --- composites -----------------------------------------------------
-    if isinstance(key, AggregateKey):
-        return key.model_copy(update={
-            "source": _recurse(key.source),
-            "args": tuple(_recurse(a) for a in key.args),
-            "kwargs": tuple((n, _recurse(v)) for n, v in key.kwargs),
-            "partition_keys": (
-                None if key.partition_keys is None
-                else frozenset(_recurse(p) for p in key.partition_keys)
-            ),
-        })
-    if isinstance(key, TransformKey):
-        return key.model_copy(update={
-            "input": _recurse(key.input),
-            "partition_keys": frozenset(_recurse(p) for p in key.partition_keys),
-            "time_key": None if key.time_key is None else _recurse(key.time_key),
-        })
-    if isinstance(key, ArithmeticKey):
-        return key.model_copy(update={
-            "operands": tuple(_recurse(o) for o in key.operands),
-        })
-    if isinstance(key, ScalarCallKey):
-        return key.model_copy(update={"args": tuple(_recurse(a) for a in key.args)})
-    if isinstance(key, BetweenKey):
-        return key.model_copy(update={
-            "column": _recurse(key.column),
-            "low": _recurse(key.low),
-            "high": _recurse(key.high),
-        })
-    if isinstance(key, InKey):
-        return key.model_copy(update={
-            "column": _recurse(key.column),
-            "values": tuple(_recurse(v) for v in key.values),
-        })
-
-    raise TypeError(
-        f"substitute_value_keys has no case for {type(key).__name__!r}. The "
-        f"visitor is total over ValueKey by design: add an explicit case rather "
-        f"than letting a key ride through unrewritten."
+    return cast(
+        _RerootableT,
+        key.map_children(lambda c: substitute_value_keys(c, mapping)),
     )
 
 

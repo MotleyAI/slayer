@@ -1,7 +1,8 @@
 """DEV-1576 — parse-level coverage for the three SlayerQuery heals.
 
 1. Aggregation-name alias / casing normalization (``normalize_aggregation_name``
-   + colon-syntax healing in ``parse_formula`` / ``parse_filter``).
+   + colon-syntax healing in ``parse_formula``; the typed pipeline heals at
+   binding — see ``tests/test_aggregation_gating.py``).
 2. ``round()`` / ``abs()`` as top-level formula functions (parse into a
    ``MixedArithmeticField`` passthrough; arity validation).
 
@@ -19,7 +20,6 @@ from slayer.core.enums import (
 from slayer.core.formula import (
     AggregatedMeasureRef,
     MixedArithmeticField,
-    parse_filter,
     parse_formula,
 )
 
@@ -88,7 +88,7 @@ class TestNormalizeAggregationName:
 
 
 # ---------------------------------------------------------------------------
-# §1 — colon-syntax healing through parse_formula / parse_filter
+# §1 — colon-syntax healing through parse_formula
 # ---------------------------------------------------------------------------
 
 
@@ -123,16 +123,6 @@ class TestColonSyntaxAliasHealing:
         assert isinstance(result, AggregatedMeasureRef)
         assert result.aggregation_name == "bogus"
 
-    def test_filter_colon_alias_heals(self) -> None:
-        pf = parse_filter("revenue:countd > 5")
-        assert any(ref.aggregation_name == "count_distinct" for ref in pf.agg_refs)
-        # The canonical alias used downstream reflects the healed name.
-        assert any("count_distinct" in a for a in pf.synthesized_aliases)
-
-    def test_filter_stddev_alias_heals(self) -> None:
-        pf = parse_filter("amount:stddev > 1")
-        assert any(ref.aggregation_name == "stddev_samp" for ref in pf.agg_refs)
-
     def test_custom_agg_named_like_alias_not_healed(self) -> None:
         # A model custom aggregation named like an alias key takes precedence —
         # an exact custom-name match is NOT rewritten to the builtin.
@@ -145,10 +135,6 @@ class TestColonSyntaxAliasHealing:
             "revenue:countd", extra_agg_names=frozenset({"some_other_agg"})
         )
         assert result.aggregation_name == "count_distinct"
-
-    def test_custom_agg_named_like_alias_not_healed_in_filter(self) -> None:
-        pf = parse_filter("revenue:countd > 5", extra_agg_names=frozenset({"countd"}))
-        assert any(ref.aggregation_name == "countd" for ref in pf.agg_refs)
 
 
 # ---------------------------------------------------------------------------

@@ -94,11 +94,14 @@ column) SHALL keep their existing behavior.
 ### Requirement: Composite-input consecutive_periods
 
 `consecutive_periods` SHALL accept any Mode-B value-key input tree — arithmetic
-of any operator, scalar calls, `BETWEEN`, `IN` / negated `IN`, boolean
-connectives, and nested transforms in any position. A boolean-shaped input is
-used as the predicate directly with NULL treated as false; a value-shaped input
-is true where its value is non-NULL and non-zero. Streak semantics are
-unchanged: false or NULL breaks the run and returns 0.
+of any operator, scalar calls, `BETWEEN`, `IN` / negated `IN`, null tests
+(`is None` / `is not None`), boolean connectives, and nested transforms in any
+position. A boolean-shaped input is used as the predicate directly with NULL
+treated as false; a value-shaped input is true where its value is non-NULL and
+non-zero. Streak semantics are unchanged: false or NULL breaks the run and
+returns 0. Emitted SQL SHALL use a boolean-shaped predicate only in condition
+positions — never wrapped as a scalar value — so generation is valid on
+strictly-typed dialects (Postgres, T-SQL, BigQuery).
 
 #### Scenario: Numeric delta truthiness
 
@@ -138,17 +141,46 @@ unchanged: false or NULL breaks the run and returns 0.
   boolean connective (for example `status in ('a','b') and revenue:sum > 0`)
 - **THEN** the referenced column materialises and the streak executes correctly
 
+#### Scenario: Top-level null test drives the streak
+
+- **WHEN** a query requests `consecutive_periods(hi_rev:sum is not None)`
+  grouped by store, where one store's aggregate is NULL in the last month
+- **THEN** the streak counts consecutive non-NULL months and the NULL month
+  breaks the run (and the `is None` form counts the complementary months)
+
+#### Scenario: Null test under a boolean connective
+
+- **WHEN** a query requests
+  `consecutive_periods(hi_rev:sum is not None and cost:sum > 0)`
+- **THEN** the query executes with both conjuncts applied, rather than failing
+  with a boolean-shaped-operands `ValueError`
+
+#### Scenario: Null test over a dimension column
+
+- **WHEN** a query requests `consecutive_periods(store is not None)` grouped by
+  store
+- **THEN** the referenced column materialises and the streak executes correctly
+
+#### Scenario: Predicates emit as bare conditions on strict dialects
+
+- **WHEN** SQL is generated for any boolean-shaped `consecutive_periods`
+  predicate (a null test included) on Postgres, T-SQL, or BigQuery
+- **THEN** the predicate appears directly as the `CASE WHEN` condition, with no
+  `COALESCE(..., FALSE)` scalar wrapper and no `... IS NOT NULL AND ... <> 0`
+  truthiness wrapper around a boolean
+
 ### Requirement: consecutive_periods predicate typing contract
 
-Boolean-shaped SHALL be defined recursively as: a comparison; `BETWEEN`; `IN`;
-or `and` / `or` / `not` whose operands are themselves boolean-shaped. A
-boolean-shaped node SHALL be accepted at the predicate top level and in a
-conditional's condition position (`iif` first argument), and SHALL be rejected
-with a `ValueError` naming the shape when it appears in any value position — an
-arithmetic operand, an argument of any other scalar call, or an operand of an
-`IN` / `BETWEEN` predicate. `and` / `or` / `not` SHALL reject non-boolean-shaped
-operands the same way. A top-level string-family scalar call SHALL be rejected
-as a predicate (its truthiness is undefined).
+Boolean-shaped SHALL be defined recursively as: a comparison; a null test
+(`is None` / `is not None`); `BETWEEN`; `IN`; or `and` / `or` / `not` whose
+operands are themselves boolean-shaped. A boolean-shaped node SHALL be accepted
+at the predicate top level and in a conditional's condition position (`iif`
+first argument), and SHALL be rejected with a `ValueError` naming the shape when
+it appears in any value position — an arithmetic operand, an argument of any
+other scalar call, or an operand of an `IN` / `BETWEEN` predicate. `and` / `or`
+/ `not` SHALL reject non-boolean-shaped operands the same way. A top-level
+string-family scalar call SHALL be rejected as a predicate (its truthiness is
+undefined).
 
 #### Scenario: iif condition position accepts a predicate
 
@@ -179,6 +211,12 @@ as a predicate (its truthiness is undefined).
 - **WHEN** a query requests `consecutive_periods(lower(name:max))`
 - **THEN** the query fails with a `ValueError` explaining that a string-valued
   predicate has no truthiness
+
+#### Scenario: Null test in a value position rejected
+
+- **WHEN** a query requests `consecutive_periods((hi_rev:sum is None) + 1)`
+- **THEN** the query fails with a `ValueError` naming the boolean-in-numeric
+  shape, rather than rendering the null test as an arithmetic operand
 
 ### Requirement: Uniform fail-closed transform errors
 

@@ -7,15 +7,20 @@ unparseable fragments and scalar values contribute nothing."""
 
 from __future__ import annotations
 
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Tuple
 
-from slayer.core.keys import AggregateKey, ColumnKey, ColumnSqlKey, StarKey
+from slayer.core.keys import (
+    AggregateKey,
+    ColumnKey,
+    ColumnSqlKey,
+    StarKey,
+    _FrozenKey,
+)
 from slayer.core.models import SlayerModel
 from slayer.engine.column_filter_paths import compute_column_filter_join_paths
 from slayer.engine.source_bundle import ResolvedSourceBundle
 
 _PathList = List[Tuple[str, ...]]
-_StructuralRef = Union[ColumnKey, ColumnSqlKey, StarKey]
 
 
 def _add_path_prefixes(path: Tuple[str, ...], out: _PathList) -> None:
@@ -83,6 +88,18 @@ def _collect_ref_paths(
             bundle=bundle,
             out=out,
         )
+        return
+    if isinstance(ref, _FrozenKey):
+        # Expression sources and other composites: crossings live on the
+        # structural leaves, reached via children().
+        for child in ref.children():
+            _collect_ref_paths(
+                child,
+                anchor_model=anchor_model,
+                anchor_relation=anchor_relation,
+                bundle=bundle,
+                out=out,
+            )
 
 
 def _collect_default_fragment_paths(

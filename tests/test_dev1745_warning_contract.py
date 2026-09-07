@@ -56,9 +56,11 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 
 # --------------------------------------------------------------------------- #
-# Fixtures — a query whose host filter is unreachable from the CTE root.
-# `warehouses` is a SIBLING branch of `customers`, so a filter on it cannot be
-# propagated into the customers-rooted _cm_ CTE.
+# Fixtures — a query whose host filter is genuinely excluded from the CTE root.
+# `warehouses` is a SIBLING branch of `customers`, and since DEV-1840 a sibling
+# filter would push down as a semi-join over the inverted host edge — so orders
+# declares TWO joins onto each aggregate target, making the reverse hop
+# ambiguous: the filter stays dropped + warned, which is this suite's subject.
 # --------------------------------------------------------------------------- #
 def _warehouses() -> SlayerModel:
     return SlayerModel(
@@ -96,14 +98,18 @@ def _orders() -> SlayerModel:
         columns=[
             Column(name="id", type=DataType.INT, primary_key=True),
             Column(name="customer_id", type=DataType.INT),
+            Column(name="customer2_id", type=DataType.INT),
             Column(name="shipper_id", type=DataType.INT),
+            Column(name="shipper2_id", type=DataType.INT),
             Column(name="warehouse_id", type=DataType.INT),
             Column(name="status", type=DataType.TEXT),
             Column(name="amount", type=DataType.DOUBLE),
         ],
         joins=[
             ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
+            ModelJoin(target_model="customers", join_pairs=[["customer2_id", "id"]]),
             ModelJoin(target_model="shippers", join_pairs=[["shipper_id", "id"]]),
+            ModelJoin(target_model="shippers", join_pairs=[["shipper2_id", "id"]]),
             ModelJoin(target_model="warehouses", join_pairs=[["warehouse_id", "id"]]),
         ],
     )

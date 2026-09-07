@@ -1,53 +1,12 @@
-"""Stage 7a.3 (DEV-1450) — Mode-B Python-AST parser.
+"""Mode-B Python-AST parser (DEV-1450).
 
-Public entry point: ``parse_expr(text: str) -> ParsedExpr``.
-
-The parser consumes a Mode-B expression string (the SLayer DSL used in
-``ModelMeasure.formula``, ``SlayerQuery.measures``,
-``SlayerQuery.filters``, …) and emits a typed ``ParsedExpr`` tree. It
-is PURE syntax — no scope resolution, no named-measure expansion
-(those are the binder's concerns).
-
-Pipeline order (per query / model save):
-
-    raw → parse_expr → bind → plan → SQL
-
-Mode-B grammar:
-
-* bare identifier (``revenue``)
-* dotted path (``customers.regions.name``)
-* aggregation, colon or functional spelling — both collapse to the SAME
-  ``AggCall`` (DEV-1826): ``revenue:sum`` / ``sum(revenue)``,
-  ``*:count`` / ``count(*)``, ``price:weighted_avg(weight=qty)`` /
-  ``weighted_avg(price, weight=qty)``, ``revenue:last(ordered_at)`` /
-  ``last(revenue, ordered_at)``. An unknown call name whose first
-  argument is aggregatable defers to binding as an ``AggCall``
-  candidate, exactly like ``x:whatever``. A functional aggregation may
-  take a same-model scalar EXPRESSION source (``sum(amount - cost)``).
-* transform call (``cumsum``, ``lag``, ``rank``, ``time_shift``, …);
-  ``first`` / ``last`` dispatch by first-arg shape — an aggregated
-  input makes them transforms, anything else the aggregation
-* scalar function (closed allowlist from ``SCALAR_FUNCTIONS``)
-* arithmetic / comparison / boolean / unary
-* parenthesised grouping
-
-Rejections (per DEV-1450 spec):
-
-* Function calls not in SCALAR_FUNCTIONS / transforms / aggregations →
-  ``UnknownFunctionError``.
-* Raw ``OVER(...)`` clauses → ``IllegalWindowInFilterError``.
-* ``__`` in any user-supplied identifier → ``ValueError`` (reserved for
-  internal join-path aliases on the SQL side).
-* Chained comparisons (``1 < x < 10``) → ``ValueError``; the user
-  splits as ``1 < x and x < 10``.
-
-ParsedExpr family: ``Ref`` / ``DottedRef`` / ``StarSource`` /
-``Literal`` / ``AggCall`` / ``TransformCall`` / ``ScalarCall`` /
-``Arith`` / ``UnaryOp`` / ``Cmp`` / ``BoolOp``. All are frozen
-Pydantic models with value-based equality so tests assert via ``==``.
-
-Dormant in stage 7a — no engine code calls ``parse_expr`` yet. The
-binder (stage 7a.5) is the first consumer.
+``parse_expr(text) -> ParsedExpr`` lowers a Mode-B DSL string
+(``ModelMeasure.formula``, ``SlayerQuery.measures`` / ``.filters``) to a typed
+tree — pure syntax, no scope resolution or named-measure expansion (binder's
+job). Grammar: bare/dotted refs; colon or functional aggregations, which
+collapse to one ``AggCall`` (DEV-1826); transform calls; a closed scalar
+allowlist; arithmetic / comparison / boolean / unary; grouping. Rejects
+non-allowlisted calls, raw ``OVER(...)``, and chained comparisons.
 """
 
 from __future__ import annotations
@@ -92,22 +51,14 @@ class Literal(_BaseNode):
 
 
 class TupleLit(_BaseNode):
-    """A literal-only tuple/list RHS for ``IN`` / ``NOT IN`` filters (DEV-1475).
-
-    Only emitted on the right-hand side of a ``Cmp`` whose op is ``in`` or
-    ``not in``. Every ``elements`` entry is a ``Literal`` — references and
-    expressions on the RHS are rejected at parse time so the binder can
-    fold the predicate into a single ``InKey`` with a tuple of
-    ``LiteralKey``. Empty tuples are rejected too (an empty IN is a SQL
-    quirk that varies by dialect; reject early with a clear message).
-    """
+    """Literal-only tuple/list RHS for ``IN`` / ``NOT IN`` (DEV-1475); non-literal
+    elements and empty tuples are rejected at parse time."""
 
     elements: Tuple[Literal, ...]
 
 
 class AggCall(_BaseNode):
-    # Beyond column/star sources, an aggregation may take an aggregation-free
-    # same-model scalar EXPRESSION source (``sum(amount - cost)``, DEV-1826).
+    # source may also be an aggregation-free scalar expression (``sum(a - b)``).
     source: Union[
         Ref, DottedRef, StarSource, Literal, "ScalarCall", "Arith", "UnaryOp",
     ]
@@ -166,51 +117,46 @@ AggCall.model_rebuild()
 # ---------------------------------------------------------------------------
 
 
-# The internal namespace SLayer mints for aggregation placeholders. The whole
-# ``__slayer_`` prefix is reserved from user input (P3), so a literal spoof of
-# the placeholder cannot slip past ``_convert``'s ``_PLACEHOLDER_RE`` match.
+# The ``__slayer_`` prefix is reserved from user input (P3). Matched only at an
+# identifier boundary so a legal embedded name (``foo__slayer_bar``) stays
+# referenceable; ``\w`` is Unicode-aware, covering ``é__slayer_bar`` too.
 _RESERVED_EXPR_PREFIX = "__slayer_"
-# Match the reserved prefix only at an identifier boundary: name validation
-# reserves it as a *prefix* (a name must START with it), so ``foo__slayer_bar``
-# is a legal saved name and must stay referenceable — a raw substring check
-# would reject it. The lookbehind rejects a token that opens the identifier
-# (start-of-string or after an operator/dot) while allowing an embedded run.
-# ``\w`` is Unicode-aware (str patterns), so a Unicode-identifier name like
-# ``é__slayer_bar`` — legal at save — stays referenceable too (Codex).
 _RESERVED_EXPR_PREFIX_RE = re.compile(r"(?<!\w)__slayer_")
 _PLACEHOLDER_PREFIX = "__slayer_agg_"
 _PLACEHOLDER_RE = re.compile(rf"^{_PLACEHOLDER_PREFIX}(\d+)__$")
-# Token minted by ``_preprocess_star_args`` for a call's first-argument ``*`` /
-# ``path.*`` (``count(*)``, ``count(customers.*)``) — Python's AST cannot parse
-# a bare ``*`` expression. Always means "star"; no numbering map needed.
+# ``_preprocess_star_args`` mints this for a call's first-arg ``*`` (``count(*)``);
+# Python's AST cannot parse a bare ``*``.
 _STAR_ARG_TOKEN = "__slayer_star__"
-_OVER_RE = re.compile(r"\bOVER\s*\(", re.IGNORECASE)
-# Python-string-literal matcher (handles backslash escapes). Mode-B expressions
-# use Python string syntax, so a SQL-style ('' / "") doubling matcher would
-# both miss ``"x \" OVER("`` and false-positive on the ``OVER(`` inside it
-# (Codex). Used by ``_normalize_sql_filter_operators``, ``_preprocess_colons``,
-# and the raw-``OVER(`` pre-scan.
+_OVER_RE = re.compile(r"\b[oO][vV][eE][rR]\s*\(")
+# Escape-aware Python-string matcher — blanks literals before keyword scans so
+# an ``OVER(`` / ``:sum`` inside a quoted value isn't mistaken for syntax.
 _PY_STRING_LITERAL_RE = re.compile(r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"")
-# SQL ``LIKE`` / ``NOT LIKE`` operator → the ``like(col, pattern)`` scalar the
-# Mode-B DSL already accepts (DEV-1484 emits it as SQL ``LIKE``). Mirrors
-# ``formula._preprocess_like`` so the typed filter parser accepts the same LIKE
-# spelling as the documented Mode-B filter grammar — a pg-facade WHERE
-# ``col LIKE 'p%'`` (or ``NOT LIKE``) lands here as a verbatim filter (DEV-1704).
-# LHS is a bare/dotted identifier or a single scalar call; RHS a quoted pattern.
-# Applied to the whole expression (the pattern is a string literal), same as
-# ``formula._preprocess_like``.
+# SQL ``[NOT] LIKE`` → the ``like(col, pattern)`` scalar (DEV-1704). LHS bare/
+# dotted ident or one scalar call; RHS a single-quoted (escape-aware) pattern.
+# Keyword as ASCII classes, not ``re.IGNORECASE`` — IGNORECASE folds spoofs like
+# ``lıke`` (dotless ı) into ``like``.
 _SQL_LIKE_RE = re.compile(
-    r"\b(\w+\([^()]*\)|(?:\w+\.)*\w+)\s+(not\s+)?like\s+('[^']*')",
-    flags=re.IGNORECASE,
+    r"\b(\w+\([^()]*\)|(?:\w+\.)*\w+)\s+"
+    r"([nN][oO][tT]\s+)?[lL][iI][kK][eE]\s+"
+    r"('(?:\\.|[^'\\])*')"
 )
 
 
 def _rewrite_sql_like(text: str) -> str:
     """``col LIKE 'p%'`` → ``like(col, 'p%')``; ``col NOT LIKE 'p%'`` →
-    ``not like(col, 'p%')`` — outside/inside handling matches
-    ``formula._preprocess_like``."""
+    ``not like(col, 'p%')``. Matches starting inside string literals are
+    left untouched."""
+    spans = [(m.start(), m.end()) for m in _PY_STRING_LITERAL_RE.finditer(text)]
 
     def _sub(m: "re.Match[str]") -> str:
+        # Skip a match inside a string literal, or one whose LHS is only part of
+        # a larger reference the ``\b``/``\w`` LHS token can't lex whole — a
+        # ``.``-rooted dotted path (``℘.name``) or a Unicode-fused prefix
+        # (``℘name``, decomposed ``éname``); that name is not a LIKE operand.
+        if any(s <= m.start() < e for s, e in spans) or _continues_ref(
+            text=text, pos=m.start() - 1
+        ):
+            return m.group(0)
         lhs, neg, pat = m.group(1), m.group(2), m.group(3)
         call = f"like({lhs}, {pat})"
         return f"not {call}" if neg else call
@@ -224,15 +170,92 @@ def _rewrite_sql_like(text: str) -> str:
 # (so ``CASE WHEN a = 5 …`` works in measures too); THEN/ELSE values are sliced
 # verbatim and only recursed for nested CASE, so a value like ``'a AND b'`` is
 # never rewritten. String literals are single tokens, so keywords inside them are
-# invisible to the keyword scan.
+# invisible to the keyword scan. Identifiers lex complete (Unicode-aware start,
+# dotted paths as ONE token), so a name containing or qualified by a keyword
+# (``customers.case``, ``écase``) can never equal one.
 _CASE_TOKEN_RE = re.compile(
     r"(?P<str>'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\")"
-    r"|(?P<id>[A-Za-z_]\w*)"
+    r"|(?P<id>[^\W\d]\w*(?:\s*\.\s*[^\W\d]\w*)*)"
     r"|(?P<lp>[(\[])"
     r"|(?P<rp>[)\]])",
     re.DOTALL,
 )
 _CASE_STOPS_OPERAND = frozenset({"WHEN", "THEN", "ELSE", "END"})
+_CASE_KEYWORDS = _CASE_STOPS_OPERAND | {"CASE"}
+
+
+def _is_ident_adjacent(text: str, pos: int) -> bool:
+    """Whether ``text[pos]`` is identifier material the ``\\w`` token class
+    misses (combining marks, ``Other_ID_Start`` symbols like ``℘``)."""
+    return 0 <= pos < len(text) and ("a" + text[pos]).isidentifier()
+
+
+def _continues_ref(text: str, pos: int) -> bool:
+    """Whether ``text[pos]`` extends a reference token past a keyword span — a
+    ``.`` join separator, or identifier material the ``\\w`` class misses. A
+    keyword touching such a char is a name component (``a.NULL``, ``℘case``),
+    not a keyword."""
+    return _is_ident_adjacent(text=text, pos=pos) or (
+        0 <= pos < len(text) and text[pos] == "."
+    )
+
+
+def _sub_keyword_isolated(pattern: "re.Pattern[str]", repl: str, text: str) -> str:
+    """``pattern.sub(repl, text)`` but leaving a keyword match that is really a
+    reference component untouched — a dotted leaf/root (``a.NULL`` → keeps
+    ``NULL``) or one fused to ``Other_ID_Start`` / combining marks the ``\\b``
+    boundary splits (``℘NULL`` → ``℘None``, ``℘AND`` → ``℘and``). Both would
+    silently rebind the reference (mirrors ``_case_keyword``'s guard)."""
+    def _guard(m: "re.Match[str]") -> str:
+        if _continues_ref(text=text, pos=m.start() - 1) or _continues_ref(
+            text=text, pos=m.end()
+        ):
+            return m.group(0)
+        return repl
+    return pattern.sub(_guard, text)
+
+
+def _case_keyword(text: str, tok: Tuple[Optional[str], str, int, int]) -> Optional[str]:
+    """The CASE-grammar keyword a token spells, or None for an identifier.
+
+    ASCII-exact (``caſe`` uppercases to ``CASE`` only via Unicode folding) and
+    rejected when adjacent raw text continues an identifier around the token.
+    """
+    kind, val, start, end = tok
+    if kind != "id" or not val.isascii():
+        return None
+    up = val.upper()
+    if up not in _CASE_KEYWORDS:
+        return None
+    if _is_ident_adjacent(text, start - 1) or _is_ident_adjacent(text, end):
+        return None
+    return up
+
+
+def _case_has_when(
+    text: str, toks: List[Tuple[Optional[str], str, int, int]], i: int,
+) -> bool:
+    """Whether the CASE at ``toks[i]`` opens a conditional: a depth-0 ``WHEN``
+    follows before any other structural keyword, an unmatched ``)``, or end.
+
+    Accepted mislex edge: a BARE keyword-named simple-CASE operand
+    (``CASE case WHEN 1 …``) is genuinely ambiguous and errors loudly —
+    parenthesize the operand (``CASE (case) WHEN 1 …``) to disambiguate.
+    """
+    depth = 0
+    for j in range(i + 1, len(toks)):
+        kind = toks[j][0]
+        if kind == "lp":
+            depth += 1
+        elif kind == "rp":
+            if depth == 0:
+                return False
+            depth -= 1
+        elif kind == "id" and depth == 0:
+            kw = _case_keyword(text, toks[j])
+            if kw is not None:
+                return kw == "WHEN"
+    return False
 
 
 def _rewrite_case_when(text: str) -> str:
@@ -242,27 +265,25 @@ def _rewrite_case_when(text: str) -> str:
         (m.lastgroup, m.group(), m.start(), m.end())
         for m in _CASE_TOKEN_RE.finditer(text)
     ]
-    if not any(k == "id" and v.upper() == "CASE" for k, v, _, _ in toks):
+    if not any(_case_keyword(text, t) == "CASE" for t in toks):
         return text
     result, _ = _rw_value(text, toks, 0, frozenset(), 0)
     return result
 
 
 def _rw_value(text, toks, i, stop_kws, start_char):  # NOSONAR(S3776) — one cohesive token-scan over a value/condition span: paren-depth tracking, the depth-0 stop-keyword break, and nested-CASE recursion are each one decision, and splitting them scatters the slice-and-recurse contract that preserves the original text.
-    """Rewrite one value/condition span, returning ``(rewritten, next_index)``.
+    """Rewrite one value/condition span → ``(rewritten, next_index)``.
 
-    ``start_char`` is where the span begins in ``text`` (the end of the keyword
-    just consumed) — the lexer only tokenises strings / idents / parens, so bare
-    values like ``1`` have no token and must be recovered by slicing. Slices the
-    ORIGINAL text for non-CASE content (preserving colons, dots, spacing) and
-    recurses into nested CASE. Stops at a depth-0 stop keyword or an unmatched
-    closing paren.
+    ``start_char`` is the span start (end of the keyword just consumed): bare
+    values (``1``) have no token, so non-CASE content is recovered by slicing the
+    original text (preserving colons/dots/spacing). Stops at a depth-0 stop
+    keyword or an unmatched ``)``.
     """
     parts: List[str] = []
     depth = 0
     last = start_char
     while i < len(toks):
-        kind, val, start, _ = toks[i]
+        kind, _, start, _ = toks[i]
         if kind == "lp":
             depth += 1
         elif kind == "rp":
@@ -270,10 +291,10 @@ def _rw_value(text, toks, i, stop_kws, start_char):  # NOSONAR(S3776) — one co
                 break
             depth -= 1
         elif kind == "id":
-            up = val.upper()
-            if depth == 0 and up in stop_kws:
+            kw = _case_keyword(text, toks[i])
+            if depth == 0 and kw in stop_kws:
                 break
-            if up == "CASE":
+            if kw == "CASE" and _case_has_when(text, toks, i):
                 parts.append(text[last:start])
                 nested, i = _rw_case(text, toks, i)
                 parts.append(nested)
@@ -291,10 +312,10 @@ def _rw_case(text, toks, i):
     operand, i = _rw_value(text, toks, i, _CASE_STOPS_OPERAND, toks[i - 1][3])
     is_simple = bool(operand)
     branches: List[Tuple[str, str]] = []
-    while i < len(toks) and toks[i][0] == "id" and toks[i][1].upper() == "WHEN":
+    while i < len(toks) and _case_keyword(text, toks[i]) == "WHEN":
         i += 1
         cond, i = _rw_value(text, toks, i, frozenset({"THEN"}), toks[i - 1][3])
-        if not (i < len(toks) and toks[i][0] == "id" and toks[i][1].upper() == "THEN"):
+        if not (i < len(toks) and _case_keyword(text, toks[i]) == "THEN"):
             raise ValueError(
                 f"Malformed CASE expression in {text!r}: a WHEN branch is "
                 f"missing its THEN."
@@ -305,11 +326,11 @@ def _rw_case(text, toks, i):
         )
         branches.append((cond, then_val))
     else_val = "None"
-    if i < len(toks) and toks[i][0] == "id" and toks[i][1].upper() == "ELSE":
+    if i < len(toks) and _case_keyword(text, toks[i]) == "ELSE":
         i += 1
         else_val, i = _rw_value(text, toks, i, frozenset({"END"}), toks[i - 1][3])
         else_val = else_val or "None"
-    if not (i < len(toks) and toks[i][0] == "id" and toks[i][1].upper() == "END"):
+    if not (i < len(toks) and _case_keyword(text, toks[i]) == "END"):
         raise ValueError(
             f"Malformed CASE expression in {text!r}: missing END."
         )
@@ -362,19 +383,11 @@ _CMP_OP_MAP: Dict[type, str] = {
     ast.Eq: "==", ast.NotEq: "!=",
     ast.Lt: "<", ast.LtE: "<=",
     ast.Gt: ">", ast.GtE: ">=",
-    # ``IS`` / ``IS NOT`` (Codex review): the filter normalizer lowers SQL
-    # ``IS NULL`` / ``IS NOT NULL`` to Python ``is None`` / ``is not None``;
-    # without these entries the AST converter raised on ``ast.Is`` /
-    # ``ast.IsNot`` and any DSL filter using the SQL-style spelling failed
-    # to plan. The downstream SQL generator renders ``is`` / ``is not``
-    # against a ``None`` literal as ``IS NULL`` / ``IS NOT NULL``.
+    # SQL ``IS [NOT] NULL`` lowers to ``is [not] None``; rendered back as
+    # ``IS [NOT] NULL`` by the SQL generator.
     ast.Is: "is", ast.IsNot: "is not",
-    # DEV-1475: SQL-style ``IN`` / ``NOT IN`` with a literal-tuple RHS.
-    # ``_normalize_sql_filter_operators`` already lowercases ``IN`` /
-    # ``NOT IN`` to the Python keywords; the AST then carries ``ast.In``
-    # / ``ast.NotIn`` here. The ``ast.Compare`` branch enforces the
-    # tuple/list-only RHS shape and validates that every element is a
-    # literal.
+    # DEV-1475: ``IN`` / ``NOT IN`` with a literal-tuple RHS (shape enforced in
+    # the ``ast.Compare`` branch).
     ast.In: "in", ast.NotIn: "not in",
 }
 
@@ -387,27 +400,25 @@ _CMP_OP_MAP: Dict[type, str] = {
 def parse_expr(text: str) -> ParsedExpr:
     """Parse a Mode-B expression string into a ``ParsedExpr``.
 
-    ``__`` in identifiers is legal (DEV-1743): binding legality is the binder's
-    concern, not the parser's. The only reserved token is the ``__slayer_``
-    prefix, scanned on the RAW input below (P3).
-
-    Raises:
-        ValueError: empty input, syntax error, unsupported AST node,
-            chained comparison, or the reserved ``__slayer_`` prefix.
-        UnknownFunctionError: function call not in
-            ``SCALAR_FUNCTIONS`` / ``ALL_TRANSFORMS``.
-        IllegalWindowInFilterError: raw ``OVER(...)`` clause anywhere
-            in ``text``.
+    ``__`` in identifiers is legal (DEV-1743); only the ``__slayer_`` prefix is
+    reserved. Raises ``ValueError`` (empty/syntax/unsupported node/chained
+    comparison/reserved prefix), ``UnknownFunctionError``, or
+    ``IllegalWindowInFilterError`` (raw ``OVER(...)``).
     """
     if not text or not text.strip():
         raise ValueError("Empty Mode-B expression.")
 
     _reject_reserved_expr_token(text)
 
-    # Scan for a raw window clause AFTER blanking string literals (Python
-    # syntax, so escapes count), so a value like ``status == 'OVER('`` or
-    # ``status == "x \" OVER("`` isn't mistaken for window usage (CR / Codex).
-    if _OVER_RE.search(_PY_STRING_LITERAL_RE.sub("", text)):
+    # Scan for raw ``OVER(`` after blanking string literals so a quoted value
+    # (``status == 'OVER('``) isn't mistaken for window usage. Skip an ``OVER``
+    # that only continues a reference — a Unicode-fused (``℘OVER(``) or dotted
+    # (``a.OVER(``) name the leading ``\b`` splits.
+    blanked = _PY_STRING_LITERAL_RE.sub("", text)
+    if any(
+        not _continues_ref(text=blanked, pos=m.start() - 1)
+        for m in _OVER_RE.finditer(blanked)
+    ):
         raise IllegalWindowInFilterError(
             filter_expr=text,
             source="raw OVER(...) is not allowed in Mode-B DSL",
@@ -441,10 +452,18 @@ def parse_filter_expr(text: str) -> ParsedExpr:
     alongside the Python spellings. This wrapper normalizes those to their
     Python equivalents (string-literal-aware, so quoted contents are
     untouched) and then delegates to :func:`parse_expr`. Measures / order use
-    ``parse_expr`` directly — only filters get the SQL-operator leniency,
-    matching the legacy ``parse_filter`` contract.
+    ``parse_expr`` directly — only filters get the SQL-operator leniency.
     """
     return parse_expr(_normalize_sql_filter_operators(text))
+
+
+# SQL keyword rewrites as explicit ASCII character classes — ``re.IGNORECASE``
+# folds Unicode spoofs (``ıs`` → ``is``) into keywords.
+_SQL_NULL_RE = re.compile(r"\b[nN][uU][lL][lL]\b")
+_SQL_KEYWORD_RES: Tuple[Tuple[re.Pattern, str], ...] = tuple(
+    (re.compile(r"\b" + "".join(f"[{c}{c.upper()}]" for c in kw) + r"\b"), kw)
+    for kw in ("is", "not", "and", "or", "in")
+)
 
 
 def _normalize_sql_filter_operators(text: str) -> str:
@@ -452,38 +471,28 @@ def _normalize_sql_filter_operators(text: str) -> str:
 
     ``NULL`` → ``None``; ``IS`` / ``NOT`` / ``AND`` / ``OR`` / ``IN`` →
     lowercase; standalone ``=`` → ``==``; ``<>`` → ``!=``; ``col [NOT] LIKE
-    'p%'`` → ``[not ]like(col, 'p%')``. Replicated from the legacy
-    ``slayer.core.formula._preprocess_sql_operators`` / ``_preprocess_like`` so
-    the typed pipeline doesn't depend on the module DEV-1452 deletes.
+    'p%'`` → ``[not ]like(col, 'p%')``.
     """
-    # LIKE runs first, on the whole string: its pattern is a quoted literal, so
-    # it can't be rewritten per-non-literal-part like the other operators.
+    # LIKE first, on the whole string (its pattern is a quoted literal). The
+    # rest run per non-literal part (escape-aware split) so a keyword inside a
+    # quoted value isn't rewritten.
     text = _rewrite_sql_like(text)
-    # CR review: use the escape-aware Python-string matcher so backslash-
-    # escaped quotes don't leak ``IS`` / ``IN`` / ``AND`` rewrites into
-    # the string body (``"x \" IN ("``).
     parts = _PY_STRING_LITERAL_RE.split(text)
     literals = _PY_STRING_LITERAL_RE.findall(text)
     result: List[str] = []
     for i, part in enumerate(parts):
-        part = re.sub(r"\bNULL\b", "None", part, flags=re.IGNORECASE)
-        for kw in ("IS", "NOT", "AND", "OR", "IN"):
-            part = re.sub(rf"\b{kw}\b", kw.lower(), part, flags=re.IGNORECASE)
+        part = _sub_keyword_isolated(_SQL_NULL_RE, "None", part)
+        for kw_re, kw in _SQL_KEYWORD_RES:
+            part = _sub_keyword_isolated(kw_re, kw, part)
         part = part.replace("<>", "!=")
-        # SQL ``||`` concat → Python ``|`` (BitOr), reinterpreted as a
-        # ``concat(...)`` ScalarCall in ``_convert``. ``|`` binds tighter
-        # than comparisons in Python just as ``||`` does in SQL, so
-        # ``a || b = 'x'`` and ``a | b == 'x'`` group identically.
+        # SQL ``||`` → Python ``|`` (BitOr), desugared to ``concat`` in
+        # ``_convert``; same precedence relative to comparisons.
         part = part.replace("||", "|")
         result.append(part)
         if i < len(literals):
             result.append(literals[i])
-    # DEV-1492: the `=` → `==` rewrite runs on the rejoined string with a
-    # call-paren-aware scanner that leaves keyword-argument `=` alone
-    # inside non-scalar calls (transforms / parametric aggregations). Run
-    # last so the scanner sees lowercased keywords and the post-`<>` /
-    # post-`||` text — only its own pass can touch literal-spanning
-    # paren context correctly.
+    # ``=`` → ``==`` runs last, on the rejoined string, via a paren-aware scanner
+    # that leaves kwarg ``=`` inside non-scalar calls alone (DEV-1492).
     return _rewrite_comparison_equals("".join(result))
 
 
@@ -492,21 +501,10 @@ def _classify_paren(
 ) -> Tuple[bool, Optional[str]]:
     """Classify an open ``(`` as a CALL or GROUPING paren.
 
-    A ``(`` is a call paren when the previous significant token is a
-    bare identifier (callable name) or a callable-suffix token (``)``
-    / ``]``). Lowercase keywords (``and`` / ``or`` / ``not`` / ``in``
-    / ``is``) do NOT make the next ``(`` a call paren — that's why
-    ``not(...)`` and ``x in (...)`` carry grouping parens.
-
-    DEV-1492 iteration 3: a colon-aggregation context
-    (``revenue:first(...)``) makes the call a parametric aggregation
-    regardless of the callee name. ``first`` and ``last`` sit in both
-    :data:`ALL_TRANSFORMS` and the built-in aggregation set
-    (``_AMBIGUOUS_AGG_TRANSFORMS`` in ``slayer/core/formula.py``);
-    after a ``:`` they are always aggregations, never transforms.
-    Drop the callee to ``None`` so :func:`_is_kwarg_equals` takes the
-    aggregation/unknown branch (kwargs preserved after ``(`` or
-    ``,``).
+    A call paren follows a bare identifier or a ``)`` / ``]``; lowercase keywords
+    (``and`` / ``not`` / ``in`` …) do not open one. After a ``:``
+    (``revenue:first(...)``) the callee is dropped to ``None`` so
+    :func:`_is_kwarg_equals` treats it as an aggregation, not a transform.
     """
     prev_kind = hist[-1][0] if hist else None
     prev_text = hist[-1][1] if hist else ""
@@ -521,26 +519,17 @@ def _is_kwarg_equals(
     stack: List[Tuple[bool, Optional[str]]],
     hist: List[Tuple[str, str]],
 ) -> bool:
-    """Whether a lone ``=`` is a Python keyword-argument separator.
+    """Whether a lone ``=`` is a Python keyword-argument separator (DEV-1492).
 
-    Three callee classes get different treatment (DEV-1492 iteration 2):
-
-    * **Scalar** (``callee in SCALAR_FUNCTIONS``) — never a kwarg;
-      scalars reject keyword args by design.
-    * **Transform** (``callee in ALL_TRANSFORMS``) — the first
-      positional is always the value to transform, so a kwarg can
-      only appear AFTER a ``,``. This preserves the documented
-      predicate-input form (``consecutive_periods(status = 'paid')``
-      where the SQL ``=`` is part of the predicate, not a kwarg).
-    * **Aggregation or unknown** — kwarg can be the first arg
-      (``weighted_avg(weight=qty)``, ``percentile(p=0.5)``), so the
-      ``=`` may follow either ``(`` or ``,``.
+    Scalars never take kwargs. Transforms take the value first, so a kwarg only
+    follows a ``,`` (keeping ``consecutive_periods(status = 'paid')`` a
+    predicate). Aggregations/unknowns may take a kwarg first, so ``=`` follows
+    ``(`` or ``,``.
     """
     top = stack[-1] if stack else None
     if top is None or not top[0]:
         return False
     callee = top[1]
-    # Case-insensitive, matching the scalar-call parse branch below.
     if callee is not None and callee.lower() in SCALAR_FUNCTIONS:
         return False
     prev_kind = hist[-1][0] if hist else None
@@ -654,44 +643,18 @@ _HANDLERS: Dict[str, Any] = {
 
 
 def _rewrite_comparison_equals(text: str) -> str:
-    """Rewrite SQL-style ``=`` to Python ``==`` except where Python would
-    treat the ``=`` as a keyword argument inside a non-scalar call.
+    """Rewrite SQL ``=`` to Python ``==`` except where it is a kwarg separator.
 
-    Per the architecture (``docs/architecture/parsing.md`` — scalars
-    reject kwargs, only ``AggCall`` / ``TransformCall`` carry kwargs),
-    a lone ``=`` is preserved (kwarg) iff:
-
-    1. the innermost open paren is a CALL paren (see
-       :func:`_classify_paren`),
-    2. the callee of that innermost call is NOT in
-       :data:`SCALAR_FUNCTIONS` — scalars never accept kwargs, so a
-       ``=`` inside them is the user's SQL comparison
-       (``coalesce(status = 'paid', False)``),
-    3. the ``=`` is immediately preceded (skipping whitespace) by an
-       identifier preceded (skipping whitespace) by the call's ``(``
-       or by a ``,`` at that paren depth — Python's keyword-argument
-       grammar (see :func:`_is_kwarg_equals`).
-
-    Compound operators (``==``, ``<=``, ``>=``, ``!=``) are emitted
-    verbatim by the tokenizer so their ``=`` is never touched. String
-    literals are tokenized as a unit (Python single/double-quoted with
-    backslash escapes) and pass through without perturbing the paren
-    stack or the previous-significant-token history.
-
-    Token-class dispatch goes through :data:`_HANDLERS` keyed by the
-    regex's ``lastgroup`` (each token-class group is named and the
-    arms are mutually exclusive, so ``lastgroup`` is exactly the
-    matched arm).
+    A lone ``=`` is kept (kwarg) inside a non-scalar CALL paren when it follows
+    ``ident`` after ``(`` or ``,`` — Python's kwarg grammar (see
+    :func:`_is_kwarg_equals`); inside scalars a ``=`` is always the user's
+    comparison. Compound ops and string literals pass through untouched.
+    Token dispatch is keyed by the scan regex's ``lastgroup``.
     """
     out: List[str] = []
-    # Each frame: (is_call, callee). ``callee`` is the identifier text
-    # preceding the call's ``(``, or ``None`` (e.g. a callable expression
-    # like ``f()(x=1)`` where the prior token is ``)``).
+    # Each frame: (is_call, callee) — callee is the ident before ``(``, else None.
     stack: List[Tuple[bool, Optional[str]]] = []
-    # Trailing window of the last 2 significant tokens (oldest-first).
-    # Categories: NAME (bare identifier), KW (lowercase Python keyword),
-    # LPAREN, COMMA, OTHER (everything else; string literals don't enter
-    # the history).
+    # Last 2 significant tokens (NAME / KW / LPAREN / COMMA / OTHER; no strings).
     hist: List[Tuple[str, str]] = []
     for m in _SCAN_TOKEN_RE.finditer(text):
         _HANDLERS[m.lastgroup](m, out, stack, hist)
@@ -706,27 +669,13 @@ def _rewrite_comparison_equals(text: str) -> str:
 def walk_parsed_refs(
     parsed: ParsedExpr,
 ) -> Iterator[Union[Ref, DottedRef, AggCall]]:
-    """Yield every reference-bearing leaf node in a ``ParsedExpr`` tree.
+    """Yield the reference-bearing leaves (``Ref`` / ``DottedRef`` / ``AggCall``)
+    of a tree — scope-free name extraction for schema-drift / memory tagging.
 
-    Yields ``Ref`` (bare identifier), ``DottedRef`` (dotted join path), and
-    ``AggCall`` (colon-syntax aggregation) nodes — the leaves a formula
-    actually references. This is the scope-free counterpart to the binder's
-    ``walk_value_keys``: callers that only need the *names* a formula touches
-    (schema-drift cascade attribution, memory entity tagging) walk the parse
-    tree directly instead of binding it against a scope.
-
-    Descent rules (chosen to match the legacy ``parse_formula`` /
-    ``FieldSpec`` walk exactly):
-
-    * ``AggCall`` is yielded as a unit — the aggregation's source / args /
-      kwargs are NOT descended (``weighted_avg(weight=quantity)`` surfaces
-      ``price``, never ``quantity``).
-    * ``TransformCall`` descends ``input`` only; positional args, kwargs, and
-      ``partition_by`` columns are opaque.
-    * ``ScalarCall`` descends every positional arg (``coalesce`` / ``nullif``
-      wrapping aggregated or bare refs).
-    * ``Arith`` / ``UnaryOp`` / ``Cmp`` / ``BoolOp`` descend their operands.
-    * ``Literal`` and ``StarSource`` yield nothing.
+    Descent (matches the binder's walk): ``AggCall`` yielded whole (args/kwargs
+    opaque, so ``weighted_avg(weight=quantity)`` surfaces ``price`` not
+    ``quantity``); ``TransformCall`` descends ``input`` only; ``ScalarCall`` /
+    arithmetic / comparison / boolean descend operands; literals yield nothing.
     """
     if isinstance(parsed, (Ref, DottedRef, AggCall)):
         yield parsed
@@ -753,10 +702,8 @@ def walk_parsed_refs(
         for op in parsed.operands:
             yield from walk_parsed_refs(op)
         return
-    # Literal / StarSource / TupleLit → no references.
-    # ``TupleLit`` carries only ``Literal`` elements by construction
-    # (see the ``ast.Compare`` branch of ``_convert``) so the walk stops
-    # here without descending — same shape as ``Literal``.
+    # Literal / StarSource / TupleLit → no references (TupleLit holds only
+    # Literals by construction).
 
 
 # ---------------------------------------------------------------------------
@@ -912,9 +859,7 @@ def _convert(node: ast.AST, *, agg_map: Dict, original: str) -> ParsedExpr:  # N
     if isinstance(node, ast.BinOp):
         op_type = type(node.op)
         if op_type is ast.BitOr:
-            # SQL ``||`` concat operator (``parse_filter_expr`` normalizes
-            # ``||`` → ``|``). Desugar to the existing ``concat`` scalar
-            # call so binding + per-dialect SQL emission are fully reused.
+            # SQL ``||`` (normalized to ``|``) desugars to the ``concat`` scalar.
             return ScalarCall(
                 name="concat",
                 args=(
@@ -967,13 +912,8 @@ def _convert(node: ast.AST, *, agg_map: Dict, original: str) -> ParsedExpr:  # N
                 f"Invalid Mode-B expression {original!r}: unsupported "
                 f"comparison operator {op_type.__name__}."
             )
-        # DEV-1475: ``IN`` / ``NOT IN`` carry a literal-only tuple RHS
-        # (``status in ('completed', 'pending')``). Reject scalar RHS,
-        # empty RHS, and any non-literal element so the binder can fold
-        # the predicate into a single ``InKey`` with confidence. Signed
-        # numerics (``amount in (-1, -2)``) are admitted by collapsing
-        # ``UnaryOp(USub/UAdd, Constant(int|float))`` to a signed
-        # ``Literal`` at validation time (Codex review).
+        # DEV-1475: ``IN`` / ``NOT IN`` carry a literal-only tuple RHS; scalar,
+        # empty, and non-literal RHS are rejected (signed numerics admitted).
         if op_type in (ast.In, ast.NotIn):
             rhs_node = node.comparators[0]
             if not isinstance(rhs_node, (ast.Tuple, ast.List)):
@@ -1243,13 +1183,8 @@ def _convert_call(  # NOSONAR(S3776) — the one call-dispatch ladder (colon pla
             kwargs=kwargs,
         )
 
-    # Scalar function? Matched case-INSENSITIVELY: SQL function names are
-    # case-insensitive and users write ``COALESCE(x, 0)`` as readily as
-    # ``coalesce(x, 0)``. The legacy parser lowercased before the allowlist
-    # lookup; matching exactly here rejected every SQL-cased formula. The
-    # name is normalised to lower case on the way into ``ScalarCall`` so the
-    # two spellings intern to ONE key rather than two slots computing the
-    # same value.
+    # Scalar function? Case-insensitive match; normalised to lower case into
+    # ``ScalarCall`` so ``COALESCE`` / ``coalesce`` intern to one key.
     if func_name.lower() in SCALAR_FUNCTIONS:
         if kwargs:
             raise ValueError(
@@ -1260,14 +1195,11 @@ def _convert_call(  # NOSONAR(S3776) — the one call-dispatch ladder (colon pla
         _reject_bare_star_args(args, kwargs, func_name=func_name, original=original)
         return ScalarCall(name=func_name.lower(), args=args)
 
-    # Unknown name with an aggregatable first argument → AggCall candidate,
-    # validated at binding — parity with ``x:whatever`` (custom aggregations
-    # need no parser plumbing; genuinely unknown names get the standard
-    # unknown-aggregation error from the binder).
+    # Unknown name with an aggregatable first arg → AggCall candidate (parity
+    # with ``x:whatever``), validated at binding.
     if args and isinstance(args[0], _AGG_SOURCE_KINDS) and not _contains_agg_or_transform(args[0]):
         return AggCall(source=args[0], agg=func_name, args=args[1:], kwargs=kwargs)
 
-    # Otherwise — unknown.
     raise UnknownFunctionError(
         name=func_name,
         location=original,

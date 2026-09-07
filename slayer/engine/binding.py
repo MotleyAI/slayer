@@ -35,7 +35,6 @@ from slayer.core.keys import (
     check_scalar_arity,
     AggregateKey,
     ArithmeticKey,
-    BetweenKey,
     ColumnKey,
     ColumnSqlKey,
     InKey,
@@ -291,56 +290,12 @@ def bind_filter(
     )
 
 
-_VALUE_KEY_TYPES = (
-    ColumnKey, ColumnSqlKey, StarKey, LiteralKey,
-    AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey,
-    BetweenKey, InKey, TimeTruncKey,
-)
-
-
 def walk_value_keys(key: ValueKey):
-    """Yield every ``ValueKey`` reachable from ``key``, including ``key``."""
+    """Yield every ``ValueKey`` reachable from ``key``, including ``key`` —
+    total via the traversal protocol (a protocol-less kind raises)."""
     yield key
-    if isinstance(key, AggregateKey):
-        if isinstance(key.source, _VALUE_KEY_TYPES):
-            yield from walk_value_keys(key.source)
-        for a in key.args:
-            if isinstance(a, _VALUE_KEY_TYPES):
-                yield from walk_value_keys(a)
-        for _, v in key.kwargs:
-            if isinstance(v, _VALUE_KEY_TYPES):
-                yield from walk_value_keys(v)
-        for pk in key.partition_keys or ():
-            yield from walk_value_keys(pk)
-    elif isinstance(key, TransformKey):
-        if isinstance(key.input, _VALUE_KEY_TYPES):
-            yield from walk_value_keys(key.input)
-        for a in key.args:
-            if isinstance(a, _VALUE_KEY_TYPES):
-                yield from walk_value_keys(a)
-        for _, v in key.kwargs:
-            if isinstance(v, _VALUE_KEY_TYPES):
-                yield from walk_value_keys(v)
-        for pk in key.partition_keys:
-            yield from walk_value_keys(pk)
-        if key.time_key is not None:
-            yield from walk_value_keys(key.time_key)
-    elif isinstance(key, ArithmeticKey):
-        for op in key.operands:
-            yield from walk_value_keys(op)
-    elif isinstance(key, ScalarCallKey):
-        for arg in key.args:
-            if isinstance(arg, _VALUE_KEY_TYPES):
-                yield from walk_value_keys(arg)
-    elif isinstance(key, BetweenKey):
-        yield from walk_value_keys(key.column)
-        yield from walk_value_keys(key.low)
-        yield from walk_value_keys(key.high)
-    elif isinstance(key, InKey):
-        # Walk column LHS + every literal RHS, like BetweenKey.
-        yield from walk_value_keys(key.column)
-        for v in key.values:
-            yield from walk_value_keys(v)
+    for child in key.children():
+        yield from walk_value_keys(child)
 
 
 def _bind(

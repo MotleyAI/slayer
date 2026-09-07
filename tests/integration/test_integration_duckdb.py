@@ -1093,10 +1093,10 @@ class TestDev1709SiblingProtection:
 
 
 # --------------------------------------------------------------------------- #
-# F1 / F4 semantic pins — executed-value coverage (decision 3A). These pin
-# CURRENT, intended behavior (Codex F1/F4 semantic decisions) and stay GREEN.
-#   F4: a scalar (no-dimension) cross-model aggregate is unaffected by a
-#       host-local filter — it sums over ALL target rows.
+# F1 / F4 semantic pins — executed-value coverage (decision 3A).
+#   F4 (revised by DEV-1840): a host-local filter restricts a scalar
+#       cross-model aggregate's population by semi-join — the aggregate counts
+#       exactly the target rows related to at least one passing host row.
 #   F1: a 1:N crossing aggregate keeps multiply-per-match semantics.
 # --------------------------------------------------------------------------- #
 @pytest.fixture(scope="module")
@@ -1152,37 +1152,32 @@ def f1f4_env(_f1f4_duckdb_storage):
 
 @pytest.mark.integration
 class TestF1F4SemanticValues:
-    async def test_f4_scalar_cross_model_agg_ignores_host_paid_filter(self, f1f4_env) -> None:
-        # F4: scalar customers.balance:sum sums ALL customers (100+200+400=700),
-        # regardless of the host-local status='paid' filter (which, if it
-        # leaked into the target-rooted CTE, would drop customer 3 [no orders]
-        # and customer 2 [reached only via an unpaid order]).
+    async def test_f4_scalar_cross_model_agg_semi_joins_host_paid_filter(self, f1f4_env) -> None:
+        # DEV-1840: scalar customers.balance:sum counts customers with at least
+        # one paid order — only customer 1 (100.0); customer 3 has no orders
+        # and customer 2 is reached only via an unpaid order.
         query = SlayerQuery(
             source_model="orders",
             measures=[ModelMeasure(formula="customers.balance:sum")],
             filters=["status = 'paid'"],
         )
         result = await f1f4_env.execute(query=query)
-        assert float(result.data[0]["orders.customers.balance_sum"]) == pytest.approx(700.0)
+        assert float(result.data[0]["orders.customers.balance_sum"]) == pytest.approx(100.0)
 
-    async def test_f4_scalar_cross_model_agg_ignores_host_unpaid_filter(self, f1f4_env) -> None:
-        # F4, second host filter (status='unpaid') — still the full 700; the
-        # host filter never constrains the target-rooted scalar aggregate.
+    async def test_f4_scalar_cross_model_agg_semi_joins_host_unpaid_filter(self, f1f4_env) -> None:
+        # Second host filter (status='unpaid') — only customer 2 (200.0).
         query = SlayerQuery(
             source_model="orders",
             measures=[ModelMeasure(formula="customers.balance:sum")],
             filters=["status = 'unpaid'"],
         )
         result = await f1f4_env.execute(query=query)
-        assert float(result.data[0]["orders.customers.balance_sum"]) == pytest.approx(700.0)
+        assert float(result.data[0]["orders.customers.balance_sum"]) == pytest.approx(200.0)
 
     async def test_f4_scalar_cross_model_agg_no_matching_host_rows(self, f1f4_env) -> None:
-        # F4 "without matching host rows": a host filter matching NO orders
-        # empties the host base, so there is no host row to broadcast the
-        # target scalar onto — the query returns zero rows. The host filter
-        # never *reduced* the customer sum (it does not reach the target-rooted
-        # CTE); it only removed the host grain the scalar attaches to. Current,
-        # intended behavior — pinned contractually per the F4 decision.
+        # "Without matching host rows": a host filter matching NO orders
+        # empties the host base, so there is no host row to attach the target
+        # scalar onto — the query returns zero rows.
         query = SlayerQuery(
             source_model="orders",
             measures=[ModelMeasure(formula="customers.balance:sum")],

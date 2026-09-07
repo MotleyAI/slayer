@@ -225,8 +225,11 @@ An inferred integer measure type describes the result without narrowing the
 database's native integer range. For example, `"amount:sum"` can return a total
 larger than a 32-bit integer even when each source value fits in one. An explicit
 measure `"type": "INT"` still requests the database's INT cast and can reject
-out-of-range results. Other type casts, including declared derived-column types,
-are unchanged.
+out-of-range results. Auto-ingested NUMERIC/DECIMAL columns likewise retain the
+database's exact aggregate type instead of being coerced through floating point
+(except on SQLite, whose numeric affinity has no exact decimal type to retain).
+An explicit measure `"type": "DOUBLE"` still requests a floating-point cast.
+Other type casts, including declared derived-column types, are unchanged.
 
 Column and measure names share a namespace within a model — you can't have a column `aov` *and* a measure `aov`. A measure can use any other measure by bare name, including inside transforms and arithmetic:
 
@@ -312,7 +315,7 @@ joins:
     join_pairs: [["product_id", "id"]]
 ```
 
-Joins enable **cross-model measures** — querying a measure from a joined model alongside the main model's data. See [Cross-Model Measures](queries.md#cross-model-measures). During [auto-ingestion](ingestion.md), joins are generated automatically from foreign-key relationships; multi-hop paths are resolved at query time by walking each intermediate model's own joins.
+Joins enable **cross-model measures** — querying a measure from a joined model alongside the main model's data. See [Cross-Model Measures](queries.md#cross-model-measures). During [auto-ingestion](ingestion.md), joins are generated automatically from foreign-key relationships; multi-hop paths are resolved at query time by walking each intermediate model's own joins. A join targeting the model itself is rejected at validation — joins are addressed by model name, so define the second role as a separate model over the same table (or a view) and join to that.
 
 ### Join cardinality
 

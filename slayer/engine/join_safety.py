@@ -22,6 +22,7 @@ __all__ = [
     "safe_reachable",
     "may_inline_crossing_inputs",
     "audit_join_safety",
+    "resolve_correlation_hop",
     "JoinSafetyFinding",
 ]
 
@@ -71,6 +72,24 @@ def provably_to_one(*, join: ModelJoin, target_model: SlayerModel) -> bool:
 
 def _find_join(model: SlayerModel, target_name: str) -> Optional[ModelJoin]:
     return next((j for j in model.joins if j.target_model == target_name), None)
+
+
+def resolve_correlation_hop(
+    *, from_model: SlayerModel, to_model: SlayerModel,
+) -> Optional[list[tuple[str, str]]]:
+    """Oriented ``(from_col, to_col)`` pairs for the hop ``from_model → to_model``,
+    for semi-join EXISTS correlation ONLY (never inline/safe classification): a
+    unique stored edge wins, else the unique stored forward edge
+    ``to_model → from_model`` is inverted; ambiguity or no edge → ``None``."""
+    stored = [j for j in from_model.joins if j.target_model == to_model.name]
+    if len(stored) == 1:
+        return [(src, tgt) for src, tgt in stored[0].join_pairs]
+    if len(stored) > 1:
+        return None
+    forward = [j for j in to_model.joins if j.target_model == from_model.name]
+    if len(forward) != 1:
+        return None
+    return [(tgt, src) for src, tgt in forward[0].join_pairs]
 
 
 def safe_reachable(

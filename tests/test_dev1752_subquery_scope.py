@@ -23,7 +23,6 @@ import os
 import sqlite3
 import tempfile
 
-import pytest
 import sqlglot
 from sqlglot import exp
 
@@ -33,7 +32,6 @@ from slayer.core.query import ColumnRef, SlayerQuery
 from slayer.engine.column_expansion import collect_root_scope_joined_paths
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.source_bundle import ResolvedSourceBundle
-from slayer.sql.scope_check import ScopeLeakError
 from slayer.storage.yaml_storage import YAMLStorage
 # The orders/customers/regions ScopeFrame fixtures are shared with the DEV-1745
 # door pack; import them rather than duplicate the fixture triple.
@@ -281,17 +279,14 @@ class TestExecution:
             )
             assert _ids(resp) == {1, 3}, resp.data
 
-    async def test_correlated_subquery_is_rejected_under_scope_validation(
+    async def test_correlated_subquery_passes_scope_validation(
         self, monkeypatch,
     ) -> None:
-        """Contract: a correlated Mode-A subquery references the outer relation,
-        which the scope-closure invariant flags as a leak. That invariant is
-        SLayer's ``assert_scope_closed`` pass, enabled by ``SLAYER_VALIDATE_SCOPES``
-        (on in CI; the conftest autouse fixture sets it — here it is set
-        explicitly so the test does not silently depend on the ambient default,
-        and is off in production for performance). The DEV-1752 fix leaves the
-        outer ref untouched; the guard, not the expander, is what rejects it —
-        so correlation is an unsupported Mode-A shape, not a supported feature."""
+        """A correlated Mode-A subquery references the outer relation — legal
+        SQL that DEV-1840's correlation-aware ``assert_scope_closed`` now
+        accepts (an expression subquery may bind ancestor sources). The
+        DEV-1752 fix still leaves the outer ref untouched, so the shape
+        executes with correlated semantics: orders 1 & 3 have line items."""
         monkeypatch.setenv("SLAYER_VALIDATE_SCOPES", "1")
         with tempfile.TemporaryDirectory() as d:
             db = os.path.join(d, "corpus.db")
@@ -306,5 +301,5 @@ class TestExecution:
             query = SlayerQuery(
                 source_model="orders", dimensions=[ColumnRef(name="id")],
             )
-            with pytest.raises(ScopeLeakError):
-                await engine.execute(query)
+            resp = await engine.execute(query)
+            assert _ids(resp) == {1, 3}, resp.data

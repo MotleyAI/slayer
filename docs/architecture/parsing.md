@@ -121,8 +121,7 @@ Filters historically accepted SQL operator spellings (`=`, `<>`, `NULL`, keyword
 `AND`/`OR`/`NOT`/`IS`/`IN`) alongside Python ones. `parse_filter_expr` normalizes
 those to Python equivalents (string-literal-aware) via
 `_normalize_sql_filter_operators`, then delegates to `parse_expr`. Measures and
-order parse with `parse_expr` directly; only filters get the leniency — matching
-the legacy `parse_filter` contract.
+order parse with `parse_expr` directly; only filters get the leniency.
 
 ### `walk_parsed_refs` — scope-free reference extraction
 

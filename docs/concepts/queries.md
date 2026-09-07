@@ -18,7 +18,7 @@ A `SlayerQuery` specifies what data to retrieve from a model.
 | `limit` | int | No | Maximum rows to return |
 | `offset` | int | No | Number of rows to skip |
 | `whole_periods_only` | bool | No | Snap date filters to time bucket boundaries, exclude the current incomplete time bucket |
-| `strict` | bool | No | Fail instead of warn when a [cross-model measure broadcasts](#cross-model-measures) across an unattributable dimension or a filter is dropped from its producer. Default `false` (warn). |
+| `strict` | bool | No | Fail instead of warn when a [cross-model measure broadcasts](#cross-model-measures) across an unattributable dimension or a filter is excluded from its producer (semi-join-pushed filters are applied and never error). Default `false` (warn). |
 
 You can pass a single query or a **list of queries** to `execute()`. When passing a list, earlier queries are named sub-queries that later queries can reference. The last query in the list is the main one whose results are returned. See [Query Lists](#query-lists) for examples.
 
@@ -184,6 +184,8 @@ A time dimension with a required granularity and an optional date range. Support
 **Granularities**: `second`, `minute`, `hour`, `day`, `week`, `week_sunday`, `month`, `quarter`, `year`
 
 `week` is Monday-anchored (ISO-8601); `week_sunday` is Sunday-anchored (weeks start Sunday, end Saturday) for tools that use Sunday weeks. Both are model granularities you set on a `TimeDimension` — `week_sunday` is the SLayer value, not a wire keyword sent by a BI tool.
+
+`date_range` must be exactly two non-null string bounds and filters inclusively (`[start, end]`); a one-sided range isn't expressible here, so use an explicit comparator filter (`"created_at >= '2024-01-01'"`) for an open-ended bound.
 
 `date_range` and an equivalent explicit filter (`"created_at >= '2024-01-01' and created_at <= '2024-12-31'"`) are interchangeable — including for trailing-window measures and `time_shift`, which still read rows from before the range so the earliest bucket isn't short-changed. See [Time bounds do not clip the window](formulas.md#time-bounds-do-not-clip-the-window) for exactly which predicates count as a time bound.
 
@@ -672,12 +674,21 @@ provably many-to-one (a primary key on the far side, or a declared
 [join `cardinality`](models.md#join-cardinality)). Each remaining dimension gets
 the **broadcast** value (the total over the safe grain, repeated across that
 dimension), and the response carries a `warnings` entry (`kind: "broadcast"`)
-naming the metric and each broadcast dimension with the reason. Likewise, a
-query filter that the sub-query cannot evaluate from its root is applied only to
-the local measures and reported as `kind: "unreachable_filter_dropped"`. Declare
-the missing join cardinality (or primary key) to make such a dimension exact.
-Set `"strict": true` on the query to turn both conditions into errors instead of
-warnings.
+naming the metric and each broadcast dimension with the reason. Declare the
+missing join cardinality (or primary key) to make such a dimension exact.
+
+Query **filters** still restrict the metric: a conjunct the sub-query can only
+reach across an unproven hop is pushed down as a correlated `EXISTS` semi-join —
+the metric counts exactly the target rows related to at least one row passing
+the filter (each row once, never multiplied through the join), silently, exactly
+like a safely inherited filter. Only a filter with no resolvable path from the
+sub-query's root (or an ambiguous reverse join, or one mixing local and joined
+references under `OR`/`NOT`) is excluded: it still applies to the local measures
+and is reported as `kind: "unreachable_filter_dropped"`. On ClickHouse the
+semi-join needs server ≥ 25.4 (the required setting is attached automatically);
+older servers fail with a clear error. Set `"strict": true` on the query to turn
+a broadcast or an excluded filter into an error instead of a warning — a
+semi-join-pushed filter is correctly applied and never errors.
 
 A filter **on** the cross-model value itself (`"customers.score:avg > 4"`)
 restricts the result rows, uniformly with local aggregate filters — groups that

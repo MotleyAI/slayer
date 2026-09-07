@@ -344,7 +344,9 @@ class TestCrossModelNarrowedGrain:
 
 
 class TestCrossModelFilterRouting:
-    async def test_host_local_filter_does_not_change_target_total(self, exec_engine) -> None:
+    async def test_host_local_filter_semi_joins_into_target_total(self, exec_engine) -> None:
+        """DEV-1840: the host filter restricts the total to customers with at
+        least one North order (c1+c2 spend = 300), not the unfiltered 350."""
         resp = await exec_engine.execute(_q(
             dimensions=["customers.tier"],
             filters=["region == 'North'"],
@@ -354,7 +356,7 @@ class TestCrossModelFilterRouting:
         ))
         assert len(resp.data) == 2
         for r in resp.data:
-            assert float(r["orders.total"]) == pytest.approx(350.0)
+            assert float(r["orders.total"]) == pytest.approx(300.0)
 
     async def test_target_reachable_filter_applies_to_total(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(

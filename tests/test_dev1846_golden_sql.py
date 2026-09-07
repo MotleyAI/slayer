@@ -96,6 +96,14 @@ def _cases() -> dict:
             {"formula": "consecutive_periods(iif(revenue:sum > 0, 1, 0))",
              "name": "streak"},
         ]),
+        # null-test predicates: bare top level and under a connective.
+        "cp/is_null_top": _q(measures=[
+            {"formula": "consecutive_periods(hi_rev:sum is None)", "name": "streak"},
+        ]),
+        "cp/is_not_null_and": _q(measures=[
+            {"formula": "consecutive_periods(hi_rev:sum is not None and cost:sum > 0)",
+             "name": "streak"},
+        ]),
         # comparison-predicate cp already renders — a regression anchor.
         "cp/change_gt_anchor": _q(measures=[
             {"formula": "consecutive_periods(change(revenue:sum) > 0)", "name": "streak"},

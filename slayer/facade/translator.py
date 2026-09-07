@@ -1,35 +1,12 @@
-"""SQL → SlayerQuery translator (DEV-1390 §6; DEV-1486 shared layer).
+"""SQL → SlayerQuery translator: the shared parse/classify/translate pipeline
+for every SQL string entering a wire facade (Arrow Flight SQL or Postgres).
 
-Shared pipeline for every SQL string entering a wire facade (Arrow Flight
-SQL or Postgres), whether through a simple-query, a ``CommandStatementQuery``,
-or the prepared-statement triplet. Returns a tagged-union ``TranslatorResult``
-whose subclass tells the handler which kind of response to send; raises
-``TranslationError`` on user-visible failures (parse error, unknown table,
-``SELECT *``, DML/DDL, etc.).
-
-The pipeline (see §6 of DEV-1390; DEV-1558 swapped catalog-matchers for a
-DuckDB-backed executor on the Postgres path):
-
-1. Parse with sqlglot (optionally with a dialect).
-2. Probe-query whitelist → canned ``RowBatch``.
-3. Classify AST root → reject DML/DDL, no-op SET/SHOW/BEGIN/COMMIT
-   (carrying a ``command_tag`` so the Postgres facade can drive its
-   transaction state machine), continue on SELECT.
-4. If ``catalog_sql_executor`` is provided (Postgres facade) and
-   ``is_catalog_only(parsed)`` is True, execute the SQL against the
-   in-memory DuckDB and return a ``PgCatalogResult``. Otherwise
-   (Flight facade) dispatch INFORMATION_SCHEMA queries to the canned
-   ``match_info_schema`` builder.
-5. ``SELECT *`` rejection (on real models).
-6. SLayer-table translation → ``SlayerQuery`` + column-name mapping.
-
-The translator never touches the engine or storage — it produces a
-``SlayerQuery`` description and lets the handler decide when to call
-``engine.execute()``.
-
-``dialect`` affects ONLY the parse step. Predicate execution coverage is
-unchanged: WHERE conjuncts are emitted verbatim into ``SlayerQuery.filters``,
-which the engine parses as Mode B DSL.
+Returns a tagged-union ``TranslatorResult`` whose subclass tells the handler
+which response to send; raises ``TranslationError`` on user-visible failures
+(parse error, unknown table, ``SELECT *``, DML/DDL). Never touches the engine
+or storage — it produces a ``SlayerQuery`` and lets the handler execute it.
+``dialect`` affects only the parse step; WHERE conjuncts are emitted verbatim
+into ``SlayerQuery.filters`` for the engine's Mode B DSL.
 """
 
 from __future__ import annotations
@@ -73,11 +50,9 @@ _COMMAND_FALLBACK_MARKER = "Falling back to parsing as a 'Command'"
 
 
 class _SuppressCommandFallbackWarning(logging.Filter):
-    """sqlglot warns whenever a statement parses to the generic ``Command``
-    node. For facade traffic that fallback is the expected, handled path
-    (``SHOW TRANSACTION ISOLATION LEVEL`` etc. — one warning per BI
-    connection), so it is suppressed while ``translate`` is parsing.
-    Engine/user parse paths keep the warning."""
+    """Suppress sqlglot's generic-``Command`` fallback warning while ``translate``
+    parses — that fallback is the expected path for facade traffic. Engine/user
+    parse paths keep the warning."""
 
     def filter(self, record: logging.LogRecord) -> bool:
         return not (
@@ -88,15 +63,12 @@ class _SuppressCommandFallbackWarning(logging.Filter):
 logging.getLogger("sqlglot").addFilter(_SuppressCommandFallbackWarning())
 
 
-# --- session-setting capture (DEV-1569) -------------------------------------
+# --- session-setting capture ------------------------------------------------
 
 
 class SetSettingOp(BaseModel):
-    """A single ``SET <name> = <value>`` capture or ``set_config(name, value, ...)``
-    mutation. Names are lowercased on capture. Consumed by the Postgres
-    facade to mutate its per-connection session-settings map. The Flight
-    facade ignores these.
-    """
+    """A ``SET <name> = <value>`` / ``set_config(...)`` capture (name lowercased);
+    the Postgres facade mutates its per-connection map, Flight ignores it."""
 
     name: str
     value: str
@@ -109,15 +81,10 @@ class ResetSettingOp(BaseModel):
     reset_all: bool = False
 
 
-# A probe matcher takes the parsed statement and returns either a canned
-# ``RowBatch`` (Flight default) or a ``ProbeMatcherOutcome`` (Postgres facade,
-# used to tunnel ``set_config`` mutation hints through to the connection). The
-# translator unwraps both into a ``ProbeResult``.
 class ProbeMatcherOutcome(BaseModel):
-    """Postgres-facade-only wrapper carrying a probe's row batch alongside
-    any pending session-setting mutation (e.g. from ``set_config(...)``).
-    The Flight facade's default matcher returns the bare ``RowBatch``; the
-    translator accepts either."""
+    """Postgres-facade probe result: a row batch plus any pending session-setting
+    mutation (from ``set_config(...)``). Flight's matcher returns a bare
+    ``RowBatch``; the translator accepts either."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -140,12 +107,9 @@ class TranslatorResult(BaseModel):
 
 
 class ProbeResult(TranslatorResult):
-    """One of the whitelisted connection probes matched.
-
-    ``settings_mutation`` carries a ``set_config(name, value, ...)``
-    mutation hint when the matcher returned a ``ProbeMatcherOutcome``.
-    The Postgres facade applies it on Execute (but not Describe). Flight
-    matchers return ``None`` here."""
+    """A whitelisted connection probe matched. ``settings_mutation`` carries a
+    ``set_config`` hint (pg facade applies it on Execute, not Describe); Flight
+    leaves it ``None``."""
 
     batch: RowBatch
     settings_mutation: SetSettingOp | None = None
@@ -166,16 +130,10 @@ class PgCatalogResult(TranslatorResult):
 class NoOpResult(TranslatorResult):
     """``BEGIN`` / ``COMMIT`` / ``ROLLBACK`` / ``SET`` / ``SHOW`` — empty success.
 
-    ``command_tag`` is the facade-neutral verb (``"BEGIN"``, ``"COMMIT"``,
-    ``"ROLLBACK"``, ``"SET"``, ``"SHOW"``, ``"USE"``, ``"RESET"``,
-    ``"START TRANSACTION"``). The Postgres facade uses it to drive its
-    transaction state machine and pick the ``CommandComplete`` tag; the
-    Flight facade ignores it.
-
-    ``set_setting`` carries the captured ``(name, value)`` pair when the
-    root parsed as ``exp.Set`` with a single ``name = value`` SetItem.
-    ``reset_setting`` carries the parsed ``RESET <name>`` or ``RESET ALL``
-    intent. Both are PG-facade-only; the Flight facade ignores them.
+    ``command_tag`` is the facade-neutral verb the pg facade uses to drive its
+    transaction state machine and pick the ``CommandComplete`` tag. ``set_setting``
+    / ``reset_setting`` carry captured SET/RESET intent. All PG-facade-only;
+    Flight ignores them.
     """
 
     command_tag: str | None = None
@@ -186,16 +144,10 @@ class NoOpResult(TranslatorResult):
 class QueryResult(TranslatorResult):
     """Translated SlayerQuery for engine execution.
 
-    ``column_name_mapping`` is ordered to match the user's projection
-    list; each tuple is ``(engine_alias, bi_tool_projected_name)``.
-    Server uses this to rewrite the SLayer response's column keys
-    (``orders.revenue_sum``) back into the BI-tool's flat names
-    (``revenue_sum``) before emitting the result set.
-
-    ``projection_types`` is the catalog-declared ``DataType`` for each
-    projected item, in the same order. ``None`` entries fall back to a
-    text type at wire-schema build time (custom aggs, measures with
-    unknown declared type, …).
+    ``column_name_mapping`` (ordered to match the projection list) rewrites the
+    response's ``model.column`` keys back to the BI tool's flat names.
+    ``projection_types`` is the catalog-declared ``DataType`` per item, ``None``
+    → text at wire-schema build time.
     """
 
     query: SlayerQuery
@@ -203,16 +155,13 @@ class QueryResult(TranslatorResult):
     facade_table: FacadeTable
     schema_name: str
     projection_types: "list[DataType | None]"
-    # Datasource the engine should execute against, resolved from the FROM
-    # (and any joined) table's model. ``None`` for catalogs whose models carry
-    # no datasource; the facade falls back to its connection datasource.
+    # Datasource to execute against, from the FROM (and joined) table's model;
+    # ``None`` → facade falls back to its connection datasource.
     data_source: str | None = None
 
     @property
     def flight_table(self) -> FacadeTable:
-        """Back-compat alias — this field was ``flight_table`` before the
-        facade extraction (DEV-1486). Kept so ``slayer.flight.translator``
-        callers reading ``result.flight_table`` keep working."""
+        """Back-compat alias for the pre-facade-extraction ``flight_table`` field."""
         return self.facade_table
 
 
@@ -236,12 +185,9 @@ SELECT_STAR_MESSAGE = (
 
 
 def _is_browse_mode_select(parsed: exp.Select, proj_exprs: list[exp.Expression]) -> bool:
-    """``SELECT * FROM t`` browse-mode predicate: no GROUP BY, no HAVING,
-    no aggregate function anywhere in the projection list (incl. COUNT(*),
-    SUM/AVG/MIN/MAX, etc.). When this holds, ``*`` expands to every
-    non-hidden column of ``t``; otherwise it stays rejected so the
-    user-facing 'project specific names' hint fires for the cases where
-    it's actually useful."""
+    """``SELECT * FROM t`` browse-mode predicate: no GROUP BY / HAVING / aggregate
+    anywhere in the projection. When it holds, ``*`` expands to every non-hidden
+    column; otherwise ``*`` stays rejected."""
     if parsed.args.get("group") is not None:
         return False
     if parsed.args.get("having") is not None:
@@ -256,10 +202,8 @@ def _is_browse_mode_select(parsed: exp.Select, proj_exprs: list[exp.Expression])
 def _expand_select_star(
     proj_exprs: list[exp.Expression], table: "FacadeTable",
 ) -> list[exp.Expression]:
-    """Replace each top-level ``exp.Star`` with a sequence of column
-    references — one per non-hidden column on ``table`` — preserving the
-    relative order of any non-Star projections. Used by browse-mode
-    ``SELECT *`` only (see ``_is_browse_mode_select``)."""
+    """Replace each top-level ``exp.Star`` with one column ref per non-hidden
+    column on ``table``, preserving the order of any non-Star projections."""
     column_names = [d.name for d in table.dimensions]
     out: list[exp.Expression] = []
     for expr in proj_exprs:
@@ -270,8 +214,8 @@ def _expand_select_star(
         else:
             out.append(expr)
     return out
-# DEV-1493: aggregating over a saved measure or a non-column expression needs
-# a multi-stage rewrite, out of scope for the current facade aggregate mapping.
+
+
 AGG_OVER_MEASURE_MESSAGE = (
     "Aggregating over a saved measure or a non-column expression is not "
     "supported yet (only aggregates over base/joined columns are mapped). "
@@ -293,20 +237,17 @@ _TIME_GRAIN_NAMES: dict[str, TimeGranularity] = {
     "second": TimeGranularity.SECOND,
 }
 
-# sqlglot represents the unwrapped one-arg time functions as dedicated nodes
-# (exp.Month, exp.Year, …). date_trunc is exp.DateTrunc with a literal unit.
+# Unwrapped one-arg time functions parse to dedicated nodes (exp.Month, …).
 _TIME_GRAIN_CLASSES: dict[type, TimeGranularity] = {
     exp.Year: TimeGranularity.YEAR,
     exp.Quarter: TimeGranularity.QUARTER,
     exp.Month: TimeGranularity.MONTH,
     exp.Week: TimeGranularity.WEEK,
     exp.Day: TimeGranularity.DAY,
-    # Hour/Minute/Second don't all have dedicated AST classes; we also accept
-    # them via exp.Anonymous below.
+    # Hour/Minute/Second lack dedicated classes; accepted via exp.Anonymous.
 }
 
-# sqlglot aggregate-function AST classes → SLayer aggregation names. COUNT is
-# handled separately (it has *-arg and DISTINCT variants).
+# Aggregate AST classes → SLayer aggregation names. COUNT handled separately.
 _AGG_CLASS_TO_NAME: dict[type, str] = {
     exp.Sum: "sum",
     exp.Avg: "avg",
@@ -323,29 +264,10 @@ _COMPARATOR_SQL: dict[type, str] = {
     exp.NEQ: "<>",
 }
 
-# DEV-1566: sqlglot DataType.Type → SLayer DataType for CAST(<col> AS <type>)
-# projection support. Aliases sqlglot canonicalises at parse time (STRING→TEXT,
-# INTEGER→INT, NUMERIC→DECIMAL, BOOL→BOOLEAN, FLOAT→DOUBLE) need no entry;
-# REAL parses to exp.DataType.Type.FLOAT (not normalised), so DOUBLE coverage
-# routes through here. Parameterised forms (VARCHAR(255), DECIMAL(10,2))
-# collapse onto the same base member at parse time — precision is dropped at
-# the SLayer boundary because SLayer wire types don't carry it.
-#
-# CAST is a COARSE wire-OID hint, not a precision-preserving conversion. The
-# SLayer engine projects the bare column unchanged; the pg-facade encoder is
-# OID-driven, so the wire bytes always match the OID we advertise. The only
-# "mismatch" exposed by the coarsenings below is that the advertised OID is
-# broader than what the user typed:
-#
-#   * DECIMAL/NUMERIC → DataType.DOUBLE (OID 701 `float8`, not 1700 `numeric`).
-#   * INTEGER / SMALLINT / TINYINT / MEDIUMINT → DataType.INT
-#     (OID 20 `int8`, not 23/21).
-#   * TIMESTAMPTZ / TIMESTAMP WITH TIME ZONE / TIMESTAMPLTZ → DataType.TIMESTAMP
-#     (OID 1114 `timestamp`, no TZ semantics).
-#
-# Callers needing exact NUMERIC precision, narrow integer wire widths, or
-# TZ-aware timestamps must compute upstream. See pg-facade.md
-# §"CAST coarse-OID mapping" for the user-facing table.
+# sqlglot DataType.Type → SLayer DataType for CAST(<col> AS <type>). CAST is a
+# COARSE wire-OID hint, not a precision-preserving conversion: DECIMAL/NUMERIC →
+# DOUBLE, narrow ints → INT (OID int8), TIMESTAMPTZ/LTZ → TIMESTAMP (no TZ).
+# Callers needing exact precision/TZ must compute upstream; see pg-facade.md.
 _SQLGLOT_TYPE_TO_DATATYPE: dict[exp.DataType.Type, DataType] = {
     exp.DataType.Type.TEXT: DataType.TEXT,
     exp.DataType.Type.VARCHAR: DataType.TEXT,
@@ -368,33 +290,21 @@ _SQLGLOT_TYPE_TO_DATATYPE: dict[exp.DataType.Type, DataType] = {
     exp.DataType.Type.TIMESTAMPLTZ: DataType.TIMESTAMP,
 }
 
-# DEV-1566: per-pair allowlist of CAST coercions admitted in projection.
-# Each pair is one the wire encoders in slayer/pg_facade/types.py handle
-# losslessly. The unknown-source (None) case admits ONLY TEXT — for every
-# other target we'd push the failure into value_to_text / value_to_binary at
-# response time, surfacing as an opaque connection error instead of a clean
-# translation error. Identity (X→X) is always admitted; computed implicitly.
+# Per-pair allowlist of CAST coercions the wire encoders handle losslessly.
+# Unknown-source (None) admits only TEXT; identity (X→X) admitted implicitly.
 _CAST_ADMITTED_TARGETS: dict[DataType, frozenset] = {
     DataType.DATE: frozenset({DataType.DATE, DataType.TIMESTAMP, DataType.TEXT}),
     DataType.TIMESTAMP: frozenset({DataType.TIMESTAMP, DataType.DATE, DataType.TEXT}),
     DataType.INT: frozenset({DataType.INT, DataType.DOUBLE, DataType.TEXT}),
-    # DOUBLE → INT intentionally dropped (Python int(x) truncates toward zero;
-    # Postgres rounds half-to-even). Round-2 Codex review.
+    # DOUBLE → INT dropped: Python int() truncates, Postgres rounds half-even.
     DataType.DOUBLE: frozenset({DataType.DOUBLE, DataType.TEXT}),
     DataType.BOOLEAN: frozenset({DataType.BOOLEAN, DataType.TEXT}),
     DataType.TEXT: frozenset({DataType.TEXT}),
 }
 
-# DEV-1566 — Codex round 3: pairs whose ORDER BY / GROUP BY semantics under
-# Postgres differ from what the bare-column engine projection would produce.
-# A query that references a CAST-projected item (via alias or canonical form)
-# in ORDER BY / GROUP BY is rejected when the pair is in the corresponding
-# set — workaround: order/group by the bare column, or wait for a follow-up
-# ticket that pushes CAST into the engine SQL.
-#
-# ORDER BY lossy: every X→TEXT pair (lex sort ≠ engine's natural sort).
-# Identity X→X, INT→DOUBLE, DATE↔TIMESTAMP all preserve relative order so
-# they stay admitted.
+# CAST pairs rejected in ORDER BY / GROUP BY because the bare-column engine
+# projection would sort/group differently than the casted type under Postgres.
+# ORDER BY lossy: every X→TEXT (lex ≠ natural sort); order-preserving pairs stay.
 _LOSSY_ORDER_BY_CAST_PAIRS: frozenset = frozenset({
     (DataType.INT, DataType.TEXT),
     (DataType.DOUBLE, DataType.TEXT),
@@ -402,15 +312,8 @@ _LOSSY_ORDER_BY_CAST_PAIRS: frozenset = frozenset({
     (DataType.DATE, DataType.TEXT),
     (DataType.TIMESTAMP, DataType.TEXT),
 })
-# GROUP BY lossy: many-to-one casts where the engine-column grouping
-# returns MORE groups than the casted column would.
-#   - TIMESTAMP → DATE: multiple timestamps per date.
-#   - INT → DOUBLE: int64 has precise range ±2^53 in IEEE 754 float64;
-#     larger bigints lose precision so distinct ints can collapse to the
-#     same double under Postgres's GROUP BY semantics, but the facade
-#     groups by the bare int and over-reports groups.
-# Every other admitted pair is a 1:1 / identity mapping within the
-# supported value range.
+# GROUP BY lossy: many-to-one casts where bare-column grouping over-reports
+# groups vs the casted column (TIMESTAMP→DATE; INT→DOUBLE past ±2^53).
 _LOSSY_GROUP_BY_CAST_PAIRS: frozenset = frozenset({
     (DataType.TIMESTAMP, DataType.DATE),
     (DataType.INT, DataType.DOUBLE),
@@ -422,12 +325,8 @@ _GROUP_BY_KIND = "GROUP BY"
 
 
 def _sqlglot_type_to_datatype(node: exp.DataType) -> DataType | None:
-    """Map a sqlglot ``DataType`` node to a SLayer ``DataType``.
-
-    Returns ``None`` when the type member isn't in the mapping (UUID, JSON,
-    ARRAY, STRUCT, …) — caller falls through to the existing
-    'Unsupported projection expression' error.
-    """
+    """Map a sqlglot ``DataType`` node to a SLayer ``DataType``, or ``None`` for
+    unmapped members (UUID, JSON, …) so the caller raises unsupported-projection."""
     return _SQLGLOT_TYPE_TO_DATATYPE.get(node.this)
 
 
@@ -446,24 +345,13 @@ def _column_to_dotted(
     strip_prefix: tuple[str, str] | None = None,
     alias_map: dict[str, str] | None = None,
 ) -> str:
-    """Reconstruct the dotted reference from a sqlglot ``Column``.
+    """Reconstruct the dotted reference from a sqlglot ``Column``
+    (``"customers"."regions"."name"`` → ``"customers.regions.name"``).
 
-    ``customers.regions.name`` (3-part) → ``"customers.regions.name"``
-    ``customers.row_count`` (2-part)    → ``"customers.row_count"``
-    ``revenue_sum``         (bare)      → ``"revenue_sum"``
-
-    DEV-1558 B5: when ``strip_prefix=(schema, table)`` is given and the
-    leading qualifiers on the column reference are exactly
-    ``schema.table.`` (case-insensitive, or with ``schema='public'`` since
-    the pg facade always exposes models under ``public``), drop them so
-    three-part refs like ``"public"."orders"."customer_id"`` resolve to the
-    bare ``customer_id`` dimension.
-
-    DEV-1565: when ``alias_map`` is given and the column's leading table
-    qualifier matches an alias entry (case-insensitive), the alias is
-    rewritten to the target SLayer model name BEFORE the dotted form is
-    built — so ``"Stores"."name"`` with ``alias_map={"Stores": "stores"}``
-    yields ``"stores.name"`` (the SLayer cross-model dotted form).
+    ``strip_prefix=(schema, table)`` drops a leading ``schema.table.`` qualifier
+    (case-insensitive, ``public`` accepted) so ``"public"."orders"."customer_id"``
+    resolves to bare ``customer_id``. ``alias_map`` rewrites a leading join-alias
+    qualifier to its SLayer model name first (``"Stores"."name"`` → ``stores.name``).
     """
     parts: list[str] = []
     for key in ("catalog", "db", "table"):
@@ -480,14 +368,9 @@ def _column_to_dotted(
 def _apply_alias_remap(
     parts: list[str], alias_map: dict[str, str] | None,
 ) -> list[str]:
-    """If ``parts`` is at least 2-part and the table-qualifier (second-to-
-    last element) matches an entry in ``alias_map`` (case-insensitive),
-    rewrite it to the target model name. Otherwise return ``parts``
-    unchanged.
-
-    DEV-1565: maps ``<JoinAlias>.<col>`` refs (e.g. Metabase's
-    ``"Stores"."name"``) to ``<model_name>.<col>`` (``"stores"."name"``).
-    """
+    """Rewrite the table-qualifier (2nd-to-last part) to its ``alias_map`` target
+    model name (case-insensitive), mapping ``<JoinAlias>.<col>`` → ``<model>.<col>``;
+    return ``parts`` unchanged if no entry matches."""
     if not alias_map or len(parts) < 2:
         return parts
     qual = parts[-2]
@@ -509,15 +392,9 @@ def _apply_alias_remap(
 def _apply_strip_prefix(
     parts: list[str], strip_prefix: tuple[str, str] | None,
 ) -> list[str]:
-    """Drop the leading ``schema.table.`` qualifier from ``parts`` when it
-    matches ``strip_prefix``. Four-part catalog-qualified refs drop the
-    leading 3; three-part drops the leading 2; two-part drops the
-    leading 1. Bare and unrelated refs pass through unchanged.
-
-    For 4-part refs, the leading catalog must match the SLayer catalog
-    name (``slayer``) — otherwise we leave the ref alone (a foreign
-    catalog reference is not addressable here).
-    """
+    """Drop the leading ``schema.table.`` qualifier from ``parts`` when it matches
+    ``strip_prefix`` (4-part drops 3, 3-part drops 2, 2-part drops 1); bare and
+    unrelated refs pass through. A 4-part ref's catalog must match ``slayer``."""
     if strip_prefix is None:
         return parts
     schema_p, table_p = strip_prefix
@@ -544,13 +421,8 @@ def _detect_time_grain_date_trunc(
 ) -> tuple[TimeGranularity, exp.Column] | None:
     """Plain ``DATE_TRUNC(<unit>, <col>)`` detector.
 
-    Does NOT unwrap any day offsets on the column side — a bare
-    ``DATE_TRUNC('week', col + INTERVAL '1 day')`` is a user-written
-    shifted bucket, not the Metabase Sunday-week wrapper, and must
-    fall through to the regular "unsupported projection" error.
-    The full Sunday-week pattern is handled by
-    ``_detect_sunday_week_wrapper`` which requires BOTH the outer ``-1
-    day`` shift and the inner ``+1 day`` shift to be present together.
+    Does NOT unwrap column-side day offsets — a bare shifted bucket is user
+    intent, not the Metabase Sunday-week wrapper (see ``_detect_sunday_week_wrapper``).
     """
     unit = node.args.get("unit")
     col = node.this
@@ -573,9 +445,7 @@ def _detect_time_grain_date_trunc(
 
 
 def _date_trunc_unit(node: exp.Expression) -> str | None:
-    """Return the lowercase unit string of a ``DATE_TRUNC``/``TIMESTAMP_TRUNC``
-    node, or ``None`` if not a trunc call. Used by the Sunday-week wrapper
-    detector below."""
+    """Lowercase unit string of a ``DATE_TRUNC``/``TIMESTAMP_TRUNC`` node, else ``None``."""
     if not isinstance(node, (exp.DateTrunc, exp.TimestampTrunc)):
         return None
     unit = node.args.get("unit")
@@ -589,28 +459,13 @@ def _date_trunc_unit(node: exp.Expression) -> str | None:
 def _detect_sunday_week_wrapper(
     node: exp.Expression,
 ) -> tuple[TimeGranularity, exp.Column] | None:
-    """Recognise the complete Metabase Sunday-week wrapper as a single shape.
+    """Recognise Metabase's complete Sunday-week wrapper as a single shape:
+    ``CAST(DATE_TRUNC('week', <col> + INTERVAL '1 day') AS DATE) + INTERVAL '-1 day'``,
+    mapping it to ``TimeGranularity.WEEK_SUNDAY``.
 
-    Full pattern (the one Metabase emits for a week breakout on a DATE
-    column)::
-
-        (CAST(DATE_TRUNC('week', <col> + INTERVAL '1 day') AS DATE)
-         + INTERVAL '-1 day')
-
-    Metabase rounds to Sunday by shifting the input forward one day,
-    applying Postgres' Monday-based ``DATE_TRUNC('week', ...)``, then
-    shifting the result back one day. SLayer models this as
-    ``TimeGranularity.WEEK_SUNDAY`` (DEV-1572), whose per-dialect SQL
-    generation reproduces the same Sunday-anchored bucketing — so the
-    result matches what Metabase asked for instead of being rejected.
-
-    Both halves must be present together — a bare ``DATE_TRUNC`` with a
-    ``+1``-day inner offset and no outer wrapper, OR an outer ``-1``-day
-    wrapper around a grain other than WEEK, are NOT Sunday-week and must
-    NOT be silently collapsed (they're either user intent we must preserve
-    or other translator gaps that should keep raising). Each shift leg must
-    be exactly one day. Returns ``(WEEK_SUNDAY, col)`` on match, ``None``
-    otherwise. The outer ``CAST`` is already peeled by ``_detect_time_grain``.
+    Both shift legs (outer -1 day, inner +1 day, each exactly one day) must be
+    present together — a partial wrapper is user intent / another gap and must
+    keep raising. Returns ``(WEEK_SUNDAY, col)`` on match, else ``None``.
     """
     inner = _unwrap_signed_day_offset(node, expected_sign=-1)
     if inner is node:
@@ -633,15 +488,9 @@ def _detect_sunday_week_wrapper(
 
 
 def _day_interval_sign(node: exp.Expression) -> int | None:
-    """Return ``+1`` for ``INTERVAL '1 day'``, ``-1`` for ``INTERVAL '-1 day'``,
-    or ``None`` if ``node`` isn't a one-day interval at all.
-
-    Recognised forms:
-    * Dialect-less parse: ``INTERVAL '1 day'`` / ``INTERVAL '-1 day'`` — the
-      literal carries the unit string.
-    * Postgres dialect: ``INTERVAL '1' DAY`` — literal is the magnitude,
-      unit is a separate ``DAY`` node.
-    """
+    """``+1`` for ``INTERVAL '1 day'``, ``-1`` for ``INTERVAL '-1 day'``, else ``None``.
+    Handles both the dialect-less form (unit in the literal) and the Postgres
+    ``INTERVAL '1' DAY`` form (unit a separate node)."""
     if not isinstance(node, exp.Interval):
         return None
     val = node.this
@@ -666,19 +515,10 @@ def _day_interval_sign(node: exp.Expression) -> int | None:
 def _unwrap_signed_day_offset(
     node: exp.Expression, *, expected_sign: int,
 ) -> exp.Expression:
-    """If ``node`` shifts by exactly ``expected_sign`` days (``+1`` or ``-1``)
-    via a single ADD/SUB of ``INTERVAL '1 day'`` / ``INTERVAL '-1 day'``,
-    return the inner expression. Otherwise return ``node`` unchanged.
-
-    Direction matters: ``expected_sign=-1`` matches Metabase's outer
-    Sunday-week wrapper (``<expr> + INTERVAL '-1 day'`` or
-    ``<expr> - INTERVAL '1 day'``) but NOT the inverse, so a legitimate
-    user-written ``DATE_TRUNC('week', x + INTERVAL '1 day')`` outside the
-    Sunday-week wrapper stays preserved (would not match
-    ``expected_sign=-1``). ``expected_sign=+1`` matches the inner
-    column-side shift (``<col> + INTERVAL '1 day'`` or
-    ``<col> - INTERVAL '-1 day'``).
-    """
+    """If ``node`` shifts by exactly ``expected_sign`` days via a single ADD/SUB
+    of a one-day interval, return the inner expression; else ``node`` unchanged.
+    Direction matters so a user-written shift outside the Sunday-week wrapper is
+    preserved (won't match the opposite sign)."""
     if isinstance(node, exp.Paren):
         inner = _unwrap_signed_day_offset(node.this, expected_sign=expected_sign)
         if inner is not node.this:
@@ -727,26 +567,12 @@ def _detect_time_grain_anonymous(
 
 def _detect_time_grain(node: exp.Expression) -> tuple[TimeGranularity, exp.Column] | None:
     """If ``node`` is ``<grain>(<column>)`` or ``date_trunc('<grain>', <column>)``,
-    return ``(granularity, column)``. Otherwise ``None``.
-
-    Also unwraps an outer ``CAST(...)`` — Metabase emits
-    ``CAST(TIMESTAMP_TRUNC(col, MONTH) AS DATE)`` when the column is
-    DATE-typed (the truncation function widens to TIMESTAMP and Metabase
-    casts back). The cast is irrelevant to the semantic time-grain
-    classification.
-    """
+    return ``(granularity, column)``, else ``None``. Also unwraps an outer
+    ``CAST(...)`` (Metabase casts DATE-typed trunc results back to DATE)."""
     if isinstance(node, exp.Cast):
-        # Unwrap the cast and recurse — the inner expression is what
-        # carries the time-grain semantics.
         unwrapped = _detect_time_grain(node.this)
         if unwrapped is not None:
             return unwrapped
-    # DEV-1562 / DEV-1558 round-20 follow-up: Metabase emits Sunday-based
-    # week truncation as the full wrapper
-    # ``CAST((CAST(DATE_TRUNC('week', col + INTERVAL '1 day') AS DATE) +
-    # INTERVAL '-1 day') AS DATE)``. Detect the complete pattern as a single
-    # match — partial wrappers (just the outer -1d, or just the inner +1d)
-    # are NOT Sunday-week and must keep raising as unsupported projections.
     sunday_week = _detect_sunday_week_wrapper(node)
     if sunday_week is not None:
         return sunday_week
@@ -772,11 +598,8 @@ def _alias_for_time_grain(
     strip_prefix: tuple[str, str] | None = None,
     alias_map: dict[str, str] | None = None,
 ) -> str:
-    """The flat projection name we expose for ``month(ordered_at)`` etc.
-
-    Format: ``"<grain>(<column-ref>)"`` lowercased so it round-trips
-    cleanly through GROUP BY / ORDER BY equality checks.
-    """
+    """The flat projection name for ``month(ordered_at)`` etc.: lowercased
+    ``"<grain>(<column-ref>)"`` so it round-trips through GROUP BY / ORDER BY."""
     return f"{grain.value}({_column_to_dotted(col, strip_prefix=strip_prefix, alias_map=alias_map)})"
 
 
@@ -800,21 +623,11 @@ def _detect_aggregate(  # NOSONAR(S3776) — flat per-aggregate-kind dispatch; s
     strip_prefix: tuple[str, str] | None = None,
     alias_map: dict[str, str] | None = None,
 ) -> _AggCall | None:
-    """If ``node`` is a SQL aggregate call, classify it; else ``None``.
-
-    ``COUNT(*)`` → ``count`` / ``inner_ref=None``. ``COUNT(DISTINCT col)`` →
-    ``count_distinct``. ``COUNT(col)`` → ``count``. ``SUM/AVG/MIN/MAX(col)`` →
-    the matching agg. An aggregate over a non-column argument sets
-    ``inner_is_column=False`` so the caller can raise the DEV-1493 error.
-
-    DEV-1558 B5: ``strip_prefix`` drops the FROM-table's ``schema.table.``
-    qualifier from the inner column ref so ``SUM("public"."orders"."revenue")``
-    resolves to the metric ``revenue:sum`` instead of
-    ``public.orders.revenue:sum``.
-
-    DEV-1565: ``alias_map`` rewrites join-alias qualifiers (e.g.
-    ``AVG("Stores"."tax_rate")``) to the SLayer cross-model dotted form
-    (``stores.tax_rate:avg``).
+    """If ``node`` is a SQL aggregate call, classify it into an ``_AggCall``; else
+    ``None``. ``COUNT(*)`` → count/no ref; ``COUNT(DISTINCT col)`` → count_distinct;
+    ``SUM/AVG/MIN/MAX(col)`` → the matching agg. A non-column argument sets
+    ``inner_is_column=False`` (caller raises the saved-measure error). ``strip_prefix``
+    / ``alias_map`` normalise the inner column ref as in ``_column_to_dotted``.
     """
     def _dot(col: exp.Column) -> str:
         return _column_to_dotted(col, strip_prefix=strip_prefix, alias_map=alias_map)
@@ -861,23 +674,12 @@ def _saved_measure_names(table: FacadeTable) -> set[str]:
 
 
 def _assert_local_metric(metric: FacadeMetric) -> None:
-    """DEV-1567: reject cross-model metric projection at the resolver.
+    """Reject cross-model metric projection (dotted name) in a flat SELECT.
 
-    The catalog pre-expands cross-model metrics into entries with dotted
-    names (``customers.row_count``, ``customers.regions.population_sum``).
-    The flat-column probes (``pg_attribute`` /
-    ``INFORMATION_SCHEMA.COLUMNS``) hide them so BI tools don't discover
-    them as projectable, but a hand-written SQL ref still resolves
-    through ``metrics_by_name`` / ``metrics_by_formula``. Letting it
-    flow into ``SlayerQuery.measures[*].name`` would either trip the
-    Pydantic validator (29 errors per query) or — with a non-dotted user
-    alias — produce a SlayerQuery whose engine alias mis-keys against
-    the engine result (DEV-1448 preserves the cross-model hop path on
-    the engine side, so ``orders.cr`` against ``orders.customers.cr``).
-
-    Guard predicate matches the catalog-flatten filter
-    (``slayer/facade/catalog.py:local_metrics``); see DEV-1493 for the
-    multi-stage rewrite path.
+    The catalog pre-expands cross-model metrics into dotted-name entries a
+    hand-written ref can still resolve to; letting one into
+    ``SlayerQuery.measures[*].name`` trips the validator or mis-keys the engine
+    result. Guard mirrors ``catalog.py:local_metrics``.
     """
     if "." in metric.name:
         raise TranslationError(
@@ -890,16 +692,13 @@ def _assert_local_metric(metric: FacadeMetric) -> None:
 def _metric_for_aggregate(
     call: _AggCall, table: FacadeTable, metrics_by_formula: dict[str, FacadeMetric],
 ) -> FacadeMetric:
-    """Resolve an aggregate call to its catalog ``FacadeMetric``.
-
-    The catalog pre-expands every *eligible* column × aggregation into a
-    metric, so a successful lookup by colon-form formula simultaneously
-    validates column existence + aggregation eligibility. Failures raise
-    a clear ``TranslationError`` (DEV-1493 for the measure/expression case).
+    """Resolve an aggregate call to its catalog ``FacadeMetric``. The catalog
+    pre-expands every eligible column × aggregation, so a colon-form lookup
+    validates column existence + aggregation eligibility in one step; failures
+    raise ``TranslationError``.
     """
-    # Only the literal COUNT(*) is the row-count star. Any other non-column
-    # argument (COUNT(<expr>), SUM(a+b), COUNT(DISTINCT <expr>)) needs a
-    # multi-stage rewrite — DEV-1493.
+    # Only literal COUNT(*) is the row-count star; other non-column args need a
+    # multi-stage rewrite.
     if not call.is_count_star and not call.inner_is_column:
         raise TranslationError(AGG_OVER_MEASURE_MESSAGE)
     formula = _agg_formula(call)
@@ -907,8 +706,7 @@ def _metric_for_aggregate(
     if metric is not None:
         _assert_local_metric(metric)
         return metric
-    # Not eligible / unknown. Distinguish the saved-measure case for a
-    # clearer message pointing at the follow-up ticket.
+    # Distinguish the saved-measure case for a clearer message.
     if call.inner_ref is not None and call.inner_ref in _saved_measure_names(table):
         raise TranslationError(AGG_OVER_MEASURE_MESSAGE)
     raise TranslationError(
@@ -939,9 +737,7 @@ def _unwrap_identifier(node: exp.Expression | None) -> str | None:
 def _resolve_qualified_table(
     *, schema_str: str, table_name: str, catalog: FacadeCatalog,
 ) -> tuple[str, FacadeTable]:
-    # Try the exact schema match first — if a catalog actually carries a
-    # ``public`` schema (or whatever name the user passed), honour the
-    # explicit qualifier.
+    # Honour an explicit schema qualifier that actually exists in the catalog.
     for sch in catalog.schemas:
         if sch.name != schema_str:
             continue
@@ -951,20 +747,9 @@ def _resolve_qualified_table(
         raise TranslationError(
             f"Unknown table {table_name!r} in schema {schema_str!r}"
         )
-    # Pg-facade alias fall-back. The Postgres facade always advertises
-    # ``public`` as its single schema (cf. ``pg_namespace`` row); when no
-    # real ``public`` schema exists in the catalog (e.g. when the catalog
-    # is keyed by the actual datasource name), accept ``public`` as a
-    # synonym so Metabase's ``"public"."orders"`` keeps working.
-    #
-    # Only fall back when the catalog presents a single schema — the
-    # "no user-customized postgres_schema anywhere" case where mapping
-    # ``public`` is unambiguous. With multiple schemas present (custom
-    # postgres_schema in use), ``public.<table>`` would silently cross
-    # schema isolation; reject with "Unknown schema" instead. Real BI
-    # clients address tables via the actual schema name (read from
-    # pg_namespace); this only ever bites hand-written SQL that
-    # hard-codes ``public``.
+    # Pg-facade fall-back: accept ``public`` as a synonym for the sole schema
+    # (the facade always advertises ``public``). Only unambiguous with one
+    # schema; with several, ``public.<table>`` would cross isolation → reject.
     if schema_str.lower() == "public" and len(catalog.schemas) == 1:
         return _resolve_bare_table(table_name=table_name, catalog=catalog)
     raise TranslationError(f"Unknown schema: {schema_str!r}")
@@ -988,14 +773,9 @@ def _resolve_bare_table(
 def _resolve_query_datasource(
     *, table: FacadeTable, join_plan: "_JoinPlan | None",
 ) -> str | None:
-    """Datasource the engine should execute the query against, or raise.
-
-    SLayer cannot execute a query spanning datasources, so when the FROM table
-    and an explicitly joined table resolve to different datasources we reject
-    with a clear message instead of letting the engine fail opaquely. Catalog
-    BFS joins are scoped per datasource, so only explicit cross-schema JOINs
-    can trigger this.
-    """
+    """Datasource the engine should execute against, or raise on a cross-datasource
+    query (FROM and an explicitly joined table resolving to different sources),
+    which SLayer cannot execute."""
     sources: set[str] = set()
     if table.model_ref is not None and table.model_ref.data_source:
         sources.add(table.model_ref.data_source)
@@ -1016,14 +796,9 @@ def _resolve_query_datasource(
 def _resolve_table(
     from_clause: exp.From, catalog: FacadeCatalog,
 ) -> tuple[str, FacadeTable]:
-    """Resolve a SELECT's FROM into ``(schema_name, FacadeTable)``.
-
-    Handles the three qualification forms (§6.1):
-
-    * ``<catalog>.<schema>.<table>`` — must match ``slayer.<ds>.<model>``.
-    * ``<schema>.<table>`` — direct schema lookup.
-    * ``<table>`` — searches every schema; unique match → use, multiple →
-      error naming the candidates, zero → "Unknown table".
+    """Resolve a SELECT's FROM into ``(schema_name, FacadeTable)``, handling the
+    three qualification forms: ``catalog.schema.table`` (must match ``slayer``),
+    ``schema.table``, and bare ``table`` (unique match across schemas, else error).
     """
     inner = from_clause.this
     if not isinstance(inner, exp.Table):
@@ -1062,9 +837,8 @@ class _ProjectionItem(BaseModel):
     dimension: FacadeDimension | None = None
     time_grain: TimeGranularity | None = None
     time_grain_underlying: FacadeDimension | None = None
-    # DEV-1566: target type when the projection was CAST(<column> AS <type>).
-    # Overrides projection_types[i] at _record_metric / _record_dimension time,
-    # leaving engine_alias and the SlayerQuery measure/dimension untouched.
+    # CAST(<column> AS <type>) target: overrides projection_types[i], leaving
+    # the engine alias and SlayerQuery measure/dimension untouched.
     cast_target: DataType | None = None
 
 
@@ -1149,13 +923,9 @@ def _resolve_column_projection(
 def _detect_column_cast(
     body: exp.Expression,
 ) -> tuple[exp.Column, DataType] | None:
-    """If ``body`` is ``CAST(<bare or qualified Column> AS <supported_type>)``,
-    return ``(inner_col, target_data_type)``. Otherwise ``None``.
-
-    The detector REQUIRES ``body.this`` to be an ``exp.Column`` — aggregates,
-    hygiene wrappers, function calls, and arithmetic stay outside scope.
-    ``exp.TryCast`` is rejected (Postgres has no native TRY_CAST equivalent).
-    """
+    """If ``body`` is ``CAST(<Column> AS <supported_type>)``, return ``(inner_col,
+    target_data_type)``, else ``None``. Requires a bare ``exp.Column`` inner
+    (aggregates/wrappers/arithmetic out of scope); ``exp.TryCast`` is rejected."""
     if not isinstance(body, exp.Cast) or isinstance(body, exp.TryCast):
         return None
     inner = body.this
@@ -1178,15 +948,9 @@ def _resolve_column_cast_projection(
     strip_prefix: tuple[str, str] | None = None,
     alias_map: dict[str, str] | None = None,
 ) -> _ProjectionItem:
-    """Resolve ``CAST(<column> AS <type>)`` to a projection item that runs
-    the bare column through the engine and overrides the wire OID via
-    ``cast_target``. Enforces the strict per-pair coercion allowlist.
-
-    DEV-1565: ``alias_map`` carries the LEFT-JOIN subquery's
-    ``"Stores"."name"`` → catalog ``stores.name`` rewrite so Metabase-style
-    joined CAST refs resolve through the same dimension-lookup path as
-    non-casted joined refs.
-    """
+    """Resolve ``CAST(<column> AS <type>)`` to a projection item that runs the bare
+    column through the engine and overrides the wire OID via ``cast_target``,
+    enforcing the strict per-pair coercion allowlist."""
     inner = _resolve_column_projection(
         body=body, alias_name=alias_name, table=table,
         metrics_by_name=metrics_by_name, dims_by_name=dims_by_name,
@@ -1203,8 +967,7 @@ def _resolve_column_cast_projection(
     return inner.model_copy(update={"cast_target": cast_target})
 
 
-# DEV-1558 B5: hygiene-scalar wrappers Metabase uses for fingerprint queries.
-# Each maps a sqlglot AST class to a human-readable name for the WARNING log.
+# Hygiene-scalar wrappers Metabase uses for fingerprint queries → printable name.
 _HYGIENE_FUNC_CLASSES: dict[type, str] = {
     exp.Substring: "SUBSTRING",
     exp.Upper: "UPPER",
@@ -1246,26 +1009,18 @@ def _detect_hygiene_wrapper(body: exp.Expression) -> tuple[str, exp.Column] | No
 def _is_fingerprint_shape_wrap(
     inner_col: exp.Column, *, strip_prefix: tuple[str, str] | None,
 ) -> bool:
-    """True iff ``inner_col`` is shaped like Metabase's fingerprint
-    projection — a 3-part qualified column reference whose
-    ``<schema>.<table>.`` prefix matches the FROM-table prefix.
-
-    The full pattern (e.g. ``SUBSTRING("public"."customers"."name", 1,
-    1234)``) is exclusive to Metabase's field-value rescan: hand-written
-    SQL like ``LENGTH(name)`` or ``UPPER(orders.status)`` does NOT match
-    and stays an error so the user notices the unsupported projection
-    instead of silently getting bare column values back.
-    """
+    """True iff ``inner_col`` is shaped like Metabase's fingerprint projection — a
+    3-part qualified ref whose ``schema.table.`` prefix matches the FROM table.
+    Hand-written ``LENGTH(name)`` etc. does NOT match and stays an error, so the
+    unsupported projection is surfaced rather than silently returning bare values."""
     if strip_prefix is None:
         return False
-    # Count qualifier parts on the column ref: catalog + db + table + leaf.
     qualifier_parts = sum(
         1 for k in ("catalog", "db", "table") if inner_col.args.get(k) is not None
     )
     if qualifier_parts < 2:
         return False  # not a 3-part (or deeper) qualified ref
-    # Confirm the leading schema.table prefix matches the FROM table by
-    # checking that strip_prefix would actually drop something.
+    # strip_prefix dropping something confirms the schema.table prefix matches.
     raw = _raw_column_parts(inner_col)
     stripped = _apply_strip_prefix(list(raw), strip_prefix)
     return len(stripped) < len(raw)
@@ -1291,9 +1046,8 @@ def _build_projection_lookups(
     extra_metrics_by_name: dict[str, FacadeMetric] | None = None,
     extra_metrics_by_formula: dict[str, FacadeMetric] | None = None,
 ) -> tuple[dict[str, FacadeMetric], dict[str, FacadeMetric], dict[str, FacadeDimension]]:
-    """Assemble the (metrics_by_name, metrics_by_formula, dims_by_name)
-    lookup dicts from the catalog's table metadata, overlaid with the
-    DEV-1565 dynamic-join extras when supplied."""
+    """Assemble the (metrics_by_name, metrics_by_formula, dims_by_name) lookups
+    from the table metadata, overlaid with dynamic-join extras when supplied."""
     metrics_by_name = {m.name: m for m in table.metrics}
     metrics_by_formula = {m.measure_formula: m for m in table.metrics}
     dims_by_name = {d.name: d for d in table.dimensions}
@@ -1318,17 +1072,10 @@ def _resolve_projection(  # NOSONAR(S3776) — flat dispatch over projection-exp
 ) -> list[_ProjectionItem]:
     """Walk the projection list, classifying each item against the table.
 
-    DEV-1565: when a LEFT JOIN to a dynamic-fallback target is in play,
-    ``extra_dims_by_name`` / ``extra_metrics_by_*`` carry the materialised
-    ``<target>.<col>`` lookups so the joined dotted refs resolve without
-    needing a configured catalog join.
-
-    DEV-1566: ``allow_column_cast`` gates the ``CAST(<column> AS <type>)``
-    projection branch. The pg-facade passes ``True`` (default) — its wire
-    encoders coerce values to the declared OID. The Flight facade passes
-    ``False`` because its ``pa.Table.from_pylist`` schema-binding rejects
-    values whose Python type doesn't match the declared Arrow type and the
-    facade has no value-coercion pass.
+    ``extra_dims_by_name`` / ``extra_metrics_by_*`` carry a dynamic LEFT-JOIN
+    target's materialised ``<target>.<col>`` lookups. ``allow_column_cast`` gates
+    the CAST branch: pg-facade passes ``True`` (its wire encoders coerce), Flight
+    passes ``False`` (its Arrow schema-binding has no value-coercion pass).
     """
     metrics_by_name, metrics_by_formula, dims_by_name = _build_projection_lookups(
         table,
@@ -1336,9 +1083,7 @@ def _resolve_projection(  # NOSONAR(S3776) — flat dispatch over projection-exp
         extra_metrics_by_name=extra_metrics_by_name,
         extra_metrics_by_formula=extra_metrics_by_formula,
     )
-    # DEV-1558 B5: when the FROM was schema-qualified (e.g. "public"."orders"),
-    # let column refs that lead with the same `schema.table.` prefix resolve
-    # to the bare column.
+    # Schema-qualified FROM: let column refs with the same prefix strip to bare.
     strip_prefix: tuple[str, str] | None = (
         (schema_name, table.name) if schema_name else None
     )
@@ -1372,13 +1117,8 @@ def _resolve_projection(  # NOSONAR(S3776) — flat dispatch over projection-exp
             ))
             continue
 
-        # DEV-1566: CAST(<column> AS <type>) projection. Runs AFTER the
-        # time-grain unwrap (preserves Metabase's CAST(DATE_TRUNC(...) AS DATE))
-        # and AFTER the aggregate detector (CAST(SUM(...) AS T) is out of
-        # scope — the detector requires the inner to be a bare Column).
-        # Gated by allow_column_cast so the Flight facade falls through to
-        # the "Unsupported projection expression" error instead of producing
-        # a wire schema its row materialiser can't fulfil.
+        # CAST(<column> AS <type>): runs after the time-grain unwrap and the
+        # aggregate detector (both take precedence). Gated by allow_column_cast.
         if allow_column_cast:
             cast_match = _detect_column_cast(body)
             if cast_match is not None:
@@ -1399,10 +1139,8 @@ def _resolve_projection(  # NOSONAR(S3776) — flat dispatch over projection-exp
             ))
             continue
 
-        # DEV-1558 B5: hygiene-scalar projection wrappers. Metabase's
-        # field-value rescan emits SUBSTRING("public"."customers"."name",
-        # 1, 1234) AS "..." — we drop the wrapper and project the bare
-        # column under the user's alias.
+        # Hygiene-scalar wrappers (Metabase field-value rescan): drop the wrapper
+        # and project the bare column under the user's alias.
         hygiene = _detect_hygiene_wrapper(body)
         if hygiene is not None and _is_fingerprint_shape_wrap(
             hygiene[1], strip_prefix=strip_prefix,
@@ -1448,7 +1186,7 @@ def _lift_time_between(
     *,
     strip_prefix: tuple[str, str] | None = None,
     alias_map: dict[str, str] | None = None,
-) -> tuple[str, str | None, str | None] | None:
+) -> tuple[str, str, str] | None:
     col = conj.this
     if not isinstance(col, exp.Column):
         return None
@@ -1460,26 +1198,6 @@ def _lift_time_between(
     if lo and hi:
         return dotted, lo, hi
     return None
-
-
-def _lift_time_comparator(
-    conj: exp.Expression, time_dim_names: set[str],
-    *,
-    strip_prefix: tuple[str, str] | None = None,
-    alias_map: dict[str, str] | None = None,
-) -> tuple[str, str | None, str | None] | None:
-    col = conj.this
-    if not isinstance(col, exp.Column):
-        return None
-    dotted = _column_to_dotted(col, strip_prefix=strip_prefix, alias_map=alias_map)
-    if dotted not in time_dim_names:
-        return None
-    val = _literal_str(conj.expression)
-    if val is None:
-        return None
-    if isinstance(conj, (exp.GTE, exp.GT)):
-        return dotted, val, None
-    return dotted, None, val
 
 
 def _aggregate_alias_for_column(
@@ -1547,12 +1265,14 @@ def _classify_where_conjunct(
     *,
     strip_prefix: tuple[str, str] | None = None,
     alias_map: dict[str, str] | None = None,
-) -> tuple[tuple[str, str | None, str | None] | None, str | None]:
+) -> tuple[tuple[str, str, str] | None, str | None]:
     """Classify a single conjunct.
 
-    Returns ``((time_dim, date_range_lo, date_range_hi), None)`` if this is
-    a time-dim filter that should lift to ``time_dimensions[*].date_range``.
-    Returns ``(None, verbatim_sql)`` for the everything-else case.
+    Returns ``((time_dim, low, high), None)`` for a two-literal ``BETWEEN`` on a
+    time dimension, which lifts to ``time_dimensions[*].date_range``. Relational
+    comparators (``>=``/``>``/``<=``/``<``) do NOT lift — a one-sided bound would
+    render as ``BETWEEN x AND NULL`` (never true, silent zero rows), so they fall
+    through to the verbatim path. Returns ``(None, verbatim_sql)`` otherwise.
 
     DEV-1558 B5: the engine's Mode-B DSL parses ``SlayerQuery.filters``
     and only accepts single-dot dotted paths. Before serialising the
@@ -1564,12 +1284,6 @@ def _classify_where_conjunct(
     """
     if isinstance(conj, exp.Between):
         lifted = _lift_time_between(
-            conj, time_dim_names, strip_prefix=strip_prefix, alias_map=alias_map,
-        )
-        if lifted is not None:
-            return lifted, None
-    if isinstance(conj, (exp.GTE, exp.GT, exp.LTE, exp.LT)):
-        lifted = _lift_time_comparator(
             conj, time_dim_names, strip_prefix=strip_prefix, alias_map=alias_map,
         )
         if lifted is not None:
@@ -1700,13 +1414,7 @@ def _apply_where(
         )
         if lifted is not None:
             name, lo, hi = lifted
-            td = time_dims_built[name]
-            existing = list(td.date_range or [None, None])
-            if lo is not None:
-                existing[0] = lo
-            if hi is not None:
-                existing[1] = hi
-            td.date_range = existing  # type: ignore[assignment]
+            time_dims_built[name].date_range = [lo, hi]
         elif verbatim is not None:
             filters_out.append(verbatim)
 
@@ -2387,7 +2095,7 @@ def translate(
     # below; non-catalog UNIONs etc. surface the unsupported-statement
     # error from the gate.
     if catalog_sql_executor is not None:
-        from slayer.facade.catalog_sql import is_catalog_only
+        from slayer.facade.catalog_sql import is_catalog_only  # ALLOW(import-not-top): circular import with catalog_sql
         if is_catalog_only(parsed):
             # ``catalog_sql_executor`` accepts either the executor itself
             # or a zero-arg factory — lazy construction lets the pg

@@ -371,7 +371,8 @@ The self-join matches on **every projected dimension as well as the shifted time
 `consecutive_periods(predicate)` evaluates a predicate at the query grain and
 returns an integer streak length for the current row. False or NULL breaks the
 run and returns 0. The input is a Mode-B predicate or numeric value — a
-comparison, `IN`, a boolean connective, a nested transform, or a bare value
+comparison, a null test (`is None` / `is not None`), `BETWEEN`, `IN`, a boolean
+connective, a nested transform, or a bare value
 (truthy when non-NULL and non-zero) — with a boolean-shaped node legal only at
 the predicate top level or an `iif` condition. The result composes with normal
 comparisons:
@@ -525,6 +526,9 @@ Any formula, filter, or field expression can branch with SQL `CASE`:
 - **Searched** (`CASE WHEN c1 THEN v1 [WHEN c2 THEN v2 …] [ELSE d] END`) and
   **simple** (`CASE x WHEN v1 THEN r1 … END`, lowered to `x = v1`) forms are both
   accepted; keywords are case-insensitive and CASE nests anywhere.
+- Identifiers named after, containing, or qualified by SQL keywords (`case`,
+  `customers.end`, `écase`) always parse as ordinary references — `CASE` starts
+  a conditional only when a `WHEN` follows it.
 - A missing `ELSE` yields `NULL`. `iif(cond, then, otherwise)` is an equivalent
   spelling — an allowlisted scalar function taking exactly three arguments.
   Everything renders to a portable SQL `CASE` on every Tier-1 dialect.

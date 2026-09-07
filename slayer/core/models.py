@@ -141,10 +141,10 @@ class Column(BaseModel):
     db_type: str | None = Field(
         default=None,
         description=(
-            "Raw database type string (e.g. 'point', 'jsonb'), retained when "
-            "the declared DataType loses information. Populated by ingestion "
-            "for UNKNOWN (opaque) columns; None for mapped types, where the "
-            "declared DataType already carries everything we need."
+            "Raw database type string (e.g. 'point', 'DECIMAL(18, 2)'), "
+            "retained when the declared DataType loses information. Populated "
+            "by ingestion for UNKNOWN (opaque) and exact NUMERIC/DECIMAL "
+            "columns; None when the mapped type carries everything needed."
         ),
     )
     primary_key: bool = False
@@ -477,6 +477,20 @@ class SlayerModel(BaseModel):
         _check_column_measure_namespace(
             model_name=self.name, columns=self.columns, measures=self.measures
         )
+        return self
+
+    @model_validator(mode="after")
+    def _reject_self_joins(self) -> "SlayerModel":
+        """Joins resolve by target-model name, so a self-join is unaddressable."""
+        if any(j.target_model == self.name for j in self.joins):
+            raise ValueError(
+                f"Model '{self.name}': join target_model '{self.name}' is the "
+                f"model itself. Self-joins are not supported — dotted "
+                f"references resolve by model name, so a self-join can never "
+                f"be addressed from a query. Define the second role as a "
+                f"separate model over the same table (or a view) and join to "
+                f"that."
+            )
         return self
 
     @model_validator(mode="after")

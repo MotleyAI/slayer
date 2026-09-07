@@ -61,6 +61,23 @@ that carry a phase, and the leaf keys hard-code their level. Keeping phase a
 *property of the key* means no separate "is this a HAVING filter?" text analysis
 exists anywhere.
 
+## Traversal
+
+Like phase, generic traversal is a property of the key: every kind implements
+`children()` (its directly embedded keys — scalars and the Mode-A-opaque
+`AggregateKey.column_filter_key` are never children) and `map_children(fn)`
+(shallow one-level rebuild, identity-preserving via `is` checks). Generic
+walkers are `for child in key.children()` and rewriters compose on
+`map_children`, so both are total by construction — a new union member flows
+through them the day it is added, and a kind missing the protocol raises
+`NotImplementedError` instead of silently passing as a leaf. `KIND_POLICY`
+records the consumer-named per-kind flags (`slottable`, `slot_composite`,
+`materialised_order`) that the planner and generator derive their dispatch
+tuples from. Visitors with deliberately asymmetric traversal (e.g.
+`_iter_slot_deps` stops at `AggregateKey` and does not descend into
+`TimeTruncKey.column`) keep explicit dispatch with a comment naming the
+asymmetry and a fail-closed raise tail.
+
 ## Design choices
 
 ### Local and cross-model share one shape (P3)

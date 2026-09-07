@@ -11,7 +11,6 @@ import sqlglot.errors
 from pydantic import ValidationError as PydanticValidationError
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.formula import parse_filter
 from slayer.core.models import Aggregation, AggregationParam, Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -4879,7 +4878,7 @@ class TestMeasureFilterInjection:
     async def test_like_pattern_backslash_is_neutralised(
         self, orders_model: SlayerModel, dialect: str,
     ) -> None:
-        """The ``LIKE`` path in ``_filter_node_to_sql`` goes through a separate helper (``_get_string_arg``); its backslash handling must match."""
+        """The LIKE-pattern literal path must apply the same backslash protection as plain string literals."""
         orders_model.columns.append(
             Column(
                 name="evil",
@@ -6872,8 +6871,9 @@ Column(name="total_policy_amount", sql="policy_amount", type=DataType.DOUBLE)],
             assert "FROM policy_amount" in cte_section or "FROM\n  policy_amount" in cte_section
 
     async def test_rerooted_unreachable_dims_and_filters_dropped(self, generator):
-        """Unreachable dims/filters are dropped. CTE produces scalar CROSS JOIN."""
-        # orders → customers join, but customers has NO join back to orders. Dimension 'status' is on orders (unreachable from customers). Filter on 'warehouse' is reachable from orders but not customers.
+        """Unattributable dims broadcast; the host-branch filter pushes into the
+        CTE as a correlated EXISTS (DEV-1840). CTE produces scalar CROSS JOIN."""
+        # orders → customers join, but customers has NO join back to orders. Dimension 'status' is on orders (unreachable from customers). Filter on 'warehouse' reaches the CTE root only across the inverted orders hop.
         orders = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
             columns=[
@@ -6910,11 +6910,13 @@ Column(name="score", sql="score", type=DataType.DOUBLE)],
             _assert_valid_sql(sql, dialect=generator.dialect)
             _assert_valid_sql(sql)
 
-            # CTE: FROM customers, no GROUP BY (status unreachable), no warehouse filter
+            # CTE: FROM customers, no GROUP BY (status unreachable); the
+            # warehouse filter restricts the population via EXISTS (DEV-1840).
             cm_cte_start = sql.find("_cm_")
             cte_section = sql[cm_cte_start:sql.find(")\nSELECT", cm_cte_start)]
             assert "FROM customers" in cte_section or "FROM\n  customers" in cte_section
-            assert "warehouse" not in cte_section.lower()
+            assert "EXISTS" in cte_section.upper()
+            assert "warehouse" in cte_section.lower()
             assert "status" not in cte_section.lower()
             # Combined: CROSS JOIN (no shared dims)
             assert "CROSS JOIN" in sql
@@ -7689,12 +7691,14 @@ class TestIsolatedFilteredMeasureCTEs:
         )
         sql = await _generate(generator, query, orders, extra_models=[customers, warehouse])
 
-        # The _cm_ CTE should NOT reference "warehouse" (it only joins orders → customers)
+        # The _cm_ CTE reaches "warehouse" only inside the correlated EXISTS
+        # (DEV-1840) — never as a cardinality-changing join of the CTE body.
         cm_start = sql.index("_cm_")
         cm_end = sql.index("\n)", cm_start)
         cm_body = sql[cm_start:cm_end]
-        assert "warehouse" not in cm_body.lower(), (
-            f"CM CTE references unavailable table 'warehouse':\n{cm_body}"
+        assert "EXISTS" in cm_body.upper(), cm_body
+        assert "JOIN Warehouse" not in cm_body, (
+            f"CM CTE joins 'warehouse' outside the EXISTS:\n{cm_body}"
         )
         base_section = sql[:cm_start]
         assert "warehouse" in base_section.lower()
@@ -9793,39 +9797,6 @@ class TestFilterOuterParenWrapDev1539:
             f"Spurious parens around LOWER(...) call; got:\n{norm}"
         )
 
-    @pytest.mark.parametrize(
-        ["formula", "expected_sql"],
-        [
-            # IS NULL / IS NOT NULL stay as-is — `_compare_op_to_sql` returns the complete operator string when the RHS is None.
-            ("flag is None", "flag IS NULL"),
-            ("flag is not None", "flag IS NOT NULL"),
-            # Non-None IS / IS NOT: previously the `continue` in the IS/IsNot branch dropped the RHS and emitted broken SQL like `flag IS` / `flag IS NOT`. Fall-through must render `IS <rhs>` / `IS NOT <rhs>`.
-            ("flag is True", "flag IS True"),
-            ("flag is not False", "flag IS NOT False"),
-            # IS-non-None composed with another predicate still flows through `_boolop_to_sql`'s outer wrap.
-            ("flag is True and value > 0", "(flag IS True AND value > 0)"),
-        ],
-    )
-    def test_dsl_compare_is_isnot_with_non_none_rhs(
-        self, formula: str, expected_sql: str,
-    ) -> None:
-        """``is`` / ``is not`` against a non-None RHS used to drop the RHS entirely and emit the broken ``IS`` / ``IS NOT`` operator string. Fix: only the ``is None`` / ``is not None`` paths short-circuit to the complete operator; everything else falls through to the standard ``<op> <rhs>`` emission."""
-        pf = parse_filter(formula)
-        assert pf.sql == expected_sql, (
-            f"parse_filter({formula!r}).sql == {pf.sql!r}, expected "
-            f"{expected_sql!r}"
-        )
-
-    def test_dsl_chained_compare_rejected(self) -> None:
-        """Chained comparisons (``a < b < c``) have different semantics between Python and SQL. Python: ``(a < b) AND (b < c)``. SQL: ``(a < b) < c`` (a boolean re-compared to c). The DSL parser must reject chained comparisons with a clear, actionable error rather than silently emit subtly wrong SQL."""
-        with pytest.raises(ValueError, match=r"[Cc]hained comparison") as excinfo:
-            parse_filter("a < b < c")
-        # The error must point at the actionable alternative.
-        assert "AND" in str(excinfo.value) or "and" in str(excinfo.value), (
-            f"Chained-compare rejection should point at the `AND` rewrite; "
-            f"got: {excinfo.value!r}"
-        )
-
     async def test_dsl_compare_lhs_boolop_wrapped(
         self, generator: SQLGenerator, orders_model: SlayerModel,
     ) -> None:
@@ -9996,39 +9967,6 @@ class TestFilterOuterParenWrapDev1539:
         assert f"'{double_bs}'" in sql, (
             f"Backslash halving regression: expected '{double_bs}' literal "
             f"preserved in emitted SQL; got:\n{sql}"
-        )
-
-    @pytest.mark.parametrize(
-        ["formula", "expected_sql"],
-        [
-            # Inner low-prec child under high-prec parent — left operand.
-            ("(a + b) * c > 10", "((a + b) * c) > 10"),
-            # Same shape — RHS of comparator.
-            ("a > (b + c) * d", "a > ((b + c) * d)"),
-            # Equal-precedence right child of /, must stay wrapped.
-            ("a / (b * c) > 0", "(a / (b * c)) > 0"),
-            # Equal-precedence right child of -, must stay wrapped to preserve right-grouping semantics.
-            ("a - (b - c) > 0", "(a - (b - c)) > 0"),
-            # Left-assoc, no source parens: no inner wrap needed.
-            ("a - b - c > 0", "(a - b - c) > 0"),
-            # Higher-precedence child under lower-precedence parent: no wrap needed — `a + b * c` reads correctly bare.
-            ("a + b * c > 10", "(a + b * c) > 10"),
-            # User-supplied parens around left equal-precedence are semantically a no-op (`(a + b) + c` == `a + b + c`) so we don't emit a stray inner wrap.
-            ("(a + b) + c > 0", "(a + b + c) > 0"),
-            # Pow is right-associative: (a ** b) ** c must keep its inner parens, else it re-parses as a ** (b ** c) — a different result.
-            ("(a ** b) ** c > 0", "((a ** b) ** c) > 0"),
-            # `a ** b ** c` parses RIGHT-assoc; emission must preserve the grouping via explicit parens on the right operand.
-            ("a ** b ** c > 0", "(a ** (b ** c)) > 0"),
-        ],
-    )
-    def test_dsl_compare_preserves_nested_arithmetic_precedence(
-        self, formula: str, expected_sql: str,
-    ) -> None:
-        """DEV-1539: ``_binop_to_sql`` must wrap nested child operands so the AST-encoded operator precedence survives serialisation. Without this, ``(a + b) * c > 10`` and ``a + b * c > 10`` would both emit as ``(a + b * c) > 10`` — semantically distinct inputs collapse to the same output, silently changing results."""
-        pf = parse_filter(formula)
-        assert pf.sql == expected_sql, (
-            f"parse_filter({formula!r}).sql == {pf.sql!r}, expected "
-            f"{expected_sql!r}"
         )
 
     @pytest.mark.parametrize(

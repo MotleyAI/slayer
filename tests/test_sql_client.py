@@ -5,6 +5,7 @@ import sqlite3
 from unittest.mock import AsyncMock, patch
 
 import pytest
+import sqlalchemy as sa
 import sqlalchemy.exc
 
 from slayer.core.models import DatasourceConfig
@@ -14,9 +15,14 @@ from slayer.sql.client import (
     _execute_with_retry_async,
     _execute_with_retry_sync,
     _execute_with_retry_threaded,
+    _get_column_types_sync,
     _is_auth_failure,
     _is_transient_db_error,
+    _is_unreachable_db_error,
     _map_type_code,
+    _read_only_transaction_sql,
+    build_sql_model_trial_query,
+    classify_model_sql,
 )
 
 
@@ -614,3 +620,221 @@ class TestClientDiscardsEngineOnAuthFailure:
         ):
             with pytest.raises(Exception, match="invalid_grant"):
                 await client.execute("SELECT 1")
+
+
+class TestBuildSqlModelTrialQuery:
+    """``build_sql_model_trial_query`` wraps model SQL in the zero-row probe
+    schema drift already ships, stripping a single trailing terminator."""
+
+    def test_wraps_plain_sql(self) -> None:
+        assert build_sql_model_trial_query("SELECT a FROM t") == (
+            "SELECT * FROM (\nSELECT a FROM t\n) AS _sd_validate WHERE 1=0"
+        )
+
+    def test_strips_trailing_semicolon(self) -> None:
+        assert build_sql_model_trial_query("SELECT 1;") == (
+            "SELECT * FROM (\nSELECT 1\n) AS _sd_validate WHERE 1=0"
+        )
+
+    def test_strips_trailing_whitespace_and_semicolon(self) -> None:
+        assert build_sql_model_trial_query("SELECT 1 ;  \n") == (
+            "SELECT * FROM (\nSELECT 1\n) AS _sd_validate WHERE 1=0"
+        )
+
+    def test_strips_only_one_terminator(self) -> None:
+        # A second ';' is left inside the wrapper — only one is stripped.
+        assert build_sql_model_trial_query("SELECT 1;;") == (
+            "SELECT * FROM (\nSELECT 1;\n) AS _sd_validate WHERE 1=0"
+        )
+
+    def test_trailing_line_comment_does_not_absorb_wrapper(self) -> None:
+        # A terminal ``-- comment`` must not swallow the closing paren/guard;
+        # the newline before ``)`` keeps the probe valid.
+        wrapped = build_sql_model_trial_query("SELECT a FROM t -- note")
+        assert wrapped == (
+            "SELECT * FROM (\nSELECT a FROM t -- note\n) AS _sd_validate WHERE 1=0"
+        )
+        assert wrapped.rstrip().endswith("WHERE 1=0")
+
+
+def _typed_exc(type_name: str, message: str = "boom") -> Exception:
+    """An exception whose class NAME is ``type_name`` (classifier matches on
+    the unqualified name to stay dependency-free)."""
+    return type(type_name, (Exception,), {})(message)
+
+
+class TestIsUnreachableDbError:
+    """``_is_unreachable_db_error`` matches connection-establishment failures
+    only — real rejections (missing object, syntax, permission, 4xx) stay
+    rejectable so the save-time check still blocks them."""
+
+    @pytest.mark.parametrize("orig_message", [
+        "could not connect to server: Connection refused",
+        "connection refused",
+        "could not translate host name \"db\": getaddrinfo failed",
+        "unable to open database file",
+        "connection to server at \"db\" (1.2.3.4), port 5432 failed",
+        "Login timeout expired",
+        "(2003, \"Can't connect to MySQL server on 'db:3306' (timed out)\")",
+        "Can't connect to local MySQL server through socket '/tmp/mysql.sock'",
+    ])
+    def test_connection_messages_are_unreachable(self, orig_message: str) -> None:
+        assert _is_unreachable_db_error(_make_op_error(orig_message)) is True
+
+    def test_disconnection_error_is_unreachable(self) -> None:
+        assert _is_unreachable_db_error(
+            sqlalchemy.exc.DisconnectionError("server closed")
+        ) is True
+
+    def test_interface_error_wrapping_connect_failure_is_unreachable(self) -> None:
+        exc = sqlalchemy.exc.InterfaceError(
+            statement="connect",
+            params={},
+            orig=sqlite3.OperationalError("could not connect to server"),
+        )
+        assert _is_unreachable_db_error(exc) is True
+
+    @pytest.mark.parametrize("type_name", [
+        "ServiceUnavailable",
+        "GatewayTimeout",
+        "TooManyRequests",
+        "DeadlineExceeded",
+        "ConnectionError",
+    ])
+    def test_cloud_type_names_are_unreachable(self, type_name: str) -> None:
+        assert _is_unreachable_db_error(_typed_exc(type_name)) is True
+
+    @pytest.mark.parametrize("orig_message", [
+        "no such table: orders",
+        "syntax error at or near \"FROM\"",
+        "permission denied for table orders",
+    ])
+    def test_reachable_rejections_are_not_unreachable(self, orig_message: str) -> None:
+        assert _is_unreachable_db_error(_make_op_error(orig_message)) is False
+
+    @pytest.mark.parametrize("type_name", ["BadRequest", "Forbidden"])
+    def test_client_error_type_names_are_not_unreachable(self, type_name: str) -> None:
+        assert _is_unreachable_db_error(_typed_exc(type_name)) is False
+
+    def test_bare_timed_out_is_not_unreachable(self) -> None:
+        # A bare "timed out" can be a real slow rejection, so it stays
+        # rejectable — only "login timeout" (connect phase) is unreachable.
+        assert _is_unreachable_db_error(_make_op_error("query timed out")) is False
+
+    def test_plain_value_error_is_not_unreachable(self) -> None:
+        assert _is_unreachable_db_error(ValueError("boom")) is False
+
+
+class TestIsUnreachableDbErrorBoundaries:
+    """Pin the deliberate exclusions: a blanket InterfaceError (by type) and
+    HTTP-status-shaped messages must stay rejectable."""
+
+    def test_bare_interface_error_is_not_unreachable(self) -> None:
+        exc = sqlalchemy.exc.InterfaceError(
+            statement="stmt",
+            params={},
+            orig=sqlite3.ProgrammingError("cursor already closed"),
+        )
+        assert _is_unreachable_db_error(exc) is False
+
+    @pytest.mark.parametrize("orig_message", ["400 Bad Request", "403 Forbidden"])
+    def test_http_status_messages_are_not_unreachable(self, orig_message: str) -> None:
+        assert _is_unreachable_db_error(_make_op_error(orig_message)) is False
+
+
+class TestUnreachableSeparateFromTransient:
+    """The unreachable classifier is kept apart from the retry classifier so
+    ``execute()`` retry semantics are untouched (design decision)."""
+
+    def test_unreachable_only_signal_is_not_transient(self) -> None:
+        exc = _make_op_error("unable to open database file")
+        assert _is_unreachable_db_error(exc) is True
+        assert _is_transient_db_error(exc) is False
+
+    @pytest.mark.parametrize("orig_message", ["database is locked", "deadlock detected"])
+    def test_transient_only_signal_is_not_unreachable(self, orig_message: str) -> None:
+        exc = _make_op_error(orig_message)
+        assert _is_transient_db_error(exc) is True
+        assert _is_unreachable_db_error(exc) is False
+
+
+class TestClassifyModelSql:
+    """Static classification gating the save-time trial-execute."""
+
+    @pytest.mark.parametrize("sql", [
+        "DELETE FROM orders",
+        "UPDATE orders SET amount = 0",
+        "INSERT INTO orders (id) VALUES (1)",
+        "MERGE INTO orders USING src ON orders.id = src.id "
+        "WHEN MATCHED THEN UPDATE SET amount = 0",
+        "DROP TABLE orders",
+        "TRUNCATE TABLE orders",
+        "CREATE TABLE t (a INT)",
+        "ALTER TABLE orders ADD COLUMN x INT",
+        "WITH x AS (DELETE FROM orders RETURNING *) SELECT * FROM x",
+        "COPY orders FROM '/tmp/x.csv'",       # non-query root the allowlist rejects
+        "GRANT SELECT ON orders TO bob",
+        "CALL do_stuff()",
+        "VACUUM",
+        "SELECT id INTO archived FROM orders",  # SELECT ... INTO creates a table
+        "SELECT id FROM orders FOR UPDATE",     # locking read (write-intent locks)
+    ])
+    def test_not_read_only(self, sql: str) -> None:
+        assert classify_model_sql(sql, dialect="postgres") == "modifying"
+
+    def test_next_value_for_is_not_read_only(self) -> None:
+        # SELECT NEXT VALUE FOR seq advances sequence state (T-SQL).
+        assert classify_model_sql("SELECT NEXT VALUE FOR s", dialect="tsql") == "modifying"
+
+    @pytest.mark.parametrize("sql", [
+        "SELECT 1",
+        "SELECT id, amount FROM orders WHERE id IN (SELECT id FROM other)",
+        "WITH c AS (SELECT 1 AS x) SELECT * FROM c",
+        "VALUES (1, 'a'), (2, 'b')",           # standalone constant table is read-only
+    ])
+    def test_read_only(self, sql: str) -> None:
+        assert classify_model_sql(sql, dialect="postgres") == "read_only"
+
+    @pytest.mark.parametrize("sql", ["SELECT (((", "totally not sql", ""])
+    def test_unparseable(self, sql: str) -> None:
+        # Unparseable SQL is rejected without a DB call — the generator can't
+        # parse it either, so the model would be non-functional anyway.
+        assert classify_model_sql(sql, dialect="postgres") == "unparseable"
+
+
+class TestReadOnlyTransactionSql:
+    """Dialects whose ``SET TRANSACTION READ ONLY`` binds the current txn."""
+
+    @pytest.mark.parametrize("ds_type", ["postgres", "postgresql", "redshift", "oracle"])
+    def test_read_only_capable_dialects(self, ds_type: str) -> None:
+        assert _read_only_transaction_sql(ds_type) == "SET TRANSACTION READ ONLY"
+
+    @pytest.mark.parametrize("ds_type", ["sqlite", "mysql", "duckdb", "bigquery", None])
+    def test_dialects_without_current_txn_read_only(self, ds_type: str) -> None:
+        assert _read_only_transaction_sql(ds_type) is None
+
+
+class TestProbeRollsBack:
+    """The type probe never commits — it rolls back so a slipped-through
+    mutation cannot persist (SQLite backstop for the read-only guard)."""
+
+    def test_probe_rolls_back_and_still_infers_types(self, tmp_path) -> None:
+        db = str(tmp_path / "probe.db")
+        eng = sa.create_engine(f"sqlite:///{db}")
+        with eng.connect() as conn:
+            conn.execute(sa.text("CREATE TABLE t (a INTEGER, b TEXT)"))
+            conn.execute(sa.text("INSERT INTO t VALUES (1, 'x')"))
+            conn.commit()
+        seen: list[str] = []
+        real_rollback = sa.Connection.rollback
+
+        def _spy_rollback(self):  # noqa: ANN001
+            seen.append("rollback")
+            return real_rollback(self)
+
+        with patch.object(sa.Connection, "rollback", _spy_rollback):
+            types = _get_column_types_sync(
+                "SELECT a, b FROM t", connection_string="", db_type="sqlite", engine=eng,
+            )
+        assert types == {"a": "number", "b": "string"}
+        assert "rollback" in seen

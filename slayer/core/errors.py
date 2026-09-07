@@ -68,6 +68,30 @@ class ColumnCycleError(SlayerError, ValueError):
         super().__init__(f"Circular column reference detected: {chain}")
 
 
+class ModelSqlValidationError(SlayerError, ValueError):
+    """Raw-``sql`` model source rejected by its reachable datasource at save time.
+
+    ``ValueError`` subclass so REST 400 / ``except ValueError`` callers catch it;
+    names the datasource *type* only, never ``repr(ds)`` (no secret leak)."""
+
+    def __init__(
+        self,
+        *,
+        model_name: str,
+        data_source: str,
+        ds_type: str | None,
+        reason: str,
+    ) -> None:
+        self.model_name = model_name
+        self.data_source = data_source
+        self.ds_type = ds_type
+        self.reason = reason
+        super().__init__(
+            f"Model {model_name!r} has invalid SQL for datasource "
+            f"{data_source!r} (type {ds_type!r}): {reason}"
+        )
+
+
 # Stage-5 errors below build their message via ``_format_error_message`` for a
 # stable ``str()``: ``ClassName: summary`` first line (grep/snapshot-stable),
 # then optional ``at`` / ``scope`` / ``suggestion`` rows. Those subclassing

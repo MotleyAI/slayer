@@ -197,6 +197,11 @@ class SqlDialect(BaseModel):
     log10_native: bool = True
     log2_native: bool = True
 
+    # Whether NUMERIC/DECIMAL columns are stored and aggregated exactly.
+    # False (SQLite's numeric affinity) keeps the inferred cast instead of
+    # native-type preservation.
+    exact_decimal_native: bool = True
+
     # Conservative universal identifier budget in BYTES; ``None`` = unbounded
     # (fitting hooks become no-ops). Default is the tightest Tier-1 value
     # (Postgres), so a new dialect over-shortens rather than silently truncating.

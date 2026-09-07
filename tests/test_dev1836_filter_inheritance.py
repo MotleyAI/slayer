@@ -3,8 +3,9 @@
 
 Spec: openspec …/specs/queries/cross-model-aggregates — "Producer filter
 inheritance". Safe ROW conjuncts apply inside the producer (re-rooted);
-unsafe/unreachable conjuncts are excluded + warned (the 1:N inherited-filter
-fan-out is the class-(c) value pin); AGGREGATE-phase routing is unchanged.
+DEV-1840 upgrades the unsafe-but-reachable class from drop+warn to semi-join
+pushdown (the two pins below are updated with consent); AGGREGATE-phase
+routing is unchanged.
 """
 
 from __future__ import annotations
@@ -20,7 +21,6 @@ from tests._dev1836_fixtures import (
     AMOUNT_BY_TIER,
     ModelMeasure,
     SPEND_BY_TIER,
-    SPEND_TOTAL,
     dropped_filter_warnings,
     make_exec_engine,
     q,
@@ -61,38 +61,36 @@ class TestAttributableRowFilters:
 
 
 class TestUnsafeRowFilters:
-    async def test_host_filter_no_longer_fans_out_the_producer(self, exec_backend):
-        """Class-(c) pin: a host-level conjunct is reachable from customers
-        only across the declared 1:N edge. Inheriting it fanned c1/c3's spend
-        through their order rows; now it is excluded + warned and the metric
-        keeps the unfanned, unfiltered per-tier value."""
+    async def test_host_filter_pushes_down_by_semi_join(self, exec_backend):
+        """DEV-1836 class-(c), upgraded by DEV-1840: the host-level conjunct
+        crosses the declared 1:N edge, so it restricts the producer by
+        semi-join — customers with at least one web order, spend counted
+        once, silently. Old drop+warn gave gold the whole 160 slice."""
         _, engine = exec_backend
         with _warnings.catch_warnings(record=True) as caught:
             _warnings.simplefilter("always")
             resp = await engine.execute(q(
                 dimensions=["customers.tier"], measures=[M, CM],
-                filters=["channel = 'app'"],
+                filters=["channel = 'web'"],
             ))
         by = rows_by(resp, "orders.customers.tier")
-        # Spine: app orders only → o2 (c1 gold), o4/o5 (c3 gold).
-        assert set(by) == {("gold",)}
-        assert float(by[("gold",)]["orders.m"]) == pytest.approx(30.0)
-        # NOT 120 (fanned through two app orders of c3) and NOT the filtered
-        # subset — the whole gold slice, computed without the predicate.
-        assert float(by[("gold",)]["orders.cm"]) == pytest.approx(
-            SPEND_BY_TIER["gold"],
-        )
-        (w,) = dropped_filter_warnings(resp)
-        assert "channel" in w.filter_text
-        assert w.location
-        assert w.reason
+        # Spine: web orders → o1 (c1), o3 (c2), o6 (c4), o7 (orphan).
+        assert set(by) == {("gold",), ("silver",), ("bronze",), (None,)}
+        # Web customers: c1 (gold 100), c2 (silver 150), c4 (bronze 40);
+        # c3 (gold, app-only) is out — NOT the unfiltered 160 gold slice.
+        assert float(by[("gold",)]["orders.cm"]) == pytest.approx(100.0)
+        assert float(by[("silver",)]["orders.cm"]) == pytest.approx(150.0)
+        assert float(by[("bronze",)]["orders.cm"]) == pytest.approx(40.0)
+        assert by[(None,)]["orders.cm"] is None
+        assert float(by[("gold",)]["orders.m"]) == pytest.approx(10.0)
+        assert dropped_filter_warnings(resp) == []
         hits = [c for c in caught
                 if issubclass(c.category, UnreachableFilterDroppedWarning)]
-        assert len(hits) == 1
+        assert hits == []
 
-    async def test_result_rows_still_honor_the_dropped_filter(self, exec_backend):
-        """Excluded from the producer ≠ dropped from the query: the predicate
-        still restricts the result spine."""
+    async def test_result_rows_still_honor_the_pushed_filter(self, exec_backend):
+        """Pushed into the producer AND kept on the spine: the predicate
+        still restricts the result rows."""
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["status"], measures=[M, CM],
@@ -103,8 +101,9 @@ class TestUnsafeRowFilters:
         assert set(by) == {("ok",), ("new",)}
         assert float(by[("ok",)]["orders.m"]) == pytest.approx(10.0)
         assert float(by[("new",)]["orders.m"]) == pytest.approx(20.0)
+        # App customers c1 + c3 — no longer the unfiltered SPEND_TOTAL.
         for row in resp.data:
-            assert float(row["orders.cm"]) == pytest.approx(SPEND_TOTAL)
+            assert float(row["orders.cm"]) == pytest.approx(160.0)
 
 
 class TestAggregatePhaseRouting:

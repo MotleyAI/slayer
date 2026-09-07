@@ -13,6 +13,7 @@ from collections.abc import Callable
 from typing import Any, Dict, List, Optional
 
 import sqlalchemy as sa
+import sqlglot
 from sqlglot import exp
 from pydantic import (
     BaseModel,
@@ -27,6 +28,7 @@ from slayer.core.errors import (
     AmbiguousModelError,
     BroadcastGrainWarning,
     ForcedFilterError,
+    ModelSqlValidationError,
     SchemaDriftError,
     SlayerError,
     UnreachableFilterDroppedWarning,
@@ -53,7 +55,9 @@ from slayer.core.query import (
     _contains_block_delimiter,
     coerce_declared_list_variables,
     declares_variables,
+    extract_variable_refs,
     list_valued_variable_names,
+    render_probe_text,
     substitute_variables,
 )
 from slayer.core.warnings import (
@@ -109,12 +113,23 @@ from slayer.memories.resolver import (
     _all_models_in_datasource,
     resolve_entity,
 )
-from slayer.sql.client import SlayerSQLClient
+from slayer.sql.client import (
+    SlayerSQLClient,
+    _is_auth_failure,
+    _is_transient_db_error,
+    _is_unreachable_db_error,
+    build_sql_model_trial_query,
+    classify_model_sql,
+)
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type, get_dialect
 from slayer.sql import engine_factory
 from slayer.sql.engine_factory import EngineCacheKey, _sql_client_cache_key
 from slayer.sql.generator import generate_planned_stages
-from slayer.sql.session_policy import ScopedTable, apply_session_policy
+from slayer.sql.session_policy import (
+    ScopedTable,
+    _attach_ch_correlated_setting,
+    apply_session_policy,
+)
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
 from slayer.storage.base import StorageBackend
 
@@ -241,6 +256,17 @@ def _model_needs_substitution_pass(model: SlayerModel) -> bool:
     return _model_has_optional_block(model) or declares_variables(model)
 
 
+def _sql_safety_reject_reason(safety: str, *, parameterized: bool) -> str | None:
+    """Save-time reject reason for a classified ``model.sql``, or None to admit
+    it. Unparseable blocks only when static (a parameterized source may parse
+    only once its identifiers are filled)."""
+    if safety == "modifying":
+        return "model SQL must be a read-only query; it is not a plain SELECT"
+    if safety == "unparseable" and not parameterized:
+        return "model SQL could not be parsed for a read-only check"
+    return None
+
+
 def _substitute_model_sql_surfaces(
     *, model: SlayerModel, variables: dict[str, Any], dialect: SqlDialect
 ) -> SlayerModel:
@@ -308,6 +334,35 @@ def _walk_regroup_attaches(planned):
     for attach in getattr(planned, "regroup_attach_plans", ()) or ():
         yield attach
         yield from _walk_regroup_attaches(attach.producer_plan)
+
+
+def plan_has_semi_join_filters(planned) -> bool:
+    """Whether any (nested) plan carries a pushed semi-join filter (DEV-1840)."""
+    if getattr(planned, "semi_join_filters", None):
+        return True
+    return any(
+        plan_has_semi_join_filters(attach.producer_plan)
+        for attach in _walk_regroup_attaches(planned)
+    )
+
+
+def _iter_plans_with_producers(planned_list):
+    """Each planned query followed by every nested producer plan."""
+    for planned in planned_list:
+        yield planned
+        for attach in _walk_regroup_attaches(planned):
+            yield attach.producer_plan
+
+
+def _semi_join_filter_texts(planned_list) -> List[str]:
+    """Distinct user filter texts pushed as semi-joins, for diagnostics."""
+    texts: List[str] = []
+    for plan in _iter_plans_with_producers(planned_list):
+        for group in getattr(plan, "semi_join_filters", None) or ():
+            for text in group.filter_texts:
+                if text and text not in texts:
+                    texts.append(text)
+    return texts
 
 
 def _collect_dropped_filter_warnings(
@@ -569,11 +624,33 @@ class SlayerQueryEngine:
 
         return guard
 
-    async def _preflight_clickhouse_correlated(
-        self, *, dialect: str, datasource: DatasourceConfig
+    def _require_clickhouse_semi_join_support(
+        self, *, datasource: DatasourceConfig, planned_list,
     ) -> None:
-        """Probe + cache the ClickHouse version once per datasource (join-rule policies); failure caches ``None``."""
-        if dialect != "clickhouse" or not self._policy_has_join_rules():
+        """Fail closed when a semi-join plan targets ClickHouse < 25.4 (or an
+        undeterminable version) — correlated EXISTS is unsupported there."""
+        version = self._ch_version_cache.get(_sql_client_cache_key(datasource))
+        if version is not None and version >= (25, 4):
+            return
+        texts = _semi_join_filter_texts(planned_list)
+        named = f" filter(s): {', '.join(repr(t) for t in texts)};" if texts else ""
+        detected = (
+            f"detected {version[0]}.{version[1]}" if version is not None
+            else "the server version could not be determined"
+        )
+        raise SlayerError(
+            f"This query pushes a filter into a related model as a correlated "
+            f"EXISTS semi-join;{named} ClickHouse supports correlated "
+            f"subqueries only from server 25.4, but {detected}. Upgrade the "
+            f"server, or restructure the filter."
+        )
+
+    async def _preflight_clickhouse_correlated(
+        self, *, dialect: str, datasource: DatasourceConfig, needed: bool = False
+    ) -> None:
+        """Probe + cache the ClickHouse version once per datasource (join-rule
+        policies, or ``needed=True`` for semi-join plans); failure caches ``None``."""
+        if dialect != "clickhouse" or not (needed or self._policy_has_join_rules()):
             return
         ds_key = _sql_client_cache_key(datasource)
         if ds_key in self._ch_version_cache:
@@ -925,11 +1002,22 @@ class SlayerQueryEngine:
             # fit; the read side decodes against the same set.
             projection_aliases=projection_result_keys(root_planned=planned_list[-1]),
         )
+        # Semi-join pushdown emits correlated EXISTS, which ClickHouse supports
+        # only from 25.4 behind a setting: probe the version, fail closed below
+        # it, and attach the setting on every entry point (dry-run included).
+        has_semi_joins = any(plan_has_semi_join_filters(p) for p in planned_list)
+        await self._preflight_clickhouse_correlated(
+            dialect=dialect, datasource=datasource, needed=has_semi_joins
+        )
+        if has_semi_joins and dialect == "clickhouse":
+            self._require_clickhouse_semi_join_support(
+                datasource=datasource, planned_list=planned_list,
+            )
+            ast = sqlglot.parse_one(sql, dialect=dialect)
+            _attach_ch_correlated_setting(ast)
+            sql = ast.sql(dialect=dialect, pretty=True)
         # Forced-filter rewrite before dry-run / explain / execute so all three
         # (and the cache key) see the policy-rewritten SQL; no-op without a policy.
-        await self._preflight_clickhouse_correlated(
-            dialect=dialect, datasource=datasource
-        )
         sql = self._apply_policy(sql=sql, dialect=dialect, datasource=datasource)
         logger.debug("Generated SQL:\n%s", sql)
 
@@ -2589,6 +2677,7 @@ class SlayerQueryEngine:
                 )
             model = await self._validate_and_populate_cache(model)
         await self._validate_mode_a_join_paths(model)
+        await self.validate_sql_model_source(model)
         await self.storage.save_model(model)
         # Clean up the stale entry if the model moved datasource.
         if (
@@ -2599,6 +2688,76 @@ class SlayerQueryEngine:
                 model.name, data_source=prior_data_source
             )
         return model
+
+    async def validate_sql_model_source(self, model: SlayerModel) -> None:
+        """Statically classify a raw-``sql`` source, then trial-execute it: a
+        non-read-only or unparseable source is rejected with no DB call; a
+        reachable backend's rejection also blocks. Parameterized SQL is still
+        classified (so a parameterized DML is caught) but not trial-run."""
+        if not model.sql or model.sql_table or model.source_queries:
+            return
+        ds = (
+            await self.storage.get_datasource(model.data_source)
+            if model.data_source
+            else None
+        )
+        sqlglot_name = dialect_for_ds_type(ds.type).sqlglot_name if ds else None
+        bare, blocked = extract_variable_refs(model.sql)
+        parameterized = bool(bare or blocked)
+        # render_probe_text is SLayer's canonical Mode-A probe render (blocks →
+        # (1=1), {var} → 0), so classification matches how model.sql parses.
+        # Unparseable blocks the save only when there are no placeholders — a
+        # parameterized source may parse only once its identifiers are filled.
+        safety = classify_model_sql(render_probe_text(model.sql), dialect=sqlglot_name)
+        reject_reason = _sql_safety_reject_reason(safety, parameterized=parameterized)
+        if reject_reason:
+            raise ModelSqlValidationError(
+                model_name=model.name,
+                data_source=model.data_source or "",
+                ds_type=ds.type if ds else None,
+                reason=reject_reason,
+            )
+        if parameterized:
+            logger.info(
+                "Skipping save-time SQL trial-execute for model %r: model.sql "
+                "carries %d placeholder(s), which cannot be trial-filled.",
+                model.name, len(bare | blocked),
+            )
+            return
+        if ds is None:
+            logger.warning(
+                "Skipping save-time SQL validation for model %r: datasource "
+                "%r is unset or not configured.", model.name, model.data_source,
+            )
+            return
+        await self._trial_execute_sql_source(model, ds)
+
+    async def _trial_execute_sql_source(self, model: SlayerModel, ds) -> None:
+        """Trial-execute read-only ``model.sql`` against ``ds``: raise on a
+        reachable rejection, warn-and-return on an inconclusive verdict."""
+        try:
+            await self._client_for(ds).get_column_types(
+                build_sql_model_trial_query(model.sql)
+            )
+        except Exception as exc:
+            if (
+                _is_transient_db_error(exc)
+                or _is_auth_failure(exc)
+                or _is_unreachable_db_error(exc)
+            ):
+                logger.warning(
+                    "Save-time SQL validation for model %r was inconclusive "
+                    "(datasource %r, type %r): %s. Saving anyway.",
+                    model.name, model.data_source, ds.type,
+                    getattr(exc, "orig", exc),
+                )
+                return
+            raise ModelSqlValidationError(
+                model_name=model.name,
+                data_source=model.data_source,
+                ds_type=ds.type,
+                reason=str(getattr(exc, "orig", exc)),
+            ) from exc
 
     async def _validate_mode_a_join_paths(self, model: SlayerModel) -> None:
         """Reject a broken dotted chain / legacy ``__`` split-alias at save time via the generator's resolver."""

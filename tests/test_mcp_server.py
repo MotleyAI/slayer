@@ -2991,3 +2991,90 @@ class TestDataProfileRetryScope:
         assert "equality operator" in (payload["sample_data_error"] or "")
         assert "connection closed" not in (payload["sample_data_error"] or "")
         assert payload["sample_data_reduced"] is False
+
+
+def _seed_live_db(path: str) -> None:
+    """A real SQLite file with an ``orders`` table for save-time trial-execute."""
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        "CREATE TABLE orders (id INTEGER PRIMARY KEY, amount REAL, status TEXT);"
+        "INSERT INTO orders VALUES (1, 100.0, 'ok');"
+    )
+    conn.commit()
+    conn.close()
+
+
+async def _register_live_ds(storage: YAMLStorage, db_path: str) -> None:
+    await storage.save_datasource(
+        DatasourceConfig(name="livedb", type="sqlite", database=db_path)
+    )
+
+
+class TestSaveTimeSqlValidationMcp:
+    """DEV-1843 — the MCP create/edit doors reroute through ``engine.save_model``
+    so a raw-sql model with backend-invalid SQL is rejected before it persists."""
+
+    async def test_create_sql_mode_valid_persists(
+        self, mcp_server, storage: YAMLStorage, tmp_path
+    ) -> None:
+        db = str(tmp_path / "live.db")
+        _seed_live_db(db)
+        await _register_live_ds(storage, db)
+        result = await _call(mcp_server, name="create_model", arguments={
+            "name": "good_model", "sql": "SELECT id FROM orders",
+            "data_source": "livedb",
+            "columns": [{"name": "id", "sql": "id", "type": "number"}],
+        })
+        assert "created" in result
+        assert await storage.get_model("good_model", data_source="livedb") is not None
+
+    async def test_create_sql_mode_invalid_rejected(
+        self, mcp_server, storage: YAMLStorage, tmp_path
+    ) -> None:
+        db = str(tmp_path / "live.db")
+        _seed_live_db(db)
+        await _register_live_ds(storage, db)
+        result = await _call(mcp_server, name="create_model", arguments={
+            "name": "bad_model", "sql": "SELECT nope FROM ghosts",
+            "data_source": "livedb",
+            "columns": [{"name": "id", "sql": "id", "type": "number"}],
+        })
+        assert "created" not in result
+        assert "bad_model" in result
+        assert await storage.get_model("bad_model", data_source="livedb") is None
+
+    async def test_edit_sql_to_invalid_rejected_and_original_intact(
+        self, mcp_server, storage: YAMLStorage, tmp_path
+    ) -> None:
+        db = str(tmp_path / "live.db")
+        _seed_live_db(db)
+        await _register_live_ds(storage, db)
+        await storage.save_model(SlayerModel(
+            name="m", sql="SELECT id FROM orders", data_source="livedb",
+            columns=[Column(name="id", sql="id", type=DataType.DOUBLE)],
+        ))
+        result = await _call(mcp_server, name="edit_model", arguments={
+            "model_name": "m", "data_source": "livedb",
+            "sql": "SELECT nope FROM ghosts",
+        })
+        assert "error" in result.lower()
+        model = await storage.get_model("m", data_source="livedb")
+        assert model.sql == "SELECT id FROM orders"
+
+    async def test_edit_sql_to_valid_succeeds(
+        self, mcp_server, storage: YAMLStorage, tmp_path
+    ) -> None:
+        db = str(tmp_path / "live.db")
+        _seed_live_db(db)
+        await _register_live_ds(storage, db)
+        await storage.save_model(SlayerModel(
+            name="m", sql="SELECT id FROM orders", data_source="livedb",
+            columns=[Column(name="id", sql="id", type=DataType.DOUBLE)],
+        ))
+        result = await _call(mcp_server, name="edit_model", arguments={
+            "model_name": "m", "data_source": "livedb",
+            "sql": "SELECT amount FROM orders",
+        })
+        assert '"success": true' in result
+        model = await storage.get_model("m", data_source="livedb")
+        assert model.sql == "SELECT amount FROM orders"
