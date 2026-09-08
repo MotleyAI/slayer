@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict
 from slayer.core.enums import DataType
 from slayer.core.formula import TIME_TRANSFORMS
 from slayer.core.format import NumberFormat
+from slayer.core.grain import Grain
 from slayer.core.errors import (
     AmbiguousReferenceError,
     DistinctDimensionValuesError,
@@ -922,7 +923,7 @@ def _regroup_grain_name(pk: ValueKey) -> str:
     return "__".join([*path, leaf])
 
 
-def _regroup_partition_order(pks: FrozenSet[ValueKey]) -> List[ValueKey]:
+def _regroup_partition_order(pks: Grain) -> List[ValueKey]:
     return sorted(
         pks, key=lambda k: (isinstance(k, TimeTruncKey), _regroup_grain_name(k), repr(k)),
     )
@@ -930,14 +931,14 @@ def _regroup_partition_order(pks: FrozenSet[ValueKey]) -> List[ValueKey]:
 
 def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound assembly; the grain / aggregate / inherited-filter / order arms share the prebound under construction.
     *,
-    pks: FrozenSet[ValueKey],
+    pks: Grain,
     aggs: List[AggregateKey],
     model: Optional[SlayerModel],
     bundle: ResolvedSourceBundle,
     inherited: List[BoundFilter],
     n_date_range: int,
     partition_order: Callable[
-        [FrozenSet[ValueKey]], List[ValueKey],
+        [Grain], List[ValueKey],
     ] = _regroup_partition_order,
     public_alias_by_agg: Optional[Mapping[AggregateKey, str]] = None,
     explicit_types: Optional[Mapping[ValueKey, DataType]] = None,
@@ -1068,7 +1069,7 @@ def _assert_attach_covers_producer_grain(
 
 
 def _validate_nested_producer_plan(
-    *, producer_plan, producer_grain: FrozenSet[ValueKey],
+    *, producer_plan, producer_grain: Grain,
 ) -> None:
     """A union-grain producer MAY carry nested COMBINED regroup attaches; admit only well-formed ones (combined-phase, local, no deeper CTE, STRICT-subset grain)."""
     for attach in producer_plan.regroup_attach_plans:
@@ -1081,13 +1082,16 @@ def _validate_nested_producer_plan(
                 "A union-grain producer's nested attach itself needs a further "
                 "regroup producer CTE, which is not supported (DEV-1839)."
             )
-        grain = frozenset(host_key for host_key, _ in attach.join_pairs)
+        grain = Grain.of(host_key for host_key, _ in attach.join_pairs)
         # A WINDOWED nested attach joins at the FULL union grain, not a strict subset.
         windowed_attach = any(
             _window_kwarg_of(sub.original_key) is not None
             for sub in attach.substitutions
         )
-        ok = grain <= producer_grain if windowed_attach else grain < producer_grain
+        ok = (
+            grain.broadcasts_into(producer_grain) if windowed_attach
+            else grain.is_strict_subgrain_of(producer_grain)
+        )
         if not ok:
             raise NotImplementedError(
                 "A union-grain producer's nested attach grain is not a subset "
@@ -1238,7 +1242,7 @@ def _effective_root_grain(
     projected_dim_keys: List[ValueKey],
     projected_td_keys: List[ValueKey],
     active_bucket: Optional[ValueKey],
-) -> Tuple[FrozenSet[ValueKey], bool]:
+) -> Tuple[Grain, bool]:
     """A combined-root's producer grain and windowedness.
 
     An explicitly-partitioned aggregate keeps ``regroup_root_grain``. A bare
@@ -1256,11 +1260,11 @@ def _effective_root_grain(
             return grain | {active_bucket}, True
         return grain, windowed
     if windowed:
-        grain = frozenset(projected_dim_keys) | (
-            frozenset(projected_td_keys) - ({active_bucket} if active_bucket else frozenset())
+        grain = Grain.of(projected_dim_keys) | (
+            Grain.of(projected_td_keys) - ({active_bucket} if active_bucket else frozenset())
         )
     else:
-        grain = frozenset(projected_dim_keys) | frozenset(projected_td_keys)
+        grain = Grain.of([*projected_dim_keys, *projected_td_keys])
     return grain, windowed
 
 
@@ -1279,9 +1283,7 @@ def _scalar_free_columns(node: ValueKey, out: set) -> None:
         _scalar_free_columns(node=node.input, out=out)
 
 
-def _prune_functionally_determined_grain(
-    pks: FrozenSet[ValueKey],
-) -> FrozenSet[ValueKey]:
+def _prune_functionally_determined_grain(pks: Grain) -> Grain:
     """Drop computed-dimension grain keys functionally determined by the raw dimensions already in the grain (redundant to group by)."""
     raw = frozenset(k for k in pks if isinstance(k, ColumnKey))
     kept = set(pks)
@@ -1298,7 +1300,7 @@ def _prune_functionally_determined_grain(
         _scalar_free_columns(k, free)
         if free <= raw:
             kept.discard(k)
-    return frozenset(kept)
+    return Grain.of(kept)
 
 
 def _windowed_or_ranked_identity(agg: ValueKey):
@@ -1795,7 +1797,7 @@ def _synthesize_wrap_attach(
         prebound, frozenset(),
     )
     producer_prebound, ordered_pks = _regroup_producer_prebound(
-        pks=frozenset(projected), aggs=[wrap_key], model=producer_model,
+        pks=Grain.of(projected), aggs=[wrap_key], model=producer_model,
         bundle=bundle, inherited=inherited, n_date_range=n_inherited_date,
         partition_order=lambda pks: sorted(
             pks, key=lambda k: consumer_order.get(k, len(consumer_order)),
@@ -2351,7 +2353,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     if window_td_key is not None:
         # The bucket joins back on the consumer's own active TD.
         host_by_rerooted.setdefault(window_td_key, prebound.main_time_key)
-    grain_keys = frozenset(rr for _, rr in safe_pairs)
+    grain_keys = Grain.of(rr for _, rr in safe_pairs)
     # The producer measure keeps the CANONICAL alias (root columns could shadow the public name).
     producer_prebound, ordered_pks = _regroup_producer_prebound(
         pks=grain_keys, aggs=[agg_rooted], model=root_model, bundle=root_bundle,
@@ -2557,7 +2559,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
         for agg, name in bare_alias.items():
             public_alias_by_agg.setdefault(agg, name)
 
-    def _root_grain(agg: ValueKey) -> FrozenSet[ValueKey]:
+    def _root_grain(agg: ValueKey) -> Grain:
         grain, windowed = _effective_root_grain(
             agg, projected_dim_keys=projected_dim_keys,
             projected_td_keys=projected_td_keys, active_bucket=active_bucket,
@@ -2569,7 +2571,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
 
     # Inside a union-grain producer, a root at EXACTLY the producer's grain compiles inline; only STRICT-subset grains nest (windowed transform inner excepted).
     if in_producer:
-        own_grain = frozenset([*projected_dim_keys, *projected_td_keys])
+        own_grain = Grain.of([*projected_dim_keys, *projected_td_keys])
         windowed_transform_inputs = {
             k
             for dm in prebound.declared_measures
@@ -2623,7 +2625,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
         if dm.declared_name is not None
     }
 
-    def _combined_order(pks: FrozenSet[ValueKey]) -> List[ValueKey]:
+    def _combined_order(pks: Grain) -> List[ValueKey]:
         return sorted(pks, key=lambda k: consumer_order.get(k, len(consumer_order)))
 
     attaches: List[RegroupAttachPlan] = []
@@ -2636,7 +2638,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
             continue
         # Group roots by producer grain and (for windowed / ranked) partition-free identity, so each gets its own producer.
         groups: Dict[Tuple, List[ValueKey]] = {}
-        group_meta: Dict[Tuple, Tuple[FrozenSet[ValueKey], bool]] = {}
+        group_meta: Dict[Tuple, Tuple[Grain, bool]] = {}
         for agg in phase_aggs:
             grain, windowed = _effective_root_grain(
                 agg, projected_dim_keys=projected_dim_keys,
