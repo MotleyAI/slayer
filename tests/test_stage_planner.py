@@ -118,8 +118,8 @@ class TestSingleStage:
             filters=["status == 'paid'"],
         )
         planned = plan_query(query=q, bundle=_bundle())
-        # Filter present in filters_by_phase.
-        assert len(planned.filters_by_phase) == 1
+        # One typed mask per filter conjunct.
+        assert len(planned.masks) == 1
 
 
 # ---------------------------------------------------------------------------

@@ -33,7 +33,7 @@ flowchart TB
   is the outer SELECT.
 
 `generate_from_planned` reads typed `PlannedQuery` fields (`row_slots` /
-`aggregate_slots` / `filters_by_phase` / `order` / `transform_layers`) and
+`aggregate_slots` / `masks` / `order` / `transform_layers`) and
 dispatches: any `cross_model_aggregate_plans` / `WindowedAggregatePlan` /
 `RankedAggregatePlan` present → `_render_with_cross_model_plans`;
 `transform_layers` present → `WITH base AS (...)`, Kahn-batched step CTEs, an
@@ -137,15 +137,12 @@ which frame the query looks at.
 
 ## P-D — Plan decides, render emits
 
-All classification happens at plan time; the generator consumes the plan
-verbatim. It never re-classifies a slot, re-parses user text, or re-walks
-filters to decide policy. The isolation decision (does this aggregate cross a
-join?), the ranking-time column, the frame-bound partition, and the order-term
-scope all arrive as typed fields on `PlannedQuery` / its plans. The generator
-builds only the environment those decisions read — for example, the render-time
-crossing probe that used to build a throwaway `ScopeFrame` purely to *detect* a
-crossing is gone; the crossing is decided at plan time and carried on the order
-entry's `OrderScope`.
+Semantics are decided at plan time (typed masks, scopeless order entries);
+placement is decided once at emission by the mask-lowering section
+(`_lower_positions`, DEV-1865): field masks → base WHERE, measure masks →
+HAVING / outer WHERE / post wrapper, and each order entry gets its
+`OrderScope` there. Every render site consumes that one lowering — none
+re-parses user text or re-walks filters independently.
 
 When a filter is routed into a cross-model CTE, its column leaves re-root to the
 CTE-local scope through `_reroot_routed_leaf`, which validates the host-rooted

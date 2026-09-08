@@ -21,7 +21,7 @@ flowchart TB
     sugar --> tval["validate: every time-needing transform has a time_key"]
     tval --> proj["ProjectionPlanner.plan → registry + projection"]
     proj --> cmp["per cross-model aggregate: cross_model_planner.plan + maybe re-root"]
-    cmp --> emit["emit transform_layers, filters_by_phase, stage_schema"]
+    cmp --> emit["emit transform_layers, masks, stage_schema"]
     emit --> pq["PlannedQuery"]
 ```
 
@@ -58,7 +58,7 @@ them, so SQL stays parity-stable:
    A reference to a non-trivial derived column is accepted (DEV-1450 #4b): the
    generator enters the predicate through the scope's Mode-A door
    (`ScopeFrame.enter_predicate`), which inline-expands it at render time. These
-   are text-only `FilterPhase` entries with no typed value-key.
+   ride in `mode_a_filters` (`ModeAFilter`) with no typed value-key.
 3. user query filters — Mode-B DSL, bound with the `filter_alias_map` so renamed
    measures resolve by alias (DEV-1445). Two filter strings that bind to the same
    structural key are deduped (P2) so a HAVING isn't duplicated.

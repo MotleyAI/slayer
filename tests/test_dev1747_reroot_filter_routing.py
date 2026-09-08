@@ -13,6 +13,7 @@ from slayer.core.errors import UnreachableFilterDroppedWarning
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
 from slayer.engine import stage_planner
 from slayer.engine.stage_planner import plan_query
+from slayer.sql.generator import _lower_positions
 from tests._dev1747_fixtures import (
     ALPHA_SPEND_ALL,
     ALPHA_SPEND_GOLD,
@@ -84,7 +85,7 @@ class TestRoutingSurvivesReroot:
 
     def test_reachable_filter_is_routed_not_blanked(self) -> None:
         attach = _sole_attach(FILTER_REACHABLE)
-        assert attach.producer_plan.filters_by_phase, (
+        assert attach.producer_plan.masks, (
             "the reachable filter did not inherit into the producer sub-plan"
         )
         assert not attach.dropped_filter_warnings, (
@@ -95,18 +96,18 @@ class TestRoutingSurvivesReroot:
     def test_host_local_filter_is_dropped_and_warned(self) -> None:
         """Host-local ROW filter is unreachable from target root ``customers`` → dropped from the producer and warned; the host base still applies it locally."""
         attach = _sole_attach(FILTER_HOST_LOCAL)
-        assert not attach.producer_plan.filters_by_phase
+        assert not attach.producer_plan.masks
         assert attach.dropped_filter_warnings
 
     def test_routing_lists_are_not_cleared_wholesale(self) -> None:
         attach = _sole_attach(FILTER_REACHABLE, FILTER_HOST_LOCAL)
-        assert attach.producer_plan.filters_by_phase, (
+        assert attach.producer_plan.masks, (
             "the reachable filter did not inherit even though it is present"
         )
 
     def test_mixed_filters_route_independently(self) -> None:
         attach = _sole_attach(FILTER_REACHABLE, FILTER_HOST_LOCAL, FILTER_UNREACHABLE)
-        assert attach.producer_plan.filters_by_phase, "the reachable filter did not inherit"
+        assert attach.producer_plan.masks, "the reachable filter did not inherit"
         assert attach.dropped_filter_warnings, "the unreachable filter did not warn"
 
 
@@ -524,7 +525,7 @@ class TestRerootedAggregateRefFilter:
             a.producer_root_model == "customers"
             for a in plan.regroup_attach_plans
         ), "the aggregate-ref shape stopped rooting its producer at the target"
-        assert plan.outer_where_filter_ids, "the predicate is applied nowhere"
+        assert _lower_positions(plan).outer_where_ids, "the predicate is applied nowhere"
 
     async def test_it_restricts_rows_by_the_aggregate_predicate(self) -> None:
         """Only Alpha's ``customers.spend:sum`` clears 500, so it is the sole surviving group — others dropped, not returned with a NULL measure."""

@@ -118,7 +118,7 @@ graph (**P7**):
 | `row_slots` / `aggregate_slots` / `combined_expression_slots` | slots bucketed by phase |
 | `cross_model_aggregate_plans` | one `CrossModelAggregatePlan` per cross-model aggregate |
 | `transform_layers` | one `TransformLayer` per transform slot, in dependency order |
-| `filters_by_phase` | `FilterPhase` entries (WHERE / HAVING / post) |
+| `masks` / `mode_a_filters` | typed filter conjuncts over hidden slots (field / measure) + Mode-A texts |
 | `projection` / `order` / `limit` / `offset` | output shape |
 | `stage_schema` | the projection downstream stages bind against (P6) |
 | `active_time_dimension_slot_id` | the TD slot used for OVER `ORDER BY` |
@@ -130,18 +130,18 @@ A `ValueSlot` carries `id`, `key`, `declared_name`, `public_name`,
 must have `public_name=None` and `public_aliases=[]`, so the generator can never
 accidentally emit it in the public projection.
 
-`FilterPhase` has two mutually-exclusive carrier modes: a typed `expression`
-(`BoundExpr`, for Mode-B DSL filters and the planner-emitted `BetweenKey`
-date_range) or `text` + `text_columns` (a Mode-A SQL fragment, for
-`SlayerModel.filters` — the renderer qualifies the named columns and emits the
-text verbatim).
+Filters carry two plan shapes (DEV-1865): each Mode-B conjunct compiles to a
+hidden whole-predicate slot listed in `masks` (`MaskEntry`: slot id, field /
+measure typing, stratum), lowered to WHERE / HAVING / outer WHERE / post at
+emission; `SlayerModel.filters` Mode-A texts ride in `mode_a_filters`
+(`ModeAFilter`) and render verbatim in the base WHERE.
 
 ### `BoundExpr` unification
 
 `planned.py` re-exports `binding.BoundExpr` as the canonical class. Earlier the
 planned side had a separate `BoundExpr` with an optional `sql_text` cache; that
 was folded into the binder's `BoundExpr(value_key=ValueKey)` so
-`ValueSlot.expression` and `FilterPhase.expression` store binder output directly.
+`ValueSlot.expression` stores binder output directly.
 There is no cached SQL string — the generator renders from the typed `value_key`
 against the slot registry.
 
