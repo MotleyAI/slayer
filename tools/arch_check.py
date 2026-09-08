@@ -133,7 +133,12 @@ def _bound_names(node: ast.AST) -> set[str]:
         return {node.name} if node.name else set()
     if isinstance(node, ast.MatchMapping):
         return {node.rest} if node.rest else set()
-    return {sub.id for t in _assignment_targets(node) for sub in ast.walk(t) if isinstance(sub, ast.Name)}
+    return {
+        sub.id
+        for t in _assignment_targets(node)
+        for sub in ast.walk(t)
+        if isinstance(sub, ast.Name) and isinstance(sub.ctx, (ast.Store, ast.Del))
+    }
 
 
 def _import_bindings(node: ast.Import, modules: set[str], rebound: set[str]) -> None:
