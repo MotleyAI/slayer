@@ -101,4 +101,4 @@
 - [x] 5.3 Post the DEV-1841 pointer comment (dice–slice + mode-axis `[target:]`
   entries in `semantics.arc42.md`, flip obligation) — verify comment visible on the
   issue *(posted 2026-09-08)*; include the dissolution ledger in the PR description
-  *(pending — at PR creation)*
+  *(done — PR #371)*
