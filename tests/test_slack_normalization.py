@@ -238,7 +238,7 @@ class TestMisplacedMeasure:
     def test_moved_column_is_a_column_ref(self):
         # A bare string here fails in the planner on ``.full_name``.
         q = SlayerQuery(source_model="orders", measures=[{"formula": "status"}])
-        result = normalize_query(q, model=_orders())
+        result = normalize_query(query=q, model=_orders())
         assert [type(d) for d in result.query.dimensions] == [ColumnRef]
 
 
@@ -318,7 +318,7 @@ class TestEngineWiring:
                 source_model="orders",
                 measures=[{"formula": "status"}, {"formula": "revenue:sum"}],
             )
-            resp = await engine.execute(q, dry_run=True)
+            resp = await engine.execute(query=q, dry_run=True)
             assert "status" in resp.sql
 
     async def test_custom_agg_functional_measure_binds(self):
