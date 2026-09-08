@@ -141,10 +141,10 @@ class Column(BaseModel):
     db_type: str | None = Field(
         default=None,
         description=(
-            "Raw database type string (e.g. 'point', 'jsonb'), retained when "
-            "the declared DataType loses information. Populated by ingestion "
-            "for UNKNOWN (opaque) columns; None for mapped types, where the "
-            "declared DataType already carries everything we need."
+            "Raw database type string (e.g. 'point', 'DECIMAL(18, 2)'), "
+            "retained when the declared DataType loses information. Populated "
+            "by ingestion for UNKNOWN (opaque) and exact NUMERIC/DECIMAL "
+            "columns; None when the mapped type carries everything needed."
         ),
     )
     primary_key: bool = False

@@ -13,12 +13,14 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
+import slayer.sql._identifier_fit as fitmod
 from slayer.core.enums import DataType
 from slayer.core.errors import IdentifierCollisionError
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.dialects import get_dialect
+from slayer.sql.dialects.postgres import PostgresDialect
 from slayer.sql.generator import SQLGenerator  # noqa: F401 — used by the skipped TestVirtualModelShorts
 from slayer.sql.naming import AliasAllocator, cte_name_from_alias, dialect_folds_case, encode_alias
 from slayer.storage.yaml_storage import YAMLStorage
@@ -36,7 +38,7 @@ _FIT_MARKER_RE = re.compile(r"_[0-9a-f]{8}_")
 # virtual-model shorts — there is no ``engine._query_as_model`` / ``_fit_short``
 # on this branch (query-backed shorts flow through ``source_bundle`` expansion),
 # so TestVirtualModelShorts below exercises removed internals. Tracked as a
-# DEV-1756 follow-up on DEV-1450 (see DECISIONS.md).
+# DEV-1756 follow-up on DEV-1450 (decision trail in git history).
 _UNPORTED_SURFACE = (
     "DEV-1756 virtual-model-short fitting not ported to the DEV-1450 pipeline "
     "(no engine._query_as_model / _fit_short); tests exercise removed internals."
@@ -490,8 +492,6 @@ class TestDecodeResultKeys:
     ) -> None:
         """Read-side symmetry with ``alias_rewrite_map``: a forced digest
         collision on two over-limit aliases must raise, not silently drop one."""
-        import slayer.sql._identifier_fit as fitmod
-
         monkeypatch.setattr(fitmod, "_digest", lambda name: "deadbeef")
         pg = get_dialect("postgres")
         assert pg.emit_alias(TWIN_A) == pg.emit_alias(TWIN_B)
@@ -503,8 +503,6 @@ class TestDecodeResultKeys:
     ) -> None:
         """A fitted alias landing on an under-limit alias that emits unchanged
         must raise — identity aliases own their emitted form too."""
-        import slayer.sql._identifier_fit as fitmod
-
         monkeypatch.setattr(fitmod, "_digest", lambda name: "deadbeef")
         pg = get_dialect("postgres")
         short = pg.fit_alias(LONG_EMAIL)  # under-limit → an identity alias
@@ -552,8 +550,6 @@ class TestDecodeWiring:
     async def test_run_data_query_passes_projection_aliases_to_decode(
         self, chain, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from slayer.sql.dialects.postgres import PostgresDialect
-
         engine, _ = chain
         prepared = await engine._prepare_pipeline(
             query=_repro_query(with_order=True), named_queries={}, runtime_kwarg={},
@@ -664,8 +660,6 @@ class TestCteNames:
         """Two distinct over-limit aliases that fit to the same string must not
         silently share one unquoted CTE name: the allocator's ``_2`` suffix
         pushes the second back over the limit and the guard raises."""
-        import slayer.sql._identifier_fit as fitmod
-
         monkeypatch.setattr(fitmod, "_digest", lambda name: "deadbeef")
         alloc = AliasAllocator()
         first = self._cte("_cm_", TWIN_A, allocator=alloc)

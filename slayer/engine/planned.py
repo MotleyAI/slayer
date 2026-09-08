@@ -59,6 +59,7 @@ class ValueSlot(BaseModel):
     label: Optional[str] = None
     type: Optional[DataType] = None
     type_is_explicit: bool = False
+    preserve_native_type: bool = False
     is_dimension: bool = False
     expression: Optional[BoundExpr] = None
     format: Optional[NumberFormat] = None
@@ -66,8 +67,11 @@ class ValueSlot(BaseModel):
 
     @property
     def cast_type(self) -> Optional[DataType]:
-        """Inferred INT is metadata, not a request to narrow an aggregate."""
-        if self.type == DataType.INT and not self.type_is_explicit and self.phase != Phase.ROW:
+        """Return only casts that preserve the inferred database value."""
+        if not self.type_is_explicit and (
+            self.preserve_native_type
+            or (self.type == DataType.INT and self.phase != Phase.ROW)
+        ):
             return None
         return self.type
 
