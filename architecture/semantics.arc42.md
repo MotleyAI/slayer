@@ -76,7 +76,7 @@ is the coercion from coarser to finer.
     and measures return the value, filters mask on it, order sorts by it — the
     expression evaluates identically in every position, compiled by
     construction as a hidden field/measure where not projected.
-    [target: DEV-1865]
+    [enforced: test:tests/test_dev1865_value_parity.py]
 14. **Filters**: a field-typed filter masks population rows before any
     aggregation; a measure-typed filter masks result cells after all values
     are computed, never changing a surviving cell's values; valid-as-both
