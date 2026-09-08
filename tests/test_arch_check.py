@@ -269,3 +269,121 @@ def test_known_enforced_tag_forms_accepted(tmp_path):
         encoding="utf-8",
     )
     assert findings_for(root, "enforced-tags") == []
+
+
+def append_principles(root: Path, lines: str) -> None:
+    path = root / "architecture" / "system.arc42.md"
+    path.write_text(path.read_text() + lines, encoding="utf-8")
+
+
+def test_malformed_enforced_tag_flagged(tmp_path):
+    root = make_repo(tmp_path)
+    append_principles(root, "3. Rule. [enforced]\n")
+    assert any("malformed" in f for f in findings_for(root, "enforced-tags"))
+
+
+def test_malformed_review_tag_flagged(tmp_path):
+    root = make_repo(tmp_path)
+    append_principles(root, "3. Rule. [review: DEV-1869]\n")
+    assert any("malformed" in f and "review" in f for f in findings_for(root, "enforced-tags"))
+
+
+def test_malformed_target_tag_flagged(tmp_path):
+    root = make_repo(tmp_path)
+    append_principles(root, "3. Rule. [target DEV-1841]\n")
+    assert any("malformed" in f and "target" in f for f in findings_for(root, "enforced-tags"))
+
+
+def test_target_tag_id_must_match_dev_number(tmp_path):
+    root = make_repo(tmp_path)
+    append_principles(root, "3. Rule. [target: 1841]\n")
+    assert any("1841" in f for f in findings_for(root, "enforced-tags"))
+
+
+def test_valid_target_tag_accepted(tmp_path):
+    root = make_repo(tmp_path)
+    append_principles(root, "3. Planned. [target: DEV-1841]\n")
+    assert findings_for(root, "enforced-tags") == []
+
+
+def test_untagged_principle_item_flagged(tmp_path):
+    root = make_repo(tmp_path)
+    append_principles(root, "3. Naked rule.\n")
+    assert any("status tag" in f for f in findings_for(root, "enforced-tags"))
+
+
+def test_mixed_tags_on_one_item_legal(tmp_path):
+    root = make_repo(tmp_path)
+    append_principles(root, "3. Broadcast clause. [review] Mode-axis clause. [target: DEV-1841]\n")
+    assert findings_for(root, "enforced-tags") == []
+
+
+def test_tag_on_continuation_line_accepted(tmp_path):
+    root = make_repo(tmp_path)
+    append_principles(root, "3. Wrapped rule\n   over two lines. [review]\n")
+    assert findings_for(root, "enforced-tags") == []
+
+
+def test_malformed_tags_in_prose_flagged(tmp_path):
+    root = make_repo(tmp_path)
+    append_principles(root, "\nProse note. [review: X]\nAnother note. [target 123]\n")
+    fs = findings_for(root, "enforced-tags")
+    assert any("malformed" in f and "review" in f for f in fs)
+    assert any("malformed" in f and "target" in f for f in fs)
+
+
+def test_malformed_tag_is_not_status_coverage(tmp_path):
+    root = make_repo(tmp_path)
+    append_principles(root, "3. A. [review: DEV-1869]\n4. B. [target DEV-1841]\n")
+    assert sum("status tag" in f for f in findings_for(root, "enforced-tags")) == 2
+
+
+def test_tag_on_next_item_does_not_cover_previous(tmp_path):
+    root = make_repo(tmp_path)
+    append_principles(root, "3. Naked rule.\n4. Tagged rule. [review]\n")
+    fs = findings_for(root, "enforced-tags")
+    assert sum("status tag" in f for f in fs) == 1
+    assert any("status tag" in f and "3" in f for f in fs)
+
+
+def test_invalid_target_id_is_not_status_coverage(tmp_path):
+    root = make_repo(tmp_path)
+    append_principles(root, "3. Rule. [target: 1841]\n")
+    assert any("status tag" in f for f in findings_for(root, "enforced-tags"))
+
+
+def test_unknown_enforced_id_is_not_status_coverage(tmp_path):
+    root = make_repo(tmp_path)
+    append_principles(root, "3. Rule. [enforced: nonsense]\n")
+    assert any("status tag" in f for f in findings_for(root, "enforced-tags"))
+
+
+def test_fenced_code_blocks_ignored(tmp_path):
+    root = make_repo(tmp_path)
+    append_principles(root, "\n```text\n3. not a principle\n[target 999]\n```\n")
+    assert findings_for(root, "enforced-tags") == []
+
+
+def test_orphan_arc42_file_flagged(tmp_path):
+    root = make_repo(tmp_path)
+    (root / "architecture" / "rogue.arc42.md").write_text("# rogue\n", encoding="utf-8")
+    assert any("rogue" in f for f in findings_for(root, "arc42-exists"))
+
+
+def test_cross_cutting_arc42_file_accepted(tmp_path):
+    root = make_repo(tmp_path)
+    (root / "architecture" / "semantics.arc42.md").write_text("# semantics\n", encoding="utf-8")
+    index = (root / "architecture" / "index.yaml").read_text()
+    (root / "architecture" / "index.yaml").write_text(
+        index + "cross_cutting_arc42: [architecture/semantics.arc42.md]\n"
+    )
+    assert findings_for(root, "arc42-exists") == []
+
+
+def test_cross_cutting_arc42_missing_file_flagged(tmp_path):
+    root = make_repo(tmp_path)
+    index = (root / "architecture" / "index.yaml").read_text()
+    (root / "architecture" / "index.yaml").write_text(
+        index + "cross_cutting_arc42: [architecture/ghost.arc42.md]\n"
+    )
+    assert any("ghost" in f for f in findings_for(root, "arc42-exists"))

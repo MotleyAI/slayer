@@ -5,12 +5,14 @@ nodes:
   core:
     package: slayer.core
     claims: [slayer.async_utils]
+    arc42: architecture/core.arc42.md
   sql:
     package: slayer.sql
     children: [render, dialects]
     arc42: architecture/sql.arc42.md
   engine:
     package: slayer.engine
+    arc42: architecture/engine.arc42.md
   storage:
     package: slayer.storage
   importers:
@@ -48,3 +50,6 @@ cross_cutting_specs:
   queries: {touches: [core, engine, sql]}
   models: {touches: [core, storage, engine]}
   aggregations: {touches: [core, engine, sql]}
+
+# arc42 files not owned by one node; arch_check flags unlisted orphans.
+cross_cutting_arc42: [architecture/semantics.arc42.md]

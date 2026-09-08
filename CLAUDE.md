@@ -94,9 +94,11 @@ poetry run ruff check --fix slayer/ tests/    # auto-fix
 
 ALWAYS update documentation when making API or user-facing changes:
 
-- `docs/` — concept docs, getting-started, reference, configuration
+- `docs/` — concept docs, getting-started, reference, configuration (user-facing only)
 - `.claude/skills/` — slayer-query.md, slayer-models.md, slayer-overview.md
 - When renaming a field or changing a response shape, grep all docs and skills for the old name
+- Behaviour is specified in `openspec/specs/` (via an OpenSpec change); cross-cutting
+  principles and the query algebra live in `architecture/` (arc42 + status tags)
 
 Every page under `docs/` must be linked from the `nav` block in `zensical.toml` (repo
 root) — add or update the entry in the same commit as the page. Otherwise the page is
