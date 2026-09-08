@@ -3,8 +3,9 @@
 ## 1. Purpose & context
 
 `slayer/core` holds the domain models, the `ValueKey` structural-identity
-family, and the typed error/warning vocabulary. It is the bottom layer: it
-imports no other SLayer node (system principle 2).
+family, and the typed error/warning vocabulary. It is the bottom layer: it is
+meant to import no other SLayer node; the remaining `core → engine/sql/storage`
+edges are grandfathered and slated to die (system principle 2).
 
 ## 2. Building blocks
 
@@ -24,10 +25,11 @@ models alongside.
    `children()` / `map_children()` protocol so generic walkers and rewriters
    cover new kinds the day they are added; deliberately asymmetric visitors
    keep explicit dispatch with a fail-closed raise tail. [review]
-4. **Errors are typed, with a stable format**: intentional failures are
-   `SlayerError` subclasses carrying the offending input, a scope summary, and
-   a suggestion; every message starts with the class name so tests and greps
-   bind to a stable prefix. [review]
+4. **Errors are typed, with a stable format**: the intentional-failure
+   vocabulary is `SlayerError` subclasses, distinguishable from driver/IO
+   errors; the stage-5 resolution family renders via `_format_error_message` —
+   a class-name-prefixed first line binding tests and greps to a stable
+   prefix, plus optional input/scope/suggestion lines. [review]
 5. **Warnings are structured payloads, surfaced twice**: degradations emit
    payload-carrying warnings that appear both as Python warnings and on
    `SlayerResponse.warnings` — never only a log line. [review]

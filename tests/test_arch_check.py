@@ -312,6 +312,30 @@ def test_untagged_principle_item_flagged(tmp_path):
     assert any("status tag" in f for f in findings_for(root, "enforced-tags"))
 
 
+def test_indented_untagged_principle_item_flagged(tmp_path):
+    root = make_repo(tmp_path)
+    append_principles(root, "  3. Indented naked rule.\n")
+    assert any("status tag" in f for f in findings_for(root, "enforced-tags"))
+
+
+def test_three_space_numbered_line_is_continuation(tmp_path):
+    root = make_repo(tmp_path)
+    append_principles(root, "3. Rule with nested steps. [review]\n   1. nested step\n")
+    assert findings_for(root, "enforced-tags") == []
+
+
+def test_indented_sibling_item_is_not_continuation(tmp_path):
+    root = make_repo(tmp_path)
+    append_principles(root, "\n   3. Tagged rule. [review]\n   4. Naked sibling.\n")
+    assert any("status tag" in f and "4" in f for f in findings_for(root, "enforced-tags"))
+
+
+def test_tag_spanning_lines_is_malformed(tmp_path):
+    root = make_repo(tmp_path)
+    append_principles(root, "3. Rule. [enforced: test:tests/a.py\ntest:tests/b.py]\n")
+    assert any("malformed" in f for f in findings_for(root, "enforced-tags"))
+
+
 def test_mixed_tags_on_one_item_legal(tmp_path):
     root = make_repo(tmp_path)
     append_principles(root, "3. Broadcast clause. [review] Mode-axis clause. [target: DEV-1841]\n")
@@ -358,9 +382,33 @@ def test_unknown_enforced_id_is_not_status_coverage(tmp_path):
     assert any("status tag" in f for f in findings_for(root, "enforced-tags"))
 
 
+def test_empty_test_id_is_not_status_coverage(tmp_path):
+    root = make_repo(tmp_path)
+    append_principles(root, "3. Rule. [enforced: test:]\n")
+    assert any("status tag" in f for f in findings_for(root, "enforced-tags"))
+
+
 def test_fenced_code_blocks_ignored(tmp_path):
     root = make_repo(tmp_path)
     append_principles(root, "\n```text\n3. not a principle\n[target 999]\n```\n")
+    assert findings_for(root, "enforced-tags") == []
+
+
+def test_tilde_fenced_code_blocks_ignored(tmp_path):
+    root = make_repo(tmp_path)
+    append_principles(root, "\n~~~text\n3. not a principle\n[target 999]\n~~~\n")
+    assert findings_for(root, "enforced-tags") == []
+
+
+def test_longer_fence_swallows_inner_backtick_fence(tmp_path):
+    root = make_repo(tmp_path)
+    append_principles(root, "\n````md\n```\n3. not a principle\n[target 999]\n````\n")
+    assert findings_for(root, "enforced-tags") == []
+
+
+def test_fence_line_with_info_string_is_not_a_closer(tmp_path):
+    root = make_repo(tmp_path)
+    append_principles(root, "\n```\n```python\n3. not a principle\n[target 999]\n```\n")
     assert findings_for(root, "enforced-tags") == []
 
 
