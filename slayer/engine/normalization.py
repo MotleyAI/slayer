@@ -34,7 +34,7 @@ from typing import List, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.models import SlayerModel
-from slayer.core.query import SlayerQuery
+from slayer.core.query import ColumnRef, SlayerQuery
 from slayer.core.warnings import NormalizationWarning, SlayerNormalizationWarning
 
 
@@ -84,7 +84,7 @@ def _apply_misplaced_measure(
     column_names = {c.name for c in model.columns}
 
     new_measures = list(query.measures)
-    moved_dim_strings: List[str] = []
+    moved_dims: List[ColumnRef] = []
     emitted: List[NormalizationWarning] = []
 
     kept: List = []
@@ -103,7 +103,7 @@ def _apply_misplaced_measure(
             kept.append(m)
             continue
         if bare in column_names:
-            moved_dim_strings.append(bare)
+            moved_dims.append(ColumnRef.from_string(bare))
             emitted.append(NormalizationWarning(
                 rule_id="MISPLACED_MEASURE",
                 original=bare,
@@ -121,12 +121,9 @@ def _apply_misplaced_measure(
     if not emitted:
         return query, []
 
-    existing_dims = list(query.dimensions or [])
-    # Append each moved bare column name as a dimension entry. We add as
-    # plain strings since SlayerQuery.dimensions accepts string entries
-    # alongside ColumnRefs (the pydantic union validators handle the
-    # coercion).
-    new_dimensions = existing_dims + moved_dim_strings
+    # model_copy skips validation, so build the ColumnRef here.
+    # A raw string reaches the planner and fails on ``.full_name``.
+    new_dimensions = list(query.dimensions or []) + moved_dims
     return (
         query.model_copy(update={"measures": kept, "dimensions": new_dimensions}),
         emitted,

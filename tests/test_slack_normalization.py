@@ -24,7 +24,7 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
-from slayer.core.query import SlayerQuery
+from slayer.core.query import ColumnRef, SlayerQuery
 from slayer.core.warnings import SlayerNormalizationWarning
 from slayer.engine.normalization import (
     NormalizationResult,
@@ -235,6 +235,12 @@ class TestMisplacedMeasure:
         assert "customer_id" in dim_names
         assert any(w.rule_id == "MISPLACED_MEASURE" for w in result.warnings)
 
+    def test_moved_column_is_a_column_ref(self):
+        # A bare string here fails in the planner on ``.full_name``.
+        q = SlayerQuery(source_model="orders", measures=[{"formula": "status"}])
+        result = normalize_query(q, model=_orders())
+        assert [type(d) for d in result.query.dimensions] == [ColumnRef]
+
 
 # ---------------------------------------------------------------------------
 # NormalizationResult shape
@@ -297,6 +303,23 @@ class TestEngineWiring:
             )
             resp = await engine.execute(q, dry_run=True)
             assert resp.warnings == []
+
+    async def test_misplaced_measure_query_compiles(self):
+        # A bare column in ``measures`` must survive the move and plan.
+        with tempfile.TemporaryDirectory() as td:
+            storage = YAMLStorage(base_dir=Path(td) / "models")
+            await storage.save_datasource(
+                DatasourceConfig(name="prod", type="sqlite", url="sqlite:///:memory:")
+            )
+            await storage.save_model(_orders())
+            engine = SlayerQueryEngine(storage=storage)
+
+            q = SlayerQuery(
+                source_model="orders",
+                measures=[{"formula": "status"}, {"formula": "revenue:sum"}],
+            )
+            resp = await engine.execute(q, dry_run=True)
+            assert "status" in resp.sql
 
     async def test_custom_agg_functional_measure_binds(self):
         # A custom aggregation written functionally resolves at binding —
