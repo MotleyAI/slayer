@@ -28,9 +28,9 @@ _ELEMENT_RE = re.compile(r"^\s*(\w+)\s*=\s*(\w+)\s+'[^']*'")
 _RELATION_RE = re.compile(r"^(\w+)\s*->\s*(\w+)(?:\s+#legacy)?$")
 _TAG_RE = re.compile(r"\[(enforced|review|target)\b([^\]]*)\]")
 _TAG_START_RE = re.compile(r"\[(enforced|review|target)\b")
-_TAG_ID_RE = re.compile(r":\s*(\S.*?)\s*")
 _TARGET_ID_RE = re.compile(r"DEV-\d+")
-_PRINCIPLE_ITEM_RE = re.compile(r"^(\d+)\.\s")
+_FENCE_RE = re.compile(r"`{3,}|~{3,}")
+_PRINCIPLE_ITEM_RE = re.compile(r"^( {0,3})(\d+)\.\s")
 _INIT_PY = "__init__.py"
 
 
@@ -394,19 +394,28 @@ def _check_model_truth(root: Path, root_package: str, claims: dict[str, list[str
     return findings
 
 
+def _parse_tag_id(rest: str) -> str | None:
+    """Tag id from ': <id>' — None when malformed (no colon, empty, or multi-line)."""
+    if not rest.startswith(":"):
+        return None
+    tag_id = rest[1:].strip()
+    if not tag_id or "\n" in tag_id:
+        return None
+    return tag_id
+
+
 def _tag_occurrence(kind: str, rest: str, name: str, contract_names: set[str]) -> tuple[bool, list[str]]:
     """(counts as status coverage, findings) for one bracket tag."""
     if kind == "review":
         return (True, []) if not rest else (False, [f"enforced-tags: malformed [review] tag in {name}"])
-    m = _TAG_ID_RE.fullmatch(rest)
-    if m is None:
+    tag_id = _parse_tag_id(rest)
+    if tag_id is None:
         return False, [f"enforced-tags: malformed [{kind}: …] tag in {name}"]
-    tag_id = m.group(1)
     if kind == "target":
         if _TARGET_ID_RE.fullmatch(tag_id) is None:
             return False, [f"enforced-tags: {name} target tag id {tag_id!r} does not match DEV-<number>"]
         return True, []
-    if tag_id in contract_names or tag_id.startswith("test:"):
+    if tag_id in contract_names or (tag_id.startswith("test:") and tag_id != "test:"):
         return True, []
     if tag_id.startswith("arch_check:") and tag_id.removeprefix("arch_check:") in CHECK_IDS:
         return True, []
@@ -416,30 +425,36 @@ def _tag_occurrence(kind: str, rest: str, name: str, contract_names: set[str]) -
 def _strip_fences(text: str) -> str:
     """Blank out fenced code blocks so tags and numbered items inside are ignored."""
     out: list[str] = []
-    in_fence = False
+    fence = ""  # opening delimiter run; closer is delimiter-only, same char, >= length
     for line in text.splitlines():
-        if line.lstrip().startswith("```"):
-            in_fence = not in_fence
-            out.append("")
+        if not fence:
+            m = _FENCE_RE.match(line.lstrip())
+            if m:
+                fence = m.group(0)
+            out.append("" if m else line)
         else:
-            out.append("" if in_fence else line)
+            m = _FENCE_RE.fullmatch(line.strip())
+            if m and m.group(0)[0] == fence[0] and len(m.group(0)) >= len(fence):
+                fence = ""
+            out.append("")
     return "\n".join(out)
 
 
 def _principle_items(text: str) -> list[tuple[str, str]]:
     """Top-level numbered items as (number, item text incl. continuation lines)."""
     items: list[tuple[str, str]] = []
-    open_item = False
+    open_col = -1  # content column of the open item; -1 = closed
     for line in text.splitlines():
         m = _PRINCIPLE_ITEM_RE.match(line)
-        if m:
-            items.append((m.group(1), line))
-            open_item = True
-        elif open_item and line.strip() and not line.startswith("#"):
+        # a number indented to the open item's content column is its content (CommonMark)
+        if m and not (open_col >= 0 and len(m.group(1)) >= open_col):
+            items.append((m.group(2), line))
+            open_col = len(m.group(1)) + len(m.group(2)) + 2
+        elif open_col >= 0 and line.strip() and not line.startswith("#"):
             num, body = items[-1]
             items[-1] = (num, body + "\n" + line)
         else:
-            open_item = False
+            open_col = -1
     return items
 
 
