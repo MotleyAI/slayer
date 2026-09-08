@@ -98,11 +98,12 @@ async def _call(server, *, name: str = "query", **arguments: Any) -> str:
 
 
 def _rows(out: str) -> list:
-    """Decode the leading JSON array, ignoring any trailing attributes footer
-    (json output appends a 'Measure attributes:' block when a measure carries
-    a display format)."""
-    decoded, _ = json.JSONDecoder().raw_decode(out)
-    return decoded
+    """Extract the data rows from strict json output. Since DEV-1858 folded
+    attributes/warnings into the payload, json output is a single
+    ``json.loads``-able value: a bare array, or a ``{"data", "warnings"?,
+    "attributes"?}`` envelope once either is present."""
+    decoded = json.loads(out)
+    return decoded["data"] if isinstance(decoded, dict) else decoded
 
 
 # ---------------------------------------------------------------------------

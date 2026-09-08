@@ -91,7 +91,7 @@ claude mcp list
 
 | Tool | Description |
 |------|-------------|
-| `query` | Execute a semantic query. The `query` argument mirrors the engine: a model name (run a query-backed model by name), a single query object, or a list of query objects — a multi-stage DAG whose stages reference one another via `source_model` or `joins.target_model`, auto-sorted by the engine (order doesn't matter), with the last entry the returned root. Plus the wrappers `variables` / `show_sql` / `dry_run` / `explain` / `format`. Without an explicit `limit` on the root query the response is capped at 20 rows (the generated SQL carries `LIMIT 21` so truncation is detectable) with a truncation notice via the warnings channel. See [Queries](../concepts/queries.md) and [Multistage Queries](../examples/06_multistage_queries/multistage_queries.md). |
+| `query` | Execute a semantic query. The `query` argument mirrors the engine: a model name (run a query-backed model by name), a single query object, or a list of query objects — a multi-stage DAG whose stages reference one another via `source_model` or `joins.target_model`, auto-sorted by the engine (order doesn't matter), with the last entry the returned root. Plus the wrappers `variables` / `show_sql` / `dry_run` / `explain` / `format`. Without an explicit `limit` on the root query the response is capped at 20 rows with a truncation notice via the warnings channel. For a query object or multi-stage list the cap is pushed into the generated SQL as `LIMIT 21` (so truncation is detectable); a model run by name is capped response-side with its stored SQL untouched. See [Queries](../concepts/queries.md) and [Multistage Queries](../examples/06_multistage_queries/multistage_queries.md). |
 
 **`query` tool arguments:**
 
@@ -102,7 +102,7 @@ claude mcp list
 | `show_sql` | bool | Include the generated SQL in the response for debugging |
 | `dry_run` | bool | Generate and return the SQL without executing it |
 | `explain` | bool | Run EXPLAIN ANALYZE and return the query plan |
-| `format` | string | Output format: `"markdown"` (default, compact), `"json"` (structured), or `"csv"` (most compact). Case-insensitive. Warnings (including the truncation notice) render as a trailing `Warnings:` block in markdown, leading `#` comment lines in csv, and turn the json payload into `{"data", "warnings"}` instead of a bare array |
+| `format` | string | Output format: `"markdown"` (default, compact), `"json"` (structured), or `"csv"` (most compact). Case-insensitive. Warnings (including the truncation notice) and field attributes stay machine-safe: a trailing `Warnings:` block (attributes footer just before it) in markdown, leading `#` comment lines in csv, and inside the json payload — which becomes `{"data", "warnings"?, "attributes"?}` instead of a bare array once either is present |
 
 **Query object fields** (the shape of `query`, and of each stage in the list form):
 

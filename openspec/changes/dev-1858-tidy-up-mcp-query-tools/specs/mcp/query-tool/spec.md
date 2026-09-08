@@ -60,7 +60,7 @@ The `query` tool SHALL treat a bare string as run-by-name execution of a query-b
 
 ### Requirement: Execution wrappers and output shaping
 
-The `query` tool SHALL support, uniformly across all three input forms: `variables` (merged with precedence runtime > named-stage > outer-query > model query variables), `dry_run` (return generated SQL without executing), `explain` (return SQL plus the query plan), `show_sql` (prefix results with the SQL), and `format` in {`markdown`, `json`, `csv`} case-insensitively — any other value SHALL be rejected with an error naming the valid options. When a result carries dimension/measure attribute metadata, the attributes block SHALL be appended regardless of input form.
+The `query` tool SHALL support, uniformly across all three input forms: `variables` (merged with precedence runtime > named-stage > outer-query > model query variables), `dry_run` (return generated SQL without executing), `explain` (return SQL plus the query plan), `show_sql` (prefix results with the SQL), and `format` in {`markdown`, `json`, `csv`} case-insensitively — any other value SHALL be rejected with an error naming the valid options. When a result carries dimension/measure attribute metadata, the attributes SHALL be rendered machine-safely for the chosen format, regardless of input form: embedded inside the json payload, as leading `#` comment lines in csv, and as a prose footer (before any warnings) in markdown — never as trailing prose that would break `json.loads` or the csv column count.
 
 #### Scenario: Dry run returns SQL only
 
@@ -72,7 +72,7 @@ The `query` tool SHALL support, uniformly across all three input forms: `variabl
 - **WHEN** `query` is called with `format="xml"`
 - **THEN** an error lists the valid formats json, csv, and markdown
 
-#### Scenario: Attributes appended on run-by-name results
+#### Scenario: Attributes stay machine-safe on run-by-name results
 
-- **WHEN** `query` is called with a query-backed model name whose result carries attribute metadata
-- **THEN** the formatted output ends with the attributes block
+- **WHEN** `query` is called with a query-backed model name whose result carries attribute metadata, in json or csv format
+- **THEN** the response stays parseable — the attributes ride inside the json payload and appear as leading `#` comment lines in csv, never as trailing prose

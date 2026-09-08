@@ -510,9 +510,10 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             whole_periods_only: When true, snap date filters to time bucket boundaries based on granularity, exclude the current incomplete time bucket.
             strict: Error instead of warn when a cross-model measure would broadcast or a producer filter would be dropped. Rejected with run-by-name execution — declare it on the stored query instead.
             distinct_dimension_values: Default True (Cube.js-style auto-dedup for dim-only queries — emits GROUP BY <dim aliases>). Set False to emit raw rows: no top-level GROUP BY, just SELECT <dimensions/time_dimensions> with the usual WHERE/ORDER BY/LIMIT. Any measure reference (in measures, filters, or order) raises an error in this mode.
+            variables: Per-query {placeholder} values, scoped to this query object / stage (same substitution as the top-level ``variables`` arg). Overridden by the top-level value — see precedence below.
 
         Top-level arguments (siblings of ``query``, NOT fields inside it):
-            variables: Values for {placeholder} substitutions in filters / model SQL.
+            variables: Values for {placeholder} substitutions in filters / model SQL. Also settable per query object (above). Precedence: runtime (top-level) > named-stage > outer-query > model.query_variables.
             show_sql: When true, include the generated SQL in the response for debugging.
             dry_run: When true, generate and return the SQL without executing it.
             explain: When true, run EXPLAIN ANALYZE and return the query plan.
@@ -546,9 +547,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 output = f"SQL:\n{result.sql}\n\nQuery Plan:\n"
                 output += _format_output(result=result, fmt=fmt)
                 return output
-            output = _format_output(
-                result=result, fmt=fmt, footer=_attributes_footer(result.attributes),
-            )
+            output = _format_output(result=result, fmt=fmt)
             if show_sql and result.sql:
                 output = f"SQL:\n{result.sql}\n\n{output}"
             return output
@@ -1987,11 +1986,21 @@ def _format_table(data: list[dict[str, Any]], columns: list[str], max_rows: int 
 def _format_json(
     data: list[dict[str, Any]],
     warnings: list[dict[str, Any]] | None = None,
+    attributes: dict[str, Any] | None = None,
 ) -> str:
-    """Format data as JSON — a bare array, or {"data", "warnings"} when warnings exist."""
-    if not warnings:
+    """Bare array, or {"data", "warnings"?, "attributes"?} once either is present.
+
+    Attributes and warnings ride inside the payload so the whole response stays
+    strict-``json.loads``-able — never trailing prose.
+    """
+    if not warnings and not attributes:
         return json.dumps(data, default=str)
-    return json.dumps({"data": data, "warnings": warnings}, default=str)
+    payload: dict[str, Any] = {"data": data}
+    if warnings:
+        payload["warnings"] = warnings
+    if attributes:
+        payload["attributes"] = attributes
+    return json.dumps(payload, default=str)
 
 
 def _format_csv(data: list[dict[str, Any]], columns: list[str]) -> str:
@@ -2067,25 +2076,32 @@ def _format_warnings(result: SlayerResponse) -> str:
     return "" if not lines else "\n\nWarnings:\n" + "\n".join(lines)
 
 
-def _format_output(result: SlayerResponse, fmt: str, *, footer: str = "") -> str:
+def _format_output(result: SlayerResponse, fmt: str) -> str:
     """Format query output in the requested format.
 
-    Warnings stay machine-safe: inside the json payload, leading `#` lines for
-    csv, a prose block only for markdown. ``footer`` (the attributes block) sits
-    before the markdown warnings so the warnings stay the trailing block.
+    Attributes and warnings stay machine-safe: both inside the json payload,
+    both as leading `#` comment lines for csv, a prose attributes footer before
+    the trailing Warnings block for markdown.
     """
     if fmt == "csv":
         # Leading `#` lines, never trailing prose — trailing rows break the
         # column count for every CSV reader.
-        return _csv_warning_comments(result) + _format_csv(
-            data=result.data, columns=result.columns,
-        ) + footer
+        return (
+            _csv_attribute_comments(result)
+            + _csv_warning_comments(result)
+            + _format_csv(data=result.data, columns=result.columns)
+        )
     if fmt == "markdown":
-        return result.to_markdown() + footer + _format_warnings(result)
+        return (
+            result.to_markdown()
+            + _attributes_footer(result.attributes)
+            + _format_warnings(result)
+        )
     return _format_json(
         data=result.data,
         warnings=[w.model_dump(mode="json") for w in (result.warnings or [])],
-    ) + footer
+        attributes=_json_attributes(result.attributes),
+    )
 
 
 def _format_field_meta(entries: dict[str, Any]) -> list[str]:
@@ -2118,11 +2134,30 @@ def _format_attributes(attributes) -> str:
     if measure_lines:
         lines.append("Measure attributes:")
         lines.extend(measure_lines)
-    return "\n".join(lines)if lines else ""
+    return "\n".join(lines) if lines else ""
+
+
+def _has_attributes(attributes) -> bool:
+    return bool(attributes and (attributes.dimensions or attributes.measures))
 
 
 def _attributes_footer(attributes) -> str:
     """Attributes block as a trailing footer, or empty when there's nothing to show."""
-    if attributes and (attributes.dimensions or attributes.measures):
+    if _has_attributes(attributes):
         return "\n\n" + _format_attributes(attributes=attributes)
     return ""
+
+
+def _csv_attribute_comments(result: SlayerResponse) -> str:
+    """Field attributes as leading `#` comment lines for CSV (never trailing rows)."""
+    if not _has_attributes(result.attributes):
+        return ""
+    block = _format_attributes(attributes=result.attributes)
+    return "\n".join(f"# {line}" for line in block.splitlines()) + "\n"
+
+
+def _json_attributes(attributes) -> dict[str, Any] | None:
+    """Structured attributes for the json payload, or None when there's nothing to show."""
+    if _has_attributes(attributes):
+        return attributes.model_dump(mode="json")
+    return None

@@ -9,7 +9,7 @@ The MCP surface exposes two overlapping query tools: `query` (multi-arg form —
 - **BREAKING** — the `query` MCP tool's main argument becomes the query itself: `query: str | dict | list[dict]` (model name for run-by-name, single query json, or multi-stage DAG list), keeping only the execution wrappers `variables`, `show_sql`, `dry_run`, `explain`, `format` as separate args. The per-field args (`source_model`, `measures`, `dimensions`, `filters`, `time_dimensions`, `order`, `limit`, `offset`, `whole_periods_only`, `strict`, `distinct_dimension_values`) are retired; `strict` and `distinct_dimension_values` are expressed inside the query json (they are `SlayerQuery` fields).
 - **BREAKING** — the `query_nested` MCP tool is deleted outright (no stub or alias); its list semantics move into `query`.
 - **BREAKING** — a bare model-name string now means run-by-name only (exact `engine.execute(str)` semantics): a non-query-backed model name raises the engine's "not query-backed" error instead of silently wrapping into `SlayerQuery(source_model=name)`. The MCP-side run-by-name shortcut block and the "strict not supported with run-by-name" check are deleted.
-- Output handling is unified into one path — the run-by-name path now appends the attributes block whenever present, like every other path.
+- Output handling is unified into one path, and attribute metadata is rendered machine-safely per format (embedded in the json payload, leading `#` comment lines in csv, prose footer in markdown) so json stays `json.loads`-able and csv keeps a uniform column count.
 - Docs, skills, notebook tool lists, and comment mentions are updated to the new surface; REST API, CLI, Python client, engine, and core behavior are unchanged.
 
 ## Capabilities
@@ -20,7 +20,7 @@ The MCP surface exposes two overlapping query tools: `query` (multi-arg form —
 
 ### Modified Capabilities
 
-None — existing corpus capabilities (queries/aggregations/models) describe engine behavior, which is untouched.
+- `mcp/response-row-cap`: the row cap's `query_nested`-keyed requirement is retired and re-added keyed on the `query` tool's multi-stage list form, since this change removes the `query_nested` tool it named. The cap behavior itself is unchanged.
 
 ## Impact
 

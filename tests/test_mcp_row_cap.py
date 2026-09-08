@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from slayer.core.enums import DataType
+from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.core.warnings import NormalizationWarning, ResponseTruncationWarning
@@ -84,9 +85,12 @@ async def _call(server, *, name: str, arguments: dict[str, Any] | None = None) -
 
 
 def _json_payload(text: str) -> Any:
-    """Decode the leading JSON value, ignoring any trailing footer text."""
-    payload, _ = json.JSONDecoder().raw_decode(text)
-    return payload
+    """Strict-decode the whole JSON output.
+
+    Since DEV-1858 attributes ride inside the payload, so json output is a single
+    ``json.loads``-able value with no trailing prose — this asserts that.
+    """
+    return json.loads(text)
 
 
 def _json_after_plan(text: str) -> Any:
@@ -419,6 +423,68 @@ class TestNoticeRendering:
         assert warning.kind == "truncated"
         assert warning.returned_rows == CAP
         assert warning.hint == "pass a higher 'limit'"
+
+
+class TestAttributesMachineSafe:
+    """Requirement (DEV-1858): field attributes never break machine formats —
+    embedded in the json payload, leading `#` comment lines for csv (never
+    trailing prose that would fail ``json.loads`` or skew the CSV column count)."""
+
+    @staticmethod
+    def _with_attributes() -> SlayerResponse:
+        attrs = ResponseAttributes(
+            dimensions={"nums.id": FieldMetadata(label="ID")},
+            measures={"nums._count": FieldMetadata(
+                label="Count", format=NumberFormat(type=NumberFormatType.INTEGER),
+            )},
+        )
+        return SlayerResponse(
+            data=[{"nums.id": i, "nums._count": 1} for i in range(1, 4)],
+            columns=["nums.id", "nums._count"], sql="SELECT 1", attributes=attrs,
+        )
+
+    async def test_json_payload_strict_parseable_with_attributes(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        server = await _make_server(tmp_path)
+        _patch_execute(monkeypatch, make_response=self._with_attributes)
+        result = await _call(server, name="query", arguments={
+            "query": {"source_model": "nums", "dimensions": ["id"]}, "format": "json",
+        })
+        payload = json.loads(result)  # strict: raises if attributes trail the payload
+        assert isinstance(payload, dict)
+        assert len(payload["data"]) == 3
+        assert payload["attributes"]["dimensions"]["nums.id"]["label"] == "ID"
+        assert payload["attributes"]["measures"]["nums._count"]["label"] == "Count"
+
+    async def test_csv_attributes_are_leading_comments(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        server = await _make_server(tmp_path)
+        _patch_execute(monkeypatch, make_response=self._with_attributes)
+        result = await _call(server, name="query", arguments={
+            "query": {"source_model": "nums", "dimensions": ["id"]}, "format": "csv",
+        })
+        lines = result.splitlines()
+        comment_lines = [ln for ln in lines if ln.startswith("#")]
+        assert any("Dimension attributes:" in ln for ln in comment_lines)
+        assert any("Measure attributes:" in ln for ln in comment_lines)
+        data_lines = [ln for ln in lines if not ln.startswith("#")]
+        rows = list(csv.reader(io.StringIO("\n".join(data_lines))))
+        assert len(rows) == 1 + 3  # header + rows, uniform column count
+        assert all(len(r) == 2 for r in rows)
+
+    async def test_json_bare_array_without_attributes_or_warnings(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        """No attributes and no warnings still yields a bare array (back-compat)."""
+        server = await _make_server(tmp_path)
+        _patch_execute(monkeypatch, make_response=lambda: _canned_response(3))
+        result = await _call(server, name="query", arguments={
+            "query": {"source_model": "nums", "dimensions": ["id"], "limit": 5},
+            "format": "json",
+        })
+        assert isinstance(json.loads(result), list)
 
 
 class TestExplainDryRun:
