@@ -254,7 +254,7 @@ def _producer(attach: RegroupAttachPlan) -> PlannedQuery:
 
 _SUBSET_MSG = (
     "A union-grain producer's nested attach grain is not a subset "
-    "of the producer grain; only subset inner grains broadcast (DEV-1839)."
+    "of the producer grain; only subset inner grains broadcast (DEV-1847)."
 )
 
 

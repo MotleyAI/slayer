@@ -59,7 +59,7 @@ def _combine(op: str, a, b):
 
 async def test_formula_equals_client_side_combine(pair_case):
     engine, pair, grain = pair_case
-    kwargs = _pair_kwargs(pair, grain)
+    kwargs = _pair_kwargs(pair=pair, grain=grain)
     left = await engine.execute(q(**kwargs, measures=[
         ModelMeasure(formula=f"{OPERANDS[pair.a]} {pair.op} {OPERANDS[pair.b]}",
                      name="x"),
@@ -68,8 +68,8 @@ async def test_formula_equals_client_side_combine(pair_case):
         ModelMeasure(formula=OPERANDS[pair.a], name="a"),
         ModelMeasure(formula=OPERANDS[pair.b], name="b"),
     ]))
-    left_rows = {_row_key(r, kwargs): r["orders.x"] for r in left.data}
-    right_rows = {_row_key(r, kwargs): r for r in right.data}
+    left_rows = {_row_key(row=r, kwargs=kwargs): r["orders.x"] for r in left.data}
+    right_rows = {_row_key(row=r, kwargs=kwargs): r for r in right.data}
     assert len(left_rows) == len(left.data), "duplicate group keys (left)"
     assert len(right_rows) == len(right.data), "duplicate group keys (right)"
     assert set(left_rows) == set(right_rows), (
@@ -77,8 +77,8 @@ async def test_formula_equals_client_side_combine(pair_case):
         f"pair={pair} grain={grain}"
     )
     for key, row in right_rows.items():
-        expected = _combine(pair.op, row["orders.a"], row["orders.b"])
-        assert values_equal(left_rows[key], expected), (
+        expected = _combine(op=pair.op, a=row["orders.a"], b=row["orders.b"])
+        assert values_equal(a=left_rows[key], b=expected), (
             f"LAW broadcast coherence violated — cell {key}: formula gave "
             f"{left_rows[key]!r}, client-side combine gave {expected!r}; "
             f"pair={pair} grain={grain}"
@@ -91,18 +91,20 @@ async def test_ill_typed_operand_refuses_identically_in_both_phrasings(exec_engi
     The rm-grain pair sample excludes part_city for exactly this reason."""
     kwargs: dict = {"dimensions": ["region"], "time_dimensions": month_td()}
     refusal = r"partition_by column 'city' is not a query dimension"
+    as_formula = q(**kwargs, measures=[
+        ModelMeasure(
+            formula=f"{OPERANDS['part_city']} + {OPERANDS['plain']}",
+            name="x",
+        ),
+    ])
+    as_separate = q(**kwargs, measures=[
+        ModelMeasure(formula=OPERANDS["part_city"], name="a"),
+        ModelMeasure(formula=OPERANDS["plain"], name="b"),
+    ])
     with pytest.raises(ValueError, match=refusal):
-        await exec_engine.execute(q(**kwargs, measures=[
-            ModelMeasure(
-                formula=f"{OPERANDS['part_city']} + {OPERANDS['plain']}",
-                name="x",
-            ),
-        ]))
+        await exec_engine.execute(as_formula)
     with pytest.raises(ValueError, match=refusal):
-        await exec_engine.execute(q(**kwargs, measures=[
-            ModelMeasure(formula=OPERANDS["part_city"], name="a"),
-            ModelMeasure(formula=OPERANDS["plain"], name="b"),
-        ]))
+        await exec_engine.execute(as_separate)
 
 
 async def test_region_grain_operand_agrees_along_the_grain_chain(exec_engine):

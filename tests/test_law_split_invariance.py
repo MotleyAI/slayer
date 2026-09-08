@@ -54,7 +54,7 @@ async def test_removing_any_measure_preserves_groups_and_shared_cells(law_case):
                     continue
                 col = f"orders.m_{kept}"
                 law_assert(
-                    values_equal(row[col], full_rows[key][col]),
+                    values_equal(a=row[col], b=full_rows[key][col]),
                     law="split-invariance",
                     detail=f"cell {key} measure {kept!r} changed when dropping "
                            f"{drop!r}: {row[col]!r} != {full_rows[key][col]!r}",

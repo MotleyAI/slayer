@@ -61,7 +61,7 @@ ALLOWED_EXPRESSIVENESS = [
     r"^Row-level expression cannot contain",
     r"^Cross-model operand inside an aggregated expression is not supported\.$",
     r"^A time-ordered transform .* accumulates within its own grain\.$",
-    r"^Scalar function",
+    r"^Scalar arity check failed:",
 ]
 
 _INDEX_YAML = Path(__file__).parent.parent / "architecture" / "index.yaml"
@@ -130,10 +130,12 @@ def classify_message(
 def _guards_baseline() -> int:
     data = yaml.safe_load(_INDEX_YAML.read_text())
     guards = data.get("guards")
-    assert isinstance(guards, dict) and "baseline" in guards, (
+    msg = (
         "architecture/index.yaml must declare `guards: {baseline: N}` "
         "(the only-ever-lowered deferral-site count)"
     )
+    assert isinstance(guards, dict), msg
+    assert "baseline" in guards, msg
     return int(guards["baseline"])
 
 

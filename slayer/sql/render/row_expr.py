@@ -195,11 +195,10 @@ def render_scalar_call(
     *, name: str, args: List[exp.Expression], dialect: SqlDialect,
 ) -> exp.Expression:
     """The one ScalarCall policy. The log fix-up is load-bearing: ``exp.func("LOG10", x)`` normalises to ``LOG(10, x)``, wrong where ``LOG10`` is native single-arg."""
-    if check_scalar_arity(name=name, argc=len(args)) is not None:
+    arity_error = check_scalar_arity(name=name, argc=len(args))
+    if arity_error is not None:
         # Checked before building: sqlglot is inconsistent (3-arg ROUND drops the third, etc.).
-        raise NotImplementedError(
-            f"Scalar function {name!r} rejects {len(args)} argument(s)."
-        )
+        raise NotImplementedError(f"Scalar arity check failed: {arity_error}")
     if name == "like":
         return exp.Like(this=args[0], expression=args[1])
     if name == "mod":
@@ -218,10 +217,9 @@ def iif_case_chain(
     node: Any = key
     while isinstance(node, ScalarCallKey) and node.name == "iif":
         # Fail-closed arity backstop so a malformed key can't surface an opaque IndexError.
-        if check_scalar_arity(name="iif", argc=len(node.args)) is not None:
-            raise NotImplementedError(
-                f"Scalar function 'iif' rejects {len(node.args)} argument(s)."
-            )
+        arity_error = check_scalar_arity(name="iif", argc=len(node.args))
+        if arity_error is not None:
+            raise NotImplementedError(f"Scalar arity check failed: {arity_error}")
         ifs.append(exp.If(this=part(node.args[0]), true=part(node.args[1])))
         node = node.args[2]
     return exp.Case(ifs=ifs, default=part(node))
