@@ -37,7 +37,8 @@ async def test_forced_fallback_matches_the_having_lowering(
     async for engine in make_exec_engine(request):
         lowered = await engine.execute(q(**_QUERY_KWARGS))
         lowered_sql = (await engine.execute(q(**_QUERY_KWARGS), dry_run=True)).sql
-        assert lowered_sql is not None and "HAVING" in lowered_sql
+        assert lowered_sql is not None
+        assert "HAVING" in lowered_sql
         break
 
     monkeypatch.setattr(generator_module, "_FORCE_MASK_FALLBACK", True)

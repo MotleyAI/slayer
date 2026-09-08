@@ -13,13 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests._dev1865_fixtures import ModelMeasure, make_exec_engine, month_td, q
-
-
-@pytest.fixture(params=["sqlite", "duckdb"])
-async def exec_engine(request):
-    async for engine in make_exec_engine(request):
-        yield engine
+from tests._dev1865_fixtures import ModelMeasure, month_td, q
 
 
 def _rowkey(row, dim_cols):
@@ -89,7 +83,8 @@ class TestNullPredicateDropsRow:
                 ModelMeasure(formula="nomatch:sum", name="e"),
             ],
         ))).data
-        assert twin and all(r["orders.e"] is None for r in twin)
+        assert twin
+        assert all(r["orders.e"] is None for r in twin)
         filtered = (await exec_engine.execute(q(
             dimensions=["region"],
             measures=[ModelMeasure(formula="amount:sum", name="s")],

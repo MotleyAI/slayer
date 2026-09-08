@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests._dev1865_fixtures import ModelMeasure, make_exec_engine, q
+from tests._dev1865_fixtures import ModelMeasure, q
 
 # gold spend=150, silver spend=200 → only silver clears 175 ('hi').
 CM_BAND = (
@@ -23,10 +23,6 @@ KEYLESS_AGG = "customers.spend:sum(partition_by=customers.tier)"
 RK_REGION = "orders.customers.regions.name"
 
 
-@pytest.fixture(params=["sqlite", "duckdb"])
-async def exec_engine(request):
-    async for engine in make_exec_engine(request):
-        yield engine
 
 
 class TestKeylessFilterRowRoutes:
@@ -71,10 +67,12 @@ class TestKeylessDualRoleRejected:
     async def test_second_role_needs_partition_key_among_dims(self, exec_engine) -> None:
         # The keyless aggregate banded by the computed dim, also selected as a
         # measure while its partition key (tier) is absent → partition-key error.
-        with pytest.raises(Exception) as ei:  # noqa: PT011 — asserted on message
-            await exec_engine.execute(q(
-                dimensions=[{"expression": CM_BAND, "name": "band"}, "customers.regions.name"],
-                measures=[ModelMeasure(formula=KEYLESS_AGG, name="dual")],
-            ))
-        msg = str(ei.value).lower()
-        assert "partition" in msg or "tier" in msg
+        query = q(
+            dimensions=[{"expression": CM_BAND, "name": "band"}, "customers.regions.name"],
+            measures=[ModelMeasure(formula=KEYLESS_AGG, name="dual")],
+        )
+        with pytest.raises(
+            ValueError,
+            match="partition_by column 'customers.tier' is not a query dimension",
+        ):
+            await exec_engine.execute(query)

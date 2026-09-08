@@ -437,6 +437,26 @@ def _lower_positions(planned_query) -> _LoweredPositions:
     )
     entries.extend(_lower_mask(m) for m in planned_query.masks[n_date:])
 
+    order = _lower_order_entries(
+        planned_query,
+        slots_by_id=slots_by_id,
+        slot_id_by_key=slot_id_by_key,
+        combined_ph_ids=combined_ph_ids,
+        windowed_ids=windowed_ids,
+    )
+    return _LoweredPositions(
+        filters=entries, outer_where_ids=outer_ids, order=order,
+    )
+
+
+def _lower_order_entries(
+    planned_query,
+    *,
+    slots_by_id: Dict[str, ValueSlot],
+    slot_id_by_key: Dict[Any, str],
+    combined_ph_ids: Set[str],
+    windowed_ids: Set[str],
+) -> List[ScopedOrder]:
     order: List[ScopedOrder] = []
     for entry in planned_query.order:
         slot = slots_by_id.get(entry.slot_id)
@@ -458,9 +478,7 @@ def _lower_positions(planned_query) -> _LoweredPositions:
             ),
             nulls=entry.nulls,
         ))
-    return _LoweredPositions(
-        filters=entries, outer_where_ids=outer_ids, order=order,
-    )
+    return order
 
 
 def _composite_reads_an_isolated_cte(
@@ -5268,10 +5286,10 @@ class SQLGenerator:
         cte_name_alias = slot_aliases[0]
         # Length-fit the shifted_/sjoin_ CTE names so a long transform name can't exceed the dialect's identifier limit
         # and silently truncate.
-        _fit_kw = dict(
-            allocator=cte_allocator, dialect=self.dialect,
-            limit=self._dialect.max_identifier_bytes,
-        )
+        _fit_kw = {
+            "allocator": cte_allocator, "dialect": self.dialect,
+            "limit": self._dialect.max_identifier_bytes,
+        }
         shifted_cte_name = cte_name_from_alias(
             prefix="shifted_", alias=cte_name_alias, **_fit_kw,
         )

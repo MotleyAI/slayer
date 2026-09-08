@@ -6,6 +6,7 @@ single on-disk dataset across runs.
 """
 
 import os
+import warnings
 from typing import List, Tuple
 
 from slayer.core.models import SlayerModel
@@ -27,6 +28,9 @@ def ensure_jaffle_shop(
     On first run, generates ~``years`` of synthetic data with jafgen and ingests
     the models. Subsequent runs reuse the existing database and models.
     """
+    # Machine-independent notebook outputs: no paths in warnings (kernel-wide by design).
+    warnings.formatwarning = lambda msg, cat, *a, **k: f"{cat.__name__}: {msg}\n"
+
     storage = YAMLStorage(base_dir=MODELS_DIR)
 
     _ds, models, db_built = ensure_demo_datasource(
@@ -38,7 +42,7 @@ def ensure_jaffle_shop(
     )
 
     if db_built:
-        print(f"Database created at {DB_PATH}")
+        print(f"Database created at {os.path.relpath(DB_PATH)}")
 
     engine = SlayerQueryEngine(storage=storage)
     return engine, storage, models

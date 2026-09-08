@@ -18,19 +18,12 @@ from tests._dev1865_fixtures import (
     CITY_TOTAL,
     REGION_TOTAL,
     ModelMeasure,
-    make_exec_engine,
     q,
     rows_by,
 )
 
 RK_REGION = "orders.customers.regions.name"
 RK_TIER = "orders.customers.tier"
-
-
-@pytest.fixture(params=["sqlite", "duckdb"])
-async def exec_engine(request):
-    async for engine in make_exec_engine(request):
-        yield engine
 
 
 class TestCrossModelPartitionedFilter:

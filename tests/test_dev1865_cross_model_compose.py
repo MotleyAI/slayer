@@ -10,18 +10,12 @@ from __future__ import annotations
 
 import pytest
 
-from tests._dev1865_fixtures import ModelMeasure, make_exec_engine, q
+from tests._dev1865_fixtures import ModelMeasure, q
 
 CM_BAND = (
     "CASE WHEN customers.spend:sum(partition_by=customers.tier) > 175 "
     "THEN 'hi' ELSE 'lo' END"
 )
-
-
-@pytest.fixture(params=["sqlite", "duckdb"])
-async def exec_engine(request):
-    async for engine in make_exec_engine(request):
-        yield engine
 
 
 async def test_local_and_cross_model_aggregates_in_one_expression(exec_engine) -> None:

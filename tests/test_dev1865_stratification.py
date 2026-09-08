@@ -16,7 +16,6 @@ from tests._dev1865_fixtures import (
     GRAND_TOTAL,
     REGION_TOTAL,
     ModelMeasure,
-    make_exec_engine,
     month_td,
     q,
     rows_by,
@@ -26,12 +25,6 @@ from tests._dev1865_fixtures import (
 def _bucket_key(row):
     """A (region, month) bucket identity — every column except the measure."""
     return tuple(sorted((k, v) for k, v in row.items() if k != "orders.w"))
-
-
-@pytest.fixture(params=["sqlite", "duckdb"])
-async def exec_engine(request):
-    async for engine in make_exec_engine(request):
-        yield engine
 
 
 class TestFieldMaskRestrictsPopulation:
