@@ -42,7 +42,7 @@ class TestStructuralProof:
     def test_covered_solo_primary_key_proves(self) -> None:
         # orders → customers on customers.id (PK): no declaration needed.
         join = orders_model().joins[0]
-        assert provably_to_one(join=join, target_model=customers_model())
+        assert provably_to_one(edge=join, target_model=customers_model())
 
     def test_covered_solo_unique_column_proves(self) -> None:
         target = SlayerModel(
@@ -53,7 +53,7 @@ class TestStructuralProof:
             ],
         )
         join = _join("codes", [["c", "code"]])
-        assert provably_to_one(join=join, target_model=target)
+        assert provably_to_one(edge=join, target_model=target)
 
     def test_physical_spelling_of_a_renamed_pk_proves(self) -> None:
         # DEV-1838: the join pair names the RAW column while the PK is declared
@@ -67,7 +67,7 @@ class TestStructuralProof:
             ],
         )
         join = _join("loss_payment", [["id", "Claim_Amount_Identifier"]])
-        assert provably_to_one(join=join, target_model=target)
+        assert provably_to_one(edge=join, target_model=target)
 
     def test_a_derived_pk_sql_does_not_prove_the_raw_spelling(self) -> None:
         # A NON-bare ``sql`` is an expression, not a rename — no uniqueness
@@ -81,19 +81,19 @@ class TestStructuralProof:
             ],
         )
         join = _join("derived", [["c", "code"]])
-        assert not provably_to_one(join=join, target_model=target)
+        assert not provably_to_one(edge=join, target_model=target)
 
     def test_uncovered_target_is_unproven(self) -> None:
         # customers → segments: segments.code carries no PK/unique claim.
         join = next(
             j for j in customers_model().joins if j.target_model == "segments"
         )
-        assert not provably_to_one(join=join, target_model=segments_model())
+        assert not provably_to_one(edge=join, target_model=segments_model())
 
     def test_non_key_target_column_is_unproven(self) -> None:
         # Joining on a non-key column of a model that HAS a PK elsewhere.
         join = _join("regions", [["r", "name"]])
-        assert not provably_to_one(join=join, target_model=regions_model())
+        assert not provably_to_one(edge=join, target_model=regions_model())
 
 
 class TestCompositeKeys:
@@ -101,17 +101,17 @@ class TestCompositeKeys:
 
     def test_full_composite_coverage_proves(self) -> None:
         join = _join("inventory", [["wh", "wh"], ["sku", "sku"]])
-        assert provably_to_one(join=join, target_model=inventory_model())
+        assert provably_to_one(edge=join, target_model=inventory_model())
 
     def test_partial_composite_coverage_proves_nothing(self) -> None:
         join = _join("inventory", [["wh", "wh"]])
-        assert not provably_to_one(join=join, target_model=inventory_model())
+        assert not provably_to_one(edge=join, target_model=inventory_model())
 
     def test_superset_of_composite_key_proves(self) -> None:
         join = _join(
             "inventory", [["wh", "wh"], ["sku", "sku"], ["q", "qty"]],
         )
-        assert provably_to_one(join=join, target_model=inventory_model())
+        assert provably_to_one(edge=join, target_model=inventory_model())
 
 
 class TestDeclaredCardinality:
@@ -121,48 +121,49 @@ class TestDeclaredCardinality:
             "segments", [["segment_code", "code"]],
             cardinality=JoinCardinality.MANY_TO_ONE,
         )
-        assert provably_to_one(join=join, target_model=segments_model())
+        assert provably_to_one(edge=join, target_model=segments_model())
 
     def test_declared_one_to_one_is_trusted(self) -> None:
         join = _join(
             "segments", [["segment_code", "code"]],
             cardinality=JoinCardinality.ONE_TO_ONE,
         )
-        assert provably_to_one(join=join, target_model=segments_model())
+        assert provably_to_one(edge=join, target_model=segments_model())
 
     def test_declared_one_to_many_is_unsafe(self) -> None:
-        # The fixture's declared reverse edge customers → orders.
-        join = next(
-            j for j in customers_model().joins if j.target_model == "orders"
+        # DEV-1853: the fixture no longer declares a reverse edge — same shape inline.
+        join = _join(
+            "orders", [["id", "customer_id"]],
+            cardinality=JoinCardinality.ONE_TO_MANY,
         )
-        assert not provably_to_one(join=join, target_model=orders_model())
+        assert not provably_to_one(edge=join, target_model=orders_model())
 
     def test_declared_many_to_many_is_unsafe(self) -> None:
         join = _join(
             "segments", [["segment_code", "code"]],
             cardinality=JoinCardinality.MANY_TO_MANY,
         )
-        assert not provably_to_one(join=join, target_model=segments_model())
+        assert not provably_to_one(edge=join, target_model=segments_model())
 
 
-class TestMirroredInnerEdges:
-    """A mirrored INNER edge carries the inverted forward cardinality
-    (``join_sync``); the predicate reads the stored edge as-is."""
+class TestInvertedCardinalityEdges:
+    """A declared join read in its inverted-cardinality shape (DEV-1853: the
+    label a stored mirror used to carry); the predicate reads it as-is."""
 
     def test_inverted_many_to_one_reverse_edge_is_unsafe(self) -> None:
-        # Forward m:1 mirrors to 1:N — exactly the fixture's reverse edge shape.
+        # Forward m:1 inverts to 1:N — the reverse-orientation shape.
         reverse = _join(
             "orders", [["id", "customer_id"]],
             cardinality=JoinCardinality.ONE_TO_MANY,
         )
-        assert not provably_to_one(join=reverse, target_model=orders_model())
+        assert not provably_to_one(edge=reverse, target_model=orders_model())
 
     def test_inverted_one_to_one_reverse_edge_is_safe(self) -> None:
         reverse = _join(
             "segments", [["segment_code", "code"]],
             cardinality=JoinCardinality.ONE_TO_ONE,
         )
-        assert provably_to_one(join=reverse, target_model=segments_model())
+        assert provably_to_one(edge=reverse, target_model=segments_model())
 
 
 class TestSafeReachable:
@@ -202,19 +203,21 @@ class TestSafeReachable:
         )
 
 
-class TestNoSynthesizedTraversal:
-    """F1 — safety is evaluated over EXISTING stored edges only; proving a
-    forward join never makes the absent reverse hop traversable."""
+class TestInvertedOrientationsStayProven:
+    """DEV-1853 repealed F1's no-synthesized-traversal rule: every declared
+    edge traverses both ways, but proof is per orientation — an inverted
+    to-one hop is a fan-out orientation and stays unsafe."""
 
-    def test_absent_reverse_edge_is_not_reachable(self) -> None:
-        # customers → regions is stored and proven; regions stores NO join
-        # back to customers.
+    def test_inverted_fan_out_orientation_is_unsafe(self) -> None:
+        # customers → regions is stored and proven; the inverted hop
+        # regions → customers now WALKS but its 1:N orientation is unproven.
         assert not safe_reachable(
             root=regions_model(), path=("customers",),
             models_by_name=_models_by_name(),
         )
 
-    def test_unknown_edge_is_not_reachable(self) -> None:
+    def test_unconnected_hop_is_not_reachable(self) -> None:
+        # orders and regions share no edge in either direction (2 hops apart).
         assert not safe_reachable(
             root=orders_model(), path=("regions",),
             models_by_name=_models_by_name(),

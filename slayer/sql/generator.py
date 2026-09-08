@@ -51,6 +51,7 @@ from slayer.core.keys import (
     column_path,
     substitute_value_keys,
 )
+from slayer.core.join_walker import resolve_hop
 from slayer.core.models import Aggregation
 from slayer.core.refs import (
     EXPRESSION_SOURCE_KINDS as _EXPRESSION_SOURCE_KINDS,
@@ -4190,6 +4191,34 @@ class SQLGenerator:
             _add_row_slot(sid)
         return ordered
 
+    def _oriented_hop_chain(self, *, source_model, path, bundle):
+        """Resolve ``path`` tokens into ``(OrientedJoin, next_model)`` hops through
+        the shared bidirectional walker — reverse hops and edge-name tokens
+        included. Raises ``ValueError`` on a missing hop (its own message) and
+        propagates ``AmbiguousJoinPathError`` on an ambiguous one."""
+        models_by_name = {m.name: m for m in bundle.referenced_models}
+        models_by_name.setdefault(source_model.name, source_model)
+        current = source_model
+        chain = []
+        for hop in path:
+            edge = resolve_hop(
+                current=current, token=hop, models_by_name=models_by_name
+            )
+            if edge is None:
+                raise ValueError(
+                    f"Model {current.name!r} has no join to "
+                    f"{hop!r}; needed for joined path {path!r}.",
+                )
+            next_model = models_by_name.get(edge.target_model)
+            if next_model is None:
+                raise ValueError(
+                    f"Join target {edge.target_model!r} not in resolved "
+                    f"source bundle.",
+                )
+            chain.append((edge, next_model))
+            current = next_model
+        return chain
+
     def _build_from_and_joins(
         self,
         *,
@@ -4207,29 +4236,17 @@ class SQLGenerator:
             return base_from, joins
         emitted_aliases: set = {source_relation}
         for path in joined_paths:
-            current_model = source_model
             current_alias = source_relation
-            for hop_idx, hop in enumerate(path):
-                join_def = next(
-                    (j for j in current_model.joins if j.target_model == hop),
-                    None,
-                )
-                if join_def is None:
-                    raise ValueError(
-                        f"Model {current_model.name!r} has no join to "
-                        f"{hop!r}; needed for joined path {path!r}.",
-                    )
-                next_model = bundle.get_referenced_model(hop)
-                if next_model is None:
-                    raise ValueError(
-                        f"Join target {hop!r} not in resolved source bundle.",
-                    )
+            chain = self._oriented_hop_chain(
+                source_model=source_model, path=path, bundle=bundle,
+            )
+            for hop_idx, (edge, next_model) in enumerate(chain):
                 next_alias = self._join_alias(
                     root=source_relation, path=path[: hop_idx + 1],
                 )
                 if next_alias not in emitted_aliases:
                     join_on_parts = []
-                    for src_col, tgt_col in join_def.join_pairs:
+                    for src_col, tgt_col in edge.join_pairs:
                         # Join keys are physical DB columns — quote them when mixed-case via _to_ident so a case-folding
                         # backend resolves them; table qualifiers are internal aliases.
                         join_on_parts.append(exp.EQ(
@@ -4257,13 +4274,14 @@ class SQLGenerator:
                         if len(join_on_parts) > 1
                         else join_on_parts[0]
                     )
-                    # Honor the model's declared join_type (default LEFT so a measure never changes cardinality;
-                    # explicit INNER only when declared).
+                    # Root-relative join type: LEFT keeps the querying root whole
+                    # in the traversal direction, INNER is symmetric; RIGHT is
+                    # never emitted (DEV-1853 D2). The oriented edge carries the
+                    # declared type unchanged.
                     joins.append((
-                        join_expr, on_expr, join_def.join_type.value.upper(),
+                        join_expr, on_expr, edge.join_type.value.upper(),
                     ))
                     emitted_aliases.add(next_alias)
-                current_model = next_model
                 current_alias = next_alias
         return base_from, joins
 
@@ -4284,19 +4302,15 @@ class SQLGenerator:
                 leaf=leaf,
             )
         current_alias = source_relation
+        chain = self._oriented_hop_chain(
+            source_model=source_model, path=path, bundle=bundle,
+        )
         current_model = source_model
-        for hop_idx, hop in enumerate(path):
-            target_alias = self._join_alias(
+        for hop_idx, (_edge, next_model) in enumerate(chain):
+            current_alias = self._join_alias(
                 root=source_relation, path=path[: hop_idx + 1],
             )
-            current_alias = target_alias
-            target_model = bundle.get_referenced_model(hop)
-            if target_model is None:
-                raise ValueError(
-                    f"Joined dim path {path!r}: target {hop!r} missing "
-                    f"from the resolved source bundle.",
-                )
-            current_model = target_model
+            current_model = next_model
         col_def = next(
             (c for c in current_model.columns if c.name == leaf), None,
         )

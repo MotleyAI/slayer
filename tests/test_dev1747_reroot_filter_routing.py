@@ -31,10 +31,16 @@ _CROSS_MODEL_MEASURE = {"formula": "customers.spend:sum", "name": "cs"}
 
 #: Reachable from the re-rooted target (``customers -> regions``).
 FILTER_REACHABLE = "customers.regions.name == 'Alpha'"
-#: Purely host-local — filters host rows, stays at the host base, never warns.
+#: Host-local — filters host rows AND pushes into the producer by semi-join
+#: over the inverted orders→customers edge (DEV-1853 divergences.md class (c)).
 FILTER_HOST_LOCAL = "status == 'A'"
-#: Off the target's graph (``orders -> order_tags``) — unreachable from a CTE rooted at ``customers``.
-FILTER_UNREACHABLE = "order_tags.name == 'rush'"
+#: Mixes a producer-root-local ref (``customers.tier``) with a cross-path ref
+#: under OR — the D2 shape that STAYS dropped + warned under DEV-1853 (the old
+#: ambiguous-reverse-hop route to drop+warn is retired; divergences.md class (d)).
+FILTER_MIXED_OR = "customers.tier == 'gold' or status == 'A'"
+#: Off the host's forward graph (``orders -> order_tags``) — now REACHABLE from
+#: a CTE rooted at ``customers`` via the inverted hop; pushes by semi-join.
+FILTER_TAGS = "order_tags.name == 'rush'"
 #: Reachable from both scopes; changes the aggregate inside a surviving group (Alpha ``cs`` 1040→1000) — separates CTE-applied from host-applied.
 FILTER_TARGET_ATTRIBUTE = "customers.tier == 'gold'"
 #: Aggregate-phase predicate over the isolated aggregate; not host-evaluable, so it must STAY routed to the CTE.
@@ -92,22 +98,31 @@ class TestRoutingSurvivesReroot:
             f"{attach.dropped_filter_warnings}"
         )
 
-    def test_host_local_filter_is_dropped_and_warned(self) -> None:
-        """Host-local ROW filter is unreachable from target root ``customers`` → dropped from the producer and warned; the host base still applies it locally."""
+    def test_host_local_filter_pushes_down_by_semi_join(self) -> None:
+        # DEV-1853 divergences.md class (c): drop+warn → semi-join pushdown
+        # over the inverted edge; the host base still applies it locally.
         attach = _sole_attach(FILTER_HOST_LOCAL)
+        assert attach.producer_plan.semi_join_filters, (
+            "the host-local filter did not push into the producer by semi-join"
+        )
+        assert not attach.dropped_filter_warnings
+
+    def test_mixed_or_filter_is_dropped_and_warned(self) -> None:
+        """The D2 mixed-OR conjunct stays excluded from the producer and warned; the host base still applies it locally."""
+        attach = _sole_attach(FILTER_MIXED_OR)
         assert not attach.producer_plan.filters_by_phase
         assert attach.dropped_filter_warnings
 
     def test_routing_lists_are_not_cleared_wholesale(self) -> None:
-        attach = _sole_attach(FILTER_REACHABLE, FILTER_HOST_LOCAL)
+        attach = _sole_attach(FILTER_REACHABLE, FILTER_MIXED_OR)
         assert attach.producer_plan.filters_by_phase, (
             "the reachable filter did not inherit even though it is present"
         )
 
     def test_mixed_filters_route_independently(self) -> None:
-        attach = _sole_attach(FILTER_REACHABLE, FILTER_HOST_LOCAL, FILTER_UNREACHABLE)
+        attach = _sole_attach(FILTER_REACHABLE, FILTER_HOST_LOCAL, FILTER_MIXED_OR)
         assert attach.producer_plan.filters_by_phase, "the reachable filter did not inherit"
-        assert attach.dropped_filter_warnings, "the unreachable filter did not warn"
+        assert attach.dropped_filter_warnings, "the mixed-OR filter did not warn"
 
 
 def _classifier_spy(monkeypatch) -> list:
@@ -130,7 +145,7 @@ def _classifier_spy(monkeypatch) -> list:
 class TestClassifiedExactlyOnce:
     def test_each_host_filter_is_classified_once_per_cte(self, monkeypatch) -> None:
         calls = _classifier_spy(monkeypatch)
-        _sole_attach(FILTER_REACHABLE, FILTER_HOST_LOCAL, FILTER_UNREACHABLE)
+        _sole_attach(FILTER_REACHABLE, FILTER_HOST_LOCAL, FILTER_MIXED_OR)
         assert calls, "the inheritance pass was never called — spy is vacuous"
         assert len(calls) == 1, (
             f"one producer must classify its filters once, not {len(calls)}×"
@@ -158,38 +173,38 @@ class TestClassifiedExactlyOnce:
     def test_the_classifier_receives_the_structural_summary(
         self, monkeypatch,
     ) -> None:
-        """The decision input must carry the unreachable filter itself, else the warning tests below pass vacuously."""
+        """The decision input must carry the excluded filter itself, else the warning tests below pass vacuously."""
         calls = _classifier_spy(monkeypatch)
-        attach = _sole_attach(FILTER_UNREACHABLE)
+        attach = _sole_attach(FILTER_MIXED_OR)
         texts = {
             text for call in calls for _bf, text in call["base_filters"]
         }
-        assert FILTER_UNREACHABLE in texts, (
-            f"the unreachable filter never reached the inheritance pass; "
+        assert FILTER_MIXED_OR in texts, (
+            f"the excluded filter never reached the inheritance pass; "
             f"saw {texts}"
         )
-        assert attach.dropped_filter_warnings, "the unreachable filter was not dropped"
+        assert attach.dropped_filter_warnings, "the mixed-OR filter was not dropped"
 
 
-class TestUnreachableWarns:
-    def test_unreachable_filter_produces_a_warning_on_the_plan(self) -> None:
-        attach = _sole_attach(FILTER_UNREACHABLE)
+class TestExcludedWarns:
+    def test_excluded_filter_produces_a_warning_on_the_plan(self) -> None:
+        attach = _sole_attach(FILTER_MIXED_OR)
         assert attach.dropped_filter_warnings, (
-            "an unreachable filter was dropped from the producer with no "
+            "an excluded filter was dropped from the producer with no "
             "warning — the B6 defect"
         )
 
     def test_warning_carries_the_original_filter_text(self) -> None:
-        warning = _sole_attach(FILTER_UNREACHABLE).dropped_filter_warnings[0]
-        assert FILTER_UNREACHABLE in warning.filter_text
+        warning = _sole_attach(FILTER_MIXED_OR).dropped_filter_warnings[0]
+        assert FILTER_MIXED_OR in warning.filter_text
 
     def test_warning_carries_a_reason(self) -> None:
-        warning = _sole_attach(FILTER_UNREACHABLE).dropped_filter_warnings[0]
+        warning = _sole_attach(FILTER_MIXED_OR).dropped_filter_warnings[0]
         assert warning.reason, "the warning carries no reason at all"
-        assert "reverse join" in warning.reason.lower(), warning.reason
+        assert "or/not" in warning.reason.lower(), warning.reason
 
     async def test_exactly_one_warning_per_filter_per_execute(self) -> None:
-        """The boundary dedups per filter identity: two cross-model measures classify one filter twice, user sees it once."""
+        """Every producer classifies the filter, the user sees one warning: the customers producer drops the mixed-OR conjunct, the regions producer pushes it (all-cross on one branch)."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="name", model="customers.regions")],
@@ -198,7 +213,7 @@ class TestUnreachableWarns:
                 {"formula": "customers.spend:sum", "name": "cs"},
                 {"formula": "customers.regions.population:sum", "name": "pop"},
             ],
-            filters=[FILTER_UNREACHABLE],
+            filters=[FILTER_MIXED_OR],
         )
         with tempfile.TemporaryDirectory() as d:
             db = os.path.join(d, "dev1747.db")
@@ -222,19 +237,22 @@ class TestUnreachableWarns:
             db = os.path.join(d, "dev1747.db")
             seed_dev1747_sqlite(db)
             engine = await make_sqlite_engine(d, db)
-            query = _query(FILTER_UNREACHABLE)
+            query = _query(FILTER_MIXED_OR)
             with warnings.catch_warnings():
                 warnings.simplefilter("error", UnreachableFilterDroppedWarning)
                 with pytest.raises(UnreachableFilterDroppedWarning):
                     await engine.execute(query)
 
     async def test_two_textually_distinct_filters_warn_separately(self) -> None:
-        """Identity is per filter, not per text bucket: two different unreachable filters warn separately."""
+        """Identity is per filter, not per text bucket: two different excluded filters warn separately."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="name", model="customers.regions")],
             measures=[{"formula": "amount:sum", "name": "rev"}, _CROSS_MODEL_MEASURE],
-            filters=["order_tags.name == 'rush'", "order_tags.name == 'gift'"],
+            filters=[
+                "customers.tier == 'gold' or status == 'A'",
+                "customers.tier == 'silver' or status == 'B'",
+            ],
         )
         with tempfile.TemporaryDirectory() as d:
             db = os.path.join(d, "dev1747.db")
@@ -421,7 +439,8 @@ class TestRerootedFilterStillNarrowsTheHost:
         for label, flt in (
             ("reachable", FILTER_REACHABLE),
             ("host-local", FILTER_HOST_LOCAL),
-            ("unreachable", FILTER_UNREACHABLE),
+            ("mixed-or", FILTER_MIXED_OR),
+            ("tags", FILTER_TAGS),
             ("target-attribute", FILTER_TARGET_ATTRIBUTE),
             ("aggregate-ref", FILTER_AGGREGATE_REF),
         ):
@@ -465,7 +484,7 @@ class TestRerootedFilterStillNarrowsTheHost:
         )
 
     async def test_a_host_local_filter_still_narrows_the_host(self) -> None:
-        """Control: a host-local filter never had routing ids, so it is unaffected — ``status == 'A'`` keeps group A's two orders across two regions."""
+        """``status == 'A'`` keeps group A's two orders across two regions; it now ALSO pushes into the producer by semi-join (rows unchanged)."""
         rows = await self._rows(FILTER_HOST_LOCAL)
         regions = sorted(
             str(r["orders.customers.regions.name"]) for r in rows
@@ -473,9 +492,9 @@ class TestRerootedFilterStillNarrowsTheHost:
         assert regions == sorted([REGION_A_LOW, REGION_A_HIGH]), regions
         assert sum(r["orders.rev"] for r in rows) == GROUP_A_AMOUNT, rows
 
-    async def test_an_unreachable_filter_still_narrows_the_host(self) -> None:
-        """An unreachable filter must still apply at the host — that is the promise the dropped-filter warning makes."""
-        rows = await self._rows(FILTER_UNREACHABLE)
+    async def test_an_excluded_filter_still_narrows_the_host(self) -> None:
+        """An excluded (mixed-OR) filter must still apply at the host — that is the promise the dropped-filter warning makes."""
+        rows = await self._rows(FILTER_MIXED_OR)
         regions = sorted(
             str(r["orders.customers.regions.name"]) for r in rows
         )
@@ -499,18 +518,19 @@ class TestRerootedFilterStillNarrowsTheHost:
         )
 
     async def test_no_warning_when_every_filter_is_reachable(self) -> None:
-        """A misclassified-reachable predicate still yields right-looking rows; the warning is the only tell. ``FILTER_HOST_LOCAL`` is excluded — it drops+warns now."""
-        for flt in (FILTER_REACHABLE, FILTER_TARGET_ATTRIBUTE):
+        """A misclassified predicate still yields right-looking rows; the warning is the only tell. Host-local and tags filters push by semi-join now (DEV-1853) — no warning."""
+        for flt in (FILTER_REACHABLE, FILTER_TARGET_ATTRIBUTE,
+                    FILTER_HOST_LOCAL, FILTER_TAGS):
             _, dropped = await self._rows_and_warnings(flt)
             assert not dropped, (
                 f"{flt!r} is evaluable by the producer but was reported "
                 f"dropped: {[str(w.message) for w in dropped]}"
             )
 
-    async def test_the_unreachable_filter_warns_exactly_once(self) -> None:
-        rows, dropped = await self._rows_and_warnings(FILTER_UNREACHABLE)
+    async def test_the_excluded_filter_warns_exactly_once(self) -> None:
+        rows, dropped = await self._rows_and_warnings(FILTER_MIXED_OR)
         assert len(dropped) == 1, [str(w.message) for w in dropped]
-        assert "order_tags" in str(dropped[0].message)
+        assert FILTER_MIXED_OR in str(dropped[0].message)
         regions = sorted(str(r["orders.customers.regions.name"]) for r in rows)
         assert regions == sorted([REGION_A_LOW, REGION_A_HIGH]), regions
 

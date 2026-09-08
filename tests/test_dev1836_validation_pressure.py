@@ -51,17 +51,25 @@ class TestUnprovenJoins:
         assert "detect" in message
 
     def test_proven_joins_are_not_flagged(self) -> None:
+        # DEV-1853 D9: one finding per edge — proven edges appear as info
+        # rows recording both orientations, never with broadcast wording.
         findings = audit_join_safety(models=dev1836_models())
         by_edge = _findings_by_edge(findings)
-        assert ("orders", "customers") not in by_edge  # PK-proven
-        assert ("customers", "regions") not in by_edge  # PK-proven
+        for edge in (("orders", "customers"), ("customers", "regions")):
+            finding = by_edge[edge]  # PK-proven
+            assert finding.forward_provably_to_one is True
+            assert finding.severity != "warning"
+            assert "broadcast" not in finding.message.lower()
 
-    def test_declared_one_to_many_is_flagged_as_broadcast(self) -> None:
+    def test_unproven_forward_orientation_is_flagged_as_broadcast(self) -> None:
         # Neither declared m:1/1:1 nor structurally proven — metrics crossing
-        # it broadcast, and validation says so.
+        # it broadcast, and validation says so (DEV-1853: the fixture's only
+        # such declared orientation is customers → segments).
         findings = audit_join_safety(models=dev1836_models())
         by_edge = _findings_by_edge(findings)
-        assert "broadcast" in by_edge[("customers", "orders")].message.lower()
+        finding = by_edge[("customers", "segments")]
+        assert finding.forward_provably_to_one is False
+        assert "broadcast" in finding.message.lower()
 
 
 class TestCrossDatasourceIsolation:
@@ -89,7 +97,11 @@ class TestCrossDatasourceIsolation:
         findings = audit_join_safety(
             models=[orders_a, customers_a, customers_b],
         )
-        assert ("orders", "customers") not in _findings_by_edge(findings)
+        # DEV-1853 D9: the edge appears as a per-edge row; proven means no
+        # broadcast flag — a weaker same-named model elsewhere must not flip it.
+        finding = _findings_by_edge(findings)[("orders", "customers")]
+        assert finding.forward_provably_to_one is True
+        assert "broadcast" not in finding.message.lower()
 
 
 class TestContradictedDeclarations:
@@ -113,14 +125,18 @@ class TestContradictedDeclarations:
         orders = models[0]
         orders.joins[0].cardinality = JoinCardinality.MANY_TO_ONE
         findings = audit_join_safety(models=models, detection=self._detection())
+        # DEV-1853 D9: the per-edge row and the contradiction are separate
+        # findings — filter on the contradiction flag.
         contradiction = [
             f for f in findings
             if (f.model, f.target_model) == ("orders", "customers")
+            and f.contradiction
         ]
         assert contradiction, [
             (f.model, f.target_model) for f in findings
         ]
         assert "contradict" in contradiction[0].message.lower()
+        assert contradiction[0].severity == "error"
 
     def test_no_detection_report_no_contradiction_flags(self) -> None:
         models = dev1836_models()

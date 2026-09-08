@@ -27,6 +27,7 @@ from slayer.core.enums import DataType
 from slayer.core.formula import TIME_TRANSFORMS
 from slayer.core.format import NumberFormat
 from slayer.core.errors import (
+    AmbiguousJoinPathError,
     AmbiguousReferenceError,
     DistinctDimensionValuesError,
     UnknownReferenceError,
@@ -54,10 +55,10 @@ from slayer.core.errors import UnreachableFilterDroppedWarning
 from slayer.core.models import ModelMeasure, SlayerModel
 from slayer.engine.aggregate_input_paths import compute_aggregate_input_join_paths
 from slayer.engine.column_filter_paths import compute_column_filter_join_paths
+from slayer.core.join_walker import resolve_hop, walk
 from slayer.engine.join_safety import (
     may_inline_crossing_inputs,
     provably_to_one,
-    resolve_correlation_hop,
     safe_reachable,
 )
 from slayer.core.query import (
@@ -1339,6 +1340,31 @@ def _key_host_path(key: ValueKey) -> Tuple[str, ...]:
     return tuple(getattr(key, "path", ()) or ())
 
 
+def _back_token(
+    *, root_model: SlayerModel, host_name: str, target_path: Tuple[str, ...],
+    models_by_name: Dict[str, SlayerModel],
+) -> str:
+    """The token that traverses from the aggregate's root back to the host.
+
+    An edge-name hop is direction-agnostic, so when the last target-path token
+    is a named edge it also names the reverse hop and resolves unambiguously
+    (the bare host model name can be ambiguous across parallel edges). Falls
+    back to the host model name otherwise (DEV-1853 D5)."""
+    if target_path:
+        last = target_path[-1]
+        if last != host_name:
+            try:
+                edge = resolve_hop(
+                    current=root_model, token=last,
+                    models_by_name=models_by_name,
+                )
+            except AmbiguousJoinPathError:
+                edge = None
+            if edge is not None and edge.target_model == host_name:
+                return last
+    return host_name
+
+
 def _attributable_from_root(
     *, host_path: Tuple[str, ...], target_path: Tuple[str, ...],
     root_model: SlayerModel, models_by_name: Dict[str, SlayerModel],
@@ -1354,8 +1380,12 @@ def _attributable_from_root(
         return False
     if hp and safe_reachable(root=root_model, path=hp, models_by_name=models_by_name):
         return True
+    back = _back_token(
+        root_model=root_model, host_name=host_name, target_path=tp,
+        models_by_name=models_by_name,
+    )
     return safe_reachable(
-        root=root_model, path=(host_name, *hp), models_by_name=models_by_name,
+        root=root_model, path=(back, *hp), models_by_name=models_by_name,
     )
 
 
@@ -1370,7 +1400,11 @@ def _reroot_leaf_via_host(
         return None  # reroot_value_key strips the prefix
     if target_path and host_name == target_path[0]:
         return None
-    via_host = (host_name, *hp)
+    back = _back_token(
+        root_model=root_model, host_name=host_name, target_path=target_path,
+        models_by_name=models_by_name,
+    )
+    via_host = (back, *hp)
     if not safe_reachable(
         root=root_model, path=via_host, models_by_name=models_by_name,
     ) and hp and safe_reachable(
@@ -1400,9 +1434,14 @@ def _reroot_from_root(
         )
         if rerooted is not None:
             mapping[r] = rerooted
+    # Strip the target prefix from under-target refs FIRST; off-side refs
+    # (the via-host mapping) never start with the target prefix so they survive
+    # unchanged, then get substituted. Doing it the other way round would let a
+    # direction-agnostic edge-name back-token (== the target token) be stripped.
+    key = reroot_value_key(key, target_path=tp)
     if mapping:
         key = substitute_value_keys(key, mapping)
-    return reroot_value_key(key, target_path=tp)
+    return key
 
 
 _UNREACHABLE_NO_PATH = "unreachable from the aggregate's root (no join path from it)"
@@ -1418,11 +1457,13 @@ def _broadcast_reason(
         return _UNREACHABLE_NO_PATH
     current = root_model
     for name in hp[len(tp):]:
-        join = next((j for j in current.joins if j.target_model == name), None)
-        if join is None:
+        edge = resolve_hop(
+            current=current, token=name, models_by_name=models_by_name,
+        )
+        if edge is None:
             return _UNREACHABLE_NO_PATH
-        tgt = models_by_name.get(name)
-        if tgt is None or not provably_to_one(join=join, target_model=tgt):
+        tgt = models_by_name.get(edge.target_model)
+        if tgt is None or not provably_to_one(edge=edge, target_model=tgt):
             return f"crosses an unproven join hop to {name}"
         current = tgt
     return "unreachable from the aggregate's root"
@@ -1916,9 +1957,14 @@ def _path_edges_exist(
 ) -> bool:
     current = model
     for name in path:
-        join = next((j for j in current.joins if j.target_model == name), None)
-        nxt = models_by_name.get(name)
-        if join is None or nxt is None:
+        try:
+            edge = resolve_hop(
+                current=current, token=name, models_by_name=models_by_name,
+            )
+        except AmbiguousJoinPathError:
+            return False
+        nxt = models_by_name.get(edge.target_model) if edge is not None else None
+        if edge is None or nxt is None:
             return False
         current = nxt
     return True
@@ -1940,60 +1986,55 @@ def _forward_hops(
     base_node_path: Tuple[str, ...], models_by_name: Dict[str, SlayerModel],
     nodes: Dict[Tuple[str, ...], SemiJoinHop],
 ) -> Tuple[str, ...]:
-    """Register forward stored hops along ``rel_path``; returns the final node path."""
+    """Register hops along ``rel_path`` through the shared walker (reverse hops
+    and edge-name tokens included); returns the final node path. The node-path
+    token stays as-typed for hop-alias identity while the hop's ``target_model``
+    is the resolved model. An ambiguous hop raises (fail closed)."""
     current = start_model
     node_path = base_node_path
     for hop_name in rel_path:
-        join = next(
-            (j for j in current.joins if j.target_model == hop_name), None,
+        edge = resolve_hop(
+            current=current, token=hop_name, models_by_name=models_by_name,
         )
-        target = models_by_name.get(hop_name)
-        if join is None or target is None:
+        target = models_by_name.get(edge.target_model) if edge is not None else None
+        if edge is None or target is None:
             raise _PushBlocked(
-                f"unreachable from the aggregate's root (no stored join from "
+                f"unreachable from the aggregate's root (no join edge from "
                 f"{current.name} to {hop_name})"
             )
         node_path = (*node_path, hop_name)
         _register_hop(
-            nodes, node_path=node_path, target_model=hop_name,
-            pairs=[(s, t) for s, t in join.join_pairs],
+            nodes, node_path=node_path, target_model=edge.target_model,
+            pairs=[(s, t) for s, t in edge.join_pairs],
         )
         current = target
     return node_path
 
 
 def _reverse_hops(
-    *, target_path: Tuple[str, ...], root_model: SlayerModel,
+    *, target_path: Tuple[str, ...],
     host_model: SlayerModel, models_by_name: Dict[str, SlayerModel],
     nodes: Dict[Tuple[str, ...], SemiJoinHop],
 ) -> Tuple[str, ...]:
-    """Register the reverse chain root → … → host; returns the host node's path."""
-    chain: List[SlayerModel] = [host_model]
-    for name in target_path[:-1]:
-        nxt = models_by_name.get(name)
-        if nxt is None:
-            raise _PushBlocked(
-                f"unreachable from the aggregate's root (join path model "
-                f"{name!r} is unresolved)"
-            )
-        chain.append(nxt)
-    node_path: Tuple[str, ...] = ()
-    frm = root_model
-    for to_model in reversed(chain):
-        pairs = resolve_correlation_hop(from_model=frm, to_model=to_model)
-        if pairs is None:
-            # Root-agnostic wording: several producers dropping one filter must
-            # agree on the reason (the boundary dedup asserts it).
-            raise _PushBlocked(
-                f"no unambiguous reverse join edge onto {to_model.name} for "
-                f"the semi-join correlation (several stored joins target it, "
-                f"or none can be inverted; declare a reverse join)"
-            )
-        node_path = (*node_path, to_model.name)
-        _register_hop(
-            nodes, node_path=node_path, target_model=to_model.name, pairs=pairs,
+    """Register the reverse chain root → … → host by inverting the forward walk
+    host → … → root along ``target_path`` — so an edge-name token correlates
+    through the exact edge the aggregate's path selected, never a re-parsed
+    model name. An ambiguous forward hop raises (fail closed in both modes);
+    an unresolvable one blocks the push. Returns the host node's path."""
+    fwd = walk(root=host_model, path=target_path, models_by_name=models_by_name)
+    if fwd is None:
+        raise _PushBlocked(
+            f"unreachable from the aggregate's root (join path "
+            f"{'.'.join(target_path)!r} does not resolve from "
+            f"{host_model.name})"
         )
-        frm = to_model
+    node_path: Tuple[str, ...] = ()
+    for edge in reversed(fwd):
+        node_path = (*node_path, edge.source_model)
+        _register_hop(
+            nodes, node_path=node_path, target_model=edge.source_model,
+            pairs=[(tgt, src) for src, tgt in edge.join_pairs],
+        )
     return node_path
 
 
@@ -2065,7 +2106,7 @@ def _resolve_ref_anchor(
         return root_model, (), hp, host_node
     if host_node is None:
         host_node = _reverse_hops(
-            target_path=tp, root_model=root_model,
+            target_path=tp,
             host_model=host_model, models_by_name=lookup, nodes=nodes,
         )
     shared = 0

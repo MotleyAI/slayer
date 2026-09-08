@@ -57,10 +57,10 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 # --------------------------------------------------------------------------- #
 # Fixtures — a query whose host filter is genuinely excluded from the CTE root.
-# `warehouses` is a SIBLING branch of `customers`, and since DEV-1840 a sibling
-# filter would push down as a semi-join over the inverted host edge — so orders
-# declares TWO joins onto each aggregate target, making the reverse hop
-# ambiguous: the filter stays dropped + warned, which is this suite's subject.
+# DEV-1853 retired the ambiguous-reverse-hop route to drop+warn (parallel edges
+# now fail closed, and any single edge inverts into a semi-join pushdown), so
+# the excluded filter is the D2 shape that STAYS dropped: a producer-root-local
+# ref mixed with a cross-path ref under OR.
 # --------------------------------------------------------------------------- #
 def _warehouses() -> SlayerModel:
     return SlayerModel(
@@ -98,24 +98,21 @@ def _orders() -> SlayerModel:
         columns=[
             Column(name="id", type=DataType.INT, primary_key=True),
             Column(name="customer_id", type=DataType.INT),
-            Column(name="customer2_id", type=DataType.INT),
             Column(name="shipper_id", type=DataType.INT),
-            Column(name="shipper2_id", type=DataType.INT),
             Column(name="warehouse_id", type=DataType.INT),
             Column(name="status", type=DataType.TEXT),
             Column(name="amount", type=DataType.DOUBLE),
         ],
         joins=[
             ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
-            ModelJoin(target_model="customers", join_pairs=[["customer2_id", "id"]]),
             ModelJoin(target_model="shippers", join_pairs=[["shipper_id", "id"]]),
-            ModelJoin(target_model="shippers", join_pairs=[["shipper2_id", "id"]]),
             ModelJoin(target_model="warehouses", join_pairs=[["warehouse_id", "id"]]),
         ],
     )
 
 
-DROPPED_FILTER = "warehouses.code == 'X'"
+#: Mixed-OR (D2): producer-root-local + cross-path — stays dropped + warned.
+DROPPED_FILTER = "customers.revenue > 0 or warehouses.code == 'X'"
 
 
 def _query(*, extra_filters: list | None = None) -> SlayerQuery:
@@ -167,13 +164,13 @@ async def _engine(tmpdir: str, *, with_tables: bool = False) -> SlayerQueryEngin
 
 
 def _two_plan_query() -> SlayerQuery:
-    """ONE user filter, unreachable from TWO different cross-model targets.
+    """ONE user filter, excluded from TWO different cross-model targets.
 
-    Verified: this produces two separate ``dropped_filter_warnings`` entries
-    (one on the customers plan, one on the shippers plan) for the SAME user
-    filter. Deduping them to a single warning is the contract's core claim, and
-    without this shape nothing in the suite distinguishes "one per filter" from
-    "one per plan".
+    ``customers.revenue > 0 or shippers.cost > 0`` is the D2 mixed-OR shape for
+    BOTH producers (each sees its own root-local ref mixed with a cross-path
+    ref), so both drop it with one agreeing reason. Deduping the two entries to
+    a single warning is the contract's core claim; without this shape nothing in
+    the suite distinguishes "one per filter" from "one per plan".
     """
     return SlayerQuery(
         source_model="orders",
@@ -182,7 +179,7 @@ def _two_plan_query() -> SlayerQuery:
             {"formula": "customers.revenue:sum"},
             {"formula": "shippers.cost:sum"},
         ],
-        filters=[DROPPED_FILTER],
+        filters=["customers.revenue > 0 or shippers.cost > 0"],
     )
 
 
@@ -255,7 +252,9 @@ class TestExecuteEntryPoint:
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
                 await engine.execute(
-                    _query(extra_filters=["warehouses.code == 'Y'"]),
+                    _query(extra_filters=[
+                        "customers.revenue > 0 or warehouses.code == 'Y'",
+                    ]),
                     dry_run=True,
                 )
         hits = [

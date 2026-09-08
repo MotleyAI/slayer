@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 import sqlalchemy as sa
 
+import slayer.osi.converter as osi_converter_module
 from slayer.core.enums import DataType, JoinType
 from slayer.osi.converter import OsiConversionError, OsiToSlayerConverter
 from slayer.osi.models import (
@@ -120,8 +121,6 @@ def test_model_and_semantic_model_ai_context(shop_engine):
 
 def test_db_comments_fill_gaps_curated_wins(shop_engine, monkeypatch):
     """Introspected DB comments survive only where OSI has no curated text."""
-    import slayer.osi.converter as osi_converter_module
-
     real = osi_converter_module.introspect_table_to_model
 
     def _with_db_comments(**kwargs):
@@ -187,9 +186,12 @@ def test_materialized_derived_column_metric(shop_engine):
 
 
 def test_cross_dataset_metric_anchors_and_dotted_ref(shop_engine):
-    orders = _by_name(_shop_result(shop_engine))["orders"]
-    m = {meas.name: meas for meas in orders.measures}
-    assert m["cust_reach"].formula == "amount:sum / customers.customer_id:count_distinct"
+    # DEV-1853 divergences.md class (d): with bidirectional traversal the
+    # mentioned-model tiebreak anchors on customers (lexicographic), and the
+    # orders operand rides the reverse hop.
+    customers = _by_name(_shop_result(shop_engine))["customers"]
+    m = {meas.name: meas for meas in customers.measures}
+    assert m["cust_reach"].formula == "orders.amount:sum / customer_id:count_distinct"
 
 
 def test_multihop_metric_anchor_relative_path(shop_engine):
@@ -483,13 +485,14 @@ def test_unique_keys_into_meta(shop_engine):
 # ─────────────── anchoring: bridge model + COUNT(*) fact-root ────────────────
 
 def test_bridge_anchor_metric(shop_engine):
-    # bridge_metric references products + customers only; orders owns neither
-    # column but is the only model reaching both -> anchor on orders.
-    orders = _by_name(_shop_result(shop_engine))["orders"]
-    m = {meas.name: meas for meas in orders.measures}
+    # DEV-1853 divergences.md class (d): customers now reaches products over
+    # the reverse orders hop, so the mentioned-model tiebreak anchors on
+    # customers instead of the unmentioned orders bridge.
+    customers = _by_name(_shop_result(shop_engine))["customers"]
+    m = {meas.name: meas for meas in customers.measures}
     assert "bridge_metric" in m
     assert m["bridge_metric"].formula == (
-        "products.price:sum + customers.customer_id:count_distinct"
+        "orders.products.price:sum + customer_id:count_distinct"
     )
 
 

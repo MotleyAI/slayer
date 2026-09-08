@@ -10,6 +10,9 @@ group appears as ``producer_plan.semi_join_filters`` (hops carry
 
 from __future__ import annotations
 
+import pytest
+
+from slayer.core.errors import AmbiguousJoinPathError
 from slayer.engine.stage_planner import plan_query
 
 from tests._dev1840_fixtures import (
@@ -17,6 +20,7 @@ from tests._dev1840_fixtures import (
     ambiguity_models,
     bundle,
     dev1840_models,
+    gen,
     q,
     tq,
 )
@@ -24,6 +28,7 @@ from tests._dev1840_fixtures import (
 CM = ModelMeasure(formula="customers.spend:sum", name="cm")
 RM = ModelMeasure(formula="stores.rent:sum", name="rm")
 SM = ModelMeasure(formula="agents.score:sum", name="sm")
+RV = ModelMeasure(formula="reviews.stars:sum", name="rv")
 
 
 def _plan(query, models=None):
@@ -76,16 +81,22 @@ class TestSemiJoinPushdown:
         assert len(sj.conjuncts) == 1
         assert any("channel" in (t or "") for t in sj.filter_texts)
 
-    def test_declared_reverse_edge_pushes_identically(self):
+    async def test_declared_reverse_edge_pushes_identically(self):
+        """The edge declared on the customers side pushes exactly like the
+        forward declaration — which model stores it is storage trivia
+        (DEV-1853 mirror parity)."""
+        query = q(dimensions=["customers.tier"], measures=[CM],
+                  filters=["channel = 'app'"])
         att = _attach(_plan(
-            q(dimensions=["customers.tier"], measures=[CM],
-              filters=["channel = 'app'"]),
-            models=dev1840_models(declare_reverse=True),
+            query, models=dev1840_models(declare_reverse=True),
         ), "customers")
         assert att.dropped_filter_warnings == []
         (sj,) = att.producer_plan.semi_join_filters
         assert [h.target_model for h in sj.hops] == ["orders"]
         assert _pairs(sj.hops[0]) == [("id", "customer_id")]
+        assert await gen(query) == await gen(
+            query, models=dev1840_models(declare_reverse=True),
+        )
 
     def test_forward_unproven_hop_pushes(self):
         """An unproven hop needs no inversion: the stored forward edge is the
@@ -201,27 +212,24 @@ class TestExcludedConjuncts:
         assert "channel" in w.filter_text
         assert list(getattr(att.producer_plan, "semi_join_filters", ())) == []
 
-    def test_ambiguous_inversion_stays_dropped(self):
-        """Scenario: ambiguous reverse path stays dropped and warned — two
-        stored forward edges tickets→agents, no reverse edge."""
-        att = _attach(_plan(
-            tq(measures=[SM], filters=["effort > 2"]),
-            models=ambiguity_models(),
-        ), "agents")
-        (w,) = att.dropped_filter_warnings
-        assert "effort" in w.filter_text
-        assert w.reason
-        assert list(getattr(att.producer_plan, "semi_join_filters", ())) == []
+    def test_ambiguous_measure_hop_fails_closed(self):
+        """Scenario: ambiguous hops fail closed — two unnamed edges
+        tickets→agents make the measure's hop an error, retiring the silent
+        first-match. DEV-1853 divergences.md class (d)."""
+        with pytest.raises(AmbiguousJoinPathError) as ei:
+            _plan(tq(measures=[SM], filters=["effort > 2"]),
+                  models=ambiguity_models())
+        msg = str(ei.value)
+        assert "opened_by" in msg
+        assert "closed_by" in msg
 
-    def test_unreachable_beyond_a_blocked_hop_stays_dropped(self):
-        """Scenario: genuinely unreachable filter keeps the established
-        behavior — the only route to reviews runs through the ambiguous hop,
-        so no path from the root resolves at all."""
-        att = _attach(_plan(
-            tq(measures=[SM], filters=["reviews.stars > 4"]),
-            models=ambiguity_models(),
-        ), "agents")
-        (w,) = att.dropped_filter_warnings
-        assert "stars" in w.filter_text
-        assert w.reason
-        assert list(getattr(att.producer_plan, "semi_join_filters", ())) == []
+    def test_ambiguous_filter_hop_fails_closed(self):
+        """Scenario: ambiguous correlation hop fails closed — the measure's
+        path is clean (tickets→reviews) but the filter crosses the ambiguous
+        pair; drop+warn is retired. DEV-1853 divergences.md class (d)."""
+        with pytest.raises(AmbiguousJoinPathError) as ei:
+            _plan(tq(measures=[RV], filters=["agents.name = 'Ann'"]),
+                  models=ambiguity_models())
+        msg = str(ei.value)
+        assert "opened_by" in msg
+        assert "closed_by" in msg

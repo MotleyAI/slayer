@@ -51,6 +51,7 @@ from slayer.core.keys import (
     normalize_scalar,
     prepend_value_key,
 )
+from slayer.core.join_walker import neighbors, resolve_hop
 from slayer.core.models import SlayerModel
 from slayer.core.query import TimeDimension
 from slayer.core.scope import ModelScope, StageSchema
@@ -250,15 +251,22 @@ def _terminal_model_for_path(
     scope: ModelScope,
     bundle: ResolvedSourceBundle,
 ) -> Optional[SlayerModel]:
-    """Walk ``path`` from ``scope.source_model`` to the terminal model (host if empty)."""
+    """Walk ``path`` from ``scope.source_model`` to the terminal model (host if
+    empty) through the shared bidirectional walker — reverse hops and edge-name
+    tokens resolve, so the terminal model comes from the resolved edge, never
+    from reading the token as a model name (DEV-1853 D5)."""
     current = scope.source_model
     if current is None:
         return None
+    models_by_name = {m.name: m for m in bundle.referenced_models}
+    models_by_name.setdefault(current.name, current)
     for hop in path:
-        nxt = bundle.get_referenced_model(hop)
-        if nxt is None:
+        edge = resolve_hop(current=current, token=hop, models_by_name=models_by_name)
+        if edge is None:
             return None
-        current = nxt
+        current = models_by_name.get(edge.target_model)
+        if current is None:
+            return None
     return current
 
 
@@ -513,31 +521,37 @@ def _walk_join_chain(
     bundle: ResolvedSourceBundle,
     parts: Tuple[str, ...],
 ):
-    """Walk ``hop_path`` join hops from ``host``, validating each and rejecting a
-    hop that revisits a model (circular join). Returns the terminal model;
-    ``parts`` is the full dotted ref, for error messages only."""
+    """Walk ``hop_path`` join hops from ``host`` through the shared bidirectional
+    walker, validating each and rejecting a hop that revisits a model (circular
+    join). Each token resolves as an edge name then a neighbour model, in either
+    orientation. Returns the terminal model; ``parts`` is the full dotted ref,
+    for error messages only. Raises ``AmbiguousJoinPathError`` on an ambiguous
+    hop."""
+    models_by_name = {m.name: m for m in bundle.referenced_models}
+    models_by_name.setdefault(host.name, host)
     current = host
     visited_models = {host.name}
     for hop in hop_path:
-        join = next(
-            (j for j in current.joins if j.target_model == hop), None,
-        )
-        if join is None:
+        edge = resolve_hop(current=current, token=hop, models_by_name=models_by_name)
+        if edge is None:
+            reachable = [
+                e.target_model
+                for e in neighbors(model=current, models_by_name=models_by_name)
+            ]
             raise UnknownReferenceError(
                 name=".".join(parts),
                 scope_kind="ModelScope",
                 scope_summary=(
-                    f"model {current.name!r} joins: "
-                    f"{[j.target_model for j in current.joins]}"
+                    f"model {current.name!r} reachable models: {reachable}"
                 ),
                 suggestion=f"model {current.name!r} has no join to {hop!r}.",
             )
-        nxt = bundle.get_referenced_model(hop)
+        nxt = models_by_name.get(edge.target_model)
         if nxt is None:
             raise UnknownReferenceError(
                 name=".".join(parts),
                 scope_kind="ModelScope",
-                scope_summary=f"target {hop!r} not in source bundle",
+                scope_summary=f"target {edge.target_model!r} not in source bundle",
                 suggestion=None,
             )
         # Revisiting a model is a circular join (``a -> b -> a``): reject here

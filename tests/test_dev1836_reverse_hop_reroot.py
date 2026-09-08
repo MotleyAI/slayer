@@ -1,9 +1,10 @@
 """DEV-1836 D3 reroot rules over a provably to-one reverse hop.
 
 The producer roots at the aggregate's model and reaches HOST coordinates back
-over the declared reverse join: a host time dimension re-roots leaf-wise
-(TimeTruncKey included), and a host-sibling filter binds the HOST's join
-instance (via-host preferred over the root's own same-named join).
+over the INVERTED forward join (DEV-1853 — no declared reverse edge): a host
+time dimension re-roots leaf-wise (TimeTruncKey included), and a host-sibling
+filter binds the HOST's join instance (via-host preferred over the root's own
+same-named join).
 """
 
 from __future__ import annotations
@@ -49,10 +50,9 @@ def _models() -> list[SlayerModel]:
             Column(name="party_b", type=DataType.INT),
         ],
         joins=[
-            # The provably to-one reverse hop (policy_identifier is policy's PK).
-            ModelJoin(target_model="policy",
-                      join_pairs=[["policy_identifier", "policy_identifier"]],
-                      join_type="inner"),
+            # DEV-1853: no declared reverse edge — the policy_amount → policy
+            # hop is the INVERTED policy → policy_amount edge, provably to-one
+            # structurally (policy_identifier is policy's PK).
             # Same sibling model as the host, joined on a DIFFERENT key.
             ModelJoin(target_model="party", join_pairs=[["party_b", "id"]]),
         ],

@@ -273,23 +273,27 @@ class TestDiagnosticsPreserved:
         await storage.save_datasource(
             DatasourceConfig(name="test", type="sqlite", database=":memory:")
         )
-        # A <-> B cycle.
+        # A <-> B cycle over two DISTINCT edges; named so each hop resolves
+        # unambiguously (DEV-1853: two edges on one pair fail closed on a bare
+        # model-name token) and the revisit check still fires.
         await storage.save_model(SlayerModel(
             name="B", sql_table="B", data_source="test",
             columns=[_pk(), _d("a_id"), _t("label")],
-            joins=[ModelJoin(target_model="A", join_pairs=[["a_id", "id"]])],
+            joins=[ModelJoin(target_model="A", join_pairs=[["a_id", "id"]],
+                             name="to_a")],
         ))
         await storage.save_model(SlayerModel(
             name="A", sql_table="A", data_source="test",
             columns=[_pk(), _d("b_id"), _d("amount")],
-            joins=[ModelJoin(target_model="B", join_pairs=[["b_id", "id"]])],
+            joins=[ModelJoin(target_model="B", join_pairs=[["b_id", "id"]],
+                             name="to_b")],
         ))
         engine = SlayerQueryEngine(storage=storage)
         with pytest.raises(ValueError) as ei:
             await _dry_sql(engine, SlayerQuery(
                 source_model="A",
                 measures=[{"formula": "amount:sum", "name": "amt"}],
-                dimensions=["B.A.amount"],
+                dimensions=["to_b.to_a.amount"],
             ))
         assert "ircular" in str(ei.value)
 
@@ -342,34 +346,54 @@ class TestDownstreamStageScope:
 # ===========================================================================
 
 class TestCountSimplePaths:
+    # DEV-1853: JoinGraph is an undirected multigraph — one entry per declared
+    # edge; route counts below are re-derived on the bidirectional semantics.
     def test_unique(self) -> None:
-        g = JoinGraph({"A": {"B"}, "B": {"C"}, "C": set()})
+        g = JoinGraph(nodes={"A", "B", "C"}, edges=[("A", "B", None), ("B", "C", None)])
         assert g.count_simple_paths("A", "C") == 1
 
     def test_diamond_is_ambiguous(self) -> None:
-        g = JoinGraph({"A": {"B", "C"}, "B": {"D"}, "C": {"D"}, "D": set()})
+        g = JoinGraph(
+            nodes={"A", "B", "C", "D"},
+            edges=[("A", "B", None), ("A", "C", None), ("B", "D", None), ("C", "D", None)],
+        )
         assert g.count_simple_paths("A", "D") == 2
 
     def test_two_hop_plus_three_hop_is_ambiguous(self) -> None:
-        # A->D direct-ish (via B) and A->C->... both reach D
-        g = JoinGraph({"A": {"B", "C"}, "B": {"D"}, "C": {"B"}, "D": set()})
+        # A-B-D and A-C-B-D both reach D.
+        g = JoinGraph(
+            nodes={"A", "B", "C", "D"},
+            edges=[("A", "B", None), ("A", "C", None), ("B", "D", None), ("C", "B", None)],
+        )
         assert g.count_simple_paths("A", "D") == 2
 
     def test_unreachable(self) -> None:
-        g = JoinGraph({"A": {"B"}, "B": set(), "C": set()})
+        # A disconnected node stays unreachable under bidirectional traversal.
+        g = JoinGraph(nodes={"A", "B", "C"}, edges=[("A", "B", None)])
         assert g.count_simple_paths("A", "C") == 0
 
     def test_root_equals_target(self) -> None:
-        g = JoinGraph({"A": {"B"}, "B": set()})
+        g = JoinGraph(nodes={"A", "B"}, edges=[("A", "B", None)])
         # A path from A to itself is the single trivial empty route.
         assert g.count_simple_paths("A", "A") == 1
 
-    def test_symmetric_cycle_is_finite_and_counts_one_route(self) -> None:
-        # Symmetric INNER edges A<->B, B<->C: exactly one simple route A->C.
-        g = JoinGraph({"A": {"B"}, "B": {"A", "C"}, "C": {"B"}})
+    def test_cycle_is_finite_and_counts_one_route(self) -> None:
+        # Chain A-B-C (each edge declared once, both directions traversable):
+        # exactly one simple route A->C, and the visited guard stays finite.
+        g = JoinGraph(nodes={"A", "B", "C"}, edges=[("A", "B", None), ("B", "C", None)])
         assert g.count_simple_paths("A", "C") == 1
+
+    def test_parallel_edges_are_distinct_routes(self) -> None:
+        # DEV-1853 divergences.md class (d): two unnamed edges on one pair
+        # count as two routes.
+        g = JoinGraph(nodes={"A", "B"}, edges=[("A", "B", None), ("A", "B", None)])
+        assert g.count_simple_paths("A", "B") == 2
 
     def test_cap_limits_work(self) -> None:
         # Many parallel routes A->{B1,B2,B3}->D: capped at 2.
-        g = JoinGraph({"A": {"B1", "B2", "B3"}, "B1": {"D"}, "B2": {"D"}, "B3": {"D"}, "D": set()})
+        g = JoinGraph(
+            nodes={"A", "B1", "B2", "B3", "D"},
+            edges=[("A", "B1", None), ("A", "B2", None), ("A", "B3", None),
+                   ("B1", "D", None), ("B2", "D", None), ("B3", "D", None)],
+        )
         assert g.count_simple_paths("A", "D", cap=2) == 2

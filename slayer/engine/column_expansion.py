@@ -207,15 +207,20 @@ def _walk_exact(
 ) -> Optional[SlayerModel]:
     """Walk ``hops`` as a chain of EXACT join targets from ``source_model``.
 
-    Returns the terminal model when every hop is a direct join (each hop may
-    itself contain ``__`` — it is matched by exact name, never split), or
-    ``None`` when any hop is not a join / not resolvable.
+    Returns the terminal model when every hop is a direct join (matched by
+    exact target-model name — which MAY contain ``__`` — or by the join's edge
+    ``name``, DEV-1853), or ``None`` when any hop is not a join / not resolvable.
     """
     current = source_model
     for hop in hops:
-        if not any(j.target_model == hop for j in current.joins):
+        join = next(
+            (j for j in current.joins
+             if j.target_model == hop or j.name == hop),
+            None,
+        )
+        if join is None:
             return None
-        nxt = resolve_model(hop)
+        nxt = resolve_model(join.target_model)
         if nxt is None:
             return None
         current = nxt
@@ -319,17 +324,25 @@ def _raise_if_broken_join_walk(
     whose first hop is NOT a join target is opaque (physical
     ``schema.table.column`` — join-target-beats-schema precedence) and returns
     without raising."""
-    if not any(j.target_model == path[0] for j in source_model.joins):
+    if not any(
+        j.target_model == path[0] or j.name == path[0]
+        for j in source_model.joins
+    ):
         return
     current: Optional[SlayerModel] = source_model
     for hop in path:
-        if current is None or not any(j.target_model == hop for j in current.joins):
+        join = next(
+            (j for j in current.joins
+             if j.target_model == hop or j.name == hop),
+            None,
+        ) if current is not None else None
+        if join is None:
             raise UnresolvableDimensionJoinError(
                 reference=".".join((*path, leaf)),
                 root_model=source_model.name,
                 reason=f"'{hop}' is not a joined model on the preceding hop.",
             )
-        current = resolve_model(hop)
+        current = resolve_model(join.target_model)
         if current is None:
             raise UnresolvableDimensionJoinError(
                 reference=".".join((*path, leaf)),

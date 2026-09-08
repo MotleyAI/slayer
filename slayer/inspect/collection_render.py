@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from slayer.core.join_walker import neighbors
 from slayer.core.models import SlayerModel
 from slayer.inspect.model_render import (
     _markdown_table,
@@ -35,8 +36,18 @@ def _visible_column_count(model: SlayerModel) -> int:
     return sum(1 for c in model.columns if not c.hidden)
 
 
-def _join_targets(model: SlayerModel) -> list[str]:
-    return sorted({j.target_model for j in model.joins})
+def _join_targets(
+    model: SlayerModel, all_models: list[SlayerModel] | None = None
+) -> list[str]:
+    """Every model reachable in one hop, in either direction (DEV-1853). With
+    ``all_models`` (the datasource collection) reverse-reachable neighbours are
+    included; without it, only declared forward targets."""
+    models_by_name = {m.name: m for m in (all_models or [model])}
+    models_by_name.setdefault(model.name, model)
+    return sorted({
+        h.target_model
+        for h in neighbors(model=model, models_by_name=models_by_name)
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +106,7 @@ def _models_summary_json(
                 "description": desc(m.description),
                 "column_count": _visible_column_count(m),
                 "measure_names": [mm.name for mm in m.measures],
-                "joins_to": _join_targets(m),
+                "joins_to": _join_targets(m, models),
             }
             for m in models
         ]
@@ -120,7 +131,7 @@ def _models_summary_json(
                     }
                     for mm in m.measures
                 ],
-                "joins_to": _join_targets(m),
+                "joins_to": _join_targets(m, models),
             }
             for m in models
         ]
@@ -145,19 +156,27 @@ def _models_summary_markdown(
         if m.description:
             model_lines.append(desc(m.description) or "")
         if compact:
-            _append_compact_model_lines(model_lines=model_lines, m=m)
+            _append_compact_model_lines(
+                model_lines=model_lines, m=m, all_models=models,
+            )
         else:
-            _append_verbose_model_lines(model_lines=model_lines, m=m, desc=desc)
+            _append_verbose_model_lines(
+                model_lines=model_lines, m=m, desc=desc, all_models=models,
+            )
         sections.append("\n".join(model_lines))
     return "\n\n".join(sections)
 
 
-def _append_compact_model_lines(*, model_lines: list[str], m: SlayerModel) -> None:
+def _append_compact_model_lines(
+    *, model_lines: list[str], m: SlayerModel,
+    all_models: list[SlayerModel] | None = None,
+) -> None:
     model_lines.append(f"Columns: {_visible_column_count(m)}")
     measure_names = ", ".join(mm.name for mm in m.measures if mm.name is not None)
     model_lines.append(f"Measures: {measure_names}")
-    if m.joins:
-        rendered = ", ".join(f"`{t}`" for t in _join_targets(m))
+    targets = _join_targets(m, all_models)
+    if targets:
+        rendered = ", ".join(f"`{t}`" for t in targets)
         model_lines.append(f"Joins to: {rendered}")
     else:
         model_lines.append("Joins to: _(none)_")
@@ -165,6 +184,7 @@ def _append_compact_model_lines(*, model_lines: list[str], m: SlayerModel) -> No
 
 def _append_verbose_model_lines(
     *, model_lines: list[str], m: SlayerModel, desc,
+    all_models: list[SlayerModel] | None = None,
 ) -> None:
     col_rows = [
         {"name": c.name, "type": str(c.type), "description": desc(c.description)}
@@ -188,8 +208,9 @@ def _append_verbose_model_lines(
     )
     model_lines.append("")
 
-    if m.joins:
-        rendered = ", ".join(f"`{t}`" for t in _join_targets(m))
+    targets = _join_targets(m, all_models)
+    if targets:
+        rendered = ", ".join(f"`{t}`" for t in targets)
         model_lines.append(f"**Joins to:** {rendered}")
     else:
         model_lines.append("**Joins to:** _(none)_")
@@ -235,7 +256,7 @@ def _oneliner_index_json(
                 {
                     "name": m.name,
                     "column_count": _visible_column_count(m),
-                    "joins_to": _join_targets(m),
+                    "joins_to": _join_targets(m, models),
                 }
                 for m in models
             ],

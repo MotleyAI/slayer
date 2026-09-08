@@ -344,9 +344,19 @@ class ModelJoin(BaseModel):
     join_type: JoinType = JoinType.LEFT             # LEFT (default) or INNER
     # Join arity, read source->target; None = undetermined.
     cardinality: JoinCardinality | None = None
+    # Optional edge name, usable as a path segment in either direction — the
+    # disambiguator for parallel edges (DEV-1853). Model-name identifier rules.
+    name: str | None = None
     # Optional human/agent metadata; additive, so no schema-version bump needed.
     description: str | None = None
     meta: dict[str, Any] | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, v: str | None) -> str | None:
+        if v is not None:
+            _validate_model_name(v, "Join")
+        return v
 
     @field_validator("join_pairs")
     @classmethod
@@ -397,7 +407,7 @@ def _check_column_measure_namespace(
 
 
 class SlayerModel(BaseModel):
-    version: int = 9  # DEV-1743: v9 = ``__`` ban lift + legacy-alias load rewrite
+    version: int = 10  # v10 = exact-inverse join dedup (bidirectional traversal)
     name: str
     sql_table: str | None = None
     # Kind of DB object ``sql_table`` names; only auto-ingestion sets it. ``None`` = unknown.

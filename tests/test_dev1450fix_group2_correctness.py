@@ -253,10 +253,9 @@ def _cyclic_bundle():
     b = SlayerModel(
         name="b", data_source="prod", sql_table="b",
         columns=[Column(name="id", type=DataType.INT, primary_key=True)],
-        joins=[ModelJoin(target_model="a", join_pairs=[["id", "id"]])],
     )
-    # ``a`` is also referenced so the walk back to it resolves and the cycle
-    # guard (not a missing-target error) fires.
+    # ``a`` is also referenced so the walk back to it (over the inverted edge,
+    # DEV-1853) resolves and the cycle guard — not a missing-target error — fires.
     return ResolvedSourceBundle(source_model=a, referenced_models=[b, a])
 
 

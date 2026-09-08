@@ -1167,10 +1167,9 @@ def _run_storage_migrate_types(args) -> None:
     refined v5 dict back. Hard-fails if a datasource is unreachable.
     """
     storage = _resolve_storage(args)
-    # Unwrap JoinSyncStorage so we can list identities and read raw dicts
-    # without triggering the get_model auto-refinement path (which would
-    # rewrite the file before our dry-run gets to inspect it).
-    inner = getattr(storage, "_inner", storage)
+    # Read identities and raw dicts directly, not via get_model, so the
+    # auto-refinement path can't rewrite files before a dry-run inspects them.
+    inner = storage
     data_source_filter = getattr(args, "data_source", None)
     dry_run = bool(getattr(args, "dry_run", False))
 

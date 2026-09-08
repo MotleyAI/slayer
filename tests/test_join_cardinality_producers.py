@@ -6,6 +6,7 @@ import pytest
 import sqlalchemy as sa
 
 from slayer.core.enums import DataType, JoinCardinality
+from slayer.core.join_walker import edges_between
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.entities import EntityRegistry
@@ -100,13 +101,17 @@ class TestDbtConverterMirror:
         fwd = next(j for j in orders.joins if j.target_model == "customers")
         assert fwd.cardinality is JoinCardinality.MANY_TO_ONE
 
-    def test_reverse_mirror_inverts_to_one_to_many(self) -> None:
+    def test_reverse_orientation_inverts_to_one_to_many(self) -> None:
+        # DEV-1853 divergences.md class (d): dbt mirroring is retired — no
+        # stored reverse edge; the inverted forward edge carries the
+        # orientation instead.
         result = DbtToSlayerConverter(
             project=_foreign_primary_project(), data_source="test_db"
         ).convert()
         customers = next(m for m in result.models if m.name == "customers")
-        rev = next(j for j in customers.joins if j.target_model == "orders")
-        # Reverse of many_to_one is one_to_many.
+        orders = next(m for m in result.models if m.name == "orders")
+        assert not any(j.target_model == "orders" for j in customers.joins)
+        rev = edges_between(source=customers, target=orders)[0]
         assert rev.cardinality is JoinCardinality.ONE_TO_MANY
 
     def test_peer_mirror_stays_one_to_one(self) -> None:
