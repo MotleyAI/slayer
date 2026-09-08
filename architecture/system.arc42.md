@@ -15,7 +15,6 @@ See the `landscape` view in [views.c4](views.c4) (model in
 `engine`, `storage` around the query pipeline; virtual buckets `importers`,
 `search`, `memories`, `protocols`, `surfaces` for the rest. Package claims,
 contract baselines, and spec mapping are in [index.yaml](index.yaml).
-Contributor-level pipeline docs: `docs/architecture/`.
 
 ## 3. Principles
 
@@ -42,8 +41,9 @@ All code, old and new, MUST obey these.
    [review]
 7. **Async-first**: engine and storage methods are async; sync entry points
    bridge via `execute_sync` / `run_sync`. [review]
-8. **Cardinality invariant**: adding a measure/field never changes result
-   cardinality or other fields' values. [review]
+8. **The query algebra** lives in `semantics.arc42.md`; its observable face:
+   adding a measure never changes result cardinality or other fields'
+   values. [enforced: test:tests/test_dev1837_dimension_measure_matrix.py]
 9. **Dotted-canonical references**: dots denote join paths in queries and model
    SQL; the legacy `__` split-alias input form is a hard error; `__` survives
    only as an internal generated-SQL join alias (`__slayer_` prefix reserved).
@@ -76,11 +76,19 @@ npx -y likec4@1.47.0 validate architecture   # pinned; run from the repo root
 poetry run basedpyright                      # gate = no new errors vs baseline
 ```
 
-Each enforced principle carries an `enforced:` tag (square-bracketed, checked
-by arch_check) whose id names an import-linter contract (`layers`,
-`forbidden`), an arch_check check (`arch_check:<check-id>`), or a test
-(`test:<pytest path>`, taken on trust). Unenforced principles are written
-`[review]` — each one is a standing candidate for a fitness function.
+Every numbered principle item in an arc42 file carries at least one
+square-bracketed status tag (all three kinds validated by arch_check, per
+clause where clauses differ):
+
+- an `enforced:` tag — an automatic check trips on violation; its id names an
+  import-linter contract (`layers`, `forbidden`), an arch_check check
+  (`arch_check:<check-id>`), or a test (`test:<pytest path>`, taken on trust).
+  Several may accumulate; tag the strongest available (structural > static >
+  generative > example matrix) and upgrade over time.
+- `[review]` — true today, unenforced; a standing candidate for a fitness
+  function (the DEV-1869 law harness for the semantics laws).
+- a `target:` tag naming a `DEV-<number>` issue — envisioned, not yet true;
+  that issue flips the tag in its own PR.
 
 ## 5. Model authoring convention
 
@@ -97,5 +105,5 @@ under this constrained convention:
 The wedge is focused on the query pipeline because that is where boundary
 violations accumulate (see `sql.arc42.md`); buckets stay coarse until real work
 touches them. Structure-shaping decision trails: the DEV-1450 typed-pipeline
-redesign and DEV-1742 consolidation (git history, `docs/architecture/`), and
-the archived changes under `openspec/changes/archive/`.
+redesign and DEV-1742 consolidation (git history), and the archived changes
+under `openspec/changes/archive/`.
