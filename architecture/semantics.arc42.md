@@ -94,14 +94,17 @@ Laws are ∀-quantified equations between evaluations; their honest enforcement
 is the generative law harness (DEV-1869), which upgrades `review` laws to
 enforced test ids as its instances land.
 
-1. **Grain union**: grain(a ⊕ b) = grain(a) ∨ grain(b). [review]
+1. **Grain union**: grain(a ⊕ b) = grain(a) ∨ grain(b).
+   [enforced: test:tests/test_law_grain_union.py]
 2. **Broadcast coherence**: coercing then combining equals combining then
-   coercing, and coercions compose along chains of grains. [review]
+   coercing, and coercions compose along chains of grains.
+   [enforced: test:tests/test_law_broadcast_coherence.py]
 3. **Compositionality**: a term's denotation depends only on the term, the
    population, the row-level filters, and the mode — never on sibling terms;
    sibling-measure independence
-   [enforced: test:tests/test_dev1837_dimension_measure_matrix.py]; the full
-   law (single-measure splits, measure-typed filters, order entries). [review]
+   [enforced: test:tests/test_dev1837_dimension_measure_matrix.py];
+   single-measure splits [enforced: test:tests/test_law_split_invariance.py];
+   measure-typed filters and order entries. [review]
 4. **Position parity**: the same expression yields the same value as a
    measure, a filter, or an order key — positions differ only in what happens
    to the value. [review]
@@ -109,9 +112,10 @@ enforced test ids as its instances land.
    groupby on `d` — exact in associate mode; the broadcast default consciously
    trades this law away and must warn. [target: DEV-1841]
 6. **Lowering soundness**: every emission trick is a pure optimization —
-   inlining an association-restricting filter on a proven to-one path, fusing
-   pipeline phases into one SELECT, and compiling a filter as a hidden measure
-   never change values. [review]
+   inlining an association-restricting filter on a proven to-one path and
+   fusing pipeline phases into one SELECT
+   [enforced: test:tests/test_law_lowering_soundness.py]; compiling a filter
+   as a hidden measure. [review]
 
 ## 4. Notes
 
