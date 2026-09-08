@@ -10,9 +10,8 @@ plans are made — the grandfathered `sql → engine` edges die with the
 
 ## 2. Building blocks
 
-See the `query_pipeline` view in [views.c4](views.c4).
-Contributor detail: `docs/architecture/sql-generation.md` (the P-A…P-J
-principles document) and `docs/architecture/scopes-and-bundle.md`.
+See the `query_pipeline` view in [views.c4](views.c4). Children: `render`
+(value keys, aggregates, order terms, joins, node assembly) and `dialects`.
 
 ## 3. Principles
 
@@ -40,6 +39,19 @@ principles document) and `docs/architecture/scopes-and-bundle.md`.
 9. **Fail closed**: reject with a typed error rather than emit invalid or
    silently-wrong SQL; the scope-closure validator (`SLAYER_VALIDATE_SCOPES`,
    on in the test harness) backstops emission. [review]
+10. **One composition primitive**: every aggregate that needs its own rows —
+    crossing a join, its own ordering, its own frame, its own grain — compiles
+    as a producer (a plan-shaped CTE rooted where its rows live), attached
+    back by a null-safe LEFT JOIN on its complete grain and substituted into
+    expressions by structural identity, never text. [review]
+11. **One flat WITH**: every statement renders through one pipeline
+    (base → aggregate → combined → steps → post) with one allocator; a
+    producer's internal WITH hoists to the top level — a WITH never nests
+    inside a CTE definition; fusion of adjacent phases is an emission
+    decision, never semantic. [review]
+12. **Attach is cardinality-neutral**: attaching a producer never changes the
+    host row count or any other column's value.
+    [enforced: test:tests/test_dev1837_dimension_measure_matrix.py]
 
 ## 4. Rationale
 

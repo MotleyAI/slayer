@@ -26,7 +26,11 @@ CHECK_IDS = frozenset(
 
 _ELEMENT_RE = re.compile(r"^\s*(\w+)\s*=\s*(\w+)\s+'[^']*'")
 _RELATION_RE = re.compile(r"^(\w+)\s*->\s*(\w+)(?:\s+#legacy)?$")
-_ENFORCED_RE = re.compile(r"\[enforced:\s*([^\]\s][^\]]*)\]")
+_TAG_RE = re.compile(r"\[(enforced|review|target)\b([^\]]*)\]")
+_TAG_START_RE = re.compile(r"\[(enforced|review|target)\b")
+_TARGET_ID_RE = re.compile(r"DEV-\d+")
+_FENCE_RE = re.compile(r"`{3,}|~{3,}")
+_PRINCIPLE_ITEM_RE = re.compile(r"^( {0,3})(\d+)\.\s")
 _INIT_PY = "__init__.py"
 
 
@@ -289,14 +293,28 @@ def _check_contracts(index: dict, importlinter: dict) -> list[str]:
     return findings
 
 
-def _check_arc42(root: Path, nodes: dict) -> list[str]:
+def _check_arc42(root: Path, index: dict) -> list[str]:
     findings: list[str] = []
-    if not (root / "architecture" / "system.arc42.md").is_file():
-        findings.append("arc42-exists: architecture/system.arc42.md is missing")
-    for node_id, spec in nodes.items():
+    system = "architecture/system.arc42.md"
+    if not (root / system).is_file():
+        findings.append(f"arc42-exists: {system} is missing")
+    registered = {system}
+    for node_id, spec in index.get("nodes", {}).items():
         arc42 = spec.get("arc42")
-        if arc42 and not (root / arc42).is_file():
-            findings.append(f"arc42-exists: {node_id} names {arc42}, which does not exist")
+        if arc42:
+            registered.add(arc42)
+            if not (root / arc42).is_file():
+                findings.append(f"arc42-exists: {node_id} names {arc42}, which does not exist")
+    for entry in index.get("cross_cutting_arc42", []):
+        registered.add(entry)
+        if not (root / entry).is_file():
+            findings.append(f"arc42-exists: cross_cutting_arc42 names {entry}, which does not exist")
+    for path in sorted((root / "architecture").glob("*.arc42.md")):
+        rel = f"architecture/{path.name}"
+        if rel not in registered:
+            findings.append(
+                f"arc42-exists: {rel} is orphaned — not {system}, a node arc42 entry, or in cross_cutting_arc42"
+            )
     return findings
 
 
@@ -376,21 +394,90 @@ def _check_model_truth(root: Path, root_package: str, claims: dict[str, list[str
     return findings
 
 
+def _parse_tag_id(rest: str) -> str | None:
+    """Tag id from ': <id>' — None when malformed (no colon, empty, or multi-line)."""
+    if not rest.startswith(":"):
+        return None
+    tag_id = rest[1:].strip()
+    if not tag_id or "\n" in tag_id:
+        return None
+    return tag_id
+
+
+def _tag_occurrence(kind: str, rest: str, name: str, contract_names: set[str]) -> tuple[bool, list[str]]:
+    """(counts as status coverage, findings) for one bracket tag."""
+    if kind == "review":
+        return (True, []) if not rest else (False, [f"enforced-tags: malformed [review] tag in {name}"])
+    tag_id = _parse_tag_id(rest)
+    if tag_id is None:
+        return False, [f"enforced-tags: malformed [{kind}: …] tag in {name}"]
+    if kind == "target":
+        if _TARGET_ID_RE.fullmatch(tag_id) is None:
+            return False, [f"enforced-tags: {name} target tag id {tag_id!r} does not match DEV-<number>"]
+        return True, []
+    if tag_id in contract_names or (tag_id.startswith("test:") and tag_id != "test:"):
+        return True, []
+    if tag_id.startswith("arch_check:") and tag_id.removeprefix("arch_check:") in CHECK_IDS:
+        return True, []
+    return False, [f"enforced-tags: {name} tags unknown enforcement id {tag_id!r}"]
+
+
+def _strip_fences(text: str) -> str:
+    """Blank out fenced code blocks so tags and numbered items inside are ignored."""
+    out: list[str] = []
+    fence = ""  # opening delimiter run; closer is delimiter-only, same char, >= length
+    for line in text.splitlines():
+        if not fence:
+            m = _FENCE_RE.match(line.lstrip())
+            if m:
+                fence = m.group(0)
+            out.append("" if m else line)
+        else:
+            m = _FENCE_RE.fullmatch(line.strip())
+            if m and m.group(0)[0] == fence[0] and len(m.group(0)) >= len(fence):
+                fence = ""
+            out.append("")
+    return "\n".join(out)
+
+
+def _principle_items(text: str) -> list[tuple[str, str]]:
+    """Top-level numbered items as (number, item text incl. continuation lines)."""
+    items: list[tuple[str, str]] = []
+    open_col = -1  # content column of the open item; -1 = closed
+    for line in text.splitlines():
+        m = _PRINCIPLE_ITEM_RE.match(line)
+        # a number indented to the open item's content column is its content (CommonMark)
+        if m and not (open_col >= 0 and len(m.group(1)) >= open_col):
+            items.append((m.group(2), line))
+            open_col = len(m.group(1)) + len(m.group(2)) + 2
+        elif open_col >= 0 and line.strip() and not line.startswith("#"):
+            num, body = items[-1]
+            items[-1] = (num, body + "\n" + line)
+        else:
+            open_col = -1
+    return items
+
+
 def _check_enforced_tags(root: Path, importlinter: dict) -> list[str]:
     findings: list[str] = []
     contract_names = {c.get("name") for c in importlinter.get("contracts", [])}
     for path in sorted((root / "architecture").glob("*.arc42.md")):
-        text = path.read_text(encoding="utf-8")
-        tag_ids = _ENFORCED_RE.findall(text)
-        if text.count("[enforced") != len(tag_ids):
-            findings.append(f"enforced-tags: malformed [enforced: …] tag in {path.name}")
-        for tag_id in tag_ids:
-            tag_id = tag_id.strip()
-            if tag_id in contract_names or tag_id.startswith("test:"):
-                continue
-            if tag_id.startswith("arch_check:") and tag_id.removeprefix("arch_check:") in CHECK_IDS:
-                continue
-            findings.append(f"enforced-tags: {path.name} tags unknown enforcement id {tag_id!r}")
+        text = _strip_fences(path.read_text(encoding="utf-8"))
+        occurrences = list(_TAG_RE.finditer(text))
+        for kind in ("enforced", "review", "target"):
+            starts = sum(1 for m in _TAG_START_RE.finditer(text) if m.group(1) == kind)
+            closed = sum(1 for m in occurrences if m.group(1) == kind)
+            if starts != closed:
+                findings.append(f"enforced-tags: malformed [{kind}: …] tag in {path.name}")
+        for m in occurrences:
+            findings += _tag_occurrence(m.group(1), m.group(2), path.name, contract_names)[1]
+        for num, body in _principle_items(text):
+            covered = any(
+                _tag_occurrence(t.group(1), t.group(2), path.name, contract_names)[0]
+                for t in _TAG_RE.finditer(body)
+            )
+            if not covered:
+                findings.append(f"enforced-tags: {path.name} principle item {num} has no status tag")
     return findings
 
 
@@ -403,7 +490,7 @@ def run_checks(root: Path) -> list[str]:
     findings: list[str] = []
     findings += _check_claims(root, root_package, claims)
     findings += _check_contracts(index, importlinter)
-    findings += _check_arc42(root, nodes)
+    findings += _check_arc42(root, index)
     findings += _check_model_identity(root, nodes)
     findings += _check_spec_mapping(root, index)
     findings += _check_baselines(index, importlinter)
