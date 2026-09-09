@@ -1010,7 +1010,7 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
 
 
 def _regroup_inherited_filters(
-    prebound: PreboundQuery, filter_typings: Sequence[ConjunctTyping],
+    *, prebound: PreboundQuery, filter_typings: Sequence[ConjunctTyping],
 ) -> Tuple[List[BoundFilter], int]:
     """Stratum-0 field masks define every producer's population; nothing else inherits."""
     date_bounds: List[BoundFilter] = []
@@ -1800,7 +1800,7 @@ def _synthesize_wrap_attach(
         if dm.declared_name is not None
     }
     inherited, n_inherited_date = _regroup_inherited_filters(
-        prebound, filter_typings,
+        prebound=prebound, filter_typings=filter_typings,
     )
     producer_prebound, ordered_pks = _regroup_producer_prebound(
         pks=Grain.of(projected), aggs=[wrap_key], model=producer_model,
@@ -2625,7 +2625,9 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
         for agg in (*row_aggs, *combined_aggs, *cm_row, *cm_combined)
     }
 
-    inherited, n_inherited_date = _regroup_inherited_filters(prebound, filter_typings)
+    inherited, n_inherited_date = _regroup_inherited_filters(
+        prebound=prebound, filter_typings=filter_typings,
+    )
 
     # A combined producer keeps the consumer's dimension order (row producers use the alphabetical default).
     consumer_order: Dict[ValueKey, int] = {
