@@ -86,7 +86,7 @@ claude mcp list
 
 | Tool | Description |
 |------|-------------|
-| `query` | Execute a semantic query. The `query` argument mirrors the engine: a model name (run a query-backed model by name), a single query object, or a list of query objects — a multi-stage DAG whose stages reference one another via `source_model` or `joins.target_model`, with non-root stages auto-sorted by the engine (their order doesn't matter) and the last entry the returned root (place the intended root last). Plus the wrappers `variables` / `show_sql` / `dry_run` / `explain` / `format`. |
+| `query` | Execute a semantic query. The `query` argument mirrors the engine: a model name (run a query-backed model by name), a single query object, or a list of query objects — a multi-stage DAG whose stages reference one another via `source_model` or `joins[].target_model`, with non-root stages auto-sorted by the engine (their order doesn't matter) and the last entry the returned root (place the intended root last). Plus the wrappers `variables` / `show_sql` / `dry_run` / `explain` / `format`. |
 
 **`query` tool arguments:**
 
@@ -112,6 +112,9 @@ claude mcp list
 | `limit` | int | Max rows |
 | `offset` | int | Skip rows |
 | `whole_periods_only` | bool | Snap date filters to time bucket boundaries, exclude the current incomplete time bucket |
+| `distinct_dimension_values` | bool | Default `true` — auto-dedup dim-only queries (`GROUP BY <dim/td aliases>`). Set `false` to emit raw rows (no top-level `GROUP BY`); rejects any measure reference in `measures` / `filters` / `order`. |
+| `strict` | bool | Default `false` — error instead of warn when a [cross-model measure broadcasts](../concepts/queries.md#cross-model-measures) or a filter is excluded from its producer. Rejected when running a model by name — declare it on the stored query instead. |
+| `variables` | dict | Per-stage `{var}` values, scoped to this stage; overridden by the top-level `variables` arg (see precedence above). |
 | `name` | string | List form only — names a stage so sibling stages can reference it via `source_model` (every non-final stage must be named). |
 
 ### Ingestion
