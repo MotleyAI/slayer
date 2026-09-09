@@ -237,9 +237,10 @@ class TestMisplacedMeasure:
 
     def test_moved_column_is_a_column_ref(self):
         # A bare string here fails in the planner on ``.full_name``.
-        q = SlayerQuery(source_model="orders", measures=[{"formula": "status"}])
+        q = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="status")])
         result = normalize_query(query=q, model=_orders())
-        assert [type(d) for d in result.query.dimensions] == [ColumnRef]
+        assert result.query is not None
+        assert [type(d) for d in result.query.dimensions or []] == [ColumnRef]
 
 
 # ---------------------------------------------------------------------------
@@ -307,27 +308,34 @@ class TestEngineWiring:
     async def test_misplaced_measure_query_compiles(self):
         # A bare column in ``measures`` must survive the move and plan.
         with tempfile.TemporaryDirectory() as td:
-            storage = YAMLStorage(base_dir=Path(td) / "models")
+            storage = YAMLStorage(base_dir=str(Path(td) / "models"))
             await storage.save_datasource(
-                DatasourceConfig(name="prod", type="sqlite", url="sqlite:///:memory:")
+                DatasourceConfig(
+                    name="prod", type="sqlite", connection_string="sqlite:///:memory:"
+                )
             )
             await storage.save_model(_orders())
             engine = SlayerQueryEngine(storage=storage)
 
             q = SlayerQuery(
                 source_model="orders",
-                measures=[{"formula": "status"}, {"formula": "revenue:sum"}],
+                measures=[
+                    ModelMeasure(formula="status"),
+                    ModelMeasure(formula="revenue:sum"),
+                ],
             )
             resp = await engine.execute(query=q, dry_run=True)
-            assert "status" in resp.sql
+            assert resp.sql is not None and "status" in resp.sql
 
     async def test_custom_agg_functional_measure_binds(self):
         # A custom aggregation written functionally resolves at binding —
         # no rewrite, no warning, correct SQL.
         with tempfile.TemporaryDirectory() as td:
-            storage = YAMLStorage(base_dir=Path(td) / "models")
+            storage = YAMLStorage(base_dir=str(Path(td) / "models"))
             await storage.save_datasource(
-                DatasourceConfig(name="prod", type="sqlite", url="sqlite:///:memory:")
+                DatasourceConfig(
+                    name="prod", type="sqlite", connection_string="sqlite:///:memory:"
+                )
             )
             m = _orders().model_copy(update={
                 "aggregations": [Aggregation(name="custom_sum", formula="SUM({value})")],

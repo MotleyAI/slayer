@@ -42246,22 +42246,6 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 43,
-                    "endColumn": 62,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportCallIssue",
-                "range": {
-                    "startColumn": 61,
-                    "endColumn": 64,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
                     "startColumn": 25,
                     "endColumn": 61,
                     "lineCount": 1
