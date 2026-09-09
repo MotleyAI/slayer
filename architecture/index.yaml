@@ -56,3 +56,12 @@ cross_cutting_specs:
 
 # arc42 files not owned by one node; arch_check flags unlisted orphans.
 cross_cutting_arc42: [architecture/semantics.arc42.md]
+
+# arc42 doc -> LikeC4 view ids embedded as mermaid between <!-- likec4:<id> --> markers.
+# arch_check's diagrams-fresh enforces byte-for-byte freshness; regenerate with
+# `poetry run python tools/arch_diagrams.py`. Keys are repo-relative architecture/*.arc42.md.
+diagrams:
+  architecture/system.arc42.md: [landscape]
+  architecture/core.arc42.md: [core_focus]
+  architecture/engine.arc42.md: [query_pipeline]
+  architecture/sql.arc42.md: [query_pipeline]
