@@ -44,6 +44,8 @@ from slayer.engine.ingestion import (
     _sa_type_is_float,
     _sa_type_to_data_type,
 )
+from slayer.core.errors import AmbiguousJoinPathError
+from slayer.core.join_walker import neighbors, resolve_hop
 from slayer.engine.column_expansion import resolve_ref_target
 from slayer.engine.syntax import (
     AggCall,
@@ -554,7 +556,7 @@ def _walk_alias_to_target_model(
     return resolve_ref_target(
         qualifiers=tuple(table_alias.split(".")),
         source_model=source_model,
-        resolve_model=models_by_name.get,
+        models_by_name=models_by_name,
     )
 
 
@@ -711,6 +713,8 @@ class _StageGraph(BaseModel):
 
     stage_source_name: str | None = None
     extension_targets: set[str] = Field(default_factory=set)
+    # Hop token (join name when set, else target name) → target model.
+    extension_hops: dict[str, str] = Field(default_factory=dict)
     reachable: set[str] = Field(default_factory=set)
     models_by_name: dict[str, SlayerModel] = Field(default_factory=dict)
 
@@ -722,6 +726,7 @@ def _build_stage_graph(
     models_by_name: dict[str, SlayerModel],
 ) -> _StageGraph:
     """Build a ``_StageGraph`` for one stage; ``stage_source_name`` None for inline sources."""
+    extension_hops = _stage_extension_hops(stage)
     extension_targets = _stage_join_targets(stage)
     reachable: set[str] = set()
     if stage_source_name:
@@ -737,13 +742,15 @@ def _build_stage_graph(
         m = models_by_name.get(name)
         if m is None:
             continue
-        for j in m.joins:
-            if j.target_model not in reachable:
-                reachable.add(j.target_model)
-                frontier.append(j.target_model)
+        # Either traversal direction reaches (DEV-1853).
+        for edge in neighbors(model=m, models_by_name=models_by_name):
+            if edge.target_model not in reachable:
+                reachable.add(edge.target_model)
+                frontier.append(edge.target_model)
     return _StageGraph(
         stage_source_name=stage_source_name,
         extension_targets=extension_targets,
+        extension_hops=extension_hops,
         reachable=reachable,
         models_by_name=models_by_name,
     )
@@ -761,22 +768,41 @@ def _attribute_ref_to_base(
     parts = ref.split(".")
     leaf = parts[-1]
     path = parts[:-1]
-    current = graph.stage_source_name
-    if current is None:
+    if graph.stage_source_name is None:
         return None
     # Root-qualified ref (``orders.amount`` from a stage rooted at orders):
     # ``orders`` isn't in its own join set, so treat path==[source] as same-model.
     if path == [graph.stage_source_name]:
         return leaf if graph.stage_source_name == base_name else None
+    terminal = _walk_stage_path(path=path, graph=graph)
+    if terminal is None:
+        return None
+    return leaf if terminal == base_name else None
+
+
+def _walk_stage_path(*, path: list[str], graph: _StageGraph) -> str | None:
+    """Terminal model name of ``path`` from the stage source — either
+    traversal direction, stage-extension joins included — or ``None``."""
+    current = graph.stage_source_name
     for hop in path:
-        m = graph.models_by_name.get(current)
-        join_targets = {j.target_model for j in (m.joins if m is not None else [])}
-        if current == graph.stage_source_name:
-            join_targets |= graph.extension_targets
-        if hop not in join_targets:
+        # Extension joins live on the stage, not the stored model; their
+        # token is the join name when set, else the target name.
+        if current == graph.stage_source_name and hop in graph.extension_hops:
+            current = graph.extension_hops[hop]
+            continue
+        m = graph.models_by_name.get(current) if current else None
+        if m is None:
             return None
-        current = hop
-    return leaf if current == base_name else None
+        try:
+            edge = resolve_hop(
+                current=m, token=hop, models_by_name=graph.models_by_name,
+            )
+        except AmbiguousJoinPathError:
+            return None
+        if edge is None:
+            return None
+        current = edge.target_model
+    return current
 
 
 def _measure_refs_on_base(
@@ -852,6 +878,7 @@ def _stage_referenced_columns_for_base(
         graph = _StageGraph(
             stage_source_name=stage_source_name,
             extension_targets=_stage_join_targets(stage),
+            extension_hops=_stage_extension_hops(stage),
             reachable={stage_source_name} if stage_source_name else set(),
             models_by_name={},
         )
@@ -872,6 +899,29 @@ def _stage_join_targets(stage: SlayerQuery) -> set[str]:
         target = getattr(j, "target_model", None)
         if isinstance(target, str):
             out.add(target)
+    return out
+
+
+def _stage_extension_hops(stage: SlayerQuery) -> dict[str, str]:
+    """Addressable hop token → target model for a stage's ``ModelExtension``
+    joins: the join ``name`` when set; the bare target name only while a
+    single join targets it (a parallel pair is unaddressable by target,
+    matching the engine's ambiguity rule)."""
+    source = getattr(stage, "source_model", None)
+    joins = getattr(source, "joins", None) or []
+    out: dict[str, str] = {}
+    target_counts: dict[str, int] = {}
+    for j in joins:
+        target = getattr(j, "target_model", None)
+        if not isinstance(target, str):
+            continue
+        target_counts[target] = target_counts.get(target, 0) + 1
+        name = getattr(j, "name", None)
+        if name:
+            out[name] = target
+    for target, count in target_counts.items():
+        if count == 1:
+            out.setdefault(target, target)
     return out
 
 

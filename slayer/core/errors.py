@@ -3,9 +3,10 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, List, Tuple
+from typing import TYPE_CHECKING, Any, List, Sequence, Tuple
 
 if TYPE_CHECKING:
+    from slayer.core.join_walker import OrientedJoin  # noqa: F401
     from slayer.engine.schema_drift import ToDeleteEntry  # noqa: F401
 
 
@@ -24,6 +25,44 @@ class AmbiguousModelError(SlayerError):
             f"{sorted(self.candidates)}. Specify a data_source or set a "
             f"datasource priority to disambiguate."
         )
+
+
+class AmbiguousJoinPathError(SlayerError):
+    """A hop between two models is spanned by two or more edges and no edge
+    name disambiguates it, so traversal fails closed in both directions rather
+    than silently picking the first stored edge. ``candidates`` holds the
+    competing oriented edges; the message names each edge's declaring model,
+    name (if any), join pairs, and cardinality, plus the remediation."""
+
+    def __init__(
+        self,
+        *,
+        source_model: str,
+        target_model: str,
+        candidates: "Sequence[OrientedJoin]",
+        token: str | None = None,
+    ) -> None:
+        self.source_model = source_model
+        self.target_model = target_model
+        self.candidates = list(candidates)
+        self.token = token
+        lines = [
+            f"Ambiguous join hop {source_model!r} → {target_model!r}: "
+            f"{len(self.candidates)} edges connect these models and no edge "
+            f"name resolves it."
+        ]
+        for c in self.candidates:
+            pairs = ", ".join(f"{a}={b}" for a, b in c.join_pairs)
+            named = f" name={c.name!r}" if c.name else ""
+            lines.append(
+                f"  - declared on {c.declaring_model!r}{named}: "
+                f"pairs [{pairs}], cardinality {c.cardinality}"
+            )
+        lines.append(
+            "Give one edge a `name` and use it as the path segment to "
+            "disambiguate."
+        )
+        super().__init__("\n".join(lines))
 
 
 class EntityResolutionError(SlayerError):

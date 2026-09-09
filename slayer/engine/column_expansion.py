@@ -18,17 +18,19 @@ unresolved derived references.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import List, Optional, Protocol, Set, Tuple
+from typing import Dict, List, Optional, Protocol, Set, Tuple
 
 import sqlglot
 from sqlglot import exp
 from sqlglot.optimizer.scope import ScopeType, traverse_scope
 
 from slayer.core.errors import (
+    AmbiguousJoinPathError,
     ColumnCycleError,
     LegacyDunderAliasError,
     UnresolvableDimensionJoinError,
 )
+from slayer.core.join_walker import resolve_hop, walk
 from slayer.core.models import Column, SlayerModel
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 
@@ -109,9 +111,11 @@ def _root_scope_column_ids(*, parsed: exp.Expression) -> set[int]:
 
 class _SyncBundle(Protocol):
     """Minimal contract for ``collect_root_scope_joined_paths``'s bundle —
-    matches ``ResolvedSourceBundle.get_referenced_model``. Declared inline so
-    this helper stays import-free of the engine layer.
+    matches ``ResolvedSourceBundle``. Declared inline so this helper stays
+    import-free of the engine layer.
     """
+
+    referenced_models: List[SlayerModel]
 
     def get_referenced_model(self, name: str) -> Optional[SlayerModel]: ...
 
@@ -135,7 +139,7 @@ class _PathSink(Protocol):
 # the graph — is a hard D2 error (:class:`LegacyDunderAliasError`).
 # ---------------------------------------------------------------------------
 
-SyncResolveModel = Callable[[str], Optional[SlayerModel]]
+ModelsByName = Dict[str, SlayerModel]
 
 
 def _identifier_chain(node: exp.Expression) -> Optional[List[str]]:
@@ -203,47 +207,47 @@ def _reference_sites(
 def _walk_exact(
     hops: Tuple[str, ...],
     source_model: SlayerModel,
-    resolve_model: SyncResolveModel,
+    models_by_name: ModelsByName,
 ) -> Optional[SlayerModel]:
-    """Walk ``hops`` as a chain of EXACT join targets from ``source_model``.
-
-    Returns the terminal model when every hop is a direct join (each hop may
-    itself contain ``__`` — it is matched by exact name, never split), or
-    ``None`` when any hop is not a join / not resolvable.
+    """Walk ``hops`` as a chain of EXACT join hops from ``source_model`` via
+    the shared walker — each token matches an incident edge's ``name`` or the
+    opposite-endpoint model name (which MAY contain ``__``), in either
+    direction (DEV-1853). ``None`` when a hop is not a join / not resolvable /
+    revisiting; propagates :class:`AmbiguousJoinPathError`.
     """
-    current = source_model
-    for hop in hops:
-        if not any(j.target_model == hop for j in current.joins):
-            return None
-        nxt = resolve_model(hop)
-        if nxt is None:
-            return None
-        current = nxt
-    return current
+    models = dict(models_by_name)
+    models.setdefault(source_model.name, source_model)
+    chain = walk(root=source_model, path=hops, models_by_name=models)
+    if chain is None:
+        return None
+    return models.get(chain[-1].target_model) if chain else source_model
 
 
 def resolve_ref_target(
     *,
     qualifiers: Tuple[str, ...],
     source_model: SlayerModel,
-    resolve_model: SyncResolveModel,
+    models_by_name: ModelsByName,
 ) -> Optional[SlayerModel]:
     """Resolve a Mode-A qualifier chain to its target model for best-effort
     save-time inspectors (schema-drift cascade, column-dependency cycle walk).
 
     Exact-name-first: an empty chain or the host's own name → the host; a single
-    exact join target (which MAY contain ``__``) or a dotted chain of exact hops
-    → the terminal model. Never ``__``-splits — the legacy split-alias is a hard
-    D2 error at the runtime / save-time door, so here it simply fails to resolve
-    (best-effort skip). Returns ``None`` when a hop is not a direct join / not
-    reachable.
+    exact hop token (which MAY contain ``__``) or a dotted chain of exact hops
+    → the terminal model, in either traversal direction. Never ``__``-splits —
+    the legacy split-alias is a hard D2 error at the runtime / save-time door,
+    so here it simply fails to resolve (best-effort skip). Returns ``None``
+    when a hop is not a join / not reachable / ambiguous.
     """
     quals = list(qualifiers)
     if quals and quals[0] == source_model.name:
         quals = quals[1:]
     if not quals:
         return source_model
-    return _walk_exact(tuple(quals), source_model, resolve_model)
+    try:
+        return _walk_exact(tuple(quals), source_model, models_by_name)
+    except AmbiguousJoinPathError:
+        return None
 
 
 def _resolve_qualifiers(
@@ -252,7 +256,7 @@ def _resolve_qualifiers(
     leaf: str,
     source_model: SlayerModel,
     owner_alias: str,
-    resolve_model: SyncResolveModel,
+    models_by_name: ModelsByName,
 ) -> Optional[Tuple[str, ...]]:
     """Classify a Mode-A qualifier chain (DEV-1743).
 
@@ -262,8 +266,9 @@ def _resolve_qualifiers(
       * ``None`` — an opaque qualifier (CTE / subquery / physical
         ``schema.table.column``), left untouched.
 
-    Raises :class:`LegacyDunderAliasError` (D2) for a split-alias spelling and
-    :class:`UnresolvableDimensionJoinError` for a chain with a broken hop.
+    Raises :class:`LegacyDunderAliasError` (D2) for a split-alias spelling,
+    :class:`UnresolvableDimensionJoinError` for a chain with a broken hop, and
+    :class:`AmbiguousJoinPathError` for an ambiguous hop (fail closed).
     """
     quals = list(qualifiers)
     if quals and quals[0] in (owner_alias, source_model.name):
@@ -271,17 +276,17 @@ def _resolve_qualifiers(
     if not quals:
         return ()
     path = tuple(quals)
-    if _walk_exact(path, source_model, resolve_model) is not None:
+    if _walk_exact(path, source_model, models_by_name) is not None:
         return path
     if len(path) == 1:
         _raise_if_legacy_split_alias(
             qualifier=path[0], leaf=leaf,
-            source_model=source_model, resolve_model=resolve_model,
+            source_model=source_model, models_by_name=models_by_name,
         )
         return None  # opaque single qualifier
     _raise_if_broken_join_walk(
         path=path, leaf=leaf,
-        source_model=source_model, resolve_model=resolve_model,
+        source_model=source_model, models_by_name=models_by_name,
     )
     return None
 
@@ -291,7 +296,7 @@ def _raise_if_legacy_split_alias(
     qualifier: str,
     leaf: str,
     source_model: SlayerModel,
-    resolve_model: SyncResolveModel,
+    models_by_name: ModelsByName,
 ) -> None:
     """D2 door: a single opaque qualifier ``a__b`` that naive-splits into a real
     join walk is the legacy split-alias form — raise :class:`LegacyDunderAliasError`
@@ -300,7 +305,11 @@ def _raise_if_legacy_split_alias(
     if "__" not in qualifier:
         return
     naive = tuple(qualifier.split("__"))
-    if _walk_exact(naive, source_model, resolve_model) is not None:
+    try:
+        walkable = _walk_exact(naive, source_model, models_by_name) is not None
+    except AmbiguousJoinPathError:
+        walkable = True  # ambiguously walkable is still the legacy spelling
+    if walkable:
         raise LegacyDunderAliasError(
             alias=qualifier, dotted=".".join((*naive, leaf)),
             model=source_model.name,
@@ -312,30 +321,36 @@ def _raise_if_broken_join_walk(
     path: Tuple[str, ...],
     leaf: str,
     source_model: SlayerModel,
-    resolve_model: SyncResolveModel,
+    models_by_name: ModelsByName,
 ) -> None:
-    """Multi-part chain whose first hop IS a join target but a later hop fails:
+    """Multi-part chain whose first hop IS a join hop but a later hop fails:
     raise :class:`UnresolvableDimensionJoinError` naming the failing hop. A chain
-    whose first hop is NOT a join target is opaque (physical
+    whose first hop is NOT a join hop is opaque (physical
     ``schema.table.column`` — join-target-beats-schema precedence) and returns
     without raising."""
-    if not any(j.target_model == path[0] for j in source_model.joins):
+    models = dict(models_by_name)
+    models.setdefault(source_model.name, source_model)
+    if resolve_hop(
+        current=source_model, token=path[0], models_by_name=models,
+    ) is None:
         return
-    current: Optional[SlayerModel] = source_model
+    current = source_model
     for hop in path:
-        if current is None or not any(j.target_model == hop for j in current.joins):
+        edge = resolve_hop(current=current, token=hop, models_by_name=models)
+        if edge is None:
             raise UnresolvableDimensionJoinError(
                 reference=".".join((*path, leaf)),
                 root_model=source_model.name,
                 reason=f"'{hop}' is not a joined model on the preceding hop.",
             )
-        current = resolve_model(hop)
-        if current is None:
+        nxt = models.get(edge.target_model)
+        if nxt is None:
             raise UnresolvableDimensionJoinError(
                 reference=".".join((*path, leaf)),
                 root_model=source_model.name,
                 reason=f"joined model '{hop}' is not in the resolved bundle.",
             )
+        current = nxt
 
 
 def _lenient_path(
@@ -343,28 +358,32 @@ def _lenient_path(
     qualifiers: Tuple[str, ...],
     source_model: SlayerModel,
     owner_alias: str,
-    resolve_model: SyncResolveModel,
+    models_by_name: ModelsByName,
 ) -> Optional[Tuple[str, ...]]:
     """LENIENT qualifier resolution for the join-path SCANNER.
 
     Unlike :func:`_resolve_qualifiers` (STRICT — the expansion door that raises
     D2), the scanner runs over BOTH raw user forms AND already-expanded output
     whose qualifiers are legitimate internal ``__`` join aliases. It must not
-    D2 those, so it resolves a ``__`` qualifier by exact-match first and then by
-    naive split, and simply SKIPS (returns ``None``) anything that does not
-    fully walk — an opaque CTE / subquery / physical reference.
+    D2 (or fail-closed) those, so it resolves a ``__`` qualifier by exact-match
+    first and then by naive split, and simply SKIPS (returns ``None``) anything
+    that does not fully walk — an opaque CTE / subquery / physical reference,
+    or an ambiguous hop (the strict door raises on those).
     """
     quals = list(qualifiers)
     if quals and quals[0] in (owner_alias, source_model.name):
         quals = quals[1:]
     if not quals:
         return ()
-    if _walk_exact(tuple(quals), source_model, resolve_model) is not None:
-        return tuple(quals)
-    if len(quals) == 1 and "__" in quals[0]:
-        naive = tuple(quals[0].split("__"))
-        if _walk_exact(naive, source_model, resolve_model) is not None:
-            return naive
+    try:
+        if _walk_exact(tuple(quals), source_model, models_by_name) is not None:
+            return tuple(quals)
+        if len(quals) == 1 and "__" in quals[0]:
+            naive = tuple(quals[0].split("__"))
+            if _walk_exact(naive, source_model, models_by_name) is not None:
+                return naive
+    except AmbiguousJoinPathError:
+        return None
     return None
 
 
@@ -391,13 +410,14 @@ def collect_root_scope_joined_paths(
     "crosses a join."
     """
     root_ids = _root_scope_column_ids(parsed=parsed)
+    models_by_name = {m.name: m for m in bundle.referenced_models}
     seen: Set[Tuple[str, ...]] = set()
     ordered: List[Tuple[str, ...]] = []
     for _node, quals, _leaf in _reference_sites(parsed, root_ids):
         path = _lenient_path(
             qualifiers=quals, source_model=source_model,
             owner_alias=source_relation,
-            resolve_model=bundle.get_referenced_model,
+            models_by_name=models_by_name,
         )
         if not path:
             continue  # host-anchored or opaque
@@ -469,7 +489,7 @@ def _process_reference_site(
     model: SlayerModel,
     alias_path: str,
     owner_path: Tuple[str, ...],
-    resolve_model: SyncResolveModel,
+    models_by_name: ModelsByName,
     dialect: str,
     visited: Tuple[Tuple[str, str], ...],
     alias_resolver: Optional[AliasResolver],
@@ -486,7 +506,7 @@ def _process_reference_site(
     """
     path = _resolve_qualifiers(
         qualifiers=qualifiers, leaf=leaf, source_model=model,
-        owner_alias=alias_path, resolve_model=resolve_model,
+        owner_alias=alias_path, models_by_name=models_by_name,
     )
     if path is None:
         return None  # opaque — leave untouched
@@ -495,7 +515,7 @@ def _process_reference_site(
         target_model: Optional[SlayerModel] = model
         canonical_alias = alias_path
     else:
-        target_model = _walk_exact(path, model, resolve_model)
+        target_model = _walk_exact(path, model, models_by_name)
         if target_model is None:
             return None
         canonical_alias = _alias_for_path(
@@ -517,7 +537,7 @@ def _process_reference_site(
         model=target_model,
         alias_path=canonical_alias,
         owner_path=full_path,
-        resolve_model=resolve_model,
+        models_by_name=models_by_name,
         dialect=dialect,
         visited=(*visited, key),
         alias_resolver=alias_resolver,
@@ -536,7 +556,7 @@ def expand_derived_refs_sync(
     sql: Optional[str],
     model: SlayerModel,
     alias_path: str,
-    resolve_model: SyncResolveModel,
+    models_by_name: ModelsByName,
     dialect: str,
     visited: Optional[Tuple[Tuple[str, str], ...]] = None,
     owner_path: Tuple[str, ...] = (),
@@ -551,8 +571,9 @@ def expand_derived_refs_sync(
     self-referential chain and ``LegacyDunderAliasError`` (D2) on a legacy
     split-alias qualifier.
 
-    ``resolve_model`` is a plain ``name -> Optional[SlayerModel]`` lookup
-    (typically ``bundle.get_referenced_model``). ``owner_path`` is the
+    ``models_by_name`` is the resolved model collection (typically built from
+    ``bundle.referenced_models``) — hops resolve through the shared
+    bidirectional walker. ``owner_path`` is the
     ROOT-relative path of ``model`` (empty at the scope root). ``alias_resolver``
     (DEV-1743) threads the WP3 join-alias registry so qualifier strings match
     the emitted JOIN aliases; ``None`` falls back to the legacy ``"__".join``
@@ -578,7 +599,7 @@ def expand_derived_refs_sync(
             model=model,
             alias_path=alias_path,
             owner_path=owner_path,
-            resolve_model=resolve_model,
+            models_by_name=models_by_name,
             dialect=dialect,
             visited=visited,
             alias_resolver=alias_resolver,

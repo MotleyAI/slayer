@@ -51,7 +51,7 @@ joins:
     cardinality: many_to_one
 ```
 
-Each generated join carries a [`cardinality`](../concepts/models.md#join-cardinality) read source→target: a foreign→primary entity reference is `many_to_one`, while a **peer** join (two models sharing the same primary/unique entity) is `one_to_one`. The reverse INNER edge the converter mirrors onto the target model carries the inverted arity.
+Each generated join carries a [`cardinality`](../concepts/models.md#join-cardinality) read source→target: a foreign→primary entity reference is `many_to_one`, while a **peer** join (two models sharing the same primary/unique entity) is `one_to_one` and is declared once per pair — every edge traverses [in both directions](../concepts/models.md#bidirectional-traversal) automatically.
 
 ### Measures — Column + ModelMeasure Split
 

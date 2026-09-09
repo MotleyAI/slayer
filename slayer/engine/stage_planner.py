@@ -27,6 +27,7 @@ from slayer.core.formula import TIME_TRANSFORMS
 from slayer.core.format import NumberFormat
 from slayer.core.grain import Grain
 from slayer.core.errors import (
+    AmbiguousJoinPathError,
     AmbiguousReferenceError,
     DistinctDimensionValuesError,
     PositionTypingError,
@@ -55,10 +56,10 @@ from slayer.core.errors import UnreachableFilterDroppedWarning
 from slayer.core.models import ModelMeasure, SlayerModel
 from slayer.engine.aggregate_input_paths import compute_aggregate_input_join_paths
 from slayer.engine.column_filter_paths import compute_column_filter_join_paths
+from slayer.core.join_walker import resolve_hop, terminal_model, walk
 from slayer.engine.join_safety import (
     may_inline_crossing_inputs,
     provably_to_one,
-    resolve_correlation_hop,
     safe_reachable,
 )
 from slayer.core.query import (
@@ -68,7 +69,11 @@ from slayer.core.query import (
     SlayerQuery,
     TimeDimension,
 )
-from slayer.core.refs import canonical_agg_name
+from slayer.core.refs import (
+    AGG_REF_RE,
+    auto_name_from_expression,
+    canonical_agg_name,
+)
 from slayer.sql.naming import canonical_aggregate_alias
 from slayer.core.time_bounds import strip_frame_bounds
 from slayer.core.window_duration import parse_window_duration
@@ -1006,7 +1011,7 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
 
 
 def _regroup_inherited_filters(
-    prebound: PreboundQuery, filter_typings: Sequence[ConjunctTyping],
+    *, prebound: PreboundQuery, filter_typings: Sequence[ConjunctTyping],
 ) -> Tuple[List[BoundFilter], int]:
     """Stratum-0 field masks define every producer's population; nothing else inherits."""
     date_bounds: List[BoundFilter] = []
@@ -1345,6 +1350,31 @@ def _key_host_path(key: ValueKey) -> Tuple[str, ...]:
     return tuple(getattr(key, "path", ()) or ())
 
 
+def _back_token(
+    *, root_model: SlayerModel, host_name: str, target_path: Tuple[str, ...],
+    models_by_name: Dict[str, SlayerModel],
+) -> str:
+    """The token that traverses from the aggregate's root back to the host.
+
+    An edge-name hop is direction-agnostic, so when the last target-path token
+    is a named edge it also names the reverse hop and resolves unambiguously
+    (the bare host model name can be ambiguous across parallel edges). Falls
+    back to the host model name otherwise (DEV-1853 D5)."""
+    if target_path:
+        last = target_path[-1]
+        if last != host_name:
+            try:
+                edge = resolve_hop(
+                    current=root_model, token=last,
+                    models_by_name=models_by_name,
+                )
+            except AmbiguousJoinPathError:
+                edge = None
+            if edge is not None and edge.target_model == host_name:
+                return last
+    return host_name
+
+
 def _attributable_from_root(
     *, host_path: Tuple[str, ...], target_path: Tuple[str, ...],
     root_model: SlayerModel, models_by_name: Dict[str, SlayerModel],
@@ -1360,8 +1390,12 @@ def _attributable_from_root(
         return False
     if hp and safe_reachable(root=root_model, path=hp, models_by_name=models_by_name):
         return True
+    back = _back_token(
+        root_model=root_model, host_name=host_name, target_path=tp,
+        models_by_name=models_by_name,
+    )
     return safe_reachable(
-        root=root_model, path=(host_name, *hp), models_by_name=models_by_name,
+        root=root_model, path=(back, *hp), models_by_name=models_by_name,
     )
 
 
@@ -1376,7 +1410,11 @@ def _reroot_leaf_via_host(
         return None  # reroot_value_key strips the prefix
     if target_path and host_name == target_path[0]:
         return None
-    via_host = (host_name, *hp)
+    back = _back_token(
+        root_model=root_model, host_name=host_name, target_path=target_path,
+        models_by_name=models_by_name,
+    )
+    via_host = (back, *hp)
     if not safe_reachable(
         root=root_model, path=via_host, models_by_name=models_by_name,
     ) and hp and safe_reachable(
@@ -1406,9 +1444,14 @@ def _reroot_from_root(
         )
         if rerooted is not None:
             mapping[r] = rerooted
+    # Strip the target prefix from under-target refs FIRST; off-side refs
+    # (the via-host mapping) never start with the target prefix so they survive
+    # unchanged, then get substituted. Doing it the other way round would let a
+    # direction-agnostic edge-name back-token (== the target token) be stripped.
+    key = reroot_value_key(key, target_path=tp)
     if mapping:
         key = substitute_value_keys(key, mapping)
-    return reroot_value_key(key, target_path=tp)
+    return key
 
 
 _UNREACHABLE_NO_PATH = "unreachable from the aggregate's root (no join path from it)"
@@ -1424,11 +1467,13 @@ def _broadcast_reason(
         return _UNREACHABLE_NO_PATH
     current = root_model
     for name in hp[len(tp):]:
-        join = next((j for j in current.joins if j.target_model == name), None)
-        if join is None:
+        edge = resolve_hop(
+            current=current, token=name, models_by_name=models_by_name,
+        )
+        if edge is None:
             return _UNREACHABLE_NO_PATH
-        tgt = models_by_name.get(name)
-        if tgt is None or not provably_to_one(join=join, target_model=tgt):
+        tgt = models_by_name.get(edge.target_model)
+        if tgt is None or not provably_to_one(edge=edge, target_model=tgt):
             return f"crosses an unproven join hop to {name}"
         current = tgt
     return "unreachable from the aggregate's root"
@@ -1470,16 +1515,21 @@ def _assert_partition_key_attributable(
 
 def _shared_join_key_reroot(
     *, key: ValueKey, target_path: Tuple[str, ...], host_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel],
 ) -> Optional[ValueKey]:
     """A host-local dimension that IS a source-side join column of the single hop to the root: return the root's target-side ColumnKey, else ``None``."""
     if not isinstance(key, ColumnKey) or _key_host_path(key) or len(target_path) != 1:
         return None
-    root_join = next(
-        (j for j in host_model.joins if j.target_model == target_path[0]), None,
-    )
-    if root_join is None:
+    try:
+        edge = resolve_hop(
+            current=host_model, token=target_path[0],
+            models_by_name=models_by_name,
+        )
+    except AmbiguousJoinPathError:
         return None
-    for src, tgt in root_join.join_pairs:
+    if edge is None:
+        return None
+    for src, tgt in edge.join_pairs:
         if src == key.leaf:
             return key.model_copy(update={"leaf": tgt, "path": ()})
     return None
@@ -1796,7 +1846,7 @@ def _synthesize_wrap_attach(
         if dm.declared_name is not None
     }
     inherited, n_inherited_date = _regroup_inherited_filters(
-        prebound, filter_typings,
+        prebound=prebound, filter_typings=filter_typings,
     )
     producer_prebound, ordered_pks = _regroup_producer_prebound(
         pks=Grain.of(projected), aggs=[wrap_key], model=producer_model,
@@ -1920,9 +1970,14 @@ def _path_edges_exist(
 ) -> bool:
     current = model
     for name in path:
-        join = next((j for j in current.joins if j.target_model == name), None)
-        nxt = models_by_name.get(name)
-        if join is None or nxt is None:
+        try:
+            edge = resolve_hop(
+                current=current, token=name, models_by_name=models_by_name,
+            )
+        except AmbiguousJoinPathError:
+            return False
+        nxt = models_by_name.get(edge.target_model) if edge is not None else None
+        if edge is None or nxt is None:
             return False
         current = nxt
     return True
@@ -1944,60 +1999,55 @@ def _forward_hops(
     base_node_path: Tuple[str, ...], models_by_name: Dict[str, SlayerModel],
     nodes: Dict[Tuple[str, ...], SemiJoinHop],
 ) -> Tuple[str, ...]:
-    """Register forward stored hops along ``rel_path``; returns the final node path."""
+    """Register hops along ``rel_path`` through the shared walker (reverse hops
+    and edge-name tokens included); returns the final node path. The node-path
+    token stays as-typed for hop-alias identity while the hop's ``target_model``
+    is the resolved model. An ambiguous hop raises (fail closed)."""
     current = start_model
     node_path = base_node_path
     for hop_name in rel_path:
-        join = next(
-            (j for j in current.joins if j.target_model == hop_name), None,
+        edge = resolve_hop(
+            current=current, token=hop_name, models_by_name=models_by_name,
         )
-        target = models_by_name.get(hop_name)
-        if join is None or target is None:
+        target = models_by_name.get(edge.target_model) if edge is not None else None
+        if edge is None or target is None:
             raise _PushBlocked(
-                f"unreachable from the aggregate's root (no stored join from "
+                f"unreachable from the aggregate's root (no join edge from "
                 f"{current.name} to {hop_name})"
             )
         node_path = (*node_path, hop_name)
         _register_hop(
-            nodes, node_path=node_path, target_model=hop_name,
-            pairs=[(s, t) for s, t in join.join_pairs],
+            nodes, node_path=node_path, target_model=edge.target_model,
+            pairs=[(s, t) for s, t in edge.join_pairs],
         )
         current = target
     return node_path
 
 
 def _reverse_hops(
-    *, target_path: Tuple[str, ...], root_model: SlayerModel,
+    *, target_path: Tuple[str, ...],
     host_model: SlayerModel, models_by_name: Dict[str, SlayerModel],
     nodes: Dict[Tuple[str, ...], SemiJoinHop],
 ) -> Tuple[str, ...]:
-    """Register the reverse chain root → … → host; returns the host node's path."""
-    chain: List[SlayerModel] = [host_model]
-    for name in target_path[:-1]:
-        nxt = models_by_name.get(name)
-        if nxt is None:
-            raise _PushBlocked(
-                f"unreachable from the aggregate's root (join path model "
-                f"{name!r} is unresolved)"
-            )
-        chain.append(nxt)
-    node_path: Tuple[str, ...] = ()
-    frm = root_model
-    for to_model in reversed(chain):
-        pairs = resolve_correlation_hop(from_model=frm, to_model=to_model)
-        if pairs is None:
-            # Root-agnostic wording: several producers dropping one filter must
-            # agree on the reason (the boundary dedup asserts it).
-            raise _PushBlocked(
-                f"no unambiguous reverse join edge onto {to_model.name} for "
-                f"the semi-join correlation (several stored joins target it, "
-                f"or none can be inverted; declare a reverse join)"
-            )
-        node_path = (*node_path, to_model.name)
-        _register_hop(
-            nodes, node_path=node_path, target_model=to_model.name, pairs=pairs,
+    """Register the reverse chain root → … → host by inverting the forward walk
+    host → … → root along ``target_path`` — so an edge-name token correlates
+    through the exact edge the aggregate's path selected, never a re-parsed
+    model name. An ambiguous forward hop raises (fail closed in both modes);
+    an unresolvable one blocks the push. Returns the host node's path."""
+    fwd = walk(root=host_model, path=target_path, models_by_name=models_by_name)
+    if fwd is None:
+        raise _PushBlocked(
+            f"unreachable from the aggregate's root (join path "
+            f"{'.'.join(target_path)!r} does not resolve from "
+            f"{host_model.name})"
         )
-        frm = to_model
+    node_path: Tuple[str, ...] = ()
+    for edge in reversed(fwd):
+        node_path = (*node_path, edge.source_model)
+        _register_hop(
+            nodes, node_path=node_path, target_model=edge.source_model,
+            pairs=[(tgt, src) for src, tgt in edge.join_pairs],
+        )
     return node_path
 
 
@@ -2069,7 +2119,7 @@ def _resolve_ref_anchor(
         return root_model, (), hp, host_node
     if host_node is None:
         host_node = _reverse_hops(
-            target_path=tp, root_model=root_model,
+            target_path=tp,
             host_model=host_model, models_by_name=lookup, nodes=nodes,
         )
     shared = 0
@@ -2081,8 +2131,11 @@ def _resolve_ref_anchor(
     if shared:
         # The ref rides the reverse path itself: bind to that chain
         # node (same related combination, D3) instead of re-walking.
+        # ``host_node`` carries walked MODEL names (reversed), so index it
+        # rather than a token lookup — ``tp`` tokens may be edge names.
         return (
-            lookup[tp[shared - 1]], host_node[: len(tp) - shared],
+            lookup[host_node[len(tp) - shared - 1]],
+            host_node[: len(tp) - shared],
             hp[shared:], host_node,
         )
     return host_model, host_node, hp, host_node
@@ -2280,6 +2333,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         hp = _key_host_path(g)
         shared = _shared_join_key_reroot(
             key=g, target_path=target_path, host_model=host_model,
+            models_by_name=models_by_name,
         )
         if shared is not None:
             # The join-key identity needs no join in the producer.
@@ -2621,7 +2675,9 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
         for agg in (*row_aggs, *combined_aggs, *cm_row, *cm_combined)
     }
 
-    inherited, n_inherited_date = _regroup_inherited_filters(prebound, filter_typings)
+    inherited, n_inherited_date = _regroup_inherited_filters(
+        prebound=prebound, filter_typings=filter_typings,
+    )
 
     # A combined producer keeps the consumer's dimension order (row producers use the alphabetical default).
     consumer_order: Dict[ValueKey, int] = {
@@ -3476,16 +3532,12 @@ def _joined_column_type(
     if not parts:
         return None
     *hops, leaf = parts
-    current = source_model
-    visited = {current.name}
-    for hop in hops:
-        if not any(j.target_model == hop for j in current.joins):
-            return None
-        nxt = bundle.get_referenced_model(hop)
-        if nxt is None or nxt.name in visited:
-            return None
-        visited.add(nxt.name)
-        current = nxt
+    current = terminal_model(
+        root=source_model, path=tuple(hops),
+        models_by_name={m.name: m for m in bundle.referenced_models},
+    )
+    if current is None:
+        return None
     col = current.get_column(leaf)
     return col.type if col is not None else None
 
@@ -3541,18 +3593,12 @@ def _reject_opaque_grouping_dim(
 def _terminal_model_for_dotted(
     *, source_model: SlayerModel, hops: List[str], bundle: ResolvedSourceBundle,
 ) -> Optional[SlayerModel]:
-    """Walk ``hops`` join targets from ``source_model`` (None on a missing/circular hop), mirroring the binder's join walk."""
-    current = source_model
-    visited = {current.name}
-    for hop in hops:
-        if not any(j.target_model == hop for j in current.joins):
-            return None
-        nxt = bundle.get_referenced_model(hop)
-        if nxt is None or nxt.name in visited:
-            return None
-        visited.add(nxt.name)
-        current = nxt
-    return current
+    """Walk ``hops`` from ``source_model`` via the shared walker (None on a
+    missing/circular/ambiguous hop), mirroring the binder's join walk."""
+    return terminal_model(
+        root=source_model, path=tuple(hops),
+        models_by_name={m.name: m for m in bundle.referenced_models},
+    )
 
 
 def _resolve_saved_measure_ref(
@@ -3779,7 +3825,7 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
             label=td.label,
             type=DataType.TIMESTAMP,
         ))
-    seen_measure_keys: Dict[str, Tuple[str, ValueKey]] = {}
+    seen_measure_keys: Dict[str, Tuple[str, ValueKey, ModelMeasure]] = {}
     for m in (query.measures or []):
         formula = m.formula
         explicit_name = m.name
@@ -3806,18 +3852,28 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
         public_name = alias_name or canonical
         # Two DIFFERENT values whose DERIVED keys collide would silently share
         # a column (e.g. ``sum(amount - cost)`` vs ``sum(amount + cost)`` both
-        # sanitize to ``amount_cost_sum``, DEV-1826) — fail loudly. Scoped to
-        # unnamed entries: explicit-name collisions keep their dedicated
-        # declared-more-than-once errors downstream.
+        # sanitize to ``amount_cost_sum``, DEV-1826) — fail loudly; the SAME
+        # value merges into one column. Scoped to unnamed entries:
+        # explicit-name collisions keep their dedicated declared-more-than-once
+        # errors downstream.
         if alias_name is None:
             prior = seen_measure_keys.get(public_name)
-            if prior is not None and prior[1] != bound.value_key:
-                raise ValueError(
-                    f"Measures {prior[0]!r} and {formula!r} both derive the "
-                    f"result key {public_name!r} but compute different "
-                    f"values; rename one (set 'name') to disambiguate."
-                )
-            seen_measure_keys[public_name] = (formula, bound.value_key)
+            if prior is not None:
+                if prior[1] != bound.value_key:
+                    raise ValueError(
+                        f"Measures {prior[0]!r} and {formula!r} both derive "
+                        f"the result key {public_name!r} but compute different "
+                        f"values; rename one (set 'name') to disambiguate."
+                    )
+                if (m.label, m.type) != (prior[2].label, prior[2].type):
+                    raise ValueError(
+                        f"Measures {prior[0]!r} and {formula!r} merge into "
+                        f"one result column {public_name!r} but declare "
+                        f"different label/type; rename one (set 'name') to "
+                        f"disambiguate."
+                    )
+                continue
+            seen_measure_keys[public_name] = (formula, bound.value_key, m)
         fmt, desc = _format_description_for_measure_formula(
             scope=scope, bound=bound,
         )
@@ -3901,9 +3957,10 @@ def _canonical_alias_for_formula(
     parsed: Optional[ParsedExpr] = None,
 ) -> str:
     """Canonical public alias for a measure formula: ``canonical_aggregate_alias``
-    for an AggregateKey root, else text-shape recognition sanitised to a valid
-    identifier. The text shape runs over the CANONICAL colon-spelling rendering
-    of ``parsed`` when given (DEV-1826), so ``cumsum(sum(revenue))`` and
+    for an AggregateKey root, ``canonical_agg_name`` for a plain ``col:agg``
+    text shape, else the text sanitised via ``auto_name_from_expression``. The
+    text shape runs over the CANONICAL colon-spelling rendering of ``parsed``
+    when given (DEV-1826), so ``cumsum(sum(revenue))`` and
     ``cumsum(revenue:sum)`` derive one alias."""
     if bound is not None and isinstance(bound.value_key, AggregateKey):
         # stage_formula profile prefixes the join path relative to the stage (``customers.*:count`` → ``customers._count``).
@@ -3916,15 +3973,16 @@ def _canonical_alias_for_formula(
     text = (
         canonical_measure_text(parsed) if parsed is not None else formula.strip()
     )
-    if ":" in text and "(" not in text:
-        base, agg = text.rsplit(":", 1)
-        return canonical_agg_name(
-            measure_name=base, aggregation_name=agg,
-        )
-    return (
-        text.replace(".", "_").replace(":", "_").replace(" ", "_")
-            .replace("(", "_").replace(")", "_").replace(",", "_")
-    )
+    # Fullmatch only — a substring heuristic here once mis-captured arithmetic
+    # composites and leaked ``:``/``/`` into SQL aliases.
+    match = AGG_REF_RE.fullmatch(text)
+    if match is not None and match.group(3) is None:
+        base, agg = match.group(1), match.group(2)
+        if base.endswith(".*"):
+            prefix, star = base[:-2], "*"
+            return f"{prefix}.{canonical_agg_name(measure_name=star, aggregation_name=agg)}"
+        return canonical_agg_name(measure_name=base, aggregation_name=agg)
+    return auto_name_from_expression(text)
 
 
 def _source_column_names(

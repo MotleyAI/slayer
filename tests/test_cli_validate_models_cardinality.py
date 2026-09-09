@@ -220,11 +220,16 @@ def test_json_without_cardinality_is_null(workspace: Path, capsys) -> None:
 
 def test_json_includes_join_safety_key(workspace: Path, capsys) -> None:
     """Automation reading JSON must see the same audit the text output prints.
-    The fixture's join is structurally proven → an empty list, not a missing key."""
+    DEV-1853 D9: one finding per edge with both orientations' provability — the
+    fixture's structurally proven join surfaces as an info row, never a
+    broadcast warning."""
     store = _setup(workspace)
     _run_validate_models(_args(store, format="json"))
     data = json.loads(capsys.readouterr().out)
-    assert data["join_safety"] == []
+    (finding,) = data["join_safety"]
+    assert finding["forward_provably_to_one"] is True
+    assert finding["severity"] == "info"
+    assert "broadcast" not in finding["message"].lower()
 
 
 def test_json_join_safety_reports_unproven_join(workspace: Path, capsys) -> None:
@@ -241,11 +246,11 @@ def test_json_join_safety_reports_unproven_join(workspace: Path, capsys) -> None
     )))
     _run_validate_models(_args(store, format="json"))
     data = json.loads(capsys.readouterr().out)
-    (finding,) = data["join_safety"]
+    (finding,) = [f for f in data["join_safety"] if f["model"] == "risky"]
     assert finding["data_source"] == "ds"
-    assert finding["model"] == "risky"
     assert finding["target_model"] == "customers"
     assert "unproven" in finding["message"]
+    assert finding["forward_provably_to_one"] is False
 
 
 def test_json_serialises_drift_entries(workspace: Path, capsys) -> None:

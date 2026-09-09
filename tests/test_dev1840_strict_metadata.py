@@ -13,7 +13,11 @@ import warnings as _warnings
 
 import pytest
 
-from slayer.core.errors import SlayerError, UnreachableFilterDroppedWarning
+from slayer.core.errors import (
+    AmbiguousJoinPathError,
+    SlayerError,
+    UnreachableFilterDroppedWarning,
+)
 
 from tests._dev1840_fixtures import (
     ModelMeasure,
@@ -52,6 +56,7 @@ async def exec_backend_amb(request):
 M = ModelMeasure(formula="amount:sum", name="m")
 CM = ModelMeasure(formula="customers.spend:sum", name="cm")
 SM = ModelMeasure(formula="agents.score:sum", name="sm")
+RV = ModelMeasure(formula="reviews.stars:sum", name="rv")
 
 
 class TestPushedFiltersAreSilent:
@@ -122,25 +127,27 @@ class TestStrictNarrows:
     async def test_strict_still_errors_on_an_ambiguous_path(
         self, exec_backend_amb,
     ):
+        """Ambiguous hop errors under strict — same failure as lenient.
+        DEV-1853 divergences.md class (d)."""
         _, engine = exec_backend_amb
         query = tq(strict=True, measures=[SM], filters=["effort > 2"])
-        with pytest.raises(SlayerError) as ei:
+        with pytest.raises(AmbiguousJoinPathError) as ei:
             await engine.execute(query=query)
-        assert "effort" in str(ei.value)
+        assert "opened_by" in str(ei.value)
+        assert "closed_by" in str(ei.value)
 
-    async def test_strict_still_errors_on_an_unreachable_filter(
+    async def test_strict_ambiguous_filter_hop_errors(
         self, exec_backend_amb,
     ):
-        """Scenario: genuinely unreachable filter keeps the established
-        behavior under strict."""
+        """A clean measure path with a filter crossing the ambiguous pair
+        errors under strict — never dropped. DEV-1853 divergences.md
+        class (d)."""
         _, engine = exec_backend_amb
-        query = tq(strict=True, measures=[SM], filters=["reviews.stars > 4"])
-        with pytest.raises(SlayerError) as ei:
+        query = tq(strict=True, measures=[RV], filters=["agents.name = 'Ann'"])
+        with pytest.raises(AmbiguousJoinPathError) as ei:
             await engine.execute(query=query)
-        message = str(ei.value)
-        assert "stars" in message
-        assert "cardinality" in message or "unique" in message \
-            or "remove" in message
+        assert "opened_by" in str(ei.value)
+        assert "closed_by" in str(ei.value)
 
 
 class TestExcludedFiltersKeepTheWarning:
@@ -170,21 +177,20 @@ class TestExcludedFiltersKeepTheWarning:
         (w,) = dropped_filter_warnings(resp)
         assert "channel" in w.filter_text
 
-    async def test_ambiguous_path_warns(self, exec_backend_amb):
-        """Scenario: ambiguous reverse path stays dropped and warned."""
+    async def test_ambiguous_path_errors_in_lenient_mode(self, exec_backend_amb):
+        """Ambiguous hop errors in BOTH modes — the drop+warn handling is
+        retired. DEV-1853 divergences.md class (d)."""
         _, engine = exec_backend_amb
-        resp = await engine.execute(tq(measures=[SM], filters=["effort > 2"]))
-        (w,) = dropped_filter_warnings(resp)
-        assert "effort" in w.filter_text
-        assert w.reason
+        query = tq(measures=[SM], filters=["effort > 2"])
+        with pytest.raises(AmbiguousJoinPathError):
+            await engine.execute(query)
 
-    async def test_unreachable_filter_warns(self, exec_backend_amb):
-        """Scenario: genuinely unreachable filter keeps the established
-        behavior — reviews is reachable only through the ambiguous hop."""
+    async def test_ambiguous_filter_hop_errors_in_lenient_mode(
+        self, exec_backend_amb,
+    ):
+        """A filter whose only route crosses the ambiguous pair errors in
+        lenient mode too — never dropped. DEV-1853 divergences.md class (d)."""
         _, engine = exec_backend_amb
-        resp = await engine.execute(
-            tq(measures=[SM], filters=["reviews.stars > 4"]),
-        )
-        (w,) = dropped_filter_warnings(resp)
-        assert "stars" in w.filter_text
-        assert w.reason
+        query = tq(measures=[RV], filters=["agents.name = 'Ann'"])
+        with pytest.raises(AmbiguousJoinPathError):
+            await engine.execute(query)

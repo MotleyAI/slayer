@@ -19,11 +19,15 @@ from __future__ import annotations
 import tempfile
 
 import pytest
+import sqlglot
+from sqlglot import exp
 
+import slayer.engine.query_engine as qe_mod
 from slayer.core.enums import DataType
 from slayer.core.errors import UnresolvableDimensionJoinError
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
+from slayer.engine.column_expansion import _requalify
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -52,8 +56,6 @@ async def _engine_with(models, *, dialect="postgres"):
 def _joined_table_names(sql: str) -> set[str]:
     """Physical table names that appear as ``exp.Table`` in the SQL — proves a
     join is actually WIRED (vs a raw substring hit anywhere in the text)."""
-    import sqlglot
-    from sqlglot import exp
     tree = sqlglot.parse_one(sql, read="postgres")
     return {t.name for t in tree.find_all(exp.Table)}
 
@@ -154,6 +156,36 @@ class TestLegacyDunderIsHardErrorAtGeneration:
         msg = str(ei.value)
         assert "customers__regions" in msg
         assert "customers.regions.name" in msg
+
+
+# --------------------------------------------------------------------------- #
+# Save-time Mode-A validation covers reverse-only chains on joinless models.
+# --------------------------------------------------------------------------- #
+class TestModeAValidationOverReverseOnlyEdge:
+    @pytest.mark.asyncio
+    async def test_broken_tail_hop_rejected_on_joinless_model(self) -> None:
+        # orders declares the only edge; customers has NO joins, but its
+        # Mode-A chain over the reverse hop still validates (DEV-1853).
+        orders = SlayerModel(
+            name="orders", data_source="test", sql_table="orders",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="customer_id", type=DataType.INT),
+            ],
+            joins=[ModelJoin(target_model="customers",
+                             join_pairs=[["customer_id", "id"]])],
+        )
+        engine = await _engine_with([orders])
+        customers = SlayerModel(
+            name="customers", data_source="test", sql_table="customers",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="bad", type=DataType.TEXT,
+                       sql="orders.nonexistent.name"),
+            ],
+        )
+        with pytest.raises(UnresolvableDimensionJoinError):
+            await engine.save_model(customers)
 
 
 # --------------------------------------------------------------------------- #
@@ -339,10 +371,9 @@ class TestDeepDottedChainResolves:
 class TestModeAValidationDialect:
     @pytest.mark.asyncio
     async def test_save_time_mode_a_uses_datasource_dialect(self, monkeypatch) -> None:
-        import slayer.engine.query_engine as qe_mod
         captured: dict = {}
 
-        def _spy(*, sql, model, alias_path, resolve_model, dialect):
+        def _spy(*, sql, model, alias_path, models_by_name, dialect):
             captured["dialect"] = dialect
 
         monkeypatch.setattr(qe_mod, "expand_derived_refs_sync", _spy)
@@ -371,9 +402,6 @@ class TestModeAValidationDialect:
 # dialects (CR).
 # --------------------------------------------------------------------------- #
 def test_requalify_preserves_quoted_mixed_case_deep_leaf() -> None:
-    import sqlglot
-
-    from slayer.engine.column_expansion import _requalify
     node = sqlglot.parse_one('a.b.c.d."Spend"')  # nested Dot, quoted mixed-case leaf
     out = _requalify(node, alias="x__y", leaf="Spend")
     assert '"Spend"' in out.sql(), out.sql()

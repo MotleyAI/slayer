@@ -28,6 +28,7 @@ import contextlib
 import io
 import json
 import os
+import sys
 import tempfile
 from types import SimpleNamespace
 from typing import AsyncIterator, Iterator
@@ -36,6 +37,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from slayer.api.server import create_app
+from slayer.cli import _run_inspect, main
+from slayer.client.slayer_client import SlayerClient
 from slayer.core.enums import DataType
 from slayer.core.models import (
     Column,
@@ -45,6 +48,7 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.inspect.service import InspectService
+from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -175,7 +179,8 @@ class TestModelCollectionCompactMarkdown:
     async def test_oneliner_per_model(self, two_ds: YAMLStorage) -> None:
         out = await _svc(two_ds).inspect(reference=None, entity_type="model")
         assert "- `orders` (3 cols; joins: `customers`)" in out
-        assert "- `customers` (1 cols; joins: _(none)_)" in out
+        # DEV-1853: reverse-reachable joins show in Markdown like in JSON.
+        assert "- `customers` (1 cols; joins: `orders`)" in out
         assert "- `events` (2 cols; joins: _(none)_)" in out
 
     async def test_no_verbose_block(self, two_ds: YAMLStorage) -> None:
@@ -254,7 +259,6 @@ class TestModelCollectionVerbose:
     async def test_single_ds_byte_identical_to_models_summary_md(
         self, single_ds: YAMLStorage
     ) -> None:
-        from slayer.mcp.server import create_mcp_server
 
         server = create_mcp_server(storage=single_ds)
         blocks, _ = await server.call_tool(
@@ -270,7 +274,6 @@ class TestModelCollectionVerbose:
     async def test_single_ds_byte_identical_to_models_summary_json(
         self, single_ds: YAMLStorage
     ) -> None:
-        from slayer.mcp.server import create_mcp_server
 
         server = create_mcp_server(storage=single_ds)
         blocks, _ = await server.call_tool(
@@ -371,7 +374,6 @@ class TestDatasourceCollection:
     async def test_compact_true_byte_identical_to_list_datasources(
         self, two_ds: YAMLStorage
     ) -> None:
-        from slayer.mcp.server import create_mcp_server
 
         server = create_mcp_server(storage=two_ds)
         blocks, _ = await server.call_tool(
@@ -424,7 +426,6 @@ class TestDatasourceCollection:
     async def test_empty_storage_message(
         self, empty_store: YAMLStorage
     ) -> None:
-        from slayer.mcp.server import create_mcp_server
 
         server = create_mcp_server(storage=empty_store)
         blocks, _ = await server.call_tool(
@@ -525,7 +526,6 @@ class TestMcpCollection:
     async def test_inspect_omitted_reference_is_collection(
         self, two_ds: YAMLStorage
     ) -> None:
-        from slayer.mcp.server import create_mcp_server
 
         server = create_mcp_server(storage=two_ds)
         blocks, _ = await server.call_tool(
@@ -538,7 +538,6 @@ class TestMcpCollection:
     async def test_inspect_reference_accepts_null_in_schema(
         self, two_ds: YAMLStorage
     ) -> None:
-        from slayer.mcp.server import create_mcp_server
 
         server = create_mcp_server(storage=two_ds)
         tool = {t.name: t for t in await server.list_tools()}["inspect"]
@@ -552,7 +551,6 @@ class TestMcpCollection:
     async def test_inspect_datasource_collection(
         self, two_ds: YAMLStorage
     ) -> None:
-        from slayer.mcp.server import create_mcp_server
 
         server = create_mcp_server(storage=two_ds)
         listing_blocks, _ = await server.call_tool(
@@ -645,7 +643,6 @@ class TestCliCollection:
     ) -> None:
         # argparse nargs="*" yields [] with no positionals; the adapter maps it
         # to None → collection.
-        from slayer.cli import _run_inspect
 
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
@@ -659,7 +656,6 @@ class TestCliCollection:
     def test_no_positional_unsupported_kind_exits_nonzero(
         self, cli_storage: YAMLStorage
     ) -> None:
-        from slayer.cli import _run_inspect
 
         args = _inspect_args(reference=[], entity_type="column")
         buf = io.StringIO()
@@ -675,7 +671,6 @@ class TestCliCollection:
     def test_single_positional_still_bare(
         self, cli_storage: YAMLStorage
     ) -> None:
-        from slayer.cli import _run_inspect
 
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
@@ -695,9 +690,7 @@ class TestCliCollection:
     ) -> None:
         # End-to-end: ``slayer inspect --type model`` (no positional) must parse
         # and dispatch to the collection view (nargs="*").
-        import sys
 
-        from slayer.cli import main
 
         storage_dir = os.path.join(str(tmp_path), "store")
         os.makedirs(storage_dir, exist_ok=True)
@@ -726,7 +719,6 @@ class TestSlayerClientCollection:
     async def test_local_none_reference_collection(
         self, client_storage: YAMLStorage
     ) -> None:
-        from slayer.client.slayer_client import SlayerClient
 
         client = SlayerClient(storage=client_storage)
         out = await client.inspect(reference=None, entity_type="model")
@@ -735,7 +727,6 @@ class TestSlayerClientCollection:
     def test_remote_posts_null_reference(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from slayer.client.slayer_client import SlayerClient
 
         client = SlayerClient(url="http://localhost:5143")
         assert client._engine is None  # remote mode

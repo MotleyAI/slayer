@@ -51,6 +51,7 @@ from slayer.core.keys import (
     normalize_scalar,
     prepend_value_key,
 )
+from slayer.core.join_walker import neighbors, resolve_hop, terminal_model
 from slayer.core.models import SlayerModel
 from slayer.core.query import TimeDimension
 from slayer.core.scope import ModelScope, StageSchema
@@ -250,15 +251,22 @@ def _terminal_model_for_path(
     scope: ModelScope,
     bundle: ResolvedSourceBundle,
 ) -> Optional[SlayerModel]:
-    """Walk ``path`` from ``scope.source_model`` to the terminal model (host if empty)."""
+    """Walk ``path`` from ``scope.source_model`` to the terminal model (host if
+    empty) through the shared bidirectional walker — reverse hops and edge-name
+    tokens resolve, so the terminal model comes from the resolved edge, never
+    from reading the token as a model name (DEV-1853 D5)."""
     current = scope.source_model
     if current is None:
         return None
+    models_by_name = {m.name: m for m in bundle.referenced_models}
+    models_by_name.setdefault(current.name, current)
     for hop in path:
-        nxt = bundle.get_referenced_model(hop)
-        if nxt is None:
+        edge = resolve_hop(current=current, token=hop, models_by_name=models_by_name)
+        if edge is None:
             return None
-        current = nxt
+        current = models_by_name.get(edge.target_model)
+        if current is None:
+            return None
     return current
 
 
@@ -513,31 +521,40 @@ def _walk_join_chain(
     bundle: ResolvedSourceBundle,
     parts: Tuple[str, ...],
 ):
-    """Walk ``hop_path`` join hops from ``host``, validating each and rejecting a
-    hop that revisits a model (circular join). Returns the terminal model;
-    ``parts`` is the full dotted ref, for error messages only."""
+    """Walk ``hop_path`` join hops from ``host`` through the shared bidirectional
+    walker, validating each and rejecting a hop that revisits a model (circular
+    join). Each token resolves as an edge name then a neighbour model, in either
+    orientation. Returns the terminal model; ``parts`` is the full dotted ref,
+    for error messages only. Raises ``AmbiguousJoinPathError`` on an ambiguous
+    hop."""
+    models_by_name = {m.name: m for m in bundle.referenced_models}
+    models_by_name.setdefault(host.name, host)
     current = host
     visited_models = {host.name}
     for hop in hop_path:
-        join = next(
-            (j for j in current.joins if j.target_model == hop), None,
-        )
-        if join is None:
+        edge = resolve_hop(current=current, token=hop, models_by_name=models_by_name)
+        if edge is None:
+            # Valid hop tokens are neighbour models AND edge names.
+            reachable = sorted({
+                token
+                for e in neighbors(model=current, models_by_name=models_by_name)
+                for token in (e.target_model, e.name)
+                if token
+            })
             raise UnknownReferenceError(
                 name=".".join(parts),
                 scope_kind="ModelScope",
                 scope_summary=(
-                    f"model {current.name!r} joins: "
-                    f"{[j.target_model for j in current.joins]}"
+                    f"model {current.name!r} reachable models: {reachable}"
                 ),
                 suggestion=f"model {current.name!r} has no join to {hop!r}.",
             )
-        nxt = bundle.get_referenced_model(hop)
+        nxt = models_by_name.get(edge.target_model)
         if nxt is None:
             raise UnknownReferenceError(
                 name=".".join(parts),
                 scope_kind="ModelScope",
-                scope_summary=f"target {hop!r} not in source bundle",
+                scope_summary=f"target {edge.target_model!r} not in source bundle",
                 suggestion=None,
             )
         # Revisiting a model is a circular join (``a -> b -> a``): reject here
@@ -727,13 +744,19 @@ def _reject_round_trip(
 ) -> None:
     """Reject a re-anchored measure whose join path revisits a model on the
     host→target chain (round trip) — parity with the circular-join rejection."""
+    models_by_name = {m.name: m for m in bundle.referenced_models}
+    models_by_name.setdefault(host.name, host)
     for sub in walk_value_keys(host_key):
         path = getattr(sub, "path", None)
         if not path:
             continue
         visited = {host.name}
+        current = host
         for hop in path:
-            nxt = bundle.get_referenced_model(hop)
+            # Tokens may be edge names — resolve via the shared walker.
+            edge = resolve_hop(
+                current=current, token=hop, models_by_name=models_by_name)
+            nxt = models_by_name.get(edge.target_model) if edge else None
             if nxt is None:
                 break
             if nxt.name in visited:
@@ -744,6 +767,7 @@ def _reject_round_trip(
                     f"(the identical hand-written path is rejected as circular)."
                 )
             visited.add(nxt.name)
+            current = nxt
 
 
 def _resolve_saved_measure(
@@ -1080,6 +1104,18 @@ def _bind_agg(
     )
 
 
+def _walk_tokens_best_effort(
+    *, host: SlayerModel, path, bundle: ResolvedSourceBundle,
+) -> Optional[SlayerModel]:
+    """Terminal model of ``path`` from ``host`` via the shared walker (tokens
+    may be edge names); ``None`` when a hop doesn't resolve — callers skip
+    their validation best-effort."""
+    return terminal_model(
+        root=host, path=tuple(path),
+        models_by_name={m.name: m for m in bundle.referenced_models},
+    )
+
+
 def _resolve_column_filter_key(
     *, source, bundle: ResolvedSourceBundle,
 ) -> Optional[SqlExprKey]:
@@ -1095,12 +1131,9 @@ def _resolve_column_filter_key(
     host = bundle.source_model
     if host is None:
         return None
-    current: SlayerModel = host
-    for hop in path:
-        nxt = bundle.get_referenced_model(hop)
-        if nxt is None:
-            return None
-        current = nxt
+    current = _walk_tokens_best_effort(host=host, path=path, bundle=bundle)
+    if current is None:
+        return None
     col = next((c for c in current.columns if c.name == leaf), None)
     if col is None or not col.filter:
         return None
@@ -1133,12 +1166,10 @@ def _resolve_agg_owner(
     if host is None:
         return None, None
     leaf = getattr(source, "leaf", None) or getattr(source, "column_name", None)
-    current: SlayerModel = host
-    for hop in tuple(getattr(source, "path", ())):
-        nxt = bundle.get_referenced_model(hop)
-        if nxt is None:
-            return None, None
-        current = nxt
+    current = _walk_tokens_best_effort(
+        host=host, path=tuple(getattr(source, "path", ())), bundle=bundle)
+    if current is None:
+        return None, None
     return current, leaf
 
 

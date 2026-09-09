@@ -4,6 +4,7 @@ The orchestrator builds this once at execute start; the binder reads it purely.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union, cast
 
@@ -25,6 +26,9 @@ if TYPE_CHECKING:
     from slayer.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
+
+#: Cap on concurrent peer-model reads during the join-graph walk.
+_PEER_LOAD_CONCURRENCY = 8
 
 
 class ResolvedSourceBundle(BaseModel):
@@ -288,11 +292,14 @@ async def _collect_referenced_models(
     storage: "StorageBackend",
     data_source: Optional[str],
 ) -> List[SlayerModel]:
-    """Transitive join-graph walk (BFS), best-effort.
+    """Transitive join-graph walk (BFS) over the bidirectional edge set,
+    best-effort.
 
     Seeds: the source model plus the real base of every named sibling stage.
-    Follows each model's ``joins[].target_model`` within ``data_source``; absent
-    targets are skipped silently. The source model is returned first.
+    Follows each edge in either direction — a model's ``joins[].target_model``
+    and any datasource model that declares a join *into* the frontier model
+    (DEV-1853) — so the closure is the datasource's connected component. The
+    source model is returned first.
     """
     # Models held concretely (host + each sibling's overlay-resolved base).
     # Best-effort: a sibling whose base is absent is skipped.
@@ -308,6 +315,40 @@ async def _collect_referenced_models(
             continue
         preseeded.setdefault(sib_model.name, sib_model)
 
+    # Load the datasource's models once so reverse edges (a peer declaring a
+    # join into a frontier model) are discoverable. Bidirectional traversal
+    # makes the reachable set the connected component, not just forward targets.
+    ds = data_source or source_model.data_source
+    all_models: Dict[str, SlayerModel] = dict(preseeded)
+    try:
+        peer_names = await storage.list_models(ds) if ds is not None else []
+    except Exception as exc:  # best-effort; ambiguous/absent ds → forward only
+        # Sanitize for log injection (S5145): strip CR/LF before logging.
+        safe_ds = str(ds).replace("\r", "\\r").replace("\n", "\\n")
+        logger.warning(
+            "list_models failed for ds '%s' (%s): reverse join edges will not "
+            "be discoverable for this query", safe_ds, exc,
+        )
+        peer_names = []
+    sem = asyncio.Semaphore(_PEER_LOAD_CONCURRENCY)
+
+    async def _load_peer(nm: str) -> "tuple[str, Optional[SlayerModel]]":
+        async with sem:
+            try:
+                return nm, await storage.get_model(nm, data_source=ds)
+            except Exception as exc:  # best-effort; a broken peer is skipped
+                logger.debug("peer model load failed for %r: %s", nm, exc)
+                return nm, None
+
+    to_load = [nm for nm in peer_names if nm not in all_models]
+    for nm, m in await asyncio.gather(*(_load_peer(nm) for nm in to_load)):
+        if m is not None:
+            all_models[nm] = m
+    incoming: Dict[str, List[str]] = {}
+    for m in all_models.values():
+        for join in m.joins:
+            incoming.setdefault(join.target_model, []).append(m.name)
+
     collected: Dict[str, SlayerModel] = {}
     visited: set[str] = set()
     frontier: List[str] = list(preseeded)
@@ -316,10 +357,10 @@ async def _collect_referenced_models(
         if name in visited:
             continue
         visited.add(name)
-        model = preseeded.get(name)
+        model = all_models.get(name)
         if model is None:
             try:
-                model = await storage.get_model(name, data_source=data_source)
+                model = await storage.get_model(name, data_source=ds)
             except Exception as exc:  # best-effort; absent target is fine
                 logger.debug("join-target lookup failed for %r: %s", name, exc)
                 model = None
@@ -329,6 +370,9 @@ async def _collect_referenced_models(
         for join in model.joins:
             if join.target_model not in visited:
                 frontier.append(join.target_model)
+        for src_name in incoming.get(name, ()):
+            if src_name not in visited:
+                frontier.append(src_name)
 
     ordered = [source_model]
     ordered.extend(m for n, m in collected.items() if n != source_model.name)

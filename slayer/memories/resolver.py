@@ -38,6 +38,7 @@ from slayer.core.errors import (
     EntityResolutionError,
     UnknownFunctionError,
 )
+from slayer.core.join_walker import resolve_hop
 from slayer.core.models import SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.syntax import (
@@ -168,22 +169,32 @@ async def _resolve_join_path(
     DEV-1330's join-scoping rule. Raises ``EntityResolutionError`` when
     a segment doesn't match any join on the current model.
     """
+    ds = starting_model.data_source
+    models_by_name: dict[str, SlayerModel] = {starting_model.name: starting_model}
+    try:
+        peer_names = await storage.list_models(ds)
+    except Exception:  # best-effort — reverse hops just won't resolve
+        peer_names = []
+    for nm in peer_names:
+        if nm in models_by_name:
+            continue
+        try:
+            peer = await storage.get_model(nm, data_source=ds)
+        except Exception:
+            peer = None
+        if peer is not None:
+            models_by_name[nm] = peer
     current = starting_model
     for seg in path:
-        join = next(
-            (j for j in current.joins if j.target_model == seg), None
+        # Tokens resolve in either direction, edge name first (DEV-1853).
+        edge = resolve_hop(
+            current=current, token=seg, models_by_name=models_by_name,
         )
-        if join is None:
+        target = models_by_name.get(edge.target_model) if edge else None
+        if target is None:
             raise EntityResolutionError(
                 f"'{seg}' is not a join target on model "
                 f"'{current.name}'."
-            )
-        target = await storage.get_model(seg, data_source=current.data_source)
-        if target is None:
-            raise EntityResolutionError(
-                f"Join target '{seg}' on model '{current.name}' "
-                f"resolves to no saved model in datasource "
-                f"'{current.data_source}'."
             )
         current = target
     return current

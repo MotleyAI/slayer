@@ -191,9 +191,10 @@ def _orders_model(*, data_source: str = "test") -> SlayerModel:
         columns=[
             Column(name="id", type=DataType.INT, primary_key=True),
             Column(name="customer_id", type=DataType.INT),
-            # Second FK onto customers: keeps the reverse hop AMBIGUOUS so the
-            # host-local / off-graph filters stay dropped + warned (this
-            # corpus's subject) instead of pushing as a DEV-1840 semi-join.
+            # Kept as a plain column; its second edge onto customers is gone —
+            # DEV-1853 makes parallel edges fail closed in BOTH directions, so
+            # host-local filters now push down by semi-join over the inverted
+            # edge instead of dropping (divergences.md class (c)/(d)).
             Column(name="billed_customer_id", type=DataType.INT),
             Column(name="status", type=DataType.TEXT),
             Column(name="created_at", type=DataType.TIMESTAMP),
@@ -217,10 +218,6 @@ def _orders_model(*, data_source: str = "test") -> SlayerModel:
         ],
         joins=[
             ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
-            ModelJoin(
-                target_model="customers",
-                join_pairs=[["billed_customer_id", "id"]],
-            ),
             ModelJoin(target_model="order_tags", join_pairs=[["id", "order_id"]]),
         ],
     )

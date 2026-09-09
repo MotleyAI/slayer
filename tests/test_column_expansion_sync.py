@@ -6,7 +6,6 @@ enrichment path it served, so this is now the only expander.) These tests pin it
 behavior directly against an in-memory ``name -> SlayerModel`` resolver,
 mirroring how the generator drives it via ``bundle.get_referenced_model``.
 """
-from typing import Optional
 
 import pytest
 
@@ -53,18 +52,13 @@ def _model_b() -> SlayerModel:
     )
 
 
-def _resolver(models: dict[str, SlayerModel]):
-    def _get(name: str) -> Optional[SlayerModel]:
-        return models.get(name)
-
-    return _get
 
 
 def test_bare_base_column_returns_name() -> None:
     a = _model_a()
     out = expand_derived_refs_sync(
         sql=None, model=a, alias_path="A",
-        resolve_model=_resolver({"A": a}), dialect="sqlite",
+        models_by_name={"A": a}, dialect="sqlite",
     )
     assert out is None
 
@@ -75,7 +69,7 @@ def test_local_derived_chain_inlines_sibling() -> None:
     a = _model_a()
     out = expand_derived_refs_sync(
         sql="A.c1 * 2", model=a, alias_path="A",
-        resolve_model=_resolver({"A": a}), dialect="sqlite",
+        models_by_name={"A": a}, dialect="sqlite",
     )
     assert _norm(out) == "(A.raw_a + 1) * 2"
 
@@ -86,7 +80,7 @@ def test_cross_table_derived_ref_inlines_joined_derived() -> None:
     a, b = _model_a(), _model_b()
     out = expand_derived_refs_sync(
         sql="A.bar / B.foo_normalized", model=a, alias_path="A",
-        resolve_model=_resolver({"A": a, "B": b}), dialect="sqlite",
+        models_by_name={"A": a, "B": b}, dialect="sqlite",
     )
     assert _norm(out) == "A.bar / (B.foo_raw / 100.0)"
 
@@ -95,7 +89,7 @@ def test_bare_local_ref_qualifies_to_alias() -> None:
     a = _model_a()
     out = expand_derived_refs_sync(
         sql="raw_a + 1", model=a, alias_path="A",
-        resolve_model=_resolver({"A": a}), dialect="sqlite",
+        models_by_name={"A": a}, dialect="sqlite",
     )
     assert _norm(out) == "A.raw_a + 1"
 
@@ -114,7 +108,7 @@ def test_cycle_raises_column_cycle_error() -> None:
     with pytest.raises(ColumnCycleError):
         expand_derived_refs_sync(
             sql="c1", model=cyclic, alias_path="C",
-            resolve_model=_resolver({"C": cyclic}), dialect="sqlite",
+            models_by_name={"C": cyclic}, dialect="sqlite",
         )
 
 
@@ -124,7 +118,7 @@ def test_unknown_alias_left_untouched() -> None:
     a = _model_a()
     out = expand_derived_refs_sync(
         sql="cte_x.value + A.bar", model=a, alias_path="A",
-        resolve_model=_resolver({"A": a}), dialect="sqlite",
+        models_by_name={"A": a}, dialect="sqlite",
     )
     # cte_x.value untouched; A.bar stays qualified to the host alias.
     assert "cte_x.value" in _norm(out)
@@ -138,7 +132,7 @@ def test_dev1752_subquery_inner_ref_not_qualified() -> None:
     a = _model_a()
     out = expand_derived_refs_sync(
         sql="bar IN (SELECT bar FROM other_tbl)", model=a, alias_path="A",
-        resolve_model=_resolver({"A": a}), dialect="sqlite",
+        models_by_name={"A": a}, dialect="sqlite",
     )
     assert _norm(out) == "A.bar IN (SELECT bar FROM other_tbl)"
 
@@ -152,7 +146,7 @@ def test_dev1752_root_inlines_while_subquery_local_untouched() -> None:
     a = _model_a()
     out = expand_derived_refs_sync(
         sql="c1 IN (SELECT c1 FROM other_tbl)", model=a, alias_path="A",
-        resolve_model=_resolver({"A": a}), dialect="sqlite",
+        models_by_name={"A": a}, dialect="sqlite",
     )
     assert _norm(out) == "(A.raw_a + 1) IN (SELECT c1 FROM other_tbl)"
 
@@ -165,7 +159,7 @@ def test_dev1752_nonroot_explicit_ref_not_requalified() -> None:
     a = _model_a()
     out = expand_derived_refs_sync(
         sql="bar IN (SELECT A.bar FROM other_tbl)", model=a, alias_path="A_host",
-        resolve_model=_resolver({"A": a}), dialect="sqlite",
+        models_by_name={"A": a}, dialect="sqlite",
     )
     # Outer bare bar -> host alias; inner A.bar stays A.bar (NOT A_host.bar).
     assert _norm(out) == "A_host.bar IN (SELECT A.bar FROM other_tbl)"
@@ -178,7 +172,7 @@ def test_dev1752_set_operation_branches_leave_inner_bare() -> None:
     out = expand_derived_refs_sync(
         sql="bar IN (SELECT bar FROM t1 UNION SELECT bar FROM t2)",
         model=a, alias_path="A",
-        resolve_model=_resolver({"A": a}), dialect="sqlite",
+        models_by_name={"A": a}, dialect="sqlite",
     )
     assert _norm(out) == "A.bar IN (SELECT bar FROM t1 UNION SELECT bar FROM t2)"
 
@@ -190,7 +184,7 @@ def test_dev1752_cte_body_leaves_inner_bare() -> None:
     out = expand_derived_refs_sync(
         sql="bar IN (WITH c AS (SELECT bar FROM t) SELECT bar FROM c)",
         model=a, alias_path="A",
-        resolve_model=_resolver({"A": a}), dialect="sqlite",
+        models_by_name={"A": a}, dialect="sqlite",
     )
     assert _norm(out) == (
         "A.bar IN (WITH c AS (SELECT bar FROM t) SELECT bar FROM c)"
