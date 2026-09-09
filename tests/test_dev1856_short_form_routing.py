@@ -457,6 +457,27 @@ class TestAdjacentParallelParity:
         with pytest.raises(AmbiguousJoinPathError):
             await _cols_sql(engine, q)
 
+    async def test_raw_rows_filter_saved_measure_stays_ambiguous(self, tmp_path) -> None:
+        """Raw-rows validation resolves saved-measure refs BEFORE binding, so the
+        resolver must not route an adjacent parallel `Target.aov` in a filter."""
+        engine = await self._engine(tmp_path)
+        q = SlayerQuery(
+            source_model="Root", dimensions=["tgt_grp"],
+            filters=["Target.aov > 0"], distinct_dimension_values=False,
+        )
+        with pytest.raises(AmbiguousJoinPathError):
+            await _cols_sql(engine, q)
+
+    async def test_raw_rows_order_saved_measure_stays_ambiguous(self, tmp_path) -> None:
+        """Same for an adjacent parallel `Target.aov` in raw-rows ORDER BY."""
+        engine = await self._engine(tmp_path)
+        q = SlayerQuery(
+            source_model="Root", dimensions=["tgt_grp"],
+            order=[{"Target.aov": "asc"}], distinct_dimension_values=False,
+        )
+        with pytest.raises(AmbiguousJoinPathError):
+            await _cols_sql(engine, q)
+
 
 # Requirement: Route-aware rejection of ambiguous and unreachable targets
 

@@ -3612,11 +3612,22 @@ def _route_short_form_saved_measure(
     *, host: SlayerModel, hops: list[str], leaf: str, bundle: ResolvedSourceBundle
 ) -> Optional[Tuple[SlayerModel, str]]:
     """``(terminal_model, canonical_ref)`` when a ``len==1`` unresolvable prefix
-    short-form routes to its full datasource-scoped path (DEV-1856), else None."""
+    short-form routes to its full datasource-scoped path (DEV-1856), else None.
+    Routing triggers only when the first hop resolves to no edge; an adjacent
+    parallel pair is a fail-closed ambiguous hop (DEV-1853), not a route. This
+    resolver also runs in pre-bind raw-rows validation, so it must not route an
+    ambiguous hop there — it returns None and lets binding raise the ambiguity."""
     if len(hops) != 1:
         return None
     models_by_name = {m.name: m for m in bundle.referenced_models}
     models_by_name.setdefault(host.name, host)
+    try:
+        if resolve_hop(
+            current=host, token=hops[0], models_by_name=models_by_name,
+        ) is not None:
+            return None
+    except AmbiguousJoinPathError:
+        return None
     route = dimension_routing.short_form_route_or_none(
         root=host, target_model=hops[0], models_by_name=models_by_name,
     )
