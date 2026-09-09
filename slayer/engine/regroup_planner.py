@@ -355,7 +355,7 @@ def classify_regroup_filter(bf: BoundFilter, dim_agg_set: frozenset) -> str:
             "A single filter that mixes a computed-dimension aggregate with "
             "another predicate cannot be routed across the regroup boundary "
             "(one is grouped by the synthesized stage, the other filters raw "
-            "rows). Put them in separate filters (DEV-1825)."
+            "rows). Put them in separate filters (DEV-1868)."
         )
     if dim_hits:
         return "final_only"
