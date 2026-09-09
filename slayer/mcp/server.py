@@ -472,10 +472,11 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
           the last entry is the root whose rows are returned.
 
         Multi-stage list rules: every entry except the last MUST carry a ``name``; the last
-        entry is the root (its rows are returned). Stages reference one another by that name —
-        as a ``source_model`` or a ``joins[].target_model``. The engine topologically reorders
-        stages so references resolve (submission order doesn't matter); an unresolved reference
-        or a cycle raises, and an empty list is rejected.
+        entry is the root (its rows are returned), so the intended root MUST be placed last.
+        Stages reference one another by that name — as a ``source_model`` or a
+        ``joins[].target_model``. The engine topologically reorders the non-root stages so
+        references resolve (their relative order is arbitrary); an unresolved reference or a
+        cycle raises, and an empty list is rejected.
 
         Query object fields:
             source_model: One of three forms:

@@ -86,7 +86,7 @@ claude mcp list
 
 | Tool | Description |
 |------|-------------|
-| `query` | Execute a semantic query. The `query` argument mirrors the engine: a model name (run a query-backed model by name), a single query object, or a list of query objects — a multi-stage DAG whose stages reference one another via `source_model` or `joins.target_model`, auto-sorted by the engine (order doesn't matter), with the last entry the returned root. Plus the wrappers `variables` / `show_sql` / `dry_run` / `explain` / `format`. |
+| `query` | Execute a semantic query. The `query` argument mirrors the engine: a model name (run a query-backed model by name), a single query object, or a list of query objects — a multi-stage DAG whose stages reference one another via `source_model` or `joins.target_model`, with non-root stages auto-sorted by the engine (their order doesn't matter) and the last entry the returned root (place the intended root last). Plus the wrappers `variables` / `show_sql` / `dry_run` / `explain` / `format`. |
 
 **`query` tool arguments:**
 
