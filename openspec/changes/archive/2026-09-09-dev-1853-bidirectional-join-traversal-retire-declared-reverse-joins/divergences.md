@@ -44,9 +44,11 @@ vocabulary (broadcast = default mode).
   — the producer CTE gains `WHERE EXISTS(SELECT 1 FROM orders WHERE
   customers.id = orders.customer_id AND …)` and the warning disappears;
   goldens `reroot/host_local_filter::*` and `reroot/unreachable_filter::*`
-  (5 dialects each) re-blessed with `_base` byte-identical. A conjunct whose
-  cross-path refs span two branches with no root-local ref pushes as a
-  multi-branch EXISTS; only root-local + cross mixing under OR/NOT still drops.
+  (5 dialects each) re-blessed with `_base` byte-identical. SEPARATE conjuncts on
+  different branches each push as their own EXISTS; ONE conjunct whose cross-path
+  refs span two branches stays dropped+warned (no single semi-join tree covers it
+  — `test_cross_branch_atomic_comparison_stays_dropped`), as do root-local + cross
+  mixes under OR/NOT.
 
 - Facade browse-mode `SELECT *` scope pinned to row-preserving paths: catalog
   dims across a fan-out hop (declared 1:N, inverted m2o/unknown, or any path

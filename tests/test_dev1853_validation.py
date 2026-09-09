@@ -111,6 +111,24 @@ class TestSaveTimeEdgeNames:
                        for t in texts), texts
             assert await storage.get_model("orders", data_source="ds") is not None
 
+    async def test_half_named_parallel_pair_warns(self) -> None:
+        # One named + one unnamed edge: the unnamed one is unaddressable
+        # (bare token ambiguous, no name) — the save must say so.
+        with tempfile.TemporaryDirectory() as d:
+            storage = await _storage(d)
+            await storage.save_model(_model("customers", ["id"]))
+            orders = _model("orders", ["id", "a_id", "b_id"], [
+                ModelJoin(target_model="customers",
+                          join_pairs=[["a_id", "id"]], name="bill"),
+                ModelJoin(target_model="customers", join_pairs=[["b_id", "id"]]),
+            ])
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                await storage.save_model(orders)
+            texts = [str(w.message) for w in caught]
+            assert any("customers" in t and "ambiguous" in t.lower()
+                       for t in texts), texts
+
     async def test_named_parallel_edges_do_not_warn(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             storage = await _storage(d)
@@ -180,6 +198,24 @@ class TestSaveTimeExactInverse:
             ])
             with pytest.raises(ValueError, match="automatic"):
                 await storage.save_model(customers)
+
+    async def test_named_inverse_saves_as_disambiguator(self) -> None:
+        # A NAMED reverse is not an exact inverse: its token must stay
+        # resolvable, so the declaration is a legal disambiguator.
+        with tempfile.TemporaryDirectory() as d:
+            storage = await self._seed_forward(d)
+            customers = _model("customers", ["id"], [
+                ModelJoin(target_model="orders",
+                          join_pairs=[["id", "customer_id"]],
+                          join_type=JoinType.INNER,
+                          cardinality=JoinCardinality.ONE_TO_MANY,
+                          name="back"),
+            ])
+            await storage.save_model(customers)
+            loaded = await storage.get_model("customers", data_source="ds")
+            assert loaded is not None
+            assert len(loaded.joins) == 1
+            assert loaded.joins[0].name == "back"
 
     async def test_non_inverse_pair_saves(self) -> None:
         with tempfile.TemporaryDirectory() as d:

@@ -251,3 +251,60 @@ class TestMissingPeer:
             assert orders is not None
             assert len(orders.joins) == 1
             assert orders.version == mig.CURRENT_VERSIONS["SlayerModel"]
+
+
+class TestNamedMirrorsSurvive:
+    async def test_one_sided_name_keeps_both_halves(self) -> None:
+        # The discarded half's name would be an unresolvable token — no dedup.
+        with tempfile.TemporaryDirectory() as d:
+            storage = await _seed_yaml(d, [
+                _orders_v9([_fwd()]),
+                _customers_v9([{**_rev(), "name": "back"}]),
+            ])
+            orders_joins, customers_joins = await _joins_after_load(storage)
+            assert len(orders_joins) == 1
+            assert len(customers_joins) == 1
+            assert customers_joins[0].name == "back"
+
+    async def test_one_sided_name_both_load_orders(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            storage = await _seed_yaml(d, [
+                _orders_v9([_fwd()]),
+                _customers_v9([{**_rev(), "name": "back"}]),
+            ])
+            customers = await storage.get_model("customers", data_source="ds")
+            orders = await storage.get_model("orders", data_source="ds")
+            assert customers is not None and len(customers.joins) == 1
+            assert orders is not None and len(orders.joins) == 1
+
+    async def test_one_sided_name_repeated_loads_change_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            storage = await _seed_yaml(d, [
+                _orders_v9([_fwd()]),
+                _customers_v9([{**_rev(), "name": "back"}]),
+            ])
+            await _joins_after_load(storage)
+            orders_joins, customers_joins = await _joins_after_load(storage)
+            assert len(orders_joins) == 1
+            assert len(customers_joins) == 1
+
+    async def test_differing_names_keep_both_halves(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            storage = await _seed_yaml(d, [
+                _orders_v9([{**_fwd(), "name": "fwd"}]),
+                _customers_v9([{**_rev(), "name": "back"}]),
+            ])
+            orders_joins, customers_joins = await _joins_after_load(storage)
+            assert len(orders_joins) == 1
+            assert len(customers_joins) == 1
+
+    async def test_equal_names_still_dedup_and_keep_the_token(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            storage = await _seed_yaml(d, [
+                _orders_v9([{**_fwd(), "name": "link"}]),
+                _customers_v9([{**_rev(), "name": "link"}]),
+            ])
+            orders_joins, customers_joins = await _joins_after_load(storage)
+            assert len(orders_joins) == 1
+            assert orders_joins[0].name == "link"
+            assert customers_joins == []

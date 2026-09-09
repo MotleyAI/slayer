@@ -94,7 +94,7 @@ resolved edge, never by reading path tokens as model names.
 ### Requirement: Edge names are validated at save time
 An edge name SHALL be rejected at save when it equals any model name in the
 datasource or duplicates another edge name incident to either endpoint model.
-Validation SHALL warn about parallel unnamed edges. Name characters follow model-name
+Validation SHALL warn when a parallel edge set contains any unnamed edge — an unnamed parallel edge is unaddressable. Name characters follow model-name
 identifier rules.
 
 #### Scenario: Name colliding with a model is rejected
@@ -102,13 +102,16 @@ identifier rules.
 - **THEN** the save fails with an error naming the collision
 
 #### Scenario: Unnamed parallel edges warn
-- **WHEN** a save leaves two unnamed edges connecting the same pair of models
-- **THEN** validation warns that paths across that pair cannot be disambiguated
+- **WHEN** a save leaves parallel edges between one pair of models and at least one is unnamed
+- **THEN** validation warns that the unnamed edge cannot be addressed (bare token ambiguous)
 
 ### Requirement: Exact-inverse declarations are redundant
 Declaring a join that is the exact inverse of an existing edge on the counterpart
-model (swapped pair set, same join type, cardinalities consistent under inversion or
-unset on one side) SHALL be rejected at save time — traversal is automatic. Stored
+model (swapped pair set, same join type, equal edge name — including both unset —
+and cardinalities consistent under inversion or unset on one side) SHALL be rejected
+at save time — traversal is automatic; a name held by only one half makes the pair
+NOT an exact inverse, so a named reverse declaration is a legal disambiguator and
+migration keeps both halves (every declared token stays resolvable). Stored
 exact-inverse pairs from past mirroring SHALL be deduplicated by a one-time
 migration on load: the surviving half is the to-one declaration where cardinality
 says which that is, else the half carrying cardinality, else a deterministic

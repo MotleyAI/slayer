@@ -45,8 +45,11 @@ _TO_ONE_CARDINALITIES = {"many_to_one", "one_to_one"}
 
 def _is_exact_inverse_join(a: dict, b: dict) -> bool:
     """True iff join dicts declared on opposite models mirror each other:
-    swapped pair set, same join type, cardinalities consistent under
-    inversion (unset on one side counts as consistent)."""
+    swapped pair set, same join type, equal ``name`` (a token on only one half
+    must survive — resolve_hop matches names first), cardinalities consistent
+    under inversion (unset on one side counts as consistent)."""
+    if (a.get("name") or None) != (b.get("name") or None):
+        return False
     try:
         a_pairs = {(str(x), str(y)) for x, y in a.get("join_pairs") or []}
         b_pairs = {(str(y), str(x)) for x, y in b.get("join_pairs") or []}
@@ -187,16 +190,17 @@ def _warn_unnamed_parallel_edges(
         target = peers.get(peer_name)
         if target is None:
             continue
-        unnamed = [
-            e for e in edges_between(source=model, target=target)
-            if e.name is None
-        ]
-        if len(unnamed) >= 2:
+        edges = edges_between(source=model, target=target)
+        unnamed = [e for e in edges if e.name is None]
+        # Any unnamed edge in a parallel set is unaddressable — the bare
+        # model token is ambiguous and there is no name to fall back on.
+        if len(edges) >= 2 and unnamed:
             warnings.warn(
-                f"Model '{model.name}': {len(unnamed)} unnamed parallel "
-                f"edges connect '{model.name}' and '{peer_name}' — paths "
-                f"across this pair cannot be disambiguated. Name the "
-                f"edges to make them addressable.",
+                f"Model '{model.name}': {len(edges)} parallel edges connect "
+                f"'{model.name}' and '{peer_name}' and {len(unnamed)} of "
+                f"them are unnamed — the bare path token is ambiguous and "
+                f"an unnamed edge has no token of its own. Name the edges "
+                f"to make them addressable.",
                 UserWarning,
                 stacklevel=2,
             )
