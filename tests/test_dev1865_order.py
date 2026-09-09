@@ -30,7 +30,7 @@ class TestDuplicateOppositeDirection:
         )
         resp = await exec_engine.execute(query)
         assert resp.columns == ["orders.region", "orders.s"]
-        sql = (await exec_engine.execute(query, dry_run=True)).sql
+        sql = (await exec_engine.execute(query=query, dry_run=True)).sql
         assert sql is not None
         order_by = sql.upper().rsplit("ORDER BY", 1)[1]
         min_pos = order_by.index("ORDERED_AT_MIN")
@@ -82,3 +82,14 @@ class TestOrderByCrossModelPartitioned:
         # RegN partition total (300) sorts before RegS (50) under desc.
         regions = [r[RK_REGION] for r in resp.data]
         assert regions == sorted(regions, key=lambda r: {"RegN": 0, "RegS": 1}[r])
+        # ASC flips to RegS-first — value order, not region-name order.
+        asc = await exec_engine.execute(q(
+            dimensions=["customers.regions.name", "customers.tier"],
+            measures=[ModelMeasure(formula="customers.spend:sum", name="sp")],
+            order=[{
+                "column": "customers.spend:sum(partition_by=customers.regions.name)",
+                "direction": "asc",
+            }],
+        ))
+        asc_regions = [r[RK_REGION] for r in asc.data]
+        assert asc_regions == sorted(asc_regions, key=lambda r: {"RegS": 0, "RegN": 1}[r])

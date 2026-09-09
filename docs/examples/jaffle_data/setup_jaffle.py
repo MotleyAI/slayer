@@ -42,7 +42,7 @@ def ensure_jaffle_shop(
     )
 
     if db_built:
-        print(f"Database created at {os.path.relpath(DB_PATH)}")
+        print(f"Database created at {os.path.relpath(DB_PATH, start=_THIS_DIR)}")
 
     engine = SlayerQueryEngine(storage=storage)
     return engine, storage, models

@@ -438,7 +438,7 @@ def _lower_positions(planned_query) -> _LoweredPositions:
     entries.extend(_lower_mask(m) for m in planned_query.masks[n_date:])
 
     order = _lower_order_entries(
-        planned_query,
+        planned_query=planned_query,
         slots_by_id=slots_by_id,
         slot_id_by_key=slot_id_by_key,
         combined_ph_ids=combined_ph_ids,
