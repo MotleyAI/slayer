@@ -18,7 +18,7 @@ from slayer.core.keys import (
     reroot_value_key,
 )
 from slayer.core.errors import AmbiguousJoinPathError
-from slayer.core.join_walker import resolve_hop, terminal_model
+from slayer.core.join_walker import terminal_model, walk
 from slayer.core.models import SlayerModel
 from slayer.engine.planned import (
     SlotId,
@@ -60,8 +60,9 @@ def _resolves_on(
     *, key: ValueKey, model: SlayerModel,
     models_by_name: dict[str, SlayerModel],
 ) -> bool:
-    """Whether ``key`` is reachable FROM ``model`` — a shallow check catching the
-    common mistake (a HOST column as a TARGET-rooted ranking key) at plan time."""
+    """Whether ``key`` is reachable FROM ``model`` — walks the full path and
+    requires the leaf on the terminal, catching a HOST column (or a stale
+    rerooted path) as a TARGET-rooted ranking key at plan time."""
     if isinstance(key, ColumnKey):
         leaf, path = key.leaf, key.path
     elif isinstance(key, ColumnSqlKey):
@@ -70,11 +71,17 @@ def _resolves_on(
         return True
     if path:
         try:
-            return resolve_hop(
-                current=model, token=path[0], models_by_name=models_by_name,
-            ) is not None
+            chain = walk(
+                root=model, path=tuple(path), models_by_name=models_by_name,
+            )
         except AmbiguousJoinPathError:
             return True  # a join hop exists; the strict door disambiguates
+        if not chain:
+            return False
+        terminal = models_by_name.get(chain[-1].target_model)
+        return terminal is not None and any(
+            c.name == leaf for c in terminal.columns
+        )
     return any(c.name == leaf for c in model.columns)
 
 

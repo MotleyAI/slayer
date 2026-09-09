@@ -325,7 +325,8 @@ class TestEngineWiring:
                 ],
             )
             resp = await engine.execute(query=q, dry_run=True)
-            assert resp.sql is not None and "status" in resp.sql
+            assert resp.sql is not None
+            assert "status" in resp.sql
 
     async def test_custom_agg_functional_measure_binds(self):
         # A custom aggregation written functionally resolves at binding —

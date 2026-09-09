@@ -4,6 +4,7 @@ The orchestrator builds this once at execute start; the binder reads it purely.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union, cast
 
@@ -25,6 +26,9 @@ if TYPE_CHECKING:
     from slayer.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
+
+#: Cap on concurrent peer-model reads during the join-graph walk.
+_PEER_LOAD_CONCURRENCY = 8
 
 
 class ResolvedSourceBundle(BaseModel):
@@ -326,14 +330,18 @@ async def _collect_referenced_models(
             "be discoverable for this query", safe_ds, exc,
         )
         peer_names = []
-    for nm in peer_names:
-        if nm in all_models:
-            continue
-        try:
-            m = await storage.get_model(nm, data_source=ds)
-        except Exception as exc:  # best-effort; a broken peer is skipped
-            logger.debug("peer model load failed for %r: %s", nm, exc)
-            m = None
+    sem = asyncio.Semaphore(_PEER_LOAD_CONCURRENCY)
+
+    async def _load_peer(nm: str) -> "tuple[str, Optional[SlayerModel]]":
+        async with sem:
+            try:
+                return nm, await storage.get_model(nm, data_source=ds)
+            except Exception as exc:  # best-effort; a broken peer is skipped
+                logger.debug("peer model load failed for %r: %s", nm, exc)
+                return nm, None
+
+    to_load = [nm for nm in peer_names if nm not in all_models]
+    for nm, m in await asyncio.gather(*(_load_peer(nm) for nm in to_load)):
         if m is not None:
             all_models[nm] = m
     incoming: Dict[str, List[str]] = {}

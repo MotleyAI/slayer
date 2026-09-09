@@ -292,8 +292,9 @@ async def test_save_model_rejects_cross_model_cycle_when_second_model_completes_
         ],
     )
     await storage.save_model(model_b)
+    cyclic = _model_a_to_b(foo_sql="B.bar + 1")
     with pytest.raises(ColumnCycleError):
-        await storage.save_model(_model_a_to_b(foo_sql="B.bar + 1"))
+        await storage.save_model(cyclic)
 
 
 async def test_save_model_rejects_cycle_when_joinless_model_saves_last(

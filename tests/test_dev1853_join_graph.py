@@ -8,8 +8,10 @@ with a path that would fail.
 
 from __future__ import annotations
 
+import asyncio
 import tempfile
 from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
@@ -18,7 +20,11 @@ from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.join_graph import JoinGraph
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.source_bundle import _collect_referenced_models
 from slayer.storage.yaml_storage import YAMLStorage
+
+if TYPE_CHECKING:
+    from slayer.storage.base import StorageBackend
 
 from tests._dev1853_fixtures import chain_models, parallel_engine, parallel_models
 
@@ -124,3 +130,42 @@ class TestRecommendRootModel:
             rec = await engine.recommend_root_model(["a.x", "c.z"])
             assert rec.reachable is True
             assert {ip.input_item for ip in rec.item_paths} == {"a.x", "c.z"}
+
+
+class TestPeerLoadsAreConcurrent:
+    async def test_peer_models_load_concurrently_not_sequentially(self) -> None:
+        """The datasource peer scan gathers reads (bounded), not one-by-one."""
+        col = [Column(name="id", type=DataType.DOUBLE)]
+        peers = {
+            f"m{i}": SlayerModel(
+                name=f"m{i}", sql_table=f"m{i}", data_source="db", columns=col,
+            )
+            for i in range(12)
+        }
+        root = SlayerModel(
+            name="root", sql_table="root", data_source="db", columns=col,
+        )
+
+        class _SlowStorage:
+            def __init__(self) -> None:
+                self.in_flight = 0
+                self.max_in_flight = 0
+
+            async def list_models(self, ds: str) -> list[str]:
+                return list(peers)
+
+            async def get_model(self, name: str, data_source=None) -> SlayerModel:
+                self.in_flight += 1
+                self.max_in_flight = max(self.max_in_flight, self.in_flight)
+                await asyncio.sleep(0.01)
+                self.in_flight -= 1
+                return peers[name]
+
+        storage = _SlowStorage()
+        out = await _collect_referenced_models(
+            source_model=root, named_queries={},
+            storage=cast("StorageBackend", storage), data_source="db",
+        )
+        assert out[0] is root
+        assert storage.max_in_flight > 1, "peer loads ran sequentially"
+        assert storage.max_in_flight <= 8, "peer loads are not bounded"
