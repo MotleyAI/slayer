@@ -66,7 +66,12 @@ from slayer.engine.column_expansion import (
     collect_root_scope_joined_paths,
     expand_derived_refs_sync,
 )
-from slayer.engine.planned import RankedGrainMember, ValueSlot
+from slayer.engine.planned import (
+    BoundExpr,
+    MaskTyping,
+    RankedGrainMember,
+    ValueSlot,
+)
 from slayer.engine.stage_planner import regroup_producer_identity
 from slayer.engine.source_bundle import (
     stage_bundle_with_siblings,
@@ -95,6 +100,9 @@ from slayer.sql.render.joins import (
 from slayer.sql.render.order_terms import (
     HOST_BASE_SCOPES,
     OrderEnv,
+    OrderScope,
+    OrderSlotNotMaterialisedError,
+    ScopedOrder,
     resolve_order_term,
 )
 from slayer.sql.render.ranked import (
@@ -116,6 +124,7 @@ from slayer.sql.render.value_expr import (
     CompositeFacilities,
     FilterFacilities,
     RenderContext,
+    _ALIAS_SLOTTED_KINDS as _ALIAS_SLOTTED_RENDER_KINDS,
     _ranked_value_cast_type,
     _wrap_cast_for_type,
     contains_aggregate,
@@ -218,7 +227,7 @@ def _windowed_emission_from_kernel(*, planned_query, kernel) -> _WindowedEmissio
         )
         or planned_query.combined_expression_slots
         or planned_query.transform_layers
-        or planned_query.outer_where_filter_ids
+        or any(m.typing == MaskTyping.MEASURE for m in planned_query.masks)
         or planned_query.order
         or planned_query.limit is not None
         or planned_query.offset is not None
@@ -283,7 +292,7 @@ def _ranked_emission_from_kernel(*, planned_query, kernel) -> _RankedEmission:
         )
         or planned_query.combined_expression_slots
         or planned_query.transform_layers
-        or planned_query.outer_where_filter_ids
+        or any(m.typing == MaskTyping.MEASURE for m in planned_query.masks)
         or planned_query.order
         or planned_query.limit is not None
         or planned_query.offset is not None
@@ -311,10 +320,213 @@ def _ranked_emission_from_kernel(*, planned_query, kernel) -> _RankedEmission:
         ranking_time_key=kernel.ranking_time_key,
         grain=grain,
         where_filter_ids=[
-            fp.id for fp in planned_query.filters_by_phase
-            if fp.phase == Phase.ROW
+            e.id for e in _lower_positions(planned_query).filters
+            if e.phase == Phase.ROW
         ],
     )
+
+
+# ---------------------------------------------------------------------------
+# Mask / order lowering (DEV-1865): the plan carries typed masks and scopeless
+# order entries; placement (base WHERE / HAVING / outer WHERE / post wrapper)
+# and the order scope are pure emission decisions reconstructed here.
+# ---------------------------------------------------------------------------
+
+
+#: Test hook: force measure masks onto the general materialize-and-filter path
+#: (outer WHERE over hidden columns) instead of the HAVING lowering.
+_FORCE_MASK_FALLBACK = False
+
+
+class _LoweredFilter(BaseModel):
+    """One mask (typed expression) or Mode-A text with its render placement."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    id: str
+    phase: Phase
+    text: Optional[str] = None
+    expression: Optional[BoundExpr] = None
+
+
+class _LoweredPositions(BaseModel):
+    """Per-plan lowering output: placed filter entries + scoped order entries."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    filters: List["_LoweredFilter"]
+    #: Measure masks that resolve only after attachment (combined placeholders) —
+    #: rendered at the outer WHERE, never HAVING in a ``_cm_*`` CTE (the LEFT JOIN
+    #: would resurface a NULL-aggregate host row).
+    outer_where_ids: List[str]
+    order: List[ScopedOrder]
+
+
+def _plan_slots(planned_query) -> List[ValueSlot]:
+    return [
+        *planned_query.row_slots,
+        *planned_query.aggregate_slots,
+        *planned_query.combined_expression_slots,
+    ]
+
+
+def _combined_placeholder_slot_ids(planned_query, slot_id_by_key) -> Set[str]:
+    """Slot ids whose value lives in a combined-attach producer CTE."""
+    out: Set[str] = set()
+    for attach in planned_query.regroup_attach_plans:
+        if attach.attach_phase != "combined":
+            continue
+        for sub in attach.substitutions:
+            sid = slot_id_by_key.get(sub.placeholder)
+            if sid is not None:
+                out.add(sid)
+    return out
+
+
+def _windowed_agg_slot_ids(planned_query) -> Set[str]:
+    """Aggregate slots carrying a ``window=`` kwarg (their value lives in a windowed CTE)."""
+    return {
+        s.id
+        for s in planned_query.aggregate_slots
+        if isinstance(s.key, AggregateKey)
+        and any(kw == "window" for kw, _ in s.key.kwargs)
+    }
+
+
+def _lower_positions(planned_query) -> _LoweredPositions:
+    """Reconstruct placements from the plan's typed masks: field → base WHERE;
+    measure → HAVING, or outer WHERE when it reads a combined placeholder, or the
+    post wrapper when it reads a windowed value / transform. Mode-A texts render
+    in the base WHERE between the date-range and user masks."""
+    slots_by_id = {s.id: s for s in _plan_slots(planned_query)}
+    slot_id_by_key = {s.key: s.id for s in slots_by_id.values()}
+    combined_ph_ids = _combined_placeholder_slot_ids(planned_query, slot_id_by_key)
+    windowed_ids = _windowed_agg_slot_ids(planned_query)
+    outer_ids: List[str] = []
+
+    def _lower_mask(mask) -> _LoweredFilter:
+        slot = slots_by_id[mask.slot_id]
+        key = slot.key
+        if mask.typing == MaskTyping.FIELD:
+            phase = Phase.ROW
+        else:
+            dep_ids = {
+                slot_id_by_key[k]
+                for k in walk_value_keys(key)
+                if k in slot_id_by_key
+            }
+            if key.phase == Phase.POST or (dep_ids & windowed_ids):
+                phase = Phase.POST
+            else:
+                phase = Phase.AGGREGATE
+                if (
+                    (dep_ids & combined_ph_ids) or _FORCE_MASK_FALLBACK
+                ) and mask.slot_id not in outer_ids:
+                    outer_ids.append(mask.slot_id)
+        return _LoweredFilter(
+            id=mask.slot_id, phase=phase,
+            expression=BoundExpr(value_key=key),
+        )
+
+    n_date = planned_query.n_date_range_masks
+    entries: List[_LoweredFilter] = [
+        _lower_mask(m) for m in planned_query.masks[:n_date]
+    ]
+    entries.extend(
+        _LoweredFilter(id=mf.id, phase=Phase.ROW, text=mf.text)
+        for mf in planned_query.mode_a_filters
+    )
+    entries.extend(_lower_mask(m) for m in planned_query.masks[n_date:])
+
+    order = _lower_order_entries(
+        planned_query=planned_query,
+        slots_by_id=slots_by_id,
+        slot_id_by_key=slot_id_by_key,
+        combined_ph_ids=combined_ph_ids,
+        windowed_ids=windowed_ids,
+    )
+    return _LoweredPositions(
+        filters=entries, outer_where_ids=outer_ids, order=order,
+    )
+
+
+def _lower_order_entries(
+    planned_query,
+    *,
+    slots_by_id: Dict[str, ValueSlot],
+    slot_id_by_key: Dict[Any, str],
+    combined_ph_ids: Set[str],
+    windowed_ids: Set[str],
+) -> List[ScopedOrder]:
+    order: List[ScopedOrder] = []
+    for entry in planned_query.order:
+        slot = slots_by_id.get(entry.slot_id)
+        if slot is None:
+            raise OrderSlotNotMaterialisedError(
+                f"ORDER BY references slot id={entry.slot_id!r}, which this "
+                f"plan did not materialise (it carries "
+                f"{sorted(slots_by_id)}).",
+            )
+        order.append(ScopedOrder(
+            slot_id=entry.slot_id,
+            direction=entry.direction,
+            scope=_classify_order_scope(
+                slot=slot,
+                cross_model_slot_ids=combined_ph_ids,
+                windowed_slot_ids=windowed_ids,
+                public_projection=list(planned_query.projection),
+                slot_by_key=slot_id_by_key,
+            ),
+            nulls=entry.nulls,
+        ))
+    return order
+
+
+def _composite_reads_an_isolated_cte(
+    *,
+    key,
+    slot_by_key: Dict[Any, str],
+    isolated_slot_ids: "AbstractSet[str]",
+) -> bool:
+    for dep in walk_value_keys(key):
+        # A combined regroup placeholder lives in its producer like a cross-model aggregate → a composite reading one is also outer.
+        is_isolated_leaf = isinstance(dep, AggregateKey) or (
+            isinstance(dep, ColumnKey) and dep.leaf.startswith(REGROUP_LEAF_PREFIX)
+        )
+        if is_isolated_leaf and slot_by_key.get(dep) in isolated_slot_ids:
+            return True
+    return False
+
+
+def _classify_order_scope(
+    *,
+    slot: ValueSlot,
+    cross_model_slot_ids: Set[str],
+    windowed_slot_ids: Set[str],
+    public_projection: List[str],
+    slot_by_key: Dict[Any, str],
+    ranked_slot_ids: "AbstractSet[str]" = frozenset(),
+) -> OrderScope:
+    """Name the scope that PRODUCES ``slot``'s value; isolated scopes are checked before the host base (a composite is OUTER_COMPOSITE when any operand lives in an isolated CTE)."""
+    if slot.id in cross_model_slot_ids:
+        return OrderScope.CROSS_MODEL_CTE
+    if slot.id in ranked_slot_ids:
+        return OrderScope.RANKED_CTE
+    if slot.id in windowed_slot_ids:
+        return OrderScope.WINDOWED_CTE
+    if isinstance(slot.key, TransformKey):
+        return OrderScope.TRANSFORM_STEP
+    if isinstance(slot.key, (ArithmeticKey, ScalarCallKey)) and _composite_reads_an_isolated_cte(
+        key=slot.key,
+        slot_by_key=slot_by_key,
+        isolated_slot_ids=(
+            cross_model_slot_ids | windowed_slot_ids | set(ranked_slot_ids)
+        ),
+    ):
+        return OrderScope.OUTER_COMPOSITE
+    if slot.hidden or slot.id not in public_projection:
+        return OrderScope.HOST_BASE_HIDDEN
+    return OrderScope.HOST_BASE
 
 
 
@@ -679,16 +891,16 @@ _GRANULARITY_MAP = {
 
 
 
-def _effective_src_filters(*, planned_query, plan) -> list:
-    """``planned_query.filters_by_phase`` as the windowed ``_src`` scope sees it"""
+def _effective_src_filters(*, lowered_filters, plan) -> list:
+    """The lowered filter entries as the windowed ``_src`` scope sees them"""
     rewrites = getattr(plan, "src_filter_rewrites", None)
     if not rewrites:
-        return planned_query.filters_by_phase
+        return list(lowered_filters)
     by_id = {r.filter_id: r.expression for r in rewrites}
     return [
         fp if fp.id not in by_id
         else fp.model_copy(update={"expression": by_id[fp.id]})
-        for fp in planned_query.filters_by_phase
+        for fp in lowered_filters
     ]
 
 
@@ -838,15 +1050,30 @@ class SQLGenerator:
             attached_columns=dict(attached_columns or {}),
         )
 
-    def _alias_render_ctx(self, *, slot_id_by_key, available_alias_by_slot_id):
+    def _alias_render_ctx(
+        self, *, slot_id_by_key, available_alias_by_slot_id,
+        composite_alias_slot_ids: Optional[Set[str]] = None,
+    ):
         """RenderContext carrying only the plain slot-alias facilities."""
         return RenderContext(
             dialect=self._dialect,
             aliases=AliasFacilities(
                 slot_id_by_key=slot_id_by_key,
                 available_alias_by_slot_id=available_alias_by_slot_id,
+                composite_alias_slot_ids=composite_alias_slot_ids or set(),
             ),
         )
+
+    @staticmethod
+    def _dimension_composite_slot_ids(planned_query) -> Set[str]:
+        """Computed-dimension slots keyed by a composite: post-aggregation scopes
+        must reference their grouped alias, never re-render the expression."""
+        return {
+            s.id
+            for name in ("row_slots", "aggregate_slots", "combined_expression_slots")
+            for s in getattr(planned_query, name, None) or []
+            if s.is_dimension and not isinstance(s.key, _ALIAS_SLOTTED_RENDER_KINDS)
+        }
 
     def _outer_wrapper_render_ctx(
         self, *, slot_by_key, cross_model_agg_slot_to_cm, aliases_by_slot_id,
@@ -1746,11 +1973,19 @@ class SQLGenerator:
         planned_query, aliases_by_slot_id: Dict[str, List[str]],
     ) -> List[Any]:
         """Projected POST-phase Arithmetic / ScalarCall slots no transform"""
+        # A lowered mask renders as a predicate, not a column — unless the slot
+        # is also projected or an order target.
+        order_ids = {e.slot_id for e in getattr(planned_query, "order", []) or []}
+        projected = set(getattr(planned_query, "projection", []) or [])
+        skip_mask_ids = {
+            m.slot_id for m in getattr(planned_query, "masks", []) or []
+            if m.slot_id not in projected and m.slot_id not in order_ids
+        }
         unmaterialised: List[Any] = []
         for cslot in planned_query.combined_expression_slots:
             if isinstance(cslot.key, TransformKey):
                 continue
-            if cslot.id in aliases_by_slot_id:
+            if cslot.id in aliases_by_slot_id or cslot.id in skip_mask_ids:
                 continue
             if isinstance(cslot.key, (ArithmeticKey, ScalarCallKey)):
                 unmaterialised.append(cslot)
@@ -1990,6 +2225,7 @@ class SQLGenerator:
         slots_by_id: Dict[str, Any],
         include_order: bool = True,
         aggregates_only: bool = False,
+        lowered_filters: Optional[List["_LoweredFilter"]] = None,
     ) -> List[str]:
         """Return slot ids the base CTE must project beyond the public"""
 
@@ -2007,10 +2243,19 @@ class SQLGenerator:
                 seen.add(sid)
                 out.append(sid)
 
+        # A composite DIMENSION subtree resolves by its grouped alias — its
+        # internals (e.g. a regroup placeholder) must not surface as extra base
+        # projections, which would refine the GROUP BY grain (DEV-1865).
+        dim_composite_ids = SQLGenerator._dimension_composite_slot_ids(
+            planned_query,
+        )
+
         def _collect_from(key) -> None:
             # Slot-worthy kinds are terminal (an aggregate's internals render
             # inside it; a TimeTruncKey IS the slot, not its wrapped column);
             # everything else descends via children().
+            if slot_id_by_key.get(key) in dim_composite_ids:
+                return
             if isinstance(key, base_kinds):
                 sid = slot_id_by_key.get(key)
                 if sid is not None:
@@ -2039,7 +2284,9 @@ class SQLGenerator:
         # Walk AGGREGATE (HAVING) and POST filter deps; POST is gated on transforms present, else its operands
         # materialise without the filter applying.
         has_transforms = bool(planned_query.transform_layers)
-        for fp in planned_query.filters_by_phase:
+        if lowered_filters is None:
+            lowered_filters = _lower_positions(planned_query).filters
+        for fp in lowered_filters:
             if fp.phase == Phase.AGGREGATE:
                 pass  # walk
             elif fp.phase == Phase.POST and has_transforms:
@@ -2617,9 +2864,10 @@ class SQLGenerator:
 
         # _src inherits row filters minus their frame bounds; one effective list feeds both join discovery and rendering
         # so they can't disagree.
-        all_filter_ids = {fp.id for fp in planned_query.filters_by_phase}
+        lowered_src = _lower_positions(planned_query).filters
+        all_filter_ids = {fp.id for fp in lowered_src}
         skip_for_src = all_filter_ids - set(plan.where_filter_ids)
-        src_filters = _effective_src_filters(planned_query=planned_query, plan=plan)
+        src_filters = _effective_src_filters(lowered_filters=lowered_src, plan=plan)
         self._resolve_where_filter_joins_via_scope(
             planned_query=planned_query, scope=src_scope,
             skip_filter_ids=skip_for_src, filters_override=src_filters,
@@ -2974,7 +3222,7 @@ class SQLGenerator:
                     location=f"Column.filter on model {root_model.name!r}",
                 ))
         skip_ids = {
-            fp.id for fp in planned_query.filters_by_phase
+            fp.id for fp in _lower_positions(planned_query).filters
         } - set(plan.where_filter_ids)
         self._resolve_where_filter_joins_via_scope(
             planned_query=planned_query, scope=scope,
@@ -3162,8 +3410,8 @@ class SQLGenerator:
         }
 
 
-        # The outer WHERE wrapper is routed by the planner; re-walking filters_by_phase here could disagree with the
-        # emission-time decision.
+        # One lowering per render: filter placements + scoped order entries.
+        lowered = _lower_positions(planned_query)
         slot_by_key = {s.key: s for s in slots_by_id.values()}
 
         # Combined regroup producers render as _cm_ CTEs joined at the combined SELECT; prepared before the ROW
@@ -3205,11 +3453,9 @@ class SQLGenerator:
             else ([], {}, [], [])
         )
         isolated_slot_ids = set(regroup_placeholder_slot_ids)
-        outer_where_filter_ids: Set[str] = set(
-            planned_query.outer_where_filter_ids,
-        )
+        outer_where_filter_ids: Set[str] = set(lowered.outer_where_ids)
         outer_where_filters: List = [
-            fp for fp in planned_query.filters_by_phase
+            fp for fp in lowered.filters
             if fp.id in outer_where_filter_ids
         ]
         # A composite whose tree walks an isolated cross-model aggregate must not render in _base (inline rendering
@@ -3338,7 +3584,7 @@ class SQLGenerator:
             host_filter_ids = set(empty_base_plan.host_filter_ids)
             placeholder_skip_ids = {
                 fp.id
-                for fp in planned_query.filters_by_phase
+                for fp in lowered.filters
                 if fp.id not in host_filter_ids
             }
             if host_filter_ids:
@@ -3715,7 +3961,7 @@ class SQLGenerator:
         # An order-only local slot is named BARE: a _base. qualifier would dangle under the outer projection-trim
         # wrapper, while the bare name still resolves against _base.
         _local_bare_ids = set(order_only_local_ids)
-        for entry in planned_query.order:
+        for entry in lowered.order:
             if entry.scope not in HOST_BASE_SCOPES:
                 continue
             slot = slots_by_id.get(entry.slot_id)
@@ -3731,7 +3977,7 @@ class SQLGenerator:
             )
         order_terms = [
             resolve_order_term(entry=entry, env=order_env)
-            for entry in planned_query.order
+            for entry in lowered.order
         ]
         if order_terms:
             combined_statement.set("order", exp.Order(expressions=order_terms))
@@ -4565,15 +4811,15 @@ class SQLGenerator:
         slot_id_by_key: Dict[Any, str],
         available_alias_by_slot_id: Dict[str, str],
     ) -> List[str]:
-        """Render each POST-phase ``FilterPhase.expression`` to a SQL"""
+        """Render each POST-phase lowered mask expression to a SQL"""
 
         out: List[str] = []
-        for fp in planned_query.filters_by_phase:
+        for fp in _lower_positions(planned_query).filters:
             if fp.phase != Phase.POST:
                 continue
             if fp.expression is None:
                 raise ValueError(
-                    f"POST-phase FilterPhase id={fp.id!r} has no typed "
+                    f"POST-phase mask id={fp.id!r} has no typed "
                     f"expression; text-only POST filters are not supported.",
                 )
             rendered = render_value_key(
@@ -4581,6 +4827,9 @@ class SQLGenerator:
                 ctx=self._alias_render_ctx(
                     slot_id_by_key=slot_id_by_key,
                     available_alias_by_slot_id=available_alias_by_slot_id,
+                    composite_alias_slot_ids=(
+                        self._dimension_composite_slot_ids(planned_query)
+                    ),
                 ),
             )
             out.append(rendered.sql(dialect=self.dialect))
@@ -4639,7 +4888,7 @@ class SQLGenerator:
         )
         return [
             resolve_order_term(entry=entry, env=env)
-            for entry in planned_query.order
+            for entry in _lower_positions(planned_query).order
         ]
 
     def _build_shifted_cte_where_parts(
@@ -4656,7 +4905,7 @@ class SQLGenerator:
         out: List[str] = []
         crossed_paths: List[Tuple[str, ...]] = []
         time_cols = frozenset(planned_query.frame_bound_columns)
-        for fp in planned_query.filters_by_phase:
+        for fp in _lower_positions(planned_query).filters:
             if fp.phase != Phase.ROW:
                 continue
             rendered = self._shifted_where_part(
@@ -5058,10 +5307,10 @@ class SQLGenerator:
         cte_name_alias = slot_aliases[0]
         # Length-fit the shifted_/sjoin_ CTE names so a long transform name can't exceed the dialect's identifier limit
         # and silently truncate.
-        _fit_kw = dict(
-            allocator=cte_allocator, dialect=self.dialect,
-            limit=self._dialect.max_identifier_bytes,
-        )
+        _fit_kw = {
+            "allocator": cte_allocator, "dialect": self.dialect,
+            "limit": self._dialect.max_identifier_bytes,
+        }
         shifted_cte_name = cte_name_from_alias(
             prefix="shifted_", alias=cte_name_alias, **_fit_kw,
         )
@@ -5643,7 +5892,7 @@ class SQLGenerator:
 
         skip = skip_filter_ids or set()
         filters = (
-            planned_query.filters_by_phase
+            _lower_positions(planned_query).filters
             if filters_override is None else filters_override
         )
         for fp in filters:
@@ -6055,7 +6304,7 @@ class SQLGenerator:
             inner = inner.where(rendered)
         return exp.Exists(this=inner)
 
-    def _build_where_having_from_planned(  # NOSONAR(S3776) — one cohesive pass over filters_by_phase routing each entry to WHERE / HAVING / POST by phase, with the per-carrier (typed vs Mode-A text) rendering and the HAVING grouped-column guard inline. The complexity is pre-existing; DEV-1732 added only the `filters_override` list selection. Splitting the phase routing from the rendering would thread slot_by_key / first_last_state / where_parts / having_parts through helpers without simplifying anything.
+    def _build_where_having_from_planned(  # NOSONAR(S3776) — one cohesive pass over the lowered entries routing each to WHERE / HAVING / POST by phase, with the per-carrier (typed vs Mode-A text) rendering and the HAVING grouped-column guard inline. The complexity is pre-existing; DEV-1732 added only the `filters_override` list selection. Splitting the phase routing from the rendering would thread slot_by_key / first_last_state / where_parts / having_parts through helpers without simplifying anything.
         self,
         *,
         planned_query,
@@ -6067,7 +6316,7 @@ class SQLGenerator:
         filters_override: "Optional[List[Any]]" = None,
         regroup_env: Optional[Dict[Any, exp.Expression]] = None,
     ):
-        """``filters_override`` (DEV-1732) replaces ``filters_by_phase`` as the"""
+        """``filters_override`` (DEV-1732) replaces the plan's lowered entries as the"""
 
         skip = skip_filter_ids or set()
         slot_by_key: Dict[Any, Any] = {
@@ -6081,7 +6330,7 @@ class SQLGenerator:
         where_parts: list[str] = []
         having_parts: list[str] = []
         filters = (
-            planned_query.filters_by_phase
+            _lower_positions(planned_query).filters
             if filters_override is None else filters_override
         )
         for fp in filters:
@@ -6142,7 +6391,7 @@ class SQLGenerator:
                 ).sql(dialect=self.dialect))
             else:
                 raise ValueError(
-                    f"FilterPhase id={fp.id!r} has neither expression "
+                    f"Lowered filter id={fp.id!r} has neither expression "
                     f"nor text (planner gap).",
                 )
 
@@ -6309,15 +6558,16 @@ class SQLGenerator:
         aliases_by_slot_id: Optional[Dict[str, List[str]]] = None,
     ) -> exp.Select:
         """ORDER BY / LIMIT / OFFSET for a base SELECT with no CTE chain."""
+        scoped_order = _lower_positions(planned_query).order
         env = self._host_base_order_env(
-            planned_query=planned_query,
+            scoped_order=scoped_order,
             source_relation=source_relation,
             slots_by_id=slots_by_id,
             source_model=source_model,
             bundle=bundle,
             aliases_by_slot_id=aliases_by_slot_id,
         )
-        for order_entry in planned_query.order:
+        for order_entry in scoped_order:
             select = select.order_by(
                 resolve_order_term(entry=order_entry, env=env),
             )
@@ -6328,7 +6578,7 @@ class SQLGenerator:
     def _host_base_order_env(
         self,
         *,
-        planned_query,
+        scoped_order: List[ScopedOrder],
         source_relation: str,
         slots_by_id: dict,
         source_model,
@@ -6337,7 +6587,7 @@ class SQLGenerator:
     ) -> OrderEnv:
         """Name every order slot the base SELECT produces, under the scope the"""
         env = OrderEnv(dialect=self._dialect)
-        for order_entry in planned_query.order:
+        for order_entry in scoped_order:
             slot = slots_by_id.get(order_entry.slot_id)
             if slot is None:
                 # Deliberately not an early raise: leaving the slot absent makes the resolver report it, so every path

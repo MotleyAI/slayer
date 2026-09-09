@@ -63,16 +63,16 @@ class TestCrossModelPartitionedStillGuarded:
         assert re.search(r"(?i)cross-model|partition", str(ei.value))
         assert "__regroup__" not in str(ei.value)
 
-    async def test_filter_on_cross_model_partitioned(self) -> None:
+    async def test_filter_on_cross_model_partitioned_now_compiles(self) -> None:
+        # DEV-1865: the filter-lag guard is retired — the measure-typed mask
+        # routes through the combined attach (executed values: dev1865 suite).
         query = q(
             dimensions=["customers.tier"],
             filters=["customers.spend:sum(partition_by=customers.tier) > 100"],
             measures=[ModelMeasure(formula="amount:sum", name="s")],
         )
-        with pytest.raises((NotImplementedError, ValueError)) as ei:
-            await gen(query)
-        assert re.search(r"(?i)cross-model|partition", str(ei.value))
-        assert "__regroup__" not in str(ei.value)
+        sql = await gen(query)
+        assert "__regroup__" not in sql
 
 
 class TestMeasureGrainRulePreserved:

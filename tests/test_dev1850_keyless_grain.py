@@ -20,12 +20,13 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.engine.planned import MaskTyping
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import (
     _crossing_local_root_predicate,
     _plan_regroups,
     _resolve_scope,
-    _split_partitioned_filter_conjuncts,
+    _type_and_split_filters,
     bind_query_inputs,
 )
 
@@ -220,7 +221,7 @@ async def test_keyless_filter_over_own_cross_model_aggregate_row_routes(
 
 
 def test_filter_over_own_cross_model_aggregate_routes_row_not_combined() -> None:
-    """The dim's OWN cross-model aggregate in a filter stays row-scoped, not pushed to the combined outer WHERE."""
+    """The dim's OWN cross-model aggregate in a filter types as FIELD (row-scoped, attached), not measure."""
     models = dev1838_models()
     bundle = ResolvedSourceBundle(
         source_model=models[0], referenced_models=list(models[1:]),
@@ -233,10 +234,10 @@ def test_filter_over_own_cross_model_aggregate_routes_row_not_combined() -> None
     scope = _resolve_scope(query=query, bundle=bundle, stage_schemas={})
     prebound = bind_query_inputs(query=query, bundle=bundle, scope=scope)
     crossing_root = _crossing_local_root_predicate(scope=scope, bundle=bundle)
-    _, combined_idx = _split_partitioned_filter_conjuncts(
+    _, typings = _type_and_split_filters(
         prebound, crossing_root=crossing_root,
     )
-    assert combined_idx == []
+    assert [(t.typing, t.stratum) for t in typings] == [(MaskTyping.FIELD, 1)]
 
 
 async def test_keyless_order_by_dimension_name_cross_model_row_routes(
@@ -312,7 +313,8 @@ def test_local_discovery_false_suppresses_local_keeps_cross_model() -> None:
 
     def _attaches(local_discovery: bool):
         result = _plan_regroups(
-            prebound=prebound, scope=scope, bundle=bundle, stage_schemas={},
+            prebound=prebound, filter_typings=[], scope=scope, bundle=bundle,
+            stage_schemas={},
             producer_source_model="orders", local_discovery=local_discovery,
         )
         assert result is not None

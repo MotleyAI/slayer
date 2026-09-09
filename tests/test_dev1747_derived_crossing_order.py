@@ -45,7 +45,8 @@ from tests._dev1747_fixtures import (
     seed_dev1747_sqlite,
 )
 from tests._engine_helpers import _engine_generate
-from slayer.engine.planned import OrderScope
+from slayer.sql.generator import _lower_positions
+from slayer.sql.render.order_terms import OrderScope
 from slayer.engine.stage_planner import plan_query
 
 
@@ -210,7 +211,7 @@ class TestRenderTimeProbeRemoved:
 
         plan = plan_query(query=_ungrouped("asc"), bundle=dev1747_bundle())
         assert plan.order, "plan carries no order entries"
-        assert plan.order[0].scope in (
+        assert _lower_positions(plan).order[0].scope in (
             OrderScope.HOST_BASE, OrderScope.HOST_BASE_HIDDEN,
         )
 
