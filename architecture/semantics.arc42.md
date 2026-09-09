@@ -77,6 +77,8 @@ is the coercion from coarser to finer.
     expression evaluates identically in every position, compiled by
     construction as a hidden field/measure where not projected.
     [enforced: test:tests/test_dev1865_value_parity.py]
+    [enforced: test:tests/test_dev1865_stratification.py]
+    [enforced: test:tests/test_dev1865_order.py]
 14. **Filters**: a field-typed filter masks population rows before any
     aggregation; a measure-typed filter masks result cells after all values
     are computed, never changing a surviving cell's values; valid-as-both
