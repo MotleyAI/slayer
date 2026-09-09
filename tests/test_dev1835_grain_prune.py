@@ -9,6 +9,7 @@ descend a ``TransformKey``'s input, a discriminating column inside e.g.
 wrongly pruned, collapsing the producer to ``region`` alone.
 """
 
+from slayer.core.grain import Grain
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
@@ -52,7 +53,7 @@ def test_scalar_free_columns_descends_transform_inside_scalar_call():
 
 
 def test_prune_keeps_transform_dim_with_free_column():
-    pks = frozenset({REGION, RANK_WITH_FREE_CITY})
+    pks = Grain.of({REGION, RANK_WITH_FREE_CITY})
     kept = _prune_functionally_determined_grain(pks)
     assert RANK_WITH_FREE_CITY in kept, (
         "a transform grain key with a free discriminating column is a real "
@@ -62,7 +63,7 @@ def test_prune_keeps_transform_dim_with_free_column():
 
 def test_prune_drops_fully_determined_transform_dim():
     # Control: no free column → constant within region → correctly pruned.
-    pks = frozenset({REGION, RANK_DETERMINED})
+    pks = Grain.of({REGION, RANK_DETERMINED})
     kept = _prune_functionally_determined_grain(pks)
     assert RANK_DETERMINED not in kept
     assert REGION in kept

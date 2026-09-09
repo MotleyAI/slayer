@@ -67,6 +67,24 @@ class TestCoarserRepeatAndShare:
         for total in per_region.values():
             assert total == pytest.approx(1.0)
 
+    async def test_per_cell_share_is_city_over_region(self, exec_engine) -> None:
+        resp = await exec_engine.execute(_q(
+            dimensions=["region", "city"],
+            measures=[
+                ModelMeasure(
+                    formula="amount:sum / amount:sum(partition_by=region)",
+                    name="share",
+                ),
+            ],
+        ))
+        by = rows_by(resp, "orders.region", "orders.city")
+        assert len(resp.data) == len(CITY_REV)
+        assert set(by) == set(CITY_REV)
+        for key, city_rev in CITY_REV.items():
+            assert float(by[key]["orders.share"]) == pytest.approx(
+                city_rev / REGION_TOTAL[key[0]]
+            )
+
     async def test_share_of_total_sums_to_one(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
