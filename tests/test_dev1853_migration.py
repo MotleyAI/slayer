@@ -274,8 +274,10 @@ class TestNamedMirrorsSurvive:
             ])
             customers = await storage.get_model("customers", data_source="ds")
             orders = await storage.get_model("orders", data_source="ds")
-            assert customers is not None and len(customers.joins) == 1
-            assert orders is not None and len(orders.joins) == 1
+            assert customers is not None
+            assert len(customers.joins) == 1
+            assert orders is not None
+            assert len(orders.joins) == 1
 
     async def test_one_sided_name_repeated_loads_change_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as d:
