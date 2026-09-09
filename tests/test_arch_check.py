@@ -31,6 +31,8 @@ contracts:
   layers: {baseline: 1}
 cross_cutting_specs:
   queries: {touches: [core, engine]}
+diagrams:
+  architecture/system.arc42.md: [land]
 """
 
 MODEL = """
@@ -46,6 +48,17 @@ model {
 }
 """
 
+VIEWS = """
+views {
+  view land {
+    title 'Landscape'
+    include *
+  }
+}
+"""
+
+SYSTEM_MD = "# System\n\n1. Layering. [enforced: layers]\n2. Soft rule. [review]\n\n<!-- likec4:land -->\n<!-- /likec4:land -->\n"
+
 
 def make_repo(tmp_path: Path) -> Path:
     root = tmp_path / "repo"
@@ -53,7 +66,8 @@ def make_repo(tmp_path: Path) -> Path:
         "pyproject.toml": PYPROJECT,
         "architecture/index.yaml": INDEX,
         "architecture/model/pkg.c4": MODEL,
-        "architecture/system.arc42.md": "# System\n\n1. Layering. [enforced: layers]\n2. Soft rule. [review]\n",
+        "architecture/views.c4": VIEWS,
+        "architecture/system.arc42.md": SYSTEM_MD,
         "architecture/engine.arc42.md": "# engine\n",
         "openspec/specs/queries/foo/spec.md": "# spec\n",
         "pkg/__init__.py": "",
@@ -65,6 +79,7 @@ def make_repo(tmp_path: Path) -> Path:
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(textwrap.dedent(content), encoding="utf-8")
+    arch_check.arch_diagrams.generate(root)  # fill the diagram marker block so the fixture is fresh
     return root
 
 

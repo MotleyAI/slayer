@@ -76,30 +76,6 @@ A stored query executed by bare name without a `limit` SHALL have its response s
 - WHEN a run-by-name stored query returns exactly 20 rows
 - THEN all 20 rows are returned and no truncation notice appears
 
-### Requirement: query_nested capped by the root stage's limit only
-
-The `query_nested` tool SHALL apply the same rule keyed on the ROOT stage (last entry of `queries`): an explicit root `limit` is trusted verbatim; without one, the final response is capped at 20 with a truncation notice whose hint points at the root query's `limit`. Non-root stages' limits SHALL NOT affect the cap. The tool SHALL NOT mutate the caller's `queries` dicts.
-
-#### Scenario: Root without limit is capped
-
-- WHEN `query_nested` runs with a root stage that has no `limit` and the final result has more than 20 rows
-- THEN the response contains exactly 20 rows and a truncation notice telling the caller to set a higher `limit` on the root query
-
-#### Scenario: Non-root limit does not lift the cap
-
-- WHEN a non-root stage has an explicit `limit` but the root stage has none
-- THEN the default cap of 20 still applies to the final response
-
-#### Scenario: Root limit trusted
-
-- WHEN the root stage has an explicit `limit`
-- THEN no response-side truncation occurs and no notice appears
-
-#### Scenario: Caller dicts unchanged
-
-- WHEN `query_nested` pushes the cap into the root stage
-- THEN the caller's submitted `queries` dicts are structurally unchanged afterwards (no `limit` key added)
-
 ### Requirement: Truncation notice content and rendering
 
 The truncation notice SHALL state the returned row count, say that more rows exist, and tell the caller how to get more rows. It SHALL appear in every output format through the warnings channel: the markdown `Warnings:` block, a leading `#` comment line in csv, and a warning entry with kind `"truncated"` in the json `{"data", "warnings"}` payload. It SHALL coexist with other warnings, appended last.
@@ -142,3 +118,27 @@ When `query` runs with `explain=True` and no `limit`, the returned plan rows SHA
 
 - WHEN `dry_run=True`
 - THEN the response contains only SQL and never a truncation notice
+
+### Requirement: Multi-stage list form capped by the root stage's limit only
+
+When the `query` tool is called with a list of query objects (the multi-stage form), the cap SHALL key on the ROOT stage (the last entry): an explicit root `limit` is trusted verbatim; without one, the final response is capped at 20 with a truncation notice whose hint points at the root query's `limit`. Non-root stages' limits SHALL NOT affect the cap. The tool SHALL NOT mutate the caller's submitted query dicts.
+
+#### Scenario: Root without limit is capped
+
+- WHEN `query` runs with a list whose root stage has no `limit` and the final result has more than 20 rows
+- THEN the response contains exactly 20 rows and a truncation notice telling the caller to set a higher `limit` on the root query
+
+#### Scenario: Non-root limit does not lift the cap
+
+- WHEN a non-root stage has an explicit `limit` but the root stage has none
+- THEN the default cap of 20 still applies to the final response
+
+#### Scenario: Root limit trusted
+
+- WHEN the root stage has an explicit `limit`
+- THEN no response-side truncation occurs and no notice appears
+
+#### Scenario: Caller dicts unchanged
+
+- WHEN `query` pushes the cap into the root stage of a list
+- THEN the caller's submitted query dicts are structurally unchanged afterwards (no `limit` key added)
