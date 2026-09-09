@@ -5,7 +5,7 @@ import logging
 import sys
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
-from typing import Any
+from typing import Any, Literal
 
 import sqlalchemy as sa
 
@@ -468,7 +468,8 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         format: str = "markdown",
         variables: dict[str, Any] | None = None,
         distinct_dimension_values: bool = True,
-        strict: bool = False,
+        to_many_handling: Literal["broadcast", "associate", "error"] = "broadcast",
+        strict: bool | None = None,
     ) -> str:
         """Query data from a semantic model. Call inspect(reference="<ds>.<model>", entity_type="model") first to see available columns and measures.
 
@@ -510,7 +511,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             offset: Number of rows to skip.
             whole_periods_only: When true, snap date filters to time bucket boundaries based on granularity, exclude the current incomplete time bucket.
             show_sql: When true, include the generated SQL in the response for debugging.
-            strict: Error instead of warn when a cross-model measure would broadcast or a producer filter would be dropped. Rejected with run-by-name execution — declare it on the stored query instead.
+            to_many_handling: How an aggregate resolves query dimensions unattributable from its root — "broadcast" (default; repeat the value, warn), "associate" (per-cell value over the distinct associated entities), or "error" (refuse). Rejected with run-by-name execution — declare it on the stored query instead.
             dry_run: When true, generate and return the SQL without executing it.
             explain: When true, run EXPLAIN ANALYZE and return the query plan.
             format: Output format — "markdown" (default, compact and LLM-friendly), "json" (structured), or "csv" (most compact). Case-insensitive.
@@ -520,6 +521,10 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
         Before calling this tool, run ``search`` first, supplying the entities you're thinking of using (and/or the query itself via the ``query`` arg, or a free-text ``question``). Read the returned memories and consider any matching example queries before formulating the final query.
         """
+        if strict is not None:
+            raise ValueError(
+                "`strict` is retired; use to_many_handling='error' instead."
+            )
         data: dict[str, Any] = {"source_model": source_model}
         if dimensions:
             data["dimensions"] = list(dimensions)
@@ -542,9 +547,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         # DEV-1543: only emit when non-default so tool calls stay compact.
         if distinct_dimension_values is False:
             data["distinct_dimension_values"] = False
-        # DEV-1836: strict = error on any silent broadcast / dropped filter.
-        if strict:
-            data["strict"] = True
+        # Only emit when non-default so tool calls stay compact.
+        if to_many_handling != "broadcast":
+            data["to_many_handling"] = to_many_handling
         try:
             fmt = format.lower().strip()
             if fmt not in ("json", "csv", "markdown"):
@@ -565,9 +570,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 model_name = source_model
                 target = await storage.get_model(model_name)
                 if target is not None and target.source_queries:
-                    if strict:
+                    if to_many_handling != "broadcast":
                         raise ValueError(
-                            "'strict' is not supported with run-by-name "
+                            "'to_many_handling' is not supported with run-by-name "
                             "execution; declare it on the stored query instead."
                         )
                     result = await engine.execute(

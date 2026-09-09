@@ -3259,7 +3259,14 @@ class SQLGenerator:
             else ([], {}, [], [])
         )
 
-        if kernel.kind == "ranked":
+        if kernel.kind == "association":
+            body = self._render_association_producer_body(
+                planned_query=planned_query, bundle=bundle, kernel=kernel,
+                source_model=source_model, source_relation=source_relation,
+                slots_by_id=slots_by_id, regroup_env=regroup_env,
+                regroup_join_specs=regroup_join_specs,
+            )
+        elif kernel.kind == "ranked":
             plan = _ranked_emission_from_kernel(
                 planned_query=planned_query, kernel=kernel,
             )
@@ -3316,6 +3323,135 @@ class SQLGenerator:
                 external_names=self._external_cte_names(),
             )
         return body.sql(dialect=self.dialect, pretty=True)
+
+    def _render_association_producer_body(  # NOSONAR(S3776) — one cohesive two-level association body: level-1 dedup SELECT (grain × entity key, picked value) wrapped as ``_base``, level-2 aggregate over the picked rows. The two arms share the grain-alias / scope state.
+        self, *, planned_query, bundle, kernel, source_model, source_relation,
+        slots_by_id, regroup_env=None, regroup_join_specs=None,
+    ) -> exp.Select:
+        """The distinct-entity association producer (DEV-1841): level 1 groups by
+        (grain × the root's entity key) picking each input once per entity; level
+        2 aggregates over the picked rows per grain."""
+        agg_slot = planned_query.aggregate_slots[0]
+        grain_slots = [
+            slots_by_id[sid]
+            for sid in planned_query.projection
+            if sid != agg_slot.id
+        ]
+        alias_index: Dict[str, int] = {}
+        grain_aliases = [
+            self._full_alias_for_slot(
+                slot=s, source_relation=source_relation, alias_index=alias_index,
+            )
+            for s in grain_slots
+        ]
+        agg_alias = self._full_alias_for_slot(
+            slot=agg_slot, source_relation=source_relation, alias_index=alias_index,
+        )
+        allocator = self._gen_allocator or self._new_allocator()
+        scope = self._scope_frame(
+            model=source_model, relation=source_relation,
+            bundle=bundle, allocator=allocator, attached_columns=regroup_env,
+        )
+        ctx = RenderContext(scope=scope, dialect=self._dialect)
+
+        inner_cols: List[exp.Expression] = []
+        group: List[exp.Expression] = []
+        for slot, alias in zip(grain_slots, grain_aliases):
+            expr = render_value_key(key=slot.key, ctx=ctx)
+            inner_cols.append(expr.copy().as_(exp.to_identifier(alias, quoted=True)))
+            group.append(expr.copy())
+        entity_exprs: List[exp.Expression] = []
+        for idx, ekey in enumerate(kernel.entity_keys):
+            eexpr = render_value_key(key=ekey, ctx=ctx)
+            ek_alias = f"_ek{idx}"
+            inner_cols.append(eexpr.copy().as_(exp.to_identifier(ek_alias)))
+            group.append(eexpr.copy())
+            entity_exprs.append(eexpr.copy())
+
+        # Level 1 picks each input once per entity (MAX is arbitrary-but-correct:
+        # the input is root-determined, constant per entity); ``*:count`` keeps no
+        # value column — level 2 counts the entity rows.
+        is_star = isinstance(agg_slot.key.source, StarKey)
+        picked_alias = "_v"
+        if not is_star:
+            resolved = self._resolve_agg_inputs_via_scope(
+                base_render_order=[agg_slot.id], slots_by_id={agg_slot.id: agg_slot},
+                scope=scope,
+            )
+            spec = self._build_agg_render_spec_from_planned(
+                slot=agg_slot, key=agg_slot.key, source_model=source_model,
+                source_relation=source_relation, full_alias=picked_alias,
+                bundle=bundle, resolved_agg_kwargs=resolved.get(agg_slot.key),
+            )
+            value_sql = _wrap_filter(self._resolve_value_sql(spec), spec.filter_sql)
+            inner_cols.append(
+                exp.Max(this=self._parse(value_sql)).as_(
+                    exp.to_identifier(picked_alias),
+                ),
+            )
+
+        self._resolve_where_filter_joins_via_scope(
+            planned_query=planned_query, scope=scope, skip_filter_ids=set(),
+        )
+        where, _having = self._build_where_having_from_planned(
+            planned_query=planned_query, source_relation=source_relation,
+            source_model=source_model, bundle=bundle, skip_filter_ids=set(),
+        )
+        from_expr, joins = self._build_from_and_joins(
+            source_model=source_model, source_relation=source_relation,
+            joined_paths=scope.join_paths.as_list(), bundle=bundle,
+        )
+        inner = exp.Select().select(*inner_cols).from_(from_expr)
+        inner = _apply_joins(select=inner, joins=joins)
+        if where is not None:
+            inner = inner.where(where)
+        # A host row with no associated entity (a NULL key from the LEFT JOIN) is
+        # not a distinct entity — exclude it so ``*:count`` never counts it.
+        for eexpr in entity_exprs:
+            inner = inner.where(exp.Not(this=exp.Is(this=eexpr, expression=exp.Null())))
+        for cond in self._semi_join_exists_conditions(
+            planned_query=planned_query, source_model=source_model,
+            source_relation=source_relation, bundle=bundle,
+        ):
+            inner = inner.where(cond)
+        for g in group:
+            inner = inner.group_by(g)
+
+        base_subq = exp.Subquery(
+            this=inner, alias=exp.TableAlias(this=exp.to_identifier("_base")),
+        )
+
+        def _base_col(alias: str, *, quoted: bool = True) -> exp.Column:
+            return exp.Column(
+                this=exp.to_identifier(alias, quoted=quoted),
+                table=exp.to_identifier("_base"),
+            )
+
+        # Level 2 aggregates over the picked rows per grain; ``*:count`` counts
+        # the entity rows (COUNT(*)), every other family runs over ``_v``.
+        if is_star:
+            level2_spec = AggRenderSpec(
+                name="", sql=None, aggregation=agg_slot.key.agg,
+                alias=agg_alias, model_name="_base", type=agg_slot.type,
+            )
+        else:
+            level2_spec = AggRenderSpec(
+                name=picked_alias, sql=None, aggregation=agg_slot.key.agg,
+                alias=agg_alias, model_name="_base", type=agg_slot.type,
+                column_type=spec.column_type, agg_kwargs=spec.agg_kwargs,
+                aggregation_def=spec.aggregation_def,
+            )
+        agg_expr, _ = self._build_agg(level2_spec)
+        agg_expr = _wrap_cast_for_type(agg_expr, self._slot_cast_type(agg_slot))
+        outer_cols: List[exp.Expression] = [
+            _base_col(alias).as_(exp.to_identifier(alias, quoted=True))
+            for alias in grain_aliases
+        ]
+        outer_cols.append(agg_expr.as_(exp.to_identifier(agg_alias, quoted=True)))
+        outer = exp.Select().select(*outer_cols).from_(base_subq)
+        for alias in grain_aliases:
+            outer = outer.group_by(_base_col(alias))
+        return outer
 
     def _build_windowed_grain_base(
         self, *, planned_query, plan, slots_by_id, aliases_by_slot_id,

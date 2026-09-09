@@ -742,7 +742,7 @@ class SlayerQuery(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    version: int = 3
+    version: int = 4
     name: str | None = None  # For referencing this query from other queries in a list
     source_model: object  # str (model name), SlayerModel (inline), or ModelExtension
     measures: Annotated[list[ModelMeasure] | None, BeforeValidator(_coerce_measures)] = None
@@ -750,6 +750,14 @@ class SlayerQuery(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _apply_schema_migrations(cls, data: Any) -> Any:
+        # Fresh input (no stored version) using the retired `strict` flag is
+        # rejected naming the replacement; stored payloads (explicit version)
+        # migrate below.
+        if isinstance(data, dict) and "strict" in data and "version" not in data:
+            raise ValueError(
+                "`strict` is retired; set to_many_handling='error' instead "
+                "(one of broadcast|associate|error)."
+            )
         return _migrate_schema(entity="SlayerQuery", data=data)
 
     @field_validator("name")
@@ -773,10 +781,10 @@ class SlayerQuery(BaseModel):
     # empty. False emits a flat projection and rejects any measure reference.
     distinct_dimension_values: bool = True
 
-    # Default False (broadcast + warn). True turns silent-semantics events — an
-    # implicit-grain broadcast, a dropped-as-unreachable filter — into hard errors.
-    # Explicit partition_by= broadcasting is by design and never errors.
-    strict: bool = False
+    # How every aggregate resolves query dimensions unattributable from its root:
+    # "broadcast" (repeat + warn), "associate" (per-cell distinct-entity value),
+    # "error" (refuse). Filters keep EXISTS pushdown in every mode.
+    to_many_handling: Literal["broadcast", "associate", "error"] = "broadcast"
 
     @model_validator(mode="after")
     def _validate_dsl_user_input(self) -> "SlayerQuery":

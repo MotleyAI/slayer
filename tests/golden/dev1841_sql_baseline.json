@@ -1,0 +1,212 @@
+{
+  "assoc/count_by_status::bigquery": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/count_by_status::duckdb": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/count_by_status::mysql": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/count_by_status::postgres": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/count_by_status::snowflake": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/count_by_status::sqlite": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/count_by_status::tsql": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/explicit_partition::bigquery": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/explicit_partition::duckdb": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/explicit_partition::mysql": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/explicit_partition::postgres": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/explicit_partition::snowflake": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/explicit_partition::sqlite": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/explicit_partition::tsql": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/measure_local_filter::bigquery": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/measure_local_filter::duckdb": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/measure_local_filter::mysql": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/measure_local_filter::postgres": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/measure_local_filter::snowflake": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/measure_local_filter::sqlite": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/measure_local_filter::tsql": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/median_by_status::bigquery": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/median_by_status::duckdb": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/median_by_status::mysql": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/median_by_status::postgres": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/median_by_status::snowflake": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/median_by_status::sqlite": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/median_by_status::tsql": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/pop_by_status::bigquery": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/pop_by_status::duckdb": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/pop_by_status::mysql": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/pop_by_status::postgres": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/pop_by_status::snowflake": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/pop_by_status::sqlite": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/pop_by_status::tsql": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/rent_composite_key::bigquery": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/rent_composite_key::duckdb": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/rent_composite_key::mysql": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/rent_composite_key::postgres": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/rent_composite_key::snowflake": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/rent_composite_key::sqlite": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/rent_composite_key::tsql": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/spend_by_status::bigquery": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/spend_by_status::duckdb": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/spend_by_status::mysql": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/spend_by_status::postgres": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/spend_by_status::snowflake": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/spend_by_status::sqlite": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "assoc/spend_by_status::tsql": {
+    "error": "ValidationError",
+    "message": "1 validation error for SlayerQuery\nto_many_handling\n  Extra inputs are not permitted [type=extra_forbidden, input_value='associate', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+  },
+  "bcast/attributable_tier::bigquery": "WITH _base AS (\n  SELECT\n    customers.tier AS `orders___customers___tier`\n  FROM orders AS orders\n  LEFT JOIN customers AS customers\n    ON orders.customer_id = customers.id\n  GROUP BY\n    customers.tier\n), _cm_orders__customers__spend_sum AS (\n  SELECT\n    customers.tier AS `customers___tier`,\n    CAST(SUM(customers.spend) AS FLOAT64) AS `customers___spend_sum`\n  FROM customers AS customers\n  GROUP BY\n    customers.tier\n)\nSELECT\n  _base.`orders___customers___tier`,\n  _cm_orders__customers__spend_sum.`customers___spend_sum` AS `orders___cm`\nFROM _base\nLEFT JOIN _cm_orders__customers__spend_sum\n  ON _base.`orders___customers___tier` IS NOT DISTINCT FROM _cm_orders__customers__spend_sum.`customers___tier`",
+  "bcast/attributable_tier::duckdb": "WITH _base AS (\n  SELECT\n    customers.tier AS \"orders.customers.tier\"\n  FROM orders AS orders\n  LEFT JOIN customers AS customers\n    ON orders.customer_id = customers.id\n  GROUP BY\n    customers.tier\n), _cm_orders__customers__spend_sum AS (\n  SELECT\n    customers.tier AS \"customers.tier\",\n    CAST(SUM(customers.spend) AS DOUBLE) AS \"customers.spend_sum\"\n  FROM customers AS customers\n  GROUP BY\n    customers.tier\n)\nSELECT\n  _base.\"orders.customers.tier\",\n  _cm_orders__customers__spend_sum.\"customers.spend_sum\" AS \"orders.cm\"\nFROM _base\nLEFT JOIN _cm_orders__customers__spend_sum\n  ON _base.\"orders.customers.tier\" IS NOT DISTINCT FROM _cm_orders__customers__spend_sum.\"customers.tier\"",
+  "bcast/attributable_tier::mysql": "WITH _base AS (\n  SELECT\n    customers.tier AS `orders.customers.tier`\n  FROM orders AS orders\n  LEFT JOIN customers AS customers\n    ON orders.customer_id = customers.id\n  GROUP BY\n    customers.tier\n), _cm_orders__customers__spend_sum AS (\n  SELECT\n    customers.tier AS `customers.tier`,\n    CAST(SUM(customers.spend) AS DOUBLE) AS `customers.spend_sum`\n  FROM customers AS customers\n  GROUP BY\n    customers.tier\n)\nSELECT\n  _base.`orders.customers.tier`,\n  _cm_orders__customers__spend_sum.`customers.spend_sum` AS `orders.cm`\nFROM _base\nLEFT JOIN _cm_orders__customers__spend_sum\n  ON _base.`orders.customers.tier` <=> _cm_orders__customers__spend_sum.`customers.tier`",
+  "bcast/attributable_tier::postgres": "WITH _base AS (\n  SELECT\n    customers.tier AS \"orders.customers.tier\"\n  FROM orders AS orders\n  LEFT JOIN customers AS customers\n    ON orders.customer_id = customers.id\n  GROUP BY\n    customers.tier\n), _cm_orders__customers__spend_sum AS (\n  SELECT\n    customers.tier AS \"customers.tier\",\n    CAST(SUM(customers.spend) AS DOUBLE PRECISION) AS \"customers.spend_sum\"\n  FROM customers AS customers\n  GROUP BY\n    customers.tier\n)\nSELECT\n  _base.\"orders.customers.tier\",\n  _cm_orders__customers__spend_sum.\"customers.spend_sum\" AS \"orders.cm\"\nFROM _base\nLEFT JOIN _cm_orders__customers__spend_sum\n  ON _base.\"orders.customers.tier\" IS NOT DISTINCT FROM _cm_orders__customers__spend_sum.\"customers.tier\"",
+  "bcast/attributable_tier::snowflake": "WITH _base AS (\n  SELECT\n    customers.tier AS \"orders.customers.tier\"\n  FROM orders AS orders\n  LEFT JOIN customers AS customers\n    ON orders.customer_id = customers.id\n  GROUP BY\n    customers.tier\n), _cm_orders__customers__spend_sum AS (\n  SELECT\n    customers.tier AS \"customers.tier\",\n    CAST(SUM(customers.spend) AS DOUBLE) AS \"customers.spend_sum\"\n  FROM customers AS customers\n  GROUP BY\n    customers.tier\n)\nSELECT\n  _base.\"orders.customers.tier\",\n  _cm_orders__customers__spend_sum.\"customers.spend_sum\" AS \"orders.cm\"\nFROM _base\nLEFT JOIN _cm_orders__customers__spend_sum\n  ON _base.\"orders.customers.tier\" IS NOT DISTINCT FROM _cm_orders__customers__spend_sum.\"customers.tier\"",
+  "bcast/attributable_tier::sqlite": "WITH _base AS (\n  SELECT\n    customers.tier AS \"orders.customers.tier\"\n  FROM orders AS orders\n  LEFT JOIN customers AS customers\n    ON orders.customer_id = customers.id\n  GROUP BY\n    customers.tier\n), _cm_orders__customers__spend_sum AS (\n  SELECT\n    customers.tier AS \"customers.tier\",\n    CAST(SUM(customers.spend) AS REAL) AS \"customers.spend_sum\"\n  FROM customers AS customers\n  GROUP BY\n    customers.tier\n)\nSELECT\n  _base.\"orders.customers.tier\",\n  _cm_orders__customers__spend_sum.\"customers.spend_sum\" AS \"orders.cm\"\nFROM _base\nLEFT JOIN _cm_orders__customers__spend_sum\n  ON _base.\"orders.customers.tier\" IS _cm_orders__customers__spend_sum.\"customers.tier\"",
+  "bcast/attributable_tier::tsql": "WITH _base AS (\n  SELECT\n    customers.tier AS [orders___customers___tier]\n  FROM orders AS orders\n  LEFT JOIN customers AS customers\n    ON orders.customer_id = customers.id\n  GROUP BY\n    customers.tier\n), _cm_orders__customers__spend_sum AS (\n  SELECT\n    customers.tier AS [customers___tier],\n    CAST(SUM(customers.spend) AS FLOAT) AS [customers___spend_sum]\n  FROM customers AS customers\n  GROUP BY\n    customers.tier\n)\nSELECT\n  _base.[orders___customers___tier],\n  _cm_orders__customers__spend_sum.[customers___spend_sum] AS [orders___cm]\nFROM _base\nLEFT JOIN _cm_orders__customers__spend_sum\n  ON (\n    _base.[orders___customers___tier] = _cm_orders__customers__spend_sum.[customers___tier]\n    OR (\n      _base.[orders___customers___tier] IS NULL\n      AND _cm_orders__customers__spend_sum.[customers___tier] IS NULL\n    )\n  )",
+  "bcast/spend_by_status::bigquery": "WITH _base AS (\n  SELECT\n    orders.status AS `orders___status`\n  FROM orders AS orders\n  GROUP BY\n    orders.status\n), _cm_orders__customers__spend_sum AS (\n  SELECT\n    CAST(SUM(customers.spend) AS FLOAT64) AS `customers___spend_sum`\n  FROM customers AS customers\n)\nSELECT\n  _base.`orders___status`,\n  _cm_orders__customers__spend_sum.`customers___spend_sum` AS `orders___cm`\nFROM _base\nCROSS JOIN _cm_orders__customers__spend_sum",
+  "bcast/spend_by_status::duckdb": "WITH _base AS (\n  SELECT\n    orders.status AS \"orders.status\"\n  FROM orders AS orders\n  GROUP BY\n    orders.status\n), _cm_orders__customers__spend_sum AS (\n  SELECT\n    CAST(SUM(customers.spend) AS DOUBLE) AS \"customers.spend_sum\"\n  FROM customers AS customers\n)\nSELECT\n  _base.\"orders.status\",\n  _cm_orders__customers__spend_sum.\"customers.spend_sum\" AS \"orders.cm\"\nFROM _base\nCROSS JOIN _cm_orders__customers__spend_sum",
+  "bcast/spend_by_status::mysql": "WITH _base AS (\n  SELECT\n    orders.status AS `orders.status`\n  FROM orders AS orders\n  GROUP BY\n    orders.status\n), _cm_orders__customers__spend_sum AS (\n  SELECT\n    CAST(SUM(customers.spend) AS DOUBLE) AS `customers.spend_sum`\n  FROM customers AS customers\n)\nSELECT\n  _base.`orders.status`,\n  _cm_orders__customers__spend_sum.`customers.spend_sum` AS `orders.cm`\nFROM _base\nCROSS JOIN _cm_orders__customers__spend_sum",
+  "bcast/spend_by_status::postgres": "WITH _base AS (\n  SELECT\n    orders.status AS \"orders.status\"\n  FROM orders AS orders\n  GROUP BY\n    orders.status\n), _cm_orders__customers__spend_sum AS (\n  SELECT\n    CAST(SUM(customers.spend) AS DOUBLE PRECISION) AS \"customers.spend_sum\"\n  FROM customers AS customers\n)\nSELECT\n  _base.\"orders.status\",\n  _cm_orders__customers__spend_sum.\"customers.spend_sum\" AS \"orders.cm\"\nFROM _base\nCROSS JOIN _cm_orders__customers__spend_sum",
+  "bcast/spend_by_status::snowflake": "WITH _base AS (\n  SELECT\n    orders.status AS \"orders.status\"\n  FROM orders AS orders\n  GROUP BY\n    orders.status\n), _cm_orders__customers__spend_sum AS (\n  SELECT\n    CAST(SUM(customers.spend) AS DOUBLE) AS \"customers.spend_sum\"\n  FROM customers AS customers\n)\nSELECT\n  _base.\"orders.status\",\n  _cm_orders__customers__spend_sum.\"customers.spend_sum\" AS \"orders.cm\"\nFROM _base\nCROSS JOIN _cm_orders__customers__spend_sum",
+  "bcast/spend_by_status::sqlite": "WITH _base AS (\n  SELECT\n    orders.status AS \"orders.status\"\n  FROM orders AS orders\n  GROUP BY\n    orders.status\n), _cm_orders__customers__spend_sum AS (\n  SELECT\n    CAST(SUM(customers.spend) AS REAL) AS \"customers.spend_sum\"\n  FROM customers AS customers\n)\nSELECT\n  _base.\"orders.status\",\n  _cm_orders__customers__spend_sum.\"customers.spend_sum\" AS \"orders.cm\"\nFROM _base\nCROSS JOIN _cm_orders__customers__spend_sum",
+  "bcast/spend_by_status::tsql": "WITH _base AS (\n  SELECT\n    orders.status AS [orders___status]\n  FROM orders AS orders\n  GROUP BY\n    orders.status\n), _cm_orders__customers__spend_sum AS (\n  SELECT\n    CAST(SUM(customers.spend) AS FLOAT) AS [customers___spend_sum]\n  FROM customers AS customers\n)\nSELECT\n  _base.[orders___status],\n  _cm_orders__customers__spend_sum.[customers___spend_sum] AS [orders___cm]\nFROM _base\nCROSS JOIN _cm_orders__customers__spend_sum"
+}

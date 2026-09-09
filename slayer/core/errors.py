@@ -385,6 +385,18 @@ class BroadcastGrainWarning(UserWarning):
         )
 
 
+class AssociatedGrainWarning(UserWarning):
+    """An aggregate resolved by distinct-entity association over unattributable dimension(s); cells' populations may overlap and are not additive. Visibility warning, not an error."""
+
+    def __init__(self, measure: str, dimensions: str) -> None:
+        self.measure = measure
+        self.dimensions = dimensions
+        super().__init__(
+            f"Metric {measure!r} associated over unattributable dimension(s) "
+            f"{dimensions}; cell populations may overlap and are not additive."
+        )
+
+
 class RenderContextMissingFacilityError(SlayerError, ValueError):
     """A ValueKey render needed a facility its render context lacked; fails closed rather than degrading quietly (silent fallbacks drifted the old renderer copies)."""
 
