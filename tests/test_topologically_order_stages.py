@@ -96,7 +96,8 @@ def test_non_root_input_order_is_invariant() -> None:
     ordered_ba = topologically_order_stages([b, a, root])
     assert [q.name for q in ordered_ab] == ["a", "b", None]
     assert [q.name for q in ordered_ba] == ["a", "b", None]
-    assert ordered_ab[-1] is root and ordered_ba[-1] is root
+    assert ordered_ab[-1] is root
+    assert ordered_ba[-1] is root
 
 
 def test_cycle_raises() -> None:
