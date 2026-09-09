@@ -40,6 +40,9 @@ from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import _resolve_main_time_dimension, plan_query
+from slayer.core.keys import TimeTruncKey
+from slayer.engine.binding import walk_value_keys
+from slayer.sql.generator import _lower_positions
 
 
 # ---------------------------------------------------------------------------
@@ -437,6 +440,11 @@ class TestResolveMainTimeDimension:
 # ---------------------------------------------------------------------------
 
 
+def _plan_filters(planned):
+    """DEV-1865: the placed-filter view is reconstructed by the emission lowering."""
+    return _lower_positions(planned).filters
+
+
 def _find_date_range_filter_on(*, planned, leaf: str) -> BetweenKey:
     """Find the auto-generated date_range filter for a given column leaf.
 
@@ -445,7 +453,7 @@ def _find_date_range_filter_on(*, planned, leaf: str) -> BetweenKey:
     high=LiteralKey)`` (DEV-1450 stage 7b.9 — closes the parity gap
     with legacy ``BETWEEN``).
     """
-    for f in planned.filters_by_phase:
+    for f in _plan_filters(planned):
         if f.expression is None:
             continue
         key = f.expression.value_key
@@ -458,7 +466,7 @@ def _find_date_range_filter_on(*, planned, leaf: str) -> BetweenKey:
     raise AssertionError(
         f"no BetweenKey filter found over column {leaf!r}; "
         f"filters present: "
-        f"{[type(f.expression.value_key).__name__ if f.expression else None for f in planned.filters_by_phase]}"
+        f"{[type(f.expression.value_key).__name__ if f.expression else None for f in _plan_filters(planned)]}"
     )
 
 
@@ -500,8 +508,8 @@ class TestDateRangeFilter:
         )
         planned = plan_query(query=q, bundle=_bundle_local())
         # Exactly one filter — the date_range — phase=ROW.
-        assert len(planned.filters_by_phase) == 1
-        assert planned.filters_by_phase[0].phase == Phase.ROW
+        assert len(_plan_filters(planned)) == 1
+        assert _plan_filters(planned)[0].phase == Phase.ROW
 
     def test_no_date_range_no_filter(self) -> None:
         q = SlayerQuery(
@@ -514,7 +522,7 @@ class TestDateRangeFilter:
             ],
         )
         planned = plan_query(query=q, bundle=_bundle_local())
-        assert planned.filters_by_phase == []
+        assert _plan_filters(planned) == []
 
     def test_date_range_with_joined_td(self) -> None:
         q = SlayerQuery(
@@ -553,7 +561,7 @@ class TestDateRangeFilter:
         )
         planned = plan_query(query=q, bundle=_bundle_local())
         row_filters = [
-            f for f in planned.filters_by_phase if f.phase == Phase.ROW
+            f for f in _plan_filters(planned) if f.phase == Phase.ROW
         ]
         assert len(row_filters) == 2
         # date_range filter first (BetweenKey shape).
@@ -587,7 +595,7 @@ class TestDateRangeFilter:
         planned = plan_query(query=q, bundle=_bundle_local())
         # Two row-phase auto-generated filters.
         row_filters = [
-            f for f in planned.filters_by_phase if f.phase == Phase.ROW
+            f for f in _plan_filters(planned) if f.phase == Phase.ROW
         ]
         assert len(row_filters) == 2
         # Each one targets a different underlying column.
@@ -613,7 +621,7 @@ class TestDateRangeFilter:
             ],
         )
         planned = plan_query(query=q, bundle=_bundle_local())
-        assert planned.filters_by_phase == []
+        assert _plan_filters(planned) == []
 
     def test_malformed_date_range_single_element_emits_no_filter(self) -> None:
         q = SlayerQuery(
@@ -627,10 +635,10 @@ class TestDateRangeFilter:
             ],
         )
         planned = plan_query(query=q, bundle=_bundle_local())
-        assert planned.filters_by_phase == []
+        assert _plan_filters(planned) == []
 
     def test_date_range_filter_carries_expression(self) -> None:
-        # The FilterPhase.expression payload must be populated so the
+        # The lowered entry's expression payload must be populated so the
         # generator can render the filter without re-parsing.
         q = SlayerQuery(
             source_model="orders",
@@ -643,8 +651,8 @@ class TestDateRangeFilter:
             ],
         )
         planned = plan_query(query=q, bundle=_bundle_local())
-        assert len(planned.filters_by_phase) == 1
-        fp = planned.filters_by_phase[0]
+        assert len(_plan_filters(planned)) == 1
+        fp = _plan_filters(planned)[0]
         assert fp.expression is not None
         assert isinstance(fp.expression.value_key, BetweenKey)
 
@@ -664,8 +672,6 @@ class TestDateRangeHiddenSlot:
         # alongside the public TimeTruncKey slot — they are two
         # distinct slot identities even though they target the same
         # underlying column.
-        from slayer.core.keys import TimeTruncKey
-
         q = SlayerQuery(
             source_model="orders",
             time_dimensions=[
@@ -704,8 +710,6 @@ class TestDateRangeBindsToUnderlyingColumn:
         # apply the filter to the outer projection while the shifted
         # self-join input reads unfiltered raw data (legacy semantics
         # for change / change_pct / time_shift on edge periods).
-        from slayer.core.keys import TimeTruncKey
-
         q = SlayerQuery(
             source_model="orders",
             time_dimensions=[
@@ -717,11 +721,9 @@ class TestDateRangeBindsToUnderlyingColumn:
             ],
         )
         planned = plan_query(query=q, bundle=_bundle_local())
-        fp = planned.filters_by_phase[0]
+        fp = _plan_filters(planned)[0]
         assert fp.expression is not None
         # Walk the predicate; no TimeTruncKey should appear in the tree.
-        from slayer.engine.binding import walk_value_keys
-
         keys = list(walk_value_keys(fp.expression.value_key))
         assert not any(isinstance(k, TimeTruncKey) for k in keys), (
             f"date_range filter should target raw column, not TimeTruncKey; "

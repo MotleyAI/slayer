@@ -402,7 +402,7 @@ def path_is_reachable(
 
 
 def recompute_filter_reachability(planned_query, *, bundle) -> List:
-    """Recompute every filter's summary from scratch, anchored at
+    """Recompute every mask's summary from scratch, anchored at
     ``planned_query``'s OWN root.
 
     Used to verify the coordinate-system invariant: a plan's stored summary
@@ -412,22 +412,29 @@ def recompute_filter_reachability(planned_query, *, bundle) -> List:
     """
     anchor_model = planned_query.render_source_model or bundle.source_model
     anchor_relation = planned_query.source_relation
+    slots_by_id = {
+        s.id: s
+        for s in (
+            *planned_query.row_slots,
+            *planned_query.aggregate_slots,
+            *planned_query.combined_expression_slots,
+        )
+    }
     cache: dict = {}
     out: List = []
-    for fp in planned_query.filters_by_phase:
-        if fp.expression is None:
-            continue
+    for mask in planned_query.masks:
+        key = slots_by_id[mask.slot_id].key
         out.append(FilterReachability(
-            filter_id=fp.id,
+            filter_id=mask.slot_id,
             crossed_join_paths=compute_key_join_paths(
-                key=fp.expression.value_key,
+                key=key,
                 anchor_model=anchor_model,
                 anchor_relation=anchor_relation,
                 bundle=bundle,
                 cache=cache,
             ),
             has_host_local_ref=key_has_host_local_ref(
-                key=fp.expression.value_key,
+                key=key,
                 anchor_model=anchor_model,
                 anchor_relation=anchor_relation,
                 bundle=bundle,

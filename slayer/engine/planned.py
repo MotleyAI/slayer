@@ -23,11 +23,12 @@ __all__ = [
     "BoundExpr",
     "BoundFilterId",
     "EmptyBaseGrainPlan",
-    "FilterPhase",
     "FilterReachability",
     "JoinRequirement",
+    "MaskEntry",
+    "MaskTyping",
+    "ModeAFilter",
     "OrderEntry",
-    "OrderScope",
     "PlainProducerKernel",
     "PlannedQuery",
     "ProducerKernel",
@@ -134,41 +135,43 @@ class TransformLayer(BaseModel):
     slot_ids: List[SlotId]
 
 
-class FilterPhase(BaseModel):
-    """A bound filter routed to its phase (ROW→WHERE, AGGREGATE→HAVING, POST→outer)."""
+class MaskTyping(str, Enum):
+    """How a position expression evaluates: field (row-level) or measure (query grain)."""
+
+    FIELD = "field"
+    MEASURE = "measure"
+
+
+class MaskEntry(BaseModel):
+    """One typed filter conjunct compiled to a hidden slot; the value masks, is never returned.
+
+    ``stratum`` 0 = aggregate-free field conjunct defining the row population every
+    producer sees; 1 = masks at its own grain (attached-ref field / measure)."""
+
+    slot_id: SlotId
+    typing: MaskTyping
+    stratum: int
+
+
+class ModeAFilter(BaseModel):
+    """A Mode-A model-filter text (model definition, not a query position); renders in the base WHERE."""
 
     id: BoundFilterId
-    phase: Phase
-    text: Optional[str] = None
-    expression: Optional[BoundExpr] = None
-
-
-class OrderScope(str, Enum):
-    """WHERE the ordered value lives — the one fact a renderer needs to build a sort term."""
-
-    HOST_BASE = "host_base"
-    #: In ``_base`` but trimmed from the public projection (order-only / unprojected).
-    HOST_BASE_HIDDEN = "host_base_hidden"
-    CROSS_MODEL_CTE = "cross_model_cte"
-    WINDOWED_CTE = "windowed_cte"
-    RANKED_CTE = "ranked_cte"
-    TRANSFORM_STEP = "transform_step"
-    OUTER_COMPOSITE = "outer_composite"
+    text: str
 
 
 class OrderEntry(BaseModel):
-    """One ORDER BY entry. ``scope``/``phase`` are required so an unclassified sort fails loudly."""
+    """One ORDER BY entry; the producing scope is classified at emission-side lowering."""
 
     slot_id: SlotId
     direction: Literal["asc", "desc"]
-    scope: OrderScope
     phase: Phase
     #: ``"default"`` = NULLs last on every dialect; the dialect strategy owns the spelling.
     nulls: Literal["default", "first", "last"] = "default"
 
 
 class FilterReachability(BaseModel):
-    """One filter's structural reachability in THIS plan's coordinates (recomputed per plan)."""
+    """One mask's structural reachability in THIS plan's coordinates (recomputed per plan); ``filter_id`` is the mask's slot id."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -293,7 +296,11 @@ class PlannedQuery(BaseModel):
     regroup_attach_plans: List["RegroupAttachPlan"] = Field(default_factory=list)
     combined_expression_slots: List[ValueSlot] = Field(default_factory=list)
     transform_layers: List[TransformLayer] = Field(default_factory=list)
-    filters_by_phase: List[FilterPhase] = Field(default_factory=list)
+    # Typed filter conjuncts over hidden slots; the first ``n_date_range_masks``
+    # are synthesized date-range bounds (they render before the Mode-A texts).
+    masks: List[MaskEntry] = Field(default_factory=list)
+    n_date_range_masks: int = Field(default=0, ge=0)
+    mode_a_filters: List[ModeAFilter] = Field(default_factory=list)
     projection: List[SlotId] = Field(default_factory=list)
     order: List[OrderEntry] = Field(default_factory=list)
     limit: Optional[int] = None
@@ -305,9 +312,6 @@ class PlannedQuery(BaseModel):
     distinct_dimension_values: bool = True
     # Time-dim columns where an explicit bound is a FRAME bound, not a population filter.
     frame_bound_columns: List[ValueKey] = Field(default_factory=list)
-    # AGGREGATE filters applied on the OUTER SELECT, not HAVING in a ``_cm_*`` CTE —
-    # HAVING there + the LEFT JOIN would resurface a NULL-aggregate host row.
-    outer_where_filter_ids: List[BoundFilterId] = Field(default_factory=list)
     filter_reachability: List[FilterReachability] = Field(default_factory=list)
     empty_base_plan: Optional[EmptyBaseGrainPlan] = None
     # Filters pushed into this (producer) plan as correlated EXISTS semi-joins.

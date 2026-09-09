@@ -111,12 +111,6 @@ DEFERRAL_SITES: Tuple[DeferralSite, ...] = (
         fragment="A cross-model partition_by aggregate nested inside a transform is not yet supported",
         issue="DEV-1868"),
     DeferralSite(
-        fragment="Filtering on a cross-model partition_by aggregate is not yet supported",
-        issue="DEV-1868"),
-    DeferralSite(
-        fragment="cannot be routed across the regroup boundary",
-        issue="DEV-1868"),
-    DeferralSite(
         fragment="cross-model aggregate operand inside an AGGREGATE-phase composite",
         issue="DEV-1868"),
     DeferralSite(

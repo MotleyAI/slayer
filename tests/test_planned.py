@@ -25,10 +25,11 @@ from slayer.core.keys import (
 from slayer.core.scope import StageColumn, StageSchema
 from slayer.engine.planned import (
     BoundExpr,
-    FilterPhase,
     JoinRequirement,
+    MaskEntry,
+    MaskTyping,
+    ModeAFilter,
     OrderEntry,
-    OrderScope,
     PlannedQuery,
     TransformLayer,
     ValueSlot,
@@ -224,34 +225,23 @@ class TestTransformLayer:
 
 
 # ---------------------------------------------------------------------------
-# FilterPhase
+# MaskEntry / ModeAFilter (DEV-1865)
 # ---------------------------------------------------------------------------
 
 
-class TestFilterPhase:
-    def test_where_phase(self):
-        f = FilterPhase(
-            id="f1",
-            phase=Phase.ROW,
-            text="status = 'paid'",
-        )
-        assert f.phase is Phase.ROW
+class TestMaskEntry:
+    def test_field_mask(self):
+        m = MaskEntry(slot_id="s1", typing=MaskTyping.FIELD, stratum=0)
+        assert m.typing is MaskTyping.FIELD
+        assert m.stratum == 0
 
-    def test_having_phase(self):
-        f = FilterPhase(
-            id="f2",
-            phase=Phase.AGGREGATE,
-            text="revenue:sum > 100",
-        )
-        assert f.phase is Phase.AGGREGATE
+    def test_measure_mask(self):
+        m = MaskEntry(slot_id="s2", typing=MaskTyping.MEASURE, stratum=1)
+        assert m.typing is MaskTyping.MEASURE
 
-    def test_post_phase(self):
-        f = FilterPhase(
-            id="f3",
-            phase=Phase.POST,
-            text="change(revenue:sum) > 0",
-        )
-        assert f.phase is Phase.POST
+    def test_mode_a_filter_carries_text(self):
+        f = ModeAFilter(id="mf0", text="status = 'paid'")
+        assert f.text == "status = 'paid'"
 
 
 # ---------------------------------------------------------------------------
@@ -260,32 +250,33 @@ class TestFilterPhase:
 
 
 class TestOrderEntry:
-    # DEV-1747 §5.10 — ``scope`` and ``phase`` are required with no default, so
-    # a planner path that forgets to classify fails at construction instead of
-    # falling through to the ``_base.``-qualified render branch.
-    _CLASSIFIED = {"scope": OrderScope.HOST_BASE, "phase": Phase.ROW}
+    # DEV-1747 §5.10 / DEV-1865 — ``phase`` is required with no default; the
+    # producing scope is classified at emission-side lowering, not on the plan.
 
     def test_asc(self):
-        o = OrderEntry(slot_id="s1", direction="asc", **self._CLASSIFIED)
+        o = OrderEntry(slot_id="s1", direction="asc", phase=Phase.ROW)
         assert o.direction == "asc"
 
     def test_desc(self):
-        o = OrderEntry(slot_id="s1", direction="desc", **self._CLASSIFIED)
+        o = OrderEntry(slot_id="s1", direction="desc", phase=Phase.ROW)
         assert o.direction == "desc"
 
-    def test_scope_and_phase_are_required(self):
+    def test_phase_is_required(self):
         with pytest.raises(ValueError):
             OrderEntry(slot_id="s1", direction="asc")  # type: ignore[call-arg]
 
+    def test_scope_is_not_a_plan_field(self):
+        assert "scope" not in OrderEntry.model_fields
+
     def test_nulls_defaults_to_the_dialect_default(self):
-        o = OrderEntry(slot_id="s1", direction="asc", **self._CLASSIFIED)
+        o = OrderEntry(slot_id="s1", direction="asc", phase=Phase.ROW)
         assert o.nulls == "default"
 
     def test_invalid_direction_rejected(self):
         with pytest.raises(ValueError):
             OrderEntry(
                 slot_id="s1", direction="random",  # type: ignore[arg-type]
-                **self._CLASSIFIED,
+                phase=Phase.ROW,
             )
 
     def test_uppercase_direction_rejected(self):
@@ -294,12 +285,12 @@ class TestOrderEntry:
         with pytest.raises(ValueError):
             OrderEntry(
                 slot_id="s1", direction="ASC",  # type: ignore[arg-type]
-                **self._CLASSIFIED,
+                phase=Phase.ROW,
             )
         with pytest.raises(ValueError):
             OrderEntry(
                 slot_id="s1", direction="DESC",  # type: ignore[arg-type]
-                **self._CLASSIFIED,
+                phase=Phase.ROW,
             )
 
 
@@ -330,7 +321,8 @@ class TestPlannedQuery:
         assert pq.row_slots == []
         assert pq.projection == ["a1"]
         assert pq.transform_layers == []
-        assert pq.filters_by_phase == []
+        assert pq.masks == []
+        assert pq.mode_a_filters == []
         assert pq.order == []
         assert pq.limit is None
         assert pq.offset is None
@@ -355,17 +347,25 @@ class TestPlannedQuery:
             public_aliases=["revenue_sum"],
             phase=Phase.AGGREGATE,
         )
-        filt = FilterPhase(id="f1", phase=Phase.ROW, text="status IS NOT NULL")
+        mask_key = ArithmeticKey(op="!=", operands=(dim_key, dim_key))
+        mask_slot = ValueSlot(
+            id="m1",
+            key=mask_key,
+            declared_name="__slayer_mask_0",
+            hidden=True,
+            phase=Phase.ROW,
+        )
+        mask = MaskEntry(slot_id="m1", typing=MaskTyping.FIELD, stratum=0)
         pq = PlannedQuery(
             source_relation="orders",
-            row_slots=[dim_slot],
+            row_slots=[dim_slot, mask_slot],
             aggregate_slots=[agg_slot],
-            filters_by_phase=[filt],
+            masks=[mask],
             projection=["d1", "a1"],
         )
-        assert len(pq.row_slots) == 1
+        assert len(pq.row_slots) == 2
         assert len(pq.aggregate_slots) == 1
-        assert pq.filters_by_phase == [filt]
+        assert pq.masks == [mask]
 
     def test_with_combined_expression(self):
         # An ArithmeticKey-keyed slot at aggregate phase (max of operands).
@@ -412,9 +412,6 @@ class TestCompose:
         assert pq.transform_layers == [layer]
 
     def test_order_in_planned(self):
-        oe = OrderEntry(
-            slot_id="s1", direction="desc",
-            scope=OrderScope.HOST_BASE, phase=Phase.AGGREGATE,
-        )
+        oe = OrderEntry(slot_id="s1", direction="desc", phase=Phase.AGGREGATE)
         pq = PlannedQuery(source_relation="orders", order=[oe])
         assert pq.order == [oe]
