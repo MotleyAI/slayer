@@ -21,11 +21,17 @@ Both halves are live on the typed pipeline: the structural half in
 guard in ``plan_query``.
 """
 
+import json
 import sqlite3
 import tempfile
 
 import pytest
+from fastapi.testclient import TestClient
+from mcp.server.fastmcp.exceptions import ToolError
 
+from slayer.api.server import QueryRequest, create_app
+from slayer.async_utils import run_sync
+from slayer.client.slayer_client import SlayerClient
 from slayer.core.enums import DataType, JoinType
 from slayer.core.errors import DistinctDimensionValuesError, SlayerError
 from slayer.core.models import (
@@ -44,6 +50,7 @@ from slayer.core.query import (
     TimeDimension,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._engine_helpers import _engine_generate
@@ -784,17 +791,16 @@ class TestMCPSurface:
 
         Uses ``mcp_server.call_tool(name=..., arguments=...)`` — same
         pattern as ``tests/test_mcp_server.py:_call``."""
-        import json
-
-        from slayer.mcp.server import create_mcp_server
         engine = sqlite_orders_env
         server = create_mcp_server(storage=engine.storage)
         content_blocks, _ = await server.call_tool(
             name="query",
             arguments={
-                "source_model": "orders",
-                "dimensions": ["status"],
-                "distinct_dimension_values": False,
+                "query": {
+                    "source_model": "orders",
+                    "dimensions": ["status"],
+                    "distinct_dimension_values": False,
+                },
                 "format": "json",
             },
         )
@@ -805,18 +811,15 @@ class TestMCPSurface:
         # Raw-row mode: 6 rows in the source table.
         assert len(payload) == 6
 
-    async def test_mcp_query_nested_inner_flag_false(self, sqlite_orders_env) -> None:
-        """Case 26a: ``query_nested`` with inner stage flag=False feeds
+    async def test_mcp_query_list_inner_flag_false(self, sqlite_orders_env) -> None:
+        """Case 26a: ``query`` with a list whose inner stage flag=False feeds
         raw rows into an outer stage that aggregates."""
-        import json
-
-        from slayer.mcp.server import create_mcp_server
         engine = sqlite_orders_env
         server = create_mcp_server(storage=engine.storage)
         content_blocks, _ = await server.call_tool(
-            name="query_nested",
+            name="query",
             arguments={
-                "queries": [
+                "query": [
                     {
                         "source_model": "orders",
                         "name": "raw_rows",
@@ -837,22 +840,19 @@ class TestMCPSurface:
         assert isinstance(payload, list)
         assert len(payload) == 3
 
-    async def test_mcp_query_nested_outer_flag_false_with_measure_rejects(
+    async def test_mcp_query_list_outer_flag_false_with_measure_rejects(
         self, sqlite_orders_env,
     ) -> None:
         """Case 26b: outer stage flag=False AND outer measure ref →
         rejected. The MCP tool surfaces the error (raises or returns an
         error-shaped result — either is acceptable)."""
-        from mcp.server.fastmcp.exceptions import ToolError
-
-        from slayer.mcp.server import create_mcp_server
         engine = sqlite_orders_env
         server = create_mcp_server(storage=engine.storage)
         with pytest.raises((ToolError, DistinctDimensionValuesError, ValueError)):
             await server.call_tool(
-                name="query_nested",
+                name="query",
                 arguments={
-                    "queries": [
+                    "query": [
                         {
                             "source_model": "orders",
                             "name": "raw_rows",
@@ -876,16 +876,10 @@ class TestRESTSurface:
         """OpenAPI documentation: ``QueryRequest`` must expose the field
         as an explicit Pydantic field (not just pass-through via
         ``extra="allow"``)."""
-        from slayer.api.server import QueryRequest
         assert "distinct_dimension_values" in QueryRequest.model_fields
 
     def test_post_query_with_flag_false(self, tmp_path) -> None:
         """Case 27: REST ``POST /query`` with ``"distinct_dimension_values": false``."""
-        from fastapi.testclient import TestClient
-
-        from slayer.api.server import create_app
-        from slayer.async_utils import run_sync
-
         storage = _seed_sqlite_storage_sync(tmp_path)
         app = create_app(storage=storage)
         client = TestClient(app)
@@ -900,13 +894,9 @@ class TestRESTSurface:
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert body["row_count"] == 6
-        del run_sync  # silence unused
 
     def test_post_query_list_shape_per_stage_flag(self, tmp_path) -> None:
         """Case 27a: REST list shape — per-stage flag passes through."""
-        from fastapi.testclient import TestClient
-
-        from slayer.api.server import create_app
         storage = _seed_sqlite_storage_sync(tmp_path)
         app = create_app(storage=storage)
         client = TestClient(app)
@@ -938,8 +928,6 @@ def _seed_sqlite_storage_sync(tmp_path):
     """Sync helper for non-async tests (REST ``TestClient`` runs sync).
     Re-uses the same SQLite seed + ``SlayerModel`` as ``sqlite_orders_env``;
     just swaps the async storage calls for ``run_sync`` wrappers."""
-    from slayer.async_utils import run_sync
-
     db_path = tmp_path / "orders_sync.db"
     _seed_orders_db_at(db_path)
     storage_dir = tmp_path / "storage_sync"
@@ -958,7 +946,6 @@ class TestSlayerClientBody:
     def test_build_body_includes_flag(self) -> None:
         """Case 28: ``SlayerClient._build_query_body`` includes the flag
         when the SlayerQuery sets it."""
-        from slayer.client.slayer_client import SlayerClient
         q = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
@@ -969,7 +956,6 @@ class TestSlayerClientBody:
 
     def test_build_body_list_shape_per_stage(self) -> None:
         """Case 28a: list-input body preserves per-stage flag."""
-        from slayer.client.slayer_client import SlayerClient
         inner = SlayerQuery(
             source_model="orders",
             name="raw_rows",

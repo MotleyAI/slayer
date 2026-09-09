@@ -9,7 +9,37 @@ edges are grandfathered and slated to die (system principle 2).
 
 ## 2. Building blocks
 
-See the `landscape` view in [views.c4](views.c4). Identity: `keys.py`; scopes:
+The `core_focus` view ([views.c4](views.c4)) — `core` and its incident edges:
+
+<!-- likec4:core_focus -->
+```mermaid
+flowchart TD
+  %% core_focus: Core in context
+  core["Core domain models"]
+  engine["Query engine"]
+  sql["SQL generation"]
+  storage["Storage backends"]
+  importers("Importers")
+  memories("Agent memories")
+  protocols("BI wire protocols")
+  search("Search & embeddings")
+  surfaces("User-facing surfaces")
+  core -.-> engine
+  core -.-> sql
+  core -.-> storage
+  engine --> core
+  importers --> core
+  memories --> core
+  protocols --> core
+  search --> core
+  sql --> core
+  storage --> core
+  surfaces --> core
+```
+*Dashed arrows: legacy edges slated to die.*
+<!-- /likec4:core_focus -->
+
+Identity: `keys.py`; scopes:
 `scope.py`; errors/warnings: `errors.py`, `warnings.py`; Pydantic domain
 models alongside.
 
