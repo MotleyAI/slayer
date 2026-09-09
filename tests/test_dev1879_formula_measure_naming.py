@@ -10,77 +10,29 @@ Named, saved, and aggregate-rooted measures keep their existing keys.
 from __future__ import annotations
 
 import re
-import tempfile
 
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import (
-    Column,
-    DatasourceConfig,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
-)
+from slayer.core.models import Column, ModelMeasure
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.core.refs import auto_name_from_expression
-from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.storage.yaml_storage import YAMLStorage
+from tests._dev1879_helpers import dry_response, mart_model
 
 
 # A result key: dot-separated bare identifiers, nothing else.
 _KEY_RE = re.compile(r"[A-Za-z_]\w*(\.[A-Za-z_]\w*)*")
 
 
-def _mart() -> SlayerModel:
-    return SlayerModel(
-        name="mart",
-        data_source="test",
-        sql_table="mart",
-        default_time_dimension="created_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="target_id", type=DataType.INT),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="logo_churn", type=DataType.DOUBLE),
-            Column(name="logo_bop", type=DataType.DOUBLE),
-            Column(name="cmrr_eop", type=DataType.DOUBLE),
+async def _dry(query: SlayerQuery):
+    mart = mart_model(
+        extra_columns=[
             Column(name="revenue", type=DataType.DOUBLE),
             Column(name="quantity", type=DataType.DOUBLE),
-            Column(name="price", type=DataType.DOUBLE),
-            Column(name="created_at", type=DataType.TIMESTAMP),
         ],
-        joins=[
-            ModelJoin(target_model="targets", join_pairs=[["target_id", "id"]]),
-        ],
-        measures=[
-            ModelMeasure(name="aov", formula="revenue:sum / quantity:sum"),
-        ],
+        measures=[ModelMeasure(name="aov", formula="revenue:sum / quantity:sum")],
     )
-
-
-def _targets() -> SlayerModel:
-    return SlayerModel(
-        name="targets",
-        data_source="test",
-        sql_table="targets",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="goal", type=DataType.DOUBLE),
-        ],
-    )
-
-
-async def _dry(query: SlayerQuery):
-    with tempfile.TemporaryDirectory() as d:
-        storage = YAMLStorage(base_dir=d)
-        await storage.save_datasource(
-            DatasourceConfig(name="test", type="postgres")
-        )
-        await storage.save_model(_mart())
-        await storage.save_model(_targets())
-        engine = SlayerQueryEngine(storage=storage)
-        return await engine.execute(query, dry_run=True)
+    return await dry_response(query, mart=mart)
 
 
 def _q(**kw) -> SlayerQuery:
