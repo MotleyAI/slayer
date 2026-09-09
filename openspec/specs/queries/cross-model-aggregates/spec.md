@@ -43,7 +43,7 @@ Whenever an aggregate's implicit grain loses a dimension to broadcasting, the re
 - THEN exactly one broadcast warning is emitted for it
 
 ### Requirement: Strict mode
-`SlayerQuery.strict` (default false) SHALL turn every silent-semantics event into a clear error: an implicit-grain broadcast, or a filter actually excluded from a producer (unreachable, ambiguous, or outside semi-join pushdown scope). A filter applied by semi-join pushdown is correctly applied and MUST NOT error. The error names the metric, the dimension or filter, and the remedy (declare join cardinality, a covering unique key, or remove the dimension/filter). Explicit `partition_by=` broadcasting does not error.
+`SlayerQuery.strict` (default false) SHALL turn every silent-semantics event into a clear error: an implicit-grain broadcast, or a filter actually excluded from a producer (unreachable, or outside semi-join pushdown scope). A filter applied by semi-join pushdown is correctly applied and MUST NOT error. The error names the metric, the dimension or filter, and the remedy (declare join cardinality, a covering unique key, or remove the dimension/filter). An ambiguous correlation path is not a strict-mode concern: it errors in both modes. Explicit `partition_by=` broadcasting does not error.
 
 #### Scenario: Strict query with a broadcast errors
 - **WHEN** a query with `strict=true` would broadcast a metric over an unattributable dimension
@@ -110,6 +110,10 @@ Cross-model aggregates SHALL be legal wherever local aggregates are: in arithmet
 - WHEN a query combines an aggregation-derived dimension (banded, bare, or transform-root) with a cross-model measure
 - THEN both are correct by executed values in one result, replacing the former fail-closed guard
 
+#### Scenario: Filter on a cross-model partitioned aggregate executes
+- WHEN a query filters on `customers.spend:sum(partition_by=<customer-level dimension>)` with that partition key among the query dimensions, whether or not the aggregate is also selected
+- THEN qualifying rows survive with values identical to the unfiltered query's, by executed values — never the former not-yet-supported error
+
 #### Scenario: Keyless-grain dual-role partitioned aggregate is rejected
 - WHEN the same cross-model partitioned aggregate is consumed by a computed dimension and selected as a measure (or named as a raw ORDER BY target) while its partition key is not among the query dimensions
 - THEN the query fails at plan time with the clear partition-key error the local variant raises — naming the key and the remedy — never with an internal join-back failure
@@ -121,61 +125,6 @@ Cross-model aggregates SHALL be legal wherever local aggregates are: in arithmet
 #### Scenario: Keyless ORDER BY the computed dimension's name executes
 - WHEN a query with a computed dimension banding a keyless cross-model partitioned aggregate orders by that dimension's name
 - THEN rows sort by the banded value, by executed values, with no combined attach synthesized for the order reference
-
-### Requirement: Producer filter inheritance
-A ROW-phase filter conjunct whose references are all attributable from an aggregate's root SHALL apply inside that aggregate's computation. A conjunct reachable from the root only across hops that are not provably many-to-one SHALL still restrict the aggregate's population, by semi-join: the aggregate is computed over exactly the root rows related to at least one row (combination) passing the conjunct — never over join-multiplied rows — silently and without metadata, uniformly with inline inheritance. On provably many-to-one hops the semi-join is semantically identical to inline application, and inline remains a pure optimization. Reference resolution uses each reference's full dependency set: a derived (SQL-defined) column's classification follows the models its definition actually reads, not just its declared location.
-
-Semi-join pushdown SHALL apply uniformly to every target-rooted producer — plain, partitioned, ranked, windowed, and nested computed-dimension producers. Conjuncts pushed into the same producer that share their first reverse hop SHALL be satisfied by the same related row (combination); conjuncts on different branches are satisfied independently.
-
-A conjunct SHALL remain excluded from the producer — reported through the established dropped-filter warning (and erroring under strict) while still applying to the result rows — when it is genuinely unreachable (no resolvable join path from the root), when its cross-path references span multiple distinct join branches within one conjunct, when root-local and cross-path references mix under a disjunction or negation, or when the reverse path is ambiguous. The reverse path resolves through stored join edges and, for semi-join correlation only, through inversion of a stored forward edge; inversion MUST never be used to classify a conjunct as safely inlineable. AGGREGATE-phase predicates keep aggregate-filter semantics uniform with local aggregates: they restrict the result rows by the aggregate's attached value, including when the aggregate appears only in the filter.
-
-#### Scenario: Attributable filter restricts the metric
-- **WHEN** a query rooted at `orders` filters on a customer-level predicate and selects `customers.spend:sum`
-- **THEN** the metric is computed over only the customers passing the predicate
-
-#### Scenario: Aggregate-phase filter restricts result rows uniformly
-- **WHEN** a query rooted at `orders` groups by a customer-level dimension and filters on `customers.spend:sum > 100`
-- **THEN** only groups passing the predicate remain in the result — exactly as a local aggregate filter behaves — whether or not the aggregate is also selected
-
-#### Scenario: Unsafe filter no longer fans out the producer
-- **WHEN** a query rooted at `orders` filters on an orders-level predicate and selects `customers.spend:sum`
-- **THEN** the metric counts exactly the customers with at least one order passing the predicate, each customer's spend once (never double-counted through the reverse join), with no warning and unchanged result cardinality
-
-#### Scenario: Pushed filter still restricts the result rows
-- **WHEN** a lenient-mode query pushes a filter into a producer by semi-join
-- **THEN** the filter also still applies to the result rows exactly as before
-
-#### Scenario: Filters sharing a branch bind to the same related row
-- **WHEN** a query rooted at `orders` filters `status = 'paid'` and `channel = 'app'` and selects `customers.spend:sum`, and a customer has a paid order and an app order but no single paid app order
-- **THEN** that customer is excluded from the metric's population — both predicates must hold on one related row, by executed values
-
-#### Scenario: Pushdown works without a declared reverse join
-- **WHEN** the only stored edge is the forward `orders → customers` join (default join type, no mirrored reverse edge) and a query rooted at `orders` filters on an orders-level predicate with `customers.spend:sum` selected
-- **THEN** the filter pushes down by semi-join over the inverted forward edge, with correct executed values
-
-#### Scenario: Ambiguous reverse path stays dropped and warned
-- **WHEN** the filtered model reaches the producer root through several distinct forward joins and no stored reverse edge disambiguates the correlation
-- **THEN** the conjunct is excluded with the established dropped-filter warning (strict errors) rather than guessing a correlation
-
-#### Scenario: Mixed disjunction stays dropped and warned
-- **WHEN** a single conjunct mixes a root-local predicate with a cross-path predicate under an OR, or its cross-path references span multiple distinct join branches
-- **THEN** it is excluded with the established dropped-filter warning (strict errors), never pushed with altered semantics
-
-#### Scenario: Derived-column dependencies drive classification
-- **WHEN** a filter references a SQL-defined column whose definition reads a model across a hop that is not provably many-to-one from the producer root
-- **THEN** the conjunct is classified by those actual dependencies — pushed by semi-join (or excluded when outside pushdown scope), never inlined through the unsafe hop
-
-#### Scenario: Pushdown reaches every producer kind
-- **WHEN** a query with an unsafe-but-reachable filter uses ranked, windowed, or nested computed-dimension producers
-- **THEN** each such producer's population is restricted by the same semi-join semantics, by executed values
-
-#### Scenario: ClickHouse below 25.4 fails closed
-- **WHEN** a semi-join pushdown query targets a ClickHouse server older than 25.4 or of undeterminable version
-- **THEN** the query fails with a clear error naming the version requirement instead of executing with different semantics; on 25.4+ the required correlated-subquery setting is applied automatically and the query executes
-
-#### Scenario: Genuinely unreachable filter keeps the established behavior
-- **WHEN** a filter references a model with no resolvable join path from the producer root
-- **THEN** it is excluded with the dropped-filter warning and strict errors, exactly as before
 
 ### Requirement: Intermediate-hop dimensions are supported
 A dimension lying on an intermediate hop of a cross-model aggregate's join chain SHALL be legal. It follows the attribution rule like any other dimension: exact when attributable from the aggregate's root, broadcast (with metadata) when not — never an internal not-implemented error.
@@ -201,3 +150,58 @@ Cross-model shapes supported before this change whose grains were already fan-ou
 #### Scenario: Provably safe filter paths keep byte-identical SQL
 - **WHEN** a filter's path from the producer root crosses only provably many-to-one hops
 - **THEN** the generated SQL keeps the inline form, byte-identical to before this change
+
+### Requirement: Producer filter routing
+A ROW-phase filter conjunct whose references are all attributable from an aggregate's root SHALL apply inside that aggregate's computation. A conjunct reachable from the root only across hops that are not provably many-to-one SHALL still restrict the aggregate's population, by semi-join: the aggregate is computed over exactly the root rows related to at least one row (combination) passing the conjunct — never over join-multiplied rows — silently and without metadata, uniformly with inline inheritance. On provably many-to-one hops the semi-join is semantically identical to inline application, and inline remains a pure optimization. Reference resolution uses each reference's full dependency set: a derived (SQL-defined) column's classification follows the models its definition actually reads, not just its declared location.
+
+Semi-join pushdown SHALL apply uniformly to every target-rooted producer — plain, partitioned, ranked, windowed, and nested computed-dimension producers. Conjuncts pushed into the same producer that share their first reverse hop SHALL be satisfied by the same related row (combination); conjuncts on different branches are satisfied independently.
+
+A conjunct SHALL remain excluded from the producer — reported through the established dropped-filter warning (and erroring under strict) while still applying to the result rows — when it is genuinely unreachable (no resolvable join path from the root), when its cross-path references span multiple distinct join branches within one conjunct, or when root-local and cross-path references mix under a disjunction or negation. The reverse path resolves through the same bidirectional traversal as every other hop: any declared edge, in either orientation, with oriented provability governing inline-vs-semi-join classification. A hop of the correlation path connected by two or more edges SHALL fail closed in both modes with the ambiguous-hop error naming the candidate edges — never dropped, never guessed. AGGREGATE-phase predicates keep aggregate-filter semantics uniform with local aggregates: they restrict the result rows by the aggregate's attached value, including when the aggregate appears only in the filter.
+
+#### Scenario: Attributable filter restricts the metric
+- **WHEN** a query rooted at `orders` filters on a customer-level predicate and selects `customers.spend:sum`
+- **THEN** the metric is computed over only the customers passing the predicate
+
+#### Scenario: Aggregate-phase filter restricts result rows uniformly
+- **WHEN** a query rooted at `orders` groups by a customer-level dimension and filters on `customers.spend:sum > 100`
+- **THEN** only groups passing the predicate remain in the result — exactly as a local aggregate filter behaves — whether or not the aggregate is also selected
+
+#### Scenario: Unsafe filter no longer fans out the producer
+- **WHEN** a query rooted at `orders` filters on an orders-level predicate and selects `customers.spend:sum`
+- **THEN** the metric counts exactly the customers with at least one order passing the predicate, each customer's spend once (never double-counted through the reverse hop), with no warning and unchanged result cardinality
+
+#### Scenario: Pushed filter still restricts the result rows
+- **WHEN** a lenient-mode query pushes a filter into a producer by semi-join
+- **THEN** the filter also still applies to the result rows exactly as before
+
+#### Scenario: Filters sharing a branch bind to the same related row
+- **WHEN** a query rooted at `orders` filters `status = 'paid'` and `channel = 'app'` and selects `customers.spend:sum`, and a customer has a paid order and an app order but no single paid app order
+- **THEN** that customer is excluded from the metric's population — both predicates must hold on one related row, by executed values
+
+#### Scenario: Pushdown works without a declared reverse join
+- **WHEN** the only stored edge is the forward `orders → customers` join (default join type) and a query rooted at `orders` filters on an orders-level predicate with `customers.spend:sum` selected
+- **THEN** the filter pushes down by semi-join over that edge's reverse orientation, with correct executed values
+
+#### Scenario: Ambiguous correlation hop fails closed
+- **WHEN** the filtered model reaches the producer root only across a pair of models connected by two or more edges and no edge name resolves the hop
+- **THEN** the query fails in both modes with the ambiguous-hop error naming the candidate edges, rather than dropping the conjunct or guessing a correlation
+
+#### Scenario: Mixed disjunction stays dropped and warned
+- **WHEN** a single conjunct mixes a root-local predicate with a cross-path predicate under an OR, or its cross-path references span multiple distinct join branches
+- **THEN** it is excluded with the established dropped-filter warning (strict errors), never pushed with altered semantics
+
+#### Scenario: Derived-column dependencies drive classification
+- **WHEN** a filter references a SQL-defined column whose definition reads a model across a hop that is not provably many-to-one from the producer root
+- **THEN** the conjunct is classified by those actual dependencies — pushed by semi-join (or excluded when outside pushdown scope), never inlined through the unsafe hop
+
+#### Scenario: Pushdown reaches every producer kind
+- **WHEN** a query with an unsafe-but-reachable filter uses ranked, windowed, or nested computed-dimension producers
+- **THEN** each such producer's population is restricted by the same semi-join semantics, by executed values
+
+#### Scenario: ClickHouse below 25.4 fails closed
+- **WHEN** a semi-join pushdown query targets a ClickHouse server older than 25.4 or of undeterminable version
+- **THEN** the query fails with a clear error naming the version requirement instead of executing with different semantics; on 25.4+ the required correlated-subquery setting is applied automatically and the query executes
+
+#### Scenario: Genuinely unreachable filter keeps the established behavior
+- **WHEN** a filter references a model with no resolvable join path from the producer root
+- **THEN** it is excluded with the dropped-filter warning and strict errors, exactly as before

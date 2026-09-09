@@ -1,0 +1,64 @@
+// ONE LikeC4 model of SLayer's top-level structure. Model truth: relations are
+// the AST-measured runtime import edges at this commit (tools/arch_check.py
+// enforces exact equality). Authoring convention: see system.arc42.md.
+specification {
+  element node
+  element bucket {
+    #virtual
+  }
+  tag virtual
+  tag legacy
+}
+
+model {
+  core = node 'Core domain models'
+  sql = node 'SQL generation' {
+    render = node 'Render'
+    dialects = node 'Dialects'
+  }
+  engine = node 'Query engine'
+  storage = node 'Storage backends'
+  importers = bucket 'Importers'
+  search = bucket 'Search & embeddings'
+  memories = bucket 'Agent memories'
+  protocols = bucket 'BI wire protocols'
+  surfaces = bucket 'User-facing surfaces'
+
+  core -> engine #legacy
+  core -> sql #legacy
+  core -> storage #legacy
+  engine -> core
+  engine -> memories
+  engine -> search
+  engine -> sql
+  engine -> storage
+  importers -> core
+  importers -> engine
+  importers -> sql
+  memories -> core
+  memories -> engine
+  memories -> search
+  memories -> storage
+  protocols -> core
+  protocols -> engine
+  protocols -> storage
+  search -> core
+  search -> engine
+  search -> memories
+  search -> storage
+  sql -> core
+  sql -> engine #legacy
+  storage -> core
+  storage -> engine
+  storage -> memories
+  storage -> search
+  storage -> sql
+  surfaces -> core
+  surfaces -> engine
+  surfaces -> importers
+  surfaces -> memories
+  surfaces -> protocols
+  surfaces -> search
+  surfaces -> sql
+  surfaces -> storage
+}

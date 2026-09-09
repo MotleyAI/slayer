@@ -22,6 +22,10 @@ REST; `slayer/mcp` MCP server; `slayer/flight` / `slayer/pg_facade` / `slayer/fa
 BI wire protocols; `slayer/memories` + `slayer/search` agent memory & semantic search;
 `slayer/cli.py` CLI.
 
+Cross-cutting structure and principles live in `architecture/` (LikeC4 model + arc42 +
+`index.yaml`); enforcement bundle: `poetry run lint-imports`, `poetry run python
+tools/arch_check.py`, `npx -y likec4@1.47.0 validate architecture`, `poetry run basedpyright`.
+
 ## Common Commands
 
 ```bash
@@ -52,6 +56,7 @@ data dir, override with `$SLAYER_STORAGE`.
 - Result column keys are `model.column`: `revenue:sum` → `orders.revenue_sum`, `*:count` → `orders._count`; joined dimensions keep the full path (`orders.customers.regions.name`)
 - Dots denote join paths in BOTH queries and model SQL (`customers.regions.name`, dotted-canonical); the legacy `__` split-alias input form is a hard error. `__` stays only as an internal generated-SQL join alias, and is a legal (exact-match) character in model/query/column names (`__slayer_` prefix reserved)
 - Models are keyed by `(data_source, name)`; joins resolve within the parent model's datasource
+- Joins are symmetric edges (declare once): any declared join traverses in both directions with flipped cardinality; parallel edges need a join `name` to disambiguate or the hop fails closed (`docs/concepts/models.md#bidirectional-traversal`)
 - Models/queries/datasource configs carry a `version` field; storage migrations run automatically on load (`slayer/storage/migrations.py`)
 - Filters support `{variable}` placeholders from `query.variables` (scalars, plus lists → auto-quoted `IN`-list body: `region IN ({regions})`). Values are trusted input; string escaping IS dialect-aware (DEV-1727) but only applies to *quoted* literals. Datasource configs support `${ENV_VAR}`
 - Mode-A raw-SQL surfaces also support optional blocks `{? pred ?}` — render parenthesised when every inner `{var}` is supplied, else collapse to `(1=1)` (Cube `FILTER_PARAMS` optional-pushdown form, DEV-1730). `extract_model_variables(model)` classifies placeholders required vs optional; surfaced in the inspect skeleton
@@ -90,9 +95,11 @@ poetry run ruff check --fix slayer/ tests/    # auto-fix
 
 ALWAYS update documentation when making API or user-facing changes:
 
-- `docs/` — concept docs, getting-started, reference, configuration
+- `docs/` — concept docs, getting-started, reference, configuration (user-facing only)
 - `.claude/skills/` — slayer-query.md, slayer-models.md, slayer-overview.md
 - When renaming a field or changing a response shape, grep all docs and skills for the old name
+- Behaviour is specified in `openspec/specs/` (via an OpenSpec change); cross-cutting
+  principles and the query algebra live in `architecture/` (arc42 + status tags)
 
 Every page under `docs/` must be linked from the `nav` block in `zensical.toml` (repo
 root) — add or update the entry in the same commit as the page. Otherwise the page is

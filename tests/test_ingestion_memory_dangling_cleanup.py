@@ -97,8 +97,7 @@ class TestIngestDanglingRefCleanup:
         assert ds is not None
         # Force every cleanup-side get_model lookup to raise — the
         # cleanup pass must treat the raise as "ref intact". Patch the
-        # specific storage instance rather than the ABC so the
-        # JoinSyncStorage wrapper's override is the one we replace.
+        # specific storage instance rather than the ABC.
         async def _raise(*args, **kwargs):
             raise RuntimeError("transient")
 

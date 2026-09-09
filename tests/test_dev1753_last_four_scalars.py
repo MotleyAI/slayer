@@ -4,7 +4,7 @@ Closes the parser/binder allowlist divergence pinned by
 ``tests/test_dev1744_value_expr.py::TestParserAndBinderScalarSetsAgree``. After
 this change ``SCALAR_PASSTHROUGH - SCALAR_FUNCTIONS == set()``.
 
-Ratified decisions (see DECISIONS.md):
+Ratified decisions (DEV-1753 decision trail, git history):
 * ``greatest`` / ``least`` — the NULL divergence is RATIFIED, not normalised:
   SQLite emits scalar ``MAX(a,b)`` / ``MIN(a,b)`` (propagates NULL), every
   GREATEST-native backend ignores NULLs (Snowflake via ``..._IGNORE_NULLS``).

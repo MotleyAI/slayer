@@ -9,17 +9,12 @@ three renderers re-derives everything else at render time — and disagrees:
   expression → bare → ``_base.``-qualified);
 * ``_planned_order_by_sql`` builds text and knows about none of it.
 
-§5.10 moves the classification into the plan: ``scope`` names WHERE the ordered
-value lives, ``phase`` its phase, ``nulls`` the null-ordering policy. This
-module asserts the PLAN — no SQL — because "plan decides, render emits" (P-D)
-is only true if the decision is observable without rendering.
+§5.10 moved the classification out of render-time re-derivation; DEV-1865 moved
+it again — ``scope`` is now classified once by the emission-side lowering
+(``_lower_positions``), still observable without rendering SQL, while the plan
+``OrderEntry`` carries ``phase`` and ``nulls``.
 
-``scope`` and ``phase`` are REQUIRED with no default. A shape the planner
-forgets to classify must fail loudly rather than fall through to the
-``_base.``-qualified branch, which is how an order term silently attaches to
-the wrong scope today.
-
-Refs: DEV-1747 (D3, D5), DEV-1742 §5.10 / P-D.
+Refs: DEV-1747 (D3, D5), DEV-1742 §5.10 / P-D, DEV-1865.
 """
 from __future__ import annotations
 
@@ -28,8 +23,10 @@ from pydantic import ValidationError
 
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.core.enums import TimeGranularity
-from slayer.engine.planned import OrderEntry, OrderScope
+from slayer.engine.planned import OrderEntry
 from slayer.engine.stage_planner import plan_query
+from slayer.sql.generator import _lower_positions
+from slayer.sql.render.order_terms import OrderScope, ScopedOrder
 from tests._dev1747_fixtures import dev1747_bundle
 from slayer.core.keys import AggregateKey
 from slayer.core.keys import ColumnKey
@@ -50,29 +47,37 @@ def _sole_entry(query: SlayerQuery) -> OrderEntry:
     return plan.order[0]
 
 
+def _sole_scoped(query: SlayerQuery) -> ScopedOrder:
+    plan = _plan(query)
+    scoped = _lower_positions(plan).order
+    assert len(scoped) == 1, f"expected one order entry, got {len(scoped)}"
+    return scoped[0]
+
+
 # ---------------------------------------------------------------------------
 # Group 1 — the field contract
 # ---------------------------------------------------------------------------
 class TestOrderEntryShape:
-    def test_scope_is_required(self) -> None:
+    def test_phase_is_required(self) -> None:
         """No default. A planner path that forgets to classify must fail at
         construction, not silently order against ``_base``."""
         with pytest.raises(ValidationError):
             OrderEntry(slot_id="s1", direction="asc")  # type: ignore[call-arg]
 
+    def test_scope_is_not_a_plan_field(self) -> None:
+        """DEV-1865: the producing scope is an emission-side lowering fact."""
+        assert "scope" not in OrderEntry.model_fields
+
     def test_nulls_defaults_to_dialect_default(self) -> None:
 
-        entry = OrderEntry(
-            slot_id="s1", direction="asc",
-            scope=OrderScope.HOST_BASE, phase=Phase.ROW,
-        )
+        entry = OrderEntry(slot_id="s1", direction="asc", phase=Phase.ROW)
         assert entry.nulls == "default"
 
     def test_nulls_rejects_an_unknown_policy(self) -> None:
 
         with pytest.raises(ValidationError):
             OrderEntry(
-                slot_id="s1", direction="asc", scope=OrderScope.HOST_BASE,
+                slot_id="s1", direction="asc",
                 phase=Phase.ROW, nulls="sometimes",  # type: ignore[arg-type]
             )
 
@@ -82,7 +87,7 @@ class TestOrderEntryShape:
         with pytest.raises(ValidationError):
             OrderEntry(
                 slot_id="s1", direction="ASC",  # type: ignore[arg-type]
-                scope=OrderScope.HOST_BASE, phase=Phase.ROW,
+                phase=Phase.ROW,
             )
 
 
@@ -91,7 +96,7 @@ class TestOrderEntryShape:
 # ---------------------------------------------------------------------------
 class TestScopeClassification:
     def test_projected_dimension_is_host_base(self) -> None:
-        entry = _sole_entry(SlayerQuery(
+        entry = _sole_scoped(SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=_MEASURE,
@@ -100,7 +105,7 @@ class TestScopeClassification:
         assert entry.scope is OrderScope.HOST_BASE
 
     def test_projected_measure_is_host_base(self) -> None:
-        entry = _sole_entry(SlayerQuery(
+        entry = _sole_scoped(SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=_MEASURE,
@@ -111,7 +116,7 @@ class TestScopeClassification:
     def test_hidden_local_aggregate_is_host_base_hidden(self) -> None:
         """Materialised in the base but trimmed from the public projection —
         the distinction the ``bare_ids`` set encodes at render time today."""
-        entry = _sole_entry(SlayerQuery(
+        entry = _sole_scoped(SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=_MEASURE,
@@ -120,7 +125,7 @@ class TestScopeClassification:
         assert entry.scope is OrderScope.HOST_BASE_HIDDEN
 
     def test_cross_model_aggregate_is_cross_model_cte(self) -> None:
-        entry = _sole_entry(SlayerQuery(
+        entry = _sole_scoped(SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[
@@ -136,7 +141,7 @@ class TestScopeClassification:
         regroup producer that renders as a ``_cm_`` CTE, so its ordered value
         now resolves in the cross-model / regroup scope rather than a dedicated
         ``_wm_`` windowed CTE."""
-        entry = _sole_entry(SlayerQuery(
+        entry = _sole_scoped(SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
                 dimension=ColumnRef(name="created_at"),
@@ -148,7 +153,7 @@ class TestScopeClassification:
         assert entry.scope is OrderScope.CROSS_MODEL_CTE
 
     def test_transform_measure_is_transform_step(self) -> None:
-        entry = _sole_entry(SlayerQuery(
+        entry = _sole_scoped(SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
                 dimension=ColumnRef(name="created_at"),
@@ -168,7 +173,7 @@ class TestScopeClassification:
         has no CTE column to name, only an outer alias or a re-rendered
         expression, which is exactly the branch
         ``_resolve_combined_order_term``'s precedence chain gets wrong."""
-        entry = _sole_entry(SlayerQuery(
+        entry = _sole_scoped(SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[{"formula": "customers.spend:sum + amount:sum", "name": "mix"}],
@@ -180,7 +185,7 @@ class TestScopeClassification:
         """The hidden variant: nothing projects the composite, so a scope that
         fell back to ``HOST_BASE`` would render it inline in ``_base`` and
         silently substitute a plain aggregate for the cross-model one."""
-        entry = _sole_entry(SlayerQuery(
+        entry = _sole_scoped(SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=_MEASURE,
@@ -193,7 +198,7 @@ class TestScopeClassification:
     def test_grouped_joined_wrap_is_cross_model_cte(self) -> None:
         """The DEV-1735 wrap lives in its own host-rooted CTE, so it resolves
         CTE-qualified — not as a bare ``_base`` alias."""
-        entry = _sole_entry(SlayerQuery(
+        entry = _sole_scoped(SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=_MEASURE,
@@ -241,7 +246,7 @@ class TestPhaseAndDirection:
             ],
         ))
         assert [e.direction for e in plan.order] == ["asc", "desc", "asc"]
-        assert [e.scope for e in plan.order] == [
+        assert [e.scope for e in _lower_positions(plan).order] == [
             OrderScope.HOST_BASE, OrderScope.HOST_BASE, OrderScope.HOST_BASE_HIDDEN,
         ]
 

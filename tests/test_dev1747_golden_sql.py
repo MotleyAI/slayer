@@ -139,6 +139,8 @@ def _cases() -> dict:
             ],
             filters=["customers.regions.name == 'Alpha'"],
         ),
+        # Both push into the producer by semi-join since DEV-1853 (ids kept
+        # stable; "unreachable" is historical — the inverted hop resolves now).
         "reroot/host_local_filter": _q(
             dimensions=["customers.regions.name"],
             measures=[

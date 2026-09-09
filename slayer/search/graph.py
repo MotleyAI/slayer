@@ -45,6 +45,8 @@ from pydantic import BaseModel
 
 from slayer.memories.models import MEMORY_CANONICAL_PREFIX as _MEMORY_PREFIX
 from slayer.storage.base import StorageBackend
+from slayer.storage.sqlite_storage import SQLiteStorage
+from slayer.storage.yaml_storage import YAMLStorage
 
 
 # ---------------------------------------------------------------------------
@@ -56,7 +58,7 @@ from slayer.storage.base import StorageBackend
 def is_available() -> bool:
     """Return True when LadybugDB is importable."""
     try:
-        import ladybug  # noqa: F401
+        import ladybug  # noqa: F401  # ALLOW(import-not-top): optional dep, guarded
         return True
     except ImportError:
         return False
@@ -65,7 +67,7 @@ def is_available() -> bool:
 def _import_graph_module() -> Any:
     """Import LadybugDB."""
     try:
-        import ladybug
+        import ladybug  # ALLOW(import-not-top): optional dep, guarded
         return ladybug
     except ImportError:
         raise ImportError(
@@ -489,12 +491,6 @@ _locks: dict[str, asyncio.Lock] = {}
 
 def _storage_key(storage: StorageBackend) -> str:
     """Stable path key for cache lookups."""
-    from slayer.storage.join_sync import JoinSyncStorage
-    from slayer.storage.sqlite_storage import SQLiteStorage
-    from slayer.storage.yaml_storage import YAMLStorage
-
-    if isinstance(storage, JoinSyncStorage):
-        return _storage_key(storage._inner)
     if isinstance(storage, YAMLStorage):
         return os.path.abspath(storage.base_dir)
     if isinstance(storage, SQLiteStorage):

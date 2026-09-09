@@ -51,6 +51,8 @@ from slayer.core.keys import (
     ValueKey,
     join_conditional_branch_types,
 )
+from slayer.core.errors import AmbiguousJoinPathError
+from slayer.core.join_walker import resolve_hop
 from slayer.core.models import SlayerModel
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, expression_source_leaf
 from slayer.engine.binding import BoundFilter
@@ -355,14 +357,23 @@ def walk_key_path(
 
     The structural counterpart to binding a dotted reference: it answers
     "is this join path traversable?" without a parser and without raising,
-    which is what re-rooting needs to decide reachability.
+    which is what re-rooting needs to decide reachability. Traversal is
+    bidirectional (DEV-1853); an ambiguous hop reads as non-traversable here.
     """
+    models_by_name = {m.name: m for m in bundle.referenced_models}
+    models_by_name.setdefault(model.name, model)
     current = model
     visited = {current.name}
     for hop in path:
-        if not any(j.target_model == hop for j in current.joins):
+        try:
+            edge = resolve_hop(
+                current=current, token=hop, models_by_name=models_by_name,
+            )
+        except AmbiguousJoinPathError:
             return None
-        nxt = bundle.get_referenced_model(hop)
+        if edge is None:
+            return None
+        nxt = models_by_name.get(edge.target_model)
         if nxt is None or nxt.name in visited:
             return None
         visited.add(nxt.name)

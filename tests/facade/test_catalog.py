@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
@@ -285,6 +285,90 @@ def test_diamond_join_produces_two_distinct_paths() -> None:
     # Both diamond paths produce distinct dimension entries.
     assert "customers.regions.name" in dim_names
     assert "warehouses.regions.name" in dim_names
+
+
+def test_reverse_hop_dimensions_enumerated() -> None:
+    # orders declares the only edge; the customers table still exposes the
+    # reverse-path orders dims (DEV-1853).
+    orders = _model(
+        name="orders",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="customer_id", type=DataType.INT),
+            Column(name="status", type=DataType.TEXT),
+        ],
+        joins=[ModelJoin(
+            target_model="customers", join_pairs=[["customer_id", "id"]])],
+    )
+    customers = _model(
+        name="customers",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="name", type=DataType.TEXT),
+        ],
+    )
+    cat = build_catalog(models_by_datasource={"ds1": [orders, customers]})
+    table = _find_table(cat, schema="ds1", table="customers")
+    dim_names = {d.name for d in table.dimensions}
+    assert "orders.status" in dim_names
+
+
+def test_row_preserving_flags_by_direction_and_cardinality() -> None:
+    # Forward m2o/1:1/unknown hops keep the root grain; a declared 1:N, the
+    # inverted side of a m2o, an inverted unknown, and any path through a
+    # fan-out hop do not (DEV-1853 browse-mode star scope).
+    orders = _model(
+        name="orders",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="customer_id", type=DataType.INT),
+        ],
+        joins=[
+            ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]],
+                      cardinality=JoinCardinality.MANY_TO_ONE),
+            ModelJoin(target_model="items", join_pairs=[["id", "order_id"]],
+                      cardinality=JoinCardinality.ONE_TO_MANY),
+            ModelJoin(target_model="receipts", join_pairs=[["id", "order_id"]],
+                      cardinality=JoinCardinality.ONE_TO_ONE),
+            ModelJoin(target_model="notes", join_pairs=[["id", "order_id"]]),
+        ],
+    )
+    others = [
+        _model(name=n, columns=[
+            Column(name="order_id", type=DataType.INT),
+            Column(name="tag", type=DataType.TEXT),
+        ])
+        for n in ("customers", "items", "receipts", "notes")
+    ]
+    cat = build_catalog(models_by_datasource={"ds1": [orders, *others]})
+
+    flags = {
+        d.name: d.row_preserving
+        for d in _find_table(cat, schema="ds1", table="orders").dimensions
+    }
+    assert flags["customers.tag"] is True    # forward m2o
+    assert flags["items.tag"] is False       # declared 1:N
+    assert flags["receipts.tag"] is True     # forward 1:1
+    assert flags["notes.tag"] is True        # forward unknown, grandfathered
+
+    cust_flags = {
+        d.name: d.row_preserving
+        for d in _find_table(cat, schema="ds1", table="customers").dimensions
+    }
+    assert cust_flags["orders.customer_id"] is False        # inverted m2o = 1:N
+    assert cust_flags["orders.receipts.tag"] is False       # poisoned by 1st hop
+
+    rec_flags = {
+        d.name: d.row_preserving
+        for d in _find_table(cat, schema="ds1", table="receipts").dimensions
+    }
+    assert rec_flags["orders.customer_id"] is True          # inverted 1:1
+
+    note_flags = {
+        d.name: d.row_preserving
+        for d in _find_table(cat, schema="ds1", table="notes").dimensions
+    }
+    assert note_flags["orders.customer_id"] is False        # inverted unknown
 
 
 def test_bfs_depth_limit_truncates() -> None:

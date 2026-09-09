@@ -150,14 +150,16 @@ class TestFilterClassifier:
         ))
         assert anded == separate
 
-    async def test_mixed_or_in_one_filter_raises_directive(self) -> None:
+    async def test_mixed_or_in_one_filter_now_types_as_field(self) -> None:
+        # DEV-1825 lift (DEV-1865): the attached band value and the base column
+        # both resolve at row scope, so the OR row-masks before re-aggregation.
         query = _q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
             filters=["band == 1 or status == 'ok'"],
             measures=[ModelMeasure(formula="amount:sum", name="s")],
         )
-        with pytest.raises(NotImplementedError, match=r"separate filters"):
-            await gen(query)
+        sql = await gen(query)
+        assert "status" in sql
 
     async def test_scalar_call_row_filter_copies_into_producer(self) -> None:
         sql = await gen(_q(

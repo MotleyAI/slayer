@@ -1,0 +1,11 @@
+views {
+  view landscape {
+    title 'SLayer landscape'
+    include *
+  }
+
+  view query_pipeline {
+    title 'Query pipeline'
+    include core, engine, sql, storage
+  }
+}

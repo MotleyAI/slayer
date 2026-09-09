@@ -192,6 +192,18 @@ def test_select_star_browse_mode_expands_to_columns(dialect) -> None:
     assert result.query.dimensions is not None and len(result.query.dimensions) > 0
 
 
+def test_select_star_browse_mode_skips_fanout_paths(dialect) -> None:
+    """``SELECT *`` on the 1-side table keeps its own grain — dims across the
+    inverted (fan-out) hop are excluded from expansion (DEV-1853)."""
+    result = translate(
+        sql="SELECT * FROM customers", catalog=_catalog(), dialect=dialect,
+        expand_star_in_browse_mode=True,
+    )
+    assert isinstance(result, QueryResult)
+    dims = result.query.dimensions or []
+    assert len(dims) == 2, f"expected only local customers dims, got {dims}"
+
+
 def test_select_star_default_strict_for_flight(dialect) -> None:
     """With ``expand_star_in_browse_mode=False`` (Flight default), ``SELECT *`` rejects."""
     with pytest.raises(TranslationError) as exc_info:

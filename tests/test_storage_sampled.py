@@ -1,8 +1,8 @@
 """Per-column sample-value persistence (DEV-1375, extended in DEV-1480).
 
 Pins ``StorageBackend.update_column_sampled`` semantics across the ABC
-contract, the YAML and SQLite implementations, and the
-``JoinSyncStorage`` delegating wrapper.
+contract, the YAML and SQLite implementations, and the ``resolve_storage``
+factory path.
 
 DEV-1480 extends the signature with two new required kwargs alongside
 ``sampled``: ``sampled_values: Optional[List[str]]`` (the structured top-N
@@ -20,7 +20,6 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.storage.base import resolve_storage
-from slayer.storage.join_sync import JoinSyncStorage
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -185,16 +184,17 @@ async def test_sqlite_update_column_sampled_preserves_other_fields() -> None:
 
 
 # ---------------------------------------------------------------------------
-# JoinSync delegation
+# resolve_storage factory path (DEV-1853: join_sync wrapper retired — the
+# factory returns the bare backend)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_join_sync_delegates_update_column_sampled() -> None:
-    """The wrapper is what the factory always returns — must pass-through."""
+async def test_factory_storage_update_column_sampled() -> None:
+    """update_column_sampled works through the factory-returned backend."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        wrapped = resolve_storage(tmpdir)  # returns JoinSyncStorage
-        assert isinstance(wrapped, JoinSyncStorage)
+        wrapped = resolve_storage(tmpdir)
+        assert isinstance(wrapped, YAMLStorage)
         await wrapped.save_datasource(DatasourceConfig(
             name="ds", type="sqlite", database=":memory:",
         ))
@@ -209,12 +209,12 @@ async def test_join_sync_delegates_update_column_sampled() -> None:
 
 
 @pytest.mark.asyncio
-async def test_join_sync_delegates_to_sqlite_inner() -> None:
-    """Same delegation, SQLite-backed."""
+async def test_factory_storage_sqlite_update_column_sampled() -> None:
+    """Same factory path, SQLite-backed."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = f"{tmpdir}/storage.db"
-        wrapped = resolve_storage(db_path)  # returns JoinSyncStorage(SQLiteStorage)
-        assert isinstance(wrapped, JoinSyncStorage)
+        wrapped = resolve_storage(db_path)
+        assert isinstance(wrapped, SQLiteStorage)
         await wrapped.save_datasource(DatasourceConfig(
             name="ds", type="sqlite", database=":memory:",
         ))
@@ -466,11 +466,11 @@ async def test_sqlite_clear_distinct_count_via_none() -> None:
 
 
 @pytest.mark.asyncio
-async def test_join_sync_delegates_sampled_values_and_distinct_count() -> None:
-    """The JoinSyncStorage wrapper passes both new kwargs through."""
+async def test_factory_storage_sampled_values_and_distinct_count() -> None:
+    """Both DEV-1480 kwargs round-trip through the factory-returned backend."""
     with tempfile.TemporaryDirectory() as tmpdir:
         wrapped = resolve_storage(tmpdir)
-        assert isinstance(wrapped, JoinSyncStorage)
+        assert isinstance(wrapped, YAMLStorage)
         await wrapped.save_datasource(DatasourceConfig(
             name="ds", type="sqlite", database=":memory:",
         ))

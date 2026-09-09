@@ -14,6 +14,7 @@ import tempfile
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.errors import AmbiguousJoinPathError
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
@@ -1086,11 +1087,11 @@ async def test_having_filter_with_sum(integration_env):
     assert response.data[0]["orders.total_amount_sum"] == pytest.approx(600.0)
 
 
-async def test_having_with_non_groupby_dimension_raises(integration_env):
-    """HAVING filter referencing a dimension not in GROUP BY should error early."""
+async def test_filter_mixing_measure_and_row_conjuncts_splits(integration_env):
+    """A top-level AND splits: the row conjunct masks before aggregation, the
+    measure conjunct prunes result cells."""
     engine = integration_env
 
-    # Filter mixes measure (count) and dimension (status), but status is not in dimensions
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
@@ -1100,8 +1101,11 @@ async def test_having_with_non_groupby_dimension_raises(integration_env):
         measures=[ModelMeasure(formula="*:count")],
         filters=["_count > 1 and status == 'completed'"],
     )
-    with pytest.raises(ValueError, match="not in the query's dimensions"):
-        await engine.execute(query)
+    response = await engine.execute(query)
+
+    # Completed orders: Jan x2, Mar x1 — only January's count survives > 1.
+    assert response.row_count == 1
+    assert response.data[0]["orders._count"] == 2
 
 
 # ---------------------------------------------------------------------------
@@ -1393,7 +1397,6 @@ async def test_cross_model_measure_with_target_join_filters(cross_model_env):
 Column(name="total_policy_amount", sql="policy_amount", type=DataType.DOUBLE)
         ],
         joins=[
-            ModelJoin(target_model="policy", join_pairs=[["policy_identifier", "policy_identifier"]], join_type="inner"),
             ModelJoin(target_model="premium", join_pairs=[["policy_amount_identifier", "policy_amount_identifier"]], join_type="inner"),
             ModelJoin(target_model="agreement_party_role", join_pairs=[["policy_identifier", "agreement_identifier"]], join_type="inner"),
         ],
@@ -1776,8 +1779,8 @@ async def test_circular_query_reference_raises(integration_env):
         await engine.execute(query=[q1, q2, main])
 
 
-async def test_circular_join_graph_raises(tmp_path):
-    """Circular joins between stored models should error when walking the join graph."""
+async def _mutual_join_engine(tmp_path, *, ab_name=None, ba_name=None):
+    """Engine over models a/b with mutual declared joins (optionally named)."""
     db_path = tmp_path / "test.db"
     conn = sqlite3.connect(str(db_path))
     conn.execute("CREATE TABLE a (id INTEGER PRIMARY KEY, b_id INTEGER)")
@@ -1792,14 +1795,13 @@ async def test_circular_join_graph_raises(tmp_path):
     storage = YAMLStorage(base_dir=str(storage_dir))
     await storage.save_datasource(DatasourceConfig(name="db", type="sqlite", database=str(db_path)))
 
-    # Circular joins: a → b → a
     await storage.save_model(SlayerModel(
         name="a", sql_table="a", data_source="db",
         columns=[Column(name="id", sql="id", type=DataType.DOUBLE),
                     Column(name="b_id", sql="b_id", type=DataType.DOUBLE),
 
         ],
-        joins=[ModelJoin(target_model="b", join_pairs=[["b_id", "id"]])],
+        joins=[ModelJoin(target_model="b", join_pairs=[["b_id", "id"]], name=ab_name)],
     ))
     await storage.save_model(SlayerModel(
         name="b", sql_table="b", data_source="db",
@@ -1808,18 +1810,33 @@ async def test_circular_join_graph_raises(tmp_path):
                     Column(name="unique_b_field", sql="id", type=DataType.DOUBLE),
 
         ],
-        joins=[ModelJoin(target_model="a", join_pairs=[["a_id", "id"]])],
+        joins=[ModelJoin(target_model="a", join_pairs=[["a_id", "id"]], name=ba_name)],
     ))
+    return SlayerQueryEngine(storage=storage)
 
-    engine = SlayerQueryEngine(storage=storage)
 
-    # Trying to resolve b.a.unique_b_field — walks a→b→a which is a cycle.
-    # "unique_b_field" only exists on model b, so __ translation can't short-circuit.
-    query = SlayerQuery(
+def _b_a_unique_field_query(hop1: str, hop2: str) -> SlayerQuery:
+    # "unique_b_field" only exists on model b, so translation can't short-circuit.
+    return SlayerQuery(
         source_model="a",
-        dimensions=[ColumnRef(name="b.a.unique_b_field")],
+        dimensions=[ColumnRef(name=f"{hop1}.{hop2}.unique_b_field")],
         measures=[ModelMeasure(formula="*:count")],
     )
+
+
+async def test_unnamed_parallel_edges_fail_closed(tmp_path):
+    """Two unnamed edges between the same pair make the hop ambiguous (DEV-1853)."""
+    engine = await _mutual_join_engine(tmp_path)
+    query = _b_a_unique_field_query("b", "a")
+    with pytest.raises(AmbiguousJoinPathError, match="2 edges"):
+        await engine.execute(query)
+
+
+async def test_circular_join_graph_raises(tmp_path):
+    """A named-edge path that revisits a model is rejected as a circular join."""
+    engine = await _mutual_join_engine(tmp_path, ab_name="fwd", ba_name="back")
+    # fwd.back walks a→b→a — a cycle.
+    query = _b_a_unique_field_query("fwd", "back")
     with pytest.raises(ValueError, match="Circular join"):
         await engine.execute(query)
 

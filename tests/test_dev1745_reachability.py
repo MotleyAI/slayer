@@ -460,7 +460,7 @@ class TestInlineScalarsAreNotReferences:
             ),
             bundle=_bundle(),
         )
-        assert planned.filters_by_phase
+        assert planned.masks
 
 
 class TestCoordinateSystemInvariant:

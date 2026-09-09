@@ -1,5 +1,6 @@
 """Tests for the dbt-to-SLayer converter."""
 
+import argparse
 import textwrap
 from unittest.mock import MagicMock, patch
 
@@ -7,8 +8,11 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.exc import SQLAlchemyError
 
+from slayer.async_utils import run_sync
+from slayer.cli import _run_import_dbt
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormatType
+from slayer.core.join_walker import edges_between
 from slayer.core.models import Column, SlayerModel
 from slayer.dbt import converter as converter_module
 from slayer.dbt.converter import DbtConversionError, DbtToSlayerConverter
@@ -27,6 +31,7 @@ from slayer.dbt.models import (
     DbtSemanticModel,
 )
 from slayer.dbt.parser import parse_dbt_project
+from slayer.storage.yaml_storage import YAMLStorage
 
 
 @pytest.fixture
@@ -181,7 +186,8 @@ class TestBasicConversion:
 
 
     def test_peer_joins_from_shared_primary_entity(self) -> None:
-        """Two models with the same primary entity get bidirectional joins."""
+        """Shared primary entity → one declared edge (smaller name); reverse
+        traversal is automatic (DEV-1853)."""
         project = DbtProject(semantic_models=[
             DbtSemanticModel(
                 name="claim",
@@ -207,11 +213,9 @@ DbtMeasure(name="count", agg="count", expr="1")
         claim = next(m for m in result.models if m.name == "claim")
         claim_cov = next(m for m in result.models if m.name == "claim_coverage")
 
-        # claim should join to claim_coverage
+        # claim (smaller name) declares the edge; claim_coverage does not.
         assert any(j.target_model == "claim_coverage" for j in claim.joins)
-        # claim_coverage should join to claim
-        assert any(j.target_model == "claim" for j in claim_cov.joins)
-        # Join key should be claim_identifier on both sides
+        assert not any(j.target_model == "claim" for j in claim_cov.joins)
         claim_to_cov = next(j for j in claim.joins if j.target_model == "claim_coverage")
         assert claim_to_cov.join_pairs == [["claim_identifier", "claim_identifier"]]
 
@@ -243,7 +247,8 @@ DbtMeasure(name="number_of_policies", agg="sum", expr="1")
 
         apr_to_policy = next(j for j in apr.joins if j.target_model == "policy")
         assert apr_to_policy.join_pairs == [["agreement_identifier", "Policy_Identifier"]]
-        assert any(j.target_model == "agreement_party_role" for j in policy.joins)
+        # DEV-1853: no reverse declaration on the larger-named peer.
+        assert not any(j.target_model == "agreement_party_role" for j in policy.joins)
 
     def test_peer_join_not_duplicated_with_foreign(self) -> None:
         """Foreign entity join is not duplicated by the peer pass."""
@@ -268,7 +273,7 @@ DbtMeasure(name="number_of_policies", agg="sum", expr="1")
         assert len(customer_joins) == 1
 
     def test_three_model_peer_group(self) -> None:
-        """Three models sharing the same primary entity all get peer joins."""
+        """Peer-group edges declared once per pair, smaller name first (DEV-1853)."""
         project = DbtProject(semantic_models=[
             DbtSemanticModel(
                 name="a", model="a",
@@ -288,8 +293,8 @@ DbtMeasure(name="number_of_policies", agg="sum", expr="1")
         b = next(m for m in result.models if m.name == "b")
         c = next(m for m in result.models if m.name == "c")
         assert {j.target_model for j in a.joins} == {"b", "c"}
-        assert {j.target_model for j in b.joins} == {"a", "c"}
-        assert {j.target_model for j in c.joins} == {"a", "b"}
+        assert {j.target_model for j in b.joins} == {"c"}
+        assert {j.target_model for j in c.joins} == set()
 
 
 class TestMeasureConsolidation:
@@ -613,18 +618,11 @@ class TestImportDbtCli:
 
         End-to-end: build a minimal dbt project on disk, run the CLI handler,
         and assert the model is actually retrievable from storage afterwards."""
-        import argparse
-        import textwrap as _tw
-
-        from slayer.async_utils import run_sync
-        from slayer.cli import _run_import_dbt
-        from slayer.storage.yaml_storage import YAMLStorage
-
         # Minimal dbt project with one semantic model + one measure
         project_dir = tmp_path / "dbt_project"
         models_dir = project_dir / "models"
         models_dir.mkdir(parents=True)
-        (models_dir / "orders.yaml").write_text(_tw.dedent("""\
+        (models_dir / "orders.yaml").write_text(textwrap.dedent("""\
             semantic_models:
               - name: orders
                 model: ref('orders')
@@ -1104,8 +1102,9 @@ class TestJoinTypeFromDbt:
         cov_join = next(j for j in claim.joins if j.target_model == "claim_coverage")
         assert str(cov_join.join_type) == "inner"
 
-    def test_inner_join_mirrored(self) -> None:
-        """Inner join from A→B is auto-mirrored as B→A."""
+    def test_inner_join_not_mirrored(self) -> None:
+        """DEV-1853: no auto-mirror — the single A→B INNER edge answers the
+        reverse orientation (divergences.md class (d))."""
         project = DbtProject(semantic_models=[
             DbtSemanticModel(
                 name="policy_amount",
@@ -1123,9 +1122,10 @@ class TestJoinTypeFromDbt:
         ])
         result = DbtToSlayerConverter(project=project, data_source="test").convert()
         policy = next(m for m in result.models if m.name == "policy")
-        # policy should have a reverse inner join back to policy_amount
-        reverse = next((j for j in policy.joins if j.target_model == "policy_amount"), None)
-        assert reverse is not None, f"Missing reverse join. Policy joins: {[j.target_model for j in policy.joins]}"
+        policy_amount = next(m for m in result.models if m.name == "policy_amount")
+        # No stored reverse edge; the inverted forward edge answers the hop.
+        assert not any(j.target_model == "policy_amount" for j in policy.joins)
+        reverse = edges_between(source=policy, target=policy_amount)[0]
         assert str(reverse.join_type) == "inner"
         assert reverse.join_pairs == [["id", "policy_id"]]
 

@@ -27,11 +27,9 @@ from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import _engine_generate
 
 
-# ---------------------------------------------------------------------------
 # SQL inspection helpers — implementation-agnostic. They walk the rendered
 # SQL via sqlglot and answer two questions: what does the outermost SELECT
 # project, and which aliases appear inside the CTE / inner layers.
-# ---------------------------------------------------------------------------
 def _norm(s: str) -> str:
     return " ".join(s.split())
 
@@ -81,9 +79,7 @@ def _outer_order_by_references(sql: str, *, dialect: str = "postgres") -> list[s
     return refs
 
 
-# ---------------------------------------------------------------------------
 # Fixtures
-# ---------------------------------------------------------------------------
 async def _generate(query: SlayerQuery, model: SlayerModel, *, dialect: str = "postgres") -> str:
     """Render a query's SQL through the typed pipeline (DEV-1484). The typed
     pipeline emits the outer projection trim directly — the legacy
@@ -168,9 +164,7 @@ async def orders_customers_engine(tmp_path):
     return SlayerQueryEngine(storage=storage), orders
 
 
-# ===========================================================================
 # Group A — DEV-1444 repros (the literal three issue reproducers).
-# ===========================================================================
 class TestDev1444Repros:
     async def test_repro1_order_by_aggregate_not_projected(
         self, funds_model: SlayerModel,
@@ -244,9 +238,7 @@ class TestDev1444Repros:
         assert "funds.benchmarkexp_avg" not in outer_cols
 
 
-# ===========================================================================
 # Group B — Projection order.
-# ===========================================================================
 class TestProjectionOrder:
     async def test_dims_then_measures_in_declared_order(
         self, orders_model: SlayerModel,
@@ -299,12 +291,10 @@ class TestProjectionOrder:
         )
 
 
-# ===========================================================================
 # Group C — Window-transform argument reuse (structural equality).
 # Spec rule 4: when a window transform's argument structurally equals an
 # already-declared measure's canonical inner expression, reuse that
 # alias inside OVER(...) and skip the duplicate hoist.
-# ===========================================================================
 class TestWindowArgReuse:
     # 12 of the 13 spec-listed window transforms have a single measure as
     # their inner argument — those are the ones where structural-equality
@@ -399,9 +389,7 @@ class TestWindowArgReuse:
             assert "_cp_value_" not in col
 
 
-# ===========================================================================
 # Group D — ORDER BY policy.
-# ===========================================================================
 class TestOrderByPolicy:
     async def test_order_by_named_measure_uses_alias(
         self, orders_model: SlayerModel,
@@ -473,9 +461,7 @@ class TestOrderByPolicy:
         assert "ORDER BY" in sql.upper()
 
 
-# ===========================================================================
 # Group E — Response attributes alignment.
-# ===========================================================================
 class TestResponseAttributesAlignment:
     async def test_attributes_have_no_entries_for_hidden_columns(
         self, funds_model: SlayerModel, tmp_path,
@@ -575,9 +561,7 @@ class TestResponseAttributesAlignment:
         )
 
 
-# ===========================================================================
 # Group F — Edge cases.
-# ===========================================================================
 class TestEdgeCases:
     async def test_dim_only_dedup_unchanged(
         self, orders_model: SlayerModel,
@@ -718,9 +702,7 @@ class TestEdgeCases:
         )
 
 
-# ===========================================================================
 # Group G — Multi-stage source_queries regression guard.
-# ===========================================================================
 class TestMultiStageSourceQueries:
     async def test_inner_stage_keeps_full_projection(
         self, tmp_path, orders_model: SlayerModel,
@@ -760,9 +742,7 @@ class TestMultiStageSourceQueries:
         )
 
 
-# ===========================================================================
 # Group H — Multi-dialect smoke.
-# ===========================================================================
 _TIER1_DIALECTS = ["postgres", "mysql", "sqlite", "clickhouse", "duckdb"]
 
 
@@ -787,13 +767,11 @@ class TestMultiDialectProjectionTrim:
         )
 
 
-# ===========================================================================
 # Group I — Staged projection trim (inner stage keeps hoisted aliases; the
 # final/outer stage is trimmed). The legacy ``render_mode`` generator
 # parameter was removed in the typed pipeline (it emits the outer trim
 # directly), so the two tests that exercised it directly are gone — the
 # behaviour is covered end-to-end via ``engine.execute`` / query-backed wrap.
-# ===========================================================================
 class TestStagedProjectionTrim:
     async def test_query_backed_wrap_keeps_full_projection(
         self, tmp_path, funds_model: SlayerModel,
@@ -859,9 +837,7 @@ class TestStagedProjectionTrim:
         assert '"orders.r"' in sql_str or "ranked.r" in sql_str
 
 
-# ===========================================================================
 # Group J — Provenance and public-projection helper.
-# ===========================================================================
 class TestProvenance:
     """The typed-pipeline notion of "user-declared" is membership in the
     trimmed OUTER projection: a declared dim/measure/transform/expression
@@ -976,9 +952,7 @@ class TestProvenance:
             "orders.n",
         ], f"unexpected projection order:\n{sql}"
         # DEV-1501: hidden order/filter aggregates materialise as inner
-        # base-CTE columns (per ``docs/architecture/planning.md`` —
-        # "hidden slot is materialised in the base CTE … then trimmed
-        # from the public projection"). The hidden ``quantity_sum``
+        # base-CTE columns (engine.arc42.md P4). The hidden ``quantity_sum``
         # alias may appear in inner CTE / base SELECT but MUST NOT
         # appear in the OUTER public projection.
         assert all(
@@ -1013,9 +987,7 @@ class TestProvenance:
         )
 
 
-# ===========================================================================
 # Group K — Dry-run / explain / expected_columns alignment.
-# ===========================================================================
 class TestDryRunAlignment:
     async def test_dry_run_columns_match_outer_projection(
         self, funds_model: SlayerModel, tmp_path,
@@ -1060,9 +1032,7 @@ class TestDryRunAlignment:
         )
 
 
-# ===========================================================================
 # Group L — Wrapper layering: filter + order + trim interaction.
-# ===========================================================================
 class TestWrapperLayering:
     async def test_post_filter_plus_order_plus_trim(
         self, orders_model: SlayerModel,
@@ -1119,9 +1089,7 @@ class TestWrapperLayering:
         )
 
 
-# ===========================================================================
 # Group M — Cross-model / isolated ORDER BY hoisted, not projected.
-# ===========================================================================
 class TestCrossModelOrderBy:
     async def test_order_by_cross_model_agg_hoisted_not_projected(
         self, orders_customers_engine,
@@ -1176,9 +1144,7 @@ class TestCrossModelOrderBy:
         assert "LIMIT 3" in sql
 
 
-# ===========================================================================
 # Group N — Window reuse (structural equality only; name-reuse → DEV-1447).
-# ===========================================================================
 class TestWindowChainReuse:
     async def test_structural_reuse_inline_subagg_collapses(
         self, orders_model: SlayerModel,
@@ -1237,9 +1203,7 @@ class TestWindowChainReuse:
         )
 
 
-# ===========================================================================
 # Test 17 (revised), 38, 39, 40, 41 — call-site / contract pins.
-# ===========================================================================
 class TestCallSitesAndContractPins:
     async def test_get_column_types_renders_through_planned_stages(
         self, orders_model: SlayerModel, tmp_path, monkeypatch,
@@ -1310,9 +1274,7 @@ class TestCallSitesAndContractPins:
         assert parsed.args.get("offset") is not None, "outer OFFSET missing"
 
 
-# ===========================================================================
 # Validation: dim + time_dim alias clash rejection (Codex round-3 finding 2).
-# ===========================================================================
 class TestDimAndTimeDimClash:
     async def test_dim_and_time_dim_resolving_to_same_alias_rejected(
         self, orders_model: SlayerModel,
@@ -1345,12 +1307,10 @@ class TestDimAndTimeDimClash:
         ), f"Validation error message is too vague: {exc.value!r}"
 
 
-# ===========================================================================
 # Same-canonical user-declared aggregations: the typed ValueRegistry
 # interns them to ONE slot and exposes BOTH public aliases (P4 / C13
 # multi-alias). The legacy pipeline rejected this shape; the typed pipeline
 # supports it, emitting both columns backed by a single aggregate.
-# ===========================================================================
 class TestDuplicateUserDeclaredCanonical:
     async def test_two_qfields_same_canonical_different_names_multi_alias(
         self, orders_model: SlayerModel,
@@ -1391,9 +1351,7 @@ class TestDuplicateUserDeclaredCanonical:
         assert "orders.other" in outer_cols
 
 
-# ===========================================================================
 # Codex review on PR #134: outer ORDER BY references after wrap path.
-# ===========================================================================
 class TestOuterOrderByQualifierStripping:
     async def test_combined_cte_order_by_inner_qualifier_stripped(
         self, orders_customers_engine,

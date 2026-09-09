@@ -10,16 +10,18 @@ Join-arity design (the point of this chain)
 ``orders → customers``           safe: customers.id is PK (structural proof)
 ``customers → regions``          safe: regions.id is PK (structural proof)
 ``customers → segments``         UNPROVEN: segments.code has no PK/unique claim
-``customers → orders`` (reverse) UNSAFE: declared ``cardinality=one_to_many``
+``customers → orders``           UNSAFE: the inverted orders→customers edge is
+                                 an unproven 1:N orientation (DEV-1853 — no
+                                 declared reverse edge; traversal is automatic)
 
 So, for an aggregate rooted at ``customers``: ``tier`` is zero-hop (exact),
 ``regions.name`` is provably safe (exact), ``segments.label`` is unproven
-(broadcast), and every ``orders``-level dimension/filter crosses the declared
-1:N edge (broadcast / dropped filter). ``customers.regions.pop:sum`` roots at
-``regions``: nothing else is reachable from there (no stored reverse edges), so
-every query dimension broadcasts. Unsafe-input probes: ``customers.seg_label``
-(Mode-A derived over the unproven hop) and ``customers.vip_spend``
-(``Column.filter`` over the unproven hop).
+(broadcast), and every ``orders``-level dimension/filter crosses the inverted
+1:N orientation (broadcast / dropped filter). ``customers.regions.pop:sum``
+roots at ``regions``: every hop away from it is an inverted fan-out
+orientation, so every query dimension broadcasts. Unsafe-input probes:
+``customers.seg_label`` (Mode-A derived over the unproven hop) and
+``customers.vip_spend`` (``Column.filter`` over the unproven hop).
 
 Dataset (hand-computed; every executed expectation derives from here)
 ---------------------------------------------------------------------
@@ -76,8 +78,8 @@ from tests._engine_helpers import _engine_generate
 
 
 # --------------------------------------------------------------------------- #
-# Models — orders (host) → customers → {regions, segments}; declared reverse
-# customers → orders (one_to_many).
+# Models — orders (host) → customers → {regions, segments}; the reverse
+# customers → orders direction is the inverted forward edge (DEV-1853).
 # --------------------------------------------------------------------------- #
 def regions_model() -> SlayerModel:
     return SlayerModel(
@@ -125,8 +127,6 @@ def customers_model() -> SlayerModel:
             ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]]),
             ModelJoin(target_model="segments",
                       join_pairs=[["segment_code", "code"]]),
-            ModelJoin(target_model="orders", join_pairs=[["id", "customer_id"]],
-                      cardinality=JoinCardinality.ONE_TO_MANY),
         ],
     )
 
