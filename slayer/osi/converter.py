@@ -658,6 +658,19 @@ class OsiToSlayerConverter:
                 return True
         return False
 
+    def _is_physical_multihop_ref(self, *, model: SlayerModel, quals: list[str]) -> bool:
+        """True for a multi-hop qualifier whose first hop is not a join hop (either
+        direction) — a physical ``schema.table.column`` ref outside SLayer's
+        contract. An ambiguous hop IS a join hop: the walk flags the ref."""
+        if len(quals) < 2:
+            return False
+        try:
+            return resolve_hop(
+                current=model, token=quals[0], models_by_name=self._models
+            ) is None
+        except AmbiguousJoinPathError:
+            return False
+
     def _unresolvable_cross_model_refs(self, model: SlayerModel, sql: str) -> list[str]:
         """Cross-model (non-self, qualified) column refs in ``sql`` that don't
         resolve to a joined model + existing column. Mirrors runtime scope rules:
@@ -679,20 +692,8 @@ class OsiToSlayerConverter:
             quals, leaf = parts[:-1], parts[-1]
             if not quals or quals == [model.name]:
                 continue  # self / unqualified — validated at field-overlay time
-            # A multi-hop qualifier whose FIRST hop is not a join hop (either
-            # direction) is a physical ``schema.table.column`` ref — outside
-            # SLayer's contract. An ambiguous hop IS a join hop: fall through
-            # so the walk flags the ref.
-            if len(quals) >= 2:
-                try:
-                    is_join_hop = resolve_hop(
-                        current=model, token=quals[0],
-                        models_by_name=self._models,
-                    ) is not None
-                except AmbiguousJoinPathError:
-                    is_join_hop = True
-                if not is_join_hop:
-                    continue
+            if self._is_physical_multihop_ref(model=model, quals=quals):
+                continue
             target = self._walk_join_alias(host=model, alias=".".join(quals))
             if target is None or not any(c.name == leaf for c in target.columns):
                 bad.append(".".join(parts))

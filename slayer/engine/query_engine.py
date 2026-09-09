@@ -1498,13 +1498,10 @@ class SlayerQueryEngine:
                     out.add(target)
         return out
 
-    async def _expand_join_graph(
-        self, *, touched: "set[str]", data_source: Optional[str]
-    ) -> None:
-        """Add join-connected models to ``touched`` — either traversal
-        direction (DEV-1853). Best-effort: an unlistable datasource falls
-        back to the models already named."""
-        names: set[str] = set(touched)
+    async def _load_join_graph_models(
+        self, *, names: "set[str]", data_source: Optional[str]
+    ) -> "Dict[str, SlayerModel]":
+        """Best-effort model load: an unlistable datasource falls back to ``names``."""
         if data_source is not None:
             try:
                 names |= set(await self.storage.list_models(data_source))
@@ -1518,6 +1515,16 @@ class SlayerQueryEngine:
                 m = None
             if m is not None:
                 models_by_name[m.name] = m
+        return models_by_name
+
+    async def _expand_join_graph(
+        self, *, touched: "set[str]", data_source: Optional[str]
+    ) -> None:
+        """Add join-connected models to ``touched`` — either traversal
+        direction (DEV-1853)."""
+        models_by_name = await self._load_join_graph_models(
+            names=set(touched), data_source=data_source
+        )
         frontier = list(touched)
         visited: set[str] = set()
         while frontier:
