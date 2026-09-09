@@ -515,7 +515,7 @@ def _rewrite_markers(text: str, vids: list[str], by_id: dict[str, View], model: 
         view = by_id.get(vid)
         if view is None:
             raise ValueError(f"view {vid} mapped to {doc_key} is not defined in views.c4")
-        span, error = _marker_span(text, vid)
+        span, error = _marker_span(text=text, vid=vid)
         if error is not None or span is None:
             raise ValueError(f"{doc_key}: {error} marker(s) for view {vid}")
         start, end = span
@@ -588,7 +588,7 @@ def _collect_mapping(diagrams: object, findings: list[str]) -> dict[str, list[st
 def check_diagrams_fresh(root: Path, model: ModelParse, views: ViewsParse) -> list[str]:
     """Fail-closed freshness check surfaced by arch_check; never raises on malformed input."""
     findings = [f"diagrams-fresh: {f}" for f in model.findings + views.findings]
-    mapping = _collect_mapping(_diagrams_map(root), findings)
+    mapping = _collect_mapping(diagrams=_diagrams_map(root), findings=findings)
     findings += _check_freshness(root=root, model=model, views=views, mapping=mapping)
     findings += _check_orphan_markers(root=root, mapping=mapping)
     return findings
@@ -608,7 +608,7 @@ def _check_freshness(root: Path, model: ModelParse, views: ViewsParse, mapping: 
             if view is None:
                 findings.append(f"diagrams-fresh: view {vid} mapped to {doc_key} does not exist in views.c4; run {FIX_CMD}")
                 continue
-            span, error = _marker_span(text, vid)
+            span, error = _marker_span(text=text, vid=vid)
             if error == "missing":
                 findings.append(f"diagrams-fresh: {doc_key} is missing the {_open_marker(vid)} marker pair; run {FIX_CMD}")
             elif error == "duplicate":
