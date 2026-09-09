@@ -42142,22 +42142,6 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 43,
-                    "endColumn": 62,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportCallIssue",
-                "range": {
-                    "startColumn": 61,
-                    "endColumn": 64,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
                     "startColumn": 25,
                     "endColumn": 54,
                     "lineCount": 1
@@ -42176,22 +42160,6 @@
                 "range": {
                     "startColumn": 38,
                     "endColumn": 43,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 43,
-                    "endColumn": 62,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportCallIssue",
-                "range": {
-                    "startColumn": 61,
-                    "endColumn": 64,
                     "lineCount": 1
                 }
             },
@@ -42230,22 +42198,6 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 43,
-                    "endColumn": 62,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportCallIssue",
-                "range": {
-                    "startColumn": 61,
-                    "endColumn": 64,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
                     "startColumn": 25,
                     "endColumn": 84,
                     "lineCount": 1
@@ -42278,32 +42230,8 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 43,
-                    "endColumn": 62,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportCallIssue",
-                "range": {
-                    "startColumn": 61,
-                    "endColumn": 64,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
                     "startColumn": 35,
                     "endColumn": 59,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportCallIssue",
-                "range": {
-                    "startColumn": 53,
-                    "endColumn": 56,
                     "lineCount": 1
                 }
             },
