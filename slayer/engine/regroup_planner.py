@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Dict, List, Mapping, NamedTuple, Optional, Tuple
 
 from slayer.core.enums import DataType
+from slayer.core.grain import Grain
 from slayer.core.keys import (
     REGROUP_LEAF_PREFIX,
     AggregateKey,
@@ -124,15 +125,15 @@ def _grained_inner_aggregates(vk: ValueKey) -> List[AggregateKey]:
     ]
 
 
-def regroup_root_grain(root: ValueKey) -> frozenset:
+def regroup_root_grain(root: ValueKey) -> Grain:
     """Producer grain of a row-attach root: a transform evaluates at the set-union
     of ALL inner aggregates' partition grains; a bare aggregate at its own grain."""
     if isinstance(root, TransformKey):
-        grain: set = set()
+        grain = Grain.EMPTY
         for inner in _grained_inner_aggregates(root.input):
-            grain |= (inner.partition_keys or frozenset())
-        return frozenset(grain)
-    return getattr(root, "partition_keys", None) or frozenset()
+            grain = grain | (inner.partition_keys or frozenset())
+        return grain
+    return Grain.of(getattr(root, "partition_keys", None) or frozenset())
 
 
 def dimension_regroup_roots(declared_measures) -> List[ValueKey]:  # NOSONAR(S3776) — one discovery walk; the transform-root and bare-aggregate arms share the seen/covered state, so splitting scatters it.
@@ -354,7 +355,7 @@ def classify_regroup_filter(bf: BoundFilter, dim_agg_set: frozenset) -> str:
             "A single filter that mixes a computed-dimension aggregate with "
             "another predicate cannot be routed across the regroup boundary "
             "(one is grouped by the synthesized stage, the other filters raw "
-            "rows). Put them in separate filters (DEV-1825)."
+            "rows). Put them in separate filters (DEV-1868)."
         )
     if dim_hits:
         return "final_only"

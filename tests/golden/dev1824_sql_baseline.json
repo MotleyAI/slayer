@@ -61,23 +61,23 @@
   },
   "guard/nested_attach::bigquery": {
     "error": "NotImplementedError",
-    "message": "An aggregate references the computed dimension 'band' (e.g. via partition_by=), which would require a nested attach \u2014 not yet supported (DEV-1824)."
+    "message": "An aggregate references the computed dimension 'band' (e.g. via partition_by=), which would require a nested attach \u2014 not yet supported (DEV-1847)."
   },
   "guard/nested_attach::duckdb": {
     "error": "NotImplementedError",
-    "message": "An aggregate references the computed dimension 'band' (e.g. via partition_by=), which would require a nested attach \u2014 not yet supported (DEV-1824)."
+    "message": "An aggregate references the computed dimension 'band' (e.g. via partition_by=), which would require a nested attach \u2014 not yet supported (DEV-1847)."
   },
   "guard/nested_attach::postgres": {
     "error": "NotImplementedError",
-    "message": "An aggregate references the computed dimension 'band' (e.g. via partition_by=), which would require a nested attach \u2014 not yet supported (DEV-1824)."
+    "message": "An aggregate references the computed dimension 'band' (e.g. via partition_by=), which would require a nested attach \u2014 not yet supported (DEV-1847)."
   },
   "guard/nested_attach::sqlite": {
     "error": "NotImplementedError",
-    "message": "An aggregate references the computed dimension 'band' (e.g. via partition_by=), which would require a nested attach \u2014 not yet supported (DEV-1824)."
+    "message": "An aggregate references the computed dimension 'band' (e.g. via partition_by=), which would require a nested attach \u2014 not yet supported (DEV-1847)."
   },
   "guard/nested_attach::tsql": {
     "error": "NotImplementedError",
-    "message": "An aggregate references the computed dimension 'band' (e.g. via partition_by=), which would require a nested attach \u2014 not yet supported (DEV-1824)."
+    "message": "An aggregate references the computed dimension 'band' (e.g. via partition_by=), which would require a nested attach \u2014 not yet supported (DEV-1847)."
   },
   "lift/coexist_cross_model::bigquery": "WITH _base AS (\n  SELECT\n    orders.region AS `orders___region`,\n    orders.city AS `orders___city`\n  FROM orders AS orders\n  GROUP BY\n    orders.region,\n    orders.city\n), _cm_orders__amount_sum_partition_by_region AS (\n  SELECT\n    orders.region AS `orders___region`,\n    CAST(SUM(orders.amount) AS FLOAT64) AS `orders___rt`\n  FROM orders AS orders\n  GROUP BY\n    orders.region\n), _cm_orders__customers__spend_sum AS (\n  SELECT\n    CAST(SUM(customers.spend) AS FLOAT64) AS `customers___spend_sum`\n  FROM customers AS customers\n)\nSELECT\n  _base.`orders___region`,\n  _base.`orders___city`,\n  _cm_orders__amount_sum_partition_by_region.`orders___rt`,\n  _cm_orders__customers__spend_sum.`customers___spend_sum` AS `orders___cm`\nFROM _base\nLEFT JOIN _cm_orders__amount_sum_partition_by_region\n  ON _base.`orders___region` IS NOT DISTINCT FROM _cm_orders__amount_sum_partition_by_region.`orders___region`\nCROSS JOIN _cm_orders__customers__spend_sum",
   "lift/coexist_cross_model::duckdb": "WITH _base AS (\n  SELECT\n    orders.region AS \"orders.region\",\n    orders.city AS \"orders.city\"\n  FROM orders AS orders\n  GROUP BY\n    orders.region,\n    orders.city\n), _cm_orders__amount_sum_partition_by_region AS (\n  SELECT\n    orders.region AS \"orders.region\",\n    CAST(SUM(orders.amount) AS DOUBLE) AS \"orders.rt\"\n  FROM orders AS orders\n  GROUP BY\n    orders.region\n), _cm_orders__customers__spend_sum AS (\n  SELECT\n    CAST(SUM(customers.spend) AS DOUBLE) AS \"customers.spend_sum\"\n  FROM customers AS customers\n)\nSELECT\n  _base.\"orders.region\",\n  _base.\"orders.city\",\n  _cm_orders__amount_sum_partition_by_region.\"orders.rt\",\n  _cm_orders__customers__spend_sum.\"customers.spend_sum\" AS \"orders.cm\"\nFROM _base\nLEFT JOIN _cm_orders__amount_sum_partition_by_region\n  ON _base.\"orders.region\" IS NOT DISTINCT FROM _cm_orders__amount_sum_partition_by_region.\"orders.region\"\nCROSS JOIN _cm_orders__customers__spend_sum",
