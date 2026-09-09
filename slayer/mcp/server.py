@@ -474,7 +474,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         Multi-stage list rules: every entry except the last MUST carry a ``name``; the last
         entry is the root (its rows are returned), so the intended root MUST be placed last.
         Stages reference one another by that name — as a ``source_model`` or a
-        ``joins[].target_model``. The engine topologically reorders the non-root stages so
+        ``source_model.joins[].target_model`` (there is no top-level ``joins`` field). The engine topologically reorders the non-root stages so
         references resolve (their relative order is arbitrary); an unresolved reference or a
         cycle raises, and an empty list is rejected.
 
@@ -511,6 +511,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 Filters can also reference computed measure names or contain inline transforms:
                 "change(revenue:sum) > 0", "last(change(revenue:sum)) < 0".
             time_dimensions: Time grouping. Format: {"dimension": "created_at", "granularity": "day|week|month|quarter|year", "date_range": ["2024-01-01", "2024-12-31"]}.
+            main_time_dimension: Name of the time dimension transforms (change/lag/etc.) key off; overrides auto-detection when a query has multiple time dimensions.
             order: Sorting. Format: {"column": "measure_or_dim_name", "direction": "asc|desc"}.
             limit: Max rows to return, trusted verbatim; without it the response is capped at 20 rows with a truncation notice.
             offset: Number of rows to skip.

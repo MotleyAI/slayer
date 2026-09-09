@@ -86,7 +86,7 @@ claude mcp list
 
 | Tool | Description |
 |------|-------------|
-| `query` | Execute a semantic query. The `query` argument mirrors the engine: a model name (run a query-backed model by name), a single query object, or a list of query objects — a multi-stage DAG whose stages reference one another via `source_model` or `joins[].target_model`, with non-root stages auto-sorted by the engine (their order doesn't matter) and the last entry the returned root (place the intended root last). Plus the wrappers `variables` / `show_sql` / `dry_run` / `explain` / `format`. |
+| `query` | Execute a semantic query. The `query` argument mirrors the engine: a model name (run a query-backed model by name), a single query object, or a list of query objects — a multi-stage DAG whose stages reference one another via `source_model` or `source_model.joins[].target_model` (there is no top-level `joins` field), with non-root stages auto-sorted by the engine (their order doesn't matter) and the last entry the returned root (place the intended root last). Plus the wrappers `variables` / `show_sql` / `dry_run` / `explain` / `format`. |
 
 **`query` tool arguments:**
 
@@ -108,6 +108,7 @@ claude mcp list
 | `dimensions` | list | Dimension names, e.g. `["status"]`. When using the engine directly, dimensions accept an optional `label` via `{"name": "status", "label": "Order Status"}`. |
 | `filters` | list[str] | Filter formula strings, e.g. `["status = 'active'", "amount > 100"]`. Supports operators (`=`, `<>`, `>`, `>=`, `<`, `<=`, `IN`, `IS NULL`, `IS NOT NULL`, `LIKE`, `NOT LIKE`), boolean logic (`AND`, `OR`, `NOT`), and inline transform expressions (`"change(revenue:sum) > 0"`). Filters on measures are automatically routed to HAVING. |
 | `time_dimensions` | list[dict] | Time grouping. Each entry supports an optional `label` for display. |
+| `main_time_dimension` | string | Name of the time dimension transforms (`change` / `lag` / …) key off, overriding auto-detection when a query has multiple time dimensions. |
 | `order` | list[dict] | Sorting, e.g. `[{"column": "*:count", "direction": "desc"}]` |
 | `limit` | int | Max rows |
 | `offset` | int | Skip rows |
