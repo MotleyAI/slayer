@@ -50,7 +50,8 @@ from slayer.engine.planning import (
 )
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects import get_dialect
-from slayer.sql.generator import SQLGenerator
+from slayer.engine.planned import BoundExpr
+from slayer.sql.generator import SQLGenerator, _LoweredFilter
 from slayer.sql.render.value_expr import (
     RenderContext,
     contains_aggregate,
@@ -471,18 +472,16 @@ class TestKindDispatchVisitorsRaise:
 # Aux-slot collection routes through children() (task 4.1)
 # ---------------------------------------------------------------------------
 def _aux_slot_ids(tree, *, slot_id_by_key=None):
-    fp = SimpleNamespace(
-        phase=Phase.AGGREGATE,
-        expression=SimpleNamespace(value_key=tree),
-        id="f1",
+    fp = _LoweredFilter.model_construct(
+        id="f1", phase=Phase.AGGREGATE,
+        expression=BoundExpr.model_construct(value_key=tree),
     )
-    planned = SimpleNamespace(
-        transform_layers=[], filters_by_phase=[fp], order=[],
-    )
+    planned = SimpleNamespace(transform_layers=[], order=[])
     return SQLGenerator._collect_base_aux_slot_ids(
         planned_query=planned,
         slot_id_by_key=slot_id_by_key or {AGG: "s1"},
         slots_by_id={},
+        lowered_filters=[fp],
     )
 
 
@@ -746,7 +745,9 @@ def _status_orders_model() -> SlayerModel:
 
 
 class TestHavingValidationWiring:
-    async def test_ungrouped_bare_column_in_having_rejected(self) -> None:
+    async def test_ungrouped_bare_column_beside_aggregate_splits_by_typing(self) -> None:
+        # DEV-1865: the AND splits per conjunct — measure half → HAVING,
+        # ungrouped field half → WHERE — instead of the old HAVING rejection.
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
@@ -756,8 +757,23 @@ class TestHavingValidationWiring:
             measures=[ModelMeasure(formula="*:count")],
             filters=["_count > 1 and status == 'completed'"],
         )
+        sql = await _engine_generate(query=query, model=_status_orders_model())
+        assert "HAVING" in sql
+        assert "WHERE" in sql
+
+    async def test_unsplittable_or_with_ungrouped_column_rejected(self) -> None:
+        # The OR cannot split; neither typing holds → the position typing error.
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"),
+                granularity=TimeGranularity.MONTH,
+            )],
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["_count > 1 or status == 'completed'"],
+        )
         model = _status_orders_model()
-        with pytest.raises(ValueError, match="dimensions / GROUP BY"):
+        with pytest.raises(ValueError, match="neither a field nor a measure"):
             await _engine_generate(query=query, model=model)
 
     async def test_grouped_column_in_having_still_accepted(self) -> None:

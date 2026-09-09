@@ -332,6 +332,19 @@ Use `and`, `or`, `not` within a single filter string:
 
 Multiple entries in the `filters` list are combined with AND.
 
+### Field vs measure filters
+
+Each filter conjunct (a top-level `and` splits) types as either a **field**
+(aggregate-free — masks rows before aggregation, so every measure sees only
+passing rows) or a **measure** (any expression legal as a measure in the same
+query, including partitioned, windowed, and cross-model aggregates — evaluated
+at query grain, it prunes result rows without changing surviving values). An
+expression valid as both (a plain dimension) is a field; one valid as neither
+— e.g. an `or` mixing an aggregate with a row column that isn't a query
+dimension — fails with an error naming both failed typings. The same typing
+applies to `order` targets, so anything you can measure you can filter or sort
+by.
+
 ### Scalar Functions in Filters
 
 Filters in `SlayerQuery.filters` accept the closed Mode-B scalar

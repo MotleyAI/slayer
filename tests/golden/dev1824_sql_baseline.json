@@ -40,24 +40,24 @@
     "message": "Cross-model aggregate 'customers.spend_sum_partition_by_region' declares partition_by=region, which unreachable from the aggregate's root (no join path from it); every explicit partition key must be attributable from customers \u2014 declare join cardinality or a covering unique key on the target."
   },
   "guard/filter_no_common_scope::bigquery": {
-    "error": "ValueError",
-    "message": "A single filter predicate mixes a partition_by aggregate (available only after aggregation and attachment) with a row-level reference (available only before aggregation); they have no common scope. Rewrite so each top-level AND conjunct's references resolve in one scope \u2014 an OR across the two cannot be split without changing meaning."
+    "error": "PositionTypingError",
+    "message": "This filter expression is valid as neither a field nor a measure. Field typing failed: it references amount:sum (partition_by), available only after aggregation. Measure typing failed: it references row-level status, not available at the query grain (not among the query dimensions). Split the top-level AND conjuncts so each resolves in one typing, or add the row-level reference to the query dimensions."
   },
   "guard/filter_no_common_scope::duckdb": {
-    "error": "ValueError",
-    "message": "A single filter predicate mixes a partition_by aggregate (available only after aggregation and attachment) with a row-level reference (available only before aggregation); they have no common scope. Rewrite so each top-level AND conjunct's references resolve in one scope \u2014 an OR across the two cannot be split without changing meaning."
+    "error": "PositionTypingError",
+    "message": "This filter expression is valid as neither a field nor a measure. Field typing failed: it references amount:sum (partition_by), available only after aggregation. Measure typing failed: it references row-level status, not available at the query grain (not among the query dimensions). Split the top-level AND conjuncts so each resolves in one typing, or add the row-level reference to the query dimensions."
   },
   "guard/filter_no_common_scope::postgres": {
-    "error": "ValueError",
-    "message": "A single filter predicate mixes a partition_by aggregate (available only after aggregation and attachment) with a row-level reference (available only before aggregation); they have no common scope. Rewrite so each top-level AND conjunct's references resolve in one scope \u2014 an OR across the two cannot be split without changing meaning."
+    "error": "PositionTypingError",
+    "message": "This filter expression is valid as neither a field nor a measure. Field typing failed: it references amount:sum (partition_by), available only after aggregation. Measure typing failed: it references row-level status, not available at the query grain (not among the query dimensions). Split the top-level AND conjuncts so each resolves in one typing, or add the row-level reference to the query dimensions."
   },
   "guard/filter_no_common_scope::sqlite": {
-    "error": "ValueError",
-    "message": "A single filter predicate mixes a partition_by aggregate (available only after aggregation and attachment) with a row-level reference (available only before aggregation); they have no common scope. Rewrite so each top-level AND conjunct's references resolve in one scope \u2014 an OR across the two cannot be split without changing meaning."
+    "error": "PositionTypingError",
+    "message": "This filter expression is valid as neither a field nor a measure. Field typing failed: it references amount:sum (partition_by), available only after aggregation. Measure typing failed: it references row-level status, not available at the query grain (not among the query dimensions). Split the top-level AND conjuncts so each resolves in one typing, or add the row-level reference to the query dimensions."
   },
   "guard/filter_no_common_scope::tsql": {
-    "error": "ValueError",
-    "message": "A single filter predicate mixes a partition_by aggregate (available only after aggregation and attachment) with a row-level reference (available only before aggregation); they have no common scope. Rewrite so each top-level AND conjunct's references resolve in one scope \u2014 an OR across the two cannot be split without changing meaning."
+    "error": "PositionTypingError",
+    "message": "This filter expression is valid as neither a field nor a measure. Field typing failed: it references amount:sum (partition_by), available only after aggregation. Measure typing failed: it references row-level status, not available at the query grain (not among the query dimensions). Split the top-level AND conjuncts so each resolves in one typing, or add the row-level reference to the query dimensions."
   },
   "guard/nested_attach::bigquery": {
     "error": "NotImplementedError",

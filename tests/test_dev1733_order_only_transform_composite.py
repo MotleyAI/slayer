@@ -19,13 +19,13 @@ from sqlglot import exp
 from slayer.core.enums import DataType
 from slayer.core.errors import (
     DistinctDimensionValuesError,
-    RenderContextMissingFacilityError,
+    PositionTypingError,
     UnknownReferenceError,
 )
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.core.keys import ColumnKey, Phase
-from slayer.engine.planned import OrderEntry, OrderScope, PlannedQuery, ValueSlot
+from slayer.engine.planned import OrderEntry, PlannedQuery, ValueSlot
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.generator import SQLGenerator
 from slayer.sql.scope_check import assert_scope_closed
@@ -34,7 +34,9 @@ from slayer.storage.yaml_storage import YAMLStorage
 _MONTH = [TimeDimension(dimension="created_at", granularity="month")]
 
 # A bare ROW-column operand must fail closed with either error; both REJECT.
-_ROW_OPERAND_REJECTED = (NotImplementedError, RenderContextMissingFacilityError)
+# DEV-1865: a row-column operand beside an aggregate now fails closed at the
+# position typing pass (PositionTypingError names both failed typings).
+_ROW_OPERAND_REJECTED = PositionTypingError
 
 
 # SQL-inspection helpers — walk the AST, never match on formatting.
@@ -1008,9 +1010,7 @@ class TestStillGuarded:
             source_relation="orders",
             row_slots=[slot],
             order=[OrderEntry(
-                slot_id="s0", direction="asc",
-                # Classification is required on every entry.
-                scope=OrderScope.HOST_BASE_HIDDEN, phase=Phase.ROW,
+                slot_id="s0", direction="asc", phase=Phase.ROW,
             )],
         )
         # Built outside the raises block so only the call under test can throw.
