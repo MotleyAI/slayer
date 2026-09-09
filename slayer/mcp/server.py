@@ -471,6 +471,12 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         - **Multi-stage list** (list of query objects) — a DAG of stages (rules below);
           the last entry is the root whose rows are returned.
 
+        Multi-stage list rules: every entry except the last MUST carry a ``name``; the last
+        entry is the root (its rows are returned). Stages reference one another by that name —
+        as a ``source_model`` or a ``joins[].target_model``. The engine topologically reorders
+        stages so references resolve (submission order doesn't matter); an unresolved reference
+        or a cycle raises, and an empty list is rejected.
+
         Query object fields:
             source_model: One of three forms:
                 - **Model name** (string) — name of a saved model from models_summary, e.g. ``"orders"``.
@@ -2030,6 +2036,20 @@ def _cap_rows(result: SlayerResponse, *, hint: str) -> None:
     ]
 
 
+def _cap_leaf(query: "SlayerQuery | dict"):
+    """Push ``limit = cap + 1`` into one query object with no limit; returns
+    ``(query_or_capped, capped)`` and never mutates the caller's input."""
+    limit = query.limit if isinstance(query, SlayerQuery) else query.get("limit")
+    if limit is not None:
+        return query, False
+    capped = (
+        query.model_copy(update={"limit": _MCP_ROW_CAP + 1})
+        if isinstance(query, SlayerQuery)
+        else {**query, "limit": _MCP_ROW_CAP + 1}
+    )
+    return capped, True
+
+
 def _apply_mcp_row_cap(
     query: "str | SlayerQuery | list[SlayerQuery]",
 ):
@@ -2042,25 +2062,12 @@ def _apply_mcp_row_cap(
     """
     if isinstance(query, str):
         return query, True, _CAP_HINT
-    if isinstance(query, SlayerQuery):
-        if query.limit is None:
-            return query.model_copy(update={"limit": _MCP_ROW_CAP + 1}), True, _CAP_HINT
-        return query, False, _CAP_HINT
-    if isinstance(query, dict):
-        if query.get("limit") is None:
-            return {**query, "limit": _MCP_ROW_CAP + 1}, True, _CAP_HINT
-        return query, False, _CAP_HINT
+    if isinstance(query, (SlayerQuery, dict)):
+        capped_query, capped = _cap_leaf(query)
+        return capped_query, capped, _CAP_HINT
     if isinstance(query, list) and query:
-        root = query[-1]
-        root_limit = root.limit if isinstance(root, SlayerQuery) else root.get("limit")
-        if root_limit is None:
-            capped_root = (
-                root.model_copy(update={"limit": _MCP_ROW_CAP + 1})
-                if isinstance(root, SlayerQuery)
-                else {**root, "limit": _MCP_ROW_CAP + 1}
-            )
-            return [*query[:-1], capped_root], True, _NESTED_CAP_HINT
-        return query, False, _NESTED_CAP_HINT
+        capped_root, capped = _cap_leaf(query[-1])
+        return [*query[:-1], capped_root], capped, _NESTED_CAP_HINT
     return query, False, _CAP_HINT
 
 
