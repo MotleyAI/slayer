@@ -12,7 +12,9 @@ import sqlglot
 from pydantic import BaseModel, Field as PydanticField
 
 from slayer.core.enums import AggregationValueClass, classify_aggregation
+from slayer.core.errors import AmbiguousJoinPathError
 from slayer.core.format import NumberFormat, NumberFormatType
+from slayer.core.join_walker import resolve_hop
 from slayer.core.keys import (
     AggregateKey,
     ColumnKey,
@@ -92,10 +94,28 @@ def projection_result_keys(*, root_planned: PlannedQuery) -> List[str]:
 def _model_for_path(
     *, bundle: ResolvedSourceBundle, path: Tuple[str, ...]
 ) -> Optional[SlayerModel]:
-    """The model a dotted join ``path`` lands on; empty path → host source model."""
-    if not path:
-        return bundle.source_model
-    return bundle.get_referenced_model(path[-1]) or bundle.source_model
+    """The model a dotted join ``path`` lands on; empty path → host source model.
+
+    Resolves each token through the shared bidirectional walker so reverse hops
+    and edge-name tokens land on the right terminal model, never by reading the
+    last token as a model name (DEV-1853 D5)."""
+    current = bundle.source_model
+    if not path or current is None:
+        return current
+    models_by_name = {m.name: m for m in bundle.referenced_models}
+    models_by_name.setdefault(current.name, current)
+    for hop in path:
+        try:
+            edge = resolve_hop(
+                current=current, token=hop, models_by_name=models_by_name,
+            )
+        except AmbiguousJoinPathError:
+            return bundle.source_model
+        nxt = models_by_name.get(edge.target_model) if edge is not None else None
+        if nxt is None:
+            return bundle.source_model
+        current = nxt
+    return current
 
 
 def _slot_result_keys(*, slot: ValueSlot, source_relation: str) -> List[str]:

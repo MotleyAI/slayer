@@ -22,10 +22,10 @@ from typing import Any, Literal
 
 import sqlalchemy as sa
 
-from slayer.core.enums import DataType, JoinType, invert_cardinality
+from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.formula import parse_formula
-from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.models import Column, ModelMeasure, SlayerModel
 from slayer.core.refs import IDENTIFIER_RE as _IDENTIFIER_RE
 from slayer.dbt.entities import EntityRegistry
 from slayer.dbt.filters import _DIMENSION_RE, convert_dbt_filter
@@ -188,7 +188,6 @@ class DbtToSlayerConverter:
             self._convert_metric(metric)
 
         self._prune_dangling_measures()
-        self._mirror_inner_joins()
 
         if self.include_hidden_models and self.project.regular_models:
             models.extend(self._convert_regular_models(existing_names={m.name for m in models}))
@@ -198,28 +197,6 @@ class DbtToSlayerConverter:
             unconverted_metrics=self._unconverted,
             warnings=self._warnings,
         )
-
-    def _mirror_inner_joins(self) -> None:
-        """Ensure inner joins are symmetric: if A→B is inner, B→A should be too."""
-        for model in list(self._models_by_name.values()):
-            for join in model.joins:
-                if join.join_type != JoinType.INNER:
-                    continue
-                target = self._models_by_name.get(join.target_model)
-                if target is None:
-                    continue
-                reverse_pairs = [[tgt, src] for src, tgt in join.join_pairs]
-                already_exists = any(
-                    j.target_model == model.name and j.join_pairs == reverse_pairs
-                    for j in target.joins
-                )
-                if not already_exists:
-                    target.joins.append(ModelJoin(
-                        target_model=model.name,
-                        join_pairs=reverse_pairs,
-                        join_type=JoinType.INNER,
-                        cardinality=invert_cardinality(join.cardinality),
-                    ))
 
     def _prune_dangling_measures(self) -> None:
         """Drop+report any ``ModelMeasure`` whose formula references a name that

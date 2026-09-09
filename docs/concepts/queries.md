@@ -528,7 +528,7 @@ rec.root_model          # "orders"  (the bridge model that reaches both)
 # {"customers.name": "customers.name", "products.category": "products.category"}
 ```
 
-A root is valid when every requested item is reachable from it over the join graph — LEFT joins are directional (source → target), INNER joins traverse both ways. Among valid roots, the one with the fewest total join hops wins. Root-owned items come back as a bare leaf (`status`); joined items as a dotted path (`customers.regions.name`); aggregation suffixes are preserved (`revenue:sum`).
+A root is valid when every requested item is reachable from it over the join graph — every declared join traverses in both directions with flipped cardinality ([bidirectional traversal](models.md#bidirectional-traversal)). Among valid roots, the one with the fewest total join hops wins. Root-owned items come back as a bare leaf (`status`); joined items as a dotted path (`customers.regions.name`); aggregation suffixes are preserved (`revenue:sum`).
 
 When no single model reaches everything, `root_model` is `None`, `reachable` is `False`, and `coverage` lists the best partial roots (each with its reachable / unreachable items) so you can split the request into a multi-stage [`source_queries`](models.md#query-backed-models) query.
 
@@ -694,14 +694,18 @@ Query **filters** still restrict the metric: a conjunct the sub-query can only
 reach across an unproven hop is pushed down as a correlated `EXISTS` semi-join —
 the metric counts exactly the target rows related to at least one row passing
 the filter (each row once, never multiplied through the join), silently, exactly
-like a safely inherited filter. Only a filter with no resolvable path from the
-sub-query's root (or an ambiguous reverse join, or one mixing local and joined
-references under `OR`/`NOT`) is excluded: it still applies to the local measures
-and is reported as `kind: "unreachable_filter_dropped"`. On ClickHouse the
-semi-join needs server ≥ 25.4 (the required setting is attached automatically);
-older servers fail with a clear error. Set `"strict": true` on the query to turn
-a broadcast or an excluded filter into an error instead of a warning — a
-semi-join-pushed filter is correctly applied and never errors.
+like a safely inherited filter. The correlation path resolves through the same
+[bidirectional traversal](models.md#bidirectional-traversal) as every other hop
+— no declared reverse join is needed, and a hop spanned by two or more edges
+fails the whole query with the ambiguous-hop error (in lenient and strict mode
+alike) rather than guessing. Only a filter with no resolvable path from the
+sub-query's root (or one mixing local and joined references under `OR`/`NOT`)
+is excluded: it still applies to the local measures and is reported as
+`kind: "unreachable_filter_dropped"`. On ClickHouse the semi-join needs server
+≥ 25.4 (the required setting is attached automatically); older servers fail
+with a clear error. Set `"strict": true` on the query to turn a broadcast or an
+excluded filter into an error instead of a warning — a semi-join-pushed filter
+is correctly applied and never errors.
 
 A filter **on** the cross-model value itself (`"customers.score:avg > 4"`)
 restricts the result rows, uniformly with local aggregate filters — groups that

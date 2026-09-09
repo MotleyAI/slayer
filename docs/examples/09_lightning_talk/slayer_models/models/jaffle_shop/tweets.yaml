@@ -1,4 +1,4 @@
-version: 9
+version: 10
 name: tweets
 sql_table: tweets
 query_variables: {}

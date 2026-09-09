@@ -72,7 +72,12 @@ column.
 
 A join's ON clause (`{CUBE}.customer_id = {customers.id}`) becomes
 `join_pairs`; member references resolve to their physical columns. Composite
-(`AND`-joined) keys are supported. All joins emit as `LEFT`.
+(`AND`-joined) keys are supported. All joins emit as `LEFT`. When a Cube schema
+declares both directions of one relationship (`orders belongs_to customers` and
+`customers has_many orders` over the same columns), the importer keeps a single
+edge — the to-one declaration — since SLayer traverses every join
+[in both directions](../concepts/models.md#bidirectional-traversal);
+contradicting declarations import as two edges and surface as an ambiguous hop.
 
 ### Segments → boolean columns
 

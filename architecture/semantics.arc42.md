@@ -25,7 +25,8 @@ is the coercion from coarser to finer.
 3. **Association**: any join path — to-one or not — defines which rows belong
    together; everything that crosses a non-determining path is defined in terms
    of it. [review] Association is derivable from forward join declarations
-   alone (bidirectional traversal). [target: DEV-1853]
+   alone (bidirectional traversal).
+   [enforced: test:tests/test_dev1853_mirror_parity.py]
 4. **The home-dataset axiom**: an aggregation runs over the rows of its home
    dataset, each counted exactly once — never over the row product of a join,
    so no fan-out can multiply its inputs (spec: `queries/semantics` › No double

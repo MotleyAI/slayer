@@ -11,7 +11,12 @@ import re
 import sqlglot
 from pydantic import BaseModel
 
-from slayer.core.enums import DataType, JoinCardinality, JoinType
+from slayer.core.enums import (
+    DataType,
+    JoinCardinality,
+    JoinType,
+    invert_cardinality,
+)
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.formula import ALL_TRANSFORMS, parse_formula
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
@@ -103,6 +108,52 @@ _RELATIONSHIP_CARDINALITY = {
     "one_to_one": JoinCardinality.ONE_TO_ONE,
     "has_one": JoinCardinality.ONE_TO_ONE,
 }
+
+
+_TO_ONE = (JoinCardinality.MANY_TO_ONE, JoinCardinality.ONE_TO_ONE)
+
+
+def _is_exact_inverse(a: ModelJoin, b: ModelJoin) -> bool:
+    """Swapped pair set, same join type, cardinalities inversion-consistent (or one unset)."""
+    if a.join_type != b.join_type:
+        return False
+    if {(s, t) for s, t in a.join_pairs} != {(t, s) for s, t in b.join_pairs}:
+        return False
+    if a.cardinality is None or b.cardinality is None:
+        return True
+    return invert_cardinality(a.cardinality) == b.cardinality
+
+
+def _inverse_pair_loser(
+    a: tuple[str, ModelJoin], b: tuple[str, ModelJoin]
+) -> ModelJoin:
+    """The edge to drop: keep the to-one side, else the cardinality-carrying
+    side, else the lexicographically smaller ``(model, target)`` declaration."""
+    for keep, drop in ((a, b), (b, a)):
+        if keep[1].cardinality in _TO_ONE:
+            return drop[1]
+    for keep, drop in ((a, b), (b, a)):
+        if keep[1].cardinality is not None:
+            return drop[1]
+    return max(a, b, key=lambda x: (x[0], x[1].target_model))[1]
+
+
+def _drop_inverse_half(
+    *, model: SlayerModel, join: ModelJoin, peer: SlayerModel
+) -> None:
+    """Remove the losing half when ``peer`` declares the exact inverse of ``join``."""
+    back = next(
+        (b for b in peer.joins
+         if b.target_model == model.name and _is_exact_inverse(join, b)),
+        None,
+    )
+    if back is None:
+        return
+    loser = _inverse_pair_loser((model.name, join), (peer.name, back))
+    if loser is join:
+        model.joins.remove(join)
+    else:
+        peer.joins.remove(back)
 
 
 def _map_relationship(relationship: str | None) -> JoinCardinality | None:
@@ -202,6 +253,12 @@ class CubeToSlayerConverter:
             if model is not None:
                 models.append(model)
                 self._models[model.name] = model
+
+        # DEV-1853: mutually-inverse declarations collapse to one edge (reverse
+        # traversal is automatic); contradicting pairs import both edges. After
+        # view conversion so facades still see the pre-dedup root joins.
+        self._dedup_inverse_joins(
+            [m for m in models if (m.meta or {}).get("cube_kind") != "view"])
 
         report.model_count = len(models)
         report.hidden_count = sum(1 for m in models if m.hidden)
@@ -695,6 +752,16 @@ class CubeToSlayerConverter:
                 target_model=cj.name, join_pairs=resolved,
                 join_type=JoinType.LEFT, cardinality=cardinality))
         return joins
+
+    def _dedup_inverse_joins(self, models: list[SlayerModel]) -> None:
+        """Collapse each mutually-inverse declaration pair to its to-one edge."""
+        by_name = {m.name: m for m in models}
+        for model in models:
+            for join in list(model.joins):  # NOSONAR(S7504) — materialised before in-place removal
+                peer = by_name.get(join.target_model)
+                if peer is None or peer.name <= model.name:
+                    continue  # visit each unordered pair once
+                _drop_inverse_half(model=model, join=join, peer=peer)
 
     def _resolve_join_pairs(self, cube, cj, pairs) -> list[list[str]] | None:
         target = self._cubes.get(cj.name)
