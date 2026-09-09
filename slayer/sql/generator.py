@@ -980,11 +980,16 @@ class ChainState(BaseModel):
 class SQLGenerator:
     """Generates SQL from a typed ``PlannedQuery`` (from ``stage_planner``)."""
 
-    def __init__(self, dialect: "str | SqlDialect" = "postgres"):
+    def __init__(
+        self, dialect: "str | SqlDialect" = "postgres",
+        force_unfused: bool = False,
+    ):
         if isinstance(dialect, SqlDialect):
             self._dialect: SqlDialect = dialect
         else:
             self._dialect = get_dialect(dialect)
+        # Synthetic fusion blocker for lowering-soundness parity tests.
+        self._force_unfused = force_unfused
         self._gen_allocator: Optional[AliasAllocator] = None
         self._gen_rendered_producers: Optional[
             Dict[Any, Tuple[str, Dict[str, str]]]
@@ -1690,6 +1695,8 @@ class SQLGenerator:
                     sid not in public_slot_ids for sid in base_render_order
                 ),
             )
+            if self._force_unfused:
+                blockers.append("forced unfused (test seam)")
             if blockers:
                 final_select = self._build_outer_trim_wrap_select(
                     base_select=base_select,
@@ -2741,8 +2748,8 @@ class SQLGenerator:
         def build(agg_key) -> exp.Expression:
             if getattr(agg_key.source, "path", ()):
                 raise NotImplementedError(
-                    "DEV-1450: cross-model aggregate operand inside an "
-                    "AGGREGATE-phase composite is not yet supported; factor it "
+                    "A cross-model aggregate operand inside an AGGREGATE-phase "
+                    "composite is not yet supported (DEV-1868); factor it "
                     "into a multi-stage source_queries model."
                 )
             synth = self._build_agg_render_spec_from_planned(
@@ -5719,9 +5726,9 @@ class SQLGenerator:
                 alias=exp.to_identifier(source_relation),
             )
         raise NotImplementedError(
-            f"DEV-1450 stage 7b.12+: query-backed models (source_queries) "
-            f"deferred to multi-stage slices. Model "
-            f"{source_model.name!r} has neither sql_table nor sql set."
+            f"Model {source_model.name!r} has neither sql_table nor sql set; "
+            f"query-backed models (source_queries) deferred to multi-stage "
+            f"slices (DEV-1878)."
         )
 
     def _dim_column_expr_from_planned(
@@ -5826,7 +5833,7 @@ class SQLGenerator:
             if getattr(ref, "path", ()):
                 raise NotImplementedError(
                     f"Cross-model operand {ref!r} inside an aggregated "
-                    f"expression is not supported (DEV-1832)."
+                    f"expression is not supported."
                 )
             if isinstance(ref, ColumnSqlKey):
                 return self._parse(self._expand_derived_column_sql(

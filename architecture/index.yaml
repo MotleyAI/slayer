@@ -46,6 +46,9 @@ contracts:
   layers: {baseline: 14}
   forbidden: {baseline: 2}
 
+# Fail-closed deferral-site count (tests/test_law_guard_ratchet.py). Only ever lower.
+guards: {baseline: 10}
+
 cross_cutting_specs:
   queries: {touches: [core, engine, sql]}
   models: {touches: [core, storage, engine]}

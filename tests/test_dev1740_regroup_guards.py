@@ -63,7 +63,7 @@ class TestDeferredShapesRaiseDev1824:
             time_dimensions=month_td(),
             measures=[ModelMeasure(formula="amount:sum", name="t")],
         )
-        with pytest.raises(NotImplementedError, match=r"DEV-1824"):
+        with pytest.raises(NotImplementedError, match=r"DEV-1868"):
             await gen(q)
 
     async def test_window_plus_partition_in_dimension_expression_lifted(self) -> None:

@@ -290,7 +290,7 @@ def _guard_dimension_temporal_axis(declared_measures) -> None:
                     f"time axis '{axis}'; a producer bucketed by time joined back "
                     f"on the coarser grain would duplicate result rows. Include "
                     f"the time key in the aggregate's partition_by= so the "
-                    f"transform accumulates within its own grain (DEV-1839)."
+                    f"transform accumulates within its own grain."
                 )
 
 
@@ -388,7 +388,7 @@ def _guard_partitioned_measures(
     if any(k.agg in ("first", "last") and _cross_model(k) for k in part_keys):
         raise NotImplementedError(
             "partition_by on a cross-model first/last aggregation is not yet "
-            "supported (DEV-1824); the aggregate must be local to the query's "
+            "supported (DEV-1868); the aggregate must be local to the query's "
             "source."
         )
     # A cross-model partitioned aggregate nested in a transform is never desugared, so fail closed.
@@ -398,7 +398,7 @@ def _guard_partitioned_measures(
     ):
         raise NotImplementedError(
             "A cross-model partition_by aggregate nested inside a transform is "
-            "not yet supported (DEV-1824); the partitioned aggregate must be "
+            "not yet supported (DEV-1868); the partitioned aggregate must be "
             "local to the query's source."
         )
 
@@ -1074,7 +1074,7 @@ def _validate_nested_producer_plan(
         if nested.regroup_attach_plans:
             raise NotImplementedError(
                 "A union-grain producer's nested attach itself needs a further "
-                "regroup producer CTE, which is not supported (DEV-1839)."
+                "regroup producer CTE, which is not supported (DEV-1847)."
             )
         grain = Grain.of(host_key for host_key, _ in attach.join_pairs)
         # A WINDOWED nested attach joins at the FULL union grain, not a strict subset.
@@ -1090,7 +1090,7 @@ def _validate_nested_producer_plan(
             raise NotImplementedError(
                 "A union-grain producer's nested attach grain is not a subset "
                 "of the producer grain; only subset inner grains broadcast "
-                "(DEV-1839)."
+                "(DEV-1847)."
             )
 
 
@@ -3640,7 +3640,7 @@ def _guard_computed_dimension(*, d: ComputedDimension, bound, query: SlayerQuery
             raise NotImplementedError(
                 f"A transform inside computed dimension {d.name!r} must wrap an "
                 f"explicitly-grained aggregate — declare partition_by= on the "
-                f"aggregate it transforms (DEV-1824)."
+                f"aggregate it transforms (DEV-1868)."
             )
     aggs = [k for k in all_keys if isinstance(k, AggregateKey)]
     if not aggs:
@@ -3677,7 +3677,7 @@ def _reraise_nested_attach(
         raise NotImplementedError(
             f"An aggregate references the computed dimension {err.name!r} (e.g. "
             f"via partition_by=), which would require a nested attach — not yet "
-            f"supported (DEV-1824)."
+            f"supported (DEV-1847)."
         ) from err
     raise err
 
