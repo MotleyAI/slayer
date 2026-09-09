@@ -138,6 +138,24 @@ def _inverse_pair_loser(
     return max(a, b, key=lambda x: (x[0], x[1].target_model))[1]
 
 
+def _drop_inverse_half(
+    *, model: SlayerModel, join: ModelJoin, peer: SlayerModel
+) -> None:
+    """Remove the losing half when ``peer`` declares the exact inverse of ``join``."""
+    back = next(
+        (b for b in peer.joins
+         if b.target_model == model.name and _is_exact_inverse(join, b)),
+        None,
+    )
+    if back is None:
+        return
+    loser = _inverse_pair_loser((model.name, join), (peer.name, back))
+    if loser is join:
+        model.joins.remove(join)
+    else:
+        peer.joins.remove(back)
+
+
 def _map_relationship(relationship: str | None) -> JoinCardinality | None:
     """Map a Cube join ``relationship`` onto cardinality; unknown → None."""
     if relationship is None:
@@ -739,22 +757,11 @@ class CubeToSlayerConverter:
         """Collapse each mutually-inverse declaration pair to its to-one edge."""
         by_name = {m.name: m for m in models}
         for model in models:
-            for join in list(model.joins):
+            for join in list(model.joins):  # NOSONAR(S7504) — materialised before in-place removal
                 peer = by_name.get(join.target_model)
                 if peer is None or peer.name <= model.name:
                     continue  # visit each unordered pair once
-                for back in list(peer.joins):
-                    if back.target_model != model.name:
-                        continue
-                    if not _is_exact_inverse(join, back):
-                        continue
-                    loser = _inverse_pair_loser(
-                        (model.name, join), (peer.name, back))
-                    if loser is join:
-                        model.joins.remove(join)
-                    else:
-                        peer.joins.remove(back)
-                    break
+                _drop_inverse_half(model=model, join=join, peer=peer)
 
     def _resolve_join_pairs(self, cube, cj, pairs) -> list[list[str]] | None:
         target = self._cubes.get(cj.name)

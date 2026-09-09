@@ -12,10 +12,11 @@ create/edit, and the migration write-back (the migration path passes
 """
 
 import pytest
+import yaml
 
 from slayer.core.enums import DataType
 from slayer.core.errors import ColumnCycleError
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -248,7 +249,8 @@ async def test_save_model_rejects_cross_model_cycle_within_datasource(
             Column(name="a_id", sql="a_id", type=DataType.DOUBLE),
             Column(name="y", sql="A.x + 1", type=DataType.DOUBLE),
         ],
-        joins=[ModelJoin(target_model="A", join_pairs=[["a_id", "id"]])],
+        # No declared B→A edge: the ref resolves over the reverse hop
+        # (DEV-1853); a second declared edge would make the pair ambiguous.
     )
     await storage.save_model(model_b)
     # Now save A with a forward ref to B.y, completing the cycle:
@@ -273,15 +275,12 @@ async def test_save_model_rejects_cross_model_cycle_within_datasource(
 async def test_save_model_rejects_cross_model_cycle_when_second_model_completes_it(
     tmp_path,
 ) -> None:
-    """Order-sensitive: A saves first (B doesn't exist; A.foo's ``B.bar`` ref
-    is unresolved and silently skipped — best-effort). When B saves with
-    a back-ref to A.foo, the save-time validator on B's save MUST detect
-    the cycle (B's reachable graph includes A and A.foo's ref into B.bar)."""
+    """Order-sensitive: B saves first (A doesn't exist; B.bar's ``A.foo`` ref
+    is unresolved and silently skipped — best-effort). When A saves with a
+    join to B and a back-ref to B.bar, the save-time validator on A's save
+    MUST detect the cycle — B.bar's ref resolves over the reverse hop
+    (DEV-1853), no declared B→A edge needed."""
     storage = _yaml_storage(tmp_path)
-    # A → B (the ModelJoin is required so the cycle is reachable via joins).
-    # B does not exist yet — unresolved B.bar ref is silently skipped.
-    await storage.save_model(_model_a_to_b(foo_sql="B.bar + 1"))
-    # Now save B with a back-ref to A.foo, completing the cycle.
     model_b = SlayerModel(
         name="B",
         data_source="ds",
@@ -291,7 +290,28 @@ async def test_save_model_rejects_cross_model_cycle_when_second_model_completes_
             Column(name="a_id", sql="a_id", type=DataType.DOUBLE),
             Column(name="bar", sql="A.foo + 1", type=DataType.DOUBLE),
         ],
-        joins=[ModelJoin(target_model="A", join_pairs=[["a_id", "id"]])],
+    )
+    await storage.save_model(model_b)
+    with pytest.raises(ColumnCycleError):
+        await storage.save_model(_model_a_to_b(foo_sql="B.bar + 1"))
+
+
+async def test_save_model_rejects_cycle_when_joinless_model_saves_last(
+    tmp_path,
+) -> None:
+    """The saved model declares NO joins: its peers load via the
+    datasource-wide prefetch and the cycle crosses A's edge in reverse
+    (DEV-1853)."""
+    storage = _yaml_storage(tmp_path)
+    await storage.save_model(_model_a_to_b(foo_sql="B.bar + 1"))
+    model_b = SlayerModel(
+        name="B",
+        data_source="ds",
+        sql_table="B",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="bar", sql="A.foo + 1", type=DataType.DOUBLE),
+        ],
     )
     with pytest.raises(ColumnCycleError):
         await storage.save_model(model_b)
@@ -424,10 +444,6 @@ async def test_save_model_migration_writeback_does_not_validate(tmp_path) -> Non
     """Write a legacy v4 cyclic model to disk by hand (bypassing save_model),
     then load it through storage.get_model. The migration write-back must
     not raise — the cycle should be tolerated on load."""
-    import yaml
-
-    from slayer.core.models import DatasourceConfig
-
     storage = YAMLStorage(base_dir=str(tmp_path))
     # Persist a datasource so the migration's type-refinement step does not
     # hard-fail on "datasource unavailable" — we want the cycle path to be

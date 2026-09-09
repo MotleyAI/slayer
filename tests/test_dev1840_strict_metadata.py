@@ -181,8 +181,9 @@ class TestExcludedFiltersKeepTheWarning:
         """Ambiguous hop errors in BOTH modes — the drop+warn handling is
         retired. DEV-1853 divergences.md class (d)."""
         _, engine = exec_backend_amb
+        query = tq(measures=[SM], filters=["effort > 2"])
         with pytest.raises(AmbiguousJoinPathError):
-            await engine.execute(tq(measures=[SM], filters=["effort > 2"]))
+            await engine.execute(query)
 
     async def test_ambiguous_filter_hop_errors_in_lenient_mode(
         self, exec_backend_amb,
@@ -190,7 +191,6 @@ class TestExcludedFiltersKeepTheWarning:
         """A filter whose only route crosses the ambiguous pair errors in
         lenient mode too — never dropped. DEV-1853 divergences.md class (d)."""
         _, engine = exec_backend_amb
+        query = tq(measures=[RV], filters=["agents.name = 'Ann'"])
         with pytest.raises(AmbiguousJoinPathError):
-            await engine.execute(
-                tq(measures=[RV], filters=["agents.name = 'Ann'"]),
-            )
+            await engine.execute(query)

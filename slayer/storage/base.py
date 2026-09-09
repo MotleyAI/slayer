@@ -81,6 +81,127 @@ def _inverse_survivor(
     return min((model_a, model_b), (model_b, model_a))[0]
 
 
+def _stored_counterpart(*, join: dict, name: str, peer: dict | None):
+    """The exact-inverse of ``join`` in ``peer``'s raw joins, or ``None``."""
+    peer_joins = peer.get("joins") if isinstance(peer, dict) else None
+    if not isinstance(peer_joins, list):
+        return None
+    return next(
+        (
+            j for j in peer_joins
+            if isinstance(j, dict) and j.get("target_model") == name
+            and _is_exact_inverse_join(join, j)
+        ),
+        None,
+    )
+
+
+def _checked_join_names(model: SlayerModel) -> list[str]:
+    """Names of ``model``'s named edges; raises on duplicates."""
+    names = [j.name for j in model.joins if j.name]
+    dupes = sorted({n for n in names if names.count(n) > 1})
+    if dupes:
+        raise ValueError(
+            f"Model '{model.name}': duplicate join names {dupes}. Each "
+            f"edge name incident to a model must be unique."
+        )
+    return names
+
+
+def _checked_join_name_namespace(
+    *, model: SlayerModel, names: list[str],
+    identities: Iterable[tuple[str, str]],
+) -> set[str]:
+    """Datasource model-name namespace; raises when an edge name collides."""
+    ds_model_names = {
+        n for ds, n in identities if ds == model.data_source
+    } | {model.name}
+    for n in names:
+        if n in ds_model_names:
+            raise ValueError(
+                f"Model '{model.name}': join name '{n}' collides with "
+                f"model '{n}' in datasource '{model.data_source}'. Edge "
+                f"names and model names share the path-segment namespace."
+            )
+    return ds_model_names
+
+
+def _check_edges_against_peers(
+    *, model: SlayerModel, peers: dict[str, SlayerModel],
+) -> None:
+    """Reject edge-name reuse across incident edges and exact-inverse twins."""
+    incident_to_self = {
+        j.name for p in peers.values() for j in p.joins
+        if j.target_model == model.name and j.name
+    }
+    for join in model.joins:
+        target = peers.get(join.target_model)
+        if join.name:
+            _check_edge_name_free(
+                model=model, join=join, target=target, peers=peers,
+                incident_to_self=incident_to_self,
+            )
+        if target is not None:
+            _check_not_exact_inverse(model=model, join=join, target=target)
+
+
+def _check_edge_name_free(
+    *, model: SlayerModel, join, target: SlayerModel | None,
+    peers: dict[str, SlayerModel], incident_to_self: set,
+) -> None:
+    target_incident = set(incident_to_self)
+    if target is not None:
+        target_incident |= {j2.name for j2 in target.joins if j2.name}
+        target_incident |= {
+            j3.name for p in peers.values() for j3 in p.joins
+            if j3.target_model == join.target_model and j3.name
+        }
+    if join.name in target_incident:
+        raise ValueError(
+            f"Model '{model.name}': join name '{join.name}' is "
+            f"already used by another edge incident to "
+            f"'{model.name}' or '{join.target_model}'."
+        )
+
+
+def _check_not_exact_inverse(
+    *, model: SlayerModel, join, target: SlayerModel,
+) -> None:
+    raw = join.model_dump(mode="json")
+    for j2 in target.joins:
+        if j2.target_model != model.name:
+            continue
+        if _is_exact_inverse_join(raw, j2.model_dump(mode="json")):
+            raise ValueError(
+                f"Model '{model.name}': join to '{target.name}' is "
+                f"the exact inverse of the edge already declared on "
+                f"'{target.name}' — reverse traversal is automatic; "
+                f"remove this declaration."
+            )
+
+
+def _warn_unnamed_parallel_edges(
+    *, model: SlayerModel, peers: dict[str, SlayerModel],
+) -> None:
+    for peer_name in {j.target_model for j in model.joins}:
+        target = peers.get(peer_name)
+        if target is None:
+            continue
+        unnamed = [
+            e for e in edges_between(source=model, target=target)
+            if e.name is None
+        ]
+        if len(unnamed) >= 2:
+            warnings.warn(
+                f"Model '{model.name}': {len(unnamed)} unnamed parallel "
+                f"edges connect '{model.name}' and '{peer_name}' — paths "
+                f"across this pair cannot be disambiguated. Name the "
+                f"edges to make them addressable.",
+                UserWarning,
+                stacklevel=2,
+            )
+
+
 def _write_sample_fields(
     col: dict[str, Any],
     *,
@@ -294,26 +415,22 @@ class StorageBackend(ABC):
             )
         if not model.joins:
             return
-        names = [j.name for j in model.joins if j.name]
-        dupes = sorted({n for n in names if names.count(n) > 1})
-        if dupes:
-            raise ValueError(
-                f"Model '{model.name}': duplicate join names {dupes}. Each "
-                f"edge name incident to a model must be unique."
-            )
+        names = _checked_join_names(model)
         identities = await self._list_all_model_identities()
-        ds_model_names = {
-            n for ds, n in identities if ds == model.data_source
-        } | {model.name}
-        for n in names:
-            if n in ds_model_names:
-                raise ValueError(
-                    f"Model '{model.name}': join name '{n}' collides with "
-                    f"model '{n}' in datasource '{model.data_source}'. Edge "
-                    f"names and model names share the path-segment namespace."
-                )
-        # Full peer loads only where needed: join targets always; every peer
-        # only when a named edge must be checked against incident edges.
+        ds_model_names = _checked_join_name_namespace(
+            model=model, names=names, identities=identities,
+        )
+        peers = await self._load_join_peers(
+            model, names=names, ds_model_names=ds_model_names,
+        )
+        _check_edges_against_peers(model=model, peers=peers)
+        _warn_unnamed_parallel_edges(model=model, peers=peers)
+
+    async def _load_join_peers(
+        self, model: SlayerModel, *, names: list[str], ds_model_names: set[str],
+    ) -> dict[str, SlayerModel]:
+        """Full peer loads only where needed: join targets always; every peer
+        only when a named edge must be checked against incident edges."""
         peers: dict[str, SlayerModel] = {}
         wanted = {j.target_model for j in model.joins}
         if names:
@@ -324,58 +441,7 @@ class StorageBackend(ABC):
             peer = await self.get_model(peer_name, data_source=model.data_source)
             if peer is not None:
                 peers[peer.name] = peer
-        incident_to_self = {
-            j.name for p in peers.values() for j in p.joins
-            if j.target_model == model.name and j.name
-        }
-        for join in model.joins:
-            target = peers.get(join.target_model)
-            if join.name:
-                target_incident = set(incident_to_self)
-                if target is not None:
-                    target_incident |= {
-                        j2.name for j2 in target.joins if j2.name
-                    }
-                    target_incident |= {
-                        j3.name for p in peers.values() for j3 in p.joins
-                        if j3.target_model == join.target_model and j3.name
-                    }
-                if join.name in target_incident:
-                    raise ValueError(
-                        f"Model '{model.name}': join name '{join.name}' is "
-                        f"already used by another edge incident to "
-                        f"'{model.name}' or '{join.target_model}'."
-                    )
-            if target is None:
-                continue
-            raw = join.model_dump(mode="json")
-            for j2 in target.joins:
-                if j2.target_model != model.name:
-                    continue
-                if _is_exact_inverse_join(raw, j2.model_dump(mode="json")):
-                    raise ValueError(
-                        f"Model '{model.name}': join to '{target.name}' is "
-                        f"the exact inverse of the edge already declared on "
-                        f"'{target.name}' — reverse traversal is automatic; "
-                        f"remove this declaration."
-                    )
-        for peer_name in {j.target_model for j in model.joins}:
-            target = peers.get(peer_name)
-            if target is None:
-                continue
-            unnamed = [
-                e for e in edges_between(source=model, target=target)
-                if e.name is None
-            ]
-            if len(unnamed) >= 2:
-                warnings.warn(
-                    f"Model '{model.name}': {len(unnamed)} unnamed parallel "
-                    f"edges connect '{model.name}' and '{peer_name}' — paths "
-                    f"across this pair cannot be disambiguated. Name the "
-                    f"edges to make them addressable.",
-                    UserWarning,
-                    stacklevel=2,
-                )
+        return peers
 
     async def _find_edge_named(
         self, *, name: str, data_source: str, exclude_model: str,
@@ -583,13 +649,16 @@ class StorageBackend(ABC):
 
     @staticmethod
     def _warn_skipped_int_probe(*, name: str, data_source: str) -> None:
+        # Sanitize for log injection (S5145): strip CR/LF before logging.
+        safe_ds = data_source.replace("\r", "\\r").replace("\n", "\\n")
+        safe_name = name.replace("\r", "\\r").replace("\n", "\\n")
         logging.getLogger(__name__).warning(
-            "Datasource %r unavailable; skipping SQLite "
-            "affinity probe for INT base columns on %r. "
+            "Datasource '%s' unavailable; skipping SQLite "
+            "affinity probe for INT base columns on '%s'. "
             "Re-run `slayer ingest` once the datasource is "
             "back to widen any mis-typed columns.",
-            data_source,
-            name,
+            safe_ds,
+            safe_name,
         )
 
     async def _migrate_and_refine_on_load(
@@ -666,36 +735,36 @@ class StorageBackend(ABC):
         if not isinstance(joins, list) or not joins:
             return data
         cache: dict[str, dict | None] = {}
-        kept: list = []
-        for join in joins:
-            peer_name = (
-                join.get("target_model") if isinstance(join, dict) else None
+        kept = [
+            join for join in joins
+            if await self._survives_stored_inverse(
+                join=join, name=name, data_source=data_source, cache=cache,
             )
-            if not isinstance(peer_name, str) or peer_name == name:
-                kept.append(join)
-                continue
-            if peer_name not in cache:
-                cache[peer_name] = await self._load_raw_model_dict(
-                    name=peer_name, data_source=data_source,
-                )
-            peer = cache[peer_name]
-            peer_joins = peer.get("joins") if isinstance(peer, dict) else None
-            counterpart = next(
-                (
-                    j for j in peer_joins
-                    if isinstance(j, dict) and j.get("target_model") == name
-                    and _is_exact_inverse_join(join, j)
-                ),
-                None,
-            ) if isinstance(peer_joins, list) else None
-            if counterpart is None or _inverse_survivor(
-                model_a=name, join_a=join,
-                model_b=peer_name, join_b=counterpart,
-            ) == name:
-                kept.append(join)
+        ]
         if len(kept) != len(joins):
             data["joins"] = kept
         return data
+
+    async def _survives_stored_inverse(
+        self, *, join, name: str, data_source: str,
+        cache: dict[str, dict | None],
+    ) -> bool:
+        """True when ``join`` has no stored exact-inverse counterpart, or wins
+        against it."""
+        peer_name = join.get("target_model") if isinstance(join, dict) else None
+        if not isinstance(peer_name, str) or peer_name == name:
+            return True
+        if peer_name not in cache:
+            cache[peer_name] = await self._load_raw_model_dict(
+                name=peer_name, data_source=data_source,
+            )
+        counterpart = _stored_counterpart(
+            join=join, name=name, peer=cache[peer_name],
+        )
+        return counterpart is None or _inverse_survivor(
+            model_a=name, join_a=join,
+            model_b=peer_name, join_b=counterpart,
+        ) == name
 
     async def _rewrite_legacy_join_aliases(
         self, *, name: str, data: dict, data_source: str,

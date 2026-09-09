@@ -111,6 +111,7 @@ class TestRoutingSurvivesReroot:
         """The D2 mixed-OR conjunct stays excluded from the producer and warned; the host base still applies it locally."""
         attach = _sole_attach(FILTER_MIXED_OR)
         assert not attach.producer_plan.filters_by_phase
+        assert not attach.producer_plan.semi_join_filters
         assert attach.dropped_filter_warnings
 
     def test_routing_lists_are_not_cleared_wholesale(self) -> None:
@@ -486,6 +487,15 @@ class TestRerootedFilterStillNarrowsTheHost:
     async def test_a_host_local_filter_still_narrows_the_host(self) -> None:
         """``status == 'A'`` keeps group A's two orders across two regions; it now ALSO pushes into the producer by semi-join (rows unchanged)."""
         rows = await self._rows(FILTER_HOST_LOCAL)
+        regions = sorted(
+            str(r["orders.customers.regions.name"]) for r in rows
+        )
+        assert regions == sorted([REGION_A_LOW, REGION_A_HIGH]), regions
+        assert sum(r["orders.rev"] for r in rows) == GROUP_A_AMOUNT, rows
+
+    async def test_the_tags_filter_narrows_without_fanning_out(self) -> None:
+        """``rush`` tags orders 1 and 2 only; a join-based pushdown (instead of containment) would multiply order 1 by its three tags."""
+        rows = await self._rows(FILTER_TAGS)
         regions = sorted(
             str(r["orders.customers.regions.name"]) for r in rows
         )

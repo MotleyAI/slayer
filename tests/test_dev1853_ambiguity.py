@@ -34,36 +34,41 @@ class TestParallelEdgesFailClosed:
     async def test_forward_dimension_no_longer_first_match(
         self, unnamed_engine,
     ) -> None:
+        query = SlayerQuery(
+            source_model="orders", dimensions=["customers.name"])
         with pytest.raises(AmbiguousJoinPathError) as ei:
-            await unnamed_engine.execute(SlayerQuery(
-                source_model="orders", dimensions=["customers.name"]))
+            await unnamed_engine.execute(query)
         _assert_names_both_candidates(str(ei.value))
 
     async def test_reverse_hop_names_the_same_candidates(
         self, unnamed_engine,
     ) -> None:
+        query = SlayerQuery(
+            source_model="customers", dimensions=["orders.status"])
         with pytest.raises(AmbiguousJoinPathError) as ei:
-            await unnamed_engine.execute(SlayerQuery(
-                source_model="customers", dimensions=["orders.status"]))
+            await unnamed_engine.execute(query)
         _assert_names_both_candidates(str(ei.value))
 
     async def test_error_carries_the_candidate_edges(self, unnamed_engine) -> None:
+        query = SlayerQuery(
+            source_model="orders", dimensions=["customers.name"])
         with pytest.raises(AmbiguousJoinPathError) as ei:
-            await unnamed_engine.execute(SlayerQuery(
-                source_model="orders", dimensions=["customers.name"]))
+            await unnamed_engine.execute(query)
         assert len(ei.value.candidates) == 2
 
     async def test_filter_path_fails_closed(self, unnamed_engine) -> None:
+        query = SlayerQuery(
+            source_model="orders", dimensions=["status"],
+            filters=["customers.tier = 'gold'"])
         with pytest.raises(AmbiguousJoinPathError):
-            await unnamed_engine.execute(SlayerQuery(
-                source_model="orders", dimensions=["status"],
-                filters=["customers.tier = 'gold'"]))
+            await unnamed_engine.execute(query)
 
     async def test_measure_path_fails_closed(self, unnamed_engine) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "customers.spend:sum", "name": "s"}])
         with pytest.raises(AmbiguousJoinPathError):
-            await unnamed_engine.execute(SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "customers.spend:sum", "name": "s"}]))
+            await unnamed_engine.execute(query)
 
 
 class TestModeAAmbiguity:
@@ -78,6 +83,6 @@ class TestModeAAmbiguity:
                 Column(name="cust_tier", sql="customers.tier"),
             ]
             await storage.save_model(orders)
+            query = SlayerQuery(source_model="orders", dimensions=["cust_tier"])
             with pytest.raises(AmbiguousJoinPathError):
-                await engine.execute(SlayerQuery(
-                    source_model="orders", dimensions=["cust_tier"]))
+                await engine.execute(query)

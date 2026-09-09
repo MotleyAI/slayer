@@ -20,6 +20,7 @@ from slayer.core.join_walker import (
     walk,
 )
 from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.engine.column_expansion import resolve_ref_target
 
 
 def _model(name: str, cols: list[str], joins: list[ModelJoin] | None = None) -> SlayerModel:
@@ -131,7 +132,8 @@ class TestResolveHop:
         models = _forward_pair()
         edge = resolve_hop(current=models["orders"], token="customers",
                            models_by_name=models)
-        assert edge is not None and edge.target_model == "customers"
+        assert edge is not None
+        assert edge.target_model == "customers"
 
     def test_model_token_resolves_reverse(self) -> None:
         models = _forward_pair()
@@ -181,7 +183,8 @@ class TestResolveHop:
         ])
         models = {"a": a, "b": _model("b", ["id"]), "c": _model("c", ["id"])}
         edge = resolve_hop(current=models["a"], token="c", models_by_name=models)
-        assert edge is not None and edge.target_model == "b"
+        assert edge is not None
+        assert edge.target_model == "b"
 
 
 class TestWalk:
@@ -201,7 +204,8 @@ class TestWalk:
         models = self._chain()
         chain = walk(root=models["customers"], path=("orders",),
                      models_by_name=models)
-        assert chain is not None and len(chain) == 1
+        assert chain is not None
+        assert len(chain) == 1
         assert chain[0].target_model == "orders"
 
     def test_two_hop_reverse_walk(self) -> None:
@@ -228,6 +232,28 @@ class TestWalk:
         with pytest.raises(AmbiguousJoinPathError):
             walk(root=models["customers"], path=("orders",),
                  models_by_name=models)
+
+
+class TestModeAResolverIsBidirectional:
+    def test_reverse_hop_resolves(self) -> None:
+        models = _forward_pair()
+        target = resolve_ref_target(
+            qualifiers=("orders",), source_model=models["customers"],
+            models_by_name=models)
+        assert target is not None
+        assert target.name == "orders"
+
+    def test_ambiguous_hop_skips_best_effort(self) -> None:
+        models = _forward_pair()
+        models["orders"].joins = [
+            *models["orders"].joins,
+            ModelJoin(target_model="customers",
+                      join_pairs=[["customer_id", "id"]],
+                      join_type=JoinType.INNER),
+        ]
+        assert resolve_ref_target(
+            qualifiers=("orders",), source_model=models["customers"],
+            models_by_name=models) is None
 
 
 class TestOrientedJoinIsFrozen:

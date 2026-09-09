@@ -1286,8 +1286,7 @@ def _refine_one_model_for_cli(
     )
     if not dry_run:
         model = SlayerModel.model_validate(upgraded)
-        # Save through inner so we don't re-trigger the load-time
-        # refinement / join-sync mirror loop.
+        # Save through inner so we don't re-trigger load-time refinement.
         run_sync(inner.save_model(model))
     return True
 

@@ -515,7 +515,7 @@ rec.root_model          # "orders"  (the bridge model that reaches both)
 # {"customers.name": "customers.name", "products.category": "products.category"}
 ```
 
-A root is valid when every requested item is reachable from it over the join graph — LEFT joins are directional (source → target), INNER joins traverse both ways. Among valid roots, the one with the fewest total join hops wins. Root-owned items come back as a bare leaf (`status`); joined items as a dotted path (`customers.regions.name`); aggregation suffixes are preserved (`revenue:sum`).
+A root is valid when every requested item is reachable from it over the join graph — every declared join traverses in both directions with flipped cardinality ([bidirectional traversal](models.md#bidirectional-traversal)). Among valid roots, the one with the fewest total join hops wins. Root-owned items come back as a bare leaf (`status`); joined items as a dotted path (`customers.regions.name`); aggregation suffixes are preserved (`revenue:sum`).
 
 When no single model reaches everything, `root_model` is `None`, `reachable` is `False`, and `coverage` lists the best partial roots (each with its reachable / unreachable items) so you can split the request into a multi-stage [`source_queries`](models.md#query-backed-models) query.
 

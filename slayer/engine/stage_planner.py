@@ -55,7 +55,7 @@ from slayer.core.errors import UnreachableFilterDroppedWarning
 from slayer.core.models import ModelMeasure, SlayerModel
 from slayer.engine.aggregate_input_paths import compute_aggregate_input_join_paths
 from slayer.engine.column_filter_paths import compute_column_filter_join_paths
-from slayer.core.join_walker import resolve_hop, walk
+from slayer.core.join_walker import resolve_hop, terminal_model, walk
 from slayer.engine.join_safety import (
     may_inline_crossing_inputs,
     provably_to_one,
@@ -1505,16 +1505,21 @@ def _assert_partition_key_attributable(
 
 def _shared_join_key_reroot(
     *, key: ValueKey, target_path: Tuple[str, ...], host_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel],
 ) -> Optional[ValueKey]:
     """A host-local dimension that IS a source-side join column of the single hop to the root: return the root's target-side ColumnKey, else ``None``."""
     if not isinstance(key, ColumnKey) or _key_host_path(key) or len(target_path) != 1:
         return None
-    root_join = next(
-        (j for j in host_model.joins if j.target_model == target_path[0]), None,
-    )
-    if root_join is None:
+    try:
+        edge = resolve_hop(
+            current=host_model, token=target_path[0],
+            models_by_name=models_by_name,
+        )
+    except AmbiguousJoinPathError:
         return None
-    for src, tgt in root_join.join_pairs:
+    if edge is None:
+        return None
+    for src, tgt in edge.join_pairs:
         if src == key.leaf:
             return key.model_copy(update={"leaf": tgt, "path": ()})
     return None
@@ -2118,8 +2123,11 @@ def _resolve_ref_anchor(
     if shared:
         # The ref rides the reverse path itself: bind to that chain
         # node (same related combination, D3) instead of re-walking.
+        # ``host_node`` carries walked MODEL names (reversed), so index it
+        # rather than a token lookup — ``tp`` tokens may be edge names.
         return (
-            lookup[tp[shared - 1]], host_node[: len(tp) - shared],
+            lookup[host_node[len(tp) - shared - 1]],
+            host_node[: len(tp) - shared],
             hp[shared:], host_node,
         )
     return host_model, host_node, hp, host_node
@@ -2317,6 +2325,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         hp = _key_host_path(g)
         shared = _shared_join_key_reroot(
             key=g, target_path=target_path, host_model=host_model,
+            models_by_name=models_by_name,
         )
         if shared is not None:
             # The join-key identity needs no join in the producer.
@@ -3525,16 +3534,12 @@ def _joined_column_type(
     if not parts:
         return None
     *hops, leaf = parts
-    current = source_model
-    visited = {current.name}
-    for hop in hops:
-        if not any(j.target_model == hop for j in current.joins):
-            return None
-        nxt = bundle.get_referenced_model(hop)
-        if nxt is None or nxt.name in visited:
-            return None
-        visited.add(nxt.name)
-        current = nxt
+    current = terminal_model(
+        root=source_model, path=tuple(hops),
+        models_by_name={m.name: m for m in bundle.referenced_models},
+    )
+    if current is None:
+        return None
     col = current.get_column(leaf)
     return col.type if col is not None else None
 
@@ -3590,18 +3595,12 @@ def _reject_opaque_grouping_dim(
 def _terminal_model_for_dotted(
     *, source_model: SlayerModel, hops: List[str], bundle: ResolvedSourceBundle,
 ) -> Optional[SlayerModel]:
-    """Walk ``hops`` join targets from ``source_model`` (None on a missing/circular hop), mirroring the binder's join walk."""
-    current = source_model
-    visited = {current.name}
-    for hop in hops:
-        if not any(j.target_model == hop for j in current.joins):
-            return None
-        nxt = bundle.get_referenced_model(hop)
-        if nxt is None or nxt.name in visited:
-            return None
-        visited.add(nxt.name)
-        current = nxt
-    return current
+    """Walk ``hops`` from ``source_model`` via the shared walker (None on a
+    missing/circular/ambiguous hop), mirroring the binder's join walk."""
+    return terminal_model(
+        root=source_model, path=tuple(hops),
+        models_by_name={m.name: m for m in bundle.referenced_models},
+    )
 
 
 def _resolve_saved_measure_ref(

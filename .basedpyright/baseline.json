@@ -27950,48 +27950,48 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 51,
-                    "endColumn": 67,
+                    "startColumn": 47,
+                    "endColumn": 63,
                     "lineCount": 1
                 }
             },
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 54,
-                    "endColumn": 69,
+                    "startColumn": 50,
+                    "endColumn": 65,
                     "lineCount": 1
                 }
             },
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 51,
-                    "endColumn": 67,
+                    "startColumn": 47,
+                    "endColumn": 63,
                     "lineCount": 1
                 }
             },
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 51,
-                    "endColumn": 59,
+                    "startColumn": 47,
+                    "endColumn": 55,
                     "lineCount": 1
                 }
             },
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 25,
-                    "endColumn": 74,
+                    "startColumn": 21,
+                    "endColumn": 70,
                     "lineCount": 1
                 }
             },
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 55,
-                    "endColumn": 66,
+                    "startColumn": 67,
+                    "endColumn": 78,
                     "lineCount": 1
                 }
             }
@@ -28126,6 +28126,70 @@
                     "endColumn": 55,
                     "lineCount": 1
                 }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 21,
+                    "endColumn": 36,
+                    "lineCount": 2
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 21,
+                    "endColumn": 77,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 21,
+                    "endColumn": 75,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 47,
+                    "endColumn": 73,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 21,
+                    "endColumn": 61,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 47,
+                    "endColumn": 55,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 21,
+                    "endColumn": 61,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 18,
+                    "endColumn": 76,
+                    "lineCount": 1
+                }
             }
         ],
         "./tests/test_dev1853_pushdown.py": [
@@ -28143,6 +28207,14 @@
                     "startColumn": 21,
                     "endColumn": 67,
                     "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 21,
+                    "endColumn": 37,
+                    "lineCount": 2
                 }
             },
             {
@@ -28328,6 +28400,14 @@
                 "range": {
                     "startColumn": 25,
                     "endColumn": 74,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 53,
+                    "endColumn": 73,
                     "lineCount": 1
                 }
             }
@@ -40912,6 +40992,24 @@
                 "range": {
                     "startColumn": 24,
                     "endColumn": 42,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./tests/test_schema_drift_typed.py": [
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 18,
+                    "endColumn": 23,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 18,
+                    "endColumn": 23,
                     "lineCount": 1
                 }
             }

@@ -43,6 +43,17 @@ other fans out.
 - THEN that orientation is one-to-many, is not provably to-one, and metrics crossing
   it broadcast
 
+### Requirement: dbt import declares each edge once
+The dbt/MetricFlow importer SHALL NOT synthesize reverse joins: a foreign→primary
+entity reference emits one `many_to_one` edge on the referencing model, and a peer
+join (two models sharing a primary/unique entity) is declared `one_to_one` only by
+the lexicographically smaller model — reverse traversal is automatic.
+
+#### Scenario: Shared primary entity declares one edge
+- WHEN two dbt semantic models declare the same primary entity
+- THEN exactly one one-to-one edge connects the pair, declared by the
+  lexicographically smaller model
+
 ## MODIFIED Requirements
 
 ### Requirement: Determination through to-one chains

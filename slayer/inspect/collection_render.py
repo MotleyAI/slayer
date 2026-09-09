@@ -279,7 +279,7 @@ def _oneliner_index_markdown(
             continue
         lines = [f"# Datasource: `{ds}` — {len(models)} model(s)"]
         for m in models:
-            joins = _join_targets(m)
+            joins = _join_targets(m, models)
             joins_str = (
                 ", ".join(f"`{t}`" for t in joins) if joins else "_(none)_"
             )

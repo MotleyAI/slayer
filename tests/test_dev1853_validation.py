@@ -141,8 +141,9 @@ class TestModelNameVsEdgeNameCollision:
                 ModelJoin(target_model="customers",
                           join_pairs=[["customer_id", "id"]], name="billing"),
             ]))
+            clashing = _model("billing", ["id"])
             with pytest.raises(ValueError, match="billing"):
-                await storage.save_model(_model("billing", ["id"]))
+                await storage.save_model(clashing)
 
 
 class TestSaveTimeExactInverse:
@@ -191,4 +192,5 @@ class TestSaveTimeExactInverse:
             ])
             await storage.save_model(customers)
             loaded = await storage.get_model("customers", data_source="ds")
-            assert loaded is not None and len(loaded.joins) == 1
+            assert loaded is not None
+            assert len(loaded.joins) == 1

@@ -31,6 +31,7 @@ __all__ = [
     "edges_between",
     "neighbors",
     "resolve_hop",
+    "terminal_model",
     "walk",
 ]
 
@@ -167,3 +168,23 @@ def walk(
         chain.append(edge)
         current = nxt
     return chain
+
+
+def terminal_model(
+    *,
+    root: SlayerModel,
+    path: Sequence[str],
+    models_by_name: dict[str, SlayerModel],
+) -> SlayerModel | None:
+    """Best-effort terminal model of ``path`` from ``root``: ``None`` on an
+    unresolvable, revisiting, or ambiguous hop — for callers whose contract is
+    to skip rather than raise (the strict doors fail closed on their own)."""
+    models = dict(models_by_name)
+    models.setdefault(root.name, root)
+    try:
+        chain = walk(root=root, path=path, models_by_name=models)
+    except AmbiguousJoinPathError:
+        return None
+    if chain is None:
+        return None
+    return models.get(chain[-1].target_model) if chain else root

@@ -18,6 +18,8 @@ import logging
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from slayer.core.errors import AmbiguousJoinPathError
+from slayer.core.join_walker import neighbors, resolve_hop
 from slayer.core.enums import (
     DEFAULT_AGGREGATIONS_BY_TYPE,
     PRIMARY_KEY_AGGREGATIONS,
@@ -362,33 +364,58 @@ def _walk_join_paths(
     models_by_name: dict[str, SlayerModel],
     max_depth: int,
 ) -> list[tuple[list[str], SlayerModel]]:
-    """BFS the join graph from ``root`` up to ``max_depth`` hops.
+    """BFS the join graph from ``root`` up to ``max_depth`` hops, in either
+    traversal direction (DEV-1853).
 
     Returns a list of (path, target_model) tuples where ``path`` is the
-    sequence of join-step names (in dotted-path form, e.g.
-    ``["customers", "regions"]`` for a two-hop walk). Diamond joins
-    naturally produce distinct path entries for the same target.
+    sequence of hop tokens the engine resolves — an edge's ``name`` when set,
+    else the neighbour model name. Diamond joins naturally produce distinct
+    path entries for the same target.
 
-    Cycles are bounded by depth alone — within ``max_depth``, a
-    ``A→B→A`` revisit is allowed (a legitimate query shape when the
-    join columns differ); past ``max_depth`` the BFS terminates.
+    Only unambiguously resolvable tokens are emitted (a parallel unnamed pair
+    is unaddressable), and model-revisiting paths are excluded — both mirror
+    the engine's fail-closed resolution, so every emitted dotted field is
+    actually queryable.
     """
     out: list[tuple[list[str], SlayerModel]] = []
     if max_depth <= 0:
         return out
-    queue: list[tuple[SlayerModel, list[str]]] = [(root, [])]
+    queue: list[tuple[SlayerModel, list[str], set[str]]] = [
+        (root, [], {root.name}),
+    ]
     while queue:
-        current, path = queue.pop(0)
+        current, path, visited = queue.pop(0)
         if len(path) >= max_depth:
             continue
-        for join in current.joins:
-            target = models_by_name.get(join.target_model)
-            if target is None or target.hidden:
+        for edge in neighbors(model=current, models_by_name=models_by_name):
+            target = models_by_name.get(edge.target_model)
+            if target is None or target.hidden or target.name in visited:
                 continue
-            new_path = [*path, join.target_model]
+            token = _resolvable_token(
+                current=current, edge=edge, models_by_name=models_by_name,
+            )
+            if token is None:
+                continue
+            new_path = [*path, token]
             out.append((new_path, target))
-            queue.append((target, new_path))
+            queue.append((target, new_path, {*visited, target.name}))
     return out
+
+
+def _resolvable_token(
+    *, current: SlayerModel, edge, models_by_name: dict[str, SlayerModel],
+) -> str | None:
+    """The engine-resolvable hop token for ``edge`` (name first), or ``None``
+    when the hop is unaddressable (a parallel unnamed pair)."""
+    token = edge.name or edge.target_model
+    try:
+        if resolve_hop(
+            current=current, token=token, models_by_name=models_by_name,
+        ) is None:
+            return None
+    except AmbiguousJoinPathError:
+        return None
+    return token
 
 
 def _path_dotted(path: list[str]) -> str:

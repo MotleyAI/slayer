@@ -431,9 +431,11 @@ class TestNoCommonRoot:
         # order-world items with incomparable hop profiles, so they survive
         # alongside orders (divergences.md class (d)).
         names = {c.model_name for c in rec.coverage}
-        assert "orders" in names and "agents" in names
+        assert "orders" in names
+        assert "agents" in names
         assert "tickets" not in names
-        assert "products" in names and "customers" in names
+        assert "products" in names
+        assert "customers" in names
 
 
 # --------------------------------------------------------------------------

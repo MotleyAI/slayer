@@ -51,7 +51,7 @@ from slayer.core.keys import (
     column_path,
     substitute_value_keys,
 )
-from slayer.core.join_walker import resolve_hop
+from slayer.core.join_walker import resolve_hop, terminal_model
 from slayer.core.models import Aggregation
 from slayer.core.refs import (
     EXPRESSION_SOURCE_KINDS as _EXPRESSION_SOURCE_KINDS,
@@ -5425,7 +5425,9 @@ class SQLGenerator:
     ) -> "Optional[exp.Expression]":
         """The rendered expression for a derived (``ColumnSqlKey``) column."""
         if key.path:
-            owner_model = bundle.get_referenced_model(key.path[-1])
+            owner_model = self._walk_join_path_model(
+                source_model=source_model, path=key.path, bundle=bundle,
+            )
             if owner_model is None:
                 return None
             owner_relation = "__".join(key.path)
@@ -5520,13 +5522,16 @@ class SQLGenerator:
             )
         if isinstance(time_column, ColumnSqlKey):
             if time_column.path:
-                joined_model = bundle.get_referenced_model(time_column.path[-1])
+                joined_model = self._walk_join_path_model(
+                    source_model=source_model, path=time_column.path,
+                    bundle=bundle,
+                )
                 if joined_model is None:
                     raise ValueError(
                         f"Time dimension references derived column "
-                        f"{time_column.column_name!r} on joined model "
-                        f"{time_column.path[-1]!r} which is not in the resolved "
-                        f"source bundle.",
+                        f"{time_column.column_name!r} over join path "
+                        f"{'.'.join(time_column.path)!r} which does not "
+                        f"resolve from the source bundle.",
                     )
                 # A joined derived TIME dim whose sql crosses a further join must anchor inner refs at the host-path
                 # alias, not the bare direct-join alias, or the FROM references an unjoined table.
@@ -5571,7 +5576,7 @@ class SQLGenerator:
             sql=col.sql,
             model=source_model,
             alias_path=source_relation,
-            resolve_model=bundle.get_referenced_model,
+            models_by_name={m.name: m for m in bundle.referenced_models},
             dialect=self.dialect,
             owner_path=owner_path,
             alias_resolver=self._join_alias_resolver(resolver_root),
@@ -5684,7 +5689,9 @@ class SQLGenerator:
             elif isinstance(k, ColumnSqlKey):
                 _add(k.path)
                 model = (
-                    bundle.get_referenced_model(k.path[-1]) if k.path
+                    self._walk_join_path_model(
+                        source_model=source_model, path=k.path, bundle=bundle,
+                    ) if k.path
                     else source_model
                 )
                 if model is not None:
@@ -5760,16 +5767,12 @@ class SQLGenerator:
                 )
 
     def _walk_join_path_model(self, *, source_model, path, bundle):
-        """The terminal model of a join ``path`` walked from ``source_model``,"""
-        current = source_model
-        for hop in path:
-            if not any(j.target_model == hop for j in current.joins):
-                return None
-            nxt = bundle.get_referenced_model(hop)
-            if nxt is None:
-                return None
-            current = nxt
-        return current
+        """The terminal model of a join ``path`` walked from ``source_model``
+        via the shared walker (tokens may be edge names or reverse hops)."""
+        return terminal_model(
+            root=source_model, path=tuple(path),
+            models_by_name={m.name: m for m in bundle.referenced_models},
+        )
 
     def _build_agg_render_spec_from_planned(  # NOSONAR(S3776) — sequential isinstance dispatch over StarKey / ColumnKey / ColumnSqlKey with helper extractions for aggregation-def lookup, kwarg path validation, and explicit-time-arg resolution. Further splitting would scatter the per-source-kind contract.
         self,

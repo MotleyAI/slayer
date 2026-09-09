@@ -30,6 +30,7 @@ from sqlglot.errors import ParseError
 
 from slayer.core.enums import DataType
 from slayer.core.errors import ModeASqlParseError, UnknownReferenceError
+from slayer.core.join_walker import terminal_model
 from slayer.core.keys import (
     REGROUP_LEAF_PREFIX,
     ArithmeticKey,
@@ -221,7 +222,7 @@ class ScopeFrame(BaseModel):
             sql=prequoted,
             model=self.root_model,
             alias_path=self.root_relation,
-            resolve_model=self.bundle.get_referenced_model,
+            models_by_name=self._models_by_name(),
             dialect=self.dialect.sqlglot_name,
             owner_path=(),
             alias_resolver=self._alias_resolver(),
@@ -272,6 +273,10 @@ class ScopeFrame(BaseModel):
 
     def _default_location(self) -> str:
         return f"Mode-A SQL in scope rooted at model {self.root_model.name!r}"
+
+    def _models_by_name(self) -> dict:
+        """The bundle's model collection, for the shared bidirectional walker."""
+        return {m.name: m for m in self.bundle.referenced_models}
 
     def _alias_resolver(self) -> Callable[[Tuple[str, ...]], str]:
         """The WP3 registry-backed alias resolver for this scope (DEV-1743):
@@ -387,7 +392,7 @@ class ScopeFrame(BaseModel):
                 sql=raw_sql,
                 model=model,
                 alias_path=alias_path,
-                resolve_model=self.bundle.get_referenced_model,
+                models_by_name=self._models_by_name(),
                 dialect=self.dialect.sqlglot_name,
                 owner_path=owner_path,
                 alias_resolver=self._alias_resolver(),
@@ -409,7 +414,7 @@ class ScopeFrame(BaseModel):
                 sql=prequoted,
                 model=self.root_model,
                 alias_path=self.root_relation,
-                resolve_model=self.bundle.get_referenced_model,
+                models_by_name=self._models_by_name(),
                 dialect=self.dialect.sqlglot_name,
                 owner_path=(),
                 alias_resolver=self._alias_resolver(),
@@ -436,7 +441,11 @@ class ScopeFrame(BaseModel):
             if not ref.path:
                 model = self.root_model
             else:
-                model = self.bundle.get_referenced_model(ref.path[-1])
+                # Walk the path — tokens may be edge names (DEV-1853).
+                model = terminal_model(
+                    root=self.root_model, path=ref.path,
+                    models_by_name=self._models_by_name(),
+                )
             if model is None:
                 return None
             col = next((c for c in model.columns if c.name == ref.leaf), None)

@@ -51,7 +51,7 @@ from slayer.core.keys import (
     normalize_scalar,
     prepend_value_key,
 )
-from slayer.core.join_walker import neighbors, resolve_hop
+from slayer.core.join_walker import neighbors, resolve_hop, terminal_model
 from slayer.core.models import SlayerModel
 from slayer.core.query import TimeDimension
 from slayer.core.scope import ModelScope, StageSchema
@@ -534,10 +534,13 @@ def _walk_join_chain(
     for hop in hop_path:
         edge = resolve_hop(current=current, token=hop, models_by_name=models_by_name)
         if edge is None:
-            reachable = [
-                e.target_model
+            # Valid hop tokens are neighbour models AND edge names.
+            reachable = sorted({
+                token
                 for e in neighbors(model=current, models_by_name=models_by_name)
-            ]
+                for token in (e.target_model, e.name)
+                if token
+            })
             raise UnknownReferenceError(
                 name=".".join(parts),
                 scope_kind="ModelScope",
@@ -741,13 +744,19 @@ def _reject_round_trip(
 ) -> None:
     """Reject a re-anchored measure whose join path revisits a model on the
     host→target chain (round trip) — parity with the circular-join rejection."""
+    models_by_name = {m.name: m for m in bundle.referenced_models}
+    models_by_name.setdefault(host.name, host)
     for sub in walk_value_keys(host_key):
         path = getattr(sub, "path", None)
         if not path:
             continue
         visited = {host.name}
+        current = host
         for hop in path:
-            nxt = bundle.get_referenced_model(hop)
+            # Tokens may be edge names — resolve via the shared walker.
+            edge = resolve_hop(
+                current=current, token=hop, models_by_name=models_by_name)
+            nxt = models_by_name.get(edge.target_model) if edge else None
             if nxt is None:
                 break
             if nxt.name in visited:
@@ -758,6 +767,7 @@ def _reject_round_trip(
                     f"(the identical hand-written path is rejected as circular)."
                 )
             visited.add(nxt.name)
+            current = nxt
 
 
 def _resolve_saved_measure(
@@ -1094,6 +1104,18 @@ def _bind_agg(
     )
 
 
+def _walk_tokens_best_effort(
+    *, host: SlayerModel, path, bundle: ResolvedSourceBundle,
+) -> Optional[SlayerModel]:
+    """Terminal model of ``path`` from ``host`` via the shared walker (tokens
+    may be edge names); ``None`` when a hop doesn't resolve — callers skip
+    their validation best-effort."""
+    return terminal_model(
+        root=host, path=tuple(path),
+        models_by_name={m.name: m for m in bundle.referenced_models},
+    )
+
+
 def _resolve_column_filter_key(
     *, source, bundle: ResolvedSourceBundle,
 ) -> Optional[SqlExprKey]:
@@ -1109,12 +1131,9 @@ def _resolve_column_filter_key(
     host = bundle.source_model
     if host is None:
         return None
-    current: SlayerModel = host
-    for hop in path:
-        nxt = bundle.get_referenced_model(hop)
-        if nxt is None:
-            return None
-        current = nxt
+    current = _walk_tokens_best_effort(host=host, path=path, bundle=bundle)
+    if current is None:
+        return None
     col = next((c for c in current.columns if c.name == leaf), None)
     if col is None or not col.filter:
         return None
@@ -1147,12 +1166,10 @@ def _resolve_agg_owner(
     if host is None:
         return None, None
     leaf = getattr(source, "leaf", None) or getattr(source, "column_name", None)
-    current: SlayerModel = host
-    for hop in tuple(getattr(source, "path", ())):
-        nxt = bundle.get_referenced_model(hop)
-        if nxt is None:
-            return None, None
-        current = nxt
+    current = _walk_tokens_best_effort(
+        host=host, path=tuple(getattr(source, "path", ())), bundle=bundle)
+    if current is None:
+        return None, None
     return current, leaf
 
 

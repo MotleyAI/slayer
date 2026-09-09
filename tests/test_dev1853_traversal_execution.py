@@ -17,7 +17,7 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import JoinCardinality, JoinType
-from slayer.core.models import ModelMeasure
+from slayer.core.models import Column, ModelMeasure
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 
@@ -220,3 +220,27 @@ class TestReverseClosure:
                 measures=[{"formula": "orders.total_amount", "name": "t"}]))
             got = {r["customers.name"]: r["customers.t"] for r in resp.data}
             assert got == CHAIN_AMOUNT_BY_NAME
+
+    async def test_drift_touched_set_expands_in_reverse(self, fwd_engine) -> None:
+        # Schema-drift attribution reaches declaring models from the target
+        # side of their edges.
+        touched = {"regions"}
+        await fwd_engine._expand_join_graph(touched=touched, data_source="test")
+        assert {"customers", "orders"} <= touched
+
+    async def test_mode_a_column_over_a_reverse_only_path(self) -> None:
+        # Mode-A free SQL resolves the same reverse hop Mode-B does.
+        with tempfile.TemporaryDirectory() as d:
+            engine = await chain_engine(d)
+            storage = engine.storage
+            cust = await storage.get_model("customers", data_source="test")
+            assert cust is not None
+            cust.columns = [
+                *cust.columns, Column(name="o_status", sql="orders.status"),
+            ]
+            await storage.save_model(cust)
+            resp = await engine.execute(SlayerQuery(
+                source_model="customers", dimensions=["name", "o_status"]))
+            assert rows_set(
+                resp, "customers.name", "customers.o_status",
+            ) == CHAIN_REVERSE_DIMS_LEFT

@@ -13,7 +13,9 @@ from collections.abc import AsyncIterator
 
 import pytest
 
-from slayer.core.enums import TimeGranularity
+from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.errors import AggregationNotAllowedError
+from slayer.core.models import Column, ModelMeasure
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 
@@ -82,7 +84,8 @@ class TestNamedTerminalMetadata:
         # Response metadata resolves the terminal column from the resolved
         # edge — the label lives on customers.signup_at.
         meta = resp.attributes.dimensions.get(key)
-        assert meta is not None and meta.label == "Signup date"
+        assert meta is not None
+        assert meta.label == "Signup date"
 
     async def test_cross_model_aggregate_reroots_over_the_named_edge(
         self, named_engine,
@@ -123,3 +126,92 @@ class TestNamedEdgeInFilters:
             filters=["billing_customer.tier = 'gold'"]))
         # Orders billed to Alice (gold): o1 ok, o2 new.
         assert rows_set(resp, "orders.status") == {("ok",), ("new",)}
+
+
+class TestNamedEdgeValidationConsumers:
+    """Validation/metadata consumers resolve path tokens through the shared
+    walker — a named-edge token must not silently skip them."""
+
+    @staticmethod
+    async def _augment_customers(engine: SlayerQueryEngine) -> None:
+        """Add a filtered column, an agg restriction, and a reverse measure."""
+        storage = engine.storage
+        cust = await storage.get_model("customers", data_source="test")
+        assert cust is not None
+        cust.columns = [*cust.columns, Column(
+            name="gold_spend", sql="spend", filter="tier = 'gold'",
+            type=DataType.DOUBLE), Column(
+            name="tier_uc", sql="UPPER(tier)", type=DataType.TEXT), Column(
+            name="signup_day", sql="signup_at", type=DataType.TIMESTAMP)]
+        for col in cust.columns:
+            if col.name == "spend":
+                col.allowed_aggregations = ["sum"]
+        cust.measures = [*cust.measures, ModelMeasure(
+            name="total_b", formula="billing_customer.amount:sum")]
+        await storage.save_model(cust)
+
+    async def test_column_filter_applies_over_the_named_edge(
+        self, named_engine,
+    ) -> None:
+        await self._augment_customers(named_engine)
+        resp = await named_engine.execute(SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "billing_customer.gold_spend:sum",
+                       "name": "g"}]))
+        # Gold customers only (Alice 100 + Cara 60), not the full 310.
+        assert resp.data[0]["orders.g"] == 160.0
+
+    async def test_disallowed_aggregation_rejected_over_the_named_edge(
+        self, named_engine,
+    ) -> None:
+        await self._augment_customers(named_engine)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "billing_customer.spend:avg", "name": "a"}])
+        with pytest.raises(AggregationNotAllowedError):
+            await named_engine.execute(query)
+
+    async def test_round_trip_measure_rejected_over_the_named_edge(
+        self, named_engine,
+    ) -> None:
+        await self._augment_customers(named_engine)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "billing_customer.total_b", "name": "r"}])
+        with pytest.raises(ValueError, match="Round-trip"):
+            await named_engine.execute(query)
+
+    async def test_derived_dimension_over_the_named_edge(
+        self, named_engine,
+    ) -> None:
+        await self._augment_customers(named_engine)
+        resp = await named_engine.execute(SlayerQuery(
+            source_model="orders", dimensions=["billing_customer.tier_uc"]))
+        assert rows_set(resp, "orders.billing_customer.tier_uc") == \
+            {("GOLD",), ("SILVER",)}
+
+    async def test_derived_time_dimension_over_the_named_edge(
+        self, named_engine,
+    ) -> None:
+        await self._augment_customers(named_engine)
+        resp = await named_engine.execute(SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="billing_customer.signup_day"),
+                granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "amount:sum", "name": "t"}]))
+        months = {str(r["orders.billing_customer.signup_day"])[:7]: r["orders.t"]
+                  for r in resp.data}
+        assert months == PARALLEL_BILLING_MONTH_AMOUNTS
+
+    async def test_order_by_a_non_projected_named_edge_column(
+        self, named_engine,
+    ) -> None:
+        """The hidden host-grain MIN/MAX order wrap walks the named edge."""
+        resp = await named_engine.execute(SlayerQuery(
+            source_model="orders", dimensions=["status"],
+            measures=[{"formula": "amount:sum", "name": "t"}],
+            order=[{"column": "billing_customer.name", "direction": "desc"}]))
+        # Desc by each group's max billing name: ok (Bob) before new (Alice).
+        assert [r["orders.status"] for r in resp.data] == ["ok", "new"]
+        assert [r["orders.t"] for r in resp.data] == [40.0, 20.0]

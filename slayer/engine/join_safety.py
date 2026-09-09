@@ -134,60 +134,72 @@ def audit_join_safety(
     for model in models:
         for join in model.joins:
             target = models_by_key.get((model.data_source, join.target_model))
-            if target is None:
-                continue
-            # Orient THIS declaration directly (never search by pairs — parallel
-            # edges may share them) — declared orientation and its inverse.
-            fwd_edge = OrientedJoin(
-                source_model=model.name, target_model=join.target_model,
-                join_pairs=[list(p) for p in join.join_pairs],
-                join_type=join.join_type, cardinality=join.cardinality,
-                name=join.name, declaring_model=model.name,
-            )
-            rev_edge = OrientedJoin(
-                source_model=join.target_model, target_model=model.name,
-                join_pairs=[[p[1], p[0]] for p in join.join_pairs],
-                join_type=join.join_type,
-                cardinality=invert_cardinality(join.cardinality),
-                name=join.name, declaring_model=model.name,
-            )
-            fwd_ok = provably_to_one(edge=fwd_edge, target_model=target)
-            rev_ok = provably_to_one(edge=rev_edge, target_model=model)
-            if fwd_ok:
-                message = (
-                    f"Join {model.name} → {join.target_model} is provably "
-                    f"to-one; the reverse hop "
-                    f"{join.target_model} → {model.name} "
-                    f"{'is provably to-one' if rev_ok else 'fans out'}."
-                )
-            else:
-                message = (
-                    f"Join {model.name} → {join.target_model} is unproven: "
-                    f"metrics crossing it will broadcast rather than join "
-                    f"through. Remedies: {_UNPROVEN_REMEDY}."
-                )
-            findings.append(JoinSafetyFinding(
-                data_source=model.data_source,
-                model=model.name,
-                target_model=join.target_model,
-                message=message,
-                severity="warning" if not fwd_ok else "info",
-                forward_provably_to_one=fwd_ok,
-                reverse_provably_to_one=rev_ok,
-            ))
+            if target is not None:
+                findings.append(_edge_finding(model=model, join=join, target=target))
     if detection is not None:
-        for finding in detection.findings:
-            if finding.verdict is CardinalityVerdict.CONTRADICTS_HARD:
-                findings.append(JoinSafetyFinding(
-                    data_source=finding.data_source,
-                    model=finding.model,
-                    target_model=finding.target_model,
-                    message=(
-                        f"Join {finding.model} → {finding.target_model} declares "
-                        f"{finding.stored}, but cardinality detection contradicts "
-                        f"it (observed {finding.detected})."
-                    ),
-                    severity="error",
-                    contradiction=True,
-                ))
+        findings.extend(
+            _contradiction_finding(finding)
+            for finding in detection.findings
+            if finding.verdict is CardinalityVerdict.CONTRADICTS_HARD
+        )
     return findings
+
+
+def _edge_finding(
+    *, model: SlayerModel, join, target: SlayerModel
+) -> JoinSafetyFinding:
+    """Provability of one declared edge in both orientations. Orients THIS
+    declaration directly (never searches by pairs — parallel edges may share
+    them)."""
+    fwd_edge = OrientedJoin(
+        source_model=model.name, target_model=join.target_model,
+        join_pairs=[list(p) for p in join.join_pairs],
+        join_type=join.join_type, cardinality=join.cardinality,
+        name=join.name, declaring_model=model.name,
+    )
+    rev_edge = OrientedJoin(
+        source_model=join.target_model, target_model=model.name,
+        join_pairs=[[p[1], p[0]] for p in join.join_pairs],
+        join_type=join.join_type,
+        cardinality=invert_cardinality(join.cardinality),
+        name=join.name, declaring_model=model.name,
+    )
+    fwd_ok = provably_to_one(edge=fwd_edge, target_model=target)
+    rev_ok = provably_to_one(edge=rev_edge, target_model=model)
+    if fwd_ok:
+        message = (
+            f"Join {model.name} → {join.target_model} is provably "
+            f"to-one; the reverse hop "
+            f"{join.target_model} → {model.name} "
+            f"{'is provably to-one' if rev_ok else 'fans out'}."
+        )
+    else:
+        message = (
+            f"Join {model.name} → {join.target_model} is unproven: "
+            f"metrics crossing it will broadcast rather than join "
+            f"through. Remedies: {_UNPROVEN_REMEDY}."
+        )
+    return JoinSafetyFinding(
+        data_source=model.data_source,
+        model=model.name,
+        target_model=join.target_model,
+        message=message,
+        severity="warning" if not fwd_ok else "info",
+        forward_provably_to_one=fwd_ok,
+        reverse_provably_to_one=rev_ok,
+    )
+
+
+def _contradiction_finding(finding) -> JoinSafetyFinding:
+    return JoinSafetyFinding(
+        data_source=finding.data_source,
+        model=finding.model,
+        target_model=finding.target_model,
+        message=(
+            f"Join {finding.model} → {finding.target_model} declares "
+            f"{finding.stored}, but cardinality detection contradicts "
+            f"it (observed {finding.detected})."
+        ),
+        severity="error",
+        contradiction=True,
+    )

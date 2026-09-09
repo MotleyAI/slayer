@@ -216,9 +216,10 @@ class TestExcludedConjuncts:
         """Scenario: ambiguous hops fail closed — two unnamed edges
         tickets→agents make the measure's hop an error, retiring the silent
         first-match. DEV-1853 divergences.md class (d)."""
+        query = tq(measures=[SM], filters=["effort > 2"])
+        models = ambiguity_models()
         with pytest.raises(AmbiguousJoinPathError) as ei:
-            _plan(tq(measures=[SM], filters=["effort > 2"]),
-                  models=ambiguity_models())
+            _plan(query, models=models)
         msg = str(ei.value)
         assert "opened_by" in msg
         assert "closed_by" in msg
@@ -227,9 +228,10 @@ class TestExcludedConjuncts:
         """Scenario: ambiguous correlation hop fails closed — the measure's
         path is clean (tickets→reviews) but the filter crosses the ambiguous
         pair; drop+warn is retired. DEV-1853 divergences.md class (d)."""
+        query = tq(measures=[RV], filters=["agents.name = 'Ann'"])
+        models = ambiguity_models()
         with pytest.raises(AmbiguousJoinPathError) as ei:
-            _plan(tq(measures=[RV], filters=["agents.name = 'Ann'"]),
-                  models=ambiguity_models())
+            _plan(query, models=models)
         msg = str(ei.value)
         assert "opened_by" in msg
         assert "closed_by" in msg

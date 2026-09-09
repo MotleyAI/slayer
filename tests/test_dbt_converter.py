@@ -186,7 +186,8 @@ class TestBasicConversion:
 
 
     def test_peer_joins_from_shared_primary_entity(self) -> None:
-        """Two models with the same primary entity get bidirectional joins."""
+        """Shared primary entity → one declared edge (smaller name); reverse
+        traversal is automatic (DEV-1853)."""
         project = DbtProject(semantic_models=[
             DbtSemanticModel(
                 name="claim",
@@ -212,11 +213,9 @@ DbtMeasure(name="count", agg="count", expr="1")
         claim = next(m for m in result.models if m.name == "claim")
         claim_cov = next(m for m in result.models if m.name == "claim_coverage")
 
-        # claim should join to claim_coverage
+        # claim (smaller name) declares the edge; claim_coverage does not.
         assert any(j.target_model == "claim_coverage" for j in claim.joins)
-        # claim_coverage should join to claim
-        assert any(j.target_model == "claim" for j in claim_cov.joins)
-        # Join key should be claim_identifier on both sides
+        assert not any(j.target_model == "claim" for j in claim_cov.joins)
         claim_to_cov = next(j for j in claim.joins if j.target_model == "claim_coverage")
         assert claim_to_cov.join_pairs == [["claim_identifier", "claim_identifier"]]
 
@@ -248,7 +247,8 @@ DbtMeasure(name="number_of_policies", agg="sum", expr="1")
 
         apr_to_policy = next(j for j in apr.joins if j.target_model == "policy")
         assert apr_to_policy.join_pairs == [["agreement_identifier", "Policy_Identifier"]]
-        assert any(j.target_model == "agreement_party_role" for j in policy.joins)
+        # DEV-1853: no reverse declaration on the larger-named peer.
+        assert not any(j.target_model == "agreement_party_role" for j in policy.joins)
 
     def test_peer_join_not_duplicated_with_foreign(self) -> None:
         """Foreign entity join is not duplicated by the peer pass."""
@@ -273,7 +273,7 @@ DbtMeasure(name="number_of_policies", agg="sum", expr="1")
         assert len(customer_joins) == 1
 
     def test_three_model_peer_group(self) -> None:
-        """Three models sharing the same primary entity all get peer joins."""
+        """Peer-group edges declared once per pair, smaller name first (DEV-1853)."""
         project = DbtProject(semantic_models=[
             DbtSemanticModel(
                 name="a", model="a",
@@ -293,8 +293,8 @@ DbtMeasure(name="number_of_policies", agg="sum", expr="1")
         b = next(m for m in result.models if m.name == "b")
         c = next(m for m in result.models if m.name == "c")
         assert {j.target_model for j in a.joins} == {"b", "c"}
-        assert {j.target_model for j in b.joins} == {"a", "c"}
-        assert {j.target_model for j in c.joins} == {"a", "b"}
+        assert {j.target_model for j in b.joins} == {"c"}
+        assert {j.target_model for j in c.joins} == set()
 
 
 class TestMeasureConsolidation:

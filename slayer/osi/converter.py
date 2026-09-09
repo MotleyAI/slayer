@@ -19,7 +19,9 @@ import sqlglot
 import sqlglot.expressions as exp
 
 from slayer.core.enums import DataType, JoinCardinality
+from slayer.core.errors import AmbiguousJoinPathError
 from slayer.core.formula import parse_formula
+from slayer.core.join_walker import resolve_hop
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.refs import IDENTIFIER_RE as _IDENTIFIER_RE
 from slayer.engine.column_expansion import _root_scope_column_ids, resolve_ref_target
@@ -677,12 +679,20 @@ class OsiToSlayerConverter:
             quals, leaf = parts[:-1], parts[-1]
             if not quals or quals == [model.name]:
                 continue  # self / unqualified — validated at field-overlay time
-            # A multi-hop qualifier whose FIRST hop is not a join target is a
-            # physical ``schema.table.column`` ref — outside SLayer's contract.
-            if len(quals) >= 2 and not any(
-                j.target_model == quals[0] for j in model.joins
-            ):
-                continue
+            # A multi-hop qualifier whose FIRST hop is not a join hop (either
+            # direction) is a physical ``schema.table.column`` ref — outside
+            # SLayer's contract. An ambiguous hop IS a join hop: fall through
+            # so the walk flags the ref.
+            if len(quals) >= 2:
+                try:
+                    is_join_hop = resolve_hop(
+                        current=model, token=quals[0],
+                        models_by_name=self._models,
+                    ) is not None
+                except AmbiguousJoinPathError:
+                    is_join_hop = True
+                if not is_join_hop:
+                    continue
             target = self._walk_join_alias(host=model, alias=".".join(quals))
             if target is None or not any(c.name == leaf for c in target.columns):
                 bad.append(".".join(parts))
@@ -699,7 +709,7 @@ class OsiToSlayerConverter:
         return resolve_ref_target(
             qualifiers=tuple(alias.split(".")),
             source_model=host,
-            resolve_model=self._models.get,
+            models_by_name=self._models,
         )
 
     def _model_has_column(self, model_name: str, column: str) -> bool:

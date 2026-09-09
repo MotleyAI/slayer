@@ -42,6 +42,7 @@ from slayer.engine.cardinality import (
     compute_verdict,
     declares_solo_unique,
 )
+from slayer.core.join_walker import neighbors
 from slayer.core.policy import JoinFilterRuleset, SessionPolicy
 from slayer.core.format import format_number
 from slayer.core.models import (
@@ -1500,7 +1501,23 @@ class SlayerQueryEngine:
     async def _expand_join_graph(
         self, *, touched: "set[str]", data_source: Optional[str]
     ) -> None:
-        """Add transitively-reachable join targets to ``touched`` (visited-guarded)."""
+        """Add join-connected models to ``touched`` — either traversal
+        direction (DEV-1853). Best-effort: an unlistable datasource falls
+        back to the models already named."""
+        names: set[str] = set(touched)
+        if data_source is not None:
+            try:
+                names |= set(await self.storage.list_models(data_source))
+            except Exception:
+                pass
+        models_by_name: Dict[str, SlayerModel] = {}
+        for name in names:
+            try:
+                m = await self.storage.get_model(name, data_source=data_source)
+            except Exception:
+                m = None
+            if m is not None:
+                models_by_name[m.name] = m
         frontier = list(touched)
         visited: set[str] = set()
         while frontier:
@@ -1508,16 +1525,13 @@ class SlayerQueryEngine:
             if name in visited:
                 continue
             visited.add(name)
-            try:
-                m = await self.storage.get_model(name, data_source=data_source)
-            except Exception:
-                m = None
+            m = models_by_name.get(name)
             if m is None:
                 continue
-            for j in m.joins:
-                if j.target_model not in touched:
-                    touched.add(j.target_model)
-                    frontier.append(j.target_model)
+            for edge in neighbors(model=m, models_by_name=models_by_name):
+                if edge.target_model not in touched:
+                    touched.add(edge.target_model)
+                    frontier.append(edge.target_model)
 
     async def _maybe_raise_schema_drift(
         self,
@@ -2761,12 +2775,7 @@ class SlayerQueryEngine:
 
     async def _validate_mode_a_join_paths(self, model: SlayerModel) -> None:
         """Reject a broken dotted chain / legacy ``__`` split-alias at save time via the generator's resolver."""
-        if not model.joins:
-            return  # no join graph → no chain qualifiers to resolve
         loaded = await self._preload_join_targets(model)
-
-        def _resolve(name: str) -> Optional[SlayerModel]:
-            return loaded.get(name)
 
         # Parse with the datasource's own dialect (matching generation), else
         # valid non-Postgres Mode-A SQL could be mis-rejected. Missing → postgres.
@@ -2785,30 +2794,32 @@ class SlayerQueryEngine:
                 sql=sql,
                 model=model,
                 alias_path=model.name,
-                resolve_model=_resolve,
+                models_by_name={
+                    k: v for k, v in loaded.items() if v is not None
+                },
                 dialect=dialect,
             )
 
     async def _preload_join_targets(
         self, model: SlayerModel,
     ) -> Dict[str, Optional[SlayerModel]]:
-        """BFS-load join-reachable models into a sync dict; missing targets map to ``None``."""
+        """Load the datasource's models into a sync dict — the bidirectional
+        closure is the connected component (DEV-1853). Best-effort: an
+        unlistable datasource or unloadable peer maps to ``None``/is skipped."""
         loaded: Dict[str, Optional[SlayerModel]] = {model.name: model}
-        queue: List[str] = [j.target_model for j in (model.joins or [])]
-        while queue:
-            name = queue.pop()
+        try:
+            names = await self.storage.list_models(model.data_source)
+        except Exception:
+            names = [j.target_model for j in (model.joins or [])]
+        for name in names:
             if name in loaded:
                 continue
-            target: Optional[SlayerModel] = None
             try:
-                target = await self.storage.get_model(
+                loaded[name] = await self.storage.get_model(
                     name, data_source=model.data_source,
                 )
             except Exception:
-                target = None
-            loaded[name] = target
-            if target is not None:
-                queue.extend(j.target_model for j in (target.joins or []))
+                loaded[name] = None
         return loaded
 
     async def _validate_and_populate_cache(self, model: SlayerModel) -> SlayerModel:

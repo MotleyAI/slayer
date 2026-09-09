@@ -75,10 +75,11 @@ class TestGraphExecutes:
             tq(measures=[ModelMeasure(formula="reviews.stars:sum", name="rv")]),
         )
         assert float(resp.data[0]["tickets.rv"]) == pytest.approx(11.0)
+        ambiguous = tq(
+            measures=[ModelMeasure(formula="agents.score:sum", name="sm")],
+        )
         with pytest.raises(AmbiguousJoinPathError):
-            await engine.execute(tq(
-                measures=[ModelMeasure(formula="agents.score:sum", name="sm")],
-            ))
+            await engine.execute(ambiguous)
 
 
 def test_planner_entry_point_builds_the_producer() -> None:

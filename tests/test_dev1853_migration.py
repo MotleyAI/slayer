@@ -114,7 +114,8 @@ async def _seed_sqlite(db_path: str, payloads: list[dict]) -> SQLiteStorage:
 async def _joins_after_load(storage) -> tuple[list, list]:
     orders = await storage.get_model("orders", data_source="ds")
     customers = await storage.get_model("customers", data_source="ds")
-    assert orders is not None and customers is not None
+    assert orders is not None
+    assert customers is not None
     return orders.joins, customers.joins
 
 
@@ -134,7 +135,8 @@ class TestMirroredPairCollapses:
                 d, [_orders_v9([_fwd()]), _customers_v9([_rev()])])
             orders = await storage.get_model("orders", data_source="ds")
             customers = await storage.get_model("customers", data_source="ds")
-            assert orders is not None and customers is not None
+            assert orders is not None
+            assert customers is not None
             assert len(edges_between(source=orders, target=customers)) == 1
             assert len(edges_between(source=customers, target=orders)) == 1
 
@@ -151,9 +153,11 @@ class TestMirroredPairCollapses:
             storage = await _seed_yaml(
                 d, [_orders_v9([_fwd()]), _customers_v9([_rev()])])
             customers = await storage.get_model("customers", data_source="ds")
-            assert customers is not None and customers.joins == []
+            assert customers is not None
+            assert customers.joins == []
             orders = await storage.get_model("orders", data_source="ds")
-            assert orders is not None and len(orders.joins) == 1
+            assert orders is not None
+            assert len(orders.joins) == 1
 
     async def test_dedup_is_persisted_and_version_bumped(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -211,7 +215,8 @@ class TestNonExactPairsAreKept:
             assert len(customers_joins) == 1
             orders = await storage.get_model("orders", data_source="ds")
             customers = await storage.get_model("customers", data_source="ds")
-            assert orders is not None and customers is not None
+            assert orders is not None
+            assert customers is not None
             models = {"orders": orders, "customers": customers}
             with pytest.raises(AmbiguousJoinPathError):
                 resolve_hop(current=customers, token="orders",

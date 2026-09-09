@@ -319,9 +319,11 @@ async def _collect_referenced_models(
     try:
         peer_names = await storage.list_models(ds) if ds is not None else []
     except Exception as exc:  # best-effort; ambiguous/absent ds → forward only
+        # Sanitize for log injection (S5145): strip CR/LF before logging.
+        safe_ds = str(ds).replace("\r", "\\r").replace("\n", "\\n")
         logger.warning(
-            "list_models failed for ds %r (%s): reverse join edges will not "
-            "be discoverable for this query", ds, exc,
+            "list_models failed for ds '%s' (%s): reverse join edges will not "
+            "be discoverable for this query", safe_ds, exc,
         )
         peer_names = []
     for nm in peer_names:

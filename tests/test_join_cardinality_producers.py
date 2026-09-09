@@ -114,7 +114,7 @@ class TestDbtConverterMirror:
         rev = edges_between(source=customers, target=orders)[0]
         assert rev.cardinality is JoinCardinality.ONE_TO_MANY
 
-    def test_peer_mirror_stays_one_to_one(self) -> None:
+    def test_peer_edge_declared_once_stays_one_to_one(self) -> None:
         project = DbtProject(
             semantic_models=[
                 DbtSemanticModel(
@@ -136,10 +136,11 @@ class TestDbtConverterMirror:
             next(j for j in claim.joins if j.target_model == "claim_coverage").cardinality
             is JoinCardinality.ONE_TO_ONE
         )
-        assert (
-            next(j for j in cov.joins if j.target_model == "claim").cardinality
-            is JoinCardinality.ONE_TO_ONE
-        )
+        # DEV-1853: the larger-named peer declares nothing; the inverted
+        # orientation stays one_to_one.
+        assert not any(j.target_model == "claim" for j in cov.joins)
+        rev = edges_between(source=cov, target=claim)[0]
+        assert rev.cardinality is JoinCardinality.ONE_TO_ONE
 
 
 # ---------------------------------------------------------------------------

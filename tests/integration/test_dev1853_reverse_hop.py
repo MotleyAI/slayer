@@ -26,8 +26,6 @@ from tests._dev1853_fixtures import (
     rows_set,
 )
 
-pytestmark = pytest.mark.integration
-
 _HAS_PG = importlib.util.find_spec("pytest_postgresql") is not None
 if _HAS_PG:
     from pytest_postgresql import factories  # ALLOW(import-not-top): optional DB driver, guarded
@@ -75,6 +73,7 @@ async def test_reverse_hop_duckdb() -> None:
         assert rows_set(resp, *_KEYS) == CHAIN_REVERSE_DIMS_LEFT
 
 
+@pytest.mark.integration
 @pytest.mark.skipif(not _HAS_PG, reason="pytest_postgresql not installed")
 async def test_reverse_hop_postgres(postgresql, tmp_path) -> None:
     cur = postgresql.cursor()

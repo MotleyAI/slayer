@@ -68,15 +68,17 @@ class TestAmbiguousCorrelationFailsClosed:
     async def test_lenient_mode_errors_instead_of_drop_and_warn(
         self, unnamed_engine,
     ) -> None:
+        query = self._query(strict=False)
         with pytest.raises(AmbiguousJoinPathError) as ei:
-            await unnamed_engine.execute(self._query(strict=False))
+            await unnamed_engine.execute(query)
         msg = str(ei.value)
         assert "billing_customer_id" in msg
         assert "shipping_customer_id" in msg
 
     async def test_strict_mode_errors_the_same_way(self, unnamed_engine) -> None:
+        query = self._query(strict=True)
         with pytest.raises(AmbiguousJoinPathError):
-            await unnamed_engine.execute(self._query(strict=True))
+            await unnamed_engine.execute(query)
 
 
 class TestNamedEdgeTargetPathPushesDown:
@@ -94,6 +96,20 @@ class TestNamedEdgeTargetPathPushesDown:
         # Billing customers with an ok order: Alice (o1) 100 + Bob (o3) 150.
         assert resp.data[0]["orders.cs"] == pytest.approx(250.0)
         assert not dropped_filter_warnings(resp)
+
+    async def test_filter_sharing_the_named_edge_prefix_binds_to_the_chain(
+        self, named_engine,
+    ) -> None:
+        # The filter ref rides the aggregate's named-edge prefix (D3): it must
+        # bind to the reverse chain node, not resolve the token as a model.
+        resp = await named_engine.execute(SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "billing_customer.regions.pop:sum",
+                       "name": "rp"}],
+            filters=["billing_customer.tier = 'gold'"]))
+        assert len(resp.data) == 1
+        # Gold billing customers with orders: Alice — North counts once.
+        assert resp.data[0]["orders.rp"] == pytest.approx(100.0)
 
 
 class TestNamedEdgeCarriesTheCorrelation:

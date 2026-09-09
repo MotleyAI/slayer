@@ -287,6 +287,32 @@ def test_diamond_join_produces_two_distinct_paths() -> None:
     assert "warehouses.regions.name" in dim_names
 
 
+def test_reverse_hop_dimensions_enumerated() -> None:
+    # orders declares the only edge; the customers table still exposes the
+    # reverse-path orders dims (DEV-1853).
+    orders = _model(
+        name="orders",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="customer_id", type=DataType.INT),
+            Column(name="status", type=DataType.TEXT),
+        ],
+        joins=[ModelJoin(
+            target_model="customers", join_pairs=[["customer_id", "id"]])],
+    )
+    customers = _model(
+        name="customers",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="name", type=DataType.TEXT),
+        ],
+    )
+    cat = build_catalog(models_by_datasource={"ds1": [orders, customers]})
+    table = _find_table(cat, schema="ds1", table="customers")
+    dim_names = {d.name for d in table.dimensions}
+    assert "orders.status" in dim_names
+
+
 def test_bfs_depth_limit_truncates() -> None:
     a = _model(name="a", columns=[Column(name="id", type=DataType.INT, primary_key=True)],
                 joins=[ModelJoin(target_model="b", join_pairs=[["id", "id"]])])
