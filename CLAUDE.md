@@ -51,6 +51,7 @@ data dir, override with `$SLAYER_STORAGE`.
 - SQL generation uses sqlglot AST building, not string concatenation
 - Async-first: engine and storage methods are async; `execute_sync()` / `run_sync()` bridge for CLI/scripts
 - Core principle: adding a measure/field must never change result cardinality or other fields' values
+- `source_model` (the query population/root) is optional; omitted → inferred as the smallest model determining every queried dimension along provably to-one joins, from dims + field filters only, never measures (`docs/concepts/queries.md#population`)
 - Two expression layers — Mode A: free SQL in `Column.sql` / model `filters` (dotted join paths); Mode B: Python-AST DSL in formulas and query fields (dotted paths, colon aggregations, scalar-allowlist functions only). Rules: `docs/concepts/references.md`
 - Aggregations are query-time, colon syntax: `revenue:sum`, `*:count` for COUNT(*), `price:percentile(p=0.9)`
 - Result column keys are `model.column`: `revenue:sum` → `orders.revenue_sum`, `*:count` → `orders._count`; joined dimensions keep the full path (`orders.customers.regions.name`)

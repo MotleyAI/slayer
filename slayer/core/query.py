@@ -744,7 +744,9 @@ class SlayerQuery(BaseModel):
 
     version: int = 3
     name: str | None = None  # For referencing this query from other queries in a list
-    source_model: object  # str (model name), SlayerModel (inline), or ModelExtension
+    # Optional (DEV-1866): omitted → the population is inferred as the smallest
+    # dimension-determining model. str (model name), SlayerModel (inline), or ModelExtension.
+    source_model: object | None = None
     measures: Annotated[list[ModelMeasure] | None, BeforeValidator(_coerce_measures)] = None
 
     @model_validator(mode="before")

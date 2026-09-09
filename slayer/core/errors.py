@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import TYPE_CHECKING, Any, List, Sequence, Tuple
 
 if TYPE_CHECKING:
@@ -532,6 +533,79 @@ class UnresolvableDimensionJoinError(SlayerError, ValueError):
         if self.suggested_path:
             msg += f" Did you mean '{self.suggested_path}'?"
         return msg
+
+
+class PopulationErrorReason(str, Enum):
+    """Why dimension-determined population inference (DEV-1866) failed closed."""
+
+    TIE = "tie"
+    NO_VIABLE_CANDIDATE = "no_viable_candidate"
+    EMPTY_DETERMINATION = "empty_determination"
+    AMBIGUOUS_PATH = "ambiguous_path"
+    AMBIGUOUS_DATASOURCE = "ambiguous_datasource"
+    NO_DATASOURCE = "no_datasource"
+    SIBLING_STAGE = "sibling_stage"
+
+
+class PopulationInferenceError(SlayerError, ValueError):
+    """A rootless query's population could not be uniquely inferred (DEV-1866).
+
+    Carries the ``reason`` kind plus the ``candidates`` / ``datasources`` that
+    left it under-determined; ``str()`` is stable-prefixed for snapshots."""
+
+    _SUMMARIES = {
+        PopulationErrorReason.TIE: (
+            "Multiple minimal populations determine every queried dimension; "
+            "name one explicitly as `source_model`."
+        ),
+        PopulationErrorReason.NO_VIABLE_CANDIDATE: (
+            "No single model determines every queried dimension along "
+            "provably to-one join paths; name a `source_model` explicitly."
+        ),
+        PopulationErrorReason.EMPTY_DETERMINATION: (
+            "There is nothing to infer a population from: the query has no "
+            "dimensions and no field-typed filters. Add a dimension or name a "
+            "`source_model`."
+        ),
+        PopulationErrorReason.AMBIGUOUS_PATH: (
+            "A queried dimension's join path is ambiguous from every otherwise "
+            "viable population; name a `source_model` explicitly."
+        ),
+        PopulationErrorReason.AMBIGUOUS_DATASOURCE: (
+            "The referenced models exist together in more than one datasource; "
+            "pass a `data_source` to disambiguate."
+        ),
+        PopulationErrorReason.NO_DATASOURCE: (
+            "No single datasource holds every referenced model."
+        ),
+        PopulationErrorReason.SIBLING_STAGE: (
+            "A rootless stage's dimensions anchor at a sibling stage; name that "
+            "sibling as the stage's `source_model`."
+        ),
+    }
+
+    def __init__(
+        self,
+        reason: PopulationErrorReason,
+        *,
+        candidates: Sequence[str] | None = None,
+        datasources: Sequence[str] | None = None,
+        detail: str | None = None,
+    ) -> None:
+        self.reason = reason
+        self.candidates = list(candidates or [])
+        self.datasources = list(datasources or [])
+        extras: List[Tuple[str, str]] = []
+        if self.candidates:
+            extras.append(("candidates", repr(sorted(self.candidates))))
+        if self.datasources:
+            extras.append(("datasources", repr(sorted(self.datasources))))
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=self._SUMMARIES[reason],
+            scope=detail,
+            extras=extras,
+        ))
 
 
 class LegacyDunderAliasError(SlayerError, ValueError):

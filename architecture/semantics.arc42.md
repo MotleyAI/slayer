@@ -72,7 +72,8 @@ is the coercion from coarser to finer.
     [enforced: test:tests/test_distinct_dimension_values.py]; it may be named
     explicitly, may be any dataset, is reported back, and defaults to the
     smallest dataset determining every queried dimension — inferred from
-    dimensions and row-level filters only, never measures. [target: DEV-1866]
+    dimensions and row-level filters only, never measures.
+    [enforced: test:tests/test_law_population_invariance.py]
 13. **Positions**: every query expression is a field or a measure; dimensions
     and measures return the value, filters mask on it, order sorts by it — the
     expression evaluates identically in every position, compiled by

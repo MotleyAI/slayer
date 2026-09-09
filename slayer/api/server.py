@@ -106,6 +106,9 @@ class QueryResponse(BaseModel):
     columns: list[str]
     sql: str | None = None
     attributes: AttributesResponse | None = None
+    # DEV-1866: the effective population model and whether it was inferred.
+    population: str | None = None
+    population_inferred: bool = False
     # DEV-1745 (W5/D2): advisories about the query itself — slack-normalization
     # rewrites and filters that were dropped as unreachable. One list, each
     # entry tagged with a ``kind`` discriminator the consumer switches on.
@@ -334,11 +337,9 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                     explain=explain,
                 )
             else:
-                if request.source_model is None:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Either 'name' (run-by-name) or 'source_model' must be provided.",
-                    )
+                # DEV-1866: a rootless query (no name, no source_model) is valid —
+                # the engine infers the population. The query must still project
+                # something, which SlayerQuery validation enforces downstream.
                 payload = request.model_dump(exclude_none=True)
                 # ``variables`` is consumed at execute() level, not part of
                 # SlayerQuery's filter-substitution variables (those merge
@@ -375,6 +376,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 warnings=[
                     w.model_dump(mode="json") for w in (result.warnings or [])
                 ],
+                population=result.population,
+                population_inferred=result.population_inferred,
             )
             if dry_run or explain:
                 response.sql = result.sql
