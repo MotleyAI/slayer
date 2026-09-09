@@ -48,6 +48,15 @@ vocabulary (broadcast = default mode).
   cross-path refs span two branches with no root-local ref pushes as a
   multi-branch EXISTS; only root-local + cross mixing under OR/NOT still drops.
 
+- Facade browse-mode `SELECT *` scope pinned to row-preserving paths: catalog
+  dims across a fan-out hop (declared 1:N, inverted m2o/unknown, or any path
+  through one) carry `row_preserving=False` and are excluded from star
+  expansion — unbounded expansion across the now-reachable inverted edges
+  join-multiplied the root grain (jaffle demo: orders × items × tweets ×
+  supplies, OOM). Fan-out dims stay individually addressable.
+  (`test_catalog.py::test_row_preserving_flags_by_direction_and_cardinality`,
+  `test_translator.py::test_select_star_browse_mode_skips_fanout_paths`.)
+
 ## Class (d) — new errors / newly legal shapes
 
 - Parallel forward edges: silent first-match → `AmbiguousJoinPathError`

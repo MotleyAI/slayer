@@ -19,7 +19,7 @@ import logging
 from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.errors import AmbiguousJoinPathError
-from slayer.core.join_walker import neighbors, resolve_hop
+from slayer.core.join_walker import OrientedJoin, neighbors, resolve_hop
 from slayer.core.enums import (
     DEFAULT_AGGREGATIONS_BY_TYPE,
     PRIMARY_KEY_AGGREGATIONS,
@@ -65,6 +65,8 @@ class FacadeDimension(BaseModel):
     data_type: DataType
     is_time: bool
     dimension_ref: str
+    # False when the join path fans out: excluded from SELECT * expansion.
+    row_preserving: bool = True
 
 
 class FacadeJoin(BaseModel):
@@ -363,28 +365,29 @@ def _walk_join_paths(
     root: SlayerModel,
     models_by_name: dict[str, SlayerModel],
     max_depth: int,
-) -> list[tuple[list[str], SlayerModel]]:
+) -> list[tuple[list[str], SlayerModel, bool]]:
     """BFS the join graph from ``root`` up to ``max_depth`` hops, in either
     traversal direction (DEV-1853).
 
-    Returns a list of (path, target_model) tuples where ``path`` is the
-    sequence of hop tokens the engine resolves — an edge's ``name`` when set,
-    else the neighbour model name. Diamond joins naturally produce distinct
-    path entries for the same target.
+    Returns a list of (path, target_model, row_preserving) tuples where
+    ``path`` is the sequence of hop tokens the engine resolves — an edge's
+    ``name`` when set, else the neighbour model name — and ``row_preserving``
+    is True iff every hop keeps the root grain. Diamond joins naturally
+    produce distinct path entries for the same target.
 
     Only unambiguously resolvable tokens are emitted (a parallel unnamed pair
     is unaddressable), and model-revisiting paths are excluded — both mirror
     the engine's fail-closed resolution, so every emitted dotted field is
     actually queryable.
     """
-    out: list[tuple[list[str], SlayerModel]] = []
+    out: list[tuple[list[str], SlayerModel, bool]] = []
     if max_depth <= 0:
         return out
-    queue: list[tuple[SlayerModel, list[str], set[str]]] = [
-        (root, [], {root.name}),
+    queue: list[tuple[SlayerModel, list[str], set[str], bool]] = [
+        (root, [], {root.name}, True),
     ]
     while queue:
-        current, path, visited = queue.pop(0)
+        current, path, visited, preserving = queue.pop(0)
         if len(path) >= max_depth:
             continue
         for edge in neighbors(model=current, models_by_name=models_by_name):
@@ -397,9 +400,23 @@ def _walk_join_paths(
             if token is None:
                 continue
             new_path = [*path, token]
-            out.append((new_path, target))
-            queue.append((target, new_path, {*visited, target.name}))
+            still_preserving = preserving and _hop_preserves_grain(edge=edge)
+            out.append((new_path, target, still_preserving))
+            queue.append(
+                (target, new_path, {*visited, target.name}, still_preserving)
+            )
     return out
+
+
+def _hop_preserves_grain(*, edge: OrientedJoin) -> bool:
+    """True when traversing ``edge`` cannot fan out the root's rows. An
+    unknown cardinality passes only in the declared direction (the pre-DEV-1853
+    star-expansion surface); inverted-unknown fails safe."""
+    if edge.cardinality in (JoinCardinality.MANY_TO_ONE, JoinCardinality.ONE_TO_ONE):
+        return True
+    if edge.cardinality is None:
+        return edge.declaring_model == edge.source_model
+    return False
 
 
 def _resolvable_token(
@@ -484,7 +501,7 @@ def _eligible_custom_aggregations(*, model: SlayerModel) -> list[Aggregation]:
 def _metric_expansion(
     *,
     model: SlayerModel,
-    reachable: list[tuple[list[str], SlayerModel]],
+    reachable: list[tuple[list[str], SlayerModel, bool]],
 ) -> list[FacadeMetric]:
     local = _local_metrics_for(model=model)
     out = list(local)
@@ -492,7 +509,7 @@ def _metric_expansion(
     # and then prefixed with the dotted join path; the prefix is the same
     # in both ``name`` (catalog-facing) and ``measure_formula`` (engine-
     # facing), matching SLayer's DSL convention end-to-end (§5.1.5).
-    for path, joined_model in reachable:
+    for path, joined_model, _row_preserving in reachable:
         prefix = _path_dotted(path)
         joined_local = _local_metrics_for(model=joined_model)
         for m in joined_local:
@@ -658,7 +675,7 @@ def _agg_output_type(*, column: Column, agg: str) -> DataType | None:
 def _dimension_expansion(
     *,
     model: SlayerModel,
-    reachable: list[tuple[list[str], SlayerModel]],
+    reachable: list[tuple[list[str], SlayerModel, bool]],
 ) -> list[FacadeDimension]:
     out: list[FacadeDimension] = []
     for col in model.columns:
@@ -674,7 +691,7 @@ def _dimension_expansion(
                 dimension_ref=col.name,
             )
         )
-    for path, joined_model in reachable:
+    for path, joined_model, row_preserving in reachable:
         prefix = _path_dotted(path)
         for col in joined_model.columns:
             if col.hidden:
@@ -688,6 +705,7 @@ def _dimension_expansion(
                     data_type=col.type,
                     is_time=col.type in {DataType.DATE, DataType.TIMESTAMP},
                     dimension_ref=ref,
+                    row_preserving=row_preserving,
                 )
             )
     return out
