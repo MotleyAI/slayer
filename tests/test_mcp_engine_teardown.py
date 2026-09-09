@@ -104,11 +104,10 @@ async def _query_count(server, *, source_model: str) -> int:
             "format": "json",
         },
     )
-    # The query tool's json format appends a human-readable "Measure
-    # attributes:" footer after the JSON payload — decode just the leading
-    # JSON value and ignore the trailing text.
-    rows, _ = json.JSONDecoder().raw_decode(text)
-    row = rows[0] if isinstance(rows, list) else rows["data"][0]
+    # json output is a bare array, or a {"data", ...} envelope once
+    # attributes/warnings are present — strict-parse and unwrap either.
+    payload = json.loads(text)
+    row = payload[0] if isinstance(payload, list) else payload["data"][0]
     return int(row[f"{source_model}._count"])
 
 

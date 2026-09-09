@@ -285,7 +285,7 @@ class TestInQueryStrict:
         """Lenient mode: the broadcast is a warning, not an error. JSON output
         carrying warnings is the ``{"data": [...], "warnings": [...]}`` shape."""
         out = await _call(broadcast_server, query=_BROADCAST_QUERY, format="json")
-        payload, _ = json.JSONDecoder().raw_decode(out)
+        payload = json.loads(out)
         assert isinstance(payload, dict)
         assert payload["data"]      # rows returned, not an error
         assert payload["warnings"]  # broadcast surfaced as a warning
