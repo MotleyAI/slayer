@@ -68,7 +68,11 @@ from slayer.core.query import (
     SlayerQuery,
     TimeDimension,
 )
-from slayer.core.refs import canonical_agg_name
+from slayer.core.refs import (
+    AGG_REF_RE,
+    auto_name_from_expression,
+    canonical_agg_name,
+)
 from slayer.sql.naming import canonical_aggregate_alias
 from slayer.core.time_bounds import strip_frame_bounds
 from slayer.core.window_duration import parse_window_duration
@@ -1006,7 +1010,7 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
 
 
 def _regroup_inherited_filters(
-    prebound: PreboundQuery, filter_typings: Sequence[ConjunctTyping],
+    *, prebound: PreboundQuery, filter_typings: Sequence[ConjunctTyping],
 ) -> Tuple[List[BoundFilter], int]:
     """Stratum-0 field masks define every producer's population; nothing else inherits."""
     date_bounds: List[BoundFilter] = []
@@ -1796,7 +1800,7 @@ def _synthesize_wrap_attach(
         if dm.declared_name is not None
     }
     inherited, n_inherited_date = _regroup_inherited_filters(
-        prebound, filter_typings,
+        prebound=prebound, filter_typings=filter_typings,
     )
     producer_prebound, ordered_pks = _regroup_producer_prebound(
         pks=Grain.of(projected), aggs=[wrap_key], model=producer_model,
@@ -2621,7 +2625,9 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
         for agg in (*row_aggs, *combined_aggs, *cm_row, *cm_combined)
     }
 
-    inherited, n_inherited_date = _regroup_inherited_filters(prebound, filter_typings)
+    inherited, n_inherited_date = _regroup_inherited_filters(
+        prebound=prebound, filter_typings=filter_typings,
+    )
 
     # A combined producer keeps the consumer's dimension order (row producers use the alphabetical default).
     consumer_order: Dict[ValueKey, int] = {
@@ -3779,7 +3785,7 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
             label=td.label,
             type=DataType.TIMESTAMP,
         ))
-    seen_measure_keys: Dict[str, Tuple[str, ValueKey]] = {}
+    seen_measure_keys: Dict[str, Tuple[str, ValueKey, ModelMeasure]] = {}
     for m in (query.measures or []):
         formula = m.formula
         explicit_name = m.name
@@ -3806,18 +3812,28 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
         public_name = alias_name or canonical
         # Two DIFFERENT values whose DERIVED keys collide would silently share
         # a column (e.g. ``sum(amount - cost)`` vs ``sum(amount + cost)`` both
-        # sanitize to ``amount_cost_sum``, DEV-1826) — fail loudly. Scoped to
-        # unnamed entries: explicit-name collisions keep their dedicated
-        # declared-more-than-once errors downstream.
+        # sanitize to ``amount_cost_sum``, DEV-1826) — fail loudly; the SAME
+        # value merges into one column. Scoped to unnamed entries:
+        # explicit-name collisions keep their dedicated declared-more-than-once
+        # errors downstream.
         if alias_name is None:
             prior = seen_measure_keys.get(public_name)
-            if prior is not None and prior[1] != bound.value_key:
-                raise ValueError(
-                    f"Measures {prior[0]!r} and {formula!r} both derive the "
-                    f"result key {public_name!r} but compute different "
-                    f"values; rename one (set 'name') to disambiguate."
-                )
-            seen_measure_keys[public_name] = (formula, bound.value_key)
+            if prior is not None:
+                if prior[1] != bound.value_key:
+                    raise ValueError(
+                        f"Measures {prior[0]!r} and {formula!r} both derive "
+                        f"the result key {public_name!r} but compute different "
+                        f"values; rename one (set 'name') to disambiguate."
+                    )
+                if (m.label, m.type) != (prior[2].label, prior[2].type):
+                    raise ValueError(
+                        f"Measures {prior[0]!r} and {formula!r} merge into "
+                        f"one result column {public_name!r} but declare "
+                        f"different label/type; rename one (set 'name') to "
+                        f"disambiguate."
+                    )
+                continue
+            seen_measure_keys[public_name] = (formula, bound.value_key, m)
         fmt, desc = _format_description_for_measure_formula(
             scope=scope, bound=bound,
         )
@@ -3901,9 +3917,10 @@ def _canonical_alias_for_formula(
     parsed: Optional[ParsedExpr] = None,
 ) -> str:
     """Canonical public alias for a measure formula: ``canonical_aggregate_alias``
-    for an AggregateKey root, else text-shape recognition sanitised to a valid
-    identifier. The text shape runs over the CANONICAL colon-spelling rendering
-    of ``parsed`` when given (DEV-1826), so ``cumsum(sum(revenue))`` and
+    for an AggregateKey root, ``canonical_agg_name`` for a plain ``col:agg``
+    text shape, else the text sanitised via ``auto_name_from_expression``. The
+    text shape runs over the CANONICAL colon-spelling rendering of ``parsed``
+    when given (DEV-1826), so ``cumsum(sum(revenue))`` and
     ``cumsum(revenue:sum)`` derive one alias."""
     if bound is not None and isinstance(bound.value_key, AggregateKey):
         # stage_formula profile prefixes the join path relative to the stage (``customers.*:count`` → ``customers._count``).
@@ -3916,15 +3933,16 @@ def _canonical_alias_for_formula(
     text = (
         canonical_measure_text(parsed) if parsed is not None else formula.strip()
     )
-    if ":" in text and "(" not in text:
-        base, agg = text.rsplit(":", 1)
-        return canonical_agg_name(
-            measure_name=base, aggregation_name=agg,
-        )
-    return (
-        text.replace(".", "_").replace(":", "_").replace(" ", "_")
-            .replace("(", "_").replace(")", "_").replace(",", "_")
-    )
+    # Fullmatch only — a substring heuristic here once mis-captured arithmetic
+    # composites and leaked ``:``/``/`` into SQL aliases.
+    match = AGG_REF_RE.fullmatch(text)
+    if match is not None and match.group(3) is None:
+        base, agg = match.group(1), match.group(2)
+        if base.endswith(".*"):
+            prefix, star = base[:-2], "*"
+            return f"{prefix}.{canonical_agg_name(measure_name=star, aggregation_name=agg)}"
+        return canonical_agg_name(measure_name=base, aggregation_name=agg)
+    return auto_name_from_expression(text)
 
 
 def _source_column_names(
