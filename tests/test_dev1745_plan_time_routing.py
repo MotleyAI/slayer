@@ -1,18 +1,10 @@
-"""DEV-1745 (W3) — filter classification is plan-time; the generator consumes
-the plan verbatim (P-D: plan decides, render emits).
+"""DEV-1745 (W3) / DEV-1865 — the plan carries TYPED masks; the one lowering
+(``_lower_positions``) derives the outer-WHERE routing deterministically from
+them, and every render site consumes that one decision.
 
-The outer combined-SELECT WHERE wrapper (DEV-1503) currently decides at RENDER
-time: the generator re-walks ``planned_query.filters_by_phase`` with
-``walk_value_keys`` looking for AGGREGATE-phase filters that reference a
-filtered-local isolated aggregate, and builds its own id set. That is policy
-decided during emission.
-
-After this change the planner computes the routing and ``PlannedQuery`` carries
-it; the generator reads the field and never re-derives it.
-
-The decisive test is that the plan field is AUTHORITATIVE: clear it, and the
-outer WHERE disappears. A generator that re-walks would keep emitting it and
-the test fails — which is exactly the coupling being removed.
+The decisive test is that the plan's mask list is AUTHORITATIVE: clear it, and
+the outer WHERE disappears. A generator that re-walked the filters on its own
+would keep emitting it and the test fails — exactly the coupling removed.
 
 ``frame_bound_columns`` and the windowed ``_src`` residuals
 (``SrcFilterRewrite``) are already plan-side; the guards here pin that so the
@@ -30,7 +22,7 @@ from slayer.core.query import SlayerQuery
 from slayer.engine.planned import PlannedQuery
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import plan_query
-from slayer.sql.generator import SQLGenerator
+from slayer.sql.generator import SQLGenerator, _lower_positions
 
 from tests._engine_helpers import _engine_generate, _outer_select
 
@@ -87,23 +79,23 @@ def _outer_where_query() -> SlayerQuery:
 # --------------------------------------------------------------------------- #
 class TestPlanCarriesOuterWhereRouting:
 
-    def test_plan_declares_the_field_on_the_schema(self) -> None:
+    def test_plan_declares_the_masks_field_on_the_schema(self) -> None:
         """A DECLARED Pydantic field, not merely an attribute — ``model_copy``
         can graft an undeclared key onto an instance, so ``hasattr`` alone
         would not prove the schema owns it."""
-        assert "outer_where_filter_ids" in PlannedQuery.model_fields, (
-            "PlannedQuery must DECLARE the outer-WHERE routing field decided "
-            f"at plan time; fields are {sorted(PlannedQuery.model_fields)}"
+        assert "masks" in PlannedQuery.model_fields, (
+            "PlannedQuery must DECLARE the typed mask list the lowering "
+            f"routes from; fields are {sorted(PlannedQuery.model_fields)}"
         )
 
-    def test_field_is_populated_for_the_isolated_shape(self) -> None:
+    def test_lowering_routes_the_isolated_shape_outer(self) -> None:
         planned = plan_query(query=_outer_where_query(), bundle=_bundle())
-        assert list(planned.outer_where_filter_ids) == ["f0"], (
-            f"expected f0 routed to the outer WHERE, got "
-            f"{getattr(planned, 'outer_where_filter_ids', None)!r}"
+        (mask,) = planned.masks
+        assert _lower_positions(planned).outer_where_ids == [mask.slot_id], (
+            "expected the isolated-aggregate mask routed to the outer WHERE"
         )
 
-    def test_field_is_empty_without_an_isolated_aggregate(self) -> None:
+    def test_routing_is_empty_without_an_isolated_aggregate(self) -> None:
         plain = SlayerQuery(
             source_model="orders",
             dimensions=[{"formula": "status", "name": "status"}],
@@ -111,7 +103,7 @@ class TestPlanCarriesOuterWhereRouting:
             filters=["amount:sum > 100"],
         )
         planned = plan_query(query=plain, bundle=_bundle())
-        assert list(planned.outer_where_filter_ids) == []
+        assert _lower_positions(planned).outer_where_ids == []
 
     def test_the_isolated_plan_is_the_trigger(self) -> None:
         """Sanity-pin the shape the routing keys off — DEV-1838 D5: a
@@ -121,7 +113,7 @@ class TestPlanCarriesOuterWhereRouting:
             a.producer_root_model is None and a.attach_phase == "combined"
             for a in planned.regroup_attach_plans
         ), planned.regroup_attach_plans
-        assert planned.outer_where_filter_ids, (
+        assert _lower_positions(planned).outer_where_ids, (
             "the filter over the isolated aggregate must route to the outer "
             "WHERE"
         )
@@ -160,23 +152,16 @@ class TestGeneratorConsumesThePlanVerbatim:
         sql = await self._sql(_outer_where_query())
         assert self._has_outer_cm_where(sql), sql
 
-    async def test_clearing_the_plan_field_removes_the_outer_where(self) -> None:
-        """P-D: the plan is authoritative. A generator that re-walks the
-        filters at render time would ignore the cleared field and keep
-        emitting the outer WHERE.
-
-        Asserted on the outer WHERE specifically rather than on the predicate
-        text appearing anywhere: clearing the routing does not delete the
-        user's filter, it returns it to the default HAVING placement. Demanding
-        that ``> 100`` vanish from the whole query would be demanding that a
-        filter be silently dropped.
-        """
+    async def test_clearing_the_masks_removes_the_outer_where(self) -> None:
+        """P-D: the plan's mask list is authoritative. A generator that
+        re-walked the raw filters at render time would ignore the cleared
+        masks and keep emitting the outer WHERE."""
         planned = plan_query(query=_outer_where_query(), bundle=_bundle())
-        assert list(planned.outer_where_filter_ids) == ["f0"], (
-            "precondition: the plan must be POPULATED before clearing, "
+        assert _lower_positions(planned).outer_where_ids, (
+            "precondition: the routing must be POPULATED before clearing, "
             "otherwise clearing proves nothing"
         )
-        cleared = planned.model_copy(update={"outer_where_filter_ids": []})
+        cleared = planned.model_copy(update={"masks": []})
         gen = SQLGenerator(dialect="postgres")
         sql = gen.generate_from_planned(planned_query=cleared, bundle=_bundle())
         assert not self._has_outer_cm_where(sql), (
@@ -201,7 +186,7 @@ class TestFrameBoundColumnsStayPlanSide:
         )
 
     def test_plan_carries_frame_bound_columns(self) -> None:
-        """A DECLARED field, checked the same way as outer_where_filter_ids.
+        """A DECLARED field, checked the same way as masks.
         ``hasattr`` is always true for a field with a default_factory, so it
         could not fail regardless of planner behaviour."""
         assert "frame_bound_columns" in PlannedQuery.model_fields

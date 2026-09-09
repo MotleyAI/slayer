@@ -139,9 +139,11 @@ class TestEmptyBaseGrainPlanNode:
         ids = list(planned.empty_base_plan.host_filter_ids)
         assert ids, (
             "the host-local filter was not recorded on the node, so the "
-            "renderer would have to re-walk `filters_by_phase` to find it."
+            "renderer would have to re-walk the masks to find it."
         )
-        known = {f.id for f in planned.filters_by_phase}
+        known = {m.slot_id for m in planned.masks} | {
+            mf.id for mf in planned.mode_a_filters
+        }
         assert set(ids) <= known, (
             f"node references unknown filter ids: {set(ids) - known}"
         )

@@ -4,7 +4,7 @@ rather than by call site so one key can't render two ways. Column-like leaves an
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import sqlglot
 from pydantic import BaseModel, ConfigDict, Field
@@ -123,13 +123,18 @@ class CompositeFacilities(BaseModel):
 class AliasFacilities(BaseModel):
     """The aliases an earlier scope projected; its presence switches the five slotted kinds to
     ALIAS-EXCLUSIVE resolution (rebuilding from source in an alias-only CTE is wrong SQL). An
-    absent slot RAISES; ``table_by_slot_id`` carries the qualifier."""
+    absent slot RAISES; ``table_by_slot_id`` carries the qualifier.
+
+    ``composite_alias_slot_ids`` (DEV-1865): composite-keyed slots (computed
+    dimensions) whose keys ALSO resolve by alias — re-rendering one inline at a
+    post-aggregation scope would re-evaluate it at the wrong grain."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     slot_id_by_key: Dict[Any, str] = Field(default_factory=dict)
     available_alias_by_slot_id: Dict[str, str] = Field(default_factory=dict)
     table_by_slot_id: Dict[str, str] = Field(default_factory=dict)
+    composite_alias_slot_ids: Set[str] = Field(default_factory=set)
 
 
 class RenderContext(BaseModel):
@@ -309,6 +314,16 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
     """Render ``key`` to sqlglot AST in ``ctx``."""
     # ALIAS-EXCLUSIVE mode: intercepted before every scope branch so a miss RAISES.
     if ctx.aliases is not None and isinstance(key, _ALIAS_SLOTTED_KINDS):
+        return _render_via_alias(key, ctx)
+    # A composite dimension slot (computed dim) resolves by its grouped alias:
+    # re-rendering it inline at a post-aggregation scope re-evaluates the
+    # expression at the wrong grain (DEV-1865).
+    if (
+        ctx.aliases is not None
+        and ctx.aliases.composite_alias_slot_ids
+        and ctx.aliases.slot_id_by_key.get(key)
+        in ctx.aliases.composite_alias_slot_ids
+    ):
         return _render_via_alias(key, ctx)
 
     if isinstance(key, ColumnKey):

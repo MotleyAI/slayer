@@ -39,13 +39,13 @@ from tests._dev1747_fixtures import (
 )
 from tests._engine_helpers import _engine_generate
 
-from slayer.core.keys import Phase
-from slayer.engine.planned import OrderEntry, OrderScope
 from slayer.engine.stage_planner import plan_query
 from slayer.sql.generator import generate_from_planned
 from slayer.sql.render.order_terms import (
     OrderEnv,
+    OrderScope,
     OrderSlotNotMaterialisedError,
+    ScopedOrder,
     resolve_order_term,
 )
 from slayer.sql.dialects.base import SqlDialect
@@ -306,9 +306,9 @@ class TestOrderTargetMatrix:
 # ---------------------------------------------------------------------------
 class TestUnresolvableRaises:
     def test_resolver_raises_when_the_scope_lookup_misses(self) -> None:
-        entry = OrderEntry(
+        entry = ScopedOrder(
             slot_id="missing", direction="asc",
-            scope=OrderScope.CROSS_MODEL_CTE, phase=Phase.AGGREGATE,
+            scope=OrderScope.CROSS_MODEL_CTE,
         )
         env = OrderEnv(dialect=SqlDialect())
         with pytest.raises(OrderSlotNotMaterialisedError) as exc:
@@ -324,9 +324,9 @@ class TestUnresolvableRaises:
         reintroduce the silent drop, and a per-scope loop is what catches an
         arm added later without one."""
         for scope in OrderScope:
-            entry = OrderEntry(
+            entry = ScopedOrder(
                 slot_id="missing", direction="asc",
-                scope=scope, phase=Phase.AGGREGATE,
+                scope=scope,
             )
             env = OrderEnv(dialect=SqlDialect())
             with pytest.raises(OrderSlotNotMaterialisedError):

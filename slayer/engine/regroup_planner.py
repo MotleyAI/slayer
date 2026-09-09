@@ -1,37 +1,35 @@
 """The regroup primitive's structural core: an aggregation-based dimension groups
 by a value that exists only after aggregating at a finer grain. Owns the pieces
-shared by discovery and substitution; orchestration lives in ``stage_planner``."""
+shared by discovery and substitution, plus the position typing pass (every filter
+conjunct / order target is a field or a measure); orchestration lives in
+``stage_planner``."""
 
 from __future__ import annotations
 
 from typing import Dict, List, Mapping, NamedTuple, Optional, Tuple
 
 from slayer.core.enums import DataType
+from slayer.core.errors import PositionTypingError
 from slayer.core.grain import Grain
 from slayer.core.keys import (
     REGROUP_LEAF_PREFIX,
     AggregateKey,
     ArithmeticKey,
-    BetweenKey,
     ColumnKey,
     ColumnSqlKey,
-    InKey,
-    LiteralKey,
-    Phase,
-    ScalarCallKey,
-    SqlExprKey,
-    StarKey,
     TimeTruncKey,
     TransformKey,
     ValueKey,
     substitute_value_keys,
 )
 from slayer.engine.binding import BoundFilter, walk_value_keys
+from slayer.engine.planned import MaskTyping
 from slayer.engine.ranked_planner import RANKED_AGGREGATIONS
 from slayer.sql.naming import canonical_aggregate_alias
 
 __all__ = [
     "REGROUP_LEAF_PREFIX",
+    "ConjunctTyping",
     "RegroupPlaceholderRegistry",
     "dimension_partitioned_aggregates",
     "dimension_regroup_roots",
@@ -40,10 +38,9 @@ __all__ = [
     "combined_consumer_aggregates",
     "is_local_combined_regroup_ref",
     "split_top_level_and",
-    "conjunct_scope",
-    "classify_regroup_filter",
     "substitute_in_bound_filter",
     "reserved_prefix_columns",
+    "type_position_conjunct",
 ]
 
 #: Reused from ``ranked_planner`` so the two stay in step.
@@ -201,14 +198,18 @@ def _combined_consumer_kind(k: ValueKey) -> Optional[str]:
 def combined_consumer_aggregates(  # NOSONAR(S3776) — one cohesive discovery walk over measures + orders + filters; splitting scatters the shared seen-set / bucket / alias-map state.
     declared_measures, order_specs, *, row_agg_set: frozenset,
     bound_filters=(),
+    measure_typed_filter_indices: frozenset = frozenset(),
+    dim_keys: frozenset = frozenset(),
 ) -> CombinedConsumers:
     """One walk discovering every partitioned / cross-model ``AggregateKey`` destined
     for a COMBINED attach, reachable from a non-dimension measure, order spec, or
     filter. ``row_agg_set`` (partitioned aggregates already carrying a computed-dimension
-    ROW role) is excluded from ORDER-name and filter references — but NOT from measure
-    use — so a row-scope reference stays row-routed while a genuine combined consumer is
-    kept. Local and cross-model partitioned aggregates share these asymmetric exclusions;
-    a cross-model bare aggregate is kept from any position."""
+    ROW role) is excluded from ORDER-name and field-typed filter references — but NOT
+    from measure use or a measure-typed filter (its index in
+    ``measure_typed_filter_indices``), which evaluate at query grain — so a row-scope
+    reference stays row-routed while a genuine combined consumer is kept. Local and
+    cross-model partitioned aggregates share these asymmetric exclusions; a cross-model
+    bare aggregate is kept from any position."""
     buckets: Dict[str, List[AggregateKey]] = {
         "local_partitioned": [],
         "cross_model_partitioned": [],
@@ -257,8 +258,20 @@ def combined_consumer_aggregates(  # NOSONAR(S3776) — one cohesive discovery w
             _add(top)
             continue
         _walk_excluding_row(top)
-    for bf in (bound_filters or ()):
-        _walk_excluding_row(bf.value_key)
+    def _walk_grain_aware(k: ValueKey) -> None:
+        # A subtree equal to a query dimension's bound key references the
+        # GROUPED value — its inner aggregates keep their ROW role.
+        if k in dim_keys:
+            return
+        _add(k)
+        for c in k.children():
+            _walk_grain_aware(c)
+
+    for i, bf in enumerate(bound_filters or ()):
+        if i in measure_typed_filter_indices:
+            _walk_grain_aware(bf.value_key)
+        else:
+            _walk_excluding_row(bf.value_key)
     return CombinedConsumers(
         local_partitioned=buckets["local_partitioned"],
         cross_model_partitioned=buckets["cross_model_partitioned"],
@@ -266,44 +279,6 @@ def combined_consumer_aggregates(  # NOSONAR(S3776) — one cohesive discovery w
         public_alias=public_alias,
         declared_type=declared_type,
     )
-
-
-# Non-literal predicate-dependency leaves; a dim-aggregate is terminal but classified apart.
-_REF_LEAVES = (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey, AggregateKey)
-
-
-def _top_level_refs(
-    vk: ValueKey, dim_agg_set: frozenset,
-) -> Tuple[List[AggregateKey], List[ValueKey]]:
-    """Split ``vk``'s refs into (dim-aggregates, other non-literal refs), not descending into a dim-aggregate's subtree."""
-    dim_hits: List[AggregateKey] = []
-    other: List[ValueKey] = []
-
-    def _walk(k: ValueKey) -> None:
-        if isinstance(k, AggregateKey) and k in dim_agg_set:
-            dim_hits.append(k)
-            return
-        if isinstance(k, _REF_LEAVES):
-            # Asymmetric: a ref leaf is terminal (TimeTruncKey IS the ref, an
-            # aggregate's subtree is its own scope).
-            other.append(k)
-            return
-        if isinstance(k, TransformKey):
-            # Asymmetric: partition/time keys are transform machinery, not refs.
-            _walk(k.input)
-            return
-        if isinstance(k, (ArithmeticKey, ScalarCallKey, BetweenKey, InKey)):
-            for child in k.children():
-                _walk(child)
-            return
-        if not isinstance(k, (LiteralKey, SqlExprKey)):
-            raise TypeError(
-                f"_top_level_refs has no case for {type(k).__name__!r}: "
-                f"classify the kind as a ref, a composite, or a non-reference."
-            )
-
-    _walk(vk)
-    return dim_hits, other
 
 
 def split_top_level_and(vk: ValueKey) -> List[ValueKey]:
@@ -316,52 +291,108 @@ def split_top_level_and(vk: ValueKey) -> List[ValueKey]:
     return [vk]
 
 
-def conjunct_scope(
-    vk: ValueKey, *, dim_keys: frozenset, row_agg_set: frozenset = frozenset(),
-) -> str:
-    """Availability scope of a filter conjunct: ``"combined"`` (a LOCAL combined
-    partitioned aggregate with every operand resolving post-attach → outer WHERE)
-    or ``"other"``; raises when one shares a conjunct with a base-row-only operand."""
-    _, refs = _top_level_refs(vk=vk, dim_agg_set=frozenset())
-    partitioned = [
-        k for k in refs
-        if is_local_combined_regroup_ref(k=k, row_agg_set=row_agg_set)
-    ]
-    if not partitioned:
-        return "other"
-    base_row_only = [
-        k for k in refs
-        if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey))
-        and k not in dim_keys
-    ]
-    if base_row_only:
-        raise ValueError(
-            "A single filter predicate mixes a partition_by aggregate (available "
-            "only after aggregation and attachment) with a row-level reference "
-            "(available only before aggregation); they have no common scope. "
-            "Rewrite so each top-level AND conjunct's references resolve in one "
-            "scope — an OR across the two cannot be split without changing meaning."
-        )
-    return "combined"
+class ConjunctTyping(NamedTuple):
+    """One position expression's typing: field/measure + stratum (0 = base-row population)."""
+
+    typing: MaskTyping
+    stratum: int
 
 
-def classify_regroup_filter(bf: BoundFilter, dim_agg_set: frozenset) -> str:
-    """``"row_inherit"`` (base-row: copied into producer AND kept) / ``"final_only"``
-    (only dim-aggregates: kept in consumer) / ``"standard"`` (agg/post: untouched);
-    raises on a predicate mixing a dim-aggregate with another non-literal ref."""
-    dim_hits, other = _top_level_refs(vk=bf.value_key, dim_agg_set=dim_agg_set)
-    if dim_hits and other:
-        raise NotImplementedError(
-            "A single filter that mixes a computed-dimension aggregate with "
-            "another predicate cannot be routed across the regroup boundary "
-            "(one is grouped by the synthesized stage, the other filters raw "
-            "rows). Put them in separate filters (DEV-1868)."
+def _field_blockers(cj: ValueKey, row_agg_set: frozenset) -> Tuple[List[ValueKey], bool]:
+    """(aggregates/transforms blocking field typing, saw-attached-ref); a ``row_agg_set``
+    aggregate resolves to its row-attached value and counts as aggregate-free."""
+    blockers: List[ValueKey] = []
+    attached = False
+
+    def _walk(k: ValueKey) -> None:
+        nonlocal attached
+        if isinstance(k, (AggregateKey, TransformKey)):
+            # A row-attach root (partitioned aggregate or transform root of a
+            # computed dimension) resolves row-side; its subtree is its own scope.
+            if k in row_agg_set:
+                attached = True
+            else:
+                blockers.append(k)
+            return
+        for c in k.children():
+            _walk(c)
+
+    _walk(cj)
+    return blockers, attached
+
+
+def _measure_blockers(cj: ValueKey, dim_keys: frozenset) -> List[ValueKey]:
+    """Row-level refs outside aggregate subtrees not available at query grain.
+    A subtree equal to a query dimension's bound key IS the grouped value —
+    available at query grain wholesale."""
+    blockers: List[ValueKey] = []
+
+    def _walk(k: ValueKey) -> None:
+        if k in dim_keys or isinstance(k, AggregateKey):
+            return
+        if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+            blockers.append(k)
+            return
+        if isinstance(k, TransformKey):
+            _walk(k.input)  # partition/time keys are transform machinery, not refs
+            return
+        for c in k.children():
+            _walk(c)
+
+    _walk(cj)
+    return blockers
+
+
+def _key_display(k: ValueKey) -> str:
+    if isinstance(k, AggregateKey):
+        leaf = getattr(k.source, "leaf", None) or getattr(k.source, "column_name", None) or "*"
+        path = getattr(k.source, "path", ())
+        name = f"{'.'.join((*path, leaf))}:{k.agg}"
+        return f"{name} (partition_by)" if k.partition_keys is not None else name
+    if isinstance(k, TransformKey):
+        return f"{k.op}(...)"
+    if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+        col = k.column if isinstance(k, TimeTruncKey) else k
+        leaf = getattr(col, "leaf", None) or getattr(col, "column_name", "?")
+        return ".".join((*col.path, leaf))
+    return type(k).__name__
+
+
+def type_position_conjunct(
+    cj: ValueKey,
+    *,
+    dim_keys: frozenset,
+    row_agg_set: frozenset = frozenset(),
+    has_measure_position: bool = True,
+    position: str = "filter",
+) -> ConjunctTyping:
+    """Type one conjunct as field (aggregate-free after resolution; attached refs count
+    as row-level) else measure (every bare ref available at query grain), else raise
+    :class:`PositionTypingError` naming both failures. Field wins a tie."""
+    field_blockers, attached = _field_blockers(cj, row_agg_set)
+    if not field_blockers:
+        return ConjunctTyping(MaskTyping.FIELD, 1 if attached else 0)
+    if has_measure_position:
+        measure_blockers = _measure_blockers(cj, dim_keys)
+        if not measure_blockers:
+            return ConjunctTyping(MaskTyping.MEASURE, 1)
+        raise PositionTypingError(
+            f"This {position} expression is valid as neither a field nor a "
+            f"measure. Field typing failed: it references "
+            f"{', '.join(_key_display(k) for k in field_blockers)}, available "
+            f"only after aggregation. Measure typing failed: it references "
+            f"row-level {', '.join(_key_display(k) for k in measure_blockers)}, "
+            f"not available at the query grain (not among the query "
+            f"dimensions). Split the top-level AND conjuncts so each resolves "
+            f"in one typing, or add the row-level reference to the query "
+            f"dimensions."
         )
-    if dim_hits:
-        return "final_only"
-    if bf.phase == Phase.ROW:
-        return "row_inherit"
-    return "standard"
+    raise PositionTypingError(
+        f"This {position} expression references "
+        f"{', '.join(_key_display(k) for k in field_blockers)}, so it is not a "
+        f"field, and measure typing is unavailable because the query has no "
+        f"measure position (distinct_dimension_values=False)."
+    )
 
 
 def substitute_in_bound_filter(

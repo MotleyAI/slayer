@@ -18,29 +18,55 @@ its own idea of what a slot id resolves to. They disagreed on three things:
   under the user's alias, so the term resolved only by falling through to an
   input column of the FROM.
 
-The producing scope is not something a renderer should re-derive: the planner
-already knows it and names it on the entry (``OrderScope``). So the resolution
-is a dict lookup keyed by that scope, with no precedence and no fallback —
-each render site fills the scopes it can produce, and a slot that is missing
-from its own scope's environment is an error rather than a silent drop.
+The producing scope is not something a renderer should re-derive twice: the
+lowering stage classifies it once and names it on the entry (``OrderScope``).
+So the resolution is a dict lookup keyed by that scope, with no precedence and
+no fallback — each render site fills the scopes it can produce, and a slot that
+is missing from its own scope's environment is an error rather than a silent
+drop.
 """
 
 from __future__ import annotations
 
-from typing import Dict
+from enum import Enum
+from typing import Dict, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
 
-from slayer.engine.planned import OrderEntry, OrderScope
+from slayer.engine.planned import SlotId
 from slayer.sql.dialects.base import SqlDialect
 
 __all__ = [
     "HOST_BASE_SCOPES",
     "OrderEnv",
+    "OrderScope",
     "OrderSlotNotMaterialisedError",
+    "ScopedOrder",
     "resolve_order_term",
 ]
+
+
+class OrderScope(str, Enum):
+    """WHERE the ordered value lives — the one fact a renderer needs to build a sort term."""
+
+    HOST_BASE = "host_base"
+    #: In ``_base`` but trimmed from the public projection (order-only / unprojected).
+    HOST_BASE_HIDDEN = "host_base_hidden"
+    CROSS_MODEL_CTE = "cross_model_cte"
+    WINDOWED_CTE = "windowed_cte"
+    RANKED_CTE = "ranked_cte"
+    TRANSFORM_STEP = "transform_step"
+    OUTER_COMPOSITE = "outer_composite"
+
+
+class ScopedOrder(BaseModel):
+    """A plan ``OrderEntry`` lowered with its producing scope."""
+
+    slot_id: SlotId
+    direction: Literal["asc", "desc"]
+    scope: OrderScope
+    nulls: Literal["default", "first", "last"] = "default"
 
 #: The scopes whose value is a column of the host ``_base`` SELECT. A render
 #: site that names ``_base`` columns one way and CTE columns another asks this
@@ -113,8 +139,8 @@ if _MISSING_ARMS:  # pragma: no cover - import-time structural guard
     )
 
 
-def resolve_order_term(*, entry: OrderEntry, env: OrderEnv) -> exp.Ordered:
-    """One ``OrderEntry`` → one ``ORDER BY`` term.
+def resolve_order_term(*, entry: ScopedOrder, env: OrderEnv) -> exp.Ordered:
+    """One scoped order entry → one ``ORDER BY`` term.
 
     Raises :class:`OrderSlotNotMaterialisedError` when the entry's scope did
     not materialise the slot. Returning an unsorted result instead is the one
