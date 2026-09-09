@@ -110,6 +110,10 @@ Cross-model aggregates SHALL be legal wherever local aggregates are: in arithmet
 - WHEN a query combines an aggregation-derived dimension (banded, bare, or transform-root) with a cross-model measure
 - THEN both are correct by executed values in one result, replacing the former fail-closed guard
 
+#### Scenario: Filter on a cross-model partitioned aggregate executes
+- WHEN a query filters on `customers.spend:sum(partition_by=<customer-level dimension>)` with that partition key among the query dimensions, whether or not the aggregate is also selected
+- THEN qualifying rows survive with values identical to the unfiltered query's, by executed values — never the former not-yet-supported error
+
 #### Scenario: Keyless-grain dual-role partitioned aggregate is rejected
 - WHEN the same cross-model partitioned aggregate is consumed by a computed dimension and selected as a measure (or named as a raw ORDER BY target) while its partition key is not among the query dimensions
 - THEN the query fails at plan time with the clear partition-key error the local variant raises — naming the key and the remedy — never with an internal join-back failure

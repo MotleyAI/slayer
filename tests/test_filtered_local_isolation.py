@@ -14,7 +14,7 @@ import importlib
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.keys import AggregateKey, Phase, SqlExprKey
+from slayer.core.keys import AggregateKey, SqlExprKey
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
@@ -24,6 +24,7 @@ from slayer.core.models import (
 )
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.column_filter_paths import compute_column_filter_join_paths
+from slayer.engine.planned import MaskTyping
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import plan_query
 
@@ -475,7 +476,7 @@ class TestHostModelFiltersInteractions:
     """Host ``SlayerModel.filters`` apply inside the sub-plan; the known limit (no aggregate-measure refs) raises ``ValueError``."""
 
     def test_host_model_filter_lands_inside_filtered_local_sub_plan(self):
-        """A host ``model.filters`` entry must appear in the sub-plan's ``filters_by_phase``."""
+        """A host ``model.filters`` entry must appear in the sub-plan's Mode-A carrier."""
         host = SlayerModel(
             name="claim_amount", data_source="test", sql_table="Claim_Amount",
             columns=[
@@ -507,9 +508,7 @@ class TestHostModelFiltersInteractions:
             if a.attach_phase == "combined"
         ]
         sub = attach.producer_plan
-        sub_filter_texts = [
-            fp.text for fp in sub.filters_by_phase if fp.text is not None
-        ]
+        sub_filter_texts = [mf.text for mf in sub.mode_a_filters]
         assert "amount > 0" in sub_filter_texts, (
             f"Host model filter must land inside the host-rooted sub-plan; "
             f"got sub-plan filter texts {sub_filter_texts!r}"
@@ -860,11 +859,8 @@ class TestWidenedLaw3TriggerCrossingInputs:
 
     @staticmethod
     def _sub_row_bound_filters(sub) -> list:
-        """ROW-phase bound filter entries of a sub-plan (user filters have text None)."""
-        return [
-            fp for fp in sub.filters_by_phase
-            if fp.expression is not None and fp.phase == Phase.ROW
-        ]
+        """Field (row-population) mask entries of a sub-plan."""
+        return [m for m in sub.masks if m.typing == MaskTyping.FIELD]
 
     def test_host_row_filter_propagates_into_widened_sub_plan(self):
         # A host ROW filter must propagate into the sub-plan's filters.
@@ -881,7 +877,7 @@ class TestWidenedLaw3TriggerCrossingInputs:
         sub = attach.producer_plan
         assert self._sub_row_bound_filters(sub), (
             f"Host ROW filter must propagate into the host-rooted sub-plan; "
-            f"got sub-plan filters {sub.filters_by_phase!r}"
+            f"got sub-plan masks {sub.masks!r}"
         )
 
     def test_pathed_host_row_filter_propagates_into_widened_sub_plan(self):
@@ -900,5 +896,5 @@ class TestWidenedLaw3TriggerCrossingInputs:
         sub = attach.producer_plan
         assert self._sub_row_bound_filters(sub), (
             f"Pathed host ROW filter must propagate into the host-rooted "
-            f"sub-plan; got sub-plan filters {sub.filters_by_phase!r}"
+            f"sub-plan; got sub-plan masks {sub.masks!r}"
         )

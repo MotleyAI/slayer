@@ -443,6 +443,10 @@ class DistinctDimensionValuesError(SlayerError, ValueError):
     """``distinct_dimension_values=False`` (raw rows, no top-level ``GROUP BY``) conflicts with any aggregation or a query with no projected columns."""
 
 
+class PositionTypingError(SlayerError, ValueError):
+    """A filter conjunct / order target is valid as neither field nor measure; names both failed typings."""
+
+
 class UnresolvableOrderColumnError(SlayerError, ValueError):
     """An ``order`` item references a column not bindable to the query's FROM scope (usually an unprojected joined column whose join was never resolved); rejected at compile time rather than emitting failing SQL."""
 

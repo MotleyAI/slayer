@@ -1086,11 +1086,11 @@ async def test_having_filter_with_sum(integration_env):
     assert response.data[0]["orders.total_amount_sum"] == pytest.approx(600.0)
 
 
-async def test_having_with_non_groupby_dimension_raises(integration_env):
-    """HAVING filter referencing a dimension not in GROUP BY should error early."""
+async def test_filter_mixing_measure_and_row_conjuncts_splits(integration_env):
+    """A top-level AND splits: the row conjunct masks before aggregation, the
+    measure conjunct prunes result cells."""
     engine = integration_env
 
-    # Filter mixes measure (count) and dimension (status), but status is not in dimensions
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
@@ -1100,8 +1100,11 @@ async def test_having_with_non_groupby_dimension_raises(integration_env):
         measures=[ModelMeasure(formula="*:count")],
         filters=["_count > 1 and status == 'completed'"],
     )
-    with pytest.raises(ValueError, match="not in the query's dimensions"):
-        await engine.execute(query)
+    response = await engine.execute(query)
+
+    # Completed orders: Jan x2, Mar x1 — only January's count survives > 1.
+    assert response.row_count == 1
+    assert response.data[0]["orders._count"] == 2
 
 
 # ---------------------------------------------------------------------------

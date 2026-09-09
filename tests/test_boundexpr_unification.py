@@ -3,7 +3,7 @@
 ``slayer.engine.binding.BoundExpr`` and ``slayer.engine.planned.BoundExpr``
 were two different Pydantic classes (Codex HIGH F2 from the earlier
 round). The binder produced the former; ``ValueSlot.expression`` /
-``FilterPhase.expression`` were typed as the latter. This is type
+filter expressions were typed as the latter. This is type
 unification, not field-fill.
 
 Decision: keep ``slayer.engine.binding.BoundExpr`` as the source of
@@ -16,7 +16,7 @@ Tests cover:
 1. Identity: ``planned.BoundExpr is binding.BoundExpr`` after re-export.
 2. ``ValueSlot.expression`` is populated for every materialised slot
    (public and hidden) by ``ProjectionPlanner``.
-3. ``FilterPhase.expression`` is populated for every filter — user
+3. every filter conjunct's mask slot carries its bound key — user
    filters too, not just auto-generated date_range filters.
 4. The expression's ``value_key`` matches the slot's / filter's key
    identity.
@@ -32,6 +32,8 @@ from slayer.engine.binding import BoundExpr as BinderBoundExpr
 from slayer.engine.planned import BoundExpr as PlannedBoundExpr
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import plan_query
+from slayer.core.keys import ArithmeticKey
+from slayer.engine.binding import walk_value_keys
 
 
 # ---------------------------------------------------------------------------
@@ -125,45 +127,53 @@ class TestValueSlotExpressionPopulated:
 
 
 # ---------------------------------------------------------------------------
-# FilterPhase.expression population
+# Mask slots carry the bound expression (DEV-1865)
 # ---------------------------------------------------------------------------
 
 
-class TestFilterPhaseExpressionPopulated:
-    def test_user_filter_carries_expression(self) -> None:
-        # 7b.6 unification: every FilterPhase carries an expression
-        # payload (not just auto-generated date_range filters).
-        q = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "amount:sum"}],
-            filters=["amount > 0"],
+def _sole_mask_key(planned):
+    slots = {
+        s.id: s
+        for s in (
+            *planned.row_slots, *planned.aggregate_slots,
+            *planned.combined_expression_slots,
         )
-        planned = plan_query(query=q, bundle=_bundle())
-        assert len(planned.filters_by_phase) == 1
-        fp = planned.filters_by_phase[0]
-        assert fp.expression is not None
-        assert isinstance(fp.expression, BinderBoundExpr)
+    }
+    (mask,) = planned.masks
+    return slots[mask.slot_id].key
 
-    def test_filter_expression_value_key_identity(self) -> None:
-        # The FilterPhase.expression carries the SAME value_key
-        # identity the binder produced. Comparing equality is enough —
-        # value_key is frozen, so structural equality implies
-        # equivalence.
+
+class TestMaskExpressionPopulated:
+    def test_user_filter_compiles_to_a_mask_slot(self) -> None:
+        # DEV-1865: every filter conjunct compiles to a hidden slot whose
+        # key IS the binder-produced predicate (not just date_range filters).
         q = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "amount:sum"}],
             filters=["amount > 0"],
         )
         planned = plan_query(query=q, bundle=_bundle())
-        fp = planned.filters_by_phase[0]
+        assert len(planned.masks) == 1
+        assert _sole_mask_key(planned) is not None
+
+    def test_filter_mask_key_identity(self) -> None:
+        # The mask slot carries the SAME value_key identity the binder
+        # produced. Comparing equality is enough — value_key is frozen,
+        # so structural equality implies equivalence.
+        q = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "amount:sum"}],
+            filters=["amount > 0"],
+        )
+        planned = plan_query(query=q, bundle=_bundle())
+        key = _sole_mask_key(planned)
         # Should be an ArithmeticKey wrapping ColumnKey(amount) and a
         # LiteralKey.
-        from slayer.core.keys import ArithmeticKey
-        assert isinstance(fp.expression.value_key, ArithmeticKey)
-        assert fp.expression.value_key.op == ">"
+        assert isinstance(key, ArithmeticKey)
+        assert key.op == ">"
 
-    def test_having_phase_filter_carries_expression(self) -> None:
-        # An aggregate-phase filter (HAVING on a sum) carries the
+    def test_measure_mask_carries_the_aggregate(self) -> None:
+        # An aggregate-bearing (measure-typed) mask carries the
         # expression too.
         q = SlayerQuery(
             source_model="orders",
@@ -171,9 +181,7 @@ class TestFilterPhaseExpressionPopulated:
             filters=["amount:sum > 100"],
         )
         planned = plan_query(query=q, bundle=_bundle())
-        fp = planned.filters_by_phase[0]
-        assert fp.expression is not None
+        key = _sole_mask_key(planned)
         # Walking the value_key reveals the AggregateKey leaf.
-        from slayer.engine.binding import walk_value_keys
-        keys = list(walk_value_keys(fp.expression.value_key))
+        keys = list(walk_value_keys(key))
         assert any(isinstance(k, AggregateKey) for k in keys)
