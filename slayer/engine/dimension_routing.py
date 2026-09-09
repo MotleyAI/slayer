@@ -28,6 +28,27 @@ from slayer.engine.join_safety import provably_to_one
 __all__ = ["short_form_route_or_none", "route_dotted_target"]
 
 
+def _safe_hops_for_neighbor(
+    *, nbr: str, edges: list, target: SlayerModel, name_counts: dict[str, int]
+) -> list[Tuple[str, str]]:
+    """Executable to-one hop tokens from a model to one neighbour: the bare
+    neighbour name for a lone unshadowed edge, else one entry per uniquely-named
+    parallel edge; each kept only if provably many-to-one on its orientation."""
+    if len(edges) == 1 and nbr not in name_counts:
+        return (
+            [(nbr, nbr)]
+            if provably_to_one(edge=edges[0], target_model=target)
+            else []
+        )
+    return [
+        (e.name, nbr)
+        for e in edges
+        if e.name is not None
+        and name_counts[e.name] == 1
+        and provably_to_one(edge=e, target_model=target)
+    ]
+
+
 def _safe_hops(
     *, model: SlayerModel, models_by_name: dict[str, SlayerModel]
 ) -> list[Tuple[str, str]]:
@@ -50,17 +71,11 @@ def _safe_hops(
         target = models_by_name.get(nbr)
         if target is None:
             continue
-        if len(edges) == 1 and nbr not in name_counts:
-            if provably_to_one(edge=edges[0], target_model=target):
-                out.append((nbr, nbr))
-        else:
-            for e in edges:
-                if (
-                    e.name is not None
-                    and name_counts[e.name] == 1
-                    and provably_to_one(edge=e, target_model=target)
-                ):
-                    out.append((e.name, nbr))
+        out.extend(
+            _safe_hops_for_neighbor(
+                nbr=nbr, edges=edges, target=target, name_counts=name_counts
+            )
+        )
     return out
 
 
@@ -75,7 +90,7 @@ def _safe_routes(
     target_model`` over the directed safe-hop set."""
     routes: list[list[str]] = []
 
-    def dfs(current: str, tokens: list[str], visited: set[str]) -> None:
+    def dfs(*, current: str, tokens: list[str], visited: set[str]) -> None:
         if len(routes) >= cap:
             return
         model = models_by_name.get(current)
@@ -89,16 +104,16 @@ def _safe_routes(
                 continue
             if nbr in visited:
                 continue
-            dfs(nbr, [*tokens, token], visited | {nbr})
+            dfs(current=nbr, tokens=[*tokens, token], visited=visited | {nbr})
 
-    dfs(root.name, [], {root.name})
+    dfs(current=root.name, tokens=[], visited={root.name})
     return routes
 
 
-def _shortest_safe_route(
-    *, root: SlayerModel, target_model: str, models_by_name: dict[str, SlayerModel]
-) -> Optional[list[str]]:
-    """Lexicographically-smallest shortest fan-out-free token route, or ``None``."""
+def _safe_bfs_dist(
+    *, root: SlayerModel, models_by_name: dict[str, SlayerModel]
+) -> dict[str, int]:
+    """BFS layer distances from ``root`` over the directed safe-hop set."""
     dist: dict[str, int] = {root.name: 0}
     frontier: deque[str] = deque([root.name])
     while frontier:
@@ -110,6 +125,14 @@ def _shortest_safe_route(
             if nbr not in dist:
                 dist[nbr] = dist[node] + 1
                 frontier.append(nbr)
+    return dist
+
+
+def _shortest_safe_route(
+    *, root: SlayerModel, target_model: str, models_by_name: dict[str, SlayerModel]
+) -> Optional[list[str]]:
+    """Lexicographically-smallest shortest fan-out-free token route, or ``None``."""
+    dist = _safe_bfs_dist(root=root, models_by_name=models_by_name)
     if target_model not in dist:
         return None
     best: dict[str, list[str]] = {root.name: []}
@@ -139,11 +162,11 @@ def _resolve_route(
     ``"unreachable"``. A unique full-graph route resolves (even if it fans out);
     among two or more routes, the sole fan-out-free one resolves."""
     graph = JoinGraph.build_from_models(list(models_by_name.values()))
-    n = graph.count_simple_paths(root.name, target_model, cap=2)
+    n = graph.count_simple_paths(root=root.name, target=target_model, cap=2)
     if n == 0:
         return None, "unreachable"
     if n == 1:
-        route = graph.shortest_path(root.name, target_model)
+        route = graph.shortest_path(root=root.name, target=target_model)
         return (route, "ok") if route is not None else (None, "ambiguous")
     safe = _safe_routes(
         root=root, target_model=target_model, models_by_name=models_by_name, cap=2
@@ -187,7 +210,7 @@ def route_dotted_target(
         )
         if base is None:
             graph = JoinGraph.build_from_models(list(models_by_name.values()))
-            base = graph.shortest_path(root.name, target_model)
+            base = graph.shortest_path(root=root.name, target=target_model)
         if base is not None:
             suggested = ".".join([*base, leaf])
     raise UnresolvableDimensionJoinError(

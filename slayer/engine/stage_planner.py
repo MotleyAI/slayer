@@ -3608,6 +3608,24 @@ def _terminal_model_for_dotted(
     )
 
 
+def _route_short_form_saved_measure(
+    *, host: SlayerModel, hops: list[str], leaf: str, bundle: ResolvedSourceBundle
+) -> Optional[Tuple[SlayerModel, str]]:
+    """``(terminal_model, canonical_ref)`` when a ``len==1`` unresolvable prefix
+    short-form routes to its full datasource-scoped path (DEV-1856), else None."""
+    if len(hops) != 1:
+        return None
+    models_by_name = {m.name: m for m in bundle.referenced_models}
+    models_by_name.setdefault(host.name, host)
+    route = dimension_routing.short_form_route_or_none(
+        root=host, target_model=hops[0], models_by_name=models_by_name,
+    )
+    if route is None:
+        return None
+    terminal = models_by_name.get(hops[0])
+    return (terminal, ".".join([*route, leaf])) if terminal is not None else None
+
+
 def _resolve_saved_measure_ref(
     *,
     scope: Union[ModelScope, StageSchema],
@@ -3639,19 +3657,12 @@ def _resolve_saved_measure_ref(
     )
     canonical_ref = text
     if terminal is None:
-        # Short-form auto-routing: a len==1 unresolvable prefix routes to its
-        # full datasource-scoped path (DEV-1856); the canonical name is that path.
-        if len(hops) == 1:
-            models_by_name = {m.name: m for m in bundle.referenced_models}
-            models_by_name.setdefault(host.name, host)
-            route = dimension_routing.short_form_route_or_none(
-                root=host, target_model=hops[0], models_by_name=models_by_name,
-            )
-            if route is not None:
-                terminal = models_by_name.get(hops[0])
-                canonical_ref = ".".join([*route, leaf])
-        if terminal is None:
+        routed = _route_short_form_saved_measure(
+            host=host, hops=hops, leaf=leaf, bundle=bundle,
+        )
+        if routed is None:
             return None
+        terminal, canonical_ref = routed
     mm = terminal.get_measure(leaf)
     return (terminal, mm, canonical_ref) if mm is not None else None
 

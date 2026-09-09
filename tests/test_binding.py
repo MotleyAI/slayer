@@ -199,11 +199,10 @@ class TestRowRefs:
 
     def test_unknown_join_target_raises(self):
         # DEV-1856: an unreachable short form is route-aware-rejected (was UnknownReferenceError).
+        expr = parse_expr("warehouses.id")
+        scope, bundle = _scope(), _bundle()
         with pytest.raises(UnresolvableDimensionJoinError):
-            bind_expr(
-                parse_expr("warehouses.id"),
-                scope=_scope(), bundle=_bundle(),
-            )
+            bind_expr(expr, scope=scope, bundle=bundle)
 
 
 # ---------------------------------------------------------------------------

@@ -19,7 +19,9 @@ determinable, and fails with a route-aware error otherwise.
   target directly adjacent via parallel edges stays DEV-1853's fail-closed
   `AmbiguousJoinPathError` — routing never sees it.
 - Ambiguous (>=2 routes, not uniquely fan-out-free) and unreachable targets are rejected with
-  `UnresolvableDimensionJoinError`, carrying a route-aware `suggested_path`.
+  `UnresolvableDimensionJoinError`; an ambiguous rejection carries a route-aware `suggested_path` when an
+  executable full path exists, while an unreachable target (or one whose only routes cross an unnamed
+  parallel pair) carries none.
 - A **broken explicit chain** (>=2 hops with an unresolvable hop) is never auto-fixed; it is
   rejected and suggests the short form when the target is uniquely routable.
 - Routing is uniform across dimensions, time dimensions, cross-model measures/aggregations,

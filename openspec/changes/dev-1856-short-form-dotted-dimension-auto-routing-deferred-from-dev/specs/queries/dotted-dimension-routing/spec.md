@@ -59,16 +59,17 @@ resolves or fails closed.
 - THEN the reference is rejected with no suggested path
 
 #### Scenario: Adjacent parallel edges stay an ambiguous hop
-- WHEN the root itself has two named edges to the target and a query references `Target.column`
-- THEN it fails with the ambiguous-join-hop error naming both edges, not a routing error
+- WHEN the root itself has two named edges to the target and a reference names `Target.column` (dimension or saved measure)
+- THEN it fails with the ambiguous-join-hop error naming both edges, not a routing error, and schema-drift attributes the reference to nothing
 
 ### Requirement: Route-aware rejection of ambiguous and unreachable targets
 A short-form target that is ambiguous (two or more routes, not uniquely fan-out-free) or unreachable
-SHALL be rejected with `UnresolvableDimensionJoinError`. An ambiguous rejection MUST carry a
-`suggested_path` (the shortest fan-out-free full path if one exists, else the shortest full path);
-among equal-length candidates the suggestion SHALL be the lexicographically-smallest executable token
-sequence, so it is deterministic and independent of model load order. An unreachable rejection MUST
-carry no suggestion.
+SHALL be rejected with `UnresolvableDimensionJoinError`. An ambiguous rejection SHALL carry a
+`suggested_path` when an executable full path exists (the shortest fan-out-free one if any, else the
+shortest executable full path); among equal-length candidates the suggestion SHALL be the
+lexicographically-smallest executable token sequence, so it is deterministic and independent of model
+load order. An ambiguous target whose only routes cross an unnamed parallel pair, and every unreachable
+target, MUST carry no suggestion.
 
 #### Scenario: Ambiguous target suggests a full path
 - WHEN a short-form target is reachable by two routes with no unique fan-out-free choice
@@ -125,9 +126,9 @@ type with the usual precedence.
 
 ### Requirement: Schema-drift tracks routed references
 Schema-drift attribution SHALL resolve a persisted short-form reference through the same
-datasource-scoped routing, so a change to the routed terminal's column or an intervening join cascades
-to the stage that uses the short form. An ambiguous or unreachable short form attributes to nothing
-and never raises inside drift analysis.
+datasource-scoped routing, so a change to the routed terminal's column or the terminal-reaching join
+cascades to the stage that uses the short form, mirroring the equivalent full path exactly. An
+ambiguous or unreachable short form attributes to nothing and never raises inside drift analysis.
 
 #### Scenario: Dropping a routed column cascades
 - WHEN a persisted stage uses the short form `Consumer.email` routed through `Consumer`, and `Consumer.email` is dropped

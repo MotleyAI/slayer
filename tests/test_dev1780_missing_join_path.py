@@ -1,11 +1,5 @@
-"""DEV-1780 / DEV-1856 — a dotted dim/time-dim with non-direct-join hops binds
-hop-by-hop before SQL generation, so an unbound ``A__B`` alias never reaches the
-emitted SQL. DEV-1856 turned ON short-form auto-routing (parked under DEV-1780's
-strict-reject decision): a bare ``Target.column`` routes to its full path when
-uniquely determinable, else raises typed ``UnresolvableDimensionJoinError`` with
-a route-aware suggestion; a broken explicit chain is never auto-fixed. Full
-routing behaviour lives in ``test_dev1856_short_form_routing.py``.
-"""
+"""DEV-1780/1856 — a non-direct-join dotted dim/time-dim binds hop-by-hop so no unbound ``A__B`` alias reaches the SQL.
+DEV-1856 turned short-form auto-routing on (broken chains never auto-fixed); full routing behaviour in test_dev1856."""
 
 from __future__ import annotations
 
@@ -51,9 +45,8 @@ async def _save_chain(
     direct_customer: bool = False,
     drop_customer_consumer: bool = False,
 ) -> SlayerModel:
-    """Invoice → Subscription → Customer → Consumer; ``direct_customer`` adds
-    Invoice → Customer (two routes), ``drop_customer_consumer`` makes Consumer
-    unreachable. Returns the Invoice root."""
+    """Invoice → Subscription → Customer → Consumer; ``direct_customer`` adds Invoice → Customer (two routes),
+    ``drop_customer_consumer`` makes Consumer unreachable."""
     await storage.save_datasource(
         DatasourceConfig(name="test", type="sqlite", database=":memory:")
     )
@@ -110,9 +103,8 @@ def _amount_query(**kw) -> dict:
 
 class TestValidPathBindsAllJoins:
     async def test_full_valid_path_resolves_all_joins_bound(self, tmp_path) -> None:
-        """``Subscription.Customer.Consumer.name`` — every hop is a direct join,
-        so each JOIN is emitted, the projected alias is bound, and the SQL parses
-        on Postgres (no unbound ``__`` alias)."""
+        """``Subscription.Customer.Consumer.name`` — every hop is a direct join, so each
+        JOIN is emitted, the alias is bound, and the SQL parses on Postgres."""
         engine = await _engine(tmp_path)
         sql = await _dry_sql(engine, SlayerQuery(**_amount_query(
             dimensions=["Subscription.Customer.Consumer.name"],
@@ -173,10 +165,9 @@ class TestValidPathBindsAllJoins:
 class TestShortFormRoutingAndBrokenChains:
     async def test_broken_explicit_chain_rejects_and_suggests_short_form(self, tmp_path) -> None:
         engine = await _engine(tmp_path)
+        q = SlayerQuery(**_amount_query(dimensions=["Customer.Consumer.name"]))
         with pytest.raises(UnresolvableDimensionJoinError) as ei:
-            await _dry_sql(engine, SlayerQuery(**_amount_query(
-                dimensions=["Customer.Consumer.name"],
-            )))
+            await _dry_sql(engine, q)
         assert ei.value.suggested_path == "Consumer.name"
 
     async def test_short_form_unique_route_resolves(self, tmp_path) -> None:
@@ -190,31 +181,30 @@ class TestShortFormRoutingAndBrokenChains:
 
     async def test_short_form_ambiguous_target_rejects(self, tmp_path) -> None:
         engine = await _engine(tmp_path, direct_customer=True)
+        q = SlayerQuery(**_amount_query(dimensions=["Consumer.name"]))
         with pytest.raises(UnresolvableDimensionJoinError) as ei:
-            await _dry_sql(engine, SlayerQuery(**_amount_query(
-                dimensions=["Consumer.name"],
-            )))
+            await _dry_sql(engine, q)
         assert ei.value.suggested_path == "Customer.Consumer.name"
 
     async def test_unreachable_target_rejects_without_suggestion(self, tmp_path) -> None:
         engine = await _engine(tmp_path, drop_customer_consumer=True)
+        q = SlayerQuery(**_amount_query(dimensions=["Consumer.name"]))
         with pytest.raises(UnresolvableDimensionJoinError) as ei:
-            await _dry_sql(engine, SlayerQuery(**_amount_query(
-                dimensions=["Consumer.name"],
-            )))
+            await _dry_sql(engine, q)
         assert ei.value.suggested_path is None
 
     async def test_broken_time_dimension_chain_rejects(self, tmp_path) -> None:
         engine = await _engine(tmp_path)
+        q = SlayerQuery(
+            source_model="Invoice",
+            measures=[{"formula": "amount:sum", "name": "amt"}],
+            time_dimensions=[{
+                "dimension": "Customer.Consumer.signup_at",
+                "granularity": "month",
+            }],
+        )
         with pytest.raises(UnresolvableDimensionJoinError):
-            await _dry_sql(engine, SlayerQuery(
-                source_model="Invoice",
-                measures=[{"formula": "amount:sum", "name": "amt"}],
-                time_dimensions=[{
-                    "dimension": "Customer.Consumer.signup_at",
-                    "granularity": "month",
-                }],
-            ))
+            await _dry_sql(engine, q)
 
     async def test_missing_terminal_column_on_valid_path_rejects(self, tmp_path) -> None:
         engine = await _engine(tmp_path, direct_customer=True)
@@ -285,10 +275,8 @@ class TestInternalEnrichmentsUnaffected:
 
 class TestDownstreamStageScope:
     async def test_downstream_stage_dotted_ref_rejects(self, tmp_path) -> None:
-        """A named-query stage sees a FLAT schema — a dotted ref in the outer
-        stage is an ``IllegalScopeReferenceError``, the DEV-1450 replacement for
-        main's lenient multi-stage fall-through. The inner stage's full-path dim
-        resolves normally."""
+        """A named-query stage sees a FLAT schema, so an outer-stage dotted ref is
+        ``IllegalScopeReferenceError``; the inner stage's full-path dim resolves."""
         engine = await _engine(tmp_path)
         inner = SlayerQuery(
             name="s1", source_model="Invoice",

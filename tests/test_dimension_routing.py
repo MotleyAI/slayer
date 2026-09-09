@@ -13,12 +13,11 @@ import pytest
 from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.errors import UnresolvableDimensionJoinError
 from slayer.core.models import Column, ModelJoin, SlayerModel
-
-# Written in the implementation stage; skip (not error) while absent so the suite still collects.
-dimension_routing = pytest.importorskip("slayer.engine.dimension_routing")
-short_form_route_or_none = dimension_routing.short_form_route_or_none
-route_dotted_target = dimension_routing.route_dotted_target
-_safe_hops = dimension_routing._safe_hops
+from slayer.engine.dimension_routing import (
+    _safe_hops,
+    route_dotted_target,
+    short_form_route_or_none,
+)
 
 
 def _pk() -> Column:
