@@ -67,9 +67,10 @@ class TestRestSurface:
 
 class TestMcpSurface:
     async def test_mode_reaches_engine(self, storage) -> None:
+        """The mode rides inside the unified ``query`` object (DEV-1858 tool shape)."""
         server = create_mcp_server(storage=storage)
         blocks, _ = await server.call_tool(name="query", arguments={
-            **_ASSOCIATE_BODY, "format": "json"})
+            "query": _ASSOCIATE_BODY, "format": "json"})
         text = blocks[0].text
         assert "420" in text and "290" in text
         assert "460" not in text  # not the broadcast total
@@ -77,7 +78,7 @@ class TestMcpSurface:
     async def test_strict_rejected(self, storage) -> None:
         server = create_mcp_server(storage=storage)
         with pytest.raises((ToolError, ValueError)):
-            await server.call_tool(name="query", arguments={
+            await server.call_tool(name="query", arguments={"query": {
                 "source_model": "orders",
                 "measures": [{"formula": "*:count"}],
-                "strict": True})
+                "strict": True}})

@@ -45,14 +45,15 @@ is the coercion from coarser to finer.
    to the total (spec: `queries/semantics` › Attribution by determination).
    [enforced: test:tests/test_dev1836_producer_execution.py]
 8. **Mode axis**: an unattributable dimension resolves per the query-level
-   mode with a per-aggregate override — broadcast (the default: the value
-   repeats across the dimension's cells, with a self-announcing warning; spec:
+   `to_many_handling` mode — broadcast (the default: the value repeats across
+   the dimension's cells, with a self-announcing warning; spec:
    `queries/semantics` › Loud degradation)
-   [enforced: test:tests/test_dev1836_broadcast_strict.py]; associate
-   (per-cell aggregation over the distinct associated home rows) and strict
-   (refuse), plus the per-aggregate override [target: DEV-1841]; an explicit
-   partition_by naming an unattributable dimension is an error outside
-   associate mode. [review]
+   [enforced: test:tests/test_dev1836_broadcast_strict.py]; associate (per-cell
+   aggregation over the distinct associated home rows)
+   [enforced: test:tests/test_dev1841_association_exec.py]; and error (refuse)
+   [enforced: test:tests/test_dev1841_error_mode.py]; an explicit partition_by
+   naming an unattributable dimension is an error outside associate mode.
+   [enforced: test:tests/test_dev1841_association_errors.py]
 9. **Closure**: every operator consumes and produces aggregates and may
    inspect only its operands' types (grain, home dataset), never how they were
    constructed — any "not supported inside" refusal of a well-typed term is a
@@ -113,7 +114,8 @@ enforced test ids as its instances land.
    to the value. [review]
 5. **Dice–slice**: filtering to `d = v` equals slicing the `v` cell of a
    groupby on `d` — exact in associate mode; the broadcast default consciously
-   trades this law away and must warn. [target: DEV-1841]
+   trades this law away and must warn.
+   [enforced: test:tests/test_law_dice_slice.py]
 6. **Lowering soundness**: every emission trick is a pure optimization —
    inlining an association-restricting filter on a proven to-one path and
    fusing pipeline phases into one SELECT

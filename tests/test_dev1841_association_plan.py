@@ -1,11 +1,7 @@
 """DEV-1841 task 3.1 / 1.4 — the association ``ProducerKernel`` variant and its
-planning: implicit grain and explicit ``partition_by=`` under associate, filter
-pushdown into it, and the mode threading into a nested (computed-dimension)
-producer.
-
-Spec: openspec …/specs/queries/attribution-modes — "Distinct-entity association
-semantics"; queries/cross-model-aggregates — "Producer filter routing"
-(association producer).
+planning: implicit grain, explicit ``partition_by=``, filter pushdown, and mode
+threading into a nested (computed-dimension) producer. Spec: attribution-modes ›
+Distinct-entity association; cross-model-aggregates › Producer filter routing.
 """
 
 from __future__ import annotations
@@ -33,9 +29,7 @@ class TestAssociationKernel:
         assert len(_association_attaches(planned)) == 1
 
     def test_explicit_partition_by_builds_association_kernel(self) -> None:
-        """Scenario: unattributable explicit partition key attributes under
-        associate — the declared coarser grain routes through the association
-        kernel."""
+        """An unattributable explicit partition key attributes under associate."""
         planned = plan_query(
             query=assoc_q(dimensions=["status"], measures=[ModelMeasure(
                 formula="customers.spend:sum(partition_by=status)", name="cm")]),
@@ -55,9 +49,8 @@ class TestAssociationKernel:
 
 class TestModeThreadsIntoNestedProducer:
     def test_nested_computed_dimension_resolves_under_associate(self) -> None:
-        """Task 1.4 — the mode reaches a recursively-planned nested producer: a
-        computed dimension whose aggregate is unattributable resolves via the
-        association kernel, not a silent broadcast default."""
+        """Task 1.4 — the mode reaches a recursively-planned nested producer:
+        an unattributable computed-dimension aggregate resolves via the kernel."""
         band = {
             "expression": (
                 "CASE WHEN customers.spend:sum(partition_by=status) > 400 "

@@ -1,21 +1,13 @@
 """Shared fixtures for DEV-1841 — the ``to_many_handling`` mode axis and the
 distinct-entity association producer.
 
-Built on top of ``tests/_dev1840_fixtures.py``: same orders → customers →
-regions → plans/stores graph, same dual-engine (SQLite + DuckDB) seeded
-dataset, same ``make_exec_engine``. That dataset already carries the shape this
-issue turns on — customer 1 has TWO ``ok`` orders (o1, o10), so a naive join
-double-counts c1's spend in the ``ok`` cell.
-
-All oracles below are hand-computed from the DEV-1840 dataset (see that module's
-docstring for the rows). Distinct-entity populations by orders-level status:
-
-    ok  orders → customers {c1,c2,c3,c5,c6}     new orders → customers {c1,c2,c4}
-    (o8 is an orphan order — no customer — so it joins to nothing.)
-
-Everything a test constructs with ``to_many_handling`` is built lazily inside a
-function (never at module import) so a missing field fails per-test, not at
-collection.
+Built on ``tests/_dev1840_fixtures.py`` (same graph, dual-engine dataset,
+``make_exec_engine``), which already carries the shape this issue turns on:
+customer 1 has TWO ``ok`` orders (o1, o10), so a naive join double-counts c1's
+spend in the ``ok`` cell. Distinct-customer populations by orders-level status:
+ok {c1,c2,c3,c5,c6}, new {c1,c2,c4}; o8 is an orphan order. Oracles below are
+hand-computed from that dataset; ``to_many_handling`` queries build lazily so a
+missing field fails per-test, not at collection.
 """
 
 from __future__ import annotations
@@ -43,9 +35,6 @@ from tests._dev1840_fixtures import (
 )
 
 
-# --------------------------------------------------------------------------- #
-# Model variants.
-# --------------------------------------------------------------------------- #
 def _customers(models: List[SlayerModel]) -> SlayerModel:
     return next(m for m in models if m.name == "customers")
 
@@ -73,9 +62,6 @@ def keyless_root_models() -> List[SlayerModel]:
     return models
 
 
-# --------------------------------------------------------------------------- #
-# Query shorthands (lazy — the mode field may not exist yet).
-# --------------------------------------------------------------------------- #
 def assoc_q(**kw) -> SlayerQuery:
     kw.setdefault("source_model", "orders")
     return SlayerQuery(to_many_handling="associate", **kw)
@@ -111,48 +97,23 @@ def pushed_filter_infos(resp) -> list:
             if getattr(w, "kind", None) == "semi_join_pushed"]
 
 
-# --------------------------------------------------------------------------- #
-# Oracles (hand-computed; see module docstring + DEV-1840 dataset).
-# --------------------------------------------------------------------------- #
-#: rooted orders, ``customers.spend:sum`` by status — distinct customers/cell.
+# Oracles — hand-computed from the DEV-1840 dataset (per-cell = distinct entities).
 ASSOC_SPEND_BY_STATUS = {"ok": 420.0, "new": 290.0}
-#: the broadcast (default) value — the metric total over EVERY customer (incl.
-#: orderless c7), repeated across cells; unchanged from DEV-1840 (its "515").
+#: broadcast default: metric total over every customer incl. orderless c7.
 BCAST_SPEND_CROSS = 515.0
 
-#: rooted customers, LOCAL ``spend:sum`` by orders.status — same populations.
 ASSOC_LOCAL_SPEND_BY_STATUS = {"ok": 420.0, "new": 290.0}
-#: the naive join-multiplied ``ok`` cell (c1 counted twice) — must be unreachable.
+#: naive join-multiplied ``ok`` cell (c1 counted twice) — must be unreachable.
 LOCAL_OK_FAN_DEFECT = 520.0
-#: LOCAL ``spend:sum`` over every customer (the broadcast total, incl. c7).
-LOCAL_SPEND_TOTAL = 515.0
+LOCAL_SPEND_TOTAL = 515.0  # LOCAL spend broadcast total, incl. c7
 
-#: rooted orders, ``customers.*:count`` by status — distinct customers/cell.
-ASSOC_COUNT_BY_STATUS = {"ok": 5, "new": 3}
-
-#: rooted orders, ``customers.spend:median`` by status — odd populations, so the
-#: median is an exact middle element (interpolation-agnostic across engines).
-ASSOC_MEDIAN_BY_STATUS = {"ok": 80.0, "new": 100.0}
-
-#: rooted orders, ``customers.regions.pop:sum`` by status — distinct REGIONS/cell
-#: (metric root is regions, two hops from the host).
-ASSOC_POP_BY_STATUS = {"ok": 300.0, "new": 100.0}
-
-#: rooted orders, ``customers.gold_spend:sum`` by status — the measure-local
-#: filter restricts the association to gold customers before per-cell summing.
-ASSOC_GOLD_SPEND_BY_STATUS = {"ok": 190.0, "new": 100.0}
-
-#: rooted orders, ``customers.spend:sum`` by status, host-local filter
-#: ``channel = 'app'`` applied inline (app orders: o2 c1, o4 c2, o5 c3, o7 c5).
-ASSOC_APP_SPEND_BY_STATUS = {"ok": 140.0, "new": 250.0}
-
-#: rooted orders (weak plans), ``customers.spend:sum`` by status, sibling-branch
-#: filter ``customers.plans.level = 'basic'`` pushed by semi-join into the
-#: association (basic customers c1/c3/c5).
-ASSOC_BASIC_SPEND_BY_STATUS = {"ok": 240.0, "new": 100.0}
-
-#: fully-attributable slice — mode-invariant (from DEV-1840's SPEND_ALL_BY_TIER).
-SPEND_BY_TIER = {"gold": 245.0, "silver": 230.0, "bronze": 40.0}
+ASSOC_COUNT_BY_STATUS = {"ok": 5, "new": 3}  # customers.*:count, distinct/cell
+ASSOC_MEDIAN_BY_STATUS = {"ok": 80.0, "new": 100.0}  # odd populations
+ASSOC_POP_BY_STATUS = {"ok": 300.0, "new": 100.0}  # distinct regions/cell
+ASSOC_GOLD_SPEND_BY_STATUS = {"ok": 190.0, "new": 100.0}  # measure-local gold filter
+ASSOC_APP_SPEND_BY_STATUS = {"ok": 140.0, "new": 250.0}  # host filter channel='app'
+ASSOC_BASIC_SPEND_BY_STATUS = {"ok": 240.0, "new": 100.0}  # sibling plans.level='basic' pushed
+SPEND_BY_TIER = {"gold": 245.0, "silver": 230.0, "bronze": 40.0}  # attributable, mode-invariant
 
 
 def status_key(resp, root: str = "orders") -> dict:

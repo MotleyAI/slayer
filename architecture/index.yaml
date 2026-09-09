@@ -50,7 +50,7 @@ contracts:
 guards: {baseline: 8}
 
 cross_cutting_specs:
-  queries: {touches: [core, engine, sql]}
+  queries: {touches: [core, engine, sql, storage]}
   models: {touches: [core, storage, engine]}
   aggregations: {touches: [core, engine, sql]}
 

@@ -317,7 +317,10 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                         request.distinct_dimension_values, request.to_many_handling,
                     ) if f is not None
                 ]
-                if disallowed:
+                # Run-by-name skips SlayerQuery validation, so a stray extra
+                # field (e.g. the retired ``strict``) would slip through — reject
+                # it here instead of silently dropping it.
+                if disallowed or request.model_extra:
                     raise HTTPException(
                         status_code=400,
                         detail=(

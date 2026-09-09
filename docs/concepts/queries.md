@@ -18,7 +18,7 @@ A `SlayerQuery` specifies what data to retrieve from a model.
 | `limit` | int | No | Maximum rows to return |
 | `offset` | int | No | Number of rows to skip |
 | `whole_periods_only` | bool | No | Snap date filters to time bucket boundaries, exclude the current incomplete time bucket |
-| `strict` | bool | No | Fail instead of warn when a [cross-model measure broadcasts](#cross-model-measures) across an unattributable dimension or a filter is excluded from its producer (semi-join-pushed filters are applied and never error). Default `false` (warn). |
+| `to_many_handling` | str | No | How an aggregate resolves query dimensions [unattributable from its root](#cross-model-measures): `broadcast` (default; repeat the safe-grain value across the cells and warn), `associate` (per-cell value over the distinct associated entities), or `error` (refuse). Semi-join-pushed filters are always applied and never error; the retired `strict` flag is rejected with this remedy. |
 
 You can pass a single query or a **list of queries** to `execute()`. When passing a list, earlier queries are named sub-queries that later queries can reference. The last query in the list is the main one whose results are returned. See [Query Lists](#query-lists) for examples.
 
@@ -697,15 +697,20 @@ the filter (each row once, never multiplied through the join), silently, exactly
 like a safely inherited filter. The correlation path resolves through the same
 [bidirectional traversal](models.md#bidirectional-traversal) as every other hop
 — no declared reverse join is needed, and a hop spanned by two or more edges
-fails the whole query with the ambiguous-hop error (in lenient and strict mode
-alike) rather than guessing. Only a filter with no resolvable path from the
+fails the whole query with the ambiguous-hop error (in every mode) rather than
+guessing. Only a filter with no resolvable path from the
 sub-query's root (or one mixing local and joined references under `OR`/`NOT`)
 is excluded: it still applies to the local measures and is reported as
 `kind: "unreachable_filter_dropped"`. On ClickHouse the semi-join needs server
 ≥ 25.4 (the required setting is attached automatically); older servers fail
-with a clear error. Set `"strict": true` on the query to turn a broadcast or an
-excluded filter into an error instead of a warning — a semi-join-pushed filter
-is correctly applied and never errors.
+with a clear error.
+
+`to_many_handling` chooses how a broadcast dimension resolves — `broadcast` (the
+default above), `associate` (each cell aggregates over the distinct entities
+associated with it, warned as `kind: "associated"` because the cells overlap and
+are not additive), or `error` (refuse) — with the retired `strict` flag mapping
+to `error` and a semi-join-pushed filter applied, never erroring, in every mode.
+Example: `{"source_model": "orders", "dimensions": ["status"], "measures": [{"formula": "customers.spend:sum"}], "to_many_handling": "associate"}`.
 
 A filter **on** the cross-model value itself (`"customers.score:avg > 4"`)
 restricts the result rows, uniformly with local aggregate filters — groups that
