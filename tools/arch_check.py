@@ -472,19 +472,19 @@ def run_checks(root: Path) -> list[str]:
     nodes = index.get("nodes", {})
     claims = _node_claims(nodes)
     model = arch_diagrams.parse_model(root)
-    views = arch_diagrams.parse_views(root, model)
+    views = arch_diagrams.parse_views(root=root, model=model)
     elements = {e.id for e in model.elements}
     modeled = {(r.src, r.dst) for r in model.relations}
     findings: list[str] = []
     findings += _check_claims(root, root_package, claims)
     findings += _check_contracts(index, importlinter)
     findings += _check_arc42(root, index)
-    findings += _check_model_identity(nodes, elements)
+    findings += _check_model_identity(nodes=nodes, elements=elements)
     findings += _check_spec_mapping(root, index)
     findings += _check_baselines(index, importlinter)
-    findings += _check_model_truth(root, root_package, claims, modeled)
+    findings += _check_model_truth(root=root, root_package=root_package, claims=claims, modeled=modeled)
     findings += _check_enforced_tags(root, importlinter)
-    findings += arch_diagrams.check_diagrams_fresh(root, model, views)
+    findings += arch_diagrams.check_diagrams_fresh(root=root, model=model, views=views)
     return findings
 
 

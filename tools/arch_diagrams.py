@@ -53,14 +53,27 @@ class ViewsParse(BaseModel):
     findings: list[str]
 
 
-_ELEMENT_RE = re.compile(r"^(\w+)\s*=\s*(\w+)\s+'([^']*)'\s*(.*)$")
+_ELEMENT_RE = re.compile(r"^(\w+)\s*=\s*(\w+)\s+'([^']*)'(?:\s*\{)?\s*$")
 _RELATION_RE = re.compile(r"^(\w+)\s*->\s*(\w+)(\s+#legacy)?\s*$")
-_SPEC_ELEMENT_RE = re.compile(r"^element\s+(\w+)\b")
+_SPEC_ELEMENT_RE = re.compile(r"^element\s+(\w+)(?:\s*\{)?\s*$")
 _TAG_DECL_RE = re.compile(r"^tag\s+\w+$")
 _BLOCK_RE = re.compile(r"^(specification|model|views)\b")
 _BRACES_ONLY_RE = re.compile(r"^[{}]+$")
-_TOKEN_RE = re.compile(r"'[^']*'|->|[{}(),*]|[A-Za-z0-9_]+|\S")
-_MARKER_RE = re.compile(r"<!--\s+(/?)likec4:([A-Za-z0-9_]+)\s+-->")
+_TOKEN_RE = re.compile(r"'[^']*'|->|\w+|\S")
+_MARKER_RE = re.compile(r"<!--\s+(/?)likec4:(\w+)\s+-->")
+
+
+def _read_exact(path: Path) -> str:
+    """Read preserving exact bytes (no universal-newline translation) for byte-for-byte checks."""
+    return path.read_bytes().decode("utf-8")
+
+
+def _is_arc42_doc_key(doc_key: object) -> bool:
+    """True only for a direct architecture/<name>.arc42.md child (rejects traversal/nesting)."""
+    if not (isinstance(doc_key, str) and doc_key.endswith(".arc42.md")):
+        return False
+    parts = Path(doc_key).parts
+    return len(parts) == 2 and parts[0] == "architecture"
 
 
 def _strip_line_comment(line: str) -> str:
@@ -125,7 +138,15 @@ def parse_model(root: Path) -> ModelParse:
     rel_pairs: set[tuple[str, str]] = set()
     findings: list[str] = []
     for path in _model_files(root):
-        _scan_model_file(path, kinds, elements, seen_ids, relations, rel_pairs, findings)
+        _scan_model_file(
+            path=path,
+            kinds=kinds,
+            elements=elements,
+            seen_ids=seen_ids,
+            relations=relations,
+            rel_pairs=rel_pairs,
+            findings=findings,
+        )
     for element in elements:
         if element.kind not in kinds:
             findings.append(f"element {element.id} has undeclared kind {element.kind}")
@@ -137,7 +158,7 @@ def parse_model(root: Path) -> ModelParse:
     return ModelParse(elements=elements, relations=relations, findings=findings)
 
 
-def _scan_model_file(
+def _scan_model_file(  # NOSONAR(S3776) — cohesive brace/region state machine; splitting scatters the model grammar
     path: Path,
     kinds: dict[str, bool],
     elements: list[Element],
@@ -161,9 +182,20 @@ def _scan_model_file(
             continue
         delta = _brace_delta(code)
         if region == "specification":
-            spec_kind = _scan_spec_line(code, kinds, spec_kind, delta, findings)
+            spec_kind = _scan_spec_line(
+                code=code, kinds=kinds, spec_kind=spec_kind, delta=delta, findings=findings
+            )
         elif region == "model":
-            _scan_model_line(code, elements, seen_ids, relations, rel_pairs, parents, delta, findings)
+            _scan_model_line(
+                code=code,
+                elements=elements,
+                seen_ids=seen_ids,
+                relations=relations,
+                rel_pairs=rel_pairs,
+                parents=parents,
+                delta=delta,
+                findings=findings,
+            )
         if delta < 0:
             for _ in range(-delta):
                 if parents:
@@ -187,8 +219,10 @@ def _scan_spec_line(
     if _TAG_DECL_RE.match(code) or _BRACES_ONLY_RE.match(code):
         return spec_kind
     if code.startswith("#"):
-        if spec_kind is not None and code.lstrip("#").strip() == "virtual":
+        if spec_kind is not None and code == "#virtual":
             kinds[spec_kind] = True
+            return spec_kind
+        findings.append(f"unrecognized specification line: {code}")
         return spec_kind
     findings.append(f"unrecognized specification line: {code}")
     return spec_kind
@@ -252,7 +286,7 @@ def _tokenize(text: str) -> list[tuple[str, str]]:
     return tokens
 
 
-def parse_views(root: Path, model: ModelParse) -> ViewsParse:
+def parse_views(root: Path, model: ModelParse) -> ViewsParse:  # NOSONAR(S3776) — one include-grammar parser; the nested cursor closures read clearer kept together
     """Parse `architecture/views.c4` under the constrained include grammar (§5)."""
     path = root / "architecture" / "views.c4"
     if not path.exists():
@@ -348,7 +382,14 @@ def parse_views(root: Path, model: ModelParse) -> ViewsParse:
                 findings.append(f"view {vid} has unrecognized directive {tok[1]!r}")
         if cur()[0] == "}":
             advance()
-        return _build_view(vid, title, base, src_anchors, dst_anchors, model)
+        return _build_view(
+            vid=vid,
+            title=title,
+            base=base,
+            src_anchors=src_anchors,
+            dst_anchors=dst_anchors,
+            model=model,
+        )
 
     if advance() != ("word", "views") or advance()[0] != "{":
         findings.append("views.c4 does not open with a `views {` block")
@@ -432,46 +473,74 @@ def _canonical_block(view: View, model: ModelParse) -> str:
 
 
 def _marker_span(text: str, vid: str) -> tuple[tuple[int, int] | None, str | None]:
-    """(span, error): the inclusive open→close span, or None + one of missing/duplicate/order."""
-    open_tok, close_tok = _open_marker(vid), _close_marker(vid)
-    n_open, n_close = text.count(open_tok), text.count(close_tok)
-    if n_open == 0 or n_close == 0:
+    """(span, error): the open→close span, or None + one of missing/duplicate/order.
+
+    Every whitespace form is counted via _MARKER_RE, so a stray variant marker for the
+    same view (e.g. an extra double-space `<!--  likec4:x -->`) cannot slip past as fresh.
+    """
+    matches = [m for m in _MARKER_RE.finditer(text) if m.group(2) == vid]
+    opens = [m for m in matches if not m.group(1)]
+    closes = [m for m in matches if m.group(1)]
+    if not opens or not closes:
         return None, "missing"
-    if n_open > 1 or n_close > 1:
+    if len(opens) > 1 or len(closes) > 1:
         return None, "duplicate"
-    oi, ci = text.index(open_tok), text.index(close_tok)
-    if ci < oi:
+    if closes[0].start() < opens[0].start():
         return None, "order"
-    return (oi, ci + len(close_tok)), None
+    return (opens[0].start(), closes[0].end()), None
 
 
 def _diagrams_map(root: Path) -> object:
-    index = yaml.safe_load((root / "architecture" / "index.yaml").read_text(encoding="utf-8"))
-    return index.get("diagrams")
+    """The index.yaml `diagrams` mapping, or a string explaining why it is unusable (never raises)."""
+    index_path = root / "architecture" / "index.yaml"
+    if not index_path.is_file():
+        return "index.yaml is missing"
+    try:
+        index = yaml.safe_load(index_path.read_text(encoding="utf-8"))
+    except yaml.YAMLError:
+        return "index.yaml is not valid YAML"
+    if not isinstance(index, dict):
+        return "index.yaml is not a mapping"
+    diagrams = index.get("diagrams")
+    return "index.yaml has no diagrams block" if diagrams is None else diagrams
+
+
+def _bad_diagrams_reason(diagrams: object) -> str:
+    return diagrams if isinstance(diagrams, str) else "diagrams block in index.yaml must be a mapping of doc -> view-id list"
+
+
+def _rewrite_markers(text: str, vids: list[str], by_id: dict[str, View], model: ModelParse, doc_key: str) -> str:
+    """Rewrite every mapped view's marker block in one doc's text; raise on missing view/marker."""
+    for vid in vids:
+        view = by_id.get(vid)
+        if view is None:
+            raise ValueError(f"view {vid} mapped to {doc_key} is not defined in views.c4")
+        span, error = _marker_span(text, vid)
+        if error is not None or span is None:
+            raise ValueError(f"{doc_key}: {error} marker(s) for view {vid}")
+        start, end = span
+        text = text[:start] + _canonical_block(view, model) + text[end:]
+    return text
 
 
 def generate(root: Path) -> list[str]:
     """Rewrite each mapped doc's marker blocks from the model; return changed repo-relative paths."""
     diagrams = _diagrams_map(root)
     if not isinstance(diagrams, dict):
-        raise ValueError("diagrams block in index.yaml must be a mapping of doc -> view-id list")
+        raise ValueError(_bad_diagrams_reason(diagrams))
     model = parse_model(root)
-    views = parse_views(root, model)
+    views = parse_views(root=root, model=model)
+    problems = model.findings + views.findings
+    if problems:
+        raise ValueError("cannot regenerate diagrams — resolve model/views findings first:\n" + "\n".join(problems))
     by_id = {v.id: v for v in views.views}
     changed: list[str] = []
     for doc_key, vids in diagrams.items():
+        if not _is_arc42_doc_key(doc_key):
+            raise ValueError(f"diagrams key {doc_key!r} must be an architecture/*.arc42.md path")
         doc_path = root / doc_key
-        text = doc_path.read_text(encoding="utf-8")
-        new_text = text
-        for vid in vids:
-            view = by_id.get(vid)
-            if view is None:
-                raise ValueError(f"view {vid} mapped to {doc_key} is not defined in views.c4")
-            span, error = _marker_span(new_text, vid)
-            if error is not None or span is None:
-                raise ValueError(f"{doc_key}: {error} marker(s) for view {vid}")
-            start, end = span
-            new_text = new_text[:start] + _canonical_block(view, model) + new_text[end:]
+        text = _read_exact(doc_path)
+        new_text = _rewrite_markers(text=text, vids=vids, by_id=by_id, model=model, doc_key=doc_key)
         if new_text != text:
             doc_path.write_text(new_text, encoding="utf-8", newline="")
             changed.append(doc_key)
@@ -479,7 +548,7 @@ def generate(root: Path) -> list[str]:
 
 
 def _validate_entry(doc_key: object, vids: object) -> tuple[list[str], list[str] | None]:
-    if not (isinstance(doc_key, str) and doc_key.startswith("architecture/") and doc_key.endswith(".arc42.md")):
+    if not _is_arc42_doc_key(doc_key):
         return [f"diagrams-fresh: diagrams key {doc_key} must be an architecture/*.arc42.md path"], None
     if not isinstance(vids, list):
         return [f"diagrams-fresh: diagrams[{doc_key}] must be a list of view ids; run {FIX_CMD}"], None
@@ -502,22 +571,26 @@ def _validate_entry(doc_key: object, vids: object) -> tuple[list[str], list[str]
     return findings, (valid if ok else None)
 
 
+def _collect_mapping(diagrams: object, findings: list[str]) -> dict[str, list[str]]:
+    """Validated doc -> view-ids mapping; appends schema findings, fail-closed on bad input."""
+    if not isinstance(diagrams, dict):
+        findings.append(f"diagrams-fresh: {_bad_diagrams_reason(diagrams)}; run {FIX_CMD}")
+        return {}
+    mapping: dict[str, list[str]] = {}
+    for doc_key, vids in diagrams.items():
+        entry_findings, valid = _validate_entry(doc_key=doc_key, vids=vids)
+        findings += entry_findings
+        if valid is not None:
+            mapping[doc_key] = valid
+    return mapping
+
+
 def check_diagrams_fresh(root: Path, model: ModelParse, views: ViewsParse) -> list[str]:
     """Fail-closed freshness check surfaced by arch_check; never raises on malformed input."""
     findings = [f"diagrams-fresh: {f}" for f in model.findings + views.findings]
-    diagrams = _diagrams_map(root)
-    mapping: dict[str, list[str]] = {}
-    if diagrams is not None:
-        if not isinstance(diagrams, dict):
-            findings.append("diagrams-fresh: diagrams block in index.yaml must be a mapping of doc -> view-id list")
-        else:
-            for doc_key, vids in diagrams.items():
-                entry_findings, valid = _validate_entry(doc_key, vids)
-                findings += entry_findings
-                if valid is not None:
-                    mapping[doc_key] = valid
-    findings += _check_freshness(root, model, views, mapping)
-    findings += _check_orphan_markers(root, mapping)
+    mapping = _collect_mapping(_diagrams_map(root), findings)
+    findings += _check_freshness(root=root, model=model, views=views, mapping=mapping)
+    findings += _check_orphan_markers(root=root, mapping=mapping)
     return findings
 
 
@@ -529,7 +602,7 @@ def _check_freshness(root: Path, model: ModelParse, views: ViewsParse, mapping: 
         if not doc_path.exists():
             findings.append(f"diagrams-fresh: mapped doc {doc_key} does not exist; run {FIX_CMD}")
             continue
-        text = doc_path.read_text(encoding="utf-8")
+        text = _read_exact(doc_path)
         for vid in vids:
             view = by_id.get(vid)
             if view is None:
@@ -552,7 +625,7 @@ def _check_orphan_markers(root: Path, mapping: dict[str, list[str]]) -> list[str
     for doc_path in sorted((root / "architecture").glob("*.arc42.md")):
         doc_key = f"architecture/{doc_path.name}"
         mapped = set(mapping.get(doc_key, []))
-        for m in _MARKER_RE.finditer(doc_path.read_text(encoding="utf-8")):
+        for m in _MARKER_RE.finditer(_read_exact(doc_path)):
             vid = m.group(2)
             if vid in mapped:
                 continue

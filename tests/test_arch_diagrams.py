@@ -219,6 +219,56 @@ def test_parse_model_comment_brace_is_ignored(tmp_path):
     assert mp.findings == []
 
 
+def test_parse_model_element_trailing_content_is_finding(tmp_path):
+    model = """
+    specification { element node }
+    model {
+      a = node 'A' unexpected junk
+      b = node 'B'
+    }
+    """
+    mp = arch_diagrams.parse_model(arch_only(tmp_path, model))
+    assert any("unexpected junk" in f for f in mp.findings)
+
+
+def test_parse_model_non_virtual_spec_tag_is_finding(tmp_path):
+    model = """
+    specification {
+      element node {
+        #bogus
+      }
+    }
+    model { a = node 'A' }
+    """
+    mp = arch_diagrams.parse_model(arch_only(tmp_path, model))
+    assert any("bogus" in f for f in mp.findings)
+
+
+def test_parse_model_spec_element_trailing_content_is_finding(tmp_path):
+    model = """
+    specification {
+      element node oops
+    }
+    model { a = node 'A' }
+    """
+    mp = arch_diagrams.parse_model(arch_only(tmp_path, model))
+    assert any("oops" in f for f in mp.findings)
+
+
+def test_parse_model_double_hash_virtual_is_finding(tmp_path):
+    model = """
+    specification {
+      element bucket {
+        ##virtual
+      }
+    }
+    model { a = bucket 'A' }
+    """
+    mp = arch_diagrams.parse_model(arch_only(tmp_path, model))
+    assert any("##virtual" in f for f in mp.findings)
+    assert {e.id: e.virtual for e in mp.elements} == {"a": False}
+
+
 # --------------------------------------------------------------------------- parse_views
 
 CHAIN_MODEL = """
@@ -694,6 +744,29 @@ def test_generate_errors_on_close_without_open(tmp_path):
         arch_diagrams.generate(root)
 
 
+def test_generate_aborts_when_model_has_findings(tmp_path):
+    bad_model = MODEL.replace("  engine -> core\n", "  engine -> core\n  total garbage here\n")
+    root = make_repo(tmp_path, regenerate=False, model=bad_model)
+    with pytest.raises(ValueError) as exc:
+        arch_diagrams.generate(root)
+    assert "total garbage here" in str(exc.value)
+
+
+def test_generate_raises_on_missing_diagrams_block(tmp_path):
+    root = make_repo(tmp_path, regenerate=False, index=INDEX_BASE, system_md=SYSTEM_MD_NO_MARKERS)
+    with pytest.raises(ValueError) as exc:
+        arch_diagrams.generate(root)
+    assert "diagrams block" in str(exc.value)
+
+
+def test_generate_rejects_path_traversal_doc_key(tmp_path):
+    index = index_with("diagrams:\n  architecture/../evil.arc42.md: [land]\n")
+    root = make_repo(tmp_path, regenerate=False, index=index, system_md=SYSTEM_MD_NO_MARKERS)
+    with pytest.raises(ValueError) as exc:
+        arch_diagrams.generate(root)
+    assert "must be an architecture" in str(exc.value)
+
+
 def test_main_prints_changed_files(tmp_path, capsys):
     root = make_repo(tmp_path, regenerate=False)
     rc = arch_diagrams.main(root)
@@ -827,6 +900,40 @@ def test_diagrams_fresh_parse_error_is_finding_other_checks_still_run(tmp_path):
     findings = arch_check.run_checks(root)  # must not raise
     assert any(f.startswith("diagrams-fresh:") for f in findings)
     assert any(f.startswith("claims-exactly-once:") for f in findings)
+
+
+def test_diagrams_fresh_missing_diagrams_block_flagged(tmp_path):
+    root = make_repo(tmp_path, regenerate=False, index=INDEX_BASE, system_md=SYSTEM_MD_NO_MARKERS)
+    assert any("diagrams block" in f for f in fresh_findings(root))
+
+
+def test_diagrams_fresh_path_traversal_key_flagged(tmp_path):
+    index = index_with("diagrams:\n  architecture/../evil.arc42.md: [land]\n")
+    root = make_repo(tmp_path, regenerate=False, index=index, system_md=SYSTEM_MD_NO_MARKERS)
+    assert any("must be an architecture" in f for f in fresh_findings(root))
+
+
+@pytest.mark.parametrize("content", [None, "", "- a\n- b\n", "just a scalar\n"])
+def test_diagrams_map_fails_closed_without_raising(tmp_path, content):
+    arch_dir = tmp_path / "architecture"
+    arch_dir.mkdir(parents=True)
+    if content is not None:
+        (arch_dir / "index.yaml").write_text(content, encoding="utf-8")
+    assert isinstance(arch_diagrams._diagrams_map(tmp_path), str)  # a reason string, never a raise
+
+
+def test_diagrams_fresh_crlf_block_is_stale(tmp_path):
+    root = make_repo(tmp_path)
+    doc = root / "architecture" / "system.arc42.md"
+    doc.write_bytes(doc.read_bytes().replace(b"\n", b"\r\n"))
+    assert any("stale" in f for f in fresh_findings(root))
+
+
+def test_diagrams_fresh_whitespace_variant_marker_flagged(tmp_path):
+    root = make_repo(tmp_path)
+    doc = root / "architecture" / "system.arc42.md"
+    doc.write_text(doc.read_text(encoding="utf-8") + "\n<!--  likec4:land -->\n", encoding="utf-8")
+    assert any("land" in f for f in fresh_findings(root))
 
 
 # --------------------------------------------------------------------------- parser consolidation (task 2.1)
