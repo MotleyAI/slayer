@@ -18,7 +18,7 @@ The MCP server SHALL expose exactly one query-execution tool, named `query`, who
 
 ### Requirement: Query-object execution
 
-The `query` tool SHALL accept a single query object with the documented query fields (`source_model` in its three forms — stored-model name, inline model extension, inline model — plus measures, dimensions, filters, time dimensions, order, limit, offset, and the in-query control fields `strict` and `distinct_dimension_values`) and SHALL execute it with the same semantics as the engine's single-query execution.
+The `query` tool SHALL accept a single query object with the documented query fields (`source_model` in its three forms — stored-model name, inline model extension, inline model — plus measures, dimensions, filters, time dimensions, `main_time_dimension`, order, limit, offset, `whole_periods_only`, per-query `variables`, and the in-query control fields `strict` and `distinct_dimension_values`) and SHALL execute it with the same semantics as the engine's single-query execution.
 
 #### Scenario: Single query object runs
 
@@ -32,7 +32,7 @@ The `query` tool SHALL accept a single query object with the documented query fi
 
 ### Requirement: Multi-stage list execution
 
-The `query` tool SHALL accept a non-empty list of query objects forming a multi-stage DAG with the engine's list semantics: every non-final entry is named, stages reference siblings by name, the engine reorders stages so references resolve, and the last entry is the root whose rows are returned. An empty list SHALL be rejected with a clear error.
+The `query` tool SHALL accept a non-empty list of query objects forming a multi-stage DAG with the engine's list semantics: every non-final entry is named, stages reference siblings by name (as a `source_model` string or a `source_model.joins[].target_model` — there is no top-level `joins` field), the engine reorders stages so references resolve, and the last entry is the root whose rows are returned. An empty list SHALL be rejected with a clear error.
 
 #### Scenario: Two-stage query returns the root stage's rows
 
