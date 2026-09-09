@@ -9,12 +9,18 @@ determinable, and fails with a route-aware error otherwise.
 
 ## What Changes
 
-- A Mode-B dotted ref whose first hop is not a direct join is **auto-routed** to the full
-  path when the target is reached by exactly one route, or — among several routes — by
-  exactly one fan-out-free route (`provably_to_one` on every hop).
+- A Mode-B dotted ref whose first hop resolves to no incident edge (either orientation,
+  DEV-1853) is **auto-routed** to the full path when the target is reached by exactly one
+  route, or — among several routes — by exactly one fan-out-free route (oriented
+  `provably_to_one` on every hop). Routes are counted over the bidirectional multigraph:
+  reverse hops are candidates and parallel edges are distinct routes.
+- Routed and suggested paths are **executable token sequences** (edge-name tokens across named
+  parallel edges; a route crossing an unnamed parallel pair is never routed or suggested). A
+  target directly adjacent via parallel edges stays DEV-1853's fail-closed
+  `AmbiguousJoinPathError` — routing never sees it.
 - Ambiguous (>=2 routes, not uniquely fan-out-free) and unreachable targets are rejected with
   `UnresolvableDimensionJoinError`, carrying a route-aware `suggested_path`.
-- A **broken explicit chain** (>=2 hops with a non-direct hop) is never auto-fixed; it is
+- A **broken explicit chain** (>=2 hops with an unresolvable hop) is never auto-fixed; it is
   rejected and suggests the short form when the target is uniquely routable.
 - Routing is uniform across dimensions, time dimensions, cross-model measures/aggregations,
   star aggregations, query filters, and ORDER BY. For dimensions and time dimensions the
@@ -47,7 +53,9 @@ determinable, and fails with a route-aware error otherwise.
   (`_walk_join_chain` routing + `BoundExpr.routed_dotted`), `slayer/engine/stage_planner.py`
   (dimension/time-dim/saved-measure naming derives the routed path), `slayer/engine/schema_drift.py`
   (routing-aware attribution).
-- Reuses existing infra: `JoinGraph`, `join_safety.provably_to_one`,
-  `UnresolvableDimensionJoinError`, `_collect_referenced_models` datasource closure.
+- Reuses existing infra: post-1853 `JoinGraph` (multigraph counts, executable-token
+  `shortest_path`), `core/join_walker` (`resolve_hop` / `neighbors` / `OrientedJoin`), oriented
+  `join_safety.provably_to_one`, `UnresolvableDimensionJoinError`, the
+  `_collect_referenced_models` bidirectional datasource closure.
 - Docs: `docs/concepts/references.md`. Tests: new routing suites + rewrite of the DEV-1780
   strict-reject cases.

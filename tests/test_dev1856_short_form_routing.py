@@ -1,22 +1,25 @@
 """DEV-1856 — short-form dotted-dimension auto-routing, end to end.
 
-A Mode-B dotted reference that names only ``Target.column`` auto-resolves to its full
-datasource-scoped join path when that path is determinable, and rejects with a
-route-aware ``UnresolvableDimensionJoinError`` otherwise. The routed short form must
-behave bound-tree-identically to the full explicit path — same SQL, same result keys —
-so most positive cases assert exactly that equivalence.
-
-Covers every ``#### Scenario:`` in
-``openspec/changes/dev-1856-.../specs/queries/dotted-dimension-routing/spec.md``.
+A Mode-B ``Target.column`` auto-resolves to its full datasource-scoped join path when
+determinable, else rejects with a route-aware ``UnresolvableDimensionJoinError``. The
+routed short form binds identically to the full explicit path (same SQL, same result
+keys), so most positive cases assert that equivalence. Routes count over the DEV-1853
+bidirectional multigraph (reverse hops candidates, safety per orientation, parallel
+edges distinct, executable-token paths). Covers every ``#### Scenario:`` in the change's
+``specs/queries/dotted-dimension-routing/spec.md``.
 """
 
 from __future__ import annotations
+
+import os
+import sqlite3
 
 import pytest
 import sqlglot
 
 from slayer.core.enums import DataType, JoinCardinality, JoinType
 from slayer.core.errors import (
+    AmbiguousJoinPathError,
     IllegalScopeReferenceError,
     UnknownReferenceError,
     UnresolvableDimensionJoinError,
@@ -37,6 +40,8 @@ from slayer.engine.schema_drift import (
     compute_datasource_drops,
 )
 from slayer.storage.base import resolve_storage
+
+from tests._engine_helpers import make_seeded_sqlite_engine
 
 
 # Column / model helpers
@@ -122,6 +127,33 @@ async def _chain_engine(tmp_path, **knobs) -> SlayerQueryEngine:
     storage = resolve_storage(str(tmp_path))
     await _save(storage, _chain_models(**knobs))
     return SlayerQueryEngine(storage=storage)
+
+
+async def _seeded_chain_engine(tmp_path) -> SlayerQueryEngine:
+    """Chain models bound to a populated SQLite file: three invoices fold to
+    Ann=30 (10+20) and Bob=30 through Subscription → Customer → Consumer."""
+    db_path = os.path.join(str(tmp_path), "data.db")
+    con = sqlite3.connect(db_path)
+    cur = con.cursor()
+    cur.execute("CREATE TABLE Consumer (id INTEGER PRIMARY KEY, name TEXT, "
+                "email TEXT, signup_at TEXT, amount REAL, geo TEXT)")
+    cur.executemany("INSERT INTO Consumer VALUES (?,?,?,?,?,?)",
+                    [(1, "Ann", None, None, None, None),
+                     (2, "Bob", None, None, None, None)])
+    cur.execute("CREATE TABLE Customer (id INTEGER PRIMARY KEY, consumerId INTEGER)")
+    cur.executemany("INSERT INTO Customer VALUES (?,?)", [(1, 1), (2, 2)])
+    cur.execute("CREATE TABLE Subscription (id INTEGER PRIMARY KEY, customerId INTEGER)")
+    cur.executemany("INSERT INTO Subscription VALUES (?,?)", [(1, 1), (2, 2)])
+    cur.execute("CREATE TABLE Invoice (id INTEGER PRIMARY KEY, subscriptionId INTEGER, "
+                "customerId INTEGER, amount REAL, status TEXT, issued_at TEXT)")
+    cur.executemany("INSERT INTO Invoice VALUES (?,?,?,?,?,?)",
+                    [(1, 1, 1, 10.0, "ok", None),
+                     (2, 1, 1, 20.0, "ok", None),
+                     (3, 2, 2, 30.0, "ok", None)])
+    con.commit()
+    con.close()
+    return await make_seeded_sqlite_engine(
+        base_dir=str(tmp_path), db_path=db_path, models=_chain_models())
 
 
 def _q(source_model: str = "Invoice", **kw) -> SlayerQuery:
@@ -216,6 +248,21 @@ class TestUniqueRoute:
             _root_q(dimensions=["M0.Tag.name"]),
         )
 
+    async def test_routed_short_form_executes_to_correct_values(self, tmp_path) -> None:
+        """End-to-end on populated SQLite: the routed short form does not just emit
+        equivalent SQL, it returns the hand-computed grouped values (Ann=30, Bob=30),
+        matching the explicit full path row-for-row."""
+        engine = await _seeded_chain_engine(tmp_path)
+        short = await engine.execute(
+            query=_q(dimensions=["Consumer.name"]), dry_run=False)
+        full = await engine.execute(
+            query=_q(dimensions=["Subscription.Customer.Consumer.name"]),
+            dry_run=False)
+        key = "Invoice.Subscription.Customer.Consumer.name"
+        got = {r[key]: r["Invoice.amt"] for r in short.data}
+        assert got == {"Ann": 30.0, "Bob": 30.0}
+        assert {r[key]: r["Invoice.amt"] for r in full.data} == got
+
 
 # Requirement: Fan-out-free tie-break among ambiguous routes
 
@@ -240,15 +287,15 @@ class TestFanoutTieBreak:
             await _cols_sql(engine, _root_q(dimensions=["Tag.name"]))
 
     async def test_two_fanout_free_routes_stay_ambiguous(self, tmp_path) -> None:
-        """Two PK-joined routes to Consumer (direct + via Subscription) — ambiguous."""
         engine = await _chain_engine(tmp_path, direct_customer=True)
         with pytest.raises(UnresolvableDimensionJoinError):
             await _cols_sql(engine, _q(dimensions=["Consumer.name"]))
 
-    async def test_reverse_inner_edge_arity_is_respected(self, tmp_path) -> None:
-        """A materialized reverse INNER edge (one-to-many) must NOT count as
-        fan-out-free: of two routes to Hub, only the all-to-one forward route via
-        Spoke is safe, so the short form resolves through it."""
+    async def test_reverse_orientation_arity_is_respected(self, tmp_path) -> None:
+        """The reverse orientation of a to-one edge is one-to-many (DEV-1853
+        inverted cardinality) and must NOT count as fan-out-free: of two routes to
+        Hub, only the all-to-one forward route via Spoke is safe, so the short
+        form resolves through it."""
         hub = SlayerModel(
             name="Hub", sql_table="Hub", data_source="test",
             columns=[_pk(), _t("name"), _d("other_id")],
@@ -279,6 +326,111 @@ class TestFanoutTieBreak:
         )
 
 
+# Requirement: Routed paths are executable (DEV-1853 bidirectional/parallel interplay)
+
+class TestBidirectionalAndParallelEdges:
+    async def test_unique_route_through_reverse_hop_resolves(self, tmp_path) -> None:
+        """Only stored edges: Payment→Invoice, Payment→Method. ``Method.kind`` from
+        Invoice routes through the reverse Payment hop ≡ explicit ``Payment.Method.kind``."""
+        method = SlayerModel(
+            name="Method", sql_table="Method", data_source="test",
+            columns=[_pk(), _t("kind")],
+        )
+        payment = SlayerModel(
+            name="Payment", sql_table="Payment", data_source="test",
+            columns=[_pk(), _d("invoiceId"), _d("methodId")],
+            joins=[_join("Invoice", [["invoiceId", "id"]]),
+                   _join("Method", [["methodId", "id"]])],
+        )
+        invoice = SlayerModel(
+            name="Invoice", sql_table="Invoice", data_source="test",
+            columns=[_pk(), _d("amount"), _t("status")],
+        )
+        storage = resolve_storage(str(tmp_path))
+        await _save(storage, [method, payment, invoice])
+        engine = SlayerQueryEngine(storage=storage)
+        await _assert_equiv(
+            engine, _q(dimensions=["Method.kind"]),
+            _q(dimensions=["Payment.Method.kind"]),
+        )
+
+    def _parallel_leaf_models(
+        self, *, second_pair: list[list[str]], names: tuple = ("by_id", "by_grp")
+    ) -> list[SlayerModel]:
+        """Root → Mid, then TWO parallel Mid↔Leaf edges (optionally named)."""
+        leaf = SlayerModel(
+            name="Leaf", sql_table="Leaf", data_source="test",
+            columns=[_pk(), _t("grp"), _t("x")],
+        )
+        mid = SlayerModel(
+            name="Mid", sql_table="Mid", data_source="test",
+            columns=[_pk(), _d("leaf_id"), _t("leaf_grp")],
+            joins=[
+                _join("Leaf", [["leaf_id", "id"]],
+                      **({"name": names[0]} if names[0] else {})),
+                _join("Leaf", second_pair,
+                      **({"name": names[1]} if names[1] else {})),
+            ],
+        )
+        root = SlayerModel(
+            name="Root", sql_table="Root", data_source="test",
+            columns=[_pk(), _d("mid_id"), _d("amount")],
+            joins=[_join("Mid", [["mid_id", "id"]])],
+        )
+        return [leaf, mid, root]
+
+    async def test_named_parallel_tiebreak_uses_edge_token(self, tmp_path) -> None:
+        """Two named Mid↔Leaf edges — ``by_id`` onto the PK (safe), ``by_grp`` onto a
+        non-unique column (fans out). ``Leaf.x`` routes through ``by_id``; the routed
+        path and result key carry the edge-name token."""
+        storage = resolve_storage(str(tmp_path))
+        await _save(storage, self._parallel_leaf_models(
+            second_pair=[["leaf_grp", "grp"]],
+        ))
+        engine = SlayerQueryEngine(storage=storage)
+        await _assert_equiv(
+            engine, _root_q(dimensions=["Leaf.x"]),
+            _root_q(dimensions=["Mid.by_id.x"]),
+        )
+        cols, _ = await _cols_sql(engine, _root_q(dimensions=["Leaf.x"]))
+        assert "Root.Mid.by_id.x" in cols
+
+    async def test_unnamed_parallel_pair_is_unroutable(self, tmp_path) -> None:
+        """Two UNNAMED Mid↔Leaf edges: every route crosses an inexecutable hop —
+        rejected with no suggestion."""
+        storage = resolve_storage(str(tmp_path))
+        await _save(storage, self._parallel_leaf_models(
+            second_pair=[["leaf_grp", "grp"]], names=(None, None),
+        ))
+        engine = SlayerQueryEngine(storage=storage)
+        with pytest.raises(UnresolvableDimensionJoinError) as ei:
+            await _cols_sql(engine, _root_q(dimensions=["Leaf.x"]))
+        assert ei.value.suggested_path is None
+
+    async def test_adjacent_parallel_edges_stay_ambiguous_hop(self, tmp_path) -> None:
+        """Root itself has two named edges to Leaf: the bare ``Leaf.x`` hop fails
+        closed as DEV-1853's ambiguous join hop — routing never applies. Boundary
+        guard; passes pre-implementation."""
+        leaf = SlayerModel(
+            name="Leaf", sql_table="Leaf", data_source="test",
+            columns=[_pk(), _t("x")],
+        )
+        root = SlayerModel(
+            name="Root", sql_table="Root", data_source="test",
+            columns=[_pk(), _d("a_id"), _d("b_id"), _d("amount")],
+            joins=[_join("Leaf", [["a_id", "id"]], name="a_leaf"),
+                   _join("Leaf", [["b_id", "id"]], name="b_leaf")],
+        )
+        storage = resolve_storage(str(tmp_path))
+        await _save(storage, [leaf, root])
+        engine = SlayerQueryEngine(storage=storage)
+        with pytest.raises(AmbiguousJoinPathError) as ei:
+            await _cols_sql(engine, _root_q(dimensions=["Leaf.x"]))
+        assert ei.value.source_model == "Root"
+        assert ei.value.target_model == "Leaf"
+        assert {c.name for c in ei.value.candidates} == {"a_leaf", "b_leaf"}
+
+
 # Requirement: Route-aware rejection of ambiguous and unreachable targets
 
 class TestRejectionTaxonomy:
@@ -287,6 +439,8 @@ class TestRejectionTaxonomy:
         with pytest.raises(UnresolvableDimensionJoinError) as ei:
             await _cols_sql(engine, _q(dimensions=["Consumer.name"]))
         assert ei.value.suggested_path == "Customer.Consumer.name"
+        assert ei.value.reference == "Consumer.name"
+        assert ei.value.root_model == "Invoice"
         assert "Consumer.name" in str(ei.value)
 
     async def test_unreachable_target_has_no_suggestion(self, tmp_path) -> None:
@@ -294,6 +448,8 @@ class TestRejectionTaxonomy:
         with pytest.raises(UnresolvableDimensionJoinError) as ei:
             await _cols_sql(engine, _q(dimensions=["Consumer.name"]))
         assert ei.value.suggested_path is None
+        assert ei.value.reference == "Consumer.name"
+        assert ei.value.root_model == "Invoice"
 
 
 # Requirement: Broken explicit chains are never auto-fixed
@@ -322,7 +478,6 @@ class TestBrokenChains:
         assert ei.value.suggested_path is None
 
     async def test_broken_later_hop_unreachable_target_no_suggestion(self, tmp_path) -> None:
-        """Later-hop broken chain onto an unreachable target — no suggestion."""
         engine = await _chain_engine(tmp_path, drop_customer_consumer=True)
         with pytest.raises(UnresolvableDimensionJoinError) as ei:
             await _cols_sql(engine, _q(dimensions=["Subscription.Consumer.name"]))
@@ -345,6 +500,10 @@ class TestUniformSurfaces:
                       {"formula": "Subscription.Customer.Consumer.*:count", "name": "c"}],
         )
         await _assert_equiv(engine, short, full)
+        # Both aggregates bind to the routed terminal, not the root — the SUM reads
+        # the Consumer join alias, so the emitted SQL references it.
+        _, sql = await _cols_sql(engine, short)
+        assert "Subscription__Customer__Consumer" in sql
 
     async def test_short_form_filter(self, tmp_path) -> None:
         engine = await _chain_engine(tmp_path)
@@ -359,9 +518,9 @@ class TestUniformSurfaces:
         engine = await _chain_engine(tmp_path)
         await _assert_equiv(
             engine,
-            _q(dimensions=["Consumer.name"], order=["Consumer.name"]),
+            _q(dimensions=["Consumer.name"], order=[{"Consumer.name": "asc"}]),
             _q(dimensions=["Subscription.Customer.Consumer.name"],
-               order=["Subscription.Customer.Consumer.name"]),
+               order=[{"Subscription.Customer.Consumer.name": "asc"}]),
         )
 
     async def test_short_form_time_dimension(self, tmp_path) -> None:
@@ -432,17 +591,21 @@ class TestTypeAndOpaque:
 class TestSavedMeasureRouting:
     async def test_routed_saved_measure_keeps_type_and_full_name(self, tmp_path) -> None:
         """Unnamed ``Consumer.aov`` (typed saved measure) ≡ its full-path form:
-        same result key, same declared DOUBLE type."""
+        same result key, same declared DOUBLE type. The surfaced key is the full
+        routed path, not the short ``Consumer.aov`` (else both forms could converge
+        on the same wrong short alias and the equivalence would pass vacuously)."""
         engine = await _chain_engine(tmp_path)
-        await _assert_equiv(
-            engine,
-            _q(dimensions=["status"], measures=[{"formula": "Consumer.aov"}]),
-            _q(dimensions=["status"],
-               measures=[{"formula": "Subscription.Customer.Consumer.aov"}]),
-        )
+        short = _q(dimensions=["status"], measures=[{"formula": "Consumer.aov"}])
+        full = _q(dimensions=["status"],
+                  measures=[{"formula": "Subscription.Customer.Consumer.aov"}])
+        await _assert_equiv(engine, short, full)
+        cols, _ = await _cols_sql(engine, short)
+        assert any(
+            "Subscription.Customer.Consumer" in k and k.endswith("aov")
+            for k in cols
+        ), cols
 
     async def test_routed_unnamed_saved_measure_type_via_saved_model(self, tmp_path) -> None:
-        """The UNNAMED routed saved measure's virtual column inherits the DOUBLE type."""
         engine = await _chain_engine(tmp_path)
         qb = SlayerModel(name="qb", data_source="test", source_queries=[SlayerQuery(
             source_model="Invoice", dimensions=["status"],
@@ -454,7 +617,6 @@ class TestSavedMeasureRouting:
         assert measure_cols[0].type == DataType.DOUBLE
 
     async def test_routed_short_form_round_trips_through_storage(self, tmp_path) -> None:
-        """A persisted stage using the short form re-resolves on reload and executes."""
         engine = await _chain_engine(tmp_path)
         qb = SlayerModel(name="qb", data_source="test", source_queries=[SlayerQuery(
             source_model="Invoice", dimensions=["Consumer.name"],
@@ -580,6 +742,19 @@ class TestSchemaDriftRouting:
             sql_diffs={},
         )
 
+    def _drop_intervening_join(self, models: list[SlayerModel]):
+        """Drop the intervening ``Customer → Consumer`` join — the routed short
+        form ``Consumer.email`` traverses it, so its removal must cascade."""
+        edit = EditModelDelete(
+            model_name="Customer", data_source="test",
+            remove=RemoveSpec(joins=["Consumer"]),
+        )
+        return compute_datasource_drops(
+            models=models,
+            sql_table_diffs={"Customer": (edit, set())},
+            sql_diffs={},
+        )
+
     @staticmethod
     def _entry_for(name: str, entries):
         return next((e for e in entries if e.model_name == name), None)
@@ -587,6 +762,11 @@ class TestSchemaDriftRouting:
     def test_dropping_routed_column_cascades(self) -> None:
         models = [*_chain_models(), self._qb()]
         entry = self._entry_for("qb", self._drops(models))
+        assert isinstance(entry, WholeModelDelete)
+
+    def test_dropping_intervening_join_cascades(self) -> None:
+        models = [*_chain_models(), self._qb()]
+        entry = self._entry_for("qb", self._drop_intervening_join(models))
         assert isinstance(entry, WholeModelDelete)
 
     def test_ambiguous_short_form_attributes_to_nothing(self) -> None:

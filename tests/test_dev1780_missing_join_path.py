@@ -1,24 +1,10 @@
-"""DEV-1780 / DEV-1856 — a dotted dimension / time-dimension whose hops are not
-all direct joins must never emit invalid SQL (an unbound ``A__B`` alias in
-SELECT / GROUP BY with no matching join).
-
-The DEV-1450 pipeline closes that hole *structurally*: ``binding.py`` walks a
-dotted path hop by hop at BIND time, before any SQL is generated, so an unbound
-alias can never reach the emitted SQL — for dimensions and time-dimensions alike.
-
-DEV-1856 then turned ON short-form auto-routing (previously parked under
-DEV-1780's strict-rejection decision): a dotted ref naming just ``Target.column``
-whose first hop is not a direct join auto-resolves to its full datasource-scoped
-join path when that path is uniquely determinable, and otherwise rejects with a
-typed ``UnresolvableDimensionJoinError`` carrying a route-aware suggestion. A
-broken explicit chain (``Customer.Consumer.name`` off a root with no direct
-Customer join) is never auto-fixed. This file keeps the structural-hole and
-diagnostics coverage; the routing behaviour is exercised in depth in
-``test_dev1856_short_form_routing.py``.
-
-Scope: dimensions + time-dimensions. Downstream (named-query) stages see a flat
-schema, so a dotted ref past a stage boundary is an ``IllegalScopeReferenceError``
-— routing is a base-scope rule and is never applied there.
+"""DEV-1780 / DEV-1856 — a dotted dim/time-dim with non-direct-join hops binds
+hop-by-hop before SQL generation, so an unbound ``A__B`` alias never reaches the
+emitted SQL. DEV-1856 turned ON short-form auto-routing (parked under DEV-1780's
+strict-reject decision): a bare ``Target.column`` routes to its full path when
+uniquely determinable, else raises typed ``UnresolvableDimensionJoinError`` with
+a route-aware suggestion; a broken explicit chain is never auto-fixed. Full
+routing behaviour lives in ``test_dev1856_short_form_routing.py``.
 """
 
 from __future__ import annotations
@@ -65,14 +51,9 @@ async def _save_chain(
     direct_customer: bool = False,
     drop_customer_consumer: bool = False,
 ) -> SlayerModel:
-    """Invoice -> Subscription -> Customer -> Consumer.
-
-    * ``direct_customer`` adds Invoice -> Customer, giving TWO routes to Consumer
-      (2-hop Customer.Consumer and 3-hop Subscription.Customer.Consumer).
-    * ``drop_customer_consumer`` removes Customer -> Consumer, leaving Consumer
-      unreachable from Invoice.
-    Returns the Invoice (root) model.
-    """
+    """Invoice → Subscription → Customer → Consumer; ``direct_customer`` adds
+    Invoice → Customer (two routes), ``drop_customer_consumer`` makes Consumer
+    unreachable. Returns the Invoice root."""
     await storage.save_datasource(
         DatasourceConfig(name="test", type="sqlite", database=":memory:")
     )
@@ -191,9 +172,6 @@ class TestValidPathBindsAllJoins:
 
 class TestShortFormRoutingAndBrokenChains:
     async def test_broken_explicit_chain_rejects_and_suggests_short_form(self, tmp_path) -> None:
-        """DEV-1856: ``Customer.Consumer.name`` where Invoice has no direct Customer
-        join is a broken chain — never auto-fixed. Typed rejection whose suggestion
-        is the routable short form."""
         engine = await _engine(tmp_path)
         with pytest.raises(UnresolvableDimensionJoinError) as ei:
             await _dry_sql(engine, SlayerQuery(**_amount_query(
@@ -202,8 +180,6 @@ class TestShortFormRoutingAndBrokenChains:
         assert ei.value.suggested_path == "Consumer.name"
 
     async def test_short_form_unique_route_resolves(self, tmp_path) -> None:
-        """DEV-1856: a short form ``Consumer.name`` (target only) with exactly one
-        route auto-resolves to the full path and emits its joins."""
         engine = await _engine(tmp_path)
         sql = await _dry_sql(engine, SlayerQuery(**_amount_query(
             dimensions=["Consumer.name"],
@@ -213,8 +189,6 @@ class TestShortFormRoutingAndBrokenChains:
         sqlglot.parse_one(sql, dialect="postgres")
 
     async def test_short_form_ambiguous_target_rejects(self, tmp_path) -> None:
-        """Two fan-out-free routes reach Consumer (direct + via Subscription) →
-        ambiguous, rejected with the shortest full path suggested."""
         engine = await _engine(tmp_path, direct_customer=True)
         with pytest.raises(UnresolvableDimensionJoinError) as ei:
             await _dry_sql(engine, SlayerQuery(**_amount_query(
@@ -223,7 +197,6 @@ class TestShortFormRoutingAndBrokenChains:
         assert ei.value.suggested_path == "Customer.Consumer.name"
 
     async def test_unreachable_target_rejects_without_suggestion(self, tmp_path) -> None:
-        """Consumer unreachable by any join → rejected, no suggestion."""
         engine = await _engine(tmp_path, drop_customer_consumer=True)
         with pytest.raises(UnresolvableDimensionJoinError) as ei:
             await _dry_sql(engine, SlayerQuery(**_amount_query(
@@ -232,8 +205,6 @@ class TestShortFormRoutingAndBrokenChains:
         assert ei.value.suggested_path is None
 
     async def test_broken_time_dimension_chain_rejects(self, tmp_path) -> None:
-        """Routing applies to time dimensions: an explicit broken-chain time-dim
-        rejects with the typed routing error."""
         engine = await _engine(tmp_path)
         with pytest.raises(UnresolvableDimensionJoinError):
             await _dry_sql(engine, SlayerQuery(
@@ -246,8 +217,6 @@ class TestShortFormRoutingAndBrokenChains:
             ))
 
     async def test_missing_terminal_column_on_valid_path_rejects(self, tmp_path) -> None:
-        """A missing leaf column on an otherwise-valid path stays a plain unknown-ref
-        — the join alias binds but the column does not exist; never a routing failure."""
         engine = await _engine(tmp_path, direct_customer=True)
         with pytest.raises(UnknownReferenceError):
             await _dry_sql(engine, SlayerQuery(**_amount_query(

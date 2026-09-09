@@ -47,6 +47,7 @@ from slayer.engine.ingestion import (
 from slayer.core.errors import AmbiguousJoinPathError
 from slayer.core.join_walker import neighbors, resolve_hop
 from slayer.engine.column_expansion import resolve_ref_target
+from slayer.engine.dimension_routing import short_form_route_or_none
 from slayer.engine.syntax import (
     AggCall,
     DottedRef,
@@ -775,9 +776,29 @@ def _attribute_ref_to_base(
     if path == [graph.stage_source_name]:
         return leaf if graph.stage_source_name == base_name else None
     terminal = _walk_stage_path(path=path, graph=graph)
+    if terminal is None and len(path) == 1:
+        # Short-form auto-routing (DEV-1856): a len==1 prefix with no direct join
+        # attributes to its uniquely-routed terminal, so a routed ref's stage
+        # cascades when the terminal's column OR any join on its route is dropped.
+        terminal = _route_short_form_terminal(target=path[0], graph=graph)
     if terminal is None:
         return None
     return leaf if terminal == base_name else None
+
+
+def _route_short_form_terminal(*, target: str, graph: _StageGraph) -> str | None:
+    """The short-form target when it is uniquely routable from the stage source
+    over the datasource-scoped join graph (ambiguous / unreachable → None)."""
+    root = (
+        graph.models_by_name.get(graph.stage_source_name)
+        if graph.stage_source_name else None
+    )
+    if root is None:
+        return None
+    route = short_form_route_or_none(
+        root=root, target_model=target, models_by_name=graph.models_by_name,
+    )
+    return target if route is not None else None
 
 
 def _walk_stage_path(*, path: list[str], graph: _StageGraph) -> str | None:
