@@ -278,7 +278,7 @@ def _canonical_if_routed(
         return None
     key = value_key.column if isinstance(value_key, TimeTruncKey) else value_key
     if not isinstance(key, (ColumnKey, ColumnSqlKey)):
-        return None
+        return None  # saved measures canonicalize in stage_planner._resolve_saved_measure_ref
     typed = parsed.parts
     if typed and typed[0] == scope.source_model.name:
         typed = typed[1:]
