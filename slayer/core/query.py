@@ -762,16 +762,35 @@ class SlayerQuery(BaseModel):
         return _validate_model_name(v, "Query")
     dimensions: Annotated[list[ColumnRef | ComputedDimension] | None, BeforeValidator(_coerce_dimensions)] = None
     time_dimensions: list[TimeDimension] | None = None
-    main_time_dimension: str | None = None  # Explicit time dimension for transforms (overrides auto-detection)
+    main_time_dimension: str | None = Field(
+        default=None,
+        description=(
+            "Name of the time dimension that time-ordered transforms (change, lag, ...) "
+            "key off; overrides auto-detection when the query has multiple time dimensions."
+        ),
+    )
     filters: list[str] | None = None
     variables: dict[str, Any] | None = None  # Variable values for filter substitution
     order: Annotated[list[OrderItem] | None, BeforeValidator(_coerce_order)] = None
-    limit: int | None = None
+    limit: int | None = Field(
+        default=None,
+        description=(
+            "Max rows to return. Use only for top-N / 'the single most X' "
+            "requests; a plain list returns every matching row."
+        ),
+    )
     offset: int | None = None
     whole_periods_only: bool = False
-    # Default True: auto-dedup dim-only queries (Cube.js-style) when measures is
-    # empty. False emits a flat projection and rejects any measure reference.
-    distinct_dimension_values: bool = True
+    distinct_dimension_values: bool = Field(
+        default=True,
+        description=(
+            "Default true: dimension-only queries return distinct dimension "
+            "combinations (GROUP BY the projected dimensions). Set false for "
+            "raw per-record rows — requires empty `measures` and no measure "
+            "reference in `filters`/`order`. For rows plus a count, keep the "
+            "default and add `count(*)`."
+        ),
+    )
 
     # Default False (broadcast + warn). True turns silent-semantics events — an
     # implicit-grain broadcast, a dropped-as-unreachable filter — into hard errors.

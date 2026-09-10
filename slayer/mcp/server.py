@@ -436,12 +436,14 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     mcp = FastMCP(
         "SLayer",
         instructions=(
-            "SLayer is a semantic layer for querying databases. "
-            "Instead of writing SQL, describe what data you want using models, measures, dimensions, and filters. "
-            "New to SLayer? Start with inspect(reference='memory:help.intro', entity_type='memory') for an overview of core concepts and the query shape — it lists the deep-dive topics you can inspect the same way. "
-            "Use search(question='...') to find relevant concepts, models, and saved learnings. "
-            "Typical workflow: inspect(memory:help.intro) → search → inspect → query. "
-            "To connect a new database: create_datasource → describe_datasource (verify + list tables) → ingest_datasource_models → models_summary."
+            """SLayer is a semantic layer for querying databases. Instead of writing SQL, describe what data you want using measures, dimensions, and filters.
+SLayer queries allow you to do multistage aggregations, arithmetic, time shifts and much more right inside the query, including across multiple models (SLayer writes the joins for you).
+Before assuming you can't express certain logic (like aggregations of aggregations, or different grains in the same query) in SLayer,
+MAKE SURE to inspect(reference='memory:help.intro', entity_type='memory') for an overview of what it can do.
+DO NOT fall back on manipulating the raw data yourself unless you've red the help and are SURE Slayer can't do it.
+Use search(question='...') to find relevant concepts, models, and saved learnings.
+Typical workflow: inspect(memory:help.intro) → search → inspect → query.
+To connect a new database: create_datasource → describe_datasource (verify + list tables) → ingest_datasource_models → models_summary."""
         ),
     )
     _set_server_version(mcp)
@@ -460,23 +462,15 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         explain: bool = False,
         format: str = "markdown",
     ) -> str:
-        """Query data from a semantic model. Call inspect(reference="<ds>.<model>", entity_type="model") first to see available columns and measures.
+        """Query data from a semantic model. Call inspect(reference="<datasource>.<model>", entity_type="model") first to see available columns and measures.
 
         The ``query`` argument mirrors the engine's accepted input — one of three forms:
 
-        - **Model name** (string) — run a query-backed model by name, e.g. ``"monthly_revenue"``.
-          Its stored backing query runs (honoring ``variables``). A model that is not
-          query-backed raises an error naming the ``source_model=`` remedy.
-        - **Query object** (dict) — a single query (fields below).
+        - **Model name** (string) — run a query-backed saved model by name, e.g. ``"monthly_revenue"``.
+        - **Query object** (SlayerQuery) — a single query (fields below).
         - **Multi-stage list** (list of query objects) — a DAG of stages (rules below);
-          the last entry is the root whose rows are returned.
-
-        Multi-stage list rules: every entry except the last MUST carry a ``name``; the last
-        entry is the root (its rows are returned), so the intended root MUST be placed last.
-        Stages reference one another by that name — as a ``source_model`` or a
-        ``source_model.joins[].target_model`` (there is no top-level ``joins`` field). The engine topologically reorders the non-root stages so
-        references resolve (their relative order is arbitrary); an unresolved reference or a
-        cycle raises, and an empty list is rejected.
+           every entry except the last MUST carry a ``name``, the last entry is the root whose rows are returned.
+            Stages reference one another by that name — as a ``source_model`` or via a join in ModelExtension
 
         Query object fields:
             source_model: One of three forms:
@@ -730,6 +724,12 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         memories. Use ``search`` instead when you want an entity surfaced *in
         context* (with related memories and ranked neighbours).
 
+        Before using a column as a filter, projection, group-by, or join
+        key, inspect it and read its ``Description:`` (the schema author's
+        intent) and ``Sample values:`` (the authoritative inventory of the
+        literal forms actually stored — build text predicates from these,
+        never a guessed spelling).
+
         Collection (DEV-1667): omit ``reference`` (or pass ``None`` / ``[]``)
         to list a whole kind. ``entity_type="model"`` lists all models grouped
         by datasource (compact=True: one terse line per model; compact=False:
@@ -804,7 +804,15 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     ) -> str:
         """Create a new semantic model, either from a database table or from a query.
 
-        **From a table** (provide sql_table or sql):
+        Host a column/measure on the model whose row grain is 1:1 with what
+        it describes — not merely one where its input columns live. Choose
+        join keys by column ``Description`` (author intent); on ties take the
+        shortest declared join path (long chains through lookup/log tables
+        fan out rows). Reference already-defined entities by name rather than
+        re-deriving them inline; in row-level SQL parenthesise weighted sums
+        in comparisons (``(a*w1 + b*w2) > t``).
+
+        **From a table or sql query** (provide sql_table or sql):
             create_model(name="orders", sql_table="public.orders", data_source="mydb",
                          columns=[...], measures=[...])
 
@@ -963,6 +971,14 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     ) -> str:
         """Edit an existing model in a single call — update metadata, upsert columns/measures/aggregations/joins,
         manage filters, and remove entities.
+
+        Host a column/measure on the model whose row grain is 1:1 with what
+        it describes — not merely one where its input columns live. Choose
+        join keys by column ``Description`` (author intent); on ties take the
+        shortest declared join path (long chains through lookup/log tables
+        fan out rows). Reference already-defined entities by name rather than
+        re-deriving them inline; in row-level SQL parenthesise weighted sums
+        in comparisons (``(a*w1 + b*w2) > t``).
 
         Args:
             model_name: Name of the model to edit.
@@ -1630,6 +1646,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         ``coverage`` lists the best partial roots so you can split the
         request into a multi-stage query.
 
+        Call this once your item list is final, not as a schema browser —
+        explore with ``search`` / ``inspect`` first.
+
         Args:
             items: entity references (``orders.revenue``, ``customers.name``,
                 ``orders.revenue:sum``, bare ``aov`` for a saved metric...).
@@ -1902,6 +1921,12 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         queries previously saved against the entities you're
         considering.
 
+        Discovery, not detail: hits come back as one-line descriptions —
+        pick candidate ids here, then read their full bodies with
+        ``inspect`` (batching same-kind ids in one call). A broad
+        ``compact=False`` search drags full renders into cached context on
+        every later turn for no added signal.
+
         Channel 1 (entity-overlap BM25 over memories): runs when
         ``entities`` and/or ``query`` is supplied. Memories whose
         canonical entity tags overlap the resolved input are ranked.
@@ -1942,12 +1967,15 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             max_results: Maximum total number of hits to return (default 10).
             cypher_filter: Optional openCypher MATCH query returning
                 ``… AS id`` that pre-filters all three channels to the
-                returned canonical IDs. When ``advanced_search`` is not
-                installed, only simple
+                returned canonical IDs — narrow to one kind so
+                ``max_results`` isn't spent on an RRF-fused mix of
+                memories, columns, measures, and models. When
+                ``advanced_search`` is not installed, only simple
                 ``MATCH (n:Label1:Label2) RETURN n.id AS id`` patterns are
                 supported as a kind filter (multi-label uses union
                 semantics; allowed labels: Memory, Datasource, Model,
-                Column, Measure, Aggregation).
+                ModelColumn, Measure, Aggregation — use ``ModelColumn``,
+                not ``Column``, which resolves only on the naive fallback).
         """
         try:
             response = await search_service.search(
