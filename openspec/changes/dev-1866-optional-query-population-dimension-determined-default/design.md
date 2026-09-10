@@ -102,6 +102,15 @@ byte-identical. Rollback = revert; no persisted state changes shape.
   leaf; parity holds for the current dotted-canonical grammar. Only short-form
   auto-routing (DEV-1856) still broadens which references bind, and DEV-1871's typed
   core folds this walk into the one binder.
+- **`_anchor_names` (datasource scoping + sibling detection) still admits saved-measure
+  filter refs**, unlike `determination_items`, because it runs before models load (the
+  sibling check must precede datasource resolution to beat `NO_DATASOURCE`). The
+  reachable impact is exotic — a saved-measure filter on a foreign-datasource model is
+  an unexecutable cross-datasource query, and a false `SIBLING_STAGE` needs a real model
+  name equal to a sibling stage name referenced only by that measure filter; the one
+  genuinely-reachable bug (aggregate-only filter → `NO_DATASOURCE` instead of
+  `EMPTY_DETERMINATION`) is fixed by the empty-anchor guard. Full consistency waits for
+  DEV-1871's single binder.
 - Two Codex findings were scoped deliberately, not "fixed": (a) `recommend_root_model`
   breaks a genuine determination-hop tie advisorily (deterministic name order) rather
   than raising `TIE` like inference — recommend's job is to suggest, not fail — while

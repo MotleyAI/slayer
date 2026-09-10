@@ -420,6 +420,12 @@ async def infer_population(
 
     anchors = _anchor_names(query)
 
+    # No dimensions and only aggregate-bearing filters ⇒ nothing to infer from;
+    # a dedicated error, not the NO_DATASOURCE that empty anchors would otherwise
+    # trigger at datasource resolution.
+    if not anchors:
+        raise PopulationInferenceError(PopulationErrorReason.EMPTY_DETERMINATION)
+
     anchored_siblings = anchors & set(siblings)
     if anchored_siblings:
         name = min(anchored_siblings)

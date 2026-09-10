@@ -124,6 +124,15 @@ class TestFailClosed:
             await infer_population(query=query, storage=storage)
         assert ei.value.reason is PopulationErrorReason.EMPTY_DETERMINATION
 
+    async def test_aggregate_filter_only_without_datasource_is_empty_determination(
+        self, storage
+    ) -> None:
+        """Aggregate-only filter, no dims, no data_source ⇒ EMPTY_DETERMINATION, not NO_DATASOURCE."""
+        query = SlayerQuery(filters=["orders.amount:sum > 100"])
+        with pytest.raises(PopulationInferenceError) as ei:
+            await infer_population(query=query, storage=storage)
+        assert ei.value.reason is PopulationErrorReason.EMPTY_DETERMINATION
+
     async def test_measure_referencing_sibling_does_not_fail_closed(self, storage) -> None:
         """A measure whose anchor matches a sibling stage name must not trigger
         SIBLING_STAGE — measures never anchor inference."""
