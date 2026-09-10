@@ -3264,6 +3264,7 @@ class SQLGenerator:
                 planned_query=planned_query, bundle=bundle, kernel=kernel,
                 source_model=source_model, source_relation=source_relation,
                 slots_by_id=slots_by_id, regroup_env=regroup_env,
+                regroup_join_specs=regroup_join_specs,
             )
         elif kernel.kind == "ranked":
             plan = _ranked_emission_from_kernel(
@@ -3356,7 +3357,7 @@ class SQLGenerator:
 
     def _render_association_producer_body(  # NOSONAR(S3776) — one cohesive two-level association body: level-1 dedup SELECT (grain × entity key, picked value) wrapped as ``_base``, level-2 aggregate over the picked rows. The two arms share the grain-alias / scope state.
         self, *, planned_query, bundle, kernel, source_model, source_relation,
-        slots_by_id, regroup_env=None,
+        slots_by_id, regroup_env=None, regroup_join_specs=None,
     ) -> exp.Select:
         """The distinct-entity association producer (DEV-1841): level 1 groups by
         (grain × the root's entity key) picking each input once per entity; level
@@ -3403,7 +3404,27 @@ class SQLGenerator:
         # value column — level 2 counts the entity rows.
         is_star = isinstance(agg_slot.key.source, StarKey)
         picked_alias = "_v"
-        if not is_star:
+        spec: Optional[AggRenderSpec] = None
+        if is_star:
+            pass
+        elif getattr(kernel, "null_safe", False):
+            # Re-aggregation (DEV-1847): the per-cell value is the carrier's
+            # attached composite; render it through the scope (its placeholders
+            # resolve to the carrier columns) and pick it once per cell.
+            value_expr = render_value_key(key=agg_slot.key.source, ctx=ctx)
+            agg_def = self._resolve_aggregation_def(
+                key=agg_slot.key, source_model=source_model, src_leaf=picked_alias,
+            )
+            spec = AggRenderSpec(
+                name=picked_alias, sql=None, aggregation=agg_slot.key.agg,
+                alias=agg_alias, model_name="_base", type=agg_slot.type,
+                aggregation_def=agg_def,
+                agg_kwargs={k: agg_kwarg_canonical_str(v) for k, v in agg_slot.key.kwargs},
+            )
+            inner_cols.append(
+                exp.Max(this=value_expr.copy()).as_(exp.to_identifier(picked_alias)),
+            )
+        else:
             resolved = self._resolve_agg_inputs_via_scope(
                 base_render_order=[agg_slot.id], slots_by_id={agg_slot.id: agg_slot},
                 scope=scope,
@@ -3430,18 +3451,34 @@ class SQLGenerator:
             planned_query=planned_query, source_relation=source_relation,
             source_model=source_model, bundle=bundle, skip_filter_ids=set(),
         )
+        # A re-aggregation (DEV-1847) attaches its carrier (the inner producer)
+        # as a row producer supplying the per-cell value; join it into level 1.
+        regroup_attach_conditions = self._resolve_regroup_attach_conditions(
+            regroup_join_specs=regroup_join_specs or [], scope=scope,
+        )
         from_expr, joins = self._build_from_and_joins(
             source_model=source_model, source_relation=source_relation,
             joined_paths=scope.join_paths.as_list(), bundle=bundle,
         )
         inner = exp.Select().select(*inner_cols).from_(from_expr)
         inner = _apply_joins(select=inner, joins=joins)
+        for _cte_name, _condition in regroup_attach_conditions:
+            if _condition is None:
+                inner = inner.join(exp.to_identifier(_cte_name), join_type="CROSS")
+            else:
+                inner = inner.join(
+                    exp.to_identifier(_cte_name), on=_condition, join_type="LEFT",
+                )
         if where is not None:
             inner = inner.where(where)
         # A host row with no associated entity (a NULL key from the LEFT JOIN) is
-        # not a distinct entity — exclude it so ``*:count`` never counts it.
-        for eexpr in entity_exprs:
-            inner = inner.where(exp.Not(this=exp.Is(this=eexpr, expression=exp.Null())))
+        # not a distinct entity — exclude it so ``*:count`` never counts it. A
+        # null-safe re-aggregation (DEV-1847) keeps a NULL grain cell as its own
+        # cell instead.
+        if not getattr(kernel, "null_safe", False):
+            for eexpr in entity_exprs:
+                inner = inner.where(
+                    exp.Not(this=exp.Is(this=eexpr, expression=exp.Null())))
         for cond in self._semi_join_exists_conditions(
             planned_query=planned_query, source_model=source_model,
             source_relation=source_relation, bundle=bundle,
@@ -3469,7 +3506,12 @@ class SQLGenerator:
             )
         else:
             level2_spec = AggRenderSpec(
-                name=picked_alias, sql=None, aggregation=agg_slot.key.agg,
+                # A re-aggregation ``count`` counts the cells with a NON-NULL
+                # value (COUNT(_v)), not the cells (COUNT(*)); reference _v so the
+                # count family runs over the picked value.
+                name=picked_alias,
+                sql=picked_alias if getattr(kernel, "null_safe", False) else None,
+                aggregation=agg_slot.key.agg,
                 alias=agg_alias, model_name="_base", type=agg_slot.type,
                 column_type=spec.column_type, agg_kwargs=spec.agg_kwargs,
                 aggregation_def=spec.aggregation_def,

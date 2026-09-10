@@ -1101,12 +1101,32 @@ def _reject_non_numeric_expression_agg(
         )
 
 
+def _source_is_reaggregation(node) -> bool:
+    """Whether a parsed aggregation source resolves to attached values (a nested
+    AggCall, alone or composed) — a re-aggregation (DEV-1847). The parse gate has
+    already ensured such a source is pure-attached (no transforms, no row mix)."""
+    if isinstance(node, AggCall):
+        return True
+    if isinstance(node, Arith):
+        return _source_is_reaggregation(node.left) or _source_is_reaggregation(node.right)
+    if isinstance(node, ScalarCall):
+        return any(_source_is_reaggregation(a) for a in node.args)
+    if isinstance(node, UnaryOp):
+        return _source_is_reaggregation(node.operand)
+    return False
+
+
 def _bind_agg(
     parsed: AggCall, *,
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
 ) -> AggregateKey:
-    if isinstance(parsed.source, StarSource):
+    if _source_is_reaggregation(parsed.source):
+        # Re-aggregation (DEV-1847): bind the operand subtree — inner AggCalls
+        # become AggregateKeys — so the outer key carries a nested-aggregate
+        # source (axiom 6). Discovery/planning lift it to a producer-over-producer.
+        source = _bind(parsed.source, scope=scope, bundle=bundle, in_filter=False)
+    elif isinstance(parsed.source, StarSource):
         source = StarKey()
     elif (
         isinstance(parsed.source, DottedRef)

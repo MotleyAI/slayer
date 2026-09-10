@@ -1,0 +1,198 @@
+{
+  "reagg/associate_city::bigquery": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'avg(sum(amount, partition_by=city))': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/associate_city::duckdb": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'avg(sum(amount, partition_by=city))': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/associate_city::mysql": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'avg(sum(amount, partition_by=city))': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/associate_city::postgres": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'avg(sum(amount, partition_by=city))': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/associate_city::snowflake": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'avg(sum(amount, partition_by=city))': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/associate_city::sqlite": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'avg(sum(amount, partition_by=city))': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/associate_city::tsql": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'avg(sum(amount, partition_by=city))': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/avg_by_region::bigquery": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'avg(sum(amount, partition_by=[city, region]))': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/avg_by_region::duckdb": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'avg(sum(amount, partition_by=[city, region]))': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/avg_by_region::mysql": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'avg(sum(amount, partition_by=[city, region]))': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/avg_by_region::postgres": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'avg(sum(amount, partition_by=[city, region]))': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/avg_by_region::snowflake": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'avg(sum(amount, partition_by=[city, region]))': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/avg_by_region::sqlite": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'avg(sum(amount, partition_by=[city, region]))': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/avg_by_region::tsql": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'avg(sum(amount, partition_by=[city, region]))': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/broadcast_city::bigquery": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'avg(sum(amount, partition_by=city))': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/broadcast_city::duckdb": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'avg(sum(amount, partition_by=city))': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/broadcast_city::mysql": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'avg(sum(amount, partition_by=city))': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/broadcast_city::postgres": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'avg(sum(amount, partition_by=city))': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/broadcast_city::snowflake": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'avg(sum(amount, partition_by=city))': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/broadcast_city::sqlite": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'avg(sum(amount, partition_by=city))': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/broadcast_city::tsql": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'avg(sum(amount, partition_by=city))': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/count_by_region::bigquery": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'count(sum(amount, partition_by=[city, region]))': aggregations and transforms cannot be nested inside the expression aggregated by 'count'."
+  },
+  "reagg/count_by_region::duckdb": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'count(sum(amount, partition_by=[city, region]))': aggregations and transforms cannot be nested inside the expression aggregated by 'count'."
+  },
+  "reagg/count_by_region::mysql": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'count(sum(amount, partition_by=[city, region]))': aggregations and transforms cannot be nested inside the expression aggregated by 'count'."
+  },
+  "reagg/count_by_region::postgres": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'count(sum(amount, partition_by=[city, region]))': aggregations and transforms cannot be nested inside the expression aggregated by 'count'."
+  },
+  "reagg/count_by_region::snowflake": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'count(sum(amount, partition_by=[city, region]))': aggregations and transforms cannot be nested inside the expression aggregated by 'count'."
+  },
+  "reagg/count_by_region::sqlite": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'count(sum(amount, partition_by=[city, region]))': aggregations and transforms cannot be nested inside the expression aggregated by 'count'."
+  },
+  "reagg/count_by_region::tsql": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'count(sum(amount, partition_by=[city, region]))': aggregations and transforms cannot be nested inside the expression aggregated by 'count'."
+  },
+  "reagg/degenerate::bigquery": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'avg(sum(amount))': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/degenerate::duckdb": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'avg(sum(amount))': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/degenerate::mysql": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'avg(sum(amount))': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/degenerate::postgres": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'avg(sum(amount))': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/degenerate::snowflake": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'avg(sum(amount))': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/degenerate::sqlite": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'avg(sum(amount))': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/degenerate::tsql": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'avg(sum(amount))': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/depth3::bigquery": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'max(avg(sum(amount, partition_by=[city, region, product]), partition_by=[region, product]))': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/depth3::duckdb": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'max(avg(sum(amount, partition_by=[city, region, product]), partition_by=[region, product]))': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/depth3::mysql": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'max(avg(sum(amount, partition_by=[city, region, product]), partition_by=[region, product]))': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/depth3::postgres": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'max(avg(sum(amount, partition_by=[city, region, product]), partition_by=[region, product]))': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/depth3::snowflake": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'max(avg(sum(amount, partition_by=[city, region, product]), partition_by=[region, product]))': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/depth3::sqlite": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'max(avg(sum(amount, partition_by=[city, region, product]), partition_by=[region, product]))': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/depth3::tsql": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'max(avg(sum(amount, partition_by=[city, region, product]), partition_by=[region, product]))': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/explicit_grain::bigquery": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'avg(sum(amount, partition_by=[city, region]), partition_by=region)': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/explicit_grain::duckdb": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'avg(sum(amount, partition_by=[city, region]), partition_by=region)': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/explicit_grain::mysql": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'avg(sum(amount, partition_by=[city, region]), partition_by=region)': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/explicit_grain::postgres": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'avg(sum(amount, partition_by=[city, region]), partition_by=region)': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/explicit_grain::snowflake": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'avg(sum(amount, partition_by=[city, region]), partition_by=region)': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/explicit_grain::sqlite": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'avg(sum(amount, partition_by=[city, region]), partition_by=region)': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  },
+  "reagg/explicit_grain::tsql": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'avg(sum(amount, partition_by=[city, region]), partition_by=region)': aggregations and transforms cannot be nested inside the expression aggregated by 'avg'."
+  }
+}

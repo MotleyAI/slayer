@@ -261,12 +261,17 @@ class AssociationProducerKernel(BaseModel):
     """A distinct-entity association producer (DEV-1841): level 1 groups by
     (grain × the root's ``entity_keys``) picking each input once per entity;
     level 2 aggregates over the picked rows per grain. ``entity_keys`` are the
-    root's unique-key columns in the producer's coordinates."""
+    root's unique-key columns in the producer's coordinates.
+
+    ``null_safe`` (DEV-1847) keeps NULL entity cells as distinct cells instead of
+    excluding them — a re-aggregation's entity is an inner-grain cell whose NULL
+    component is its own cell (null-safe second-order aggregation)."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     kind: Literal["association"] = "association"
     entity_keys: List[ValueKey] = Field(default_factory=list)
+    null_safe: bool = False
 
 
 ProducerKernel = Union[
@@ -300,6 +305,12 @@ class RegroupAttachPlan(BaseModel):
     # are not additive across (empty for an explicit ``partition_by=`` grain).
     associated_measure: Optional[str] = None
     associated_dimensions: List[str] = Field(default_factory=list)
+    # Degenerate second-order aggregation (DEV-1847): the re-aggregation whose
+    # operand grain equals the outer grain (the identity), with both grains for
+    # the warning.
+    degenerate_measure: Optional[str] = None
+    degenerate_operand_grain: List[str] = Field(default_factory=list)
+    degenerate_outer_grain: List[str] = Field(default_factory=list)
 
 
 class PlannedQuery(BaseModel):

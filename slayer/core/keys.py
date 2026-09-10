@@ -365,9 +365,12 @@ class SqlExprKey(_LeafKey):
 # same-model EXPRESSION source (``sum(amount - cost)``) — the bound tree reuses
 # the existing row-level composites, so hash/equality/serialization come from
 # the canonical tree and formatting variants intern to one key.
+# DEV-1847: a re-aggregation's source resolves entirely to attached values, so
+# the source may itself be an ``AggregateKey`` (or a composite of them — carried
+# by the Arithmetic/ScalarCall operands, which already admit any ValueKey).
 _AggregateSource = Union[
     ColumnKey, ColumnSqlKey, StarKey,
-    "ArithmeticKey", "ScalarCallKey", "LiteralKey",
+    "ArithmeticKey", "ScalarCallKey", "LiteralKey", "AggregateKey",
 ]
 # Positional and kwarg arg values share one union: both `last(created_at)` and
 # `weighted_avg(weight=qty)` bind identifier columns via `_bind_agg_arg`.
