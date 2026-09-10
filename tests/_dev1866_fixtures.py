@@ -42,6 +42,7 @@ import pytest
 
 from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.models import (
+    Aggregation,
     Column,
     DatasourceConfig,
     ModelJoin,
@@ -59,6 +60,7 @@ DS_UNKNOWN = "ds_unknown"
 DS_KEYCOV = "ds_keycov"
 DS_WIDGETS_A = "ds_widgets_a"
 DS_WIDGETS_B = "ds_widgets_b"
+DS_NAMED = "ds_named"
 
 
 # --------------------------------------------------------------------------- #
@@ -272,6 +274,41 @@ def keycov_models() -> list[SlayerModel]:
     return [days, events]
 
 
+def named_models() -> list[SlayerModel]:
+    """tickets → agents over a *named* join ("reporter"); agents owns a saved measure,
+    and column ``score`` deliberately shares a name with a custom aggregation."""
+    agents = SlayerModel(
+        name="agents", data_source=DS_NAMED, sql_table="agents",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="name", type=DataType.TEXT),
+            Column(name="score", type=DataType.INT),
+        ],
+        measures=[ModelMeasure(formula="id:count", name="handled")],
+        aggregations=[Aggregation(name="score", formula="MAX({score})")],
+    )
+    tickets = SlayerModel(
+        name="tickets", data_source=DS_NAMED, sql_table="tickets",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="subject", type=DataType.TEXT),
+            Column(name="agent_id", type=DataType.INT),
+        ],
+        joins=[
+            ModelJoin(
+                name="reporter", target_model="agents",
+                join_pairs=[["agent_id", "id"]],
+                cardinality=JoinCardinality.MANY_TO_ONE,
+            ),
+        ],
+    )
+    return [agents, tickets]
+
+
+def named_models_by_name() -> dict[str, SlayerModel]:
+    return {m.name: m for m in named_models()}
+
+
 def widgets_model(data_source: str) -> SlayerModel:
     return SlayerModel(
         name="widgets", data_source=data_source, sql_table="widgets",
@@ -294,6 +331,7 @@ _ALL_TOPOLOGIES: list[tuple[str, list[SlayerModel]]] = [
     (DS_KEYCOV, keycov_models()),
     (DS_WIDGETS_A, [widgets_model(DS_WIDGETS_A)]),
     (DS_WIDGETS_B, [widgets_model(DS_WIDGETS_B)]),
+    (DS_NAMED, named_models()),
 ]
 
 

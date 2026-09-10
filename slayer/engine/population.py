@@ -81,15 +81,43 @@ def _computed_dimension_refs(expression: str) -> list[str]:
     return refs
 
 
+def _walk_terminal_model(
+    path: list[str], *, models_by_name: dict[str, SlayerModel]
+) -> SlayerModel | None:
+    """Model at the end of a dotted ``path`` (a model name then join tokens), or None.
+
+    Cardinality-blind (a saved measure is dropped regardless of the path's arity)
+    and routes edge-name tokens via ``resolve_hop``, so a named join resolves the
+    same way execution binds it; an ambiguous or dead hop yields None.
+    """
+    if not path:
+        return None
+    current = models_by_name.get(path[0])
+    for token in path[1:]:
+        if current is None:
+            return None
+        try:
+            edge = resolve_hop(current=current, token=token, models_by_name=models_by_name)
+        except AmbiguousJoinPathError:
+            return None
+        current = models_by_name.get(edge.target_model) if edge is not None else None
+    return current
+
+
 def _is_saved_measure_ref(ref: str, *, models_by_name: dict[str, SlayerModel]) -> bool:
-    """Whether ``ref`` resolves to a saved measure / custom aggregation (dropped from determination)."""
+    """Whether ``ref`` resolves to a saved measure / custom aggregation (dropped from determination).
+
+    The owner is the model the join path lands on — walked, not guessed from a
+    segment name — so a measure reached through a named join is recognised too.
+    A real column always wins: aggregation names share no namespace with columns,
+    so a column that happens to share an aggregation's name stays a determination item.
+    """
     parts = ref.split(".")
+    owner = _walk_terminal_model(parts[:-1], models_by_name=models_by_name)
+    if owner is None:
+        return False
     leaf = parts[-1]
-    if len(parts) >= 2 and parts[-2] in models_by_name:
-        owner = models_by_name[parts[-2]]
-    elif parts[0] in models_by_name:
-        owner = models_by_name[parts[0]]
-    else:
+    if owner.get_column(leaf) is not None:
         return False
     return owner.get_measure(leaf) is not None or owner.get_aggregation(leaf) is not None
 

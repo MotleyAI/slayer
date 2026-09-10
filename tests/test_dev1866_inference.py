@@ -21,8 +21,10 @@ from slayer.engine.population import (
 
 from tests._dev1866_fixtures import (
     DS_CHAIN,
+    DS_NAMED,
     chain_models_by_name,
     make_inference_storage,
+    named_models_by_name,
 )
 
 
@@ -125,6 +127,20 @@ class TestSelection:
             storage=storage,
         )
         assert choice.model_name == "customers"
+
+    async def test_saved_measure_filter_via_named_join_does_not_participate(
+        self, storage
+    ) -> None:
+        """Saved measure behind a named join (``tickets.reporter.handled``) is dropped ⇒ tickets."""
+        choice = await infer_population(
+            query=SlayerQuery(
+                dimensions=["tickets.subject"],
+                filters=["tickets.reporter.handled > 0"],
+            ),
+            storage=storage,
+        )
+        assert choice.model_name == "tickets"
+        assert choice.data_source == DS_NAMED
 
     async def test_raw_row_mode_uses_same_rule(self, storage) -> None:
         choice = await infer_population(
@@ -233,6 +249,28 @@ class TestDeterminationItems:
             filters=["orders.revenue > 100"],
         ))
         assert items == {"customers.region"}
+
+    def test_saved_measure_via_named_join_ref_dropped(self) -> None:
+        """Owner found by walking the join path ⇒ a named-join saved measure is dropped."""
+        items = set(determination_items(
+            SlayerQuery(
+                dimensions=["tickets.subject"],
+                filters=["tickets.reporter.handled > 0"],
+            ),
+            models_by_name=named_models_by_name(),
+        ))
+        assert items == {"tickets.subject"}
+
+    def test_column_sharing_an_aggregation_name_is_kept(self) -> None:
+        """A real column sharing an aggregation's name stays a determination item (column precedence)."""
+        items = set(determination_items(
+            SlayerQuery(
+                dimensions=["tickets.subject"],
+                filters=["tickets.reporter.score > 0"],
+            ),
+            models_by_name=named_models_by_name(),
+        ))
+        assert items == {"tickets.subject", "tickets.reporter.score"}
 
     def test_aggregation_filter_dropped(self) -> None:
         items = self._items(SlayerQuery(

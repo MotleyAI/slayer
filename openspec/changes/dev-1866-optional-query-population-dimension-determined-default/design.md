@@ -94,6 +94,14 @@ byte-identical. Rollback = revert; no persisted state changes shape.
   two surfaces agree on the winner.
 - The MCP surface test was corrected to nest query fields under `query` (the tool
   contract is unchanged; only `source_model` became optional).
+- **Viability probe shipped as the dotted-path walker, not decision #2's production
+  binder.** `probe_item` and `_is_saved_measure_ref` route each spelled dimension /
+  filter path via `resolve_hop` — edge-name tokens included, so a named join (live
+  since DEV-1853) resolves and a saved measure reached through one is dropped, the
+  same way execution binds it — and check `provably_to_one` / `get_column` at the
+  leaf; parity holds for the current dotted-canonical grammar. Only short-form
+  auto-routing (DEV-1856) still broadens which references bind, and DEV-1871's typed
+  core folds this walk into the one binder.
 - Two Codex findings were scoped deliberately, not "fixed": (a) `recommend_root_model`
   breaks a genuine determination-hop tie advisorily (deterministic name order) rather
   than raising `TIE` like inference — recommend's job is to suggest, not fail — while
