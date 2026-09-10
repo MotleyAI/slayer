@@ -168,6 +168,12 @@ _DUCKDB_TRANSIENT_SIGNATURES = (
     r"failed to (?:connect|download)",
 )
 
+# httpfs transport errors DuckDB emits without naming the URL, but which can only
+# come from the remote fetch (they cite httpfs-only state), so they skip the host gate.
+_DUCKDB_HTTPFS_TRANSPORT_SIGNATURES = (
+    r"server sent back more data than expected",  # CDN range/download mismatch
+)
+
 
 def _duckdb_data_host_reachable() -> bool:
     return _github_reachable(host=_DUCKDB_DATA_HOST)
@@ -205,6 +211,8 @@ def _duckdb_failure_text(nb) -> str:
 
 def _duckdb_network_error_is_transient(error_text: str) -> bool:
     text = (error_text or "").lower()
+    if any(re.search(pattern=p, string=text) for p in _DUCKDB_HTTPFS_TRANSPORT_SIGNATURES):
+        return True
     if not any(host in text for host in _DUCKDB_REMOTE_HOSTS):
         return False
     return any(re.search(pattern=pattern, string=text) for pattern in _DUCKDB_TRANSIENT_SIGNATURES)

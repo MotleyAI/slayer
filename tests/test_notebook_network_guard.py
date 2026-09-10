@@ -33,6 +33,18 @@ def test_external_host_outage_is_transient(text):
 @pytest.mark.parametrize(
     "text",
     [
+        # DuckDB's httpfs range/download mismatch names no host but is remote-only.
+        "HTTP Error: Server sent back more data than expected, `SET force_download=true` might help in this case",
+        "(_duckdb.HTTPException) HTTP Error: Server sent back more data than expected",
+    ],
+)
+def test_hostless_httpfs_transport_error_is_transient(text):
+    assert _duckdb_network_error_is_transient(text) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
         "",
         "BinderException: Referenced column 'temp_max' not found",
         "NotImplementedError: dialect does not support this aggregation",
