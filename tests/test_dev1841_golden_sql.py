@@ -104,7 +104,9 @@ def test_association_cases_emit_two_level_group_by(baseline) -> None:
     for key, value in baseline.items():
         case_id = key.rsplit("::", 1)[0]
         if key in _AGG_UNSUPPORTED:
-            assert isinstance(value, dict) and value.get("error") == "NotImplementedError", (
+            assert isinstance(value, dict), (
+                f"{key} should pin the dialect's median limitation, got {value!r}")
+            assert value.get("error") == "NotImplementedError", (
                 f"{key} should pin the dialect's median limitation, got {value!r}")
         elif case_id.startswith("assoc/"):
             assert not isinstance(value, dict), f"{key} still raises: {value}"

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import List
 
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import Aggregation, AggregationParam, Column, SlayerModel
 
 from tests._dev1836_fixtures import (
     broadcast_warnings,
@@ -59,6 +59,26 @@ def keyless_root_models() -> List[SlayerModel]:
         (c.model_copy(update={"primary_key": False}) if c.name == "id" else c)
         for c in cust.columns
     ]
+    return models
+
+
+def crossing_input_models() -> List[SlayerModel]:
+    """Graph + a customers column filtering across the fanning customers→orders hop (an input not constant per customer)."""
+    models = dev1840_models()
+    _customers(models).columns.append(
+        Column(name="vip_spend", type=DataType.DOUBLE, sql="spend",
+               filter="orders.status = 'ok'"),
+    )
+    return models
+
+
+def column_default_agg_models() -> List[SlayerModel]:
+    """Graph + a custom aggregation whose parameter *defaults* to a column (``weight`` → ``spend``)."""
+    models = dev1840_models()
+    _customers(models).aggregations.append(
+        Aggregation(name="wsum", formula="SUM({value} * {weight})",
+                    params=[AggregationParam(name="weight", sql="spend")]),
+    )
     return models
 
 
@@ -126,6 +146,7 @@ __all__ = [
     "Column", "DataType", "ModelMeasure", "SlayerQuery", "SlayerModel",
     "ColumnRef", "TimeDimension", "TimeGranularity", "ModelJoin",
     "dev1840_models", "dev1841_models", "keyless_root_models",
+    "crossing_input_models", "column_default_agg_models",
     "make_exec_engine", "q", "assoc_q", "error_q", "bcast_q", "cust_q",
     "rows_by", "status_key", "broadcast_warnings", "dropped_filter_warnings",
     "associated_warnings", "pushed_filter_infos",

@@ -22,7 +22,7 @@ from slayer.core.models import ModelMeasure, SlayerModel, _validate_model_name
 from slayer.core.refs import auto_name_from_expression
 from slayer.engine.syntax import AggCall, parse_expr, walk_parsed_refs
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
-from slayer.storage.migrations import migrate as _migrate_schema
+from slayer.storage.migrations import CURRENT_VERSIONS, migrate as _migrate_schema
 
 logger = logging.getLogger(__name__)
 
@@ -750,10 +750,13 @@ class SlayerQuery(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _apply_schema_migrations(cls, data: Any) -> Any:
-        # Fresh input (no stored version) using the retired `strict` flag is
-        # rejected naming the replacement; stored payloads (explicit version)
-        # migrate below.
-        if isinstance(data, dict) and "strict" in data and "version" not in data:
+        # `strict` is retired. Fresh input (no version) and current-version
+        # payloads are rejected naming the replacement; only a pre-current stored
+        # payload migrates it (v3→v4 maps strict:true→to_many_handling='error').
+        if isinstance(data, dict) and "strict" in data and (
+            data.get("version") is None
+            or data["version"] >= CURRENT_VERSIONS["SlayerQuery"]
+        ):
             raise ValueError(
                 "`strict` is retired; set to_many_handling='error' instead "
                 "(one of broadcast|associate|error)."

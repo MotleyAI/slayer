@@ -72,7 +72,8 @@ class TestMcpSurface:
         blocks, _ = await server.call_tool(name="query", arguments={
             "query": _ASSOCIATE_BODY, "format": "json"})
         text = blocks[0].text
-        assert "420" in text and "290" in text
+        assert "420" in text
+        assert "290" in text
         assert "460" not in text  # not the broadcast total
 
     async def test_strict_rejected(self, storage) -> None:

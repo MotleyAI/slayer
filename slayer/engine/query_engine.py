@@ -10,7 +10,7 @@ import logging
 import re
 import warnings as _warnings_module
 from collections.abc import Callable
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 import sqlalchemy as sa
 import sqlglot
@@ -440,6 +440,12 @@ def _collect_associated_warnings(
     ]
 
 
+def _attach_semi_join_texts(attach) -> Iterator[str]:
+    """Non-empty semi-join-pushed filter texts on an attach's producer plan."""
+    for group in getattr(attach.producer_plan, "semi_join_filters", None) or ():
+        yield from (text for text in group.filter_texts if text)
+
+
 def _collect_semi_join_pushed_warnings(
     *, planned_list, stages,
 ) -> List[SemiJoinPushedWarningPayload]:
@@ -453,17 +459,14 @@ def _collect_semi_join_pushed_warnings(
                 attach.broadcast_measure or attach.associated_measure
                 or attach.alias_hint or "<aggregate>"
             )
-            for group in getattr(attach.producer_plan, "semi_join_filters", None) or ():
-                for text in group.filter_texts:
-                    if not text:
-                        continue
-                    identity = (location, measure, text)
-                    if identity in seen:
-                        continue
-                    seen.add(identity)
-                    out.append(SemiJoinPushedWarningPayload(
-                        measure=measure, location=location, filter_text=text,
-                    ))
+            for text in _attach_semi_join_texts(attach):
+                identity = (location, measure, text)
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                out.append(SemiJoinPushedWarningPayload(
+                    measure=measure, location=location, filter_text=text,
+                ))
     return out
 
 

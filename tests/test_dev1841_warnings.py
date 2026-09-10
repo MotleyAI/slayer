@@ -14,6 +14,12 @@ import warnings as _warnings
 
 import pytest
 
+from slayer.core.errors import (
+    AssociatedGrainWarning,
+    BroadcastGrainWarning,
+    UnreachableFilterDroppedWarning,
+)
+
 from tests._dev1841_fixtures import (
     ASSOC_SPEND_BY_STATUS,
     ModelMeasure,
@@ -28,6 +34,11 @@ from tests._dev1841_fixtures import (
 )
 
 CM = ModelMeasure(formula="customers.spend:sum", name="cm")
+
+#: SLayer's own to-many warnings — scope past incidental (e.g. 3.14) warnings.
+_SLAYER_TO_MANY_WARNINGS = (
+    BroadcastGrainWarning, AssociatedGrainWarning, UnreachableFilterDroppedWarning,
+)
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -113,4 +124,7 @@ class TestPushedFilterInformational:
         (info,) = pushed_filter_infos(resp)
         assert "channel" in info.human_message() or "channel" in str(
             info.model_dump())
-        assert caught == []
+        slayer_warnings = [
+            w for w in caught if issubclass(w.category, _SLAYER_TO_MANY_WARNINGS)
+        ]
+        assert slayer_warnings == []

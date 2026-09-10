@@ -2602,6 +2602,32 @@ def _synthesize_association_producer(  # NOSONAR(S3776) — one cohesive host-ro
             f"model {root_name!r} declares no primary or unique key to deduplicate "
             f"entities by; declare a primary or unique key on {root_name!r}."
         )
+    # An input crossing an unproven/fanning hop is not constant per root entity,
+    # so the level-1 per-entity pick would be arbitrary. Input safety is
+    # mode-invariant — reject exactly as the broadcast/error path does (DEV-1884
+    # tracks certifying such inputs via empirical to-one evidence).
+    _assert_cross_model_inputs_safe(
+        agg=agg, agg_rooted=reroot_value_key(agg, target_path=target_path),
+        root_model=root_model, root_name=root_name, target_path=target_path,
+        bundle=bundle, models_by_name=models_by_name,
+    )
+    # A column-reference aggregate parameter (e.g. weighted_avg(weight=col))
+    # binds against the host scope, but the level-2 aggregate runs over the
+    # deduped ``_base`` (grain + entity key + one picked value) and cannot carry
+    # the column. Reject loudly; DEV-1884 tracks lifting such parameters.
+    column_param = next(
+        (v for v in (*agg.args, *(val for _, val in agg.kwargs))
+         if isinstance(v, (ColumnKey, ColumnSqlKey))),
+        None,
+    )
+    if column_param is not None:
+        raise SlayerError(
+            f"Aggregate {alias!r} needs distinct-entity association over an "
+            f"unattributable dimension, which is unsupported with a "
+            f"column-reference parameter (e.g. weighted_avg(weight=…)); the "
+            f"per-entity pick carries only the aggregate's own value. Attribute "
+            f"the dimension or drop the column parameter."
+        )
     entity_keys: List[ValueKey] = [
         ColumnKey(path=target_path, leaf=col) for col in key_sets[0]
     ]

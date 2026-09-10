@@ -693,8 +693,9 @@ missing join cardinality (or primary key) to make such a dimension exact.
 Query **filters** still restrict the metric: a conjunct the sub-query can only
 reach across an unproven hop is pushed down as a correlated `EXISTS` semi-join —
 the metric counts exactly the target rows related to at least one row passing
-the filter (each row once, never multiplied through the join), silently, exactly
-like a safely inherited filter. The correlation path resolves through the same
+the filter (each row once, never multiplied through the join), surfaced as an
+informational `kind: "semi_join_pushed"` entry in `.warnings` (never an error,
+in any mode). The correlation path resolves through the same
 [bidirectional traversal](models.md#bidirectional-traversal) as every other hop
 — no declared reverse join is needed, and a hop spanned by two or more edges
 fails the whole query with the ambiguous-hop error (in every mode) rather than
@@ -708,8 +709,9 @@ with a clear error.
 `to_many_handling` chooses how a broadcast dimension resolves — `broadcast` (the
 default above), `associate` (each cell aggregates over the distinct entities
 associated with it, warned as `kind: "associated"` because the cells overlap and
-are not additive), or `error` (refuse) — with the retired `strict` flag mapping
-to `error` and a semi-join-pushed filter applied, never erroring, in every mode.
+are not additive), or `error` (refuse) — where a stored query's retired
+`strict: true` migrates to `error` (fresh input carrying `strict` is rejected),
+and a semi-join-pushed filter is applied, never erroring, in every mode.
 Example: `{"source_model": "orders", "dimensions": ["status"], "measures": [{"formula": "customers.spend:sum"}], "to_many_handling": "associate"}`.
 
 A filter **on** the cross-model value itself (`"customers.score:avg > 4"`)
