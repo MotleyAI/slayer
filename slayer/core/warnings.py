@@ -111,6 +111,8 @@ class SlayerNormalizationWarning(UserWarning):
     """Carrier ``UserWarning`` for a ``NormalizationWarning`` payload — one wording on both channels."""
 
     def __init__(self, payload: NormalizationWarning) -> None:
+        super().__init__(payload)  # arg mirrors param; __str__ is the one wording (pytest-xdist degrades to str() for the unserializable payload)
         self.payload = payload
-        # One source of truth for the wording across both channels.
-        super().__init__(payload.human_message())
+
+    def __str__(self) -> str:
+        return self.payload.human_message()
