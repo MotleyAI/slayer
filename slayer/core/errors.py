@@ -396,11 +396,14 @@ class AssociatedGrainWarning(UserWarning):
     """An aggregate resolved by distinct-entity association over unattributable dimension(s); cells' populations may overlap and are not additive. Visibility warning, not an error."""
 
     def __init__(self, measure: str, dimensions: str) -> None:
+        super().__init__(measure, dimensions)  # args mirror params so cls(*w.args) reconstructs across pytest-xdist
         self.measure = measure
         self.dimensions = dimensions
-        super().__init__(
-            f"Metric {measure!r} associated over unattributable dimension(s) "
-            f"{dimensions}; cell populations may overlap and are not additive."
+
+    def __str__(self) -> str:
+        return (
+            f"Metric {self.measure!r} associated over unattributable dimension(s) "
+            f"{self.dimensions}; cell populations may overlap and are not additive."
         )
 
 

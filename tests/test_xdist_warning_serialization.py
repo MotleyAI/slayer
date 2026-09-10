@@ -14,7 +14,11 @@ import pytest
 from xdist.remote import serialize_warning_message
 from xdist.workermanage import unserialize_warning_message
 
-from slayer.core.errors import BroadcastGrainWarning, UnreachableFilterDroppedWarning
+from slayer.core.errors import (
+    AssociatedGrainWarning,
+    BroadcastGrainWarning,
+    UnreachableFilterDroppedWarning,
+)
 from slayer.core.warnings import NormalizationWarning, SlayerNormalizationWarning
 
 
@@ -27,6 +31,9 @@ def _carriers() -> list[UserWarning]:
     )
     return [
         BroadcastGrainWarning(measure="orders.revenue_sum", reason="no join path"),
+        AssociatedGrainWarning(
+            measure="orders.revenue_sum", dimensions="customers.region"
+        ),
         UnreachableFilterDroppedWarning(
             filter_text="customers.score > 5", reason="unreachable from CTE root"
         ),

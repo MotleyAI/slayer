@@ -66,6 +66,9 @@ def _query_v3_to_v4(data: dict) -> dict:
     if "strict" not in data:
         return data
     strict = data.pop("strict")
+    if isinstance(strict, str):
+        # migration precedes Pydantic bool coercion; mirror it so a legacy quoted ``strict: "false"`` stays broadcast
+        strict = strict.strip().lower() in ("1", "true", "t", "yes", "y", "on")
     if strict:
         data.setdefault("to_many_handling", "error")
     return data
