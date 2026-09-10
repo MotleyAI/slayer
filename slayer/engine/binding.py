@@ -18,6 +18,7 @@ from slayer.core.errors import (
     MeasureRecursionLimitError,
     UnknownFunctionError,
     UnknownReferenceError,
+    UnresolvableDimensionJoinError,
 )
 from slayer.core.enums import (
     BUILTIN_AGGREGATIONS,
@@ -51,8 +52,9 @@ from slayer.core.keys import (
     normalize_scalar,
     prepend_value_key,
 )
-from slayer.core.join_walker import neighbors, resolve_hop, terminal_model
+from slayer.core.join_walker import resolve_hop, terminal_model
 from slayer.core.models import SlayerModel
+from slayer.engine import dimension_routing
 from slayer.core.query import TimeDimension
 from slayer.core.scope import ModelScope, StageSchema
 from slayer.engine.column_filter_paths import compute_column_filter_join_paths
@@ -123,11 +125,15 @@ def _fmt_measure_chain(chain: Tuple[Tuple[str, str], ...]) -> List[str]:
 
 
 class BoundExpr(BaseModel):
-    """A bound expression — its leaves are resolved ``ValueKey``s."""
+    """A bound expression — its leaves are resolved ``ValueKey``s. ``routed_dotted``
+    is the full routed dotted path when the whole field is a short-form
+    ``DottedRef`` that auto-routed (DEV-1856), else ``None`` — the naming layer
+    surfaces a routed dimension under this full path, not the short form typed."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
 
     value_key: ValueKey
+    routed_dotted: Optional[str] = None
 
     @property
     def phase(self) -> Phase:
@@ -165,7 +171,12 @@ def bind_expr(
     value_key = _bind(
         parsed, scope=scope, bundle=bundle, in_filter=False, measure_ctx=measure_ctx,
     )
-    return BoundExpr(value_key=value_key)
+    return BoundExpr(
+        value_key=value_key,
+        routed_dotted=_canonical_if_routed(
+            parsed=parsed, value_key=value_key, scope=scope,
+        ),
+    )
 
 
 def bind_time_dimension(
@@ -238,11 +249,42 @@ def bind_time_dimension(
             f"(DATE / TIMESTAMP); got column type {observed!r}."
         )
 
-    return BoundExpr(
-        value_key=TimeTruncKey(
-            column=bound_col, granularity=str(td.granularity.value),
-        ),
+    time_key = TimeTruncKey(
+        column=bound_col, granularity=str(td.granularity.value),
     )
+    routed = (
+        _canonical_if_routed(
+            parsed=DottedRef(parts=tuple(full.split("."))),
+            value_key=bound_col, scope=scope,
+        )
+        if "." in full else None
+    )
+    return BoundExpr(value_key=time_key, routed_dotted=routed)
+
+
+def _canonical_if_routed(
+    *,
+    parsed: ParsedExpr,
+    value_key: ValueKey,
+    scope: Union[ModelScope, StageSchema],
+) -> Optional[str]:
+    """Full routed dotted path when the whole field is a short-form ``DottedRef``
+    that auto-routed to a longer path (DEV-1856), else ``None``. Excludes
+    self-prefix and direct joins (bound path == typed hop path) so every
+    non-routed ref keeps a byte-identical result key."""
+    if not isinstance(parsed, DottedRef):
+        return None
+    if not isinstance(scope, ModelScope) or scope.source_model is None:
+        return None
+    key = value_key.column if isinstance(value_key, TimeTruncKey) else value_key
+    if not isinstance(key, (ColumnKey, ColumnSqlKey)):
+        return None
+    typed = parsed.parts
+    if typed and typed[0] == scope.source_model.name:
+        typed = typed[1:]
+    if tuple(column_path(key)) == tuple(typed[:-1]):
+        return None
+    return ".".join((*column_path(key), column_leaf(key)))
 
 
 def _terminal_model_for_path(
@@ -520,13 +562,20 @@ def _walk_join_chain(
     host,
     bundle: ResolvedSourceBundle,
     parts: Tuple[str, ...],
+    leaf: str,
 ):
     """Walk ``hop_path`` join hops from ``host`` through the shared bidirectional
-    walker, validating each and rejecting a hop that revisits a model (circular
-    join). Each token resolves as an edge name then a neighbour model, in either
-    orientation. Returns the terminal model; ``parts`` is the full dotted ref,
-    for error messages only. Raises ``AmbiguousJoinPathError`` on an ambiguous
-    hop."""
+    walker; returns ``(terminal_model, effective_hop_path)``. Each token resolves
+    as an edge name then a neighbour model, in either orientation.
+
+    When a token resolves to no incident edge, a bare ``Target`` short form
+    (``len(hop_path) == 1``) auto-routes to its full datasource-scoped path
+    (DEV-1856) — the effective path is the routed one; a ``len >= 2`` chain is a
+    broken chain, rejected (never silently repaired) with a short-form suggestion
+    when the target is uniquely routable. ``AmbiguousJoinPathError`` from a
+    parallel-pair hop propagates untouched; an edge that resolves onto a target
+    absent from the bundle stays ``UnknownReferenceError``. ``parts`` is the full
+    dotted ref, for error messages."""
     models_by_name = {m.name: m for m in bundle.referenced_models}
     models_by_name.setdefault(host.name, host)
     current = host
@@ -534,20 +583,23 @@ def _walk_join_chain(
     for hop in hop_path:
         edge = resolve_hop(current=current, token=hop, models_by_name=models_by_name)
         if edge is None:
-            # Valid hop tokens are neighbour models AND edge names.
-            reachable = sorted({
-                token
-                for e in neighbors(model=current, models_by_name=models_by_name)
-                for token in (e.target_model, e.name)
-                if token
-            })
-            raise UnknownReferenceError(
-                name=".".join(parts),
-                scope_kind="ModelScope",
-                scope_summary=(
-                    f"model {current.name!r} reachable models: {reachable}"
-                ),
-                suggestion=f"model {current.name!r} has no join to {hop!r}.",
+            if current is host and len(hop_path) == 1:
+                route = dimension_routing.route_dotted_target(
+                    root=host, target_model=hop, leaf=leaf,
+                    models_by_name=models_by_name,
+                )
+                terminal = models_by_name.get(hop)
+                if terminal is None:
+                    raise UnknownReferenceError(
+                        name=".".join(parts),
+                        scope_kind="ModelScope",
+                        scope_summary=f"target {hop!r} not in source bundle",
+                        suggestion=None,
+                    )
+                return terminal, tuple(route)
+            raise _broken_chain_error(
+                host=host, hop_path=hop_path, leaf=leaf, parts=parts,
+                models_by_name=models_by_name,
             )
         nxt = models_by_name.get(edge.target_model)
         if nxt is None:
@@ -566,7 +618,30 @@ def _walk_join_chain(
             )
         visited_models.add(nxt.name)
         current = nxt
-    return current
+    return current, tuple(hop_path)
+
+
+def _broken_chain_error(
+    *,
+    host: SlayerModel,
+    hop_path: Tuple[str, ...],
+    leaf: str,
+    parts: Tuple[str, ...],
+    models_by_name: Dict[str, SlayerModel],
+) -> UnresolvableDimensionJoinError:
+    """A multi-hop dotted chain with an unresolvable hop — rejected, never
+    auto-repaired. Suggests the short form ``Target.leaf`` when its target
+    (``hop_path[-1]``) is itself uniquely routable, else no suggestion."""
+    target = hop_path[-1]
+    routable = dimension_routing.short_form_route_or_none(
+        root=host, target_model=target, models_by_name=models_by_name,
+    )
+    return UnresolvableDimensionJoinError(
+        reference=".".join(parts),
+        root_model=host.name,
+        reason=f"'{'.'.join(hop_path)}' is not a valid join chain",
+        suggested_path=f"{target}.{leaf}" if routable is not None else None,
+    )
 
 
 def _strip_self_prefix(
@@ -635,12 +710,12 @@ def _resolve_dotted(
     # parts[:-1] are join targets; parts[-1] is the leaf column.
     hop_path = parts[:-1]
     leaf = parts[-1]
-    current = _walk_join_chain(
-        hop_path=hop_path, host=host, bundle=bundle, parts=parts,
+    current, effective_hop_path = _walk_join_chain(
+        hop_path=hop_path, host=host, bundle=bundle, parts=parts, leaf=leaf,
     )
 
     return _resolve_terminal_leaf(
-        current=current, leaf=leaf, hop_path=hop_path,
+        current=current, leaf=leaf, hop_path=effective_hop_path,
         original_parts=original_parts, scope=scope, bundle=bundle,
         measure_ctx=measure_ctx,
     )
@@ -852,10 +927,12 @@ def _resolve_dotted_star(
     # Strip same-model self-prefix (``orders.*`` on ``orders``).
     if hop_path and hop_path[0] == host.name:
         hop_path = hop_path[1:]
-    # Validate the hop chain (raises on missing / circular join); leaf ``*``
-    # needs only the validated path, not the terminal model.
-    _walk_join_chain(hop_path=hop_path, host=host, bundle=bundle, parts=parts)
-    return StarKey(path=tuple(hop_path))
+    # Validate the hop chain (raises on missing / circular join, auto-routes a
+    # short form); the routed effective path carries the star.
+    _, effective_hop_path = _walk_join_chain(
+        hop_path=hop_path, host=host, bundle=bundle, parts=parts, leaf="*",
+    )
+    return StarKey(path=tuple(effective_hop_path))
 
 
 def _bind_agg_partition_keys(

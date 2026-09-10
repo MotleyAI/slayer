@@ -211,6 +211,8 @@ class SlayerClient:
             columns=result.get("columns") or [],
             sql=result.get("sql"),
             attributes=attributes,
+            population=result.get("population"),
+            population_inferred=bool(result.get("population_inferred", False)),
         )
 
     # ----- Async API -----

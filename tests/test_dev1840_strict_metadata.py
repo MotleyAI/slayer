@@ -90,7 +90,7 @@ class TestStrictNarrows:
         """Scenario: strict passes on a pushable filter."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            strict=True, dimensions=["customers.tier"], measures=[M, CM],
+            to_many_handling="error", dimensions=["customers.tier"], measures=[M, CM],
             filters=["channel = 'app'"],
         ))
         by = rows_by(resp, "orders.customers.tier")
@@ -102,7 +102,7 @@ class TestStrictNarrows:
     ):
         _, engine = exec_backend_weak
         resp = await engine.execute(q(
-            strict=True, dimensions=["customers.tier"], measures=[CM],
+            to_many_handling="error", dimensions=["customers.tier"], measures=[CM],
             filters=["customers.plans.level = 'basic'"],
         ))
         by = rows_by(resp, "orders.customers.tier")
@@ -114,7 +114,7 @@ class TestStrictNarrows:
         filter and the remedy."""
         _, engine = exec_backend
         query = q(
-            strict=True, dimensions=["customers.tier"], measures=[CM],
+            to_many_handling="error", dimensions=["customers.tier"], measures=[CM],
             filters=["customers.tier = 'gold' OR channel = 'app'"],
         )
         with pytest.raises(SlayerError) as ei:
@@ -130,7 +130,7 @@ class TestStrictNarrows:
         """Ambiguous hop errors under strict — same failure as lenient.
         DEV-1853 divergences.md class (d)."""
         _, engine = exec_backend_amb
-        query = tq(strict=True, measures=[SM], filters=["effort > 2"])
+        query = tq(to_many_handling="error", measures=[SM], filters=["effort > 2"])
         with pytest.raises(AmbiguousJoinPathError) as ei:
             await engine.execute(query=query)
         assert "opened_by" in str(ei.value)
@@ -143,7 +143,7 @@ class TestStrictNarrows:
         errors under strict — never dropped. DEV-1853 divergences.md
         class (d)."""
         _, engine = exec_backend_amb
-        query = tq(strict=True, measures=[RV], filters=["agents.name = 'Ann'"])
+        query = tq(to_many_handling="error", measures=[RV], filters=["agents.name = 'Ann'"])
         with pytest.raises(AmbiguousJoinPathError) as ei:
             await engine.execute(query=query)
         assert "opened_by" in str(ei.value)

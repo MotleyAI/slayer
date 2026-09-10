@@ -31,6 +31,7 @@ from tests._dev1853_fixtures import (
     CHAIN_REVERSE_AGG_TOTAL,
     CHAIN_REVERSE_DIMS_INNER,
     CHAIN_REVERSE_DIMS_LEFT,
+    CHAIN_SPEND_BROADCAST_TOTAL,
     CHAIN_SPEND_BY_REVERSE_STATUS,
     CHAIN_UNPROVEN_BROADCAST_TOTAL,
     chain_engine,
@@ -170,18 +171,25 @@ class TestOrientedCardinalityValues:
         statuses = {r["customers.orders.status"] for r in resp.data}
         assert statuses == {"ok", "new", None}
 
-    async def test_local_measure_with_reverse_fan_out_dim_stays_exact(
+    async def test_local_measure_with_reverse_fan_out_dim_both_modes(
         self, fwd_engine,
     ) -> None:
-        # Grain-safe dedup across the inverted hop: each customer's spend
-        # counts once per status it has, never join-multiplied.
-        resp = await fwd_engine.execute(SlayerQuery(
-            source_model="customers", dimensions=["orders.status"],
-            measures=[{"formula": "spend:sum", "name": "s"}]))
+        # orders.status is unattributable from a customer (reverse fan-out).
+        # DEV-1841: default broadcasts the distinct-customer total; associate
+        # dedups each customer's spend once per status, never join-multiplied.
+        kw = dict(source_model="customers", dimensions=["orders.status"],
+                  measures=[{"formula": "spend:sum", "name": "s"}])
+        bcast = await fwd_engine.execute(SlayerQuery(**kw))
+        assert broadcast_warnings(bcast)
+        assert {r["customers.s"] for r in bcast.data} == {
+            CHAIN_SPEND_BROADCAST_TOTAL}
+
+        assoc = await fwd_engine.execute(
+            SlayerQuery(**kw, to_many_handling="associate"))
         got = {r["customers.orders.status"]: r["customers.s"]
-               for r in resp.data}
+               for r in assoc.data}
         assert got == CHAIN_SPEND_BY_REVERSE_STATUS
-        assert not broadcast_warnings(resp)
+        assert not broadcast_warnings(assoc)
 
 
 class TestMultiHopReverse:

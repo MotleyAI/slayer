@@ -516,7 +516,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             limit: Max rows to return, trusted verbatim; without it the response is capped at 20 rows with a truncation notice.
             offset: Number of rows to skip.
             whole_periods_only: When true, snap date filters to time bucket boundaries based on granularity, exclude the current incomplete time bucket.
-            strict: Error instead of warn when a cross-model measure would broadcast or a producer filter would be dropped. A query-object field only; a run-by-name string carries no fields, so set ``strict`` on the stored query instead.
+            to_many_handling: How an aggregate resolves query dimensions unattributable from its root — "broadcast" (default; repeat the value, warn), "associate" (per-cell value over the distinct associated entities), or "error" (refuse). The retired ``strict`` flag is rejected with this remedy. A query-object field only; a run-by-name string carries no fields, so set it on the stored query instead.
             distinct_dimension_values: Default True (Cube.js-style auto-dedup for dim-only queries — emits GROUP BY <dim aliases>). Set False to emit raw rows: no top-level GROUP BY, just SELECT <dimensions/time_dimensions> with the usual WHERE/ORDER BY/LIMIT. Any measure reference (in measures, filters, or order) raises an error in this mode.
             variables: Per-query {placeholder} values, scoped to this query object / stage (same substitution as the top-level ``variables`` arg). Overridden by the top-level value — see precedence below.
 
@@ -1995,19 +1995,23 @@ def _format_json(
     data: list[dict[str, Any]],
     warnings: list[dict[str, Any]] | None = None,
     attributes: dict[str, Any] | None = None,
+    population: str | None = None,
 ) -> str:
-    """Bare array, or {"data", "warnings"?, "attributes"?} once either is present.
+    """Bare array, or {"data", "warnings"?, "attributes"?, "population"?} once any is present.
 
-    Attributes and warnings ride inside the payload so the whole response stays
-    strict-``json.loads``-able — never trailing prose.
+    Attributes, warnings, and the inferred population ride inside the payload so
+    the whole response stays strict-``json.loads``-able — never trailing prose.
     """
-    if not warnings and not attributes:
+    if not warnings and not attributes and population is None:
         return json.dumps(data, default=str)
     payload: dict[str, Any] = {"data": data}
     if warnings:
         payload["warnings"] = warnings
     if attributes:
         payload["attributes"] = attributes
+    if population is not None:
+        payload["population"] = population
+        payload["population_inferred"] = True
     return json.dumps(payload, default=str)
 
 
@@ -2092,11 +2096,13 @@ def _format_output(result: SlayerResponse, fmt: str) -> str:
     both as leading `#` comment lines for csv, a prose attributes footer before
     the trailing Warnings block for markdown.
     """
+    inferred_population = result.population if result.population_inferred else None
     if fmt == "csv":
         # Leading `#` lines, never trailing prose — trailing rows break the
         # column count for every CSV reader.
         return (
-            _csv_attribute_comments(result)
+            _population_comment(inferred_population)
+            + _csv_attribute_comments(result)
             + _csv_warning_comments(result)
             + _format_csv(data=result.data, columns=result.columns)
         )
@@ -2104,13 +2110,25 @@ def _format_output(result: SlayerResponse, fmt: str) -> str:
         return (
             result.to_markdown()
             + _attributes_footer(result.attributes)
+            + _population_footer(inferred_population)
             + _format_warnings(result)
         )
     return _format_json(
         data=result.data,
         warnings=[w.model_dump(mode="json") for w in (result.warnings or [])],
         attributes=_json_attributes(result.attributes),
+        population=inferred_population,
     )
+
+
+def _population_footer(population: str | None) -> str:
+    """Trailing note naming the inferred population (markdown), or empty."""
+    return "" if population is None else f"\n\nPopulation: {population} (inferred)"
+
+
+def _population_comment(population: str | None) -> str:
+    """Leading `#` note naming the inferred population (csv), or empty."""
+    return "" if population is None else f"# population: {population} (inferred)\n"
 
 
 def _format_field_meta(entries: dict[str, Any]) -> list[str]:
