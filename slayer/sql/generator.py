@@ -30,7 +30,7 @@ from slayer.core.enums import (
 )
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from slayer.core.errors import AggregationNotAllowedError
+from slayer.core.errors import AggregationNotAllowedError, SlayerError
 from slayer.core.formula import RANK_FAMILY_TRANSFORMS
 from slayer.core.keys import (
     KIND_POLICY,
@@ -3264,7 +3264,6 @@ class SQLGenerator:
                 planned_query=planned_query, bundle=bundle, kernel=kernel,
                 source_model=source_model, source_relation=source_relation,
                 slots_by_id=slots_by_id, regroup_env=regroup_env,
-                regroup_join_specs=regroup_join_specs,
             )
         elif kernel.kind == "ranked":
             plan = _ranked_emission_from_kernel(
@@ -3324,9 +3323,40 @@ class SQLGenerator:
             )
         return body.sql(dialect=self.dialect, pretty=True)
 
+    def _assert_association_no_column_default_params(
+        self, *, spec: AggRenderSpec, alias: str, query_param_names: Set[str],
+    ) -> None:
+        """Reject an association aggregate whose aggregation-definition default
+        parameters reference a column: the level-2 aggregate runs over ``_base``
+        (grain + entity key + the picked value ``_v``), so a defaulted column
+        param would render against a column ``_base`` lacks. Explicit column
+        params are rejected earlier at plan time; this catches the
+        definition-default path (DEV-1884 tracks lifting such parameters).
+        ``query_param_names`` are the query-supplied kwarg names — the only ones
+        the plan-time gate saw; ``spec.agg_kwargs`` also carries resolved defaults,
+        so it must not be used to decide which params are explicit."""
+        agg_def = spec.aggregation_def
+        if agg_def is None:
+            return
+        for p in agg_def.params:
+            if p.name in query_param_names:
+                continue
+            try:
+                default_ast = sqlglot.parse_one(p.sql, dialect=self.dialect)
+            except Exception:  # noqa: BLE001 — unparseable default is not a column ref
+                continue
+            if default_ast is not None and default_ast.find(exp.Column) is not None:
+                raise SlayerError(
+                    f"Aggregate {alias!r} needs distinct-entity association over "
+                    f"an unattributable dimension, which is unsupported with a "
+                    f"column-reference parameter (aggregation {agg_def.name!r} "
+                    f"parameter {p.name!r} defaults to column {p.sql!r}); the "
+                    f"per-entity pick carries only the aggregate's own value."
+                )
+
     def _render_association_producer_body(  # NOSONAR(S3776) — one cohesive two-level association body: level-1 dedup SELECT (grain × entity key, picked value) wrapped as ``_base``, level-2 aggregate over the picked rows. The two arms share the grain-alias / scope state.
         self, *, planned_query, bundle, kernel, source_model, source_relation,
-        slots_by_id, regroup_env=None, regroup_join_specs=None,
+        slots_by_id, regroup_env=None,
     ) -> exp.Select:
         """The distinct-entity association producer (DEV-1841): level 1 groups by
         (grain × the root's entity key) picking each input once per entity; level
@@ -3383,6 +3413,9 @@ class SQLGenerator:
                 source_relation=source_relation, full_alias=picked_alias,
                 bundle=bundle, resolved_agg_kwargs=resolved.get(agg_slot.key),
             )
+            self._assert_association_no_column_default_params(
+                spec=spec, alias=agg_alias,
+                query_param_names={n for n, _ in getattr(agg_slot.key, "kwargs", ())})
             value_sql = _wrap_filter(self._resolve_value_sql(spec), spec.filter_sql)
             inner_cols.append(
                 exp.Max(this=self._parse(value_sql)).as_(

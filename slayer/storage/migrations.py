@@ -59,7 +59,7 @@ def _model_v9_to_v10(data: dict) -> dict:
     return data
 
 
-@register_migration("SlayerQuery", 3)
+@register_migration(entity="SlayerQuery", source_version=3)
 def _query_v3_to_v4(data: dict) -> dict:
     """v4: retire ``strict`` — ``strict: true`` → ``to_many_handling: "error"``;
     ``false``/absent drops to the ``"broadcast"`` default."""

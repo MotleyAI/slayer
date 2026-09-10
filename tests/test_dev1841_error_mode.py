@@ -46,8 +46,9 @@ class TestErrorModeRefusesBroadcast:
     async def test_cross_model_broadcast_errors(self, exec_backend):
         """Scenario: broadcast-would-happen errors — cross-model."""
         _, engine = exec_backend
+        query = error_q(dimensions=["status"], measures=[M, CM])
         with pytest.raises((SlayerError, ValueError)) as ei:
-            await engine.execute(error_q(dimensions=["status"], measures=[M, CM]))
+            await engine.execute(query)
         msg = str(ei.value)
         assert "cm" in msg or "spend" in msg
         assert "status" in msg
@@ -57,10 +58,10 @@ class TestErrorModeRefusesBroadcast:
         """Scenario: broadcast-would-happen errors — local (the new coverage:
         a fanning local aggregate errors instead of silently multiplying)."""
         _, engine = exec_backend
+        query = cust_q(dimensions=["orders.status"], measures=[SP],
+                       to_many_handling="error")
         with pytest.raises((SlayerError, ValueError)) as ei:
-            await engine.execute(
-                cust_q(dimensions=["orders.status"], measures=[SP],
-                       to_many_handling="error"))
+            await engine.execute(query)
         assert "status" in str(ei.value)
 
 
@@ -69,19 +70,20 @@ class TestErrorModeRefusesExcludedFilters:
         """Scenario: excluded filter errors — a mixed disjunction stays dropped
         and error mode turns it into an error naming the filter."""
         _, engine = exec_backend
+        query = error_q(
+            dimensions=["customers.tier"], measures=[CM],
+            filters=["customers.tier = 'gold' OR channel = 'app'"])
         with pytest.raises((SlayerError, ValueError)) as ei:
-            await engine.execute(error_q(
-                dimensions=["customers.tier"], measures=[CM],
-                filters=["customers.tier = 'gold' OR channel = 'app'"]))
+            await engine.execute(query)
         assert "channel" in str(ei.value)
 
     async def test_ambiguous_hop_errors_in_error_mode(self, exec_backend_amb):
         """An ambiguous correlation hop fails closed in every mode — not an
         error-mode concern, but it must not be masked by it."""
         _, engine = exec_backend_amb
+        query = error_q(source_model="tickets", measures=[SM], filters=["effort > 2"])
         with pytest.raises(AmbiguousJoinPathError):
-            await engine.execute(error_q(
-                source_model="tickets", measures=[SM], filters=["effort > 2"]))
+            await engine.execute(query)
 
 
 class TestErrorModePasses:
@@ -126,8 +128,9 @@ class TestStrictParity:
         ok = await engine.execute(
             error_q(dimensions=["customers.tier"], measures=[CM]))
         assert ok.data
+        broadcast_query = error_q(dimensions=["status"], measures=[CM])
         with pytest.raises((SlayerError, ValueError)):
-            await engine.execute(error_q(dimensions=["status"], measures=[CM]))
+            await engine.execute(broadcast_query)
 
     async def test_migrated_strict_query_executes_in_error_mode(self, exec_backend):
         """Scenario: stored strict queries migrate and EXECUTE with the mapped

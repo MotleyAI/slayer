@@ -31,7 +31,9 @@ class TestModeField:
         with pytest.raises(ValueError) as ei:
             _q(to_many_handling="partition")
         msg = str(ei.value)
-        assert "broadcast" in msg and "associate" in msg and "error" in msg
+        assert "broadcast" in msg
+        assert "associate" in msg
+        assert "error" in msg
 
 
 class TestStrictRetired:
@@ -49,6 +51,17 @@ class TestStrictRetired:
         """Even ``strict=False`` is a retired field on input — no silent accept."""
         with pytest.raises(ValueError) as ei:
             _q(strict=False)
+        assert "to_many_handling" in str(ei.value)
+
+    @pytest.mark.parametrize("version", [4, "4", "bogus", 3.9])
+    def test_current_or_malformed_version_with_strict_rejects_cleanly(self, version) -> None:
+        """A current-version (int or string), or malformed (non-integral float,
+        non-numeric string) ``version`` carrying retired ``strict`` raises the
+        remedy — never a ``TypeError`` from the pre-coercion comparison, and never
+        a silent float truncation into a stale migratable version."""
+        payload = {"version": version, "source_model": "orders", "strict": True}
+        with pytest.raises(ValueError) as ei:
+            SlayerQuery.model_validate(payload)
         assert "to_many_handling" in str(ei.value)
 
 

@@ -260,7 +260,7 @@ Query results are returned as a `SlayerResponse`:
 | `row_count` | int | Number of rows |
 | `sql` | string | The generated SQL (useful for debugging) |
 | `attributes` | ResponseAttributes | Field metadata split by type: `attributes.dimensions` and `attributes.measures`, each a dict of column alias → FieldMetadata (label, format) |
-| `warnings` | list[SlayerWarning] | Advisories, discriminated by `kind`: input normalizations (`"normalization"`), a [cross-model measure broadcast](#cross-model-measures) (`"broadcast"` — `measure`, `location`, and per-dimension `dimensions[].reason`), a filter dropped from a cross-model producer (`"unreachable_filter_dropped"` — `filter_text`, `location`, `reason`) |
+| `warnings` | list[SlayerWarning] | Advisories, discriminated by `kind`: input normalizations (`"normalization"`), a [cross-model measure broadcast](#cross-model-measures) (`"broadcast"` — `measure`, `location`, and per-dimension `dimensions[].reason`), a distinct-entity attribution over an unattributable dimension (`"associated"` — `measure`, `location`, `dimensions`; cells overlap and are not additive), a filter dropped from a cross-model producer (`"unreachable_filter_dropped"` — `filter_text`, `location`, `reason`), and a semi-join-pushed filter (`"semi_join_pushed"` — `measure`, `location`, `filter_text`) |
 
 `columns` — and the key order of each row in `data` — follows the order you
 declared fields in the query: dimensions, then time dimensions, then measures,
@@ -693,8 +693,9 @@ missing join cardinality (or primary key) to make such a dimension exact.
 Query **filters** still restrict the metric: a conjunct the sub-query can only
 reach across an unproven hop is pushed down as a correlated `EXISTS` semi-join —
 the metric counts exactly the target rows related to at least one row passing
-the filter (each row once, never multiplied through the join), silently, exactly
-like a safely inherited filter. The correlation path resolves through the same
+the filter (each row once, never multiplied through the join), surfaced as an
+informational `kind: "semi_join_pushed"` entry in `.warnings` (never an error,
+in any mode). The correlation path resolves through the same
 [bidirectional traversal](models.md#bidirectional-traversal) as every other hop
 — no declared reverse join is needed, and a hop spanned by two or more edges
 fails the whole query with the ambiguous-hop error (in every mode) rather than
@@ -708,9 +709,12 @@ with a clear error.
 `to_many_handling` chooses how a broadcast dimension resolves — `broadcast` (the
 default above), `associate` (each cell aggregates over the distinct entities
 associated with it, warned as `kind: "associated"` because the cells overlap and
-are not additive), or `error` (refuse) — with the retired `strict` flag mapping
-to `error` and a semi-join-pushed filter applied, never erroring, in every mode.
+are not additive), or `error` (refuse) — where a stored query's retired
+`strict: true` migrates to `error` (fresh input carrying `strict` is rejected),
+and a semi-join-pushed filter is applied, never erroring, in every mode.
 Example: `{"source_model": "orders", "dimensions": ["status"], "measures": [{"formula": "customers.spend:sum"}], "to_many_handling": "associate"}`.
+
+`associate` resolves only *eligible* aggregates — a plain scalar aggregate whose root declares a unique key; an unsupported combination (`window=`/`first`/`last`, a root without a unique key, a column-reference parameter, or an input crossing an unproven hop) returns a typed error rather than a value, so `associate` does not turn every broadcast case exact.
 
 A filter **on** the cross-model value itself (`"customers.score:avg > 4"`)
 restricts the result rows, uniformly with local aggregate filters — groups that
