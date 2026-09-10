@@ -117,3 +117,12 @@ byte-identical. Rollback = revert; no persisted state changes shape.
   still using the same to-one determination for viability; (b) the MCP *text* surface
   reports the population only when inferred (to avoid changing explicit-query output),
   while the structured `SlayerResponse` / REST / Python client always carry it.
+- **DEV-1856 interaction realized (this branch merged 1856 via 1841).** Rootless
+  inference runs before binding and reads dimensions as literal join paths, so it does
+  not apply DEV-1856 short-form auto-routing (routing needs a root inference is still
+  choosing); a short-form cross-model dim fails closed or roots at the short-form's
+  target instead of routing. Pinned by
+  `test_dev1866_fail_closed.py::test_short_form_cross_model_dim_not_routed_when_rootless`
+  and documented in `docs/concepts/queries.md#population` (use full dotted paths, or
+  name `source_model`, when combining the two). Route-aware rootless inference is
+  deferred to DEV-1871's single binder.

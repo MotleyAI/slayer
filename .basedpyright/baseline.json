@@ -29344,6 +29344,22 @@
             {
                 "code": "reportArgumentType",
                 "range": {
+                    "startColumn": 45,
+                    "endColumn": 78,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 41,
+                    "endColumn": 84,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
                     "startColumn": 39,
                     "endColumn": 65,
                     "lineCount": 1
