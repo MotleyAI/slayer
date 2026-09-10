@@ -19,7 +19,9 @@ import sqlglot
 import sqlglot.expressions as exp
 
 from slayer.core.enums import DataType, JoinCardinality
+from slayer.core.errors import AmbiguousJoinPathError
 from slayer.core.formula import parse_formula
+from slayer.core.join_walker import resolve_hop
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.refs import IDENTIFIER_RE as _IDENTIFIER_RE
 from slayer.engine.column_expansion import _root_scope_column_ids, resolve_ref_target
@@ -656,6 +658,19 @@ class OsiToSlayerConverter:
                 return True
         return False
 
+    def _is_physical_multihop_ref(self, *, model: SlayerModel, quals: list[str]) -> bool:
+        """True for a multi-hop qualifier whose first hop is not a join hop (either
+        direction) — a physical ``schema.table.column`` ref outside SLayer's
+        contract. An ambiguous hop IS a join hop: the walk flags the ref."""
+        if len(quals) < 2:
+            return False
+        try:
+            return resolve_hop(
+                current=model, token=quals[0], models_by_name=self._models
+            ) is None
+        except AmbiguousJoinPathError:
+            return False
+
     def _unresolvable_cross_model_refs(self, model: SlayerModel, sql: str) -> list[str]:
         """Cross-model (non-self, qualified) column refs in ``sql`` that don't
         resolve to a joined model + existing column. Mirrors runtime scope rules:
@@ -677,11 +692,7 @@ class OsiToSlayerConverter:
             quals, leaf = parts[:-1], parts[-1]
             if not quals or quals == [model.name]:
                 continue  # self / unqualified — validated at field-overlay time
-            # A multi-hop qualifier whose FIRST hop is not a join target is a
-            # physical ``schema.table.column`` ref — outside SLayer's contract.
-            if len(quals) >= 2 and not any(
-                j.target_model == quals[0] for j in model.joins
-            ):
+            if self._is_physical_multihop_ref(model=model, quals=quals):
                 continue
             target = self._walk_join_alias(host=model, alias=".".join(quals))
             if target is None or not any(c.name == leaf for c in target.columns):
@@ -699,7 +710,7 @@ class OsiToSlayerConverter:
         return resolve_ref_target(
             qualifiers=tuple(alias.split(".")),
             source_model=host,
-            resolve_model=self._models.get,
+            models_by_name=self._models,
         )
 
     def _model_has_column(self, model_name: str, column: str) -> bool:

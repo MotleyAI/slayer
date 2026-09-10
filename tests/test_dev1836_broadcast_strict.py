@@ -146,7 +146,7 @@ class TestBroadcastMetadata:
 class TestStrictMode:
     async def test_strict_broadcast_errors_with_remedy(self, exec_backend):
         _, engine = exec_backend
-        query = q(strict=True, dimensions=["status"], measures=[M, CM])
+        query = q(to_many_handling="error", dimensions=["status"], measures=[M, CM])
         with pytest.raises((SlayerError, ValueError)) as ei:
             await engine.execute(query)
         message = str(ei.value)
@@ -160,7 +160,7 @@ class TestStrictMode:
         nothing to flag; the metric covers the app customers (c1, c3)."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            strict=True, dimensions=["customers.tier"], measures=[M, CM],
+            to_many_handling="error", dimensions=["customers.tier"], measures=[M, CM],
             filters=["channel = 'app'"],
         ))
         by = rows_by(resp, "orders.customers.tier")
@@ -173,7 +173,7 @@ class TestStrictMode:
         still excluded, and strict still errors on it."""
         _, engine = exec_backend
         query = q(
-            strict=True, dimensions=["customers.tier"], measures=[M, CM],
+            to_many_handling="error", dimensions=["customers.tier"], measures=[M, CM],
             filters=["customers.tier = 'gold' OR channel = 'app'"],
         )
         with pytest.raises((SlayerError, ValueError)) as ei:
@@ -186,7 +186,7 @@ class TestStrictMode:
             q(dimensions=["customers.tier"], measures=[M, CM]),
         )
         strict = await engine.execute(
-            q(strict=True, dimensions=["customers.tier"], measures=[M, CM]),
+            q(to_many_handling="error", dimensions=["customers.tier"], measures=[M, CM]),
         )
         lenient_by = rows_by(lenient, "orders.customers.tier")
         strict_by = rows_by(strict, "orders.customers.tier")
@@ -200,7 +200,7 @@ class TestStrictMode:
     async def test_strict_allows_explicit_partition_broadcast(self, exec_backend):
         _, engine = exec_backend
         resp = await engine.execute(q(
-            strict=True, dimensions=["status"],
+            to_many_handling="error", dimensions=["status"],
             measures=[ModelMeasure(
                 formula="customers.spend:sum(partition_by=[])", name="total",
             )],

@@ -121,9 +121,14 @@ bind_golden_tests(
 
 def test_exists_cases_carry_an_exists(baseline) -> None:
     """Feature-missing tripwire: every pushdown case must emit a semi-join;
-    inline and excluded cases must not."""
+    inline cases must not; the ambiguous case must be the recorded fail-closed
+    raise (DEV-1853 divergences.md class (d))."""
     for key, value in baseline.items():
         case_id = key.rsplit("::", 1)[0]
+        if case_id == "excluded/ambiguous_inversion":
+            assert isinstance(value, dict), f"{key} no longer fails closed"
+            assert value.get("error") == "AmbiguousJoinPathError", value
+            continue
         assert not isinstance(value, dict), f"{key} unexpectedly raised: {value}"
         assert "__regroup__" not in value, f"{key} leaked a placeholder"
         if case_id.startswith("exists/"):

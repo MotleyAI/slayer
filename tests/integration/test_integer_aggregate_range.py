@@ -119,7 +119,7 @@ def test_joined_integer_aggregate_preserves_cast_intent(integer_orders, explicit
             "name": "customers",
             "sql_table": "customers",
             "measures": [],
-            "joins": [ModelJoin(target_model="orders", join_pairs=[["id", "id"]])],
+            "joins": [],
         }
     )
     measure = {"formula": "customers.amount:sum", "name": "total"}

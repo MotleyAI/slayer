@@ -357,6 +357,14 @@ class TestResolveEntityDotted:
         )
         assert result.canonical_forms == ["mydb.regions.name"]
 
+    async def test_reverse_hop_join(self, storage: StorageBackend) -> None:
+        # customers.orders.amount — orders declares the only edge; the
+        # reverse hop resolves without a declared reverse join (DEV-1853).
+        result = await resolve_entity(
+            "customers.orders.amount", storage=storage
+        )
+        assert result.canonical_forms == ["mydb.orders.amount"]
+
     async def test_dot_terminating_at_join_target(
         self, storage: StorageBackend
     ) -> None:

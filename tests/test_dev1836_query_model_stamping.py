@@ -72,7 +72,7 @@ class TestStampedModelProvesJoins:
             target_model="vm_kpis",
             join_pairs=[["status", "status"], ["channel", "channel"]],
         )
-        assert provably_to_one(join=full, target_model=model)
+        assert provably_to_one(edge=full, target_model=model)
 
     async def test_join_onto_partial_grain_stays_unproven(self, engine) -> None:
         model = await engine.create_model_from_query(
@@ -83,7 +83,7 @@ class TestStampedModelProvesJoins:
         partial = ModelJoin(
             target_model="vm_kpis2", join_pairs=[["status", "status"]],
         )
-        assert not provably_to_one(join=partial, target_model=model)
+        assert not provably_to_one(edge=partial, target_model=model)
 
     async def test_metric_through_stamped_grain_keeps_exact_values(
         self, engine,
@@ -117,4 +117,4 @@ class TestStampedModelProvesJoins:
             "vm_dup2",
         )
         join = ModelJoin(target_model="vm_dup2", join_pairs=[["status", "status"]])
-        assert not provably_to_one(join=join, target_model=model)
+        assert not provably_to_one(edge=join, target_model=model)

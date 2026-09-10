@@ -8,4 +8,9 @@ views {
     title 'Query pipeline'
     include core, engine, sql, storage
   }
+
+  view core_focus {
+    title 'Core in context'
+    include core, core -> *, * -> core
+  }
 }

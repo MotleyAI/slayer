@@ -30,7 +30,7 @@ from slayer.core.enums import (
 )
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from slayer.core.errors import AggregationNotAllowedError
+from slayer.core.errors import AggregationNotAllowedError, SlayerError
 from slayer.core.formula import RANK_FAMILY_TRANSFORMS
 from slayer.core.keys import (
     KIND_POLICY,
@@ -51,6 +51,7 @@ from slayer.core.keys import (
     column_path,
     substitute_value_keys,
 )
+from slayer.core.join_walker import resolve_hop, terminal_model
 from slayer.core.models import Aggregation
 from slayer.core.refs import (
     EXPRESSION_SOURCE_KINDS as _EXPRESSION_SOURCE_KINDS,
@@ -3258,7 +3259,13 @@ class SQLGenerator:
             else ([], {}, [], [])
         )
 
-        if kernel.kind == "ranked":
+        if kernel.kind == "association":
+            body = self._render_association_producer_body(
+                planned_query=planned_query, bundle=bundle, kernel=kernel,
+                source_model=source_model, source_relation=source_relation,
+                slots_by_id=slots_by_id, regroup_env=regroup_env,
+            )
+        elif kernel.kind == "ranked":
             plan = _ranked_emission_from_kernel(
                 planned_query=planned_query, kernel=kernel,
             )
@@ -3315,6 +3322,169 @@ class SQLGenerator:
                 external_names=self._external_cte_names(),
             )
         return body.sql(dialect=self.dialect, pretty=True)
+
+    def _assert_association_no_column_default_params(
+        self, *, spec: AggRenderSpec, alias: str, query_param_names: Set[str],
+    ) -> None:
+        """Reject an association aggregate whose aggregation-definition default
+        parameters reference a column: the level-2 aggregate runs over ``_base``
+        (grain + entity key + the picked value ``_v``), so a defaulted column
+        param would render against a column ``_base`` lacks. Explicit column
+        params are rejected earlier at plan time; this catches the
+        definition-default path (DEV-1884 tracks lifting such parameters).
+        ``query_param_names`` are the query-supplied kwarg names — the only ones
+        the plan-time gate saw; ``spec.agg_kwargs`` also carries resolved defaults,
+        so it must not be used to decide which params are explicit."""
+        agg_def = spec.aggregation_def
+        if agg_def is None:
+            return
+        for p in agg_def.params:
+            if p.name in query_param_names:
+                continue
+            try:
+                default_ast = sqlglot.parse_one(p.sql, dialect=self.dialect)
+            except Exception:  # noqa: BLE001 — unparseable default is not a column ref
+                continue
+            if default_ast is not None and default_ast.find(exp.Column) is not None:
+                raise SlayerError(
+                    f"Aggregate {alias!r} needs distinct-entity association over "
+                    f"an unattributable dimension, which is unsupported with a "
+                    f"column-reference parameter (aggregation {agg_def.name!r} "
+                    f"parameter {p.name!r} defaults to column {p.sql!r}); the "
+                    f"per-entity pick carries only the aggregate's own value."
+                )
+
+    def _render_association_producer_body(  # NOSONAR(S3776) — one cohesive two-level association body: level-1 dedup SELECT (grain × entity key, picked value) wrapped as ``_base``, level-2 aggregate over the picked rows. The two arms share the grain-alias / scope state.
+        self, *, planned_query, bundle, kernel, source_model, source_relation,
+        slots_by_id, regroup_env=None,
+    ) -> exp.Select:
+        """The distinct-entity association producer (DEV-1841): level 1 groups by
+        (grain × the root's entity key) picking each input once per entity; level
+        2 aggregates over the picked rows per grain."""
+        agg_slot = planned_query.aggregate_slots[0]
+        grain_slots = [
+            slots_by_id[sid]
+            for sid in planned_query.projection
+            if sid != agg_slot.id
+        ]
+        alias_index: Dict[str, int] = {}
+        grain_aliases = [
+            self._full_alias_for_slot(
+                slot=s, source_relation=source_relation, alias_index=alias_index,
+            )
+            for s in grain_slots
+        ]
+        agg_alias = self._full_alias_for_slot(
+            slot=agg_slot, source_relation=source_relation, alias_index=alias_index,
+        )
+        allocator = self._gen_allocator or self._new_allocator()
+        scope = self._scope_frame(
+            model=source_model, relation=source_relation,
+            bundle=bundle, allocator=allocator, attached_columns=regroup_env,
+        )
+        ctx = RenderContext(scope=scope, dialect=self._dialect)
+
+        inner_cols: List[exp.Expression] = []
+        group: List[exp.Expression] = []
+        for slot, alias in zip(grain_slots, grain_aliases):
+            expr = render_value_key(key=slot.key, ctx=ctx)
+            inner_cols.append(expr.copy().as_(exp.to_identifier(alias, quoted=True)))
+            group.append(expr.copy())
+        entity_exprs: List[exp.Expression] = []
+        for idx, ekey in enumerate(kernel.entity_keys):
+            eexpr = render_value_key(key=ekey, ctx=ctx)
+            ek_alias = f"_ek{idx}"
+            inner_cols.append(eexpr.copy().as_(exp.to_identifier(ek_alias)))
+            group.append(eexpr.copy())
+            entity_exprs.append(eexpr.copy())
+
+        # Level 1 picks each input once per entity (MAX is arbitrary-but-correct:
+        # the input is root-determined, constant per entity); ``*:count`` keeps no
+        # value column — level 2 counts the entity rows.
+        is_star = isinstance(agg_slot.key.source, StarKey)
+        picked_alias = "_v"
+        if not is_star:
+            resolved = self._resolve_agg_inputs_via_scope(
+                base_render_order=[agg_slot.id], slots_by_id={agg_slot.id: agg_slot},
+                scope=scope,
+            )
+            spec = self._build_agg_render_spec_from_planned(
+                slot=agg_slot, key=agg_slot.key, source_model=source_model,
+                source_relation=source_relation, full_alias=picked_alias,
+                bundle=bundle, resolved_agg_kwargs=resolved.get(agg_slot.key),
+            )
+            self._assert_association_no_column_default_params(
+                spec=spec, alias=agg_alias,
+                query_param_names={n for n, _ in getattr(agg_slot.key, "kwargs", ())})
+            value_sql = _wrap_filter(self._resolve_value_sql(spec), spec.filter_sql)
+            inner_cols.append(
+                exp.Max(this=self._parse(value_sql)).as_(
+                    exp.to_identifier(picked_alias),
+                ),
+            )
+
+        self._resolve_where_filter_joins_via_scope(
+            planned_query=planned_query, scope=scope, skip_filter_ids=set(),
+        )
+        where, _having = self._build_where_having_from_planned(
+            planned_query=planned_query, source_relation=source_relation,
+            source_model=source_model, bundle=bundle, skip_filter_ids=set(),
+        )
+        from_expr, joins = self._build_from_and_joins(
+            source_model=source_model, source_relation=source_relation,
+            joined_paths=scope.join_paths.as_list(), bundle=bundle,
+        )
+        inner = exp.Select().select(*inner_cols).from_(from_expr)
+        inner = _apply_joins(select=inner, joins=joins)
+        if where is not None:
+            inner = inner.where(where)
+        # A host row with no associated entity (a NULL key from the LEFT JOIN) is
+        # not a distinct entity — exclude it so ``*:count`` never counts it.
+        for eexpr in entity_exprs:
+            inner = inner.where(exp.Not(this=exp.Is(this=eexpr, expression=exp.Null())))
+        for cond in self._semi_join_exists_conditions(
+            planned_query=planned_query, source_model=source_model,
+            source_relation=source_relation, bundle=bundle,
+        ):
+            inner = inner.where(cond)
+        for g in group:
+            inner = inner.group_by(g)
+
+        base_subq = exp.Subquery(
+            this=inner, alias=exp.TableAlias(this=exp.to_identifier("_base")),
+        )
+
+        def _base_col(alias: str, *, quoted: bool = True) -> exp.Column:
+            return exp.Column(
+                this=exp.to_identifier(alias, quoted=quoted),
+                table=exp.to_identifier("_base"),
+            )
+
+        # Level 2 aggregates over the picked rows per grain; ``*:count`` counts
+        # the entity rows (COUNT(*)), every other family runs over ``_v``.
+        if is_star:
+            level2_spec = AggRenderSpec(
+                name="", sql=None, aggregation=agg_slot.key.agg,
+                alias=agg_alias, model_name="_base", type=agg_slot.type,
+            )
+        else:
+            level2_spec = AggRenderSpec(
+                name=picked_alias, sql=None, aggregation=agg_slot.key.agg,
+                alias=agg_alias, model_name="_base", type=agg_slot.type,
+                column_type=spec.column_type, agg_kwargs=spec.agg_kwargs,
+                aggregation_def=spec.aggregation_def,
+            )
+        agg_expr, _ = self._build_agg(level2_spec)
+        agg_expr = _wrap_cast_for_type(agg_expr, self._slot_cast_type(agg_slot))
+        outer_cols: List[exp.Expression] = [
+            _base_col(alias).as_(exp.to_identifier(alias, quoted=True))
+            for alias in grain_aliases
+        ]
+        outer_cols.append(agg_expr.as_(exp.to_identifier(agg_alias, quoted=True)))
+        outer = exp.Select().select(*outer_cols).from_(base_subq)
+        for alias in grain_aliases:
+            outer = outer.group_by(_base_col(alias))
+        return outer
 
     def _build_windowed_grain_base(
         self, *, planned_query, plan, slots_by_id, aliases_by_slot_id,
@@ -4443,6 +4613,34 @@ class SQLGenerator:
             _add_row_slot(sid)
         return ordered
 
+    def _oriented_hop_chain(self, *, source_model, path, bundle):
+        """Resolve ``path`` tokens into ``(OrientedJoin, next_model)`` hops through
+        the shared bidirectional walker — reverse hops and edge-name tokens
+        included. Raises ``ValueError`` on a missing hop (its own message) and
+        propagates ``AmbiguousJoinPathError`` on an ambiguous one."""
+        models_by_name = {m.name: m for m in bundle.referenced_models}
+        models_by_name.setdefault(source_model.name, source_model)
+        current = source_model
+        chain = []
+        for hop in path:
+            edge = resolve_hop(
+                current=current, token=hop, models_by_name=models_by_name
+            )
+            if edge is None:
+                raise ValueError(
+                    f"Model {current.name!r} has no join to "
+                    f"{hop!r}; needed for joined path {path!r}.",
+                )
+            next_model = models_by_name.get(edge.target_model)
+            if next_model is None:
+                raise ValueError(
+                    f"Join target {edge.target_model!r} not in resolved "
+                    f"source bundle.",
+                )
+            chain.append((edge, next_model))
+            current = next_model
+        return chain
+
     def _build_from_and_joins(
         self,
         *,
@@ -4460,29 +4658,17 @@ class SQLGenerator:
             return base_from, joins
         emitted_aliases: set = {source_relation}
         for path in joined_paths:
-            current_model = source_model
             current_alias = source_relation
-            for hop_idx, hop in enumerate(path):
-                join_def = next(
-                    (j for j in current_model.joins if j.target_model == hop),
-                    None,
-                )
-                if join_def is None:
-                    raise ValueError(
-                        f"Model {current_model.name!r} has no join to "
-                        f"{hop!r}; needed for joined path {path!r}.",
-                    )
-                next_model = bundle.get_referenced_model(hop)
-                if next_model is None:
-                    raise ValueError(
-                        f"Join target {hop!r} not in resolved source bundle.",
-                    )
+            chain = self._oriented_hop_chain(
+                source_model=source_model, path=path, bundle=bundle,
+            )
+            for hop_idx, (edge, next_model) in enumerate(chain):
                 next_alias = self._join_alias(
                     root=source_relation, path=path[: hop_idx + 1],
                 )
                 if next_alias not in emitted_aliases:
                     join_on_parts = []
-                    for src_col, tgt_col in join_def.join_pairs:
+                    for src_col, tgt_col in edge.join_pairs:
                         # Join keys are physical DB columns — quote them when mixed-case via _to_ident so a case-folding
                         # backend resolves them; table qualifiers are internal aliases.
                         join_on_parts.append(exp.EQ(
@@ -4510,13 +4696,14 @@ class SQLGenerator:
                         if len(join_on_parts) > 1
                         else join_on_parts[0]
                     )
-                    # Honor the model's declared join_type (default LEFT so a measure never changes cardinality;
-                    # explicit INNER only when declared).
+                    # Root-relative join type: LEFT keeps the querying root whole
+                    # in the traversal direction, INNER is symmetric; RIGHT is
+                    # never emitted (DEV-1853 D2). The oriented edge carries the
+                    # declared type unchanged.
                     joins.append((
-                        join_expr, on_expr, join_def.join_type.value.upper(),
+                        join_expr, on_expr, edge.join_type.value.upper(),
                     ))
                     emitted_aliases.add(next_alias)
-                current_model = next_model
                 current_alias = next_alias
         return base_from, joins
 
@@ -4537,19 +4724,15 @@ class SQLGenerator:
                 leaf=leaf,
             )
         current_alias = source_relation
+        chain = self._oriented_hop_chain(
+            source_model=source_model, path=path, bundle=bundle,
+        )
         current_model = source_model
-        for hop_idx, hop in enumerate(path):
-            target_alias = self._join_alias(
+        for hop_idx, (_edge, next_model) in enumerate(chain):
+            current_alias = self._join_alias(
                 root=source_relation, path=path[: hop_idx + 1],
             )
-            current_alias = target_alias
-            target_model = bundle.get_referenced_model(hop)
-            if target_model is None:
-                raise ValueError(
-                    f"Joined dim path {path!r}: target {hop!r} missing "
-                    f"from the resolved source bundle.",
-                )
-            current_model = target_model
+            current_model = next_model
         col_def = next(
             (c for c in current_model.columns if c.name == leaf), None,
         )
@@ -5667,7 +5850,9 @@ class SQLGenerator:
     ) -> "Optional[exp.Expression]":
         """The rendered expression for a derived (``ColumnSqlKey``) column."""
         if key.path:
-            owner_model = bundle.get_referenced_model(key.path[-1])
+            owner_model = self._walk_join_path_model(
+                source_model=source_model, path=key.path, bundle=bundle,
+            )
             if owner_model is None:
                 return None
             owner_relation = "__".join(key.path)
@@ -5762,13 +5947,16 @@ class SQLGenerator:
             )
         if isinstance(time_column, ColumnSqlKey):
             if time_column.path:
-                joined_model = bundle.get_referenced_model(time_column.path[-1])
+                joined_model = self._walk_join_path_model(
+                    source_model=source_model, path=time_column.path,
+                    bundle=bundle,
+                )
                 if joined_model is None:
                     raise ValueError(
                         f"Time dimension references derived column "
-                        f"{time_column.column_name!r} on joined model "
-                        f"{time_column.path[-1]!r} which is not in the resolved "
-                        f"source bundle.",
+                        f"{time_column.column_name!r} over join path "
+                        f"{'.'.join(time_column.path)!r} which does not "
+                        f"resolve from the source bundle.",
                     )
                 # A joined derived TIME dim whose sql crosses a further join must anchor inner refs at the host-path
                 # alias, not the bare direct-join alias, or the FROM references an unjoined table.
@@ -5813,7 +6001,7 @@ class SQLGenerator:
             sql=col.sql,
             model=source_model,
             alias_path=source_relation,
-            resolve_model=bundle.get_referenced_model,
+            models_by_name={m.name: m for m in bundle.referenced_models},
             dialect=self.dialect,
             owner_path=owner_path,
             alias_resolver=self._join_alias_resolver(resolver_root),
@@ -5926,7 +6114,9 @@ class SQLGenerator:
             elif isinstance(k, ColumnSqlKey):
                 _add(k.path)
                 model = (
-                    bundle.get_referenced_model(k.path[-1]) if k.path
+                    self._walk_join_path_model(
+                        source_model=source_model, path=k.path, bundle=bundle,
+                    ) if k.path
                     else source_model
                 )
                 if model is not None:
@@ -6002,16 +6192,12 @@ class SQLGenerator:
                 )
 
     def _walk_join_path_model(self, *, source_model, path, bundle):
-        """The terminal model of a join ``path`` walked from ``source_model``,"""
-        current = source_model
-        for hop in path:
-            if not any(j.target_model == hop for j in current.joins):
-                return None
-            nxt = bundle.get_referenced_model(hop)
-            if nxt is None:
-                return None
-            current = nxt
-        return current
+        """The terminal model of a join ``path`` walked from ``source_model``
+        via the shared walker (tokens may be edge names or reverse hops)."""
+        return terminal_model(
+            root=source_model, path=tuple(path),
+            models_by_name={m.name: m for m in bundle.referenced_models},
+        )
 
     def _build_agg_render_spec_from_planned(  # NOSONAR(S3776) — sequential isinstance dispatch over StarKey / ColumnKey / ColumnSqlKey with helper extractions for aggregation-def lookup, kwarg path validation, and explicit-time-arg resolution. Further splitting would scatter the per-source-kind contract.
         self,

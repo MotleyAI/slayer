@@ -16,8 +16,8 @@ from collections.abc import Callable
 
 # Per-entity current version. Bump independently when an entity's schema changes.
 CURRENT_VERSIONS: dict[str, int] = {
-    "SlayerModel": 9,
-    "SlayerQuery": 3,
+    "SlayerModel": 10,
+    "SlayerQuery": 4,
     "DatasourceConfig": 2,
     "Memory": 2,
     "Embedding": 1,
@@ -50,6 +50,25 @@ def register_migration(
         return fn
 
     return deco
+
+
+@register_migration("SlayerModel", 9)
+def _model_v9_to_v10(data: dict) -> dict:
+    """v10: per-doc no-op; the cross-document exact-inverse join dedup runs in
+    the storage load path (``_migrate_and_refine_on_load``)."""
+    return data
+
+
+@register_migration(entity="SlayerQuery", source_version=3)
+def _query_v3_to_v4(data: dict) -> dict:
+    """v4: retire ``strict`` — ``strict: true`` → ``to_many_handling: "error"``;
+    ``false``/absent drops to the ``"broadcast"`` default."""
+    if "strict" not in data:
+        return data
+    strict = data.pop("strict")
+    if strict:
+        data.setdefault("to_many_handling", "error")
+    return data
 
 
 def migrate(entity: str, data: Any) -> Any:
@@ -85,13 +104,13 @@ def migrate(entity: str, data: Any) -> Any:
 # module to avoid a circular import (the v2 module imports BUILTIN_AGGREGATIONS
 # from slayer.core.enums and must register against the register_migration
 # decorator defined above).
-from slayer.storage import v2_migration  # noqa: E402, F401
-from slayer.storage import v2_memory_migration  # noqa: E402, F401
-from slayer.storage import v2_datasource_migration  # noqa: E402, F401
-from slayer.storage import v3_migration  # noqa: E402, F401
-from slayer.storage import v4_migration  # noqa: E402, F401
-from slayer.storage import v5_migration  # noqa: E402, F401
-from slayer.storage import v6_migration  # noqa: E402, F401
-from slayer.storage import v7_migration  # noqa: E402, F401
-from slayer.storage import v8_migration  # noqa: E402, F401
-from slayer.storage import v9_migration  # noqa: E402, F401
+from slayer.storage import v2_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import v2_memory_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import v2_datasource_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import v3_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import v4_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import v5_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import v6_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import v7_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import v8_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import v9_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here

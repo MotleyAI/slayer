@@ -10,8 +10,64 @@ place. Behaviour lives in `openspec/specs/`; decision history lives in
 
 ## 2. Building blocks
 
-See the `landscape` view in [views.c4](views.c4) (model in
-[model/slayer.c4](model/slayer.c4)). Nine nodes: precise `core`, `sql`,
+The `landscape` view ([views.c4](views.c4), model in
+[model/slayer.c4](model/slayer.c4)):
+
+<!-- likec4:landscape -->
+```mermaid
+flowchart TD
+  %% landscape: SLayer landscape
+  core["Core domain models"]
+  sql["SQL generation"]
+  engine["Query engine"]
+  storage["Storage backends"]
+  importers("Importers")
+  search("Search & embeddings")
+  memories("Agent memories")
+  protocols("BI wire protocols")
+  surfaces("User-facing surfaces")
+  core -.-> engine
+  core -.-> sql
+  core -.-> storage
+  engine --> core
+  engine --> memories
+  engine --> search
+  engine --> sql
+  engine --> storage
+  importers --> core
+  importers --> engine
+  importers --> sql
+  memories --> core
+  memories --> engine
+  memories --> search
+  memories --> storage
+  protocols --> core
+  protocols --> engine
+  protocols --> storage
+  search --> core
+  search --> engine
+  search --> memories
+  search --> storage
+  sql --> core
+  sql -.-> engine
+  storage --> core
+  storage --> engine
+  storage --> memories
+  storage --> search
+  storage --> sql
+  surfaces --> core
+  surfaces --> engine
+  surfaces --> importers
+  surfaces --> memories
+  surfaces --> protocols
+  surfaces --> search
+  surfaces --> sql
+  surfaces --> storage
+```
+*Dashed arrows: legacy edges slated to die.*
+<!-- /likec4:landscape -->
+
+Nine nodes: precise `core`, `sql`,
 `engine`, `storage` around the query pipeline; virtual buckets `importers`,
 `search`, `memories`, `protocols`, `surfaces` for the rest. Package claims,
 contract baselines, and spec mapping are in [index.yaml](index.yaml).
@@ -76,6 +132,10 @@ npx -y likec4@1.47.0 validate architecture   # pinned; run from the repo root
 poetry run basedpyright                      # gate = no new errors vs baseline
 ```
 
+`arch_check`'s `diagrams-fresh` goes red when a mapped doc's embedded mermaid
+drifts from the model or views — the one fix is `poetry run python
+tools/arch_diagrams.py`.
+
 Every numbered principle item in an arc42 file carries at least one
 square-bracketed status tag (all three kinds validated by arch_check, per
 clause where clauses differ):
@@ -90,15 +150,22 @@ clause where clauses differ):
 - a `target:` tag naming a `DEV-<number>` issue — envisioned, not yet true;
   that issue flips the tag in its own PR.
 
-## 5. Model authoring convention
+## 5. Model & diagram authoring convention
 
-`likec4 validate` owns syntax; `arch_check` additionally parses `model/*.c4`
-under this constrained convention:
+`likec4 validate` owns syntax; `tools/arch_diagrams.py` is the one parser of the
+constrained convention `arch_check` enforces (`model-identity`, `model-truth`,
+`diagrams-fresh`):
 
 - every element declared as `<id> = <kind> '<title>'`, one per line (children
   nest inside the parent's `{ }` body);
 - all relations flat at model top level, one `<src> -> <dst>` per line, never
-  inside element bodies, never `this`/`it`; `#legacy` on the same line.
+  inside element bodies, never `this`/`it`; `#legacy` on the same line;
+- `views.c4` includes support only `include *`, listed top-level ids, and the
+  focus predicates `x -> *` / `* -> x`; anything else fails loudly;
+- each mapped doc (the `diagrams:` block in [index.yaml](index.yaml)) carries a
+  `<!-- likec4:<view_id> -->` … `<!-- /likec4:<view_id> -->` marker pair placed
+  once by hand, and `poetry run python tools/arch_diagrams.py` fills the mermaid
+  between the markers.
 
 ## 6. Rationale
 

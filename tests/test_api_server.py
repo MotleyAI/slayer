@@ -441,8 +441,8 @@ class TestQueryBackedModelsAPI:
 class TestQueryListBody:
     """POST /query accepts a multi-stage DAG via ``{"queries": [...]}``.
 
-    Mirrors ``engine.execute(query=[...])`` and the MCP ``query_nested``
-    tool: earlier entries are named sub-queries, the last entry is the
+    Mirrors ``engine.execute(query=[...])`` and the MCP ``query`` tool's
+    list form: earlier entries are named sub-queries, the last entry is the
     DAG root, order doesn't matter (engine auto-sorts), cycles and
     self-references are rejected with 400.
     """

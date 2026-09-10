@@ -257,8 +257,21 @@ class TrailingWindowProducerKernel(BaseModel):
     src_filter_rewrites: List["SrcFilterRewrite"] = Field(default_factory=list)
 
 
+class AssociationProducerKernel(BaseModel):
+    """A distinct-entity association producer (DEV-1841): level 1 groups by
+    (grain × the root's ``entity_keys``) picking each input once per entity;
+    level 2 aggregates over the picked rows per grain. ``entity_keys`` are the
+    root's unique-key columns in the producer's coordinates."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    kind: Literal["association"] = "association"
+    entity_keys: List[ValueKey] = Field(default_factory=list)
+
+
 ProducerKernel = Union[
     PlainProducerKernel, RankedProducerKernel, TrailingWindowProducerKernel,
+    AssociationProducerKernel,
 ]
 
 
@@ -282,6 +295,11 @@ class RegroupAttachPlan(BaseModel):
     dropped_filter_warnings: List[Any] = Field(default_factory=list)
     broadcast_measure: Optional[str] = None
     broadcast_dimensions: List[Tuple[str, str]] = Field(default_factory=list)
+    # Associate-mode counterparts (DEV-1841): the aggregate resolved by
+    # distinct-entity association, and the unattributable dimensions its cells
+    # are not additive across (empty for an explicit ``partition_by=`` grain).
+    associated_measure: Optional[str] = None
+    associated_dimensions: List[str] = Field(default_factory=list)
 
 
 class PlannedQuery(BaseModel):

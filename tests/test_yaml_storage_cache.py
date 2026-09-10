@@ -535,10 +535,10 @@ async def test_datasource_unresolved_var_propagates(storage: YAMLStorage) -> Non
         await storage.get_datasource("pg")
 
 
-# ---- smoke through the JoinSyncStorage wrapper ----------------------------
+# ---- smoke through the resolve_storage factory path -----------------------
 
 
-async def test_wrapped_storage_hands_out_independent_copies() -> None:
+async def test_factory_storage_hands_out_independent_copies() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         wrapped = resolve_storage(tmpdir)
         await wrapped.save_model(_model())

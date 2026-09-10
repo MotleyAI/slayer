@@ -17,7 +17,6 @@ catches anything missed here.
 """
 from __future__ import annotations
 
-from collections import deque
 from typing import TYPE_CHECKING
 
 import sqlglot
@@ -81,7 +80,7 @@ def _column_dependencies(
     deps: list[tuple[str, str]] = []
     for _node, quals, leaf in _reference_sites(parsed, root_ids):
         target = resolve_ref_target(
-            qualifiers=quals, source_model=host, resolve_model=reachable.get,
+            qualifiers=quals, source_model=host, models_by_name=reachable,
         )
         if target is None:
             continue
@@ -164,29 +163,27 @@ async def _prefetch_reachable_models(
     model: SlayerModel,
     storage: "StorageBackend",
 ) -> dict[str, SlayerModel]:
-    """BFS over ``model.joins`` (transitively), pulling each target model
-    in the same ``data_source``. Returns ``{model_name: model}`` including
-    ``model`` itself. Unresolvable target names (model not persisted yet)
-    are silently omitted — save-time is best-effort.
+    """The datasource's models keyed by name, including ``model`` — the
+    bidirectional closure is the connected component (DEV-1853), so refs may
+    cross edges declared on either side. Unlistable datasources and
+    unloadable peers are silently omitted — save-time is best-effort.
     """
     out: dict[str, SlayerModel] = {model.name: model}
-    queue: deque[SlayerModel] = deque([model])
-    while queue:
-        current = queue.popleft()
-        for join in current.joins:
-            target_name = join.target_model
-            if target_name in out:
-                continue
-            try:
-                target = await storage.get_model(
-                    target_name, data_source=model.data_source,
-                )
-            except Exception:
-                target = None
-            if target is None:
-                continue
-            out[target_name] = target
-            queue.append(target)
+    try:
+        names = await storage.list_models(model.data_source)
+    except Exception:
+        names = [j.target_model for j in model.joins]
+    for name in names:
+        if name in out:
+            continue
+        try:
+            target = await storage.get_model(
+                name, data_source=model.data_source,
+            )
+        except Exception:
+            target = None
+        if target is not None:
+            out[name] = target
     return out
 
 

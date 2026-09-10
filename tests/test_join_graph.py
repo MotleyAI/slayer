@@ -1,15 +1,14 @@
-"""Unit tests for the pure ``JoinGraph`` routing primitive (DEV-1626).
+"""Unit tests for the pure ``JoinGraph`` routing primitive (DEV-1626/DEV-1853).
 
-``JoinGraph`` builds an in-memory adjacency from a set of models' *stored
-outgoing* joins (directed edges). INNER joins are kept symmetric by the
-storage layer (``slayer/storage/join_sync.py``) — the same invariant the
-the query-time join walk in ``binding.py`` relies on — so a symmetric INNER pair
-shows up here as two directed edges and is therefore traversable both ways.
-The primitive itself is join-type-agnostic: it just reads outgoing joins.
+``JoinGraph`` builds an in-memory undirected multigraph from a set of models'
+declared joins: every declared edge is traversable in both directions, and
+parallel edges between the same pair are distinct routes. The primitive is
+join-type-agnostic: it just reads declared joins.
 
-Reachability is directed; ``shortest_path`` returns the hop-name sequence
-(excluding the root), picking the lexicographically-smallest sequence among
-all minimal-distance paths so diamond graphs resolve deterministically.
+``shortest_path`` returns the executable hop-token sequence (excluding the
+root), picking the lexicographically-smallest sequence among all
+minimal-distance paths so diamond graphs resolve deterministically; a hop
+across unnamed parallel edges is not executable.
 """
 
 from __future__ import annotations
@@ -38,12 +37,13 @@ def _inner(target: str) -> ModelJoin:
 
 
 class TestReachability:
-    def test_left_join_is_directed(self) -> None:
-        # orders -> customers (LEFT). Reachable forward only.
+    def test_left_join_reaches_both_ways(self) -> None:
+        # DEV-1853 divergences.md class (d): a LEFT edge, declared once, is
+        # reachable from either endpoint (was forward-only).
         models = [_m("orders", [_left("customers")]), _m("customers")]
         g = JoinGraph.build_from_models(models)
         assert g.reachable_from("orders") == {"orders", "customers"}
-        assert g.reachable_from("customers") == {"customers"}
+        assert g.reachable_from("customers") == {"customers", "orders"}
 
     def test_transitive_reachability(self) -> None:
         models = [
@@ -54,11 +54,11 @@ class TestReachability:
         g = JoinGraph.build_from_models(models)
         assert g.reachable_from("orders") == {"orders", "customers", "regions"}
 
-    def test_symmetric_inner_reachable_both_ways(self) -> None:
-        # Storage keeps INNER symmetric: both directed edges exist.
+    def test_single_inner_edge_reachable_both_ways(self) -> None:
+        # One declared INNER edge routes both directions (no mirror needed).
         models = [
             _m("orders", [_inner("order_items")]),
-            _m("order_items", [_inner("orders")]),
+            _m("order_items"),
         ]
         g = JoinGraph.build_from_models(models)
         assert g.reachable_from("orders") == {"orders", "order_items"}
@@ -82,8 +82,19 @@ class TestShortestPath:
         assert g.shortest_path("orders", "orders") == []
 
     def test_unreachable_returns_none(self) -> None:
-        g = JoinGraph.build_from_models([_m("orders", [_left("customers")]), _m("customers")])
-        assert g.shortest_path("customers", "orders") is None
+        # A disconnected component stays unreachable (reverse-only no longer
+        # counts as disconnected — DEV-1853).
+        g = JoinGraph.build_from_models(
+            [_m("orders", [_left("customers")]), _m("customers"), _m("logs")]
+        )
+        assert g.shortest_path("logs", "orders") is None
+
+    def test_unnamed_parallel_edges_are_not_executable(self) -> None:
+        # Two unnamed edges between a pair: routes exist but no executable
+        # token disambiguates them → shortest_path reports unreachable.
+        models = [_m("orders", [_left("customers"), _left("customers")]), _m("customers")]
+        g = JoinGraph.build_from_models(models)
+        assert g.shortest_path("orders", "customers") is None
 
     def test_single_hop(self) -> None:
         g = JoinGraph.build_from_models([_m("orders", [_left("customers")]), _m("customers")])
@@ -121,10 +132,11 @@ class TestShortestPath:
         g = JoinGraph.build_from_models(models)
         assert g.shortest_path("root", "zzz") == ["zzz"]
 
-    def test_symmetric_inner_reverse_path(self) -> None:
+    def test_inner_reverse_path_over_single_edge(self) -> None:
+        # DEV-1853: the reverse direction routes over the one declared edge.
         models = [
             _m("orders", [_inner("order_items")]),
-            _m("order_items", [_inner("orders")]),
+            _m("order_items"),
         ]
         g = JoinGraph.build_from_models(models)
         assert g.shortest_path("order_items", "orders") == ["orders"]

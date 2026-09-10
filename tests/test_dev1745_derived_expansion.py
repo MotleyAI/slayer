@@ -89,18 +89,14 @@ def _orders() -> SlayerModel:
 _MODELS = {"orders": _orders(), "customers": _customers(), "regions": _regions()}
 
 
-def _resolve(name: str):
-    return _MODELS.get(name)
-
-
 def _expand(sql: str) -> str:
-    # The SAME instance ``_resolve`` hands back — the reference resolver walks
+    # The SAME ``_MODELS`` instances — the reference resolver walks
     # ``model``'s joins by identity, so passing a second, equal-but-distinct
-    # ``_orders()`` would diverge the moment the root path resolves through
-    # ``resolve_model``. ``owner_path=()`` (the default) roots at ``orders``.
+    # ``_orders()`` would diverge the moment the root path resolves.
+    # ``owner_path=()`` (the default) roots at ``orders``.
     out = expand_derived_refs_sync(
         sql=sql, model=_MODELS["orders"], alias_path="orders",
-        resolve_model=_resolve, dialect="postgres",
+        models_by_name=_MODELS, dialect="postgres",
     )
     assert out is not None, f"expansion returned None for {sql!r}"
     return out
@@ -238,8 +234,7 @@ class TestDerivedOfDerivedEmission:
 
 @pytest.mark.asyncio
 async def test_derived_of_derived_executes_on_duckdb() -> None:
-    import duckdb
-
+    duckdb = pytest.importorskip("duckdb")
     sql = await _engine_generate(
         query=SlayerQuery(
             source_model="orders",

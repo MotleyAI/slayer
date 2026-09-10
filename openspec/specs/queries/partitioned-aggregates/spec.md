@@ -228,15 +228,30 @@ An aggregation's own filter SHALL restrict only the rows aggregated by its produ
 - THEN the row count and every companion value are unchanged, and only the filtered measure's value reflects the filter
 
 ### Requirement: Partition keys are attributable from the aggregate's root
-Every explicit `partition_by=` key SHALL be attributable from the aggregate's root — expressible over join hops that are provably many-to-one. An unattributable partition key is a hard error in both lenient and strict mode, naming the key, the failing hop, and the remedy; the producer MUST never join through an unproven or fanning hop to express a declared grain.
+Under `to_many_handling: "broadcast"` and `"error"`, every explicit `partition_by=`
+key SHALL be attributable from the aggregate's root — expressible over join hops that
+are provably many-to-one. An unattributable partition key is a hard error in those
+modes, naming the key, the failing hop, and the remedy; the producer MUST never join
+through an unproven or fanning hop to express a declared grain. Under `"associate"`,
+an explicit partition key not attributable from the root is legal: the aggregate
+attributes at the declared grain by distinct-entity association (per
+`queries/attribution-modes`), without warning.
 
 #### Scenario: Joined partition key over a provably safe hop works
-- WHEN a local aggregate declares `partition_by=` naming a dimension reached over a provably many-to-one join
-- THEN the producer computes at that grain with correct executed values
+- **WHEN** a local aggregate declares `partition_by=` naming a dimension reached over a
+  provably many-to-one join
+- **THEN** the producer computes at that grain with correct executed values
 
 #### Scenario: Partition key over an unproven hop errors
-- WHEN an aggregate declares `partition_by=` naming a dimension reachable only across a join with unproven arity
-- THEN the query fails with a clear error naming the key and the remedy, never silently double-counting inside the producer
+- **WHEN** an aggregate declares `partition_by=` naming a dimension reachable only
+  across a join with unproven arity, under `"broadcast"` or `"error"` mode
+- **THEN** the query fails with a clear error naming the key and the remedy, never
+  silently double-counting inside the producer
+
+#### Scenario: Unattributable partition key attributes under associate
+- **WHEN** the same aggregate runs under `to_many_handling: "associate"`
+- **THEN** it computes at the declared grain over distinct associated entities with
+  correct executed values and no warning
 
 ### Requirement: Combined-consumer partition keys are query dimensions
 Every explicit partition key of a partitioned aggregate consumed in a combined position — as a non-dimension measure, inside an arithmetic / scalar-call composite or transform used as a measure, as a raw ORDER BY target, or as a filter-only reference — SHALL be a query dimension or a time dimension's source column (rewritten to its truncated bucket), for local and cross-model aggregates alike. A violation SHALL fail at plan time with a clear error naming the offending key and the remedy, never with an internal join-back failure. A partitioned aggregate consumed only inside computed dimensions keeps the finer-grain exemption (its partition set declares an internal producer grain). A filter or ORDER BY reference to a computed dimension's own aggregate is a row-scope reference, legal at any partition grain: such a filter restricts the aggregated population per base row at the partition grain, and MAY therefore change surviving groups' aggregate values — unlike a combined-scope partitioned-aggregate filter, which only prunes result rows.

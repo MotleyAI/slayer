@@ -879,3 +879,23 @@ async def test_e2e_time_arg_join_dedup_with_dimension() -> None:
         f"expected one customers join per scope (host base + isolation "
         f"CTE), got {len(joins)}:\n{resp.sql}"
     )
+
+
+class TestRankingKeyFullPathValidation:
+    def test_invalid_leaf_past_first_hop_is_rejected_at_plan_time(self) -> None:
+        """A rerooted ranking key whose first hop resolves but whose leaf is
+        absent on the terminal fails at plan time, not in SQL generation."""
+        customers = _u_customers()
+        bundle = ResolvedSourceBundle(
+            source_model=customers,
+            referenced_models=[customers, _u_regions()],
+        )
+        key = AggregateKey(
+            source=ColumnKey(path=("customers",), leaf="amount"), agg="last",
+            args=(ColumnKey(path=("customers", "regions"), leaf="nonexistent"),),
+        )
+        with pytest.raises(ValueError, match="not resolvable"):
+            resolve_ranking_time_key(
+                key=key, root_model=customers, bundle=bundle,
+                target_path=("customers",),
+            )

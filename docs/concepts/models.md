@@ -317,6 +317,26 @@ joins:
 
 Joins enable **cross-model measures** — querying a measure from a joined model alongside the main model's data. See [Cross-Model Measures](queries.md#cross-model-measures). During [auto-ingestion](ingestion.md), joins are generated automatically from foreign-key relationships; multi-hop paths are resolved at query time by walking each intermediate model's own joins. A join targeting the model itself is rejected at validation — joins are addressed by model name, so define the second role as a separate model over the same table (or a view) and join to that.
 
+### Bidirectional traversal
+
+A declared join is a **symmetric edge**: it is traversable from either endpoint, so with only `orders → customers` declared, a query rooted at `customers` can still reference `orders.status` — traversal swaps the join pairs and inverts the cardinality label (`many_to_one` ↔ `one_to_many`). Which model stores the declaration never changes any query answer, so declare each relationship **once**; declaring the exact inverse on the counterpart model is rejected at save time (stored mirror pairs from older versions are deduplicated automatically on load), while a **named** reverse declaration is not an exact inverse — it saves as a disambiguating parallel edge and dedup keeps both halves. The join type is root-relative: a LEFT edge keeps the querying root's rows whole from either side, an INNER edge restricts to matched pairs from either side, and a RIGHT join is never emitted.
+
+When two or more edges connect the same pair of models (e.g. billing and shipping FKs onto `customers`), a bare model-name hop is ambiguous and **fails closed** in both directions with an error naming the candidate edges. Give each edge a `name` and use it as the path segment instead — names follow model-name rules, work from either endpoint, and keep the path as typed in result keys:
+
+```yaml
+joins:
+  - target_model: customers
+    join_pairs: [["billing_customer_id", "id"]]
+    cardinality: many_to_one
+    name: billing_customer
+  - target_model: customers
+    join_pairs: [["shipping_customer_id", "id"]]
+    cardinality: many_to_one
+    name: shipping_customer
+```
+
+Now `billing_customer.name` selects the billing customer's name (result key `orders.billing_customer.name`), and from a `customers`-rooted query `billing_customer.amount:sum` traverses the same edge in reverse. Validation rejects an edge name that collides with a model name or another edge name on either endpoint, and warns when unnamed parallel edges are left undisambiguatable.
+
 ### Join cardinality
 
 A join optionally records its **arity**, read source→target:
@@ -328,7 +348,7 @@ joins:
     cardinality: many_to_one   # many orders → one customer
 ```
 
-`cardinality` is one of `one_to_one`, `one_to_many`, `many_to_one`, `many_to_many` (omit it when undetermined). It is **orthogonal to the join type** — joins stay LEFT regardless — but it is load-bearing for [cross-model measures](queries.md#cross-model-measures): a dimension reached over a hop that is provably to-one (a primary key on the far side, or a declared `one_to_one`/`many_to_one`) gets the **exact** per-group value, while an unproven hop makes the measure **broadcast** across that dimension with a response warning. Declaring cardinality (or primary keys) is how you make such dimensions exact.
+`cardinality` is one of `one_to_one`, `one_to_many`, `many_to_one`, `many_to_many` (omit it when undetermined). It is **orthogonal to the join type** — joins stay LEFT regardless — but it is load-bearing for [cross-model measures](queries.md#cross-model-measures): a dimension reached over a hop that is provably to-one (a primary key on the far side, or a declared `one_to_one`/`many_to_one`) gets the **exact** per-group value, while an unproven hop makes the measure **broadcast** across that dimension with a response warning. Declaring cardinality (or primary keys) is how you make such dimensions exact. Proof is **per orientation**: a declared `customers → orders (one_to_many)` edge traversed in reverse is a provable `many_to_one` hop, while inverting a to-one hop yields a fan-out orientation that broadcasts.
 
 Auto-ingestion fills it structurally from key constraints: an FK join defaults to `many_to_one`, upgrading to `one_to_one` when the source key is itself unique. To infer it from the actual data instead, run:
 
@@ -341,7 +361,7 @@ Detection full-scans each side of the join and reports the observed arity, a `ve
 
 A side with no non-null key rows reports `no_evidence` and detects nothing: an empty scan would trivially look unique, and that is not weak evidence — it is none. Re-run once the table has data. A join whose scan fails outright reports `scan_failed` and does not stop the rest of the report. Full verdict table: [CLI reference](../reference/cli.md#slayer-validate-models).
 
-`validate-models` also prints a **Join safety** section flagging every join that is neither declared `many_to_one`/`one_to_one` nor structurally proven (via a primary/unique key on the target side) — cross-model measures crossing such a join [broadcast](queries.md#cross-model-measures) instead of computing per-group values, so each finding names the remedy.
+`validate-models` also prints a **Join safety** section with one finding per declared edge, reporting the provability of **both orientations**; an edge neither declared `many_to_one`/`one_to_one` nor structurally proven (via a primary/unique key on the target side) is flagged as a warning — cross-model measures crossing such a join [broadcast](queries.md#cross-model-measures) instead of computing per-group values, so each finding names the remedy.
 
 ### Path-based table aliases
 

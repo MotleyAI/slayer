@@ -203,8 +203,10 @@ def _expand_select_star(
     proj_exprs: list[exp.Expression], table: "FacadeTable",
 ) -> list[exp.Expression]:
     """Replace each top-level ``exp.Star`` with one column ref per non-hidden
-    column on ``table``, preserving the order of any non-Star projections."""
-    column_names = [d.name for d in table.dimensions]
+    column on ``table``, preserving the order of any non-Star projections.
+    Only row-preserving dims expand — a fan-out join path would multiply the
+    browse-mode row grain (DEV-1853); those dims stay individually addressable."""
+    column_names = [d.name for d in table.dimensions if d.row_preserving]
     out: list[exp.Expression] = []
     for expr in proj_exprs:
         if isinstance(expr, exp.Star):

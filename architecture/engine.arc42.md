@@ -9,7 +9,32 @@ implements is `semantics.arc42.md`.
 
 ## 2. Building blocks
 
-See the `query_pipeline` view in [views.c4](views.c4). Stages:
+The `query_pipeline` view ([views.c4](views.c4)):
+
+<!-- likec4:query_pipeline -->
+```mermaid
+flowchart TD
+  %% query_pipeline: Query pipeline
+  core["Core domain models"]
+  engine["Query engine"]
+  sql["SQL generation"]
+  storage["Storage backends"]
+  core -.-> engine
+  core -.-> sql
+  core -.-> storage
+  engine --> core
+  engine --> sql
+  engine --> storage
+  sql --> core
+  sql -.-> engine
+  storage --> core
+  storage --> engine
+  storage --> sql
+```
+*Dashed arrows: legacy edges slated to die.*
+<!-- /likec4:query_pipeline -->
+
+Stages:
 `normalization.py` → `syntax.py` (parse) → `binding.py` → `planning.py` /
 `stage_planner.py` (plan) → `planned.py` (the typed hand-off to `sql`), fed by
 `source_bundle.py`; `query_engine.py` orchestrates.

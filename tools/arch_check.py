@@ -3,12 +3,26 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
 import re
 import sys
 import tomllib
 from pathlib import Path
 
 import yaml
+
+
+def _load_arch_diagrams():
+    """Load the sibling generator/parser module (single parser of the §5 convention)."""
+    path = Path(__file__).resolve().parent / "arch_diagrams.py"
+    spec = importlib.util.spec_from_file_location("arch_diagrams", path)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+arch_diagrams = _load_arch_diagrams()
 
 CHECK_IDS = frozenset(
     {
@@ -21,11 +35,10 @@ CHECK_IDS = frozenset(
         "baseline-ratchet",
         "model-truth",
         "enforced-tags",
+        "diagrams-fresh",
     }
 )
 
-_ELEMENT_RE = re.compile(r"^\s*(\w+)\s*=\s*(\w+)\s+'[^']*'")
-_RELATION_RE = re.compile(r"^(\w+)\s*->\s*(\w+)(?:\s+#legacy)?$")
 _TAG_RE = re.compile(r"\[(enforced|review|target)\b([^\]]*)\]")
 _TAG_START_RE = re.compile(r"\[(enforced|review|target)\b")
 _TARGET_ID_RE = re.compile(r"DEV-\d+")
@@ -76,36 +89,6 @@ def _top_level_units(root: Path, root_package: str) -> set[str]:
         elif child.is_file() and child.suffix == ".py" and child.name != _INIT_PY:
             units.add(f"{root_package}.{child.stem}")
     return units
-
-
-def _model_files(root: Path) -> list[Path]:
-    return sorted((root / "architecture" / "model").glob("*.c4"))
-
-
-def _parse_elements(root: Path) -> set[str]:
-    ids: set[str] = set()
-    for path in _model_files(root):
-        for line in path.read_text(encoding="utf-8").splitlines():
-            m = _ELEMENT_RE.match(line)
-            if m:
-                ids.add(m.group(1))
-    return ids
-
-
-def _parse_relations(root: Path) -> tuple[set[tuple[str, str]], list[str]]:
-    """All `src -> dst` relation lines in model/*.c4, plus malformed-line findings."""
-    relations: set[tuple[str, str]] = set()
-    findings: list[str] = []
-    for path in _model_files(root):
-        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            if "->" not in line or line.lstrip().startswith("//"):
-                continue
-            m = _RELATION_RE.match(line.strip())
-            if m:
-                relations.add((m.group(1), m.group(2)))
-            else:
-                findings.append(f"model-truth: unparseable relation line {path.name}:{lineno}: {line.strip()}")
-    return relations, findings
 
 
 def _param_names(args: ast.arguments) -> set[str]:
@@ -318,9 +301,8 @@ def _check_arc42(root: Path, index: dict) -> list[str]:
     return findings
 
 
-def _check_model_identity(root: Path, nodes: dict) -> list[str]:
+def _check_model_identity(nodes: dict, elements: set[str]) -> list[str]:
     findings: list[str] = []
-    elements = _parse_elements(root)
     children = {child for spec in nodes.values() for child in spec.get("children", [])}
     for node_id in nodes:
         if node_id not in elements:
@@ -383,10 +365,12 @@ def _check_baselines(index: dict, importlinter: dict) -> list[str]:
     return findings
 
 
-def _check_model_truth(root: Path, root_package: str, claims: dict[str, list[str]]) -> list[str]:
+def _check_model_truth(
+    root: Path, root_package: str, claims: dict[str, list[str]], modeled: set[tuple[str, str]]
+) -> list[str]:
     top_to_node = {unit.split(".", 1)[1]: node for node, units in claims.items() for unit in units}
     measured = measure_runtime_node_edges(root, root_package, top_to_node)
-    modeled, findings = _parse_relations(root)
+    findings: list[str] = []
     for src, dst in sorted(measured - modeled):
         findings.append(f"model-truth: measured runtime edge {src} -> {dst} is missing from the model")
     for src, dst in sorted(modeled - measured):
@@ -487,15 +471,20 @@ def run_checks(root: Path) -> list[str]:
     root_package = importlinter.get("root_package", "slayer")
     nodes = index.get("nodes", {})
     claims = _node_claims(nodes)
+    model = arch_diagrams.parse_model(root)
+    views = arch_diagrams.parse_views(root=root, model=model)
+    elements = {e.id for e in model.elements}
+    modeled = {(r.src, r.dst) for r in model.relations}
     findings: list[str] = []
     findings += _check_claims(root, root_package, claims)
     findings += _check_contracts(index, importlinter)
     findings += _check_arc42(root, index)
-    findings += _check_model_identity(root, nodes)
+    findings += _check_model_identity(nodes=nodes, elements=elements)
     findings += _check_spec_mapping(root, index)
     findings += _check_baselines(index, importlinter)
-    findings += _check_model_truth(root, root_package, claims)
+    findings += _check_model_truth(root=root, root_package=root_package, claims=claims, modeled=modeled)
     findings += _check_enforced_tags(root, importlinter)
+    findings += arch_diagrams.check_diagrams_fresh(root=root, model=model, views=views)
     return findings
 
 

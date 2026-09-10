@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.errors import AmbiguousJoinPathError
 from slayer.engine.stage_planner import plan_query
 
 from tests._dev1840_fixtures import (
@@ -67,11 +68,18 @@ class TestGraphExecutes:
         assert resp.warnings in (None, [])
 
     async def test_ambiguity_graph_executes(self, exec_backend_amb):
+        """The healthy leg (tickets→reviews) executes; the ambiguous pair
+        fails closed. DEV-1853 divergences.md class (d)."""
         _, engine = exec_backend_amb
         resp = await engine.execute(
-            tq(measures=[ModelMeasure(formula="agents.score:sum", name="sm")]),
+            tq(measures=[ModelMeasure(formula="reviews.stars:sum", name="rv")]),
         )
-        assert float(resp.data[0]["tickets.sm"]) == pytest.approx(60.0)
+        assert float(resp.data[0]["tickets.rv"]) == pytest.approx(11.0)
+        ambiguous = tq(
+            measures=[ModelMeasure(formula="agents.score:sum", name="sm")],
+        )
+        with pytest.raises(AmbiguousJoinPathError):
+            await engine.execute(ambiguous)
 
 
 def test_planner_entry_point_builds_the_producer() -> None:

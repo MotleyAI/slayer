@@ -10,7 +10,32 @@ plans are made — the grandfathered `sql → engine` edges die with the
 
 ## 2. Building blocks
 
-See the `query_pipeline` view in [views.c4](views.c4). Children: `render`
+The `query_pipeline` view ([views.c4](views.c4)):
+
+<!-- likec4:query_pipeline -->
+```mermaid
+flowchart TD
+  %% query_pipeline: Query pipeline
+  core["Core domain models"]
+  engine["Query engine"]
+  sql["SQL generation"]
+  storage["Storage backends"]
+  core -.-> engine
+  core -.-> sql
+  core -.-> storage
+  engine --> core
+  engine --> sql
+  engine --> storage
+  sql --> core
+  sql -.-> engine
+  storage --> core
+  storage --> engine
+  storage --> sql
+```
+*Dashed arrows: legacy edges slated to die.*
+<!-- /likec4:query_pipeline -->
+
+Children: `render`
 (value keys, aggregates, order terms, joins, node assembly) and `dialects`.
 
 ## 3. Principles

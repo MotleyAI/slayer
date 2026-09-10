@@ -73,7 +73,7 @@ The body accepts the same fields as a `SlayerQuery`, plus `dry_run`, `explain`, 
 
 - `whole_periods_only` (bool) — snap date filters to bucket boundaries.
 - `distinct_dimension_values` (bool, default `true`) — set `false` to emit raw rows (no top-level `GROUP BY`); rejects any measure reference in `measures` / `filters` / `order`.
-- `strict` (bool, default `false`) — error instead of warn when a [cross-model measure broadcasts](../concepts/queries.md#cross-model-measures) or a filter is excluded from its producer. Rejected on run-by-name bodies (`{"name": ...}`) — declare it on the stored query instead.
+- `to_many_handling` (str, default `"broadcast"`) — how an aggregate resolves query dimensions [unattributable from its root](../concepts/queries.md#cross-model-measures): `broadcast` (repeat the safe-grain value and warn), `associate` (per-cell value over the distinct associated entities), or `error` (refuse). Rejected on run-by-name bodies (`{"name": ...}`) — declare it on the stored query instead; the retired `strict` flag is rejected with this remedy.
 
 Multi-stage DAG bodies use `{"queries": [...]}` — each stage in the list honours its own `distinct_dimension_values`.
 

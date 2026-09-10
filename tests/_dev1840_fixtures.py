@@ -7,9 +7,11 @@ seeded into SQLite AND DuckDB).
 
 Join design (the point of this graph)
 -------------------------------------
-``orders → customers``   safe: customers.id PK. NO reverse edge stored — the
-                         canonical inversion shape (``declare_reverse=True``
-                         adds the 1:N reverse edge, as DEV-1836 had).
+``orders → customers``   safe: customers.id PK. One stored edge — the
+                         canonical inversion shape. ``declare_reverse=True``
+                         moves the declaration to the customers side
+                         (``customers → orders``, 1:N) — mirror-parity
+                         variant, same single edge (DEV-1853).
 ``orders → stores``      safe: composite PK (co, no) — composite inline pin
                          AND, for a stores-rooted producer, a composite
                          inverted correlation.
@@ -20,11 +22,10 @@ Join design (the point of this graph)
                          classification probe.
 ``customers.last_status``  (reverse variant only) Mode-A derived over the 1:N
                          hop (``orders.status``): must never inline.
-``tickets → agents`` ×2  (separate graph) two forward edges, no reverse:
-                         ambiguous inversion → excluded.
-``tickets → reviews``    safe m:1; from an agents-rooted producer the only
-                         route to reviews runs through the ambiguous hop →
-                         no resolvable path (genuinely unreachable).
+``tickets → agents`` ×2  (separate graph) two unnamed parallel edges: every
+                         hop across the pair — measure, filter, correlation,
+                         either direction — fails closed (DEV-1853).
+``tickets → reviews``    safe m:1 — the graph's healthy leg.
 
 Dataset (hand-computed; every executed expectation derives from here)
 ---------------------------------------------------------------------
@@ -147,6 +148,9 @@ def stores_model() -> SlayerModel:
 
 
 def customers_model(*, declare_reverse: bool = False) -> SlayerModel:
+    """``declare_reverse=True``: customers OWNS the orders edge (1:N) and the
+    ``last_status`` Mode-A probe; orders then declares no customers edge — one
+    symmetric edge either way (DEV-1853)."""
     columns = [
         Column(name="id", type=DataType.INT, primary_key=True),
         Column(name="region_id", type=DataType.INT),
@@ -174,7 +178,15 @@ def customers_model(*, declare_reverse: bool = False) -> SlayerModel:
     )
 
 
-def orders_model() -> SlayerModel:
+def orders_model(*, customers_edge: bool = True) -> SlayerModel:
+    joins = [
+        ModelJoin(target_model="stores",
+                  join_pairs=[["store_co", "co"], ["store_no", "no"]]),
+    ]
+    if customers_edge:
+        joins.insert(0, ModelJoin(
+            target_model="customers", join_pairs=[["customer_id", "id"]],
+        ))
     return SlayerModel(
         name="orders", data_source="test", sql_table="orders",
         default_time_dimension="ordered_at",
@@ -190,11 +202,7 @@ def orders_model() -> SlayerModel:
             # Host-declared, target-reading: expanded-deps probe.
             Column(name="cust_tier", type=DataType.TEXT, sql="customers.tier"),
         ],
-        joins=[
-            ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
-            ModelJoin(target_model="stores",
-                      join_pairs=[["store_co", "co"], ["store_no", "no"]]),
-        ],
+        joins=joins,
     )
 
 
@@ -220,7 +228,7 @@ def reviews_model() -> SlayerModel:
 
 
 def tickets_model() -> SlayerModel:
-    # TWO forward edges to agents, no reverse: inverting is ambiguous.
+    # TWO unnamed parallel edges to agents: any hop across the pair fails closed.
     return SlayerModel(
         name="tickets", data_source="test", sql_table="tickets",
         columns=[
@@ -243,7 +251,7 @@ def dev1840_models(*, declare_reverse: bool = False,
                    strong_plans: bool = True) -> List[SlayerModel]:
     """``[host, *referenced]`` in the order ``_engine_generate`` wants."""
     return [
-        orders_model(),
+        orders_model(customers_edge=not declare_reverse),
         customers_model(declare_reverse=declare_reverse),
         regions_model(),
         stores_model(),

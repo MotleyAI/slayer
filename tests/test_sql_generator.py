@@ -6787,7 +6787,8 @@ class TestCrossModelRerootedSubquery:
                 Column(name="effective_date", type=DataType.TIMESTAMP),
 Column(name="total_policy_amount", sql="policy_amount", type=DataType.DOUBLE)],
             joins=[
-                ModelJoin(target_model="policy", join_pairs=[["policy_identifier", "policy_identifier"]], join_type="inner"),
+                # No reverse edge onto policy: the policy → policy_amount
+                # declaration traverses both ways (DEV-1853).
                 ModelJoin(target_model="premium", join_pairs=[["policy_amount_identifier", "policy_amount_identifier"]], join_type="inner"),
                 ModelJoin(target_model="agreement_party_role", join_pairs=[["policy_identifier", "agreement_identifier"]], join_type="inner"),
             ],
@@ -7006,7 +7007,7 @@ Column(name="amount", sql="amount", type=DataType.DOUBLE)],
                 Column(name="id", type=DataType.DOUBLE, primary_key=True),
                 Column(name="name", type=DataType.TEXT),
 Column(name="lifetime_value", sql="lifetime_value", type=DataType.DOUBLE)],
-            joins=[ModelJoin(target_model="orders", join_pairs=[["id", "customer_id"]])],
+            # No reverse edge: orders → customers traverses both ways (DEV-1853).
         )
         async with self._setup_engine(orders, customers) as engine:
             query = SlayerQuery(
