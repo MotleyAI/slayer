@@ -80,7 +80,7 @@ warnings too. Explicit `partition_by=` broadcasting is by design and MUST NOT wa
 - **THEN** the warning's reason names that hop classification — never "unreachable"
 
 ### Requirement: Unsafe aggregate inputs fail closed
-An aggregate whose inputs — positional args, keyword args (including aggregation-parameter fragments), or measure-level column filter references — cross a join hop that is not provably many-to-one from the aggregate's root SHALL fail with a clear error in both modes, whatever the aggregate's root: target-rooted, host-rooted, and local aggregates alike. Multiplying a host-side operand through a fanning join is ambiguous and MUST never silently compute over multiplied rows. The rule applies per input role: a *filter reference* or *argument* crossing an unproven hop fails closed, whatever the aggregate's root. A crossing *source* stays legal only where the aggregate is evaluated over the join result at host grain — a host-grain wrap (an ORDER BY sort key over an unprojected joined column) consumes the target's values per matched row and keeps its established values. A target-rooted cross-model producer re-roots its source to the target; a source that then reads through an unproven hop fans the aggregate and fails closed like any other crossing input.
+An aggregate whose inputs — positional args, keyword args (including aggregation-parameter fragments), or measure-level column filter references — cross a join hop that is not provably many-to-one from the aggregate's root SHALL fail with a clear error in all three modes, whatever the aggregate's root: target-rooted, host-rooted, and local aggregates alike. Multiplying a host-side operand through a fanning join is ambiguous and MUST never silently compute over multiplied rows. The rule applies per input role: a *filter reference* or *argument* crossing an unproven hop fails closed, whatever the aggregate's root. A crossing *source* stays legal only where the aggregate is evaluated over the join result at host grain — a host-grain wrap (an ORDER BY sort key over an unprojected joined column) consumes the target's values per matched row and keeps its established values. A target-rooted cross-model producer re-roots its source to the target; a source that then reads through an unproven hop fans the aggregate and fails closed like any other crossing input.
 
 #### Scenario: Aggregate reading through an unproven join errors
 - WHEN an aggregate's column filter references a column across a join with unproven arity from the aggregate's root
@@ -217,7 +217,7 @@ within one conjunct, or when root-local and cross-path references mix under a
 disjunction or negation. The reverse path resolves through the same bidirectional
 traversal as every other hop: any declared edge, in either orientation, with oriented
 provability governing inline-vs-semi-join classification. A hop of the correlation path
-connected by two or more edges SHALL fail closed in both modes with the ambiguous-hop
+connected by two or more edges SHALL fail closed in all three modes with the ambiguous-hop
 error naming the candidate edges — never dropped, never guessed. AGGREGATE-phase
 predicates keep aggregate-filter semantics uniform with local aggregates: they restrict
 the result rows by the aggregate's attached value, including when the aggregate appears
@@ -268,7 +268,7 @@ only in the filter.
 #### Scenario: Ambiguous correlation hop fails closed
 - **WHEN** the filtered model reaches the producer root only across a pair of models
   connected by two or more edges and no edge name resolves the hop
-- **THEN** the query fails in both modes with the ambiguous-hop error naming the
+- **THEN** the query fails in all three modes with the ambiguous-hop error naming the
   candidate edges, rather than dropping the conjunct or guessing a correlation
 
 #### Scenario: Mixed disjunction stays dropped and warned

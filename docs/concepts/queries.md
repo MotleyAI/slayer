@@ -720,8 +720,10 @@ A filter **on** the cross-model value itself (`"customers.score:avg > 4"`)
 restricts the result rows, uniformly with local aggregate filters — groups that
 fail the predicate are dropped, not returned with `NULL`.
 
-Cross-model aggregates also work with `window=`, `partition_by=`, `first` /
-`last`, inside [dimension expressions](#expression-dimensions), and as hidden
+Cross-model aggregates also support `window=`, `partition_by=`, and `first` /
+`last` when associate-mode resolution is not required (an aggregate that needs
+association cannot use `window=` or `first` / `last`), inside
+[dimension expressions](#expression-dimensions), and as hidden
 [order-only fields](#ordering-by-something-you-dont-project).
 
 A cross-model **parametric** aggregate keeps its kwarg signature in the result key, so two variants on the same target column do not collide:
