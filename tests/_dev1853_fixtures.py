@@ -260,9 +260,11 @@ CHAIN_AMOUNT_BY_NAME_WITH_ORPHAN = {
 }
 # Total-grain aggregate covers all orders, orphan included (mirror parity).
 CHAIN_REVERSE_AGG_TOTAL = 100.0
-# Local measure grouped by a reverse fan-out dim: exact grain-safe values,
-# each customer counted once per status it has.
+# Local measure grouped by a reverse fan-out dim. Default broadcasts the
+# distinct-customer total (Alice 100 + Bob 150 + Cara 60); associate dedups
+# each customer once per status it has (overlapping, so not additive).
 CHAIN_SPEND_BY_REVERSE_STATUS = {"ok": 250.0, "new": 100.0, None: 60.0}
+CHAIN_SPEND_BROADCAST_TOTAL = 310.0
 CHAIN_AMOUNT_BY_TIER_EXACT = {"gold": 30.0, "silver": 30.0}
 CHAIN_UNPROVEN_BROADCAST_TOTAL = 100.0  # amount total, repeated per group
 CHAIN_POP_BROADCAST_TOTAL = 300.0  # pop total, repeated per group
@@ -287,6 +289,7 @@ __all__ = [
     "CHAIN_REVERSE_DIMS_LEFT", "CHAIN_REVERSE_DIMS_INNER",
     "CHAIN_AMOUNT_BY_NAME", "CHAIN_AMOUNT_BY_NAME_WITH_ORPHAN",
     "CHAIN_REVERSE_AGG_TOTAL", "CHAIN_SPEND_BY_REVERSE_STATUS",
+    "CHAIN_SPEND_BROADCAST_TOTAL",
     "CHAIN_AMOUNT_BY_TIER_EXACT", "CHAIN_UNPROVEN_BROADCAST_TOTAL",
     "CHAIN_POP_BROADCAST_TOTAL",
     "CHAIN_PUSHDOWN_OK_SPEND", "CHAIN_MULTIHOP",

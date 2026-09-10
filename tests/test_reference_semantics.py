@@ -515,20 +515,19 @@ class TestStrictResolution:
             dimensions=["housenum"],
             filters=["transportation_assets.total_vehicles >= 3"],
         )
+        # DEV-1856: an unreachable short form is route-aware-rejected (a ValueError) — still a loud raise, never silent unbound SQL (the DEV-1367 contract).
         with pytest.raises(
             ValueError,
-            match=r"no join to 'transportation_assets'|Cannot resolve reference 'transportation_assets",
+            match=(
+                r"no join to 'transportation_assets'"
+                r"|Cannot resolve reference 'transportation_assets"
+                r"|not a valid join path from 'households'"
+            ),
         ):
             await _engine_generate(query=query, model=households)
 
-    # NOTE (DEV-1484 Stage C): the two former lenient-drop tests
-    # (``test_filter_referencing_unjoined_model_dropped_when_lenient`` and
-    # ``test_unknown_bare_name_dropped_when_lenient``) poked the legacy
-    # ``the legacy enrichment entry point(drop_unreachable_filters=True)`` internal flag, which
-    # has no public surface on the typed pipeline. The equivalent
-    # lenient-drop now lives in producer filter inheritance and is covered by
-    # ``tests/test_dev1836_filter_inheritance`` and the dropped-filter
-    # warning pins in ``tests/test_dev1747_reroot_filter_routing``.
+    # DEV-1484 Stage C: the two former lenient-drop tests moved to producer filter
+    # inheritance (tests/test_dev1836_filter_inheritance, test_dev1747_reroot_filter_routing).
 
     async def test_known_filter_name_passes(self) -> None:
         """Control: a filter naming a defined Column enriches without error."""

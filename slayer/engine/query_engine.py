@@ -10,7 +10,7 @@ import logging
 import re
 import warnings as _warnings_module
 from collections.abc import Callable
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 import sqlalchemy as sa
 import sqlglot
@@ -26,6 +26,7 @@ from slayer.async_utils import run_sync
 from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, DataType, JoinCardinality
 from slayer.core.errors import (
     AmbiguousModelError,
+    AssociatedGrainWarning,
     BroadcastGrainWarning,
     ForcedFilterError,
     ModelSqlValidationError,
@@ -68,10 +69,12 @@ from slayer.engine.population import (
 )
 from slayer.core.warnings import (
     AnySlayerWarning,
+    AssociatedWarningPayload,
     BroadcastDimension,
     BroadcastGrainWarningPayload,
     DroppedFilterWarning,
     NormalizationWarning,
+    SemiJoinPushedWarningPayload,
 )
 from slayer.core.recommend import (
     CandidateCoverage,
@@ -428,26 +431,78 @@ def _collect_broadcast_warnings(
     ]
 
 
-def _raise_on_strict_events(
+def _collect_associated_warnings(
+    *, planned_list, stages,
+) -> List[AssociatedWarningPayload]:
+    """One associated payload per ``(stage location, measure label)``; dimensions unioned."""
+    dims_by_key: "dict[tuple[str, str], list[str]]" = {}
+    for index, planned in enumerate(planned_list):
+        location = _stage_location(stages=stages, index=index, member=None)
+        for attach in _walk_regroup_attaches(planned):
+            measure = attach.associated_measure
+            if not measure:
+                continue
+            dims = dims_by_key.setdefault((location, measure), [])
+            for dim in attach.associated_dimensions:
+                if dim not in dims:
+                    dims.append(dim)
+    return [
+        AssociatedWarningPayload(measure=measure, location=location, dimensions=dims)
+        for (location, measure), dims in dims_by_key.items()
+    ]
+
+
+def _attach_semi_join_texts(attach) -> Iterator[str]:
+    """Non-empty semi-join-pushed filter texts on an attach's producer plan."""
+    for group in getattr(attach.producer_plan, "semi_join_filters", None) or ():
+        yield from (text for text in group.filter_texts if text)
+
+
+def _collect_semi_join_pushed_warnings(
+    *, planned_list, stages,
+) -> List[SemiJoinPushedWarningPayload]:
+    """Response-only informational entries for semi-join-pushed conjuncts (DEV-1841 amends DEV-1840's silence); one per ``(location, aggregate, filter text)``."""
+    seen: set = set()
+    out: List[SemiJoinPushedWarningPayload] = []
+    for index, planned in enumerate(planned_list):
+        location = _stage_location(stages=stages, index=index, member=None)
+        for attach in _walk_regroup_attaches(planned):
+            measure = (
+                attach.broadcast_measure or attach.associated_measure
+                or attach.alias_hint or "<aggregate>"
+            )
+            for text in _attach_semi_join_texts(attach):
+                identity = (location, measure, text)
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                out.append(SemiJoinPushedWarningPayload(
+                    measure=measure, location=location, filter_text=text,
+                ))
+    return out
+
+
+def _raise_on_error_events(
     *, broadcasts: List[BroadcastGrainWarningPayload],
     dropped: List[DroppedFilterWarning],
 ) -> None:
-    """Strict mode: turn any silent-semantics event into an error naming metric/filter + remedy."""
+    """``to_many_handling: "error"``: turn any silent-semantics event into an error naming metric/filter + remedy."""
     remedy = (
-        "declare join cardinality, a covering unique key, or remove the "
+        "declare join cardinality, a covering unique key, switch to "
+        "to_many_handling='associate', or remove the "
     )
     if broadcasts:
         w = broadcasts[0]
         dims = ", ".join(d.dimension for d in w.dimensions)
         reason = w.dimensions[0].reason if w.dimensions else ""
         raise SlayerError(
-            f"strict mode: metric {w.measure!r} would broadcast across "
+            f"error mode: metric {w.measure!r} would broadcast across "
             f"unattributable dimension(s) {dims} ({reason}); {remedy}dimension."
         )
     if dropped:
         d = dropped[0]
         raise SlayerError(
-            f"strict mode: filter {d.filter_text!r} would be dropped from a "
+            f"error mode: filter {d.filter_text!r} would be dropped from a "
             f"producer ({d.reason}); {remedy}filter."
         )
 
@@ -467,6 +522,13 @@ def _emit_dropped_filter_warnings(response) -> None:
             reason = w.dimensions[0].reason if w.dimensions else ""
             _warnings_module.warn(
                 BroadcastGrainWarning(measure=w.measure, reason=reason),
+                stacklevel=3,
+            )
+        elif isinstance(w, AssociatedWarningPayload):
+            _warnings_module.warn(
+                AssociatedGrainWarning(
+                    measure=w.measure, dimensions=", ".join(w.dimensions),
+                ),
                 stacklevel=3,
             )
 
@@ -1022,12 +1084,20 @@ class SlayerQueryEngine:
         broadcast_warnings = _collect_broadcast_warnings(
             planned_list=planned_list, stages=ordered_stages,
         )
-        if getattr(query, "strict", False):
-            _raise_on_strict_events(
+        associated_warnings = _collect_associated_warnings(
+            planned_list=planned_list, stages=ordered_stages,
+        )
+        semi_join_infos = _collect_semi_join_pushed_warnings(
+            planned_list=planned_list, stages=ordered_stages,
+        )
+        if getattr(query, "to_many_handling", "broadcast") == "error":
+            _raise_on_error_events(
                 broadcasts=broadcast_warnings, dropped=dropped_warnings,
             )
         slack_warnings.extend(dropped_warnings)
         slack_warnings.extend(broadcast_warnings)
+        slack_warnings.extend(associated_warnings)
+        slack_warnings.extend(semi_join_infos)
 
         dialect = self._dialect_for_type(datasource.type)
         sql = generate_planned_stages(

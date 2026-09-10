@@ -516,7 +516,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             limit: Max rows to return, trusted verbatim; without it the response is capped at 20 rows with a truncation notice.
             offset: Number of rows to skip.
             whole_periods_only: When true, snap date filters to time bucket boundaries based on granularity, exclude the current incomplete time bucket.
-            strict: Error instead of warn when a cross-model measure would broadcast or a producer filter would be dropped. A query-object field only; a run-by-name string carries no fields, so set ``strict`` on the stored query instead.
+            to_many_handling: How an aggregate resolves query dimensions unattributable from its root — "broadcast" (default; repeat the value, warn), "associate" (per-cell value over the distinct associated entities), or "error" (refuse). The retired ``strict`` flag is rejected with this remedy. A query-object field only; a run-by-name string carries no fields, so set it on the stored query instead.
             distinct_dimension_values: Default True (Cube.js-style auto-dedup for dim-only queries — emits GROUP BY <dim aliases>). Set False to emit raw rows: no top-level GROUP BY, just SELECT <dimensions/time_dimensions> with the usual WHERE/ORDER BY/LIMIT. Any measure reference (in measures, filters, or order) raises an error in this mode.
             variables: Per-query {placeholder} values, scoped to this query object / stage (same substitution as the top-level ``variables`` arg). Overridden by the top-level value — see precedence below.
 

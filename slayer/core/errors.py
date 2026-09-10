@@ -366,11 +366,14 @@ class UnreachableFilterDroppedWarning(UserWarning):
     """A host filter referenced slots unreachable from a cross-model CTE's root, so it was dropped from the CTE (still applied to host rows). Visibility warning, not an error."""
 
     def __init__(self, filter_text: str, reason: str) -> None:
+        super().__init__(filter_text, reason)  # args mirror params so cls(*w.args) reconstructs across pytest-xdist
         self.filter_text = filter_text
         self.reason = reason
-        super().__init__(
-            f"Filter {filter_text!r} dropped from cross-model CTE "
-            f"(unreachable from CTE root): {reason}"
+
+    def __str__(self) -> str:
+        return (
+            f"Filter {self.filter_text!r} dropped from cross-model CTE "
+            f"(unreachable from CTE root): {self.reason}"
         )
 
 
@@ -378,11 +381,26 @@ class BroadcastGrainWarning(UserWarning):
     """A cross-model aggregate's implicit grain lost a dimension (not attributable from its root) to broadcasting; result grain unchanged. Visibility warning, not an error."""
 
     def __init__(self, measure: str, reason: str) -> None:
+        super().__init__(measure, reason)  # args mirror params so cls(*w.args) reconstructs across pytest-xdist
         self.measure = measure
         self.reason = reason
+
+    def __str__(self) -> str:
+        return (
+            f"Metric {self.measure!r} broadcast across an unattributable "
+            f"dimension: {self.reason}"
+        )
+
+
+class AssociatedGrainWarning(UserWarning):
+    """An aggregate resolved by distinct-entity association over unattributable dimension(s); cells' populations may overlap and are not additive. Visibility warning, not an error."""
+
+    def __init__(self, measure: str, dimensions: str) -> None:
+        self.measure = measure
+        self.dimensions = dimensions
         super().__init__(
-            f"Metric {measure!r} broadcast across an unattributable "
-            f"dimension: {reason}"
+            f"Metric {measure!r} associated over unattributable dimension(s) "
+            f"{dimensions}; cell populations may overlap and are not additive."
         )
 
 

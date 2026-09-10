@@ -21,23 +21,23 @@
   },
   "guard/dim_cross_model_source::bigquery": {
     "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.spend_sum_partition_by_region' declares partition_by=region, which unreachable from the aggregate's root (no join path from it); every explicit partition key must be attributable from customers \u2014 declare join cardinality or a covering unique key on the target."
+    "message": "Cross-model aggregate 'customers.spend_sum_partition_by_region' declares partition_by=region, which crosses a fanning or unproven join hop to orders; every explicit partition key must be attributable from customers \u2014 declare join cardinality or a covering unique key on the target."
   },
   "guard/dim_cross_model_source::duckdb": {
     "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.spend_sum_partition_by_region' declares partition_by=region, which unreachable from the aggregate's root (no join path from it); every explicit partition key must be attributable from customers \u2014 declare join cardinality or a covering unique key on the target."
+    "message": "Cross-model aggregate 'customers.spend_sum_partition_by_region' declares partition_by=region, which crosses a fanning or unproven join hop to orders; every explicit partition key must be attributable from customers \u2014 declare join cardinality or a covering unique key on the target."
   },
   "guard/dim_cross_model_source::postgres": {
     "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.spend_sum_partition_by_region' declares partition_by=region, which unreachable from the aggregate's root (no join path from it); every explicit partition key must be attributable from customers \u2014 declare join cardinality or a covering unique key on the target."
+    "message": "Cross-model aggregate 'customers.spend_sum_partition_by_region' declares partition_by=region, which crosses a fanning or unproven join hop to orders; every explicit partition key must be attributable from customers \u2014 declare join cardinality or a covering unique key on the target."
   },
   "guard/dim_cross_model_source::sqlite": {
     "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.spend_sum_partition_by_region' declares partition_by=region, which unreachable from the aggregate's root (no join path from it); every explicit partition key must be attributable from customers \u2014 declare join cardinality or a covering unique key on the target."
+    "message": "Cross-model aggregate 'customers.spend_sum_partition_by_region' declares partition_by=region, which crosses a fanning or unproven join hop to orders; every explicit partition key must be attributable from customers \u2014 declare join cardinality or a covering unique key on the target."
   },
   "guard/dim_cross_model_source::tsql": {
     "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.spend_sum_partition_by_region' declares partition_by=region, which unreachable from the aggregate's root (no join path from it); every explicit partition key must be attributable from customers \u2014 declare join cardinality or a covering unique key on the target."
+    "message": "Cross-model aggregate 'customers.spend_sum_partition_by_region' declares partition_by=region, which crosses a fanning or unproven join hop to orders; every explicit partition key must be attributable from customers \u2014 declare join cardinality or a covering unique key on the target."
   },
   "guard/filter_no_common_scope::bigquery": {
     "error": "PositionTypingError",

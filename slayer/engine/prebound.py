@@ -28,7 +28,7 @@ to avoid that cycle).
 
 from __future__ import annotations
 
-from typing import List, Optional, Tuple, TypeGuard
+from typing import List, Literal, Optional, Tuple, TypeGuard
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -126,6 +126,9 @@ class PreboundQuery(BaseModel):
     limit: Optional[int] = None
     offset: Optional[int] = None
     distinct_dimension_values: bool = True
+    # How aggregates resolve query dimensions unattributable from their root;
+    # threaded onto nested producer prebounds so every plan resolves alike.
+    to_many_handling: Literal["broadcast", "associate", "error"] = "broadcast"
 
     @model_validator(mode="after")
     def _filter_texts_are_parallel(self) -> "PreboundQuery":

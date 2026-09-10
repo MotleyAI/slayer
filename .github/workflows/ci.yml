@@ -79,7 +79,10 @@ jobs:
 
       - name: Run unit tests
         timeout-minutes: 15
-        run: poetry run pytest tests/ -v -m "not integration" --timeout=120
+        # -n logical uses ALL the runner's vCPUs for ~16.5k CPU-bound tests
+        # (plain -n auto picks only physical cores via psutil — half). Clears the
+        # 3.14 timeout; --durations logs the slowest tests per matrix leg.
+        run: poetry run pytest tests/ -m "not integration" --timeout=120 -n logical --durations=25
 
       - name: Run integration tests
         timeout-minutes: 20
@@ -94,8 +97,10 @@ jobs:
         # its own workflow at .github/workflows/pg-facade-e2e.yml — same
         # reasoning, exclude here so this job isn't on the hook for booting
         # a Metabase container.
+        # Serial on purpose: real-DB fixtures risk contention under xdist, and
+        # at ~4 min this isn't the timeout culprit. --durations logs slowest.
         run: |
-          poetry run pytest tests/ -v -m "integration and not metabase_e2e" --timeout=180 \
+          poetry run pytest tests/ -v -m "integration and not metabase_e2e" --timeout=180 --durations=25 \
             --ignore=tests/integration/test_integration_mysql.py \
             --ignore=tests/integration/test_integration_clickhouse.py \
             --ignore=tests/integration/test_integration_sqlserver.py
