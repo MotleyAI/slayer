@@ -160,7 +160,7 @@ class TestUnsafeExplicitPartitionKeys:
     async def test_errors_apply_in_strict_mode_alike(self, exec_backend):
         _, engine = exec_backend
         query = q(
-            strict=True, dimensions=["status"],
+            to_many_handling="error", dimensions=["status"],
             measures=[ModelMeasure(
                 formula="customers.spend:sum(partition_by=status)", name="x",
             )],

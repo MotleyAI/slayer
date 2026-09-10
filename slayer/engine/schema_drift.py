@@ -47,6 +47,7 @@ from slayer.engine.ingestion import (
 from slayer.core.errors import AmbiguousJoinPathError
 from slayer.core.join_walker import neighbors, resolve_hop
 from slayer.engine.column_expansion import resolve_ref_target
+from slayer.engine.dimension_routing import short_form_route_or_none
 from slayer.engine.syntax import (
     AggCall,
     DottedRef,
@@ -775,9 +776,41 @@ def _attribute_ref_to_base(
     if path == [graph.stage_source_name]:
         return leaf if graph.stage_source_name == base_name else None
     terminal = _walk_stage_path(path=path, graph=graph)
+    if terminal is None and len(path) == 1:
+        # Short-form auto-routing (DEV-1856): a len==1 prefix with no direct join
+        # attributes to its uniquely-routed terminal only (mirroring full paths),
+        # so the stage cascades on the terminal column or terminal-reaching join.
+        # Route-precise attribution (earlier intervening joins, and no over-cascade
+        # on off-route joins to the terminal) is deferred to DEV-1885.
+        terminal = _route_short_form_terminal(target=path[0], graph=graph)
     if terminal is None:
         return None
     return leaf if terminal == base_name else None
+
+
+def _route_short_form_terminal(*, target: str, graph: _StageGraph) -> str | None:
+    """The short-form target when it is uniquely routable from the stage source
+    over the datasource-scoped join graph (ambiguous / unreachable → None).
+    Routing triggers only when the first hop resolves to no edge; a parallel pair
+    directly off the source is a fail-closed ambiguous hop (DEV-1853), not a
+    route, so it attributes to nothing — mirroring the binder."""
+    root = (
+        graph.models_by_name.get(graph.stage_source_name)
+        if graph.stage_source_name else None
+    )
+    if root is None:
+        return None
+    try:
+        if resolve_hop(
+            current=root, token=target, models_by_name=graph.models_by_name,
+        ) is not None:
+            return None
+    except AmbiguousJoinPathError:
+        return None
+    route = short_form_route_or_none(
+        root=root, target_model=target, models_by_name=graph.models_by_name,
+    )
+    return target if route is not None else None
 
 
 def _walk_stage_path(*, path: list[str], graph: _StageGraph) -> str | None:

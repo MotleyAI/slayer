@@ -22,7 +22,7 @@ from slayer.core.models import ModelMeasure, SlayerModel, _validate_model_name
 from slayer.core.refs import auto_name_from_expression
 from slayer.engine.syntax import AggCall, parse_expr, walk_parsed_refs
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
-from slayer.storage.migrations import migrate as _migrate_schema
+from slayer.storage.migrations import CURRENT_VERSIONS, migrate as _migrate_schema
 
 logger = logging.getLogger(__name__)
 
@@ -742,14 +742,36 @@ class SlayerQuery(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    version: int = 3
+    version: int = 4
     name: str | None = None  # For referencing this query from other queries in a list
-    source_model: object  # str (model name), SlayerModel (inline), or ModelExtension
+    # Optional (DEV-1866): omitted → the population is inferred as the smallest
+    # dimension-determining model. str (model name), SlayerModel (inline), or ModelExtension.
+    source_model: object | None = None
     measures: Annotated[list[ModelMeasure] | None, BeforeValidator(_coerce_measures)] = None
 
     @model_validator(mode="before")
     @classmethod
     def _apply_schema_migrations(cls, data: Any) -> Any:
+        # `strict` is retired. Reject it for fresh (no version), current-version,
+        # or malformed payloads; only a pre-current *integer* stored version
+        # migrates it (v3→v4 maps strict:true→to_many_handling='error'). ``version``
+        # is raw here (pre-coercion), so accept only int / integer-string forms —
+        # never truncate a float or other malformed value into a stale version.
+        if isinstance(data, dict) and "strict" in data:
+            raw_version = data.get("version")
+            version: int | None = None
+            if isinstance(raw_version, int) and not isinstance(raw_version, bool):
+                version = raw_version
+            elif isinstance(raw_version, str):
+                try:
+                    version = int(raw_version)
+                except ValueError:
+                    version = None
+            if version is None or version >= CURRENT_VERSIONS["SlayerQuery"]:
+                raise ValueError(
+                    "`strict` is retired; set to_many_handling='error' instead "
+                    "(one of broadcast|associate|error)."
+                )
         return _migrate_schema(entity="SlayerQuery", data=data)
 
     @field_validator("name")
@@ -792,10 +814,10 @@ class SlayerQuery(BaseModel):
         ),
     )
 
-    # Default False (broadcast + warn). True turns silent-semantics events — an
-    # implicit-grain broadcast, a dropped-as-unreachable filter — into hard errors.
-    # Explicit partition_by= broadcasting is by design and never errors.
-    strict: bool = False
+    # How every aggregate resolves query dimensions unattributable from its root:
+    # "broadcast" (repeat + warn), "associate" (per-cell distinct-entity value),
+    # "error" (refuse). Filters keep EXISTS pushdown in every mode.
+    to_many_handling: Literal["broadcast", "associate", "error"] = "broadcast"
 
     @model_validator(mode="after")
     def _validate_dsl_user_input(self) -> "SlayerQuery":

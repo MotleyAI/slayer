@@ -3,7 +3,7 @@
 A dotted saved-measure reference expands to ordinary cross-model aggregates, so
 it inherits DEV-1836 broadcast metadata and strict-mode errors verbatim. Every
 assertion compares the dotted spelling against its hand-expanded twin: identical
-broadcast warnings in lenient mode, identical failure under ``strict=True``.
+broadcast warnings in lenient mode, identical failure under ``to_many_handling="error"``.
 """
 
 from __future__ import annotations
@@ -68,9 +68,9 @@ class TestBroadcastMetadataInherited:
 class TestStrictInherited:
     async def test_strict_broadcast_errors_like_hand(self, exec_backend):
         _, engine = exec_backend
-        dotted_query = q(strict=True, dimensions=["status"],
+        dotted_query = q(to_many_handling="error", dimensions=["status"],
                          measures=[{"formula": DOTTED, "name": "x"}])
-        hand_query = q(strict=True, dimensions=["status"],
+        hand_query = q(to_many_handling="error", dimensions=["status"],
                        measures=[{"formula": HAND, "name": "x"}])
         with pytest.raises((SlayerError, ValueError)) as dotted_err:
             await engine.execute(dotted_query)
@@ -86,7 +86,7 @@ class TestStrictInherited:
     async def test_strict_passes_when_attributable(self, exec_backend):
         _, engine = exec_backend
         resp = await engine.execute(
-            q(strict=True, dimensions=["customers.tier"],
+            q(to_many_handling="error", dimensions=["customers.tier"],
               measures=[{"formula": DOTTED, "name": "x"}]),
         )
         assert any(r.get("orders.x") is not None for r in resp.data)
