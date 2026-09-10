@@ -144,12 +144,13 @@ def determination_items(
     query: SlayerQuery,
     *,
     models_by_name: dict[str, SlayerModel],
-    runtime_variables: dict | None = None,  # noqa: ARG001 — variable values never introduce determination refs
 ) -> list[str]:
     """The dimensions + time dimensions + field-typed filter refs that the population must determine.
 
     Measures, measure-typed filters, saved-measure refs, order entries, and
     model-level filters contribute nothing. Deduped, preserving first occurrence.
+    Runtime variable values never participate — a filter's ``{var}`` is masked to a
+    neutral literal before parsing, so an injected value can't introduce a ref.
     """
     items: list[str] = []
     seen: set[str] = set()

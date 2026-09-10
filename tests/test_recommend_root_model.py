@@ -377,6 +377,19 @@ class TestNoCommonRoot:
         # {customers}; agents (hops 0) dominates tickets for {agents}.
         assert covered == {"customers", "agents"}
 
+    async def test_attachment_only_disconnected_still_lists_coverage(self, engine) -> None:
+        # Attachment-only items on disconnected models: coverage falls back to
+        # attachment reachability, so it is non-empty (orders.aov / logs.line:count).
+        rec = await engine.recommend_root_model(
+            ["orders.aov", "logs.line:count"], data_source="mydb"
+        )
+        assert rec.reachable is False
+        assert rec.item_paths == []
+        assert rec.coverage  # not empty — the regression this guards
+        covered = {c.model_name for c in rec.coverage}
+        assert "orders" in covered
+        assert "logs" in covered
+
     async def test_coverage_surfaces_partial_roots(self, engine) -> None:
         rec = await engine.recommend_root_model(
             ["customers.name", "products.category", "agents.name"]

@@ -1996,7 +1996,7 @@ class SlayerQueryEngine:
                 deduped_warnings.append(w)
         return resolved, deduped_warnings
 
-    async def recommend_root_model(
+    async def recommend_root_model(  # NOSONAR(S3776) — cohesive: small named reach/validity closures over shared state read clearer inline than hoisted
         self,
         items: list[str],
         *,
@@ -2088,9 +2088,21 @@ class SlayerQueryEngine:
             )
 
         force_include = {hint_model} if hint_model is not None else None
-        coverage = _build_recommend_coverage(
-            all_names, det, reach, force_include=force_include
-        )
+        if det:
+            coverage = _build_recommend_coverage(all_names, det, reach, force_include=force_include)
+        else:
+            # Attachment-only request with no common reacher: rank partial roots by
+            # attachment reachability (cardinality-blind) so `coverage` isn't empty
+            # when the message directs callers to it.
+            attach_reach = {
+                name: {
+                    r.model: p
+                    for r in attach
+                    if (p := graph.shortest_path(name, r.model)) is not None
+                }
+                for name in all_names
+            }
+            coverage = _build_recommend_coverage(all_names, attach, attach_reach, force_include=force_include)
         if hint_model is not None:
             missing = ", ".join(unmet(hint_model))
             warnings.append(

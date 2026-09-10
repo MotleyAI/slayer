@@ -299,11 +299,11 @@ class TestDeterminationItems:
         assert items == {"customers.region"}
 
     def test_runtime_variable_value_does_not_participate(self) -> None:
+        # A filter's ``{reg}`` is masked before parsing, so its value never adds a ref.
         items = self._items(
             SlayerQuery(
                 dimensions=["customers.region"],
                 filters=["customers.region = {reg}"],
             ),
-            runtime_variables={"reg": "customers.tier"},
         )
         assert items == {"customers.region"}
