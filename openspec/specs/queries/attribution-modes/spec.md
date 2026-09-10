@@ -86,9 +86,10 @@ or unique key).
 
 #### Scenario: Percentile attributes over the association
 - **WHEN** an associate-mode query slices a cross-model percentile aggregate by an
-  unattributable dimension
+  unattributable dimension, on a dialect that supports grouped percentile
 - **THEN** each cell's value is the percentile over the distinct associated entities'
-  values, by executed values
+  values, by executed values; on a dialect without grouped percentile (T-SQL, MySQL)
+  the query raises the established `NotImplementedError`, unchanged by mode
 
 #### Scenario: Star-count counts distinct associated entities
 - **WHEN** an associate-mode query rooted at `orders` selects `customers.*:count` by an

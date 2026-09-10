@@ -217,7 +217,7 @@ within one conjunct, or when root-local and cross-path references mix under a
 disjunction or negation. The reverse path resolves through the same bidirectional
 traversal as every other hop: any declared edge, in either orientation, with oriented
 provability governing inline-vs-semi-join classification. A hop of the correlation path
-connected by two or more edges SHALL fail closed in all three modes with the ambiguous-hop
+connected by two or more parallel edges (candidate edges for that single hop) SHALL fail closed in all three modes with the ambiguous-hop
 error naming the candidate edges — never dropped, never guessed. AGGREGATE-phase
 predicates keep aggregate-filter semantics uniform with local aggregates: they restrict
 the result rows by the aggregate's attached value, including when the aggregate appears
@@ -267,7 +267,7 @@ only in the filter.
 
 #### Scenario: Ambiguous correlation hop fails closed
 - **WHEN** the filtered model reaches the producer root only across a pair of models
-  connected by two or more edges and no edge name resolves the hop
+  connected by two or more parallel edges (candidate edges for that single hop) and no edge name resolves the hop
 - **THEN** the query fails in all three modes with the ambiguous-hop error naming the
   candidate edges, rather than dropping the conjunct or guessing a correlation
 
