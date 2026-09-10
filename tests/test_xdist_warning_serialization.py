@@ -31,6 +31,9 @@ def _carriers() -> list[UserWarning]:
     )
     return [
         BroadcastGrainWarning(measure="orders.revenue_sum", reason="no join path"),
+        AssociatedGrainWarning(
+            measure="orders.revenue_sum", dimensions="customers.region"
+        ),
         UnreachableFilterDroppedWarning(
             filter_text="customers.score > 5", reason="unreachable from CTE root"
         ),

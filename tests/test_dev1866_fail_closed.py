@@ -165,11 +165,9 @@ class TestFailClosed:
         cross-model ``regions.name`` alongside ``orders.status`` fails closed; the
         full path ``customers.regions.name`` resolves to orders. Route-aware rootless
         inference is deferred to DEV-1871 (one binder)."""
+        query = SlayerQuery(dimensions=["orders.status", "regions.name"])
         with pytest.raises(PopulationInferenceError) as ei:
-            await infer_population(
-                query=SlayerQuery(dimensions=["orders.status", "regions.name"]),
-                storage=storage,
-            )
+            await infer_population(query=query, storage=storage)
         assert ei.value.reason is PopulationErrorReason.NO_VIABLE_CANDIDATE
         choice = await infer_population(
             query=SlayerQuery(dimensions=["orders.status", "customers.regions.name"]),
