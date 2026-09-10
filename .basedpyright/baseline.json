@@ -29188,6 +29188,16 @@
                 }
             }
         ],
+        "./tests/test_dev1866_surfaces.py": [
+            {
+                "code": "reportAttributeAccessIssue",
+                "range": {
+                    "startColumn": 21,
+                    "endColumn": 35,
+                    "lineCount": 1
+                }
+            }
+        ],
         "./tests/test_dev1867_grain.py": [
             {
                 "code": "reportUnhashable",

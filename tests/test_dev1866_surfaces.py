@@ -52,18 +52,21 @@ async def _call(server, *, name: str, arguments: dict[str, Any]) -> str:
 async def test_mcp_rootless_query_executes_and_reports_population() -> None:
     storage = await make_chain_sqlite_storage()
     server = create_mcp_server(storage=storage)
-    result = await _call(server, name="query", arguments={
-        "query": {
-            "dimensions": ["customers.region"],
-            "measures": [{"formula": "orders.amount:sum", "name": "rev"}],
-        },
-        "format": "json",
-    })
-    # Decode the leading JSON value, tolerating any trailing footer text.
-    payload, _ = json.JSONDecoder().raw_decode(result)
-    rows = payload["data"] if isinstance(payload, dict) else payload
-    regions = {row["customers.region"] for row in rows}
-    assert regions == {"North", "South", "West"}
-    # The inferred population rides in the JSON envelope (both fields, since inferred).
-    assert payload["population"] == "customers"
-    assert payload["population_inferred"] is True
+    try:
+        result = await _call(server, name="query", arguments={
+            "query": {
+                "dimensions": ["customers.region"],
+                "measures": [{"formula": "orders.amount:sum", "name": "rev"}],
+            },
+            "format": "json",
+        })
+        # Decode the leading JSON value, tolerating any trailing footer text.
+        payload, _ = json.JSONDecoder().raw_decode(result)
+        rows = payload["data"] if isinstance(payload, dict) else payload
+        regions = {row["customers.region"] for row in rows}
+        assert regions == {"North", "South", "West"}
+        # The inferred population rides in the JSON envelope (both fields, since inferred).
+        assert payload["population"] == "customers"
+        assert payload["population_inferred"] is True
+    finally:
+        await server._slayer_engine.aclose()
