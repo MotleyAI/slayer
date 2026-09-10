@@ -20,6 +20,8 @@ A `SlayerQuery` is a JSON/dict object. The same shape works across the REST API,
 }
 ```
 
+`source_model` is optional: omit it and the population (query root) is inferred as the smallest model that determines every queried dimension along provably to-one joins — from dimensions and field-typed filters only, never measures — with the choice reported as `population` / `population_inferred`; inference fails closed naming the candidates when it isn't forced.
+
 Over MCP, a query without `limit` returns at most 20 rows plus a truncation notice — set an explicit `limit` to get more (in the multi-stage list form, on the root/last stage).
 
 `order[].column` uses the short alias (`count`, `revenue_sum`) to order by a measure declared in the same query; undeclared order targets use formula (colon) syntax — see below.
@@ -138,7 +140,7 @@ A dotted reference may target a *derived* column on the joined model (a column w
 
 ## Picking the root model
 
-Not sure which model to use as `source_model` for a set of columns/metrics? Call `recommend_root_model` with the `model.column` / `model.metric` items you want; it introspects the join graph and returns the recommended root plus each item's join-qualified path from it (aggregation suffixes preserved), ready to drop into a query.
+Not sure which model to use as `source_model` for a set of columns/metrics? Call `recommend_root_model` with the `model.column` / `model.metric` items you want; it applies the population rule (the root must determine every column along provably to-one joins; saved measures / aggregation-suffixed items attach reachably and don't steer the pick) and returns the recommended root plus each item's join-qualified path from it (aggregation suffixes preserved), ready to drop into a query.
 
 ```python
 rec = client.recommend_root_model_sync(["customers.name", "products.category"])

@@ -42,6 +42,38 @@ jobs:
       - name: Install jafgen (for notebook tests, not on PyPI)
         run: poetry run pip install git+https://github.com/rossbowen/jaffle-shop-generator.git@09557a1118b000071f8171aa97d54d5029bf0f0b
 
+      # Install a pinned, checksum-verified DuckDB CLI into ~/.duckdb/cli/latest
+      # (the layout the installer uses and the 15_duckdb notebook expects on
+      # PATH). Cached across runs; on a miss we fetch a pinned release and verify
+      # its SHA256 instead of piping a remote installer to bash. With the binary
+      # already on PATH, the notebook's idempotent `command -v duckdb || curl …`
+      # cell never reaches the network.
+      - name: Cache the DuckDB CLI
+        id: duckdb-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.duckdb/cli
+          key: duckdb-cli-${{ runner.os }}-v1.5.5
+
+      - name: Install the pinned DuckDB CLI (verified)
+        if: steps.duckdb-cache.outputs.cache-hit != 'true'
+        env:
+          DUCKDB_VERSION: v1.5.5
+          DUCKDB_SHA256: 08c0ca117111fcede14239d0093792352befdc174218c344d232c13279643d05
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          curl --proto "=https" --tlsv1.2 -fsSL -o "$tmp/duckdb.zip" \
+            "https://github.com/duckdb/duckdb/releases/download/${DUCKDB_VERSION}/duckdb_cli-linux-amd64.zip"
+          echo "${DUCKDB_SHA256}  ${tmp}/duckdb.zip" | sha256sum -c -
+          mkdir -p "$HOME/.duckdb/cli/latest"
+          unzip -o -q "$tmp/duckdb.zip" -d "$HOME/.duckdb/cli/latest"
+          chmod +x "$HOME/.duckdb/cli/latest/duckdb"
+          rm -rf "$tmp"
+
+      - name: Put the DuckDB CLI on PATH
+        run: echo "$HOME/.duckdb/cli/latest" >> "$GITHUB_PATH"
+
       - name: Lint with ruff
         run: poetry run ruff check slayer/ tests/
 
