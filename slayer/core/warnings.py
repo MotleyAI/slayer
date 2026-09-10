@@ -107,6 +107,28 @@ class AssociatedWarningPayload(SlayerWarning):
         )
 
 
+class DegenerateReaggregationWarningPayload(SlayerWarning):
+    """A second-order aggregation whose operand grain equals the outer grain, so it is the identity (DEV-1847); ``operand_grain`` / ``outer_grain`` name the equal grains and ``hint`` the partition_by remedy."""
+
+    kind: Literal["degenerate_reaggregation"] = "degenerate_reaggregation"
+    measure: str
+    location: str
+    operand_grain: list[str]
+    outer_grain: list[str]
+    hint: str = (
+        "add a finer partition_by= to the inner aggregate so the outer "
+        "aggregation combines across distinct cells"
+    )
+
+    def human_message(self) -> str:
+        og = ", ".join(self.operand_grain) or "<global>"
+        return (
+            f"metric {self.measure!r} (at {self.location}) is a degenerate "
+            f"re-aggregation: the operand grain ({og}) equals the outer grain, "
+            f"so it returns the operand unchanged — {self.hint}"
+        )
+
+
 class SemiJoinPushedWarningPayload(SlayerWarning):
     """A ROW filter pushed into a producer as a semi-join (EXISTS): correctly applied, informational only — carried on the response, never a Python warning and never an error."""
 
@@ -143,6 +165,7 @@ AnySlayerWarning = Annotated[
         DroppedFilterWarning,
         BroadcastGrainWarningPayload,
         AssociatedWarningPayload,
+        DegenerateReaggregationWarningPayload,
         SemiJoinPushedWarningPayload,
         ResponseTruncationWarning,
     ],
