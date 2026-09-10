@@ -19,11 +19,16 @@ from tests._dev1847_fixtures import (
     BROADCAST_GLOBAL_AVG_CITY,
     INNER_CITY,
     INNER_CR,
+    SHAPE_B_BAND_TOTAL,
+    SPEND_BAND_EXPR,
+    ModelMeasure,
     associated_warnings,
     broadcast_warnings,
+    chain_q,
     make_exec_engine,
     reagg,
     region_key,
+    rows_by,
     sales_q,
 )
 
@@ -114,3 +119,37 @@ class TestExplicitOuterKeyUnattributable:
             await exec_engine.execute(self._pq("error"))
         assert not isinstance(ei.value, NotImplementedError)
         assert "product" in str(ei.value)
+
+
+class TestExpressionGrainNonTransitivity:
+    async def test_expression_grain_determines_only_itself(self, exec_engine):
+        """Deferred from stage 2: an expression inner grain (spend_band)
+        determines only itself — region is NOT attributed through it; each row
+        carries its band's cell value and region broadcasts with a warning."""
+        band = {"expression": SPEND_BAND_EXPR, "name": "spend_band"}
+        resp = await exec_engine.execute(sales_q(
+            dimensions=[band, "region"],
+            measures=[ModelMeasure(
+                formula="avg(sum(amount, partition_by=spend_band))", name="abt")]))
+        by = rows_by(resp, "sales.spend_band", "sales.region")
+        for (bandv, _region), cell in by.items():
+            assert float(cell["sales.abt"]) == pytest.approx(
+                SHAPE_B_BAND_TOTAL[bandv])
+        (w,) = broadcast_warnings(resp)
+        assert any(d.dimension == "region" for d in w.dimensions)
+
+
+class TestJoinedDimensionSeeding:
+    async def test_unseeded_joined_dimension_broadcasts(self, exec_engine):
+        """A joined dim reachable to-one from the host but NOT seeded by the
+        operand grain broadcasts the global value with a warning — never a
+        silent per-group association (Codex review find)."""
+        resp = await exec_engine.execute(chain_q(
+            dimensions=["customers.regions.name"],
+            measures=[ModelMeasure(
+                formula="avg(sum(amount, partition_by=amount))", name="a")]))
+        vals = {row["corders.customers.regions.name"]: float(row["corders.a"])
+                for row in resp.data}
+        assert vals == {"North": 42.5, "South": 42.5}  # global avg of the 4 cells
+        (w,) = broadcast_warnings(resp)
+        assert "determined by the operand grain" in w.human_message()

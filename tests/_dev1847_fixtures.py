@@ -1,36 +1,9 @@
 """Shared fixtures for DEV-1847 — second-order aggregation (re-aggregation).
 
-Axiom 6: an aggregate is a dataset, so it can be aggregated again. An outer
-aggregation whose operand is an attached (partitioned) aggregate consumes the
-inner producer's *grain rows*, never the broadcast query rows.
-
-Two datasets, both datasource ``test`` (dual-engine: one seeded into SQLite AND
-DuckDB via ``make_exec_engine``):
-
-``sales`` — denormalized (region, city, product, amount); ``id`` is the PK.
-  The city ``Alpha`` appears in BOTH North and South with different totals, so
-  ``partition_by=[city, region]`` and ``partition_by=city`` diverge. Region
-  ``Gap`` carries a NULL-city cell; region ``Void``'s only rows have NULL
-  ``amount`` (sum → NULL, count → 0).
-
-  sales rows (region, city, product, amount):
-    North Alpha  P 10 | North Alpha P 10 | North Alpha Q 10   -> Alpha 30 (3 rows)
-    North Beta   Q 60                                          -> Beta  60 (1 row)
-    South Alpha  P 20 | South Alpha P 20                       -> Alpha 40 (2 rows)
-    South Gamma  Q 100                                         -> Gamma 100 (1 row)
-    East  Delta  P 50 | East Epsilon P 50 | East Zeta Q 80     -> 50/50/80
-    Gap   NULL   P 7  | Gap Kappa    P 8                        -> NULL 7, Kappa 8
-    Void  Xi     P NULL | Void Xi    P NULL                     -> NULL (all-null)
-
-``regions``/``customers``/``corders`` — normalized chain for to-one attribution:
-  regions(id,name): 1 North, 2 South
-  customers(id,region_id): 1->1, 2->1, 3->2            (customers.id PK)
-  corders(id,customer_id,amount): c1 {10,20}=30, c2 {40}=40, c3 {100}=100
-  ``avg(sum(amount, partition_by=customer_id))`` by region: North 35, South 100.
-
-Every oracle below is re-derived from the raw rows by the fixture smoke test
-(``test_dev1847_fixtures_smoke.py``) so a hand-arithmetic slip fails loudly.
-"""
+``sales`` is denormalized (Alpha appears in North AND South; Gap has a
+NULL-city cell; Void is all-NULL amounts); ``corders``→``customers``→``regions``
+is a to-one chain for attribution. Every oracle constant is re-derived from the
+raw rows by ``test_dev1847_fixtures_smoke.py``."""
 
 from __future__ import annotations
 
@@ -50,7 +23,7 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
-from slayer.core.query import SlayerQuery
+from slayer.core.query import ColumnRef, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -59,9 +32,6 @@ from tests._dev1841_fixtures import associated_warnings
 from tests._engine_helpers import _engine_generate
 
 
-# --------------------------------------------------------------------------- #
-# Models.
-# --------------------------------------------------------------------------- #
 def sales_model() -> SlayerModel:
     return SlayerModel(
         name="sales", data_source="test", sql_table="sales",
@@ -71,13 +41,10 @@ def sales_model() -> SlayerModel:
             Column(name="city", type=DataType.TEXT),
             Column(name="product", type=DataType.TEXT),
             Column(name="amount", type=DataType.DOUBLE),
-            # Measure-local filtered column: amount restricted to product 'Q'.
-            # Sparse by design — a (city, region) cell with no Q row has no value.
+            # amount restricted to product 'Q' — sparse by design.
             Column(name="q_amount", type=DataType.DOUBLE, sql="amount",
                    filter="product = 'Q'"),
         ],
-        # A model-defined custom aggregation (SUM) — exercises a custom OUTER
-        # aggregation over the inner producer's grain rows.
         aggregations=[Aggregation(name="dsum", formula="SUM({value})")],
     )
 
@@ -123,29 +90,24 @@ def dev1847_models() -> List[SlayerModel]:
 
 
 def source_queries_equiv_model() -> SlayerModel:
-    """The manual two-stage encoding DEV-1847 replaces: stage 1 sums at the
-    (region, city) grain, stage 2 averages per region — the same number the
-    ``avg(sum(amount, partition_by=[city, region]))`` re-aggregation must match."""
+    """The manual two-stage encoding the re-aggregation must match."""
     return SlayerModel(
         name="avg_city_total_by_region", data_source="test",
         source_queries=[
             SlayerQuery(
                 name="city_region_total", source_model="sales",
-                dimensions=["region", "city"],
+                dimensions=[ColumnRef(name="region"), ColumnRef(name="city")],
                 measures=[ModelMeasure(formula="amount:sum", name="city_total")],
             ),
             SlayerQuery(
                 source_model="city_region_total",
-                dimensions=["region"],
+                dimensions=[ColumnRef(name="region")],
                 measures=[ModelMeasure(formula="city_total:avg", name="acr")],
             ),
         ],
     )
 
 
-# --------------------------------------------------------------------------- #
-# Query shorthands.
-# --------------------------------------------------------------------------- #
 def sales_q(**kw) -> SlayerQuery:
     kw.setdefault("source_model", "sales")
     return SlayerQuery(**kw)
@@ -164,8 +126,6 @@ async def gen(query: SlayerQuery, *, dialect: str = "postgres") -> str:
         dialect=dialect, validate=False)
 
 
-# Inner partitioned-aggregate formulas (these parse today; the OUTER wrap is the
-# new surface). Spelled functionally per the proposal; colon form is equivalent.
 INNER_CR = "sum(amount, partition_by=[city, region])"  # [city, region] grain
 INNER_CITY = "sum(amount, partition_by=city)"          # [city] grain (spans regions)
 INNER_CRP = "sum(amount, partition_by=[city, region, product])"
@@ -177,9 +137,6 @@ def reagg(outer: str, inner: str, *, name: str, **kw) -> ModelMeasure:
     return ModelMeasure(formula=f"{outer}({inner}{extra})", name=name)
 
 
-# --------------------------------------------------------------------------- #
-# Warning helpers.
-# --------------------------------------------------------------------------- #
 #: The warning kind DEV-1847 adds for an operand grain == outer grain.
 DEGENERATE_KIND = "degenerate_reaggregation"
 
@@ -194,21 +151,15 @@ def warning_kinds(resp) -> list:
     return [getattr(w, "kind", None) for w in (resp.warnings or [])]
 
 
-# --------------------------------------------------------------------------- #
-# Oracles (hand-computed; re-derived by the smoke test).
-# --------------------------------------------------------------------------- #
 #: avg(sum(amount, partition_by=[city, region])) by region — the headline oracle.
 AVG_CITY_TOTAL_BY_REGION = {"North": 45.0, "South": 70.0, "East": 60.0, "Gap": 10.0}
 #: the WRONG row-count-weighted value the naive broadcast would give.
 ROW_WEIGHTED_WRONG = {"North": 37.5, "South": 60.0}
-#: partition_by=city alone, re-aggregated globally (broadcast default) by region.
-#: city totals [Alpha 70, Beta 60, Gamma 100, Delta 50, Epsilon 50, Zeta 80,
-#: NULL 12, Kappa 8] -> 430 / 8 = 53.75.
+#: partition_by=city re-aggregated globally (broadcast): 430 / 8 city cells.
 BROADCAST_GLOBAL_AVG_CITY = 53.75
 #: partition_by=city alone, re-aggregated per region under associate mode.
 ASSOCIATE_AVG_CITY_BY_REGION = {"North": 65.0, "South": 85.0}
-#: avg(sum(amount)) by region == per-region total (degenerate identity).
-#: Also the oracle for the custom OUTER aggregation ``dsum`` (SUM of city totals).
+#: degenerate identity per region; also the custom-outer ``dsum`` oracle.
 DEGENERATE_SUM_BY_REGION = {"North": 90.0, "South": 140.0, "East": 180.0, "Gap": 20.0}
 #: avg(sum(amount, partition_by=[])) — the grand total (keyless identity).
 KEYLESS_GRAND_TOTAL = 430.0
@@ -223,13 +174,11 @@ GAP_AVG = 10.0
 GAP_NULL_CELL_TOTAL = 12.0
 #: to-one chain: avg(sum(amount, partition_by=customer_id)) by region name.
 CHAIN_AVG_BY_REGION = {"North": 35.0, "South": 100.0}
-#: composite operand ``q_amount:sum(pb=[city,region]) + amount:sum(pb=region)``
-#: re-aggregated by region (a NULL constituent keeps its cell, not dropped).
+#: composite operand by region (a NULL constituent keeps its cell).
 COMPOSITE_AVG_BY_REGION = {"North": 125.0, "South": 240.0, "East": 260.0}
 #: row-phase filter ``product='P'`` reaches the inner producer, shifting totals.
 ROWPHASE_P_AVG_BY_REGION = {"North": 20.0, "South": 40.0, "East": 50.0, "Gap": 10.0}
-#: shape B: spend_band = 'hi' when the [city,region] total > 45 else 'lo'.
-#:   amount:sum(partition_by=spend_band) — the band total, broadcast.
+#: shape B (spend_band = 'hi' iff [city,region] total > 45): the band totals.
 SHAPE_B_BAND_TOTAL = {"hi": 340.0, "lo": 90.0}
 #:   plain amount:sum grouped by (region, spend_band).
 SHAPE_B_GROUP_SUM = {
@@ -237,8 +186,7 @@ SHAPE_B_GROUP_SUM = {
     ("South", "lo"): 40.0, ("South", "hi"): 100.0,
     ("East", "hi"): 180.0, ("Gap", "lo"): 20.0, ("Void", "lo"): None,
 }
-#:   avg(sum(amount, partition_by=[city,region])) grouped by (region, spend_band)
-#:   — spend_band is determined from the inner grain, so it partitions exactly.
+#:   the re-aggregated avg by (region, spend_band) — partitions exactly.
 SHAPE_B_ACR = {
     ("North", "lo"): 30.0, ("North", "hi"): 60.0,
     ("South", "lo"): 40.0, ("South", "hi"): 100.0,
@@ -251,11 +199,7 @@ SPEND_BAND_EXPR = (
 )
 
 
-# --------------------------------------------------------------------------- #
-# Execution dataset.
-# --------------------------------------------------------------------------- #
-_SALES_ROWS = [
-    # (id, region, city, product, amount)
+_SALES_ROWS = [  # (id, region, city, product, amount)
     (1, "North", "Alpha", "P", 10.0),
     (2, "North", "Alpha", "P", 10.0),
     (3, "North", "Alpha", "Q", 10.0),
@@ -266,8 +210,7 @@ _SALES_ROWS = [
     (8, "East", "Delta", "P", 50.0),
     (9, "East", "Epsilon", "P", 50.0),
     (10, "East", "Zeta", "Q", 80.0),
-    # Gap: two NULL-city rows (7 + 5) coalesce into ONE null-grain cell (12),
-    # distinct from Kappa (8) — so Gap's avg of city totals is avg(12, 8) = 10.
+    # Gap's two NULL-city rows coalesce into ONE null-grain cell (12).
     (11, "Gap", None, "P", 7.0),
     (12, "Gap", None, "P", 5.0),
     (13, "Gap", "Kappa", "P", 8.0),
@@ -345,8 +288,8 @@ def region_key(resp) -> dict:
 
 
 __all__ = [
-    "Column", "DataType", "ModelJoin", "ModelMeasure", "SlayerModel",
-    "SlayerQuery", "JoinCardinality",
+    "Column", "ColumnRef", "DataType", "ModelJoin", "ModelMeasure",
+    "SlayerModel", "SlayerQuery", "JoinCardinality",
     "sales_model", "regions_model", "customers_model", "corders_model",
     "dev1847_models", "source_queries_equiv_model",
     "sales_q", "chain_q", "reagg", "region_key", "rows_by", "gen",

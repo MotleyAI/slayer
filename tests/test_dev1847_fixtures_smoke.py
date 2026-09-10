@@ -36,6 +36,7 @@ from tests._dev1847_fixtures import (
     SHAPE_B_BAND_THRESHOLD,
     SHAPE_B_BAND_TOTAL,
     SHAPE_B_GROUP_SUM,
+    dev1847_models,
     make_exec_engine,
     source_queries_equiv_model,
 )
@@ -74,7 +75,7 @@ class TestOracleReDerivation:
         # row-weighted wrong value: broadcast each city total onto its rows.
         for region in ("North", "South"):
             rows = [r for r in _SALES_ROWS if r[1] == region]
-            bc = [cr[(r[2], r[1])] for r in rows if cr[(r[2], r[1])] is not None]
+            bc = [v for r in rows if (v := cr[(r[2], r[1])]) is not None]
             assert mean(bc) == pytest.approx(ROW_WEIGHTED_WRONG[region])
             assert ROW_WEIGHTED_WRONG[region] != AVG_CITY_TOTAL_BY_REGION[region]
 
@@ -86,7 +87,8 @@ class TestOracleReDerivation:
         for (_id, region, city, _p, _a) in _SALES_ROWS:
             region_cities[region].add(city)
         for region, expected in ASSOCIATE_AVG_CITY_BY_REGION.items():
-            vals = [city_tot[c] for c in region_cities[region] if city_tot[c] is not None]
+            vals = [v for c in region_cities[region]
+                    if (v := city_tot[c]) is not None]
             assert mean(vals) == pytest.approx(expected)
 
     def test_degenerate_keyless_and_gap(self):
@@ -185,7 +187,6 @@ class TestSourceQueriesRealizesOracle:
 
     @pytest.fixture(params=["sqlite", "duckdb"])
     async def engine(self, request):
-        from tests._dev1847_fixtures import dev1847_models
         models = dev1847_models() + [source_queries_equiv_model()]
         async for eng in make_exec_engine(request, models=models):
             yield eng

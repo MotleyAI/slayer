@@ -121,9 +121,12 @@ compiles through the same target-rooted producer as a
 [cross-model measure](#cross-model-measures), with the same exact-grain vs
 broadcast semantics.
 
+An aggregate partitioned by another computed dimension — even one carrying an
+attached aggregate — compiles as a nested producer
+([re-aggregation](formulas.md#re-aggregation-aggregate-over-an-attached-value)).
+
 Deferred shapes (raise a clear error citing the follow-up): a bare aggregate
-without `partition_by=`, an aggregate partitioned by another computed dimension
-(a nested attach), a computed dimension combined with a bare windowed
+without `partition_by=`, a computed dimension combined with a bare windowed
 (`window=` without `partition_by=`) or `first` / `last` measure, a
 **mixed-grain** transform any of whose inner aggregates is windowed or `first`
 / `last` (its union would need the synthesized time bucket), and a time-ordered

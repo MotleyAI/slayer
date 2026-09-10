@@ -1,12 +1,7 @@
 """DEV-1847 task 1.4/4.2 — nested producers compose to arbitrary depth (SQLite +
-DuckDB). Depth-three executed values, one flat WITH with closed scopes and no
-placeholder leak, and a producer consumed at two depths that renders once.
-Fails until the depth-1 / strict-subset arms of ``_validate_nested_producer_plan``
-are lifted.
-
-Spec: openspec …/specs/queries/partitioned-aggregates — "Nested producers
-compose to arbitrary depth".
-"""
+DuckDB): depth-three executed values, one flat WITH with closed scopes and no
+placeholder leak, and a producer consumed at two depths that renders once
+(spec: queries/partitioned-aggregates)."""
 
 from __future__ import annotations
 
@@ -41,18 +36,23 @@ async def exec_engine(request):
 
 
 def _grain_producer_count(sql: str, *, dialect: str, grain=("city", "region")) -> int:
-    """Number of CTEs whose GROUP BY keys cover every token in ``grain``
-    (substring match survives alias mangling like ``sales___city``)."""
+    """Number of CTEs ANY of whose SELECTs (producers wrap their GROUP BY in a
+    ``_stage_inner`` subquery) groups by PLAIN columns exactly matching ``grain``
+    (name suffix match survives alias mangling like ``sales___city``); expression
+    keys (the association kernel's cell GROUP BY) don't count."""
     tree = sqlglot.parse_one(sql, dialect=dialect)
     count = 0
     for cte in tree.find_all(exp.CTE):
-        select = cte.this
-        group = select.args.get("group") if isinstance(select, exp.Select) else None
-        if group is None:
-            continue
-        keys = " ".join(col.sql().lower() for col in group.expressions)
-        if all(token in keys for token in grain):
-            count += 1
+        for select in cte.find_all(exp.Select):
+            group = select.args.get("group")
+            if group is None or not all(
+                isinstance(e, exp.Column) for e in group.expressions
+            ):
+                continue
+            names = {e.name.lower().rsplit("_", 1)[-1] for e in group.expressions}
+            if names == set(grain):
+                count += 1
+                break
     return count
 
 
