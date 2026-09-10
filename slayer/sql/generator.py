@@ -3419,11 +3419,15 @@ class SQLGenerator:
                 name=picked_alias, sql=None, aggregation=agg_slot.key.agg,
                 alias=agg_alias, model_name="_base", type=agg_slot.type,
                 aggregation_def=agg_def,
-                agg_kwargs={k: agg_kwarg_canonical_str(v) for k, v in agg_slot.key.kwargs},
+                agg_kwargs={
+                    k: ResolvedAggKwarg(kind="str", value=agg_kwarg_canonical_str(v))
+                    for k, v in agg_slot.key.kwargs
+                },
             )
-            inner_cols.append(
-                exp.Max(this=value_expr.copy()).as_(exp.to_identifier(picked_alias)),
-            )
+            inner_cols.append(exp.Alias(
+                this=exp.Max(this=value_expr.copy()),
+                alias=exp.to_identifier(picked_alias),
+            ))
         else:
             resolved = self._resolve_agg_inputs_via_scope(
                 base_render_order=[agg_slot.id], slots_by_id={agg_slot.id: agg_slot},
@@ -3505,6 +3509,7 @@ class SQLGenerator:
                 alias=agg_alias, model_name="_base", type=agg_slot.type,
             )
         else:
+            assert spec is not None  # set in both non-star arms above
             level2_spec = AggRenderSpec(
                 # A re-aggregation ``count`` counts the cells with a NON-NULL
                 # value (COUNT(_v)), not the cells (COUNT(*)); reference _v so the

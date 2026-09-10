@@ -2,12 +2,10 @@
 
 Covers the new ``slayer/core/grain.py`` value type (construction, set protocol,
 Grain-only equality, lattice predicates, operand contract) and the planner sites
-retyped to ``Grain``: ``regroup_root_grain``, ``_effective_root_grain``,
-``_prune_functionally_determined_grain``, and the ``_validate_nested_producer_plan``
-broadcast-direction admission. Fails on import until ``grain.py`` exists; the
-grain-direction planner tests fail until the planners return/accept ``Grain``. The
-row-phase-skip and deeper-CTE guards are behavior-preserving — they pass once the
-module exists and must keep passing after the refactor.
+retyped to ``Grain``: ``regroup_root_grain``, ``_effective_root_grain``, and
+``_prune_functionally_determined_grain``. (The ``_validate_nested_producer_plan``
+admission guard was removed by DEV-1847 — nesting is admitted by the general
+complete-grain rule.)
 """
 
 from __future__ import annotations
@@ -22,16 +20,10 @@ from slayer.core.keys import (
     ColumnKey,
     TransformKey,
 )
-from slayer.engine.planned import (
-    PlannedQuery,
-    RegroupAttachPlan,
-    RegroupSubstitution,
-)
 from slayer.engine.regroup_planner import regroup_root_grain
 from slayer.engine.stage_planner import (
     _effective_root_grain,
     _prune_functionally_determined_grain,
-    _validate_nested_producer_plan,
 )
 
 REGION = ColumnKey(path=(), leaf="region")
@@ -229,68 +221,3 @@ class TestPruneFunctionallyDeterminedGrain:
         assert g == Grain.of([REGION, RANK_DETERMINED])  # input untouched
         assert RANK_DETERMINED not in out  # determined by region → dropped
         assert REGION in out
-
-
-def _sub(*, windowed: bool) -> RegroupSubstitution:
-    orig = WINDOW_SUM if windowed else BARE_SUM
-    return RegroupSubstitution(placeholder=orig, producer_slot_id="s", original_key=orig)
-
-
-def _attach(*, host_keys, windowed, phase="combined", nested=()):
-    return RegroupAttachPlan(
-        producer_plan=PlannedQuery(
-            source_relation="_nested", regroup_attach_plans=list(nested),
-        ),
-        alias_hint="a",
-        attach_phase=phase,
-        join_pairs=[(k, f"slot{i}") for i, k in enumerate(host_keys)],
-        substitutions=[_sub(windowed=windowed)],
-    )
-
-
-def _producer(attach: RegroupAttachPlan) -> PlannedQuery:
-    return PlannedQuery(source_relation="_regroup", regroup_attach_plans=[attach])
-
-
-_SUBSET_MSG = (
-    "A union-grain producer's nested attach grain is not a subset "
-    "of the producer grain; only subset inner grains broadcast (DEV-1847)."
-)
-
-
-class TestValidateNestedProducerPlan:
-    UNION = Grain.of([REGION, CITY])
-
-    def test_equal_grain_windowed_admitted(self) -> None:
-        pp = _producer(_attach(host_keys=[REGION, CITY], windowed=True))
-        _validate_nested_producer_plan(producer_plan=pp, producer_grain=self.UNION)
-
-    def test_equal_grain_non_windowed_rejected(self) -> None:
-        pp = _producer(_attach(host_keys=[REGION, CITY], windowed=False))
-        with pytest.raises(NotImplementedError) as ei:
-            _validate_nested_producer_plan(producer_plan=pp, producer_grain=self.UNION)
-        assert str(ei.value) == _SUBSET_MSG
-
-    def test_strict_subgrain_admitted(self) -> None:
-        pp = _producer(_attach(host_keys=[REGION], windowed=False))
-        _validate_nested_producer_plan(producer_plan=pp, producer_grain=self.UNION)
-
-    def test_supergrain_rejected(self) -> None:
-        pp = _producer(_attach(host_keys=[REGION, CITY, CHANNEL], windowed=False))
-        with pytest.raises(NotImplementedError) as ei:
-            _validate_nested_producer_plan(producer_plan=pp, producer_grain=self.UNION)
-        assert str(ei.value) == _SUBSET_MSG
-
-    def test_row_phase_attach_skipped(self) -> None:
-        # A supergrain ROW attach would reject if checked; the phase gate skips it.
-        pp = _producer(
-            _attach(host_keys=[REGION, CITY, CHANNEL], windowed=False, phase="row"),
-        )
-        _validate_nested_producer_plan(producer_plan=pp, producer_grain=self.UNION)
-
-    def test_deeper_cte_rejected(self) -> None:
-        inner = _attach(host_keys=[REGION], windowed=False)
-        pp = _producer(_attach(host_keys=[REGION], windowed=False, nested=[inner]))
-        with pytest.raises(NotImplementedError) as ei:
-            _validate_nested_producer_plan(producer_plan=pp, producer_grain=self.UNION)
-        assert "needs a further regroup producer CTE" in str(ei.value)

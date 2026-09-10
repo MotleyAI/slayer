@@ -71,7 +71,9 @@ duplicate-key error asking for a rename.
   is not yet supported;
 * operands whose column carries a column-level `filter` — define a derived
   model column instead;
-* nested aggregations or transforms (`sum(sum(x))`, `sum(cumsum(x) - 1)`).
+* nested transforms (`sum(cumsum(x) - 1)`) and sources mixing row-level
+  columns with attached values (`sum(x + sum(x))`) — a fully-attached source
+  is a [re-aggregation](#re-aggregation-aggregate-over-an-attached-value).
 
 **Gates.** Per-column `allowed_aggregations` / primary-key / type-default
 gates apply to *columns*, not expressions — `sum(price * quantity)` succeeds
@@ -239,8 +241,9 @@ the measure's model. Consumed in a **combined position** — a query measure, an
 arithmetic/scalar composite, a transform input, or a raw `order` target — every
 explicit partition key must be a query dimension (or a query time dimension's
 bucket), for local and cross-model sources alike, else it errors at plan time
-naming the key and the remedy. Only the computed-dimension consumer keeps the
-finer-grain freedom; a filter over, or `order` by the *name* of, that dimension's
+naming the key and the remedy. Only the computed-dimension consumer and a
+[re-aggregation](#re-aggregation-aggregate-over-an-attached-value) operand keep
+the finer-grain freedom; a filter over, or `order` by the *name* of, that dimension's
 own aggregate is a row-scope reference that stays legal at any partition grain.
 For a cross-model source, every explicit partition key must additionally be
 *attributable* from the measure's own model (see
@@ -252,6 +255,29 @@ Combining aggregates at **different** grains in one expression is well-defined:
 a computed dimension, a filter, or wrapped in a transform such as
 `rank(...)`) unions the two grains and broadcasts each aggregate to the union —
 never an error. See [grain-union broadcasting](queries.md#grouping-by-an-expression-over-an-aggregate).
+
+### Re-aggregation (aggregate over an attached value)
+
+Wrapping a partitioned aggregate in another aggregation re-aggregates its
+**cells** — one input row per inner group, never the query's population rows:
+
+```json
+{
+  "dimensions": ["region"],
+  "measures": [
+    {"formula": "avg(amount:sum(partition_by=[city, region]))", "name": "avg_city_total"}
+  ]
+}
+```
+
+`avg_city_total` is each region's unweighted average of its city totals (a
+row-weighted average would be wrong, and is exactly what this shape avoids).
+The operand may compose several attached aggregates (their grains union), and
+`partition_by=` may name a computed dimension — including one carrying an
+attached aggregate itself. An outer dimension not determined by the operand's
+grain resolves per `to_many_handling` (broadcast + warning by default), and an
+operand grain equal to the outer grain is the identity plus a degenerate
+warning naming the `partition_by=` remedy.
 
 ---
 

@@ -38,7 +38,8 @@ is the coercion from coarser to finer.
    again; a strictly coarser grain is reached only through an explicit
    second-order aggregation — the implicit collapse is a typed error
    [enforced: test:tests/test_dev1824_partitioned_execution.py]; second-order
-   aggregation over attached values [target: DEV-1847]; aggregation sources
+   aggregation over attached values
+   [enforced: test:tests/test_dev1847_reaggregation_exec.py]; aggregation sources
    mixing row-level columns with attached values [target: DEV-1859].
 7. **Attributability**: a dimension is attributable to an aggregation iff the
    home dataset determines it — the cells then partition the home rows and sum

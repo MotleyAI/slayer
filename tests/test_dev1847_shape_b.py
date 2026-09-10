@@ -1,13 +1,6 @@
 """DEV-1847 task 1.4/3.3 — shape B (partition_by an attach-carrying computed
-dimension) and the narrowed combined-consumer partition-key rule (SQLite +
-DuckDB). Directly exercises the removal of ``_reraise_nested_attach`` and the
-re-aggregation-operand finer-grain exemption.
-
-Spec: openspec …/specs/queries/partitioned-aggregates — "Partitioning by an
-attach-carrying computed dimension", "Combined-consumer partition keys are query
-dimensions" (MODIFIED) › "Re-aggregation operands keep the finer-grain
-exemption".
-"""
+dimension) and the re-aggregation-operand finer-grain exemption (spec:
+queries/partitioned-aggregates)."""
 
 from __future__ import annotations
 
@@ -43,8 +36,7 @@ async def exec_engine(request):
 
 class TestPartitionByBandedDimension:
     async def test_measure_partitioned_by_banded_dimension(self, exec_engine):
-        """Scenario: Measure partitioned by a banded dimension — the band total
-        broadcasts across the band's rows; no nested-attach NotImplementedError."""
+        """The band total broadcasts across the band's rows."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region", BAND],
             measures=[ModelMeasure(formula="amount:sum", name="tot"),
@@ -59,9 +51,7 @@ class TestPartitionByBandedDimension:
     async def test_partition_by_computed_dim_no_longer_raises_nested_attach(
         self, exec_engine,
     ):
-        """The ``_reraise_nested_attach`` site is removed — partitioning by an
-        attach-carrying computed dimension compiles rather than raising
-        NotImplementedError."""
+        """Partitioning by an attach-carrying computed dimension compiles."""
         try:
             await exec_engine.execute(sales_q(
                 dimensions=["region", BAND],
@@ -71,9 +61,7 @@ class TestPartitionByBandedDimension:
             pytest.fail(f"nested-attach guard still present: {exc}")
 
     async def test_nested_inside_another_computed_dimension(self, exec_engine):
-        """Scenario: Nested inside another computed dimension — a second computed
-        dimension whose expression partitions by spend_band plans and executes
-        without the nested-attach error."""
+        """A second computed dimension partitioned by spend_band executes."""
         resp = await exec_engine.execute(sales_q(
             dimensions=[BAND, BAND2],
             measures=[ModelMeasure(formula="amount:sum", name="tot")]))
@@ -85,9 +73,7 @@ class TestPartitionByBandedDimension:
 
 class TestCombinedConsumerExemption:
     async def test_reaggregation_operand_keeps_finer_grain_exemption(self, exec_engine):
-        """Scenario: Re-aggregation operands keep the finer-grain exemption — an
-        inner partition key (city) that is not a query dimension is legal because
-        the aggregate is consumed only as the outer operand."""
+        """An inner partition key that is not a query dimension is legal."""
         try:
             resp = await exec_engine.execute(sales_q(
                 dimensions=["region"],
@@ -99,8 +85,7 @@ class TestCombinedConsumerExemption:
         assert float(vals["North"]) == pytest.approx(AVG_CITY_TOTAL_BY_REGION["North"])
 
     async def test_outer_explicit_key_still_carries_the_rule(self, exec_engine):
-        """The outer aggregation's OWN explicit partition key must still be a
-        query dimension — here ``product`` is not, so it fails cleanly."""
+        """The outer's OWN explicit partition key must be a query dimension."""
         with pytest.raises((SlayerError, ValueError)) as ei:
             await exec_engine.execute(sales_q(
                 dimensions=["region"],
@@ -112,3 +97,26 @@ class TestCombinedConsumerExemption:
         # message echoes 'product' from the formula).
         assert "nested inside the expression aggregated" not in msg
         assert "product" in msg
+
+
+class TestFilterAndOrderSurfaces:
+    async def test_filter_partition_by_computed_dim(self, exec_engine):
+        """A FILTER's partition_by= resolves the computed dimension name too
+        (Codex review find) — only the hi band (340 > 100) survives."""
+        resp = await exec_engine.execute(sales_q(
+            dimensions=["region", BAND],
+            measures=[ModelMeasure(formula="amount:sum", name="tot")],
+            filters=["amount:sum(partition_by=spend_band) > 100"]))
+        labels = {row["sales.spend_band"] for row in resp.data}
+        assert resp.data and labels == {"hi"}
+
+    async def test_order_partition_by_computed_dim(self, exec_engine):
+        """A raw ORDER BY target's partition_by= resolves it as well — hi band
+        rows (340) sort before lo (90)."""
+        resp = await exec_engine.execute(sales_q(
+            dimensions=["region", BAND],
+            measures=[ModelMeasure(formula="amount:sum", name="tot")],
+            order=[{"column": "amount:sum(partition_by=spend_band)",
+                    "direction": "desc"}]))
+        labels = [row["sales.spend_band"] for row in resp.data]
+        assert labels == sorted(labels, key=lambda x: x != "hi")

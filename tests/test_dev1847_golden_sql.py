@@ -1,13 +1,7 @@
 """DEV-1847 golden SQL (task 6.1) — re-aggregation shapes across seven Tier-1
-dialects. Blessed BEFORE implementation, so every case records today's
-feature-missing raise. At implementation each case's flip to the stacked
-producer shape enters ALLOWED_DELTAS, is re-blessed, and the manifest is emptied.
-
-``test_reaggregation_cases_emit_stacked_producers`` is this module's
-feature-missing failure until then. Query construction is deferred into
-``_generate_one`` (never at import) so a case records a raise, not a collection
-error.
-"""
+dialects, blessed as the stacked producer-over-producer SQL (originally
+recorded as feature-missing raises; re-blessed per the ALLOWED_DELTAS
+protocol when the feature landed)."""
 
 from __future__ import annotations
 

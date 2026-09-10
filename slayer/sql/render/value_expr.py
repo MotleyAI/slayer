@@ -293,6 +293,13 @@ def _render_builtin_aggregate(  # NOSONAR(S3776) — sequential fail-closed guar
                 f"only 'count' is defined over a bare star.",
             )
         inner: exp.Expression = exp.Star()
+    elif isinstance(key.source, AggregateKey):
+        # A nested-aggregate source (re-aggregation) desugars before render.
+        raise RenderContextMissingFacilityError(
+            key_kind=type(key).__name__,
+            facility=_AGG_BUILDER,
+            detail="a nested-aggregate source must desugar to a producer",
+        )
     else:
         inner = _require_scope(ctx, key).resolve(
             key.source, consumer=ctx.consumer,

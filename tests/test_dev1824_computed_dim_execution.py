@@ -203,9 +203,10 @@ class TestDimensionErrorSurface:
             await exec_engine.execute(query)
         assert "__regroup__" not in str(ei.value)
 
-    async def test_aggregate_over_attached_value_rejected(self, exec_engine) -> None:
+    async def test_aggregate_over_attached_value_executes(self, exec_engine) -> None:
         # `b2` aggregates at the grain of `band`, whose own value needs a row
-        # attach first — the requires_nested_attach shape fails closed.
+        # attach first — legal since DEV-1847 (shape B); value oracles live in
+        # tests/test_dev1847_shape_b.py.
         query = q(
             dimensions=[
                 {"expression": BAND35, "name": "band"},
@@ -213,12 +214,11 @@ class TestDimensionErrorSurface:
             ],
             measures=[ModelMeasure(formula="amount:sum", name="s")],
         )
-        with pytest.raises((NotImplementedError, ValueError)) as ei:
-            await exec_engine.execute(query)
-        assert "not yet supported" in str(ei.value).lower()
-        assert "__regroup__" not in str(ei.value)
+        resp = await exec_engine.execute(query)
+        for row in resp.data:
+            assert float(row["orders.b2"]) == float(row["orders.s"])
 
-    async def test_measure_partitioned_by_computed_dimension_rejected(
+    async def test_measure_partitioned_by_computed_dimension_executes(
         self, exec_engine,
     ) -> None:
         query = q(
@@ -227,10 +227,9 @@ class TestDimensionErrorSurface:
                 formula="amount:sum(partition_by=band)", name="bt",
             )],
         )
-        with pytest.raises((NotImplementedError, ValueError)) as ei:
-            await exec_engine.execute(query)
-        assert "not yet supported" in str(ei.value).lower()
-        assert "__regroup__" not in str(ei.value)
+        resp = await exec_engine.execute(query)
+        by = {row["orders.band"]: float(row["orders.bt"]) for row in resp.data}
+        assert by == {0: 60.0, 1: 150.0}
 
     async def test_grain_circular_dimension_rejected(self, exec_engine) -> None:
         circular = "CASE WHEN amount:sum(partition_by=selfband) > 10 THEN 1 ELSE 0 END"

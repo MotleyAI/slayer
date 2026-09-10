@@ -23,7 +23,9 @@ from tests._dev1847_fixtures import (
     INNER_CR,
     KEYLESS_GRAND_TOTAL,
     ROW_WEIGHTED_WRONG,
+    ColumnRef,
     ModelMeasure,
+    SlayerQuery,
     broadcast_warnings,
     chain_q,
     degenerate_warnings,
@@ -208,3 +210,19 @@ class TestNullEmptyKeyless:
             measures=[reagg("avg", "sum(amount, partition_by=[])", name="g")]))
         assert float(resp.data[0]["sales.g"]) == pytest.approx(KEYLESS_GRAND_TOTAL)
         assert degenerate_warnings(resp)
+
+
+class TestCrossModelInner:
+    async def test_cross_model_inner_aggregate_executes(self, exec_engine):
+        """Deferred from stage 2: a cross-model inner aggregate (corders.amount
+        summed from customers at the region_id grain) re-aggregates over its
+        cells — region 1 orders 10+20+40, region 2 order 100."""
+        resp = await exec_engine.execute(SlayerQuery(
+            source_model="customers",
+            dimensions=[ColumnRef(name="region_id")],
+            measures=[ModelMeasure(
+                formula="avg(sum(corders.amount, partition_by=region_id))",
+                name="art")]))
+        by = rows_by(resp, "customers.region_id")
+        assert float(by[(1,)]["customers.art"]) == pytest.approx(70.0)
+        assert float(by[(2,)]["customers.art"]) == pytest.approx(100.0)

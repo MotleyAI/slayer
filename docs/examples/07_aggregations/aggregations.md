@@ -280,6 +280,8 @@ Most aggregations take an optional `partition_by=` to compute over a subset of t
 
 A local `partition_by` aggregate also composes with the rest of the query: combined with `window=` (a rolling total at the partition grain, per the query's time bucket), on `first`/`last`, nested inside a transform (`cumsum(revenue:sum(partition_by=region))`), and referenced in a filter or `order` target (`revenue:sum(partition_by=region) > 5000`) — cross-model included (`customers.spend:sum(partition_by=customers.regions.name) > 100`). A filter's top-level `AND` conjuncts route independently; a single predicate valid as neither a row-level field nor a measure (e.g. a partitioned aggregate OR-ed with a raw row column that isn't a query dimension) raises a typing error naming both failures. Cross-model `partition_by` combined with `window=`, on `first`/`last`, or nested inside a transform is not yet supported and raises a clear error rather than returning wrong numbers.
 
+A partitioned aggregate can itself be re-aggregated — `{"formula": "avg(revenue:sum(partition_by=[city, region]))", "name": "avg_city_total"}` grouped by `region` averages each region's **city totals** (one input per city cell, never a row-weighted value); see [re-aggregation](../../concepts/formulas.md#re-aggregation-aggregate-over-an-attached-value).
+
 ## Result column naming
 
 The colon becomes an underscore in result keys:

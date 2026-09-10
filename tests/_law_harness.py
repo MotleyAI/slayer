@@ -117,15 +117,6 @@ DEFERRAL_SITES: Tuple[DeferralSite, ...] = (
         fragment="must wrap an explicitly-grained aggregate",
         issue="DEV-1868"),
     DeferralSite(
-        fragment="would require a nested attach",
-        issue="DEV-1847"),
-    DeferralSite(
-        fragment="nested attach itself needs a further regroup producer CTE",
-        issue="DEV-1847"),
-    DeferralSite(
-        fragment="nested attach grain is not a subset of the producer grain",
-        issue="DEV-1847"),
-    DeferralSite(
         fragment="query-backed models (source_queries) deferred",
         issue="DEV-1878"),
 )

@@ -534,6 +534,8 @@ class TestLowerSugarTraversal:
             agg="sum",
         )
         out = lower_sugar_transforms(key)
+        assert isinstance(out, AggregateKey)
+        assert isinstance(out.source, ArithmeticKey)
         assert isinstance(out.source.operands[1], ArithmeticKey)
 
     def test_change_in_transform_partition_keys_is_lowered(self) -> None:
