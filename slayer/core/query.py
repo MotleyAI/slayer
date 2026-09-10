@@ -750,17 +750,26 @@ class SlayerQuery(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _apply_schema_migrations(cls, data: Any) -> Any:
-        # `strict` is retired. Fresh input (no version) and current-version
-        # payloads are rejected naming the replacement; only a pre-current stored
-        # payload migrates it (v3→v4 maps strict:true→to_many_handling='error').
-        if isinstance(data, dict) and "strict" in data and (
-            data.get("version") is None
-            or data["version"] >= CURRENT_VERSIONS["SlayerQuery"]
-        ):
-            raise ValueError(
-                "`strict` is retired; set to_many_handling='error' instead "
-                "(one of broadcast|associate|error)."
-            )
+        # `strict` is retired. Reject it for fresh (no version), current-version,
+        # or malformed payloads; only a pre-current *integer* stored version
+        # migrates it (v3→v4 maps strict:true→to_many_handling='error'). ``version``
+        # is raw here (pre-coercion), so accept only int / integer-string forms —
+        # never truncate a float or other malformed value into a stale version.
+        if isinstance(data, dict) and "strict" in data:
+            raw_version = data.get("version")
+            version: int | None = None
+            if isinstance(raw_version, int) and not isinstance(raw_version, bool):
+                version = raw_version
+            elif isinstance(raw_version, str):
+                try:
+                    version = int(raw_version)
+                except ValueError:
+                    version = None
+            if version is None or version >= CURRENT_VERSIONS["SlayerQuery"]:
+                raise ValueError(
+                    "`strict` is retired; set to_many_handling='error' instead "
+                    "(one of broadcast|associate|error)."
+                )
         return _migrate_schema(entity="SlayerQuery", data=data)
 
     @field_validator("name")

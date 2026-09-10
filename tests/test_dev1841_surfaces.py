@@ -64,6 +64,16 @@ class TestRestSurface:
         assert resp.status_code != 200
         assert "to_many_handling" in resp.text
 
+    async def test_association_slayer_error_maps_to_400(self, storage) -> None:
+        """An association-eligibility ``SlayerError`` (here a column-reference param) is a client error (400), not a 500."""
+        client = TestClient(create_app(storage=storage))
+        body = {"source_model": "orders", "dimensions": ["status"],
+                "measures": [{"formula":
+                              "customers.spend:weighted_avg(weight=customers.spend)"}],
+                "to_many_handling": "associate"}
+        resp = client.post("/query", json=body)
+        assert resp.status_code == 400, resp.text
+
 
 class TestMcpSurface:
     async def test_mode_reaches_engine(self, storage) -> None:

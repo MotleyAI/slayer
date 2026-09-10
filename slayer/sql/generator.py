@@ -3324,20 +3324,22 @@ class SQLGenerator:
         return body.sql(dialect=self.dialect, pretty=True)
 
     def _assert_association_no_column_default_params(
-        self, *, spec: AggRenderSpec, alias: str,
+        self, *, spec: AggRenderSpec, alias: str, query_param_names: Set[str],
     ) -> None:
         """Reject an association aggregate whose aggregation-definition default
         parameters reference a column: the level-2 aggregate runs over ``_base``
         (grain + entity key + the picked value ``_v``), so a defaulted column
         param would render against a column ``_base`` lacks. Explicit column
         params are rejected earlier at plan time; this catches the
-        definition-default path (DEV-1884 tracks lifting such parameters)."""
+        definition-default path (DEV-1884 tracks lifting such parameters).
+        ``query_param_names`` are the query-supplied kwarg names — the only ones
+        the plan-time gate saw; ``spec.agg_kwargs`` also carries resolved defaults,
+        so it must not be used to decide which params are explicit."""
         agg_def = spec.aggregation_def
         if agg_def is None:
             return
-        explicit = set(spec.agg_kwargs)
         for p in agg_def.params:
-            if p.name in explicit:
+            if p.name in query_param_names:
                 continue
             try:
                 default_ast = sqlglot.parse_one(p.sql, dialect=self.dialect)
@@ -3412,7 +3414,8 @@ class SQLGenerator:
                 bundle=bundle, resolved_agg_kwargs=resolved.get(agg_slot.key),
             )
             self._assert_association_no_column_default_params(
-                spec=spec, alias=agg_alias)
+                spec=spec, alias=agg_alias,
+                query_param_names={n for n, _ in getattr(agg_slot.key, "kwargs", ())})
             value_sql = _wrap_filter(self._resolve_value_sql(spec), spec.filter_sql)
             inner_cols.append(
                 exp.Max(this=self._parse(value_sql)).as_(

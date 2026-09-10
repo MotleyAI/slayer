@@ -397,6 +397,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                     "original": str(drift.__cause__) if drift.__cause__ else None,
                 },
             )
+        except SlayerError as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
     @app.get("/models")
     async def list_models(
