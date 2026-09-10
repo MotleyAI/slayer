@@ -223,16 +223,16 @@ class TestRootSelection:
         assert rec.root_model == "orders"
         assert _paths(rec) == {"orders.status": "status", "orders.revenue": "revenue"}
 
-    async def test_fan_out_picks_mentioned_root_over_bridge(self, engine) -> None:
-        # DEV-1853 divergences.md class (d): reachability growth. customers now
-        # reaches products over the inverted orders edge, so total hops tie
-        # (customers 0+2, products 2+0, orders 1+1) and the mentioned-candidate
-        # preference beats the unmentioned bridge; "customers" < "products".
+    async def test_fan_out_picks_bridge_that_determines_both(self, engine) -> None:
+        # DEV-1866: determination is to-one. Neither customers nor products
+        # determines the other's column (the reverse hop through orders fans
+        # out), so only the shared child orders determines both — the bridge
+        # wins outright, no tiebreak needed.
         rec = await engine.recommend_root_model(["customers.name", "products.category"])
-        assert rec.root_model == "customers"
+        assert rec.root_model == "orders"
         assert _paths(rec) == {
-            "customers.name": "name",
-            "products.category": "orders.products.category",
+            "customers.name": "customers.name",
+            "products.category": "products.category",
         }
 
     async def test_min_hops_prefers_closer_mentioned_root(self, engine) -> None:
@@ -251,12 +251,12 @@ class TestRootSelection:
             "regions.population": "customers.regions.population",
         }
 
-    async def test_mentioned_root_beats_unmentioned_bridge(self, engine) -> None:
-        # DEV-1853 divergences.md class (d): with bidirectional traversal the
-        # mentioned models reach each other, so orders is no longer the sole
-        # valid root — the mentioned-preference tiebreak picks customers.
+    async def test_shared_child_is_sole_determiner(self, engine) -> None:
+        # DEV-1866: only orders determines both columns along to-one paths;
+        # customers/products each fan out to the other, so orders is the sole
+        # valid root.
         rec = await engine.recommend_root_model(["customers.name", "products.price"])
-        assert rec.root_model == "customers"
+        assert rec.root_model == "orders"
 
     async def test_symmetric_tie_broken_lexicographically(self, engine) -> None:
         # The single orders→order_items INNER edge routes both ways (DEV-1853):
@@ -321,65 +321,45 @@ class TestAggSuffix:
 # INNER routing + real resolvability
 #
 # The orders→order_items INNER edge is declared ONCE; DEV-1853 makes every
-# declared edge traversable in both directions, so these tests verify routing
-# works from either side and that the emitted path is walkable by the query
-# engine.
+# declared edge traversable in both directions. DEV-1866 determination is
+# to-one: orders→order_items fans out (order_items.order_id is not unique), so
+# only order_items determines the trio — and it reaches orders/products over
+# the to-one order_items→orders→(products) chain.
 # --------------------------------------------------------------------------
 class TestInnerJoins:
-    async def test_inner_pair_routes_from_either_side(self, engine) -> None:
-        # {orders, order_items, products}: orders reaches all in 2 hops
-        # (order_items via the stored INNER edge, products via LEFT);
-        # order_items would need 3 (order_items->orders->products). So the
-        # chosen root is orders and it reaches order_items via the stored
-        # orders->order_items INNER edge. The other direction
-        # (order_items->orders) is exercised by
-        # TestRootSelection.test_symmetric_tie_broken_lexicographically.
+    async def test_inner_pair_routes_from_child(self, engine) -> None:
+        # {orders, order_items, products}: orders cannot determine order_items
+        # (the INNER hop fans out), so order_items is the sole to-one determiner
+        # — reaching orders in 1 hop and products in 2 (order_items→orders→products).
         rec = await engine.recommend_root_model(
             ["orders.status", "order_items.sku", "products.category"]
         )
-        assert rec.root_model == "orders"
-        assert _paths(rec)["order_items.sku"] == "order_items.sku"
+        assert rec.root_model == "order_items"
+        assert _paths(rec)["order_items.sku"] == "sku"
+        assert _paths(rec)["orders.status"] == "orders.status"
 
     async def test_inner_path_resolvable_by_engine_walker(self, engine) -> None:
-        """The recommended INNER hop must be resolvable by the code that
-        actually runs a query, proving the path is query-resolvable given the
-        storage symmetry invariant (INNER joins stored on both sides).
-
-        DEV-1485 Stage D: this went through ``engine._walk_join_chain`` ->
-        ``path_resolution.walk_join_chain`` (both now deleted). That was the
-        query-time resolver
-        when the test was written, but it is not any more — the typed
-        pipeline walks join hops in ``binding.py`` against the resolved
-        bundle, and ``walk_join_chain``'s only callers were the legacy
-        resolvers deleted with the enrichment stack. Asserting against it now
-        would pin a function no query touches, so the test would keep passing
-        while the property it names silently broke.
-
-        Executing the recommended path is the honest form of the same check
-        and is strictly stronger: it fails if ANY layer (binder, planner,
-        generator) cannot traverse the hop.
+        """The recommended to-one hop must be resolvable by the code that
+        actually runs a query — executing the recommended path is the honest,
+        strictly stronger check (it fails if any layer cannot traverse the hop).
         """
-        # Same item set as ``test_inner_edge_used_as_path`` above, which pins
-        # that this resolves to root ``orders`` reaching ``order_items`` over
-        # the stored INNER edge (a two-item set would tie and break
-        # lexicographically to ``order_items``, testing nothing about the hop).
         rec = await engine.recommend_root_model(
             ["orders.status", "order_items.sku", "products.category"]
         )
-        assert rec.root_model == "orders"
-        path = _paths(rec)["order_items.sku"]
-        assert path == "order_items.sku"
+        assert rec.root_model == "order_items"
+        path = _paths(rec)["orders.status"]
+        assert path == "orders.status"
 
-        # Feed the recommendation straight back in as a query.
+        # Feed the recommended order_items→orders hop back in as a query.
         resp = await engine.execute(
             SlayerQuery(source_model=rec.root_model, dimensions=[path]),
             dry_run=True,
         )
         sql = resp.sql or ""
-        assert "order_items" in sql, sql
+        assert "orders" in sql, sql
         assert "JOIN" in sql.upper(), sql
         # Resolved as a joined dimension under the dotted result key.
-        assert "orders.order_items.sku" in sql, sql
+        assert "order_items.orders.status" in sql, sql
 
 
 # --------------------------------------------------------------------------
@@ -397,19 +377,32 @@ class TestNoCommonRoot:
         # {customers}; agents (hops 0) dominates tickets for {agents}.
         assert covered == {"customers", "agents"}
 
+    async def test_attachment_only_disconnected_still_lists_coverage(self, engine) -> None:
+        # Attachment-only items on disconnected models: coverage falls back to
+        # attachment reachability, so it is non-empty (orders.aov / logs.line:count).
+        rec = await engine.recommend_root_model(
+            ["orders.aov", "logs.line:count"], data_source="mydb"
+        )
+        assert rec.reachable is False
+        assert rec.item_paths == []
+        assert rec.coverage  # not empty — the regression this guards
+        covered = {c.model_name for c in rec.coverage}
+        assert "orders" in covered
+        assert "logs" in covered
+
     async def test_coverage_surfaces_partial_roots(self, engine) -> None:
         rec = await engine.recommend_root_model(
             ["customers.name", "products.category", "agents.name"]
         )
         assert rec.reachable is False
-        # DEV-1853 divergences.md class (d): customers/orders/products all
-        # cover the two order-world items now (hop profiles incomparable, all
-        # total 2), so the frontier keeps all three; name asc puts customers
-        # first. Item lists preserve original input order.
-        assert rec.coverage[0].model_name == "customers"
+        # DEV-1866 (to-one determination): only orders determines both order-world
+        # columns (customers/products fan out to the other), so it dominates them
+        # on the frontier; agents covers the disconnected item. Item lists preserve
+        # original input order.
+        assert rec.coverage[0].model_name == "orders"
         assert rec.coverage[0].reachable_items == ["customers.name", "products.category"]
         assert rec.coverage[0].unreachable_items == ["agents.name"]
-        assert {c.model_name for c in rec.coverage} >= {"customers", "orders", "products"}
+        assert {c.model_name for c in rec.coverage} == {"orders", "agents"}
         # Sorted by len(reachable_items) desc, then total hops asc, then name.
         lengths = [len(c.reachable_items) for c in rec.coverage]
         assert lengths == sorted(lengths, reverse=True)
@@ -426,16 +419,15 @@ class TestNoCommonRoot:
         rec = await engine.recommend_root_model(
             ["customers.name", "products.category", "agents.name"]
         )
-        # tickets (same coverage as agents, strictly more hops) is dominated
-        # and dropped. DEV-1853: customers/products now also cover both
-        # order-world items with incomparable hop profiles, so they survive
-        # alongside orders (divergences.md class (d)).
+        # DEV-1866 (to-one determination): orders is the sole determiner of both
+        # order-world columns, dominating customers/products (each reaches only its
+        # own, a subset); tickets is dominated by agents. Only orders + agents survive.
         names = {c.model_name for c in rec.coverage}
         assert "orders" in names
         assert "agents" in names
         assert "tickets" not in names
-        assert "products" in names
-        assert "customers" in names
+        assert "products" not in names
+        assert "customers" not in names
 
 
 # --------------------------------------------------------------------------
@@ -567,14 +559,12 @@ class TestSyncWrapper:
 
 
 class TestDistinctOwningModelHopSum:
-    async def test_hop_total_summed_over_distinct_owning_models(self) -> None:
-        # Chain (ds "iso"): A -- B -- C (undirected distances are symmetric
-        # under DEV-1853, so the old one-way-cycle fixture cannot discriminate
-        # with two owning models; three can). Mentioned = {A, B, C}.
-        #   distinct sums: A 0+1+2=3 | B 1+0+1=2 | C 2+1+0=3 → B wins.
-        # Input has FIVE A-columns + one B-column + one C-column. Under a
-        # per-INPUT-ITEM hop sum, root A would total 3 and root B 6 → A would
-        # win. Summing over DISTINCT owning models keeps B the winner.
+    async def test_only_to_one_determiner_wins(self) -> None:
+        # Chain (ds "iso"): A →to-one→ B →to-one→ C (FK→PK forward; reverse hops
+        # fan out). DEV-1866 determination is to-one, so only A determines every
+        # column: A reaches A(0), B(1), C(2). B cannot determine A.a* (B→A fans
+        # out), and neither can C — so A is the sole viable root regardless of how
+        # the per-item hops sum.
         with tempfile.TemporaryDirectory() as tmpdir:
             s = YAMLStorage(base_dir=tmpdir)
             await s.save_datasource(DatasourceConfig(name="iso", type="postgres", host="x"))
@@ -598,7 +588,7 @@ class TestDistinctOwningModelHopSum:
                 rec = await eng.recommend_root_model(
                     ["A.a1", "A.a2", "A.a3", "A.a4", "A.a5", "B.b1", "C.c1"]
                 )
-                assert rec.root_model == "B"
+                assert rec.root_model == "A"
             finally:
                 await eng.aclose()
 
@@ -668,20 +658,20 @@ class TestRootHint:
 
     # -- infeasible hint (real model) → fallback + warning --------------
     async def test_infeasible_hint_falls_back_with_warning(self, engine) -> None:
-        # DEV-1853: within a connected component every model reaches every
-        # item, so an infeasible hint now means a hint in ANOTHER component —
-        # 'agents' reaches neither order-world item.
+        # DEV-1866: 'agents' determines neither order-world column (to-one), so
+        # it is infeasible and we fall back to the auto-pick (orders, the sole
+        # to-one determiner of both).
         rec = await engine.recommend_root_model(
             ["customers.name", "products.category"], root_hint="agents"
         )
         assert rec.reachable is True
-        assert rec.root_model == "customers"  # fell back to the auto-pick
+        assert rec.root_model == "orders"  # fell back to the auto-pick
         joined = " ".join(rec.warnings)
         assert "root_hint" in joined
         assert "cannot reach" in joined
         assert "agents" in joined     # the rejected hint
-        assert "products" in joined   # an unreachable owning model
-        assert "customers" in joined  # the fallback root
+        assert "products" in joined   # an undetermined owning model
+        assert "customers" in joined  # the other undetermined owning model
 
     async def test_infeasible_warning_echoes_original_ds_qualified_hint(self, engine) -> None:
         # The diagnostic must quote what the caller typed ('mydb.agents'),
@@ -689,7 +679,7 @@ class TestRootHint:
         rec = await engine.recommend_root_model(
             ["customers.name", "products.category"], root_hint="mydb.agents"
         )
-        assert rec.root_model == "customers"
+        assert rec.root_model == "orders"
         assert any("mydb.agents" in w for w in rec.warnings)
 
     # -- bad hint → ValueError ------------------------------------------

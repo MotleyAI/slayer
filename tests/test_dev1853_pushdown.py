@@ -58,25 +58,25 @@ class TestPushdownWithoutDeclaredReverseJoin:
 
 
 class TestAmbiguousCorrelationFailsClosed:
-    def _query(self, *, strict: bool) -> SlayerQuery:
+    def _query(self, *, to_many_handling: str = "broadcast") -> SlayerQuery:
         return SlayerQuery(
             source_model="customers",
             measures=[{"formula": "regions.pop:sum", "name": "rp"}],
             filters=["orders.status = 'ok'"],
-            strict=strict)
+            to_many_handling=to_many_handling)
 
     async def test_lenient_mode_errors_instead_of_drop_and_warn(
         self, unnamed_engine,
     ) -> None:
-        query = self._query(strict=False)
+        query = self._query()
         with pytest.raises(AmbiguousJoinPathError) as ei:
             await unnamed_engine.execute(query)
         msg = str(ei.value)
         assert "billing_customer_id" in msg
         assert "shipping_customer_id" in msg
 
-    async def test_strict_mode_errors_the_same_way(self, unnamed_engine) -> None:
-        query = self._query(strict=True)
+    async def test_error_mode_errors_the_same_way(self, unnamed_engine) -> None:
+        query = self._query(to_many_handling="error")
         with pytest.raises(AmbiguousJoinPathError):
             await unnamed_engine.execute(query)
 

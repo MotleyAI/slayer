@@ -64,9 +64,10 @@ class QueryRequest(BaseModel):
     # (``None`` here) keeps the v3 SlayerQuery default (``True``). Set
     # ``False`` to emit raw rows.
     distinct_dimension_values: bool | None = None
-    # DEV-1836: error on any silent-semantics event (implicit-grain broadcast /
-    # dropped producer filter) instead of broadcasting + warning.
-    strict: bool | None = None
+    # How aggregates resolve query dimensions unattributable from their root
+    # (broadcast|associate|error); posting the retired `strict` flag is rejected
+    # downstream by SlayerQuery (extra="allow" forwards it into the payload).
+    to_many_handling: str | None = None
     dry_run: bool | None = None
     explain: bool | None = None
     variables: dict[str, Any] | None = None
@@ -106,6 +107,9 @@ class QueryResponse(BaseModel):
     columns: list[str]
     sql: str | None = None
     attributes: AttributesResponse | None = None
+    # DEV-1866: the effective population model and whether it was inferred.
+    population: str | None = None
+    population_inferred: bool = False
     # DEV-1745 (W5/D2): advisories about the query itself — slack-normalization
     # rewrites and filters that were dropped as unreachable. One list, each
     # entry tagged with a ``kind`` discriminator the consumer switches on.
@@ -313,10 +317,13 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                         request.source_model, request.measures, request.dimensions,
                         request.time_dimensions, request.filters, request.order,
                         request.limit, request.offset, request.whole_periods_only,
-                        request.distinct_dimension_values, request.strict,
+                        request.distinct_dimension_values, request.to_many_handling,
                     ) if f is not None
                 ]
-                if disallowed:
+                # Run-by-name skips SlayerQuery validation, so a stray extra
+                # field (e.g. the retired ``strict``) would slip through — reject
+                # it here instead of silently dropping it.
+                if disallowed or request.model_extra:
                     raise HTTPException(
                         status_code=400,
                         detail=(
@@ -334,11 +341,9 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                     explain=explain,
                 )
             else:
-                if request.source_model is None:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Either 'name' (run-by-name) or 'source_model' must be provided.",
-                    )
+                # DEV-1866: a rootless query (no name, no source_model) is valid —
+                # the engine infers the population. The query must still project
+                # something, which SlayerQuery validation enforces downstream.
                 payload = request.model_dump(exclude_none=True)
                 # ``variables`` is consumed at execute() level, not part of
                 # SlayerQuery's filter-substitution variables (those merge
@@ -375,6 +380,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 warnings=[
                     w.model_dump(mode="json") for w in (result.warnings or [])
                 ],
+                population=result.population,
+                population_inferred=result.population_inferred,
             )
             if dry_run or explain:
                 response.sql = result.sql
@@ -393,6 +400,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                     "original": str(drift.__cause__) if drift.__cause__ else None,
                 },
             )
+        except SlayerError as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
     @app.get("/models")
     async def list_models(

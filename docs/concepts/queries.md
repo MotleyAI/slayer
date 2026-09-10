@@ -7,7 +7,7 @@ A `SlayerQuery` specifies what data to retrieve from a model.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `name` | string | No | Name for this query — used to reference it from other queries in a list |
-| `source_model` | string, SlayerModel, or ModelExtension | Yes | Source model name, inline model, or model extension (adds columns/measures/joins) |
+| `source_model` | string, SlayerModel, or ModelExtension | No | The population (query root): a model name, inline model, or model extension. Omit it to infer the population — see [Population](#population). |
 | `measures` | list[ModelMeasure] | No | Computed/aggregated values — formulas, arithmetic, transforms. Aggregations accept colon syntax (`revenue:sum`) and the equivalent functional spelling (`sum(revenue)`, incl. expressions like `sum(amount - cost)`) interchangeably — see [Formulas](formulas.md) and [Aggregation spelling equivalence](references.md#aggregation-spelling-equivalence). |
 | `dimensions` | list[str \| ColumnRef \| ComputedDimension] | No | Columns to group by — bare strings (`"status"`) or `{"name": "status"}` dicts, dotted names for joined models (`customers.name`), or `{"expression": …, "name": …}` for a [computed expression](#expression-dimensions). |
 | `time_dimensions` | list[TimeDimension] | No | Time dimensions with granularity |
@@ -18,7 +18,7 @@ A `SlayerQuery` specifies what data to retrieve from a model.
 | `limit` | int | No | Maximum rows to return |
 | `offset` | int | No | Number of rows to skip |
 | `whole_periods_only` | bool | No | Snap date filters to time bucket boundaries, exclude the current incomplete time bucket |
-| `strict` | bool | No | Fail instead of warn when a [cross-model measure broadcasts](#cross-model-measures) across an unattributable dimension or a filter is excluded from its producer (semi-join-pushed filters are applied and never error). Default `false` (warn). |
+| `to_many_handling` | str | No | How an aggregate resolves query dimensions [unattributable from its root](#cross-model-measures): `broadcast` (default; repeat the safe-grain value across the cells and warn), `associate` (per-cell value over the distinct associated entities), or `error` (refuse). Semi-join-pushed filters are always applied and never error; the retired `strict` flag is rejected with this remedy. |
 
 You can pass a single query or a **list of queries** to `execute()`. When passing a list, earlier queries are named sub-queries that later queries can reference. The last query in the list is the main one whose results are returned. See [Query Lists](#query-lists) for examples.
 
@@ -260,7 +260,7 @@ Query results are returned as a `SlayerResponse`:
 | `row_count` | int | Number of rows |
 | `sql` | string | The generated SQL (useful for debugging) |
 | `attributes` | ResponseAttributes | Field metadata split by type: `attributes.dimensions` and `attributes.measures`, each a dict of column alias → FieldMetadata (label, format) |
-| `warnings` | list[SlayerWarning] | Advisories, discriminated by `kind`: input normalizations (`"normalization"`), a [cross-model measure broadcast](#cross-model-measures) (`"broadcast"` — `measure`, `location`, and per-dimension `dimensions[].reason`), a filter dropped from a cross-model producer (`"unreachable_filter_dropped"` — `filter_text`, `location`, `reason`) |
+| `warnings` | list[SlayerWarning] | Advisories, discriminated by `kind`: input normalizations (`"normalization"`), a [cross-model measure broadcast](#cross-model-measures) (`"broadcast"` — `measure`, `location`, and per-dimension `dimensions[].reason`), a distinct-entity attribution over an unattributable dimension (`"associated"` — `measure`, `location`, `dimensions`; cells overlap and are not additive), a filter dropped from a cross-model producer (`"unreachable_filter_dropped"` — `filter_text`, `location`, `reason`), and a semi-join-pushed filter (`"semi_join_pushed"` — `measure`, `location`, `filter_text`) |
 
 `columns` — and the key order of each row in `data` — follows the order you
 declared fields in the query: dimensions, then time dimensions, then measures,
@@ -517,18 +517,32 @@ MCP equivalent: `query(query="<model>", variables={...}, dry_run=True/False, exp
 
 ---
 
+## Population
+
+`source_model` declares the query's **population** — the model whose rows the result is quantified over (one result row per distinct combination of its dimensions). It is optional: omit it and the population is inferred as the smallest dataset (fewest join hops) that **determines every queried dimension** along provably to-one join paths, read from the dimensions and field-typed (aggregate-free) filters **only — never measures**. Adding or removing a measure therefore never changes which rows come back.
+
+```json
+{"dimensions": ["customers.region"], "measures": [{"formula": "orders.amount:sum"}]}
+```
+
+infers population `customers` (one row per region present among customers, order totals attached, NULL where a region has no orders) — not "regions that happen to have orders". The Python client and REST responses always carry the effective population as `population` and whether it was inferred as `population_inferred`; MCP output reports them only when the population was inferred.
+
+Inference fails closed with a `PopulationInferenceError` naming the candidates when no single model determines everything, several minimal candidates tie, a dimension's join path is ambiguous, or the referenced models don't scope to exactly one datasource. Name `source_model` explicitly (any model — including a bridge that owns none of the queried items) to override inference.
+
+Inference reads dimensions as literal join paths, so when you omit `source_model`, write cross-model dimensions as full dotted paths (`customers.regions.name`) — short-form auto-routing needs a declared root, so a bare `regions.name` will fail closed or pick the wrong population; name `source_model` if you want short forms.
+
 ## Choosing a root model
 
-When you know the columns and metrics you want but not which model to use as `source_model`, `recommend_root_model` introspects the join graph and picks it for you. Give it the `model.column` / `model.metric` items (aggregation suffixes allowed) and it returns the recommended root plus each item's join-qualified reference path from that root — ready to paste into a query.
+`recommend_root_model` is the explain surface for the population rule: give it the `model.column` / `model.metric` items you want (aggregation suffixes allowed) and it returns the population it would pick plus each item's join-qualified reference path from it — ready to paste into a query.
 
 ```python
 rec = engine.recommend_root_model_sync(["customers.name", "products.category"])
-rec.root_model          # "orders"  (the bridge model that reaches both)
+rec.root_model          # "orders"  (the only model that determines both to-one)
 {ip.input_item: ip.path for ip in rec.item_paths}
 # {"customers.name": "customers.name", "products.category": "products.category"}
 ```
 
-A root is valid when every requested item is reachable from it over the join graph — every declared join traverses in both directions with flipped cardinality ([bidirectional traversal](models.md#bidirectional-traversal)). Among valid roots, the one with the fewest total join hops wins. Root-owned items come back as a bare leaf (`status`); joined items as a dotted path (`customers.regions.name`); aggregation suffixes are preserved (`revenue:sum`).
+A root is valid when it **determines** every requested column along provably to-one join paths; saved measures and aggregation-suffixed items are attachments that only need to be reachable and never steer the choice (each `ItemPath` flags `attachment`). Among valid roots, the one with the fewest total join hops wins — the same rule as population inference, so the two surfaces cannot disagree. Root-owned items come back as a bare leaf (`status`); joined items as a dotted path (`customers.regions.name`); aggregation suffixes are preserved (`revenue:sum`).
 
 When no single model reaches everything, `root_model` is `None`, `reachable` is `False`, and `coverage` lists the best partial roots (each with its reachable / unreachable items) so you can split the request into a multi-stage [`source_queries`](models.md#query-backed-models) query.
 
@@ -543,7 +557,7 @@ rec = engine.recommend_root_model_sync(
 rec.root_model   # "orders"  (honored — it reaches both, overriding the closer auto-pick)
 ```
 
-When the hint reaches every item it's honored outright, overriding the fewest-hops pick. When it can't reach everything, the auto-pick is used instead and `warnings` explains which owning models the hint missed and which root was chosen. If no model reaches everything (`reachable` is `False`), the hint's own row is included in `coverage` too, so you can see exactly what it reaches. `root_hint` is resolved after the datasource is fixed from the items, so it names a model *within* that datasource — it can't choose the datasource. A hint that isn't a model in the resolved datasource raises.
+When the hint determines every item it's honored outright, overriding the fewest-hops pick. When it can't, the auto-pick is used instead and `warnings` explains which owning models the hint missed and which root was chosen. If no model reaches everything (`reachable` is `False`), the hint's own row is included in `coverage` too, so you can see exactly what it reaches. `root_hint` is resolved after the datasource is fixed from the items, so it names a model *within* that datasource — it can't choose the datasource. A hint that isn't a model in the resolved datasource raises.
 
 Surfaces: MCP `recommend_root_model(items, data_source=None, root_hint=None, format="markdown")`, REST `POST /recommend-root-model` (`{"items": [...], "data_source": null, "root_hint": null}`), CLI `slayer recommend-root-model ITEM... [--data-source X] [--root-hint M] [--format json|text]`, and `SlayerClient.recommend_root_model(_sync)`. The optional `data_source` scopes name resolution to one datasource; all items must resolve to a single datasource.
 
@@ -693,19 +707,28 @@ missing join cardinality (or primary key) to make such a dimension exact.
 Query **filters** still restrict the metric: a conjunct the sub-query can only
 reach across an unproven hop is pushed down as a correlated `EXISTS` semi-join —
 the metric counts exactly the target rows related to at least one row passing
-the filter (each row once, never multiplied through the join), silently, exactly
-like a safely inherited filter. The correlation path resolves through the same
+the filter (each row once, never multiplied through the join), surfaced as an
+informational `kind: "semi_join_pushed"` entry in `.warnings` (never an error,
+in any mode). The correlation path resolves through the same
 [bidirectional traversal](models.md#bidirectional-traversal) as every other hop
 — no declared reverse join is needed, and a hop spanned by two or more edges
-fails the whole query with the ambiguous-hop error (in lenient and strict mode
-alike) rather than guessing. Only a filter with no resolvable path from the
+fails the whole query with the ambiguous-hop error (in every mode) rather than
+guessing. Only a filter with no resolvable path from the
 sub-query's root (or one mixing local and joined references under `OR`/`NOT`)
 is excluded: it still applies to the local measures and is reported as
 `kind: "unreachable_filter_dropped"`. On ClickHouse the semi-join needs server
 ≥ 25.4 (the required setting is attached automatically); older servers fail
-with a clear error. Set `"strict": true` on the query to turn a broadcast or an
-excluded filter into an error instead of a warning — a semi-join-pushed filter
-is correctly applied and never errors.
+with a clear error.
+
+`to_many_handling` chooses how a broadcast dimension resolves — `broadcast` (the
+default above), `associate` (each cell aggregates over the distinct entities
+associated with it, warned as `kind: "associated"` because the cells overlap and
+are not additive), or `error` (refuse) — where a stored query's retired
+`strict: true` migrates to `error` (fresh input carrying `strict` is rejected),
+and a semi-join-pushed filter is applied, never erroring, in every mode.
+Example: `{"source_model": "orders", "dimensions": ["status"], "measures": [{"formula": "customers.spend:sum"}], "to_many_handling": "associate"}`.
+
+`associate` resolves only *eligible* aggregates — a plain scalar aggregate whose root declares a unique key; an unsupported combination (`window=`/`first`/`last`, a root without a unique key, a column-reference parameter, or an input crossing an unproven hop) returns a typed error rather than a value, so `associate` does not turn every broadcast case exact.
 
 A filter **on** the cross-model value itself (`"customers.score:avg > 4"`)
 restricts the result rows, uniformly with local aggregate filters — groups that

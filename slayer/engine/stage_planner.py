@@ -14,6 +14,7 @@ from typing import (
     Hashable,
     List,
     Mapping,
+    NamedTuple,
     Optional,
     Sequence,
     Tuple,
@@ -31,6 +32,7 @@ from slayer.core.errors import (
     AmbiguousReferenceError,
     DistinctDimensionValuesError,
     PositionTypingError,
+    SlayerError,
     UnknownReferenceError,
 )
 from slayer.core.keys import (
@@ -59,6 +61,7 @@ from slayer.engine.aggregate_input_paths import compute_aggregate_input_join_pat
 from slayer.engine.column_filter_paths import compute_column_filter_join_paths
 from slayer.core.join_walker import resolve_hop, terminal_model, walk
 from slayer.engine.join_safety import (
+    _unique_key_sets,
     may_inline_crossing_inputs,
     provably_to_one,
     safe_reachable,
@@ -92,6 +95,7 @@ from slayer.engine.filter_reachability import (
     key_has_host_local_ref,
 )
 from slayer.engine.planned import (
+    AssociationProducerKernel,
     BoundExpr as PlannedBoundExpr,
     EmptyBaseGrainPlan,
     FilterReachability,
@@ -914,6 +918,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         limit=query.limit,
         offset=query.offset,
         distinct_dimension_values=query.distinct_dimension_values,
+        to_many_handling=query.to_many_handling,
     )
 
 
@@ -949,6 +954,7 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
     explicit_types: Optional[Mapping[ValueKey, DataType]] = None,
     grain_name_by_key: Optional[Mapping[ValueKey, str]] = None,
     window_td_key: Optional[ValueKey] = None,
+    to_many_handling: str = "broadcast",
 ) -> Tuple[PreboundQuery, List[ValueKey]]:
     """The producer's bind product: grain from partition keys, one measure per consumed aggregate, inherited base-row filters; returns prebound + ordered grain keys."""
     public_alias_by_agg = public_alias_by_agg or {}
@@ -1013,6 +1019,7 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
         n_dims=len(dims),
         n_time_dimensions=len(tds),
         distinct_dimension_values=True,
+        to_many_handling=to_many_handling,
     )
     return prebound, [*dims, *tds]
 
@@ -1464,26 +1471,54 @@ def _reroot_from_root(
 _UNREACHABLE_NO_PATH = "unreachable from the aggregate's root (no join path from it)"
 
 
+def _hop_walk_reason(
+    *, root_model: SlayerModel, path: Tuple[str, ...],
+    models_by_name: Dict[str, SlayerModel],
+) -> Optional[str]:
+    """Walk ``path`` from ``root_model`` (bidirectional, DEV-1853): the
+    fanning/unproven-hop reason if the path resolves but a hop is not provably
+    many-to-one, else ``None`` (an unresolvable/ambiguous path is unreachable)."""
+    try:
+        chain = walk(root=root_model, path=path, models_by_name=models_by_name)
+    except AmbiguousJoinPathError:
+        return None
+    if chain is None:
+        return None
+    for i, edge in enumerate(chain):
+        tgt = models_by_name.get(edge.target_model)
+        if tgt is None:
+            return None
+        if not provably_to_one(edge=edge, target_model=tgt):
+            token = path[i] if i < len(path) else edge.target_model
+            return f"crosses a fanning or unproven join hop to {token}"
+    return None
+
+
 def _broadcast_reason(
     *, host_path: Tuple[str, ...], target_path: Tuple[str, ...],
     root_model: SlayerModel, models_by_name: Dict[str, SlayerModel],
+    host_name: Optional[str] = None,
 ) -> str:
-    """Why a dimension broadcasts: unreachable from the root, or crosses an unproven/fanning join hop."""
+    """Why a dimension broadcasts: crosses an unproven/fanning join hop (forward
+    from the root, or back through the reverse hop), or unreachable if no path."""
     tp, hp = tuple(target_path), tuple(host_path)
-    if hp[: len(tp)] != tp:
-        return _UNREACHABLE_NO_PATH
-    current = root_model
-    for name in hp[len(tp):]:
-        edge = resolve_hop(
-            current=current, token=name, models_by_name=models_by_name,
+    if hp[: len(tp)] == tp:
+        reason = _hop_walk_reason(
+            root_model=root_model, path=hp[len(tp):], models_by_name=models_by_name,
         )
-        if edge is None:
-            return _UNREACHABLE_NO_PATH
-        tgt = models_by_name.get(edge.target_model)
-        if tgt is None or not provably_to_one(edge=edge, target_model=tgt):
-            return f"crosses an unproven join hop to {name}"
-        current = tgt
-    return "unreachable from the aggregate's root"
+        return reason or _UNREACHABLE_NO_PATH
+    # Off the forward path: reachable only back through the reverse (fanning) hop?
+    if host_name is not None and not (tp and host_name == tp[0]):
+        back = _back_token(
+            root_model=root_model, host_name=host_name, target_path=tp,
+            models_by_name=models_by_name,
+        )
+        reason = _hop_walk_reason(
+            root_model=root_model, path=(back, *hp), models_by_name=models_by_name,
+        )
+        if reason is not None:
+            return reason
+    return _UNREACHABLE_NO_PATH
 
 
 def _assert_partition_key_attributable(
@@ -1512,6 +1547,7 @@ def _assert_partition_key_attributable(
     reason = _broadcast_reason(
         host_path=hp, target_path=agg_target, root_model=root,
         models_by_name=models_by_name,
+        host_name=host_m.name if agg_target else None,
     )
     raise ValueError(
         f"{label}: partition_by column '{_partition_key_display(pk)}' {reason}; "
@@ -1862,6 +1898,7 @@ def _synthesize_wrap_attach(
             pks, key=lambda k: consumer_order.get(k, len(consumer_order)),
         ),
         grain_name_by_key=grain_name_by_key,
+        to_many_handling=prebound.to_many_handling,
     )
     producer_plan = plan_query(
         query=StrictQueryCarrier(
@@ -2298,6 +2335,17 @@ class _ProducerSynthesisContext(BaseModel):
     stage_schemas: Dict[str, StageSchema]
 
 
+class _UnattributableDim(NamedTuple):
+    """A requested grain dimension not attributable from the aggregate's root:
+    its display name, broadcast reason, and whether a join path reaches it
+    (fanning) or none does (truly unreachable)."""
+
+    key: ValueKey
+    name: str
+    reason: str
+    reachable: bool
+
+
 def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-rooted producer synthesis (root / safe-grain / broadcast / inputs / filter-inheritance / recursive plan / attach); the arms share the re-rooting coordinate state.
     *,
     agg: AggregateKey,
@@ -2333,9 +2381,15 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         requested = [*projected_dim_keys, *projected_td_keys]
         explicit = False
 
-    # Safe grain S (attributable from R) vs broadcast; an unattributable explicit key is a hard error.
+    mode = context.prebound.to_many_handling
+    # Host included so the reverse (fanning) hop resolves for the broadcast
+    # reason; attributability/filter routing keep the host-free map unchanged.
+    models_with_host = {**models_by_name, host_model.name: host_model}
+
+    # Safe grain S (attributable from R) vs unattributable; each unattributable
+    # dim carries whether it is reachable (fanning) or truly unreachable.
     safe_pairs: List[Tuple[ValueKey, ValueKey]] = []  # (host_key, rerooted_key)
-    broadcast: List[Tuple[str, str]] = []
+    unattributable: List[_UnattributableDim] = []
     for g in requested:
         hp = _key_host_path(g)
         shared = _shared_join_key_reroot(
@@ -2353,22 +2407,40 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
                 g, target_path=target_path, root_model=root_model,
                 models_by_name=models_by_name, host_name=host_model.name,
             )))
-        elif explicit:
+        else:
             reason = _broadcast_reason(
                 host_path=hp, target_path=target_path, root_model=root_model,
-                models_by_name=models_by_name,
+                models_by_name=models_with_host, host_name=host_model.name,
             )
+            unattributable.append(_UnattributableDim(
+                key=g, name=_regroup_grain_name(g), reason=reason,
+                reachable=reason != _UNREACHABLE_NO_PATH,
+            ))
+
+    # Associate mode attributes unattributable dims per cell over the root's
+    # distinct entities (a host-rooted two-level producer that reaches every query
+    # dimension) rather than broadcasting; an explicit partition_by= at such a
+    # grain is legal here.
+    if mode == "associate" and unattributable:
+        return _synthesize_association_producer(
+            agg=agg, placeholder=placeholder, attach_phase=attach_phase,
+            alias=alias, root_model=root_model, root_name=root_name,
+            target_path=target_path, requested=requested, explicit=explicit,
+            unattributable=unattributable, context=context,
+            declared_type=declared_type, producer_registry=producer_registry,
+        )
+
+    # Broadcast / error path: an unattributable explicit key is a hard error.
+    broadcast: List[Tuple[str, str]] = []
+    for u in unattributable:
+        if explicit:
             raise ValueError(
                 f"Cross-model aggregate {alias!r} declares partition_by="
-                f"{_regroup_grain_name(g)}, which {reason}; every explicit "
+                f"{u.name}, which {u.reason}; every explicit "
                 f"partition key must be attributable from {root_name} — declare "
                 f"join cardinality or a covering unique key on the target."
             )
-        else:
-            broadcast.append((_regroup_grain_name(g), _broadcast_reason(
-                host_path=hp, target_path=target_path, root_model=root_model,
-                models_by_name=models_by_name,
-            )))
+        broadcast.append((u.name, u.reason))
 
     agg_rooted = reroot_value_key(agg, target_path=target_path)
     _assert_cross_model_inputs_safe(
@@ -2424,6 +2496,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         explicit_types=(
             {agg_rooted: declared_type} if declared_type is not None else None
         ),
+        to_many_handling=prebound.to_many_handling,
     )
     # A computed-dimension grain member or windowed producer re-enables discovery.
     enable_nested = window_td_key is not None or any(
@@ -2491,6 +2564,171 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         broadcast_measure=alias if broadcast else None,
         broadcast_dimensions=broadcast,
         **cm_attach_kwargs,
+    )
+
+
+def _synthesize_association_producer(  # NOSONAR(S3776) — one cohesive host-rooted association synthesis (eligibility / entity key / grain / filter-inheritance / recursive plan / attach).
+    *,
+    agg: AggregateKey,
+    placeholder: ValueKey,
+    attach_phase: str,
+    alias: str,
+    root_model: SlayerModel,
+    root_name: str,
+    target_path: Tuple[str, ...],
+    requested: List[ValueKey],
+    explicit: bool,
+    unattributable: List[_UnattributableDim],
+    context: _ProducerSynthesisContext,
+    declared_type: Optional[DataType] = None,
+    producer_registry: Optional[Dict[Hashable, PlannedQuery]] = None,
+) -> RegroupAttachPlan:
+    """Build a distinct-entity association producer: HOST-rooted at the full
+    requested grain, joining to the aggregate's root, deduped per root entity by
+    the ``association`` kernel (level 1 picks per entity, level 2 aggregates)."""
+    prebound, bundle = context.prebound, context.bundle
+    host_model, models_by_name = context.host_model, context.models_by_name
+    base_filters_with_text = context.base_filters_with_text
+    scope, stage_schemas = context.scope, context.stage_schemas
+
+    # window= / first / last cannot associate — the pick per entity is undefined.
+    if _window_kwarg_of(agg) is not None or (
+        isinstance(agg, AggregateKey) and agg.agg in RANKED_AGGREGATIONS
+    ):
+        raise SlayerError(
+            f"Aggregate {alias!r} needs distinct-entity association over an "
+            f"unattributable dimension, which is unsupported in combination with "
+            f"window=/first/last; drop the window/first-last or attribute the "
+            f"dimension."
+        )
+    # The root must declare a unique key to dedup its entities.
+    key_sets = _unique_key_sets(root_model)
+    if not key_sets:
+        raise SlayerError(
+            f"Aggregate {alias!r} needs distinct-entity association, but its root "
+            f"model {root_name!r} declares no primary or unique key to deduplicate "
+            f"entities by; declare a primary or unique key on {root_name!r}."
+        )
+    # An input crossing an unproven/fanning hop is not constant per root entity,
+    # so the level-1 per-entity pick would be arbitrary. Input safety is
+    # mode-invariant — reject exactly as the broadcast/error path does (DEV-1884
+    # tracks certifying such inputs via empirical to-one evidence).
+    _assert_cross_model_inputs_safe(
+        agg=agg, agg_rooted=reroot_value_key(agg, target_path=target_path),
+        root_model=root_model, root_name=root_name, target_path=target_path,
+        bundle=bundle, models_by_name=models_by_name,
+    )
+    # A column-reference aggregate parameter (e.g. weighted_avg(weight=col))
+    # binds against the host scope, but the level-2 aggregate runs over the
+    # deduped ``_base`` (grain + entity key + one picked value) and cannot carry
+    # the column. Reject loudly; DEV-1884 tracks lifting such parameters.
+    column_param = next(
+        (v for v in (*agg.args, *(val for _, val in agg.kwargs))
+         if isinstance(v, (ColumnKey, ColumnSqlKey))),
+        None,
+    )
+    if column_param is not None:
+        raise SlayerError(
+            f"Aggregate {alias!r} needs distinct-entity association over an "
+            f"unattributable dimension, which is unsupported with a "
+            f"column-reference parameter (e.g. weighted_avg(weight=…)); the "
+            f"per-entity pick carries only the aggregate's own value. Attribute "
+            f"the dimension or drop the column parameter."
+        )
+    entity_keys: List[ValueKey] = [
+        ColumnKey(path=target_path, leaf=col) for col in key_sets[0]
+    ]
+
+    # A HOST-grain wrap of the aggregate compiles inline at the producer's full
+    # grain (never re-routed as unattributable); the kernel's level-1 dedup
+    # removes the reverse-hop fan-out.
+    assoc_agg = agg.model_copy(update={"grain": "host"})
+    grain_keys = Grain.of(requested)
+    # A conjunct the metric-root routing cannot handle (e.g. an OR mixing the
+    # entity's own column with a host predicate) would inline fan-dependently at
+    # host grain — drop it exactly as the cross-model producer would; every other
+    # conjunct routes via the host (inline / semi-join).
+    survivors: List[Tuple[BoundFilter, Optional[str]]] = []
+    root_dropped: List[UnreachableFilterDroppedWarning] = []
+    for bf, text in base_filters_with_text:
+        if bf.phase != Phase.ROW:
+            survivors.append((bf, text))
+            continue
+        for cj in split_top_level_and(bf.value_key):
+            _, _, drop_w = _conjunct_disposition(
+                cj, text=text, target_path=target_path, root_model=root_model,
+                models_by_name=models_by_name, host_name=host_model.name,
+                host_model=host_model, bundle=bundle,
+            )
+            if drop_w is not None:
+                root_dropped.append(drop_w)
+            else:
+                survivors.append((_bound_filter_from_key(cj), text))
+    inherited, semi_joins, dropped = _cross_model_inherited_filters(
+        base_filters=survivors, target_path=(),
+        root_model=host_model, models_by_name=models_by_name,
+        host_name=host_model.name, host_model=host_model, bundle=bundle,
+    )
+    dropped = [*root_dropped, *dropped]
+    producer_prebound, ordered_pks = _regroup_producer_prebound(
+        pks=grain_keys, aggs=[assoc_agg], model=host_model, bundle=bundle,
+        inherited=inherited, n_date_range=0,
+        explicit_types=(
+            {assoc_agg: declared_type} if declared_type is not None else None
+        ),
+        to_many_handling=prebound.to_many_handling,
+    )
+    producer_plan = plan_query(
+        query=StrictQueryCarrier(
+            source_model=host_model.name, prebound=producer_prebound,
+        ),
+        bundle=bundle, scope=scope, stage_schemas=stage_schemas,
+        disable_host_rooted_isolation=True, enable_producer_regroups=False,
+        prebound=producer_prebound, producer_registry=producer_registry,
+    )
+    if semi_joins:
+        producer_plan = producer_plan.model_copy(
+            update={"semi_join_filters": semi_joins},
+        )
+    producer_answer_ids = list(producer_plan.projection)[len(ordered_pks):]
+    answer_slot = _regroup_answer_slot_id(
+        value_slots=[
+            *producer_plan.aggregate_slots,
+            *producer_plan.combined_expression_slots,
+        ],
+        key=assoc_agg,
+        fallback=producer_answer_ids[0] if producer_answer_ids else None,
+    )
+    producer_grain_ids = list(producer_plan.projection)[: len(ordered_pks)]
+    join_pairs: List[Tuple[ValueKey, SlotId]] = []
+    for i, rr in enumerate(ordered_pks):
+        slot_id = next(
+            (s.id for s in producer_plan.row_slots if s.key == rr), None,
+        )
+        if slot_id is None:
+            slot_id = producer_grain_ids[i]
+        join_pairs.append((rr, slot_id))
+    _assert_attach_covers_producer_grain(
+        joined_slot_ids={slot_id for _, slot_id in join_pairs},
+        producer_grain_slot_ids=_producer_grain_slot_ids(producer_plan),
+    )
+    assoc_dims = [u.name for u in unattributable]
+    return RegroupAttachPlan(
+        producer_plan=producer_plan,
+        alias_hint=canonical_aggregate_alias(agg, profile="stage_formula"),
+        attach_phase=attach_phase,
+        kernel=AssociationProducerKernel(entity_keys=entity_keys),
+        join_pairs=join_pairs,
+        substitutions=[RegroupSubstitution(
+            placeholder=placeholder, producer_slot_id=answer_slot,
+            original_key=agg,
+        )],
+        partition_display=[_regroup_grain_name(rr) for rr in ordered_pks],
+        producer_root_model=host_model.name,
+        dropped_filter_warnings=dropped,
+        # Explicit partition_by= is a requested grain and does not warn.
+        associated_measure=None if explicit else alias,
+        associated_dimensions=[] if explicit else assoc_dims,
     )
 
 
@@ -2663,6 +2901,54 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
     cm_combined = [
         *consumers.cross_model_partitioned, *consumers.cross_model_bare,
     ]
+    # DEV-1841: a LOCAL aggregate whose query grain includes a dimension not
+    # attributable from the host root routes through the same producer synthesis
+    # (broadcast / associate / error), never the naive fanned inline GROUP BY.
+    host_for_local = scope.source_model if isinstance(scope, ModelScope) else None
+    if host_for_local is not None:
+        lb_models = {m.name: m for m in bundle.referenced_models}
+        lb_grain = [*projected_dim_keys, *projected_td_keys]
+
+        def _local_broadcasts(k: ValueKey) -> bool:
+            if (
+                not isinstance(k, AggregateKey) or _is_cross_model_agg(k)
+                or getattr(k, "grain", "target") == "host"
+                or k.partition_keys is not None or _is_crossing_local_root(k)
+                # first/last and windowed aggregates have deliberate per-group
+                # semantics over a fan-out grain (DEV-1748) and their own producer
+                # path — only the additive/counting family fans destructively.
+                or k.agg in RANKED_AGGREGATIONS or _window_kwarg_of(k) is not None
+            ):
+                return False
+            return any(
+                not _grain_member_attributable(
+                    key=g, target_path=(), root_model=host_for_local,
+                    models_by_name=lb_models, host_name=host_for_local.name,
+                )
+                for g in lb_grain
+            )
+
+        seen_lb: set = set()
+        local_broadcast: List[ValueKey] = []
+
+        def _scan_lb(vk: ValueKey) -> None:
+            for k in walk_value_keys(vk):
+                if k not in seen_lb and _local_broadcasts(k):
+                    seen_lb.add(k)
+                    local_broadcast.append(k)
+
+        for dm in prebound.declared_measures:
+            if dm.is_dimension:
+                continue
+            vk = dm.bound.value_key
+            if dm.public_name and _local_broadcasts(vk):
+                public_alias_by_agg.setdefault(vk, dm.public_name)
+            _scan_lb(vk)
+        for sp in prebound.order_specs:
+            _scan_lb(sp.bound.value_key)
+        for bf in prebound.bound_filters:
+            _scan_lb(bf.value_key)
+        cm_combined = [*cm_combined, *local_broadcast]
     cm_type = dict(consumers.declared_type)
     if not row_aggs and not combined_aggs and not cm_combined and not cm_row:
         return None
@@ -2762,6 +3048,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
                 },
                 grain_name_by_key=grain_names,
                 window_td_key=prebound.main_time_key if windowed else None,
+                to_many_handling=prebound.to_many_handling,
             )
             producer_plan = plan_query(
                 query=StrictQueryCarrier(
@@ -2933,6 +3220,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
         limit=prebound.limit,
         offset=prebound.offset,
         distinct_dimension_values=prebound.distinct_dimension_values,
+        to_many_handling=prebound.to_many_handling,
     )
     # Intern every producer: a structurally identical one becomes the same plan object.
     attaches = [_intern_producer(a, producer_registry) for a in attaches]

@@ -119,7 +119,7 @@ claude mcp list
 | `offset` | int | Skip rows |
 | `whole_periods_only` | bool | Snap date filters to time bucket boundaries, exclude the current incomplete time bucket |
 | `distinct_dimension_values` | bool | Default `true` — auto-dedup dim-only queries (`GROUP BY <dim/td aliases>`). Set `false` to emit raw rows (no top-level `GROUP BY`); rejects any measure reference in `measures` / `filters` / `order`. |
-| `strict` | bool | Default `false` — error instead of warn when a [cross-model measure broadcasts](../concepts/queries.md#cross-model-measures) or a filter is excluded from its producer. Rejected when running a model by name — declare it on the stored query instead. |
+| `to_many_handling` | str | Default `"broadcast"` — how an aggregate resolves query dimensions [unattributable from its root](../concepts/queries.md#cross-model-measures): `broadcast` (repeat and warn), `associate` (per-cell value over the distinct associated entities), or `error` (refuse). A query-object field; the retired `strict` flag is rejected with this remedy. |
 | `variables` | dict | Per-stage `{var}` values, scoped to this stage; overridden by the top-level `variables` arg (see precedence above). |
 | `name` | string | List form only — names a stage so sibling stages can reference it via `source_model` (every non-final stage must be named). |
 

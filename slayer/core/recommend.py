@@ -20,6 +20,9 @@ class ItemPath(BaseModel):
 
     input_item: str
     path: str
+    # DEV-1866: True for a saved measure / aggregation-suffixed item — reachable
+    # from the root but not a determination item that steers the recommendation.
+    attachment: bool = False
 
 
 class CandidateCoverage(BaseModel):

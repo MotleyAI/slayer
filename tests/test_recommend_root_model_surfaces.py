@@ -136,9 +136,9 @@ class TestRestEndpoint:
         )
         assert resp.status_code == 200
         body = resp.json()
-        # DEV-1853 divergences.md class (d): mentioned-candidate tiebreak now
-        # beats the unmentioned bridge (customers reaches products in reverse).
-        assert body["root_model"] == "customers"
+        # DEV-1866: only orders determines both columns along to-one paths
+        # (customers→products is unreachable to-one), so orders is the root.
+        assert body["root_model"] == "orders"
         assert body["data_source"] == "mydb"
 
     def test_returns_item_paths(self, storage) -> None:
@@ -148,11 +148,10 @@ class TestRestEndpoint:
             json={"items": ["customers.name", "products.category"]},
         )
         paths = {ip["input_item"]: ip["path"] for ip in resp.json()["item_paths"]}
-        # DEV-1853 divergences.md class (d): root is customers; products rides
-        # the reverse hop through orders.
+        # DEV-1866: root is orders; each column is one to-one hop away.
         assert paths == {
-            "customers.name": "name",
-            "products.category": "orders.products.category",
+            "customers.name": "customers.name",
+            "products.category": "products.category",
         }
 
     def test_post_unresolvable_item_400(self, storage) -> None:
@@ -208,8 +207,8 @@ class TestCliParserWiring:
         ])
         main()
         payload = json.loads(capsys.readouterr().out)
-        # DEV-1853 divergences.md class (d): mentioned-candidate tiebreak.
-        assert payload["root_model"] == "customers"
+        # DEV-1866: orders determines both columns to-one.
+        assert payload["root_model"] == "orders"
 
 
 class TestSlayerClient:
@@ -218,14 +217,14 @@ class TestSlayerClient:
         client = SlayerClient(storage=storage)
         rec = client.recommend_root_model_sync(["customers.name", "products.category"])
         assert isinstance(rec, RootModelRecommendation)
-        assert rec.root_model == "customers"  # DEV-1853 divergences.md class (d)
+        assert rec.root_model == "orders"  # DEV-1866: to-one determiner of both
 
     async def test_local_engine_async(self, storage) -> None:
 
         client = SlayerClient(storage=storage)
         rec = await client.recommend_root_model(["customers.name", "products.category"])
         assert isinstance(rec, RootModelRecommendation)
-        assert rec.root_model == "customers"  # DEV-1853 divergences.md class (d)
+        assert rec.root_model == "orders"  # DEV-1866: to-one determiner of both
 
 
 class TestRootHintSurfaces:

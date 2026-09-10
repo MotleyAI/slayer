@@ -230,7 +230,7 @@ class TestQueryDispatch:
 
 
 # ---------------------------------------------------------------------------
-# 1.3 — in-query control fields (strict / distinct_dimension_values)
+# 1.3 — in-query control fields (to_many_handling / distinct_dimension_values)
 # ---------------------------------------------------------------------------
 
 
@@ -255,7 +255,8 @@ class TestInQueryControlFields:
 @pytest.fixture
 async def broadcast_server(tmp_path):
     """MCP server over the DEV-1836 cross-model fixture, where an implicit-grain
-    broadcast warns in lenient mode and errors under in-query ``strict``."""
+    broadcast warns in the default mode and errors under in-query
+    ``to_many_handling='error'``."""
     db_path = str(tmp_path / "data.sqlite")
     fx._seed_sqlite(db_path)
     engine = await fx._engine_for(dialect="sqlite", db_path=db_path)
@@ -272,14 +273,17 @@ _BROADCAST_QUERY = {
 }
 
 
-class TestInQueryStrict:
-    async def test_strict_true_in_json_errors_on_broadcast(
+class TestInQueryErrorMode:
+    async def test_error_mode_in_json_errors_on_broadcast(
         self, broadcast_server,
     ) -> None:
         with pytest.raises(ToolError, match="cardinality|unique|status"):
-            await _call(broadcast_server, query={**_BROADCAST_QUERY, "strict": True})
+            await _call(
+                broadcast_server,
+                query={**_BROADCAST_QUERY, "to_many_handling": "error"},
+            )
 
-    async def test_without_strict_the_same_query_returns_rows_with_warning(
+    async def test_default_mode_returns_rows_with_warning(
         self, broadcast_server,
     ) -> None:
         """Lenient mode: the broadcast is a warning, not an error. JSON output
