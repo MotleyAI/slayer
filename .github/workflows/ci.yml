@@ -36,6 +36,14 @@ jobs:
       - name: Install Poetry
         run: pip install poetry
 
+      # Warm the resolved venv across runs so `poetry install` is a near-noop
+      # on a cache hit. Keyed on the lock so any dependency change busts it.
+      - name: Cache Poetry virtualenv
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pypoetry/virtualenvs
+          key: venv-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('poetry.lock') }}
+
       - name: Install dependencies
         run: poetry install -E all --with dev
 
@@ -97,10 +105,12 @@ jobs:
         # its own workflow at .github/workflows/pg-facade-e2e.yml — same
         # reasoning, exclude here so this job isn't on the hook for booting
         # a Metabase container.
-        # Serial on purpose: real-DB fixtures risk contention under xdist, and
-        # at ~4 min this isn't the timeout culprit. --durations logs slowest.
+        # -n logical --dist loadscope: parallelise across all vCPUs, but pin each
+        # test module to one worker so the notebook suite's fixed-path DuckDB
+        # (single-writer) can't hit a cross-process lock. --durations logs slowest.
         run: |
-          poetry run pytest tests/ -v -m "integration and not metabase_e2e" --timeout=180 --durations=25 \
+          poetry run pytest tests/ -m "integration and not metabase_e2e" --timeout=180 --durations=25 \
+            -n logical --dist loadscope \
             --ignore=tests/integration/test_integration_mysql.py \
             --ignore=tests/integration/test_integration_clickhouse.py \
             --ignore=tests/integration/test_integration_sqlserver.py
