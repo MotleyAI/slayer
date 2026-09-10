@@ -418,7 +418,11 @@ async def make_chain_exec_engine(dialect: str) -> AsyncIterator[SlayerQueryEngin
         )
         for model in chain_models():
             await storage.save_model(model)
-        yield SlayerQueryEngine(storage=storage)
+        engine = SlayerQueryEngine(storage=storage)
+        try:
+            yield engine
+        finally:
+            await engine.aclose()
 
 
 # --------------------------------------------------------------------------- #

@@ -1116,6 +1116,11 @@ class SlayerQueryEngine:
                     sibling_stage_names=stage_names - {name},
                 )
                 stage = stage.model_copy(update={"source_model": choice.model_name})
+                # Pin bundle resolution to the inferred datasource even when only a
+                # stage (not the main query) was rootless, so the stage's bare model
+                # name can't resolve to a same-named model in another datasource.
+                if inferred_data_source is None:
+                    inferred_data_source = choice.data_source
             rewritten[name] = stage
 
         return (

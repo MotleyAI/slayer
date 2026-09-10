@@ -525,7 +525,7 @@ MCP equivalent: `query(query="<model>", variables={...}, dry_run=True/False, exp
 {"dimensions": ["customers.region"], "measures": [{"formula": "orders.amount:sum"}]}
 ```
 
-infers population `customers` (one row per region present among customers, order totals attached, NULL where a region has no orders) — not "regions that happen to have orders". Every successful response reports the effective population as `population` and whether it was inferred as `population_inferred`.
+infers population `customers` (one row per region present among customers, order totals attached, NULL where a region has no orders) — not "regions that happen to have orders". The Python client and REST responses always carry the effective population as `population` and whether it was inferred as `population_inferred`; MCP output reports them only when the population was inferred.
 
 Inference fails closed with a `PopulationInferenceError` naming the candidates when no single model determines everything, several minimal candidates tie, a dimension's join path is ambiguous, or the referenced models don't scope to exactly one datasource. Name `source_model` explicitly (any model — including a bridge that owns none of the queried items) to override inference.
 

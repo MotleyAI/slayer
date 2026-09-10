@@ -18,8 +18,8 @@ _URL = f"https://{_HOST}/npm/vega-datasets@2/data/seattle-weather.csv"
 @pytest.mark.parametrize(
     "text",
     [
-        f"HTTP Error: HTTP GET error on '{_URL}' (HTTP 404 Not Found)",
         f"HTTP Error: HTTP GET error on '{_URL}' (HTTP 403 Forbidden)",
+        f"HTTP Error: HTTP GET error on '{_URL}' (HTTP 408 Request Timeout)",
         f"HTTP Error: HTTP GET error on '{_URL}' (HTTP 429 Too Many Requests)",
         f"HTTP Error: HTTP GET error on '{_URL}' (HTTP 503 Service Unavailable)",
         f"IO Error: Could not resolve host: {_HOST}",
@@ -36,8 +36,13 @@ def test_external_host_outage_is_transient(text):
         "",
         "BinderException: Referenced column 'temp_max' not found",
         "NotImplementedError: dialect does not support this aggregation",
-        # HTTP error that names no external host — not classifiable as a CDN outage.
-        "HTTP Error: HTTP GET error on 'https://example.internal/x' (HTTP 500)",
+        # A 404/400 on the fixed URL = the resource is genuinely wrong/gone: a real
+        # failure that must stay loud, not a CDN outage — including via curl's -f.
+        f"HTTP Error: HTTP GET error on '{_URL}' (HTTP 404 Not Found)",
+        f"HTTP Error: HTTP GET error on '{_URL}' (HTTP 400 Bad Request)",
+        "curl: (22) The requested URL returned error: 404 install.duckdb.org",
+        # A transient status but no external host named — not a classifiable outage.
+        "HTTP Error: HTTP GET error on 'https://example.internal/x' (HTTP 503)",
     ],
 )
 def test_real_bugs_are_not_transient(text):

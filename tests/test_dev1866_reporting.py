@@ -139,24 +139,28 @@ class TestReportedAcrossExecutionModes:
         storage, db_path = await seed_chain_storage(str(tmp_path))
         engine = SlayerQueryEngine(storage=storage)
         engine.cache_config = CacheConfig(refresh_keys=[("orders", "MAX(ordered_at)")])
-        await engine.execute(_INFERRED, cache=True)
-        con = sqlite3.connect(db_path)
-        con.execute("INSERT INTO orders VALUES (5, 2, 'ok', 7.0, '2024-12-31')")
-        con.commit()
-        con.close()
-        result = await engine.refresh()
-        assert result.refreshed  # the entry was actually re-executed
-        refreshed = await engine.execute(_INFERRED, cache=True)
-        assert refreshed.population == "customers"
-        assert refreshed.population_inferred is True
+        try:
+            await engine.execute(_INFERRED, cache=True)
+            con = sqlite3.connect(db_path)
+            con.execute("INSERT INTO orders VALUES (5, 2, 'ok', 7.0, '2024-12-31')")
+            con.commit()
+            con.close()
+            result = await engine.refresh()
+            assert result.refreshed  # the entry was actually re-executed
+            refreshed = await engine.execute(_INFERRED, cache=True)
+            assert refreshed.population == "customers"
+            assert refreshed.population_inferred is True
+        finally:
+            await engine.aclose()
 
 
 class TestEngineDatasourceForwarding:
     async def test_execute_forwards_datasource_to_inference(self) -> None:
         engine = SlayerQueryEngine(storage=await make_inference_storage())
         # No datasource ⇒ the widgets collision is ambiguous.
+        ambiguous = SlayerQuery(dimensions=["widgets.x"])
         with pytest.raises(PopulationInferenceError) as ei:
-            await engine.execute(SlayerQuery(dimensions=["widgets.x"]), dry_run=True)
+            await engine.execute(ambiguous, dry_run=True)
         assert ei.value.reason is PopulationErrorReason.AMBIGUOUS_DATASOURCE
         # Pinning the datasource resolves it (dry-run keeps it DB-free).
         resp = await engine.execute(

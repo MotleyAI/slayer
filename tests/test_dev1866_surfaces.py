@@ -64,6 +64,6 @@ async def test_mcp_rootless_query_executes_and_reports_population() -> None:
     rows = payload["data"] if isinstance(payload, dict) else payload
     regions = {row["customers.region"] for row in rows}
     assert regions == {"North", "South", "West"}
-    # The inferred population is reported — as a footer line or an envelope key.
-    lowered = result.lower()
-    assert "population" in lowered and "customers" in result and "inferred" in lowered
+    # The inferred population rides in the JSON envelope (both fields, since inferred).
+    assert payload["population"] == "customers"
+    assert payload["population_inferred"] is True

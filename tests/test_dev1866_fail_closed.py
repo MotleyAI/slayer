@@ -32,11 +32,9 @@ def _assert_stable_prefix(err: PopulationInferenceError) -> None:
 
 class TestFailClosed:
     async def test_tie_names_both_candidates(self, storage) -> None:
+        query = SlayerQuery(dimensions=["prof.bio", "acct.email"])
         with pytest.raises(PopulationInferenceError) as ei:
-            await infer_population(
-                query=SlayerQuery(dimensions=["prof.bio", "acct.email"]),
-                storage=storage,
-            )
+            await infer_population(query=query, storage=storage)
         err = ei.value
         assert err.reason is PopulationErrorReason.TIE
         assert set(err.candidates) == {"acct", "prof"}
@@ -44,37 +42,26 @@ class TestFailClosed:
         _assert_stable_prefix(err)
 
     async def test_no_viable_candidate_lists_the_siblings(self, storage) -> None:
+        query = SlayerQuery(dimensions=["basket_items.sku", "basket_pays.method"])
         with pytest.raises(PopulationInferenceError) as ei:
-            await infer_population(
-                query=SlayerQuery(
-                    dimensions=["basket_items.sku", "basket_pays.method"]
-                ),
-                storage=storage,
-            )
+            await infer_population(query=query, storage=storage)
         err = ei.value
         assert err.reason is PopulationErrorReason.NO_VIABLE_CANDIDATE
         assert set(err.candidates) == {"basket", "basket_items", "basket_pays"}
         _assert_stable_prefix(err)
 
     async def test_unknown_cardinality_hop_is_not_determination(self, storage) -> None:
+        query = SlayerQuery(dimensions=["hits.page", "sess.token"])
         with pytest.raises(PopulationInferenceError) as ei:
-            await infer_population(
-                query=SlayerQuery(dimensions=["hits.page", "sess.token"]),
-                storage=storage,
-            )
+            await infer_population(query=query, storage=storage)
         assert ei.value.reason is PopulationErrorReason.NO_VIABLE_CANDIDATE
         _assert_stable_prefix(ei.value)
 
     async def test_empty_determination_set_has_dedicated_error(self, storage) -> None:
         """Only measures, no dims/field-filters ⇒ nothing to infer from."""
+        query = SlayerQuery(measures=[{"formula": "orders.amount:sum", "name": "rev"}])
         with pytest.raises(PopulationInferenceError) as ei:
-            await infer_population(
-                query=SlayerQuery(
-                    measures=[{"formula": "orders.amount:sum", "name": "rev"}],
-                ),
-                storage=storage,
-                data_source=DS_CHAIN,
-            )
+            await infer_population(query=query, storage=storage, data_source=DS_CHAIN)
         err = ei.value
         assert err.reason is PopulationErrorReason.EMPTY_DETERMINATION
         assert not err.candidates  # dedicated message, no full model listing
@@ -82,22 +69,19 @@ class TestFailClosed:
         _assert_stable_prefix(err)
 
     async def test_ambiguous_hop_fails_closed(self, storage) -> None:
+        query = SlayerQuery(dimensions=["shipment.weight", "depot.name"])
         with pytest.raises(PopulationInferenceError) as ei:
-            await infer_population(
-                query=SlayerQuery(dimensions=["shipment.weight", "depot.name"]),
-                storage=storage,
-            )
+            await infer_population(query=query, storage=storage)
         err = ei.value
         assert err.reason is PopulationErrorReason.AMBIGUOUS_PATH
-        assert "shipment" in str(err) and "depot" in str(err)
+        assert "shipment" in str(err)
+        assert "depot" in str(err)
         _assert_stable_prefix(err)
 
     async def test_ambiguous_datasource_names_both(self, storage) -> None:
+        query = SlayerQuery(dimensions=["widgets.x"])
         with pytest.raises(PopulationInferenceError) as ei:
-            await infer_population(
-                query=SlayerQuery(dimensions=["widgets.x"]),
-                storage=storage,
-            )
+            await infer_population(query=query, storage=storage)
         err = ei.value
         assert err.reason is PopulationErrorReason.AMBIGUOUS_DATASOURCE
         assert set(err.datasources) == {DS_WIDGETS_A, DS_WIDGETS_B}
@@ -105,11 +89,9 @@ class TestFailClosed:
 
     async def test_zero_candidate_datasources_fails_closed(self, storage) -> None:
         """No single datasource holds every referenced anchor model."""
+        query = SlayerQuery(dimensions=["widgets.x", "customers.region"])
         with pytest.raises(PopulationInferenceError) as ei:
-            await infer_population(
-                query=SlayerQuery(dimensions=["widgets.x", "customers.region"]),
-                storage=storage,
-            )
+            await infer_population(query=query, storage=storage)
         assert ei.value.reason is PopulationErrorReason.NO_DATASOURCE
         _assert_stable_prefix(ei.value)
 
@@ -125,12 +107,9 @@ class TestFailClosed:
 
     async def test_sibling_anchored_stage_refs_fail_closed(self, storage) -> None:
         """A stage omitting source_model whose dims anchor at a sibling name."""
+        query = SlayerQuery(dimensions=["s1.total"])
         with pytest.raises(PopulationInferenceError) as ei:
-            await infer_population(
-                query=SlayerQuery(dimensions=["s1.total"]),
-                storage=storage,
-                sibling_stage_names={"s1"},
-            )
+            await infer_population(query=query, storage=storage, sibling_stage_names={"s1"})
         err = ei.value
         assert err.reason is PopulationErrorReason.SIBLING_STAGE
         assert "s1" in str(err)
@@ -140,13 +119,9 @@ class TestFailClosed:
     async def test_measure_only_without_datasource_is_empty_determination(self, storage) -> None:
         """A measures-only query has nothing to infer from — even with no
         data_source it is EMPTY_DETERMINATION, never a datasource error."""
+        query = SlayerQuery(measures=[{"formula": "orders.amount:sum", "name": "rev"}])
         with pytest.raises(PopulationInferenceError) as ei:
-            await infer_population(
-                query=SlayerQuery(
-                    measures=[{"formula": "orders.amount:sum", "name": "rev"}],
-                ),
-                storage=storage,
-            )
+            await infer_population(query=query, storage=storage)
         assert ei.value.reason is PopulationErrorReason.EMPTY_DETERMINATION
 
     async def test_measure_referencing_sibling_does_not_fail_closed(self, storage) -> None:
@@ -177,11 +152,9 @@ class TestFailClosed:
 
     async def test_error_payload_exposes_all_three_fields(self, storage) -> None:
         """reason/candidates/datasources are always present on the typed error."""
+        query = SlayerQuery(dimensions=["prof.bio", "acct.email"])
         with pytest.raises(PopulationInferenceError) as ei:
-            await infer_population(
-                query=SlayerQuery(dimensions=["prof.bio", "acct.email"]),
-                storage=storage,
-            )
+            await infer_population(query=query, storage=storage)
         err = ei.value
         assert isinstance(err.reason, PopulationErrorReason)
         assert isinstance(err.candidates, list)

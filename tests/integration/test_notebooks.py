@@ -1,13 +1,6 @@
-"""Integration tests that execute all example notebooks end-to-end.
-
-Each notebook under docs/examples/ is run via nbclient. Success means
-the notebook completes without raising any exceptions.
-
-The Jaffle Shop database is generated once per test session (slow ~1-2 min).
-The models directory is cleaned before each notebook to prevent stale
-cross-notebook state (custom models created by one notebook shouldn't
-leak into another).
-"""
+"""Execute every example notebook end-to-end via nbclient; success = it runs
+without raising. The Jaffle Shop DB is built once per session and the models dir
+is reset per notebook (see fixtures)."""
 
 import re
 import shutil
@@ -68,12 +61,9 @@ _INGEST_DEMO_NOTEBOOKS = {
 
 @pytest.fixture(scope="session")
 def _jaffle_models_template(_ensure_jaffle_db, tmp_path_factory) -> Path:
-    """Ingest the base Jaffle models once and snapshot ``slayer_models/`` (DEV-1815).
-
-    Built fresh (not from a possibly-stale checkout dir) and validated to contain
-    every demo table before snapshotting, so consumer notebooks can restore it and
-    hit ``ensure_demo_datasource``'s reuse fast-path instead of re-ingesting.
-    """
+    """Ingest the base Jaffle models once, validate every demo table is present,
+    and snapshot ``slayer_models/`` so consumers restore it instead of
+    re-ingesting (DEV-1815)."""
     if JAFFLE_MODELS_DIR.exists():
         shutil.rmtree(JAFFLE_MODELS_DIR)
     storage = YAMLStorage(base_dir=str(JAFFLE_MODELS_DIR))
@@ -132,17 +122,10 @@ def _github_reachable(host: str = "github.com", port: int = 443, timeout: float 
 
 
 def _bootstrap_failure_is_transient(error_text: str) -> bool:
-    """True if a MetricFlow bootstrap error reflects a transient network/server
-    problem (GitHub 5xx/429, DNS, dropped connection) rather than a deterministic
-    one (bad pin SHA, missing CSVs). A reachable socket does not guarantee a clone
-    succeeds — GitHub can accept the connection and still answer 503 — so the skip
-    guard consults this in addition to :func:`_github_reachable`.
-
-    Reuses the setup helper's classifier (imported lazily, mirroring the in-fixture
-    ``build_jaffle_shop`` import above) so the retry loop and skip guard agree on
-    what counts as transient. If the helper can't be imported, err toward *not*
-    transient so a genuine failure is never silently skipped.
-    """
+    """True if a MetricFlow bootstrap error is a transient network/server problem
+    (5xx/429, DNS, dropped connection) — a reachable socket can still 503 — not a
+    deterministic one (bad pin, missing CSVs). Reuses the setup helper's classifier;
+    if it can't be imported, err toward not-transient so real failures aren't hidden."""
     metricflow_dir = EXAMPLES_DIR / _METRICFLOW_NB_DIR
     if str(metricflow_dir) not in sys.path:
         sys.path.insert(0, str(metricflow_dir))
@@ -153,17 +136,11 @@ def _bootstrap_failure_is_transient(error_text: str) -> bool:
     return _is_transient_git_error(error_text)
 
 
-# The DuckDB example notebooks read a CSV live over httpfs; DuckDB also
-# auto-installs the httpfs extension from its repo on a clean machine. The CDN
-# host serving the CSV is always needed, so the pre-run probe gates on it (over
-# 443). A missing extension repo (served over 80) surfaces only mid-run and is
-# caught by the transient classifier below, which names both hosts. Mirrors the
-# MetricFlow guard: skip (never fail) when the network is down, so offline runs
-# stay green.
+# The DuckDB notebooks read a CSV over httpfs and auto-install the httpfs
+# extension + CLI from these hosts; the pre-run probe gates on the CSV CDN (443),
+# and the classifier below skips (never fails) on any outage reaching them.
 _DUCKDB_NB_DIR = "15_duckdb"
 _DUCKDB_DATA_HOST = "cdn.jsdelivr.net"
-# Remote hosts the DuckDB notebooks reach: the CSV CDN, the httpfs extension
-# repo, and (CLI notebook) the DuckDB CLI installer + version endpoint.
 _DUCKDB_REMOTE_HOSTS = (
     _DUCKDB_DATA_HOST,
     "extensions.duckdb.org",
@@ -171,18 +148,14 @@ _DUCKDB_REMOTE_HOSTS = (
     "duckdb.org",
 )
 
-# Substrings marking a mid-run failure as a transient network/server problem
-# reaching one of those hosts. Matched case-insensitively and only when the
-# error also names a remote host, so genuine query / ingestion bugs still fail
-# loudly.
+# Substrings marking a failure as a transient outage of one of those hosts —
+# case-insensitive, and only when the error names a host. Throttle/block/service
+# statuses only (403/408/429/5xx, incl. curl's "returned error: NNN"); a 404/400
+# means the fixed URL is genuinely wrong — a real failure that must stay loud.
+# curl transport failures surface as the connection/DNS messages below.
 _DUCKDB_TRANSIENT_SIGNATURES = (
-    # Any HTTP status, not just 429/5xx: a shared CI-runner IP gets 403/404-blocked
-    # by the CDN just as readily as rate-limited. duckdb httpfs renders these as
-    # "HTTP GET error on '<url>' (HTTP NNN ...)"; curl (CLI installer) as "curl: (N)".
-    r"http (?:4\d\d|5\d\d)",
-    r"http (?:get |head )?error",
-    r"returned error: \d{3}",
-    r"curl: \(\d+\)",
+    r"http (?:403|408|429|5\d\d)",
+    r"returned error: (?:403|408|429|5\d\d)",
     r"could not resolve host",
     r"temporary failure in name resolution",
     r"name or service not known",
@@ -238,12 +211,9 @@ def _duckdb_network_error_is_transient(error_text: str) -> bool:
 
 
 def _report_notebook_failure(rel: str, exc: BaseException) -> None:
-    """Print the failure to stderr now (flushed) so it survives.
-
-    On Python 3.14 a notebook failure in the full integration session can end the
-    run without pytest's end-of-session FAILURES/summary; emitting the cause
-    mid-run keeps it in the CI log so the failure is never silent.
-    """
+    # On Python 3.14 a notebook failure in the full integration session can end the
+    # run without pytest's end-of-session FAILURES/summary; flushing the cause now
+    # keeps it in the CI log so the failure is never silent.
     print(f"\n===== NOTEBOOK FAILED: {rel} =====\n{exc}", file=sys.stderr, flush=True)
 
 

@@ -123,6 +123,23 @@ def _filter_refs(filter_str: str, *, models_by_name: dict[str, SlayerModel]) -> 
     return [r for r in refs if not _is_saved_measure_ref(r, models_by_name=models_by_name)]
 
 
+def _query_dimension_refs(query: SlayerQuery) -> list[str]:
+    """Row-valued refs of the query's dimensions + time dimensions.
+
+    Computed dimensions contribute their row-valued and partition_by refs (never
+    refs inside an aggregation); plain and time dimensions contribute their name.
+    """
+    refs: list[str] = []
+    for dim in query.dimensions or []:
+        if isinstance(dim, ComputedDimension):
+            refs.extend(_computed_dimension_refs(dim.expression))
+        else:
+            refs.append(dim.full_name)
+    for td in query.time_dimensions or []:
+        refs.append(td.dimension.full_name)
+    return refs
+
+
 def determination_items(
     query: SlayerQuery,
     *,
@@ -142,14 +159,8 @@ def determination_items(
             seen.add(ref)
             items.append(ref)
 
-    for dim in query.dimensions or []:
-        if isinstance(dim, ComputedDimension):
-            for ref in _computed_dimension_refs(dim.expression):
-                _add(ref)
-        else:
-            _add(dim.full_name)
-    for td in query.time_dimensions or []:
-        _add(td.dimension.full_name)
+    for ref in _query_dimension_refs(query):
+        _add(ref)
     for f in query.filters or []:
         for ref in _filter_refs(f, models_by_name=models_by_name):
             _add(ref)
@@ -327,14 +338,7 @@ def _anchor_names(query: SlayerQuery) -> set[str]:
     scoping, or sibling detection); references are read from the parser, so string
     literals never surface as anchors.
     """
-    refs: list[str] = []
-    for dim in query.dimensions or []:
-        if isinstance(dim, ComputedDimension):
-            refs.extend(_computed_dimension_refs(dim.expression))
-        else:
-            refs.append(dim.full_name)
-    for td in query.time_dimensions or []:
-        refs.append(td.dimension.full_name)
+    refs = _query_dimension_refs(query)
     for f in query.filters or []:
         filter_refs, _ = _parsed_filter_refs(f)
         refs.extend(filter_refs)
@@ -389,7 +393,7 @@ async def infer_population(
 
     anchored_siblings = anchors & set(siblings)
     if anchored_siblings:
-        name = sorted(anchored_siblings)[0]
+        name = min(anchored_siblings)
         raise PopulationInferenceError(
             PopulationErrorReason.SIBLING_STAGE,
             candidates=sorted(anchored_siblings),
