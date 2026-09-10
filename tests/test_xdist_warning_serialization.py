@@ -37,6 +37,9 @@ def _carriers() -> list[UserWarning]:
         UnreachableFilterDroppedWarning(
             filter_text="customers.score > 5", reason="unreachable from CTE root"
         ),
+        AssociatedGrainWarning(
+            measure="orders.revenue_sum", dimensions="customers.region, status"
+        ),
         SlayerNormalizationWarning(nw),
     ]
 

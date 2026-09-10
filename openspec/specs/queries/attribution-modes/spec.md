@@ -71,7 +71,9 @@ values identical to broadcast mode.
 ### Requirement: Association eligibility and input handling
 Associate-mode resolution SHALL support the full plain scalar aggregation family
 (including count, count_distinct, avg, min, max, median, percentile, and stddev-class
-aggregations). Every input expression of the aggregation — arguments and
+aggregations), subject to each dialect's existing aggregate capability — grouped
+`median`/`percentile` remains a `NotImplementedError` on T-SQL and MySQL, unchanged by
+mode (per the divergence ledger). Every input expression of the aggregation — arguments and
 aggregation-parameter fragments alike — is evaluated per associated entity (constant
 per entity under the established unsafe-aggregate-inputs rule, which keeps applying
 unchanged); `*:count` counts the distinct associated entities per cell. An
@@ -84,9 +86,10 @@ or unique key).
 
 #### Scenario: Percentile attributes over the association
 - **WHEN** an associate-mode query slices a cross-model percentile aggregate by an
-  unattributable dimension
+  unattributable dimension, on a dialect that supports grouped percentile
 - **THEN** each cell's value is the percentile over the distinct associated entities'
-  values, by executed values
+  values, by executed values; on a dialect without grouped percentile (T-SQL, MySQL)
+  the query raises the established `NotImplementedError`, unchanged by mode
 
 #### Scenario: Star-count counts distinct associated entities
 - **WHEN** an associate-mode query rooted at `orders` selects `customers.*:count` by an
@@ -116,7 +119,9 @@ fail with a clear typed error: an implicit-grain broadcast (cross-model or local
 filter actually excluded from a producer (unreachable, or outside semi-join pushdown
 scope). The error names the metric, the dimension or filter, and the remedy. A filter
 applied by semi-join pushdown is correctly applied and MUST NOT error; explicit
-`partition_by=` broadcasting MUST NOT error; an ambiguous correlation hop errors in
+`partition_by=` broadcasting of an attributable declared grain MUST NOT error, while
+an unattributable explicit `partition_by=` key is a hard error under `broadcast`/`error`
+(it associates only under `associate`); an ambiguous correlation hop errors in
 every mode and is not an error-mode concern.
 
 #### Scenario: Broadcast-would-happen errors

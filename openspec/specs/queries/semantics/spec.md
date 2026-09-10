@@ -164,10 +164,13 @@ alike.
 
 ### Requirement: Dice–slice correspondence under associate
 Under `to_many_handling: "associate"`, filtering the population to `d = v` SHALL yield
-the same value for an aggregate as slicing the `v` cell of the same query grouped by
-`d`, by executed values, for any dimension `d` reachable from the population. The
-broadcast default does not satisfy this correspondence; its warning hint (per Loud
-degradation) is the required disclosure.
+the same value for an **association-eligible** aggregate as slicing the `v` cell of the
+same query grouped by `d`, by executed values, for any dimension `d` reachable from the
+population. An aggregate whose shape is unsupported under association (`window=`,
+`first`/`last`, a root without a unique key, or a column-reference parameter) is not
+subject to this rule — it fails with its typed error instead. The broadcast default does
+not satisfy this correspondence; its warning hint (per Loud degradation) is the required
+disclosure.
 
 #### Scenario: Filtered value equals the sliced cell
 - **WHEN** an associate-mode query filters `status = 'ok'` with `customers.spend:sum`
