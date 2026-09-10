@@ -47,10 +47,10 @@ jobs:
 
       - name: Run unit tests
         timeout-minutes: 15
-        # -n auto parallelises ~16.5k CPU-bound tests across the runner's vCPUs
-        # (~3-4x; clears the intermittent 3.14 timeout). --durations logs the
-        # slowest tests per matrix leg.
-        run: poetry run pytest tests/ -m "not integration" --timeout=120 -n auto --durations=25
+        # -n logical uses ALL the runner's vCPUs for ~16.5k CPU-bound tests
+        # (plain -n auto picks only physical cores via psutil — half). Clears the
+        # 3.14 timeout; --durations logs the slowest tests per matrix leg.
+        run: poetry run pytest tests/ -m "not integration" --timeout=120 -n logical --durations=25
 
       - name: Run integration tests
         timeout-minutes: 20
