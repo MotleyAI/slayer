@@ -171,12 +171,18 @@ _DUCKDB_REMOTE_HOSTS = (
     "duckdb.org",
 )
 
-# Substrings marking a mid-run failure as a transient network/server hiccup
+# Substrings marking a mid-run failure as a transient network/server problem
 # reaching one of those hosts. Matched case-insensitively and only when the
 # error also names a remote host, so genuine query / ingestion bugs still fail
 # loudly.
 _DUCKDB_TRANSIENT_SIGNATURES = (
-    r"http (?:429|5\d\d)",
+    # Any HTTP status, not just 429/5xx: a shared CI-runner IP gets 403/404-blocked
+    # by the CDN just as readily as rate-limited. duckdb httpfs renders these as
+    # "HTTP GET error on '<url>' (HTTP NNN ...)"; curl (CLI installer) as "curl: (N)".
+    r"http (?:4\d\d|5\d\d)",
+    r"http (?:get |head )?error",
+    r"returned error: \d{3}",
+    r"curl: \(\d+\)",
     r"could not resolve host",
     r"temporary failure in name resolution",
     r"name or service not known",
@@ -218,7 +224,10 @@ def _duckdb_failure_text(nb) -> str:
                 # Python exception carries the actual error in evalue/traceback.
                 parts.append(out.get("evalue", ""))
                 parts.append("\n".join(out.get("traceback", [])))
-    return "\n".join(parts)
+    # Contiguous join: nbclient splits one stderr write into several stream
+    # outputs, so "".join reconstructs the original text — a host or HTTP status
+    # split across chunk boundaries would otherwise dodge the host/signature gate.
+    return "".join(parts)
 
 
 def _duckdb_network_error_is_transient(error_text: str) -> bool:
@@ -226,6 +235,16 @@ def _duckdb_network_error_is_transient(error_text: str) -> bool:
     if not any(host in text for host in _DUCKDB_REMOTE_HOSTS):
         return False
     return any(re.search(pattern=pattern, string=text) for pattern in _DUCKDB_TRANSIENT_SIGNATURES)
+
+
+def _report_notebook_failure(rel: str, exc: BaseException) -> None:
+    """Print the failure to stderr now (flushed) so it survives.
+
+    On Python 3.14 a notebook failure in the full integration session can end the
+    run without pytest's end-of-session FAILURES/summary; emitting the cause
+    mid-run keeps it in the CI log so the failure is never silent.
+    """
+    print(f"\n===== NOTEBOOK FAILED: {rel} =====\n{exc}", file=sys.stderr, flush=True)
 
 
 def test_notebook_runs_without_errors(notebook_path, request):
@@ -263,6 +282,7 @@ def test_notebook_runs_without_errors(notebook_path, request):
         # code bug. Other notebooks still fail loudly on timeout.
         if is_duckdb:
             pytest.skip(f"DuckDB notebook timed out (likely a network hang): {exc}")
+        _report_notebook_failure(rel, exc)
         raise
     except nbclient.exceptions.CellExecutionError as exc:
         # A failing `git fetch` (or a stale/partial cache) surfaces as
@@ -283,4 +303,5 @@ def test_notebook_runs_without_errors(notebook_path, request):
         # "network down at start".
         if is_duckdb and _duckdb_network_error_is_transient(_duckdb_failure_text(nb)):
             pytest.skip(f"DuckDB notebook hit a transient network error: {exc}")
+        _report_notebook_failure(rel, exc)
         raise

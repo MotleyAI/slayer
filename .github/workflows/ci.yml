@@ -42,6 +42,22 @@ jobs:
       - name: Install jafgen (for notebook tests, not on PyPI)
         run: poetry run pip install git+https://github.com/rossbowen/jaffle-shop-generator.git@09557a1118b000071f8171aa97d54d5029bf0f0b
 
+      # Cache the DuckDB CLI so the 15_duckdb notebook doesn't re-hit
+      # install.duckdb.org every run (a shared runner IP gets throttled/blocked).
+      - name: Cache the DuckDB CLI
+        id: cache-duckdb-cli
+        uses: actions/cache@v4
+        with:
+          path: ~/.duckdb/cli
+          key: duckdb-cli-${{ runner.os }}
+
+      - name: Install the DuckDB CLI
+        if: steps.cache-duckdb-cli.outputs.cache-hit != 'true'
+        run: curl -fsSL https://install.duckdb.org | bash
+
+      - name: Put the DuckDB CLI on PATH
+        run: echo "$HOME/.duckdb/cli/latest" >> "$GITHUB_PATH"
+
       - name: Lint with ruff
         run: poetry run ruff check slayer/ tests/
 
