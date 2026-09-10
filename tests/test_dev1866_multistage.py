@@ -31,7 +31,7 @@ async def test_nonfinal_stage_inferred_independently() -> None:
         )
         resp = await engine.execute([s1, root])
         assert resp.data  # executed end to end ⇒ s1's population was inferred
-        break
+        # No break: the loop's next step resumes the generator so its finally (aclose + tempdir) runs at test scope.
 
 
 async def test_sibling_anchored_stage_fails_closed_via_execute() -> None:
