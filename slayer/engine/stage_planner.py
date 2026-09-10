@@ -56,6 +56,7 @@ from slayer.core.keys import (
 )
 from slayer.core.errors import UnreachableFilterDroppedWarning
 from slayer.core.models import ModelMeasure, SlayerModel
+from slayer.engine import dimension_routing
 from slayer.engine.aggregate_input_paths import compute_aggregate_input_join_paths
 from slayer.engine.column_filter_paths import compute_column_filter_join_paths
 from slayer.core.join_walker import resolve_hop, terminal_model, walk
@@ -590,7 +591,10 @@ def _map_bound_keys(
 ) -> Tuple[List[DeclaredMeasure], List[BoundFilter], List[OrderSpec]]:
     new_measures = [
         DeclaredMeasure(
-            bound=BinderBoundExpr(value_key=key_fn(dm.bound.value_key)),
+            bound=BinderBoundExpr(
+                value_key=key_fn(dm.bound.value_key),
+                routed_dotted=dm.bound.routed_dotted,
+            ),
             declared_name=dm.declared_name,
             public_name=dm.public_name,
             label=dm.label,
@@ -616,7 +620,10 @@ def _map_bound_keys(
         )
     new_specs = [
         OrderSpec(
-            bound=BinderBoundExpr(value_key=key_fn(spec.bound.value_key)),
+            bound=BinderBoundExpr(
+                value_key=key_fn(spec.bound.value_key),
+                routed_dotted=spec.bound.routed_dotted,
+            ),
             direction=spec.direction,
         )
         for spec in order_specs
@@ -3889,20 +3896,52 @@ def _terminal_model_for_dotted(
     )
 
 
+def _route_short_form_saved_measure(
+    *, host: SlayerModel, hops: list[str], leaf: str, bundle: ResolvedSourceBundle
+) -> Optional[Tuple[SlayerModel, str]]:
+    """``(terminal_model, canonical_ref)`` when a ``len==1`` unresolvable prefix
+    short-form routes to its full datasource-scoped path (DEV-1856), else None.
+    Routing triggers only when the first hop resolves to no edge; an adjacent
+    parallel pair is a fail-closed ambiguous hop (DEV-1853), not a route. This
+    resolver also runs in pre-bind raw-rows validation, so it must not route an
+    ambiguous hop there — it returns None and lets binding raise the ambiguity."""
+    if len(hops) != 1:
+        return None
+    models_by_name = {m.name: m for m in bundle.referenced_models}
+    models_by_name.setdefault(host.name, host)
+    try:
+        if resolve_hop(
+            current=host, token=hops[0], models_by_name=models_by_name,
+        ) is not None:
+            return None
+    except AmbiguousJoinPathError:
+        return None
+    route = dimension_routing.short_form_route_or_none(
+        root=host, target_model=hops[0], models_by_name=models_by_name,
+    )
+    if route is None:
+        return None
+    terminal = models_by_name.get(hops[0])
+    return (terminal, ".".join([*route, leaf])) if terminal is not None else None
+
+
 def _resolve_saved_measure_ref(
     *,
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
     formula: str,
-) -> Optional[Tuple[SlayerModel, "ModelMeasure"]]:
-    """Return ``(terminal_model, measure)`` if ``formula`` is a bare/dotted saved-measure reference (binder resolution order), else None."""
+) -> Optional[Tuple[SlayerModel, "ModelMeasure", str]]:
+    """Return ``(terminal_model, measure, canonical_ref)`` if ``formula`` is a
+    bare/dotted saved-measure reference (binder resolution order, short-form
+    auto-routing included), else None. ``canonical_ref`` is the full routed
+    dotted text a short form resolves to, else the formula text unchanged."""
     if not isinstance(scope, ModelScope) or scope.source_model is None:
         return None
     host = scope.source_model
     text = formula.strip()
     if text.isidentifier():
         mm = host.get_measure(text)
-        return (host, mm) if mm is not None else None
+        return (host, mm, text) if mm is not None else None
     parts = text.split(".")
     if len(parts) < 2 or not all(p.isidentifier() for p in parts):
         return None
@@ -3910,15 +3949,21 @@ def _resolve_saved_measure_ref(
         parts = parts[1:]
     if len(parts) == 1:
         mm = host.get_measure(parts[0])
-        return (host, mm) if mm is not None else None
+        return (host, mm, text) if mm is not None else None
     *hops, leaf = parts
     terminal = _terminal_model_for_dotted(
         source_model=host, hops=hops, bundle=bundle,
     )
+    canonical_ref = text
     if terminal is None:
-        return None
+        routed = _route_short_form_saved_measure(
+            host=host, hops=hops, leaf=leaf, bundle=bundle,
+        )
+        if routed is None:
+            return None
+        terminal, canonical_ref = routed
     mm = terminal.get_measure(leaf)
-    return (terminal, mm) if mm is not None else None
+    return (terminal, mm, canonical_ref) if mm is not None else None
 
 
 def _saved_model_measure_type(
@@ -3937,9 +3982,10 @@ def _saved_measure_public_name(
     bundle: ResolvedSourceBundle,
     formula: str,
 ) -> Optional[str]:
-    """Implicit surfaced name for a bare/dotted saved-measure reference — the formula text itself."""
+    """Implicit surfaced name for a bare/dotted saved-measure reference — the
+    full routed dotted text (short forms surface under their routed path)."""
     ref = _resolve_saved_measure_ref(scope=scope, bundle=bundle, formula=formula)
-    return formula.strip() if ref is not None else None
+    return ref[2] if ref is not None else None
 
 
 def _reject_computed_dim_name_collision(
@@ -4075,21 +4121,25 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
             declared.append(dm)
             continue
         full = d.full_name
-        _reject_opaque_grouping_dim(
-            query=query, scope=scope, full_name=full, bundle=bundle,
-        )
+        # Bind first: a short-form dotted dim auto-routes, and its full routed
+        # path (``bound.routed_dotted``) — not the short form typed — drives the
+        # result key, type, opaque guard, and description (DEV-1856).
         bound = bind_expr(
             parsed=parse_expr(full),
             scope=scope,
             bundle=bundle,
         )
-        flat_name = _flatten_dotted(full)
-        _guard_flatten(flat_name=flat_name, origin=full)
+        canonical = bound.routed_dotted or full
+        _reject_opaque_grouping_dim(
+            query=query, scope=scope, full_name=canonical, bundle=bundle,
+        )
+        flat_name = _flatten_dotted(canonical)
+        _guard_flatten(flat_name=flat_name, origin=canonical)
         fmt, desc = _format_description_for_dimension(
-            scope=scope, full_name=full,
+            scope=scope, full_name=canonical,
         )
         dim_type = _type_for_dimension(
-            scope=scope, full_name=full, bundle=bundle,
+            scope=scope, full_name=canonical, bundle=bundle,
         )
         declared.append(DeclaredMeasure(
             bound=bound,
@@ -4104,8 +4154,9 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
     for td in (query.time_dimensions or []):
         full = td.dimension.full_name
         bound = bind_time_dimension(td=td, scope=scope, bundle=bundle)
-        flat_name = _flatten_dotted(full)
-        _guard_flatten(flat_name=flat_name, origin=full)
+        canonical = bound.routed_dotted or full
+        flat_name = _flatten_dotted(canonical)
+        _guard_flatten(flat_name=flat_name, origin=canonical)
         declared.append(DeclaredMeasure(
             bound=bound,
             declared_name=flat_name,

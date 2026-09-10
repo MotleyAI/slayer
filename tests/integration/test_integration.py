@@ -14,7 +14,7 @@ import tempfile
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.errors import AmbiguousJoinPathError
+from slayer.core.errors import AmbiguousJoinPathError, UnresolvableDimensionJoinError
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
@@ -1323,14 +1323,15 @@ async def test_cross_model_measure_monthly(cross_model_env):
 
 
 async def test_cross_model_measure_no_join_raises(cross_model_env):
-    """Referencing a model with no join should raise."""
+    """An unreachable cross-model measure target is route-aware-rejected (DEV-1856):
+    ``UnresolvableDimensionJoinError`` (a ``ValueError``) with no route to target."""
     engine = cross_model_env
 
     query = SlayerQuery(
         source_model="orders",
         measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="nonexistent.some_measure:sum")],
     )
-    with pytest.raises(ValueError, match="has no join to"):
+    with pytest.raises(UnresolvableDimensionJoinError, match="no route to target"):
         await engine.execute(query)
 
 

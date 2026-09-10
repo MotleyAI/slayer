@@ -37,6 +37,7 @@ from slayer.core.errors import (
     IllegalScopeReferenceError,
     IllegalWindowInFilterError,
     UnknownReferenceError,
+    UnresolvableDimensionJoinError,
 )
 from slayer.core.keys import (
     AggregateKey,
@@ -56,7 +57,7 @@ from slayer.engine.binding import (
     bind_filter,
 )
 from slayer.engine.source_bundle import ResolvedSourceBundle
-from slayer.engine.syntax import parse_expr
+from slayer.engine.syntax import Ref, parse_expr
 
 
 # ---------------------------------------------------------------------------
@@ -197,11 +198,11 @@ class TestRowRefs:
             )
 
     def test_unknown_join_target_raises(self):
-        with pytest.raises(UnknownReferenceError):
-            bind_expr(
-                parse_expr("warehouses.id"),
-                scope=_scope(), bundle=_bundle(),
-            )
+        # DEV-1856: an unreachable short form is route-aware-rejected (was UnknownReferenceError).
+        expr = parse_expr("warehouses.id")
+        scope, bundle = _scope(), _bundle()
+        with pytest.raises(UnresolvableDimensionJoinError):
+            bind_expr(expr, scope=scope, bundle=bundle)
 
 
 # ---------------------------------------------------------------------------
@@ -455,7 +456,6 @@ class TestStageSchemaScope:
         # The syntax parser rejects `__` in user identifiers — bind_expr
         # is given a pre-parsed ParsedExpr that explicitly uses the flat
         # column name via the Ref constructor.
-        from slayer.engine.syntax import Ref
         bound = bind_expr(Ref(name="robot_details__modelseriesval"),
                           scope=scope, bundle=_bundle())
         assert bound.value_key == ColumnKey(
