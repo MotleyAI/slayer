@@ -99,6 +99,13 @@ class TestStorageMigration:
             out = self._migrate(strict=raw)
             assert out["to_many_handling"] == "error", raw
 
+    def test_strict_unrecognized_string_fails_closed(self) -> None:
+        """An unrecognized legacy token raises rather than silently broadcasting."""
+        for raw in ("error", "treu", "maybe", "broadcast"):
+            with pytest.raises(ValueError) as ei:
+                self._migrate(strict=raw)
+            assert "to_many_handling" in str(ei.value), raw
+
     def test_strict_absent_maps_to_default(self) -> None:
         out = self._migrate()
         assert out.get("to_many_handling", "broadcast") == "broadcast"
