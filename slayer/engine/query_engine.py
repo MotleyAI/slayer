@@ -65,6 +65,7 @@ from slayer.core.query import (
 from slayer.core.warnings import (
     AnySlayerWarning,
     AssociatedWarningPayload,
+    DegenerateReaggregationWarningPayload,
     BroadcastDimension,
     BroadcastGrainWarningPayload,
     DroppedFilterWarning,
@@ -438,6 +439,30 @@ def _collect_associated_warnings(
         AssociatedWarningPayload(measure=measure, location=location, dimensions=dims)
         for (location, measure), dims in dims_by_key.items()
     ]
+
+
+def _collect_degenerate_warnings(
+    *, planned_list, stages,
+) -> List[DegenerateReaggregationWarningPayload]:
+    """One degenerate-re-aggregation payload per ``(location, measure)`` (DEV-1847)."""
+    seen: set = set()
+    out: List[DegenerateReaggregationWarningPayload] = []
+    for index, planned in enumerate(planned_list):
+        location = _stage_location(stages=stages, index=index, member=None)
+        for attach in _walk_regroup_attaches(planned):
+            measure = attach.degenerate_measure
+            if not measure:
+                continue
+            identity = (location, measure)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            out.append(DegenerateReaggregationWarningPayload(
+                measure=measure, location=location,
+                operand_grain=list(attach.degenerate_operand_grain),
+                outer_grain=list(attach.degenerate_outer_grain),
+            ))
+    return out
 
 
 def _attach_semi_join_texts(attach) -> Iterator[str]:
@@ -1057,6 +1082,9 @@ class SlayerQueryEngine:
         semi_join_infos = _collect_semi_join_pushed_warnings(
             planned_list=planned_list, stages=ordered_stages,
         )
+        degenerate_warnings = _collect_degenerate_warnings(
+            planned_list=planned_list, stages=ordered_stages,
+        )
         if getattr(query, "to_many_handling", "broadcast") == "error":
             _raise_on_error_events(
                 broadcasts=broadcast_warnings, dropped=dropped_warnings,
@@ -1065,6 +1093,7 @@ class SlayerQueryEngine:
         slack_warnings.extend(broadcast_warnings)
         slack_warnings.extend(associated_warnings)
         slack_warnings.extend(semi_join_infos)
+        slack_warnings.extend(degenerate_warnings)
 
         dialect = self._dialect_for_type(datasource.type)
         sql = generate_planned_stages(
