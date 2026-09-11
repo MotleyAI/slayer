@@ -728,7 +728,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
         key, inspect it and read its ``Description:`` (the schema author's
         intent) and ``Sample values:`` (the authoritative inventory of the
         literal forms actually stored — build text predicates from these,
-        never a guessed spelling).
+        never a guessed spelling). Never pick a column from its name alone.
 
         Collection (DEV-1667): omit ``reference`` (or pass ``None`` / ``[]``)
         to list a whole kind. ``entity_type="model"`` lists all models grouped
@@ -808,9 +808,10 @@ To connect a new database: create_datasource → describe_datasource (verify + l
         it describes — not merely one where its input columns live. Choose
         join keys by column ``Description`` (author intent); on ties take the
         shortest declared join path (long chains through lookup/log tables
-        fan out rows). Reference already-defined entities by name rather than
-        re-deriving them inline; in row-level SQL parenthesise weighted sums
-        in comparisons (``(a*w1 + b*w2) > t``).
+        fan out rows). Encode definitions in dependency order, referencing
+        already-defined entities by name rather than re-deriving them inline;
+        in row-level SQL parenthesise weighted sums in comparisons
+        (``(a*w1 + b*w2) > t``).
 
         **From a table or sql query** (provide sql_table or sql):
             create_model(name="orders", sql_table="public.orders", data_source="mydb",
@@ -976,9 +977,10 @@ To connect a new database: create_datasource → describe_datasource (verify + l
         it describes — not merely one where its input columns live. Choose
         join keys by column ``Description`` (author intent); on ties take the
         shortest declared join path (long chains through lookup/log tables
-        fan out rows). Reference already-defined entities by name rather than
-        re-deriving them inline; in row-level SQL parenthesise weighted sums
-        in comparisons (``(a*w1 + b*w2) > t``).
+        fan out rows). Encode definitions in dependency order, referencing
+        already-defined entities by name rather than re-deriving them inline;
+        in row-level SQL parenthesise weighted sums in comparisons
+        (``(a*w1 + b*w2) > t``).
 
         Args:
             model_name: Name of the model to edit.
