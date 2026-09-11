@@ -26,6 +26,10 @@ Cross-cutting structure and principles live in `architecture/` (LikeC4 model + a
 `index.yaml`); enforcement bundle: `poetry run lint-imports`, `poetry run python
 tools/arch_check.py`, `npx -y likec4@1.47.0 validate architecture`, `poetry run basedpyright`.
 
+`architecture/**/*.arc42.md` and `architecture/**/*.c4` are normative harnesses, like
+tests: NEVER create, modify, or delete one without explicit per-change user approval —
+present the exact edit and wait for the OK, even when a broader plan already mentioned it.
+
 ## Common Commands
 
 ```bash
