@@ -2943,6 +2943,23 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         or f"{root.agg}_{inner_alias}"
     )
 
+    # The outer level-2 aggregate runs over ``_base`` (grain + entity keys + the
+    # picked value) and cannot carry a column parameter; reject loudly (DEV-1884
+    # tracks lifting such parameters).
+    column_param = next(
+        (v for v in (*root.args, *(val for _, val in root.kwargs))
+         if isinstance(v, (ColumnKey, ColumnSqlKey))),
+        None,
+    )
+    if column_param is not None:
+        raise SlayerError(
+            f"Re-aggregation {alias!r} carries a column-reference parameter on "
+            f"its outer aggregation (e.g. weighted_avg(weight=…)), which is "
+            f"unsupported: the outer aggregate consumes only the operand's "
+            f"per-cell values. Drop the column parameter or use a numeric "
+            f"literal."
+        )
+
     # Requested outer grain: explicit partition_by= (combined-consumer rule: each
     # key must be a query dimension) else the query dimensions.
     if root.partition_keys is not None:
@@ -3053,7 +3070,10 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         original_by_pk[sub] = g
     outer_prebound, ordered_outer = _regroup_producer_prebound(
         pks=Grain.of(original_by_pk), aggs=[outer_agg], model=host_model, bundle=bundle,
-        inherited=[], n_date_range=0,
+        # Row filters define the population whose cells the outer aggregate
+        # consumes — without them a NULL-masking composite (coalesce) would
+        # fabricate cells for filtered-out entities.
+        inherited=inherited, n_date_range=n_date_range,
         # A clean producer column name (the placeholder-sourced key would leak the
         # reserved __regroup__ prefix into the emitted alias).
         public_alias_by_agg={outer_agg: alias},

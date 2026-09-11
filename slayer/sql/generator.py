@@ -3424,6 +3424,10 @@ class SQLGenerator:
                     for k, v in agg_slot.key.kwargs
                 },
             )
+            self._assert_association_no_column_default_params(
+                spec=spec, alias=agg_alias,
+                query_param_names={n for n, _ in agg_slot.key.kwargs},
+            )
             inner_cols.append(exp.Alias(
                 this=exp.Max(this=value_expr.copy()),
                 alias=exp.to_identifier(picked_alias),

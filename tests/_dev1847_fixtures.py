@@ -17,6 +17,7 @@ import pytest
 from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.models import (
     Aggregation,
+    AggregationParam,
     Column,
     DatasourceConfig,
     ModelJoin,
@@ -45,7 +46,13 @@ def sales_model() -> SlayerModel:
             Column(name="q_amount", type=DataType.DOUBLE, sql="amount",
                    filter="product = 'Q'"),
         ],
-        aggregations=[Aggregation(name="dsum", formula="SUM({value})")],
+        aggregations=[
+            Aggregation(name="dsum", formula="SUM({value})"),
+            # weight defaults to a COLUMN — outer use must fail closed.
+            Aggregation(name="wavg",
+                        formula="SUM({value} * {weight}) / SUM({weight})",
+                        params=[AggregationParam(name="weight", sql="amount")]),
+        ],
     )
 
 
@@ -178,6 +185,8 @@ CHAIN_AVG_BY_REGION = {"North": 35.0, "South": 100.0}
 COMPOSITE_AVG_BY_REGION = {"North": 125.0, "South": 240.0, "East": 260.0}
 #: row-phase filter ``product='P'`` reaches the inner producer, shifting totals.
 ROWPHASE_P_AVG_BY_REGION = {"North": 20.0, "South": 40.0, "East": 50.0, "Gap": 10.0}
+#: avg(coalesce(sum, 0)) under ``product='Q'`` — P-only cities form NO cells.
+FILTERED_COALESCE_AVG_BY_REGION = {"North": 35.0, "South": 100.0, "East": 80.0}
 #: shape B (spend_band = 'hi' iff [city,region] total > 45): the band totals.
 SHAPE_B_BAND_TOTAL = {"hi": 340.0, "lo": 90.0}
 #:   plain amount:sum grouped by (region, spend_band).
@@ -304,6 +313,7 @@ __all__ = [
     "DEPTH3_MAX_AVG_BY_PRODUCT", "GAP_AVG", "GAP_NULL_CELL_TOTAL",
     "CHAIN_AVG_BY_REGION",
     "COMPOSITE_AVG_BY_REGION", "ROWPHASE_P_AVG_BY_REGION",
+    "FILTERED_COALESCE_AVG_BY_REGION",
     "SHAPE_B_BAND_TOTAL", "SHAPE_B_GROUP_SUM", "SHAPE_B_ACR",
     "SHAPE_B_BAND_THRESHOLD", "SPEND_BAND_EXPR",
     "_SALES_ROWS", "_CORDERS_ROWS", "_CUSTOMERS_ROWS", "_REGIONS_ROWS",

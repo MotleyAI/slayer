@@ -52,6 +52,24 @@ class TestRejections:
         with pytest.raises(ValueError, match="(?i)mix|row|attach|nest"):
             parse_expr("sum(amount * avg(amount, partition_by=city))")
 
+    async def test_column_parameter_on_outer_rejected(self):
+        """Scenario: Column-reference outer parameter fails closed — explicit
+        ``weight=id`` on the outer custom aggregation is a typed plan-time
+        error, never invalid SQL over ``_base``."""
+        with pytest.raises(SlayerError, match="column-reference parameter"):
+            await gen(sales_q(
+                dimensions=["region"],
+                measures=[ModelMeasure(
+                    formula=f"wavg({INNER_CR}, weight=id)", name="w")]))
+
+    async def test_column_default_parameter_on_outer_rejected(self):
+        """Scenario: Column-reference outer parameter fails closed — the
+        aggregation definition's parameter DEFAULT is a column."""
+        with pytest.raises(SlayerError, match="defaults to column"):
+            await gen(sales_q(
+                dimensions=["region"],
+                measures=[ModelMeasure(formula=f"wavg({INNER_CR})", name="w")]))
+
     async def test_outer_window_fails_closed(self):
         """Scenario: Outer window and outer filter fail closed — window= over an
         attached operand is a typed error naming the combination, never a

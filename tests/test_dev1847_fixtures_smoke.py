@@ -27,6 +27,7 @@ from tests._dev1847_fixtures import (
     DEGENERATE_SUM_BY_REGION,
     DEPTH3_MAX_AVG_BY_PRODUCT,
     EAST_CITY_TOTALS,
+    FILTERED_COALESCE_AVG_BY_REGION,
     GAP_AVG,
     GAP_NULL_CELL_TOTAL,
     KEYLESS_GRAND_TOTAL,
@@ -147,6 +148,18 @@ class TestOracleReDerivation:
                 p_region[region].append(t)
         for region, expected in ROWPHASE_P_AVG_BY_REGION.items():
             assert _avg(p_region[region]) == pytest.approx(expected)
+
+    def test_filtered_coalesce(self):
+        # product='Q' population: only Q rows form cells, so coalesce never
+        # fires; P-only cities/regions contribute no cell at all.
+        qcells = {k: _ssum(v) for k, v in
+                  _group(lambda r: (r[2], r[1]) if r[3] == "Q" else ("_skip", r[1])).items()}
+        q_region = defaultdict(list)
+        for (city, region), t in qcells.items():
+            if city != "_skip":
+                q_region[region].append(0.0 if t is None else t)
+        derived = {r: _avg(v) for r, v in q_region.items()}
+        assert derived == FILTERED_COALESCE_AVG_BY_REGION
 
     def test_shape_b_band_totals(self):
         cr = _cr_totals()
