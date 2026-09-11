@@ -386,7 +386,7 @@ def _guard_partitioned_measures(
     *, measure_vks: list, filter_vks: list, order_vks: list,
     exclude: AbstractSet[AggregateKey] = frozenset(),
 ) -> None:
-    """Reject still-deferred cross-model partition_by shapes (first/last, nested-in-transform, in-filter), excluding computed-dimension aggregates."""
+    """Reject still-deferred cross-model partition_by shapes (first/last, nested-in-transform), excluding computed-dimension aggregates."""
     def _part(vk: ValueKey) -> list:
         return _partitioned_agg_keys(vk, exclude=exclude)
 
@@ -2606,7 +2606,7 @@ def _synthesize_association_producer(  # NOSONAR(S3776) — one cohesive host-ro
         )
     # An input crossing an unproven/fanning hop is not constant per root entity,
     # so the level-1 per-entity pick would be arbitrary. Input safety is
-    # mode-invariant — reject exactly as the broadcast/error path does (DEV-1884
+    # mode-invariant — reject exactly as the broadcast/error path does (DEV-1892
     # tracks certifying such inputs via empirical to-one evidence).
     _assert_cross_model_inputs_safe(
         agg=agg, agg_rooted=reroot_value_key(agg, target_path=target_path),
@@ -2616,7 +2616,7 @@ def _synthesize_association_producer(  # NOSONAR(S3776) — one cohesive host-ro
     # A column-reference aggregate parameter (e.g. weighted_avg(weight=col))
     # binds against the host scope, but the level-2 aggregate runs over the
     # deduped ``_base`` (grain + entity key + one picked value) and cannot carry
-    # the column. Reject loudly; DEV-1884 tracks lifting such parameters.
+    # the column. Reject loudly; DEV-1892 tracks lifting such parameters.
     column_param = next(
         (v for v in (*agg.args, *(val for _, val in agg.kwargs))
          if isinstance(v, (ColumnKey, ColumnSqlKey))),
@@ -2752,12 +2752,14 @@ def _substitute_prebound(
 
 def _operand_aggregates(source: ValueKey) -> List[AggregateKey]:
     """The top-level attached aggregates of a re-aggregation source (the direct
-    constituents), not descending through a nested aggregate's own source."""
+    constituents, deduped — a composite may repeat one), not descending through
+    a nested aggregate's own source."""
     out: List[AggregateKey] = []
 
     def _walk(k: ValueKey) -> None:
         if isinstance(k, AggregateKey):
-            out.append(k)
+            if k not in out:
+                out.append(k)
             return
         for c in k.children():
             _walk(c)
@@ -2944,7 +2946,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
     )
 
     # The outer level-2 aggregate runs over ``_base`` (grain + entity keys + the
-    # picked value) and cannot carry a column parameter; reject loudly (DEV-1884
+    # picked value) and cannot carry a column parameter; reject loudly (DEV-1892
     # tracks lifting such parameters).
     column_param = next(
         (v for v in (*root.args, *(val for _, val in root.kwargs))

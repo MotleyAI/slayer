@@ -16,6 +16,7 @@ import pytest
 from tests._dev1847_fixtures import (
     AVG_CITY_TOTAL_BY_REGION,
     COMPOSITE_AVG_BY_REGION,
+    DEGENERATE_SUM_BY_REGION,
     INNER_CR,
     ROWPHASE_P_AVG_BY_REGION,
     ModelMeasure,
@@ -132,6 +133,31 @@ class TestCompositeSparseOperand:
         vals = {k[0]: v["sales.comp"] for k, v in region_key(resp).items()}
         for region, expected in COMPOSITE_AVG_BY_REGION.items():
             assert float(vals[region]) == pytest.approx(expected)
+
+    async def test_duplicate_constituent_dedupes(self, exec_engine):
+        """A composite may repeat one attached aggregate — the constituent
+        projects once (no stage column collision): sum over cells of
+        total+total is twice the degenerate region sum."""
+        resp = await exec_engine.execute(sales_q(
+            dimensions=["region"],
+            measures=[ModelMeasure(
+                formula=f"sum({INNER_CR} + {INNER_CR})", name="d2")]))
+        vals = {k[0]: v["sales.d2"] for k, v in region_key(resp).items()}
+        for region, total in DEGENERATE_SUM_BY_REGION.items():
+            assert float(vals[region]) == pytest.approx(2 * total)
+
+    async def test_comparison_and_boolean_composites(self, exec_engine):
+        """Cmp/BoolOp composition leaves consume cells, not rows: counting
+        cities with 25 < total < 90 per region (North's Alpha spans 3 rows —
+        the row-weighted wrong value would be 4, not 2)."""
+        resp = await exec_engine.execute(sales_q(
+            dimensions=["region"],
+            measures=[ModelMeasure(
+                formula=(f"sum(iif({INNER_CR} > 25 and {INNER_CR} < 90, "
+                         f"1, 0))"), name="mid")]))
+        vals = {k[0]: v["sales.mid"] for k, v in region_key(resp).items()}
+        assert {r: int(vals[r]) for r in ("North", "South", "East")} == {
+            "North": 2, "South": 1, "East": 3}
 
     async def test_sparse_cell_present_at_operand_grain(self, exec_engine):
         """The operand dataset keeps (South, Alpha) even though its composite

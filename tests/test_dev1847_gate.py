@@ -6,6 +6,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.errors import SlayerError
+from slayer.engine.binding import _source_is_reaggregation
 from slayer.engine.syntax import AggCall, TransformCall, parse_expr
 
 from tests._dev1847_fixtures import (
@@ -31,6 +32,29 @@ class TestFullyAttachedAccepted:
         """A composite of attached aggregates is also accepted."""
         parse_expr("avg(sum(amount, partition_by=[city, region]) + "
                    "sum(amount, partition_by=region))")
+
+    def test_direct_comparison_and_boolean_sources_parse(self):
+        """A comparison / boolean composite is a legal attached source
+        DIRECTLY — no scalar-call wrapper — while a row-level comparison
+        source keeps its typed rejection."""
+        for f in (f"count({INNER_CR} > 0)",
+                  f"sum({INNER_CR} > 45 and {INNER_CR} < 100)"):
+            parsed = parse_expr(f)
+            assert isinstance(parsed, AggCall)
+            assert _source_is_reaggregation(parsed.source)
+        with pytest.raises(ValueError, match="cannot aggregate a Cmp"):
+            parse_expr("sum(amount > 45)")
+
+    def test_comparison_and_boolean_composites_route_as_reaggregation(self):
+        """Cmp/BoolOp composition leaves route to the re-aggregation binder,
+        mirroring the parse gate's traversal."""
+        cmp_call = parse_expr(f"sum(iif({INNER_CR} > 45, 1, 0))")
+        assert isinstance(cmp_call, AggCall)
+        assert _source_is_reaggregation(cmp_call.source)
+        bool_call = parse_expr(
+            f"sum(iif({INNER_CR} > 45 and {INNER_CR} < 100, 1, 0))")
+        assert isinstance(bool_call, AggCall)
+        assert _source_is_reaggregation(bool_call.source)
 
     async def test_reaggregation_compiles_to_sql(self):
         """Accepted end-to-end: emits SQL rather than raising the gate."""

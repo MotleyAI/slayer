@@ -384,14 +384,6 @@
                     "endColumn": 21,
                     "lineCount": 1
                 }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 13,
-                    "endColumn": 17,
-                    "lineCount": 1
-                }
             }
         ],
         "./slayer/engine/column_dependency.py": [
@@ -28952,8 +28944,8 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 45,
-                    "endColumn": 78,
+                    "startColumn": 39,
+                    "endColumn": 72,
                     "lineCount": 1
                 }
             },

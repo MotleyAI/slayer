@@ -215,6 +215,7 @@ class TestDimensionErrorSurface:
             measures=[ModelMeasure(formula="amount:sum", name="s")],
         )
         resp = await exec_engine.execute(query)
+        assert resp.data
         for row in resp.data:
             assert float(row["orders.b2"]) == float(row["orders.s"])
 

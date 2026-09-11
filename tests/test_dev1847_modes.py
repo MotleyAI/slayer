@@ -148,6 +148,7 @@ class TestJoinedDimensionSeeding:
             dimensions=["customers.regions.name"],
             measures=[ModelMeasure(
                 formula="avg(sum(amount, partition_by=amount))", name="a")]))
+        assert len(resp.data) == 2  # one row per region, no hidden duplicates
         vals = {row["corders.customers.regions.name"]: float(row["corders.a"])
                 for row in resp.data}
         assert vals == {"North": 42.5, "South": 42.5}  # global avg of the 4 cells

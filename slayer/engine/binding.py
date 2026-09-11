@@ -21,6 +21,7 @@ from slayer.core.errors import (
     UnresolvableDimensionJoinError,
 )
 from slayer.core.enums import (
+    BUILTIN_AGGREGATION_PARAM_ORDER,
     BUILTIN_AGGREGATIONS,
     DEFAULT_AGGREGATIONS_BY_TYPE,
     NUMERIC_ONLY_AGGREGATIONS,
@@ -1128,12 +1129,14 @@ def _source_is_reaggregation(node) -> bool:
     already ensured such a source is pure-attached (no transforms, no row mix)."""
     if isinstance(node, AggCall):
         return True
-    if isinstance(node, Arith):
+    if isinstance(node, (Arith, Cmp)):
         return _source_is_reaggregation(node.left) or _source_is_reaggregation(node.right)
     if isinstance(node, ScalarCall):
         return any(_source_is_reaggregation(a) for a in node.args)
     if isinstance(node, UnaryOp):
         return _source_is_reaggregation(node.operand)
+    if isinstance(node, BoolOp):
+        return any(_source_is_reaggregation(o) for o in node.operands)
     return False
 
 
@@ -1204,6 +1207,9 @@ def _bind_agg(
     # (alias-healed) name so the generator resolves the canonical aggregation.
     effective_agg = _validate_agg_eligibility(
         source=source, agg=parsed.agg, bundle=bundle,
+    )
+    args, kwargs = _fold_positional_agg_args(
+        agg=effective_agg, source=source, bundle=bundle, args=args, kwargs=kwargs,
     )
     # DEV-1826 expression sources: order-sensitive first/last need a plain
     # column (the ranked kernel can't rank an expression), and numeric-only
@@ -1295,6 +1301,50 @@ def _resolve_agg_owner(
     if current is None:
         return None, None
     return current, leaf
+
+
+def _declared_agg_param_names(
+    agg: str, source, bundle: ResolvedSourceBundle,
+) -> List[str]:
+    """Declared parameter order for ``agg`` — the owning model's custom
+    definition wins over the built-in registry; ``[]`` when none declared."""
+    owner, _leaf = _resolve_agg_owner(source, bundle)
+    if owner is not None:
+        custom = next(
+            (a for a in (owner.aggregations or []) if a.name == agg), None,
+        )
+        if custom is not None:
+            return [p.name for p in custom.params]
+    return list(BUILTIN_AGGREGATION_PARAM_ORDER.get(agg, ()))
+
+
+def _fold_positional_agg_args(
+    *, agg: str, source, bundle: ResolvedSourceBundle, args: tuple, kwargs: tuple,
+) -> "tuple[tuple, tuple]":
+    """Fold positional call values onto declared parameter names, Python-call
+    style, so ``percentile(x, 0.9)`` interns identically to ``p=0.9``. Ranked
+    ``first``/``last`` declare no parameters — their positional ranking column
+    stays in ``args``."""
+    if not args:
+        return args, kwargs
+    names = _declared_agg_param_names(agg, source, bundle)
+    if not names:
+        return args, kwargs
+    if len(args) > len(names):
+        raise ValueError(
+            f"Aggregation {agg!r} takes at most {len(names)} parameter(s) "
+            f"({', '.join(names)}); got {len(args)} positional value(s)."
+        )
+    given = {k for k, _ in kwargs}
+    folded = list(kwargs)
+    for name, value in zip(names, args):
+        if name in given:
+            raise ValueError(
+                f"Aggregation {agg!r} got parameter {name!r} both positionally "
+                f"and by name."
+            )
+        folded.append((name, value))
+    return (), tuple(folded)
 
 
 def _unknown_aggregation_message(name: str, known) -> str:

@@ -3332,7 +3332,7 @@ class SQLGenerator:
         (grain + entity key + the picked value ``_v``), so a defaulted column
         param would render against a column ``_base`` lacks. Explicit column
         params are rejected earlier at plan time; this catches the
-        definition-default path (DEV-1884 tracks lifting such parameters).
+        definition-default path (DEV-1892 tracks lifting such parameters).
         ``query_param_names`` are the query-supplied kwarg names — the only ones
         the plan-time gate saw; ``spec.agg_kwargs`` also carries resolved defaults,
         so it must not be used to decide which params are explicit."""

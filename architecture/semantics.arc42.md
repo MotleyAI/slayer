@@ -58,7 +58,12 @@ is the coercion from coarser to finer.
 9. **Closure**: every operator consumes and produces aggregates and may
    inspect only its operands' types (grain, home dataset), never how they were
    constructed — any "not supported inside" refusal of a well-typed term is a
-   closure violation. [target: DEV-1868]
+   closure violation. [target: DEV-1868] Typed residue, by design and NOT a
+   closure violation: an aggregate in dimension position must declare its grain
+   explicitly — the ungrained default (the query's dimensions) would include
+   the dimension being defined, a self-referential grain, so the explicit
+   `partition_by=` requirement is a type rule.
+   [enforced: test:tests/test_dev1824_computed_dim_execution.py]
 10. **Grain-union broadcast**: combining aggregates unions their grains, each
     operand broadcast from its own grain to the union — coarser to finer only;
     the population supplies the row set, a cell an operand lacks contributes
