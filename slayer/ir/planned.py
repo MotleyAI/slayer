@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Dict, List, Literal, Optional, Tuple, Union
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union, Hashable
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -12,15 +12,13 @@ from slayer.core.format import NumberFormat
 from slayer.core.keys import Phase, ValueKey
 from slayer.core.models import SlayerModel
 from slayer.core.scope import StageSchema
-from slayer.engine.binding import BoundExpr  # re-exported below
-
+from slayer.ir.bound import BoundExpr
 
 SlotId = str
 BoundFilterId = str
 
 
 __all__ = [
-    "BoundExpr",
     "BoundFilterId",
     "EmptyBaseGrainPlan",
     "FilterReachability",
@@ -382,3 +380,40 @@ class PlannedQuery(BaseModel):
 
 # ``producer_plan`` forward-references ``PlannedQuery``.
 RegroupAttachPlan.model_rebuild()
+
+
+def regroup_producer_identity(attach: RegroupAttachPlan) -> Hashable:
+    """Interning identity of a regroup producer: its root plus the full structural spec of the producer body (never the render-level attach coordinates)."""
+    return (
+        attach.producer_root_model,
+        _structural_fingerprint(attach.kernel),
+        _structural_fingerprint(attach.producer_plan),
+    )
+
+
+def _structural_fingerprint(obj) -> Hashable:
+    if isinstance(obj, BaseModel):
+        return (
+            type(obj).__name__,
+            tuple(
+                (name, _structural_fingerprint(getattr(obj, name)))
+                for name in type(obj).model_fields
+            ),
+        )
+    if isinstance(obj, (list, tuple)):
+        return tuple(_structural_fingerprint(x) for x in obj)
+    if isinstance(obj, (set, frozenset)):
+        return frozenset(_structural_fingerprint(x) for x in obj)
+    if isinstance(obj, dict):
+        return tuple(sorted(
+            (
+                (_structural_fingerprint(k), _structural_fingerprint(v))
+                for k, v in obj.items()
+            ),
+            key=repr,
+        ))
+    if isinstance(obj, Enum) or obj is None or isinstance(
+        obj, (str, int, float, bool, bytes),
+    ):
+        return obj
+    return (type(obj).__name__, repr(obj))

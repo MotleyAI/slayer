@@ -20,8 +20,8 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.engine.planned import MaskTyping
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.planned import MaskTyping
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import (
     _crossing_local_root_predicate,
     _plan_regroups,

@@ -32,25 +32,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 from slayer.core.errors import AggregationNotAllowedError, SlayerError
 from slayer.core.formula import RANK_FAMILY_TRANSFORMS
-from slayer.core.keys import (
-    KIND_POLICY,
-    REGROUP_LEAF_PREFIX,
-    VALUE_KEY_TYPES,
-    AggregateKey,
-    ArithmeticKey,
-    BetweenKey,
-    ColumnKey,
-    ColumnSqlKey,
-    InKey,
-    Phase,
-    ScalarCallKey,
-    StarKey,
-    TimeTruncKey,
-    TransformKey,
-    column_leaf,
-    column_path,
-    substitute_value_keys,
-)
+from slayer.core.keys import KIND_POLICY, REGROUP_LEAF_PREFIX, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, column_leaf, column_path, substitute_value_keys, walk_value_keys
 from slayer.core.join_walker import resolve_hop, terminal_model
 from slayer.core.models import Aggregation
 from slayer.core.refs import (
@@ -60,20 +42,13 @@ from slayer.core.refs import (
 )
 from slayer.core.time_bounds import strip_frame_bounds
 from slayer.core.window_duration import parse_window_duration as _parse_window_duration
-from slayer.engine.binding import walk_value_keys
-from slayer.engine.column_expansion import (
-    _is_trivial_base,
+from slayer.sql.column_expansion import (
+    is_trivial_base,
     collect_root_scope_joined_paths,
     expand_derived_refs_sync,
 )
-from slayer.engine.planned import (
-    BoundExpr,
-    MaskTyping,
-    RankedGrainMember,
-    ValueSlot,
-)
-from slayer.engine.stage_planner import regroup_producer_identity
-from slayer.engine.source_bundle import (
+from slayer.ir.planned import MaskTyping, RankedGrainMember, ValueSlot, regroup_producer_identity
+from slayer.ir.source_bundle import (
     stage_bundle_with_siblings,
     synthetic_model_from_stage_schema,
 )
@@ -135,6 +110,7 @@ from slayer.sql.render.row_expr import render_row_expression
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 from slayer.sql.scope import ScopeFrame
 from slayer.sql.scope_check import maybe_validate_scopes
+from slayer.ir.bound import BoundExpr
 from slayer.sql.stage_wrapper import (
     build_flat_rename_wrapper,
     unmangle_dotted_table_refs,
@@ -6625,7 +6601,7 @@ class SQLGenerator:
     def _is_nontrivial_derived(model, name: str) -> bool:
         """True iff ``name`` is a column on ``model`` whose ``Column.sql`` is a"""
         col = next((c for c in model.columns if c.name == name), None)
-        return col is not None and col.sql is not None and not _is_trivial_base(
+        return col is not None and col.sql is not None and not is_trivial_base(
             column=col,
         )
 

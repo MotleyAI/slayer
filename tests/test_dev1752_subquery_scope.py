@@ -29,12 +29,10 @@ from sqlglot import exp
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery
-from slayer.engine.column_expansion import collect_root_scope_joined_paths
+from slayer.sql.column_expansion import collect_root_scope_joined_paths
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.storage.yaml_storage import YAMLStorage
-# The orders/customers/regions ScopeFrame fixtures are shared with the DEV-1745
-# door pack; import them rather than duplicate the fixture triple.
 from tests.test_dev1745_mode_a_door import (
     _customers,
     _orders,
@@ -42,6 +40,10 @@ from tests.test_dev1745_mode_a_door import (
     _scope,
     _sql_of,
 )
+
+
+# The orders/customers/regions ScopeFrame fixtures are shared with the DEV-1745
+# door pack; import them rather than duplicate the fixture triple.
 
 
 def _inner_select_sql(rendered: str, dialect: str = "postgres") -> str:

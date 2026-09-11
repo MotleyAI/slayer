@@ -9,7 +9,7 @@ value equalling the measure's is pinned by the executed twin-query law in
 
 from __future__ import annotations
 
-from slayer.engine.planned import OrderEntry
+from slayer.ir.planned import OrderEntry
 from slayer.engine.stage_planner import plan_query
 
 from tests._dev1840_fixtures import ModelMeasure as _CM

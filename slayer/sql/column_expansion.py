@@ -32,11 +32,21 @@ from slayer.core.errors import (
 )
 from slayer.core.join_walker import resolve_hop, walk
 from slayer.core.models import Column, SlayerModel
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 
+__all__ = [
+    "collect_root_scope_joined_paths",
+    "expand_derived_refs_sync",
+    "is_trivial_base",
+    "reference_sites",
+    "resolve_ref_target",
+    "root_scope_column_ids",
+]
 
 
-def _is_trivial_base(*, column: Column) -> bool:
+
+def is_trivial_base(*, column: Column) -> bool:
     """A column is "trivial base" iff its sql is missing or is just its own
     bare name. These need no expansion — only re-qualification.
     """
@@ -53,7 +63,7 @@ def _is_trivial_base(*, column: Column) -> bool:
     return sql == column.name
 
 
-def _root_scope_column_ids(*, parsed: exp.Expression) -> set[int]:
+def root_scope_column_ids(*, parsed: exp.Expression) -> set[int]:
     """Return the ``id()`` set of ``exp.Column`` nodes that lexically belong
     to the root scope of ``parsed`` (DEV-1410).
 
@@ -109,17 +119,6 @@ def _root_scope_column_ids(*, parsed: exp.Expression) -> set[int]:
     return root_ids
 
 
-class _SyncBundle(Protocol):
-    """Minimal contract for ``collect_root_scope_joined_paths``'s bundle —
-    matches ``ResolvedSourceBundle``. Declared inline so this helper stays
-    import-free of the engine layer.
-    """
-
-    referenced_models: List[SlayerModel]
-
-    def get_referenced_model(self, name: str) -> Optional[SlayerModel]: ...
-
-
 class _PathSink(Protocol):
     """A duck-typed ordered collector of join-path tuples (``.add(path)``), so
     a caller can pass its own insertion-ordered set (``ScopeFrame.join_paths``)
@@ -166,7 +165,7 @@ def _dot_reference_sites(
 ) -> Tuple[List[Tuple[exp.Expression, Tuple[str, ...], str]], Set[int]]:
     """Root-scope references that parse as an outermost ``exp.Dot`` (5+-part
     refs), plus the ids of the ``Column`` nodes they consume so the plain-Column
-    pass in :func:`_reference_sites` does not double-count them."""
+    pass in :func:`reference_sites` does not double-count them."""
     sites: List[Tuple[exp.Expression, Tuple[str, ...], str]] = []
     consumed: Set[int] = set()
     for dot in parsed.find_all(exp.Dot):
@@ -185,7 +184,7 @@ def _dot_reference_sites(
     return sites, consumed
 
 
-def _reference_sites(
+def reference_sites(
     parsed: exp.Expression, root_scope_ids: Set[int],
 ) -> List[Tuple[exp.Expression, Tuple[str, ...], str]]:
     """Yield ``(node, qualifiers, leaf)`` for every root-scope reference.
@@ -392,7 +391,7 @@ def collect_root_scope_joined_paths(
     parsed: exp.Expression,
     source_model: SlayerModel,
     source_relation: str,
-    bundle: _SyncBundle,
+    bundle: ResolvedSourceBundle,
 ) -> List[Tuple[str, ...]]:
     """Collect the ordered de-duplicated list of join-path prefixes a parsed
     SQL fragment references in its root scope.
@@ -409,11 +408,11 @@ def collect_root_scope_joined_paths(
     column filter discovery so the two surfaces agree on what counts as
     "crosses a join."
     """
-    root_ids = _root_scope_column_ids(parsed=parsed)
+    root_ids = root_scope_column_ids(parsed=parsed)
     models_by_name = {m.name: m for m in bundle.referenced_models}
     seen: Set[Tuple[str, ...]] = set()
     ordered: List[Tuple[str, ...]] = []
-    for _node, quals, _leaf in _reference_sites(parsed, root_ids):
+    for _node, quals, _leaf in reference_sites(parsed, root_ids):
         path = _lenient_path(
             qualifiers=quals, source_model=source_model,
             owner_alias=source_relation,
@@ -525,7 +524,7 @@ def _process_reference_site(
             for i in range(1, len(full_path) + 1):
                 crossed_paths.add(full_path[:i])
     target_col = target_model.get_column(leaf)
-    if target_col is None or _is_trivial_base(column=target_col):
+    if target_col is None or is_trivial_base(column=target_col):
         return _requalify(node, alias=canonical_alias, leaf=leaf)
     key = (target_model.name, leaf)
     if key in visited:
@@ -590,8 +589,8 @@ def expand_derived_refs_sync(
     # that already prequoted (the Mode-A door) are unaffected (DEV-1686).
     sql = prequote_reserved_identifiers(sql, dialect=dialect)
     parsed = sqlglot.parse_one(sql, dialect=dialect)
-    root_scope_ids = _root_scope_column_ids(parsed=parsed)
-    for node, quals, leaf in _reference_sites(parsed, root_scope_ids):
+    root_scope_ids = root_scope_column_ids(parsed=parsed)
+    for node, quals, leaf in reference_sites(parsed, root_scope_ids):
         replacement = _process_reference_site(
             node=node,
             qualifiers=quals,

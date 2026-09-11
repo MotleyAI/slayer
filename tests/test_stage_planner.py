@@ -22,7 +22,7 @@ from slayer.core.enums import DataType
 from slayer.core.errors import IllegalScopeReferenceError
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import plan_query, plan_stages
 
 

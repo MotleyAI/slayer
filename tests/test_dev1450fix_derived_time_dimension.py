@@ -36,7 +36,7 @@ from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.core.scope import ModelScope
 from slayer.engine.binding import bind_time_dimension
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.storage.yaml_storage import YAMLStorage
 
 

@@ -12,9 +12,9 @@ from slayer.core.enums import TimeGranularity
 from slayer.core.keys import TransformKey
 from slayer.core.models import ModelMeasure
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
-from slayer.engine.planned import PlannedQuery, ValueSlot
+from slayer.ir.planned import PlannedQuery, ValueSlot
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import plan_query
 from slayer.sql.generator import SQLGenerator
 from slayer.sql.scope import ScopeFrame

@@ -10,16 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.keys import (
-    AggregateKey,
-    ArithmeticKey,
-    ColumnKey,
-    LiteralKey,
-    Phase,
-    ScalarCallKey,
-    reroot_value_key,
-)
-from slayer.engine.binding import walk_value_keys
+from slayer.core.keys import AggregateKey, ArithmeticKey, ColumnKey, LiteralKey, Phase, ScalarCallKey, reroot_value_key, walk_value_keys
 from slayer.sql.render.value_expr import contains_aggregate
 
 

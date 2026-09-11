@@ -41,13 +41,13 @@ from slayer.core.models import (
 )
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.source_bundle import build_resolved_source_bundle
 from slayer.engine.stage_planner import plan_stages
 from slayer.sql.generator import generate_planned_stages
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._engine_helpers import _engine_generate
+import slayer.engine.bundle_builder
 
 
 def _outer_select_columns(sql: str, *, dialect: str = "postgres") -> List[str]:
@@ -403,7 +403,7 @@ class TestJoinedDimensionDottedKeys:
 async def _new_sql(*, storage, stages, dialect="sqlite") -> str:
     root = stages[-1]
     named = {q.name: q for q in stages[:-1] if q.name}
-    bundle = await build_resolved_source_bundle(
+    bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
         query=root, storage=storage, named_queries=named
     )
     planned = plan_stages(queries=stages, bundle=bundle)

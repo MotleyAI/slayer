@@ -9,7 +9,7 @@ descend a ``TransformKey``'s input, a discriminating column inside e.g.
 wrongly pruned, collapsing the producer to ``region`` alone.
 """
 
-from slayer.core.grain import Grain
+from slayer.ir.grain import Grain
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,

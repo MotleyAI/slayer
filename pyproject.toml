@@ -150,7 +150,7 @@ exclude_type_checking_imports = true
 [[tool.importlinter.contracts]]
 name = "layers"
 type = "layers"
-layers = ["slayer.engine", "slayer.sql", "slayer.core"]
+layers = ["slayer.engine", "slayer.sql", "slayer.ir", "slayer.core"]
 unmatched_ignore_imports_alerting = "error"
 ignore_imports = [
     "slayer.core.query -> slayer.engine.syntax",
@@ -158,15 +158,6 @@ ignore_imports = [
     "slayer.core.models -> slayer.sql.sql_predicate",
     "slayer.core.models -> slayer.sql.window_detect",
     "slayer.core.query -> slayer.sql.window_detect",
-    "slayer.sql.client -> slayer.engine.timing",
-    "slayer.sql.generator -> slayer.engine.binding",
-    "slayer.sql.generator -> slayer.engine.column_expansion",
-    "slayer.sql.generator -> slayer.engine.planned",
-    "slayer.sql.generator -> slayer.engine.source_bundle",
-    "slayer.sql.generator -> slayer.engine.stage_planner",
-    "slayer.sql.render.order_terms -> slayer.engine.planned",
-    "slayer.sql.scope -> slayer.engine.column_expansion",
-    "slayer.sql.scope -> slayer.engine.source_bundle",
 ]
 
 [[tool.importlinter.contracts]]

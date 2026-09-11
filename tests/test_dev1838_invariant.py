@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import plan_query
 
 from tests._dev1838_fixtures import (

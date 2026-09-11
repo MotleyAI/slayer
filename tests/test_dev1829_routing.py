@@ -13,7 +13,6 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
-from slayer.engine.source_bundle import build_resolved_source_bundle
 from slayer.engine.stage_planner import plan_stages
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -24,6 +23,7 @@ from tests._dev1739_fixtures import (
     make_exec_engine,
     rows_by,
 )
+import slayer.engine.bundle_builder
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -229,7 +229,7 @@ class TestReservedPrefixAcrossStages:
             ],
             measures=[ModelMeasure(formula="total:sum", name="s")],
         )
-        bundle = await build_resolved_source_bundle(
+        bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=root, storage=storage, named_queries={"stage1": stage1},
         )
         with pytest.raises(ValueError, match=r"reserved '__regroup__' prefix"):

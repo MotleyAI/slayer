@@ -56,7 +56,7 @@ from slayer.engine.binding import (
     bind_expr,
     bind_filter,
 )
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.syntax import Ref, parse_expr
 
 

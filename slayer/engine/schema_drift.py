@@ -46,7 +46,7 @@ from slayer.engine.ingestion import (
 )
 from slayer.core.errors import AmbiguousJoinPathError
 from slayer.core.join_walker import neighbors, resolve_hop
-from slayer.engine.column_expansion import resolve_ref_target
+from slayer.sql.column_expansion import resolve_ref_target
 from slayer.engine.dimension_routing import short_form_route_or_none
 from slayer.engine.syntax import (
     AggCall,

@@ -67,7 +67,7 @@ from slayer.core.models import (
 )
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects import get_dialect
 from slayer.sql.generator import SQLGenerator
 from slayer.sql.naming import AliasAllocator

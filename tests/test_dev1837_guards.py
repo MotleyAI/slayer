@@ -20,7 +20,7 @@ import sqlglot
 from sqlglot import exp
 
 import slayer
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import plan_query
 from slayer.sql.generator import SQLGenerator
 

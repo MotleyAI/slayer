@@ -40,7 +40,6 @@ from slayer.core.models import (
 )
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine import planning, stage_planner
-from slayer.engine.binding import BoundExpr
 from slayer.engine.planning import _canonical_name
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.stage_planner import _canonical_alias_for_formula
@@ -52,6 +51,7 @@ from slayer.sql.dialects import tsql as tsql_module
 from slayer.sql.generator import SQLGenerator
 from slayer.sql.naming import AliasAllocator
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.ir.bound import BoundExpr
 
 
 # Fixtures — a seeded store whose model contains the colliding name shapes.
