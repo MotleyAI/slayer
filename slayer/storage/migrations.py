@@ -59,6 +59,12 @@ def _model_v9_to_v10(data: dict) -> dict:
     return data
 
 
+# Legacy quoted ``strict`` tokens; blank/whitespace counts as false. Anything
+# outside both sets fails closed rather than silently reading as broadcast.
+_STRICT_TRUE_TOKENS = frozenset({"1", "true", "t", "yes", "y", "on"})
+_STRICT_FALSE_TOKENS = frozenset({"0", "false", "f", "no", "n", "off", ""})
+
+
 @register_migration(entity="SlayerQuery", source_version=3)
 def _query_v3_to_v4(data: dict) -> dict:
     """v4: retire ``strict`` — ``strict: true`` → ``to_many_handling: "error"``;
@@ -66,6 +72,16 @@ def _query_v3_to_v4(data: dict) -> dict:
     if "strict" not in data:
         return data
     strict = data.pop("strict")
+    if isinstance(strict, str):
+        token = strict.strip().lower()
+        if token in _STRICT_TRUE_TOKENS:
+            strict = True
+        elif token in _STRICT_FALSE_TOKENS:
+            strict = False
+        else:
+            raise ValueError(
+                f"Unrecognized legacy strict value {strict!r}; use to_many_handling instead"
+            )
     if strict:
         data.setdefault("to_many_handling", "error")
     return data

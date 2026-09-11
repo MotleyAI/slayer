@@ -199,6 +199,7 @@ class TestAggregateKey:
             source=ColumnKey(path=("customers",), leaf="revenue"),
             agg="sum",
         )
+        assert isinstance(k.source, ColumnKey)
         assert k.source.path == ("customers",)
         # Same class as local — only `source.path` differs (P3).
         local = AggregateKey(
@@ -568,6 +569,8 @@ class TestIdentityInterning:
         )
         assert type(local) is type(cross)
         assert local != cross
+        assert isinstance(local.source, ColumnKey)
+        assert isinstance(cross.source, ColumnKey)
         assert local.source.path == ()
         assert cross.source.path == ("customers",)
 

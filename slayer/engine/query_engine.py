@@ -1055,9 +1055,10 @@ class SlayerQueryEngine:
         # aggs, misplaced measures) to canonical form, each stage against its
         # own resolved model.
         sibling_names = set(named_queries)
-        query, slack_warnings = self._normalize_stage(
+        query, _norm_warnings = self._normalize_stage(
             query=query, bundle=bundle, sibling_names=sibling_names,
         )
+        slack_warnings: List[AnySlayerWarning] = list(_norm_warnings)
         normed_named: Dict[str, SlayerQuery] = {}
         for nm, nq in named_queries.items():
             nq2, nq_warnings = self._normalize_stage(

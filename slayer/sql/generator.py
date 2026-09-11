@@ -3332,7 +3332,7 @@ class SQLGenerator:
         (grain + entity key + the picked value ``_v``), so a defaulted column
         param would render against a column ``_base`` lacks. Explicit column
         params are rejected earlier at plan time; this catches the
-        definition-default path (DEV-1884 tracks lifting such parameters).
+        definition-default path (DEV-1892 tracks lifting such parameters).
         ``query_param_names`` are the query-supplied kwarg names — the only ones
         the plan-time gate saw; ``spec.agg_kwargs`` also carries resolved defaults,
         so it must not be used to decide which params are explicit."""
@@ -3405,9 +3405,7 @@ class SQLGenerator:
         is_star = isinstance(agg_slot.key.source, StarKey)
         picked_alias = "_v"
         spec: Optional[AggRenderSpec] = None
-        if is_star:
-            pass
-        elif getattr(kernel, "null_safe", False):
+        if not is_star and getattr(kernel, "null_safe", False):
             # Re-aggregation (DEV-1847): the per-cell value is the carrier's
             # attached composite; render it through the scope (its placeholders
             # resolve to the carrier columns) and pick it once per cell.
@@ -3419,12 +3417,20 @@ class SQLGenerator:
                 name=picked_alias, sql=None, aggregation=agg_slot.key.agg,
                 alias=agg_alias, model_name="_base", type=agg_slot.type,
                 aggregation_def=agg_def,
-                agg_kwargs={k: agg_kwarg_canonical_str(v) for k, v in agg_slot.key.kwargs},
+                agg_kwargs={
+                    k: ResolvedAggKwarg(kind="str", value=agg_kwarg_canonical_str(v))
+                    for k, v in agg_slot.key.kwargs
+                },
             )
-            inner_cols.append(
-                exp.Max(this=value_expr.copy()).as_(exp.to_identifier(picked_alias)),
+            self._assert_association_no_column_default_params(
+                spec=spec, alias=agg_alias,
+                query_param_names={n for n, _ in agg_slot.key.kwargs},
             )
-        else:
+            inner_cols.append(exp.Alias(
+                this=exp.Max(this=value_expr.copy()),
+                alias=exp.to_identifier(picked_alias),
+            ))
+        elif not is_star:
             resolved = self._resolve_agg_inputs_via_scope(
                 base_render_order=[agg_slot.id], slots_by_id={agg_slot.id: agg_slot},
                 scope=scope,
@@ -3505,6 +3511,7 @@ class SQLGenerator:
                 alias=agg_alias, model_name="_base", type=agg_slot.type,
             )
         else:
+            assert spec is not None  # set in both non-star arms above
             level2_spec = AggRenderSpec(
                 # A re-aggregation ``count`` counts the cells with a NON-NULL
                 # value (COUNT(_v)), not the cells (COUNT(*)); reference _v so the

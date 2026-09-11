@@ -424,9 +424,11 @@ class TestExpressionErrors:
             await _dry(q)
         assert "filter" in str(ei.value).lower()
 
-    async def test_nested_aggregation_rejected(self) -> None:
-        q = _q(measures=["sum(sum(amount))"])
-        with pytest.raises(ValueError, match="(?i)nest"):
+    async def test_mixed_row_and_attached_source_rejected(self) -> None:
+        # ``sum(sum(amount))`` became a legal degenerate re-aggregation
+        # (DEV-1847); row-mixing stays rejected (DEV-1859 boundary).
+        q = _q(measures=["sum(amount + sum(amount))"])
+        with pytest.raises(ValueError, match="(?i)mix"):
             await _dry(q)
 
     async def test_nested_transform_rejected(self) -> None:

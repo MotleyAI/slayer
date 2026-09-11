@@ -19,11 +19,16 @@ from tests._dev1847_fixtures import (
     BROADCAST_GLOBAL_AVG_CITY,
     INNER_CITY,
     INNER_CR,
+    SHAPE_B_BAND_TOTAL,
+    SPEND_BAND_EXPR,
+    ModelMeasure,
     associated_warnings,
     broadcast_warnings,
+    chain_q,
     make_exec_engine,
     reagg,
     region_key,
+    rows_by,
     sales_q,
 )
 
@@ -53,7 +58,8 @@ class TestBroadcast:
             assert float(value) == pytest.approx(BROADCAST_GLOBAL_AVG_CITY)
         (w,) = broadcast_warnings(resp)
         region_dims = [d for d in w.dimensions if d.dimension == "region"]
-        assert region_dims and region_dims[0].reason
+        assert region_dims
+        assert region_dims[0].reason
         assert "associate" in w.hint.lower()
 
 
@@ -82,8 +88,9 @@ class TestErrorMode:
     async def test_error_mode_refuses_with_clear_message(self, exec_engine):
         """Scenario: Unattributable outer dimension refuses under error mode —
         a clear error naming the dimension and the remedy, never wrong numbers."""
+        query = _q("error")
         with pytest.raises((SlayerError, ValueError)) as ei:
-            await exec_engine.execute(_q("error"))
+            await exec_engine.execute(query)
         msg = str(ei.value)
         assert not isinstance(ei.value, NotImplementedError)
         # a genuine error-mode refusal, not the generic expression-nesting gate
@@ -110,7 +117,43 @@ class TestExplicitOuterKeyUnattributable:
         assert any(d.dimension == "product" for d in w.dimensions)
 
     async def test_error_mode_refuses(self, exec_engine):
+        query = self._pq("error")
         with pytest.raises((SlayerError, ValueError)) as ei:
-            await exec_engine.execute(self._pq("error"))
+            await exec_engine.execute(query)
         assert not isinstance(ei.value, NotImplementedError)
         assert "product" in str(ei.value)
+
+
+class TestExpressionGrainNonTransitivity:
+    async def test_expression_grain_determines_only_itself(self, exec_engine):
+        """Deferred from stage 2: an expression inner grain (spend_band)
+        determines only itself — region is NOT attributed through it; each row
+        carries its band's cell value and region broadcasts with a warning."""
+        band = {"expression": SPEND_BAND_EXPR, "name": "spend_band"}
+        resp = await exec_engine.execute(sales_q(
+            dimensions=[band, "region"],
+            measures=[ModelMeasure(
+                formula="avg(sum(amount, partition_by=spend_band))", name="abt")]))
+        by = rows_by(resp, "sales.spend_band", "sales.region")
+        for (bandv, _region), cell in by.items():
+            assert float(cell["sales.abt"]) == pytest.approx(
+                SHAPE_B_BAND_TOTAL[bandv])
+        (w,) = broadcast_warnings(resp)
+        assert any(d.dimension == "region" for d in w.dimensions)
+
+
+class TestJoinedDimensionSeeding:
+    async def test_unseeded_joined_dimension_broadcasts(self, exec_engine):
+        """A joined dim reachable to-one from the host but NOT seeded by the
+        operand grain broadcasts the global value with a warning — never a
+        silent per-group association (Codex review find)."""
+        resp = await exec_engine.execute(chain_q(
+            dimensions=["customers.regions.name"],
+            measures=[ModelMeasure(
+                formula="avg(sum(amount, partition_by=amount))", name="a")]))
+        assert len(resp.data) == 2  # one row per region, no hidden duplicates
+        vals = {row["corders.customers.regions.name"]: float(row["corders.a"])
+                for row in resp.data}
+        assert vals == {"North": 42.5, "South": 42.5}  # global avg of the 4 cells
+        (w,) = broadcast_warnings(resp)
+        assert "determined by the operand grain" in w.human_message()

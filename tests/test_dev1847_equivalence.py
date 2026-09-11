@@ -11,9 +11,11 @@ import pytest
 
 from tests._dev1847_fixtures import (
     INNER_CR,
+    ColumnRef,
     ModelMeasure,
     SlayerModel,
     SlayerQuery,
+    dev1847_models,
     gen,
     make_exec_engine,
     reagg,
@@ -31,10 +33,11 @@ def _sq_model(outer: str) -> SlayerModel:
         source_queries=[
             SlayerQuery(
                 name=f"s1_{outer}", source_model="sales",
-                dimensions=["region", "city"],
+                dimensions=[ColumnRef(name="region"), ColumnRef(name="city")],
                 measures=[ModelMeasure(formula="amount:sum", name="ct")]),
             SlayerQuery(
-                source_model=f"s1_{outer}", dimensions=["region"],
+                source_model=f"s1_{outer}",
+                dimensions=[ColumnRef(name="region")],
                 measures=[ModelMeasure(formula=f"ct:{outer}", name="v")]),
         ])
 
@@ -47,7 +50,6 @@ def _by_region_suffix(resp, suffix):
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def exec_engine(request):
-    from tests._dev1847_fixtures import dev1847_models
     models = dev1847_models() + [_sq_model(o) for o in OUTER_AGGS]
     async for engine in make_exec_engine(request, models=models):
         yield engine

@@ -18,8 +18,9 @@ and computed dimension (with an explicit outer grain, per the dimension
 grain-self-containment rule). `first`/`last` over an aggregated first argument
 keep their transform dispatch. The outer aggregation SHALL reject, with typed
 errors naming the combination and the remedy: `window=` or ranked (`first`/
-`last`) aggregation over an attached operand, and a measure-local `filter=` on
-the outer aggregation.
+`last`) aggregation over an attached operand, a measure-local `filter=` on
+the outer aggregation, and a column-reference parameter on the outer
+aggregation (explicit or via a parameter default).
 
 #### Scenario: Count and parametric outer aggregations
 - **WHEN** a query over `[region]` selects
@@ -48,6 +49,19 @@ the outer aggregation.
 - **WHEN** the query carries a row-level filter conjunct
 - **THEN** it restricts the inner producer's population per the established
   producer filter routing, and the re-aggregated value reflects it
+
+#### Scenario: Row filters bound the operand dataset's cells
+- **WHEN** a row filter removes every operand row of a union-grain cell and the
+  operand is consumed through a NULL-restoring composite (e.g. `coalesce(…, 0)`)
+- **THEN** the operand dataset excludes that cell — the composite cannot
+  fabricate it — by executed values
+
+#### Scenario: Column-reference outer parameter fails closed
+- **WHEN** the outer aggregation carries a column-reference parameter, explicit
+  (`wavg(sum(amount, partition_by=[city, region]), weight=id)`) or defaulted by
+  its aggregation definition
+- **THEN** it fails with a typed error naming the parameter, never invalid SQL
+  or a silently wrong value
 
 #### Scenario: Outer window and outer filter fail closed
 - **WHEN** a query selects `sum(sum(amount, partition_by=[city, region]), window='90d')`

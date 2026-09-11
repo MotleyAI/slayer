@@ -27,6 +27,7 @@ from tests._dev1847_fixtures import (
     DEGENERATE_SUM_BY_REGION,
     DEPTH3_MAX_AVG_BY_PRODUCT,
     EAST_CITY_TOTALS,
+    FILTERED_COALESCE_AVG_BY_REGION,
     GAP_AVG,
     GAP_NULL_CELL_TOTAL,
     KEYLESS_GRAND_TOTAL,
@@ -36,6 +37,7 @@ from tests._dev1847_fixtures import (
     SHAPE_B_BAND_THRESHOLD,
     SHAPE_B_BAND_TOTAL,
     SHAPE_B_GROUP_SUM,
+    dev1847_models,
     make_exec_engine,
     source_queries_equiv_model,
 )
@@ -74,7 +76,7 @@ class TestOracleReDerivation:
         # row-weighted wrong value: broadcast each city total onto its rows.
         for region in ("North", "South"):
             rows = [r for r in _SALES_ROWS if r[1] == region]
-            bc = [cr[(r[2], r[1])] for r in rows if cr[(r[2], r[1])] is not None]
+            bc = [v for r in rows if (v := cr[(r[2], r[1])]) is not None]
             assert mean(bc) == pytest.approx(ROW_WEIGHTED_WRONG[region])
             assert ROW_WEIGHTED_WRONG[region] != AVG_CITY_TOTAL_BY_REGION[region]
 
@@ -86,7 +88,8 @@ class TestOracleReDerivation:
         for (_id, region, city, _p, _a) in _SALES_ROWS:
             region_cities[region].add(city)
         for region, expected in ASSOCIATE_AVG_CITY_BY_REGION.items():
-            vals = [city_tot[c] for c in region_cities[region] if city_tot[c] is not None]
+            vals = [v for c in region_cities[region]
+                    if (v := city_tot[c]) is not None]
             assert mean(vals) == pytest.approx(expected)
 
     def test_degenerate_keyless_and_gap(self):
@@ -146,6 +149,18 @@ class TestOracleReDerivation:
         for region, expected in ROWPHASE_P_AVG_BY_REGION.items():
             assert _avg(p_region[region]) == pytest.approx(expected)
 
+    def test_filtered_coalesce(self):
+        # product='Q' population: only Q rows form cells, so coalesce never
+        # fires; P-only cities/regions contribute no cell at all.
+        qcells = {k: _ssum(v) for k, v in
+                  _group(lambda r: (r[2], r[1]) if r[3] == "Q" else ("_skip", r[1])).items()}
+        q_region = defaultdict(list)
+        for (city, region), t in qcells.items():
+            if city != "_skip":
+                q_region[region].append(0.0 if t is None else t)
+        derived = {r: _avg(v) for r, v in q_region.items()}
+        assert derived == FILTERED_COALESCE_AVG_BY_REGION
+
     def test_shape_b_band_totals(self):
         cr = _cr_totals()
         def band(city, region):
@@ -185,7 +200,6 @@ class TestSourceQueriesRealizesOracle:
 
     @pytest.fixture(params=["sqlite", "duckdb"])
     async def engine(self, request):
-        from tests._dev1847_fixtures import dev1847_models
         models = dev1847_models() + [source_queries_equiv_model()]
         async for eng in make_exec_engine(request, models=models):
             yield eng
@@ -194,7 +208,10 @@ class TestSourceQueriesRealizesOracle:
         resp = await engine.execute("avg_city_total_by_region")
         region_col = next(c for c in resp.columns if c.endswith(".region"))
         acr_col = next(c for c in resp.columns if c.endswith(".acr"))
-        got = {row[region_col]: row[acr_col] for row in resp.data
-               if row[acr_col] is not None}
+        rows = [row for row in resp.data if row[acr_col] is not None]
+        # One row per region — duplicates must not hide behind the dict build.
+        assert sorted(row[region_col] for row in rows) == sorted(
+            AVG_CITY_TOTAL_BY_REGION)
+        got = {row[region_col]: row[acr_col] for row in rows}
         for region, expected in AVG_CITY_TOTAL_BY_REGION.items():
             assert got[region] == pytest.approx(expected)

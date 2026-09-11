@@ -21,6 +21,7 @@ from slayer.core.errors import (
     UnresolvableDimensionJoinError,
 )
 from slayer.core.enums import (
+    BUILTIN_AGGREGATION_PARAM_ORDER,
     BUILTIN_AGGREGATIONS,
     DEFAULT_AGGREGATIONS_BY_TYPE,
     NUMERIC_ONLY_AGGREGATIONS,
@@ -158,18 +159,22 @@ def bind_expr(
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
     allow_measures: bool = False,
+    dimension_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> BoundExpr:
     """Bind a parsed expression against a scope into a ``BoundExpr``.
 
     ``allow_measures`` enables saved-measure resolution (bare and dotted) in
     the eligible positions — measure formulas and computed-dimension
-    expressions; off everywhere else, so a saved-measure name there errors."""
+    expressions; off everywhere else, so a saved-measure name there errors.
+    ``dimension_alias_map`` resolves ``partition_by=<computed dim name>`` to
+    the dimension's bound key (DEV-1847 shape B); it applies ONLY there."""
     measure_ctx = (
         MeasureResolutionCtx(depth_limit=_measure_depth_limit())
         if allow_measures else None
     )
     value_key = _bind(
         parsed, scope=scope, bundle=bundle, in_filter=False, measure_ctx=measure_ctx,
+        dim_alias_map=dimension_alias_map,
     )
     return BoundExpr(
         value_key=value_key,
@@ -318,6 +323,7 @@ def bind_filter(
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
+    dimension_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> BoundFilter:
     """Bind a parsed filter predicate + classify its phase.
 
@@ -325,9 +331,11 @@ def bind_filter(
     ``IllegalWindowInFilterError`` if a referenced ``Column.sql`` is windowed.
     ``alias_map`` maps a stage's declared-measure names to their bound
     ``ValueKey`` so a bare ref matching an alias interns onto that slot rather
-    than resolving against model columns (colon form and alias form share one slot)."""
+    than resolving against model columns (colon form and alias form share one slot).
+    ``dimension_alias_map`` resolves ``partition_by=<computed dim name>`` only."""
     value_key = _bind(
         parsed, scope=scope, bundle=bundle, in_filter=True, alias_map=alias_map,
+        dim_alias_map=dimension_alias_map,
     )
     refs = tuple(walk_value_keys(value_key))
     phase = max(
@@ -356,9 +364,12 @@ def _bind(
     in_filter: bool,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     measure_ctx: Optional[MeasureResolutionCtx] = None,
+    dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> ValueKey:
     # ``measure_ctx`` rides eligible operand edges, dropped at the aggregation
     # boundary — a measure is legal at value level but not inside an aggregation.
+    # ``dim_alias_map`` rides every edge but resolves ONLY inside an
+    # aggregation's ``partition_by`` (DEV-1847 shape B).
     if isinstance(parsed, Literal):
         return LiteralKey(value=normalize_scalar(parsed.value))
 
@@ -378,33 +389,36 @@ def _bind(
         return StarKey()
 
     if isinstance(parsed, AggCall):
-        return _bind_agg(parsed, scope=scope, bundle=bundle)
+        return _bind_agg(
+            parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
+        )
 
     if isinstance(parsed, TransformCall):
         return _bind_transform(
             parsed, scope=scope, bundle=bundle, alias_map=alias_map,
-            measure_ctx=measure_ctx,
+            measure_ctx=measure_ctx, dim_alias_map=dim_alias_map,
         )
 
     if isinstance(parsed, ScalarCall):
         return _bind_scalar(
             parsed, scope=scope, bundle=bundle, in_filter=in_filter,
             alias_map=alias_map, measure_ctx=measure_ctx,
+            dim_alias_map=dim_alias_map,
         )
 
     if isinstance(parsed, Arith):
         return ArithmeticKey(
             op=parsed.op,
             operands=(
-                _bind(parsed.left, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx),
-                _bind(parsed.right, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx),
+                _bind(parsed.left, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx, dim_alias_map=dim_alias_map),
+                _bind(parsed.right, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx, dim_alias_map=dim_alias_map),
             ),
         )
 
     if isinstance(parsed, UnaryOp):
         return ArithmeticKey(
             op=parsed.op,
-            operands=(_bind(parsed.operand, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx),),
+            operands=(_bind(parsed.operand, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx, dim_alias_map=dim_alias_map),),
         )
 
     if isinstance(parsed, Cmp):
@@ -415,18 +429,19 @@ def _bind(
                 parsed,
                 scope=scope, bundle=bundle, in_filter=in_filter,
                 alias_map=alias_map, measure_ctx=measure_ctx,
+                dim_alias_map=dim_alias_map,
             )
         return ArithmeticKey(
             op=parsed.op,
             operands=(
-                _bind(parsed.left, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx),
-                _bind(parsed.right, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx),
+                _bind(parsed.left, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx, dim_alias_map=dim_alias_map),
+                _bind(parsed.right, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx, dim_alias_map=dim_alias_map),
             ),
         )
 
     if isinstance(parsed, BoolOp):
         operands = tuple(
-            _bind(v, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx)
+            _bind(v, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx, dim_alias_map=dim_alias_map)
             for v in parsed.operands
         )
         return ArithmeticKey(op=parsed.op, operands=operands)
@@ -444,6 +459,7 @@ def _bind_in(
     in_filter: bool,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     measure_ctx: Optional[MeasureResolutionCtx] = None,
+    dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> InKey:
     """Bind an ``IN`` / ``NOT IN`` predicate into an ``InKey``.
 
@@ -458,7 +474,7 @@ def _bind_in(
     column = _bind(
         parsed.left,
         scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map,
-        measure_ctx=measure_ctx,
+        measure_ctx=measure_ctx, dim_alias_map=dim_alias_map,
     )
     values = tuple(
         LiteralKey(value=normalize_scalar(elt.value))
@@ -939,11 +955,17 @@ def _bind_agg_partition_keys(
     value, *,
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
+    dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> frozenset:
-    """Bind an aggregation ``partition_by`` value to a frozenset of column keys."""
+    """Bind an aggregation ``partition_by`` value to a frozenset of column keys;
+    a name in ``dim_alias_map`` resolves to that computed dimension's bound key
+    (DEV-1847 shape B)."""
     elements = value if isinstance(value, tuple) else (value,)
     pks: List = []
     for elem in elements:
+        if dim_alias_map and isinstance(elem, Ref) and elem.name in dim_alias_map:
+            pks.append(dim_alias_map[elem.name])
+            continue
         bound = _bind(parsed=elem, scope=scope, bundle=bundle, in_filter=False)
         if not isinstance(bound, (ColumnKey, ColumnSqlKey)):
             raise ValueError(
@@ -1107,12 +1129,14 @@ def _source_is_reaggregation(node) -> bool:
     already ensured such a source is pure-attached (no transforms, no row mix)."""
     if isinstance(node, AggCall):
         return True
-    if isinstance(node, Arith):
+    if isinstance(node, (Arith, Cmp)):
         return _source_is_reaggregation(node.left) or _source_is_reaggregation(node.right)
     if isinstance(node, ScalarCall):
         return any(_source_is_reaggregation(a) for a in node.args)
     if isinstance(node, UnaryOp):
         return _source_is_reaggregation(node.operand)
+    if isinstance(node, BoolOp):
+        return any(_source_is_reaggregation(o) for o in node.operands)
     return False
 
 
@@ -1120,12 +1144,16 @@ def _bind_agg(
     parsed: AggCall, *,
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
+    dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> AggregateKey:
     if _source_is_reaggregation(parsed.source):
         # Re-aggregation (DEV-1847): bind the operand subtree — inner AggCalls
         # become AggregateKeys — so the outer key carries a nested-aggregate
         # source (axiom 6). Discovery/planning lift it to a producer-over-producer.
-        source = _bind(parsed.source, scope=scope, bundle=bundle, in_filter=False)
+        source = _bind(
+            parsed.source, scope=scope, bundle=bundle, in_filter=False,
+            dim_alias_map=dim_alias_map,
+        )
     elif isinstance(parsed.source, StarSource):
         source = StarKey()
     elif (
@@ -1163,7 +1191,9 @@ def _bind_agg(
     kwargs_list: List = []
     for k, v in parsed.kwargs:
         if k == "partition_by":
-            partition_keys = _bind_agg_partition_keys(value=v, scope=scope, bundle=bundle)
+            partition_keys = _bind_agg_partition_keys(
+                value=v, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
+            )
             continue
         kwargs_list.append((k, _bind_agg_arg(v, scope=scope, bundle=bundle)))
     kwargs = tuple(kwargs_list)
@@ -1177,6 +1207,9 @@ def _bind_agg(
     # (alias-healed) name so the generator resolves the canonical aggregation.
     effective_agg = _validate_agg_eligibility(
         source=source, agg=parsed.agg, bundle=bundle,
+    )
+    args, kwargs = _fold_positional_agg_args(
+        agg=effective_agg, source=source, bundle=bundle, args=args, kwargs=kwargs,
     )
     # DEV-1826 expression sources: order-sensitive first/last need a plain
     # column (the ranked kernel can't rank an expression), and numeric-only
@@ -1268,6 +1301,50 @@ def _resolve_agg_owner(
     if current is None:
         return None, None
     return current, leaf
+
+
+def _declared_agg_param_names(
+    *, agg: str, source, bundle: ResolvedSourceBundle,
+) -> List[str]:
+    """Declared parameter order for ``agg`` — the owning model's custom
+    definition wins over the built-in registry; ``[]`` when none declared."""
+    owner, _leaf = _resolve_agg_owner(source, bundle)
+    if owner is not None:
+        custom = next(
+            (a for a in (owner.aggregations or []) if a.name == agg), None,
+        )
+        if custom is not None:
+            return [p.name for p in custom.params]
+    return list(BUILTIN_AGGREGATION_PARAM_ORDER.get(agg, ()))
+
+
+def _fold_positional_agg_args(
+    *, agg: str, source, bundle: ResolvedSourceBundle, args: tuple, kwargs: tuple,
+) -> "tuple[tuple, tuple]":
+    """Fold positional call values onto declared parameter names, Python-call
+    style, so ``percentile(x, 0.9)`` interns identically to ``p=0.9``. Ranked
+    ``first``/``last`` declare no parameters — their positional ranking column
+    stays in ``args``."""
+    if not args:
+        return args, kwargs
+    names = _declared_agg_param_names(agg=agg, source=source, bundle=bundle)
+    if not names:
+        return args, kwargs
+    if len(args) > len(names):
+        raise ValueError(
+            f"Aggregation {agg!r} takes at most {len(names)} parameter(s) "
+            f"({', '.join(names)}); got {len(args)} positional value(s)."
+        )
+    given = {k for k, _ in kwargs}
+    folded = list(kwargs)
+    for name, value in zip(names, args):
+        if name in given:
+            raise ValueError(
+                f"Aggregation {agg!r} got parameter {name!r} both positionally "
+                f"and by name."
+            )
+        folded.append((name, value))
+    return (), tuple(folded)
 
 
 def _unknown_aggregation_message(name: str, known) -> str:
@@ -1432,12 +1509,13 @@ def _bind_transform(
     bundle: ResolvedSourceBundle,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     measure_ctx: Optional[MeasureResolutionCtx] = None,
+    dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> TransformKey:
     # ``measure_ctx`` rides the transform INPUT only — partition_by / scalar
-    # kwargs drop it (and partition_by binds without ``alias_map``).
+    # kwargs drop it (and a transform's partition_by binds without alias maps).
     inp = _bind(
         parsed.input, scope=scope, bundle=bundle, in_filter=False,
-        alias_map=alias_map, measure_ctx=measure_ctx,
+        alias_map=alias_map, measure_ctx=measure_ctx, dim_alias_map=dim_alias_map,
     )
     # A few transforms accept further positional params (mapped onto kwargs);
     # every other transform is keyword-only after the value.
@@ -1575,6 +1653,7 @@ def _bind_scalar(
     in_filter: bool,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     measure_ctx: Optional[MeasureResolutionCtx] = None,
+    dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> ScalarCallKey:
     if parsed.name not in SCALAR_FUNCTIONS:
         # Defence in depth: direct ParsedExpr construction bypasses the parser.
@@ -1599,7 +1678,7 @@ def _bind_scalar(
             )
         raise ValueError(arity_error)
     args = tuple(
-        _bind(a, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx)
+        _bind(a, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx, dim_alias_map=dim_alias_map)
         for a in parsed.args
     )
     return ScalarCallKey(name=parsed.name, args=args)

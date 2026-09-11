@@ -186,7 +186,7 @@ def _cases() -> dict:
             filters=["amount:sum(partition_by=region) > 50 or status == 'ok'"],
             measures=[ModelMeasure(formula="amount:sum", name="s")],
         ),
-        "guard/nested_attach": q(
+        "lift/nested_attach": q(
             dimensions=[
                 {"expression": BAND35, "name": "band"},
                 {"expression": "amount:sum(partition_by=band)", "name": "b2"},
