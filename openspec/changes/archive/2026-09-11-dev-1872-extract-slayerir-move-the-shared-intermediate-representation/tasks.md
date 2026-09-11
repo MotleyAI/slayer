@@ -31,4 +31,4 @@
 - [x] 4.1 `poetry run lint-imports` green with zero `sql → engine` entries; `arch_check` green (baselines 5/2)
 - [x] 4.2 `poetry run pytest tests/ -m "integration or not integration"` — full suite incl. integration (unavailable DBs skip; collection proves imports); golden SQL byte-identical (no golden file changes)
 - [x] 4.3 `poetry run basedpyright` zero unbaselined diagnostics; baseline diff = path rewrites only; `poetry run ruff check slayer/ tests/` clean
-- [ ] 4.4 Commit (new files added individually), push, open PR based on `egor/dev-1847-…` (or `main` if DEV-1847 landed) — with the standing go-ahead gate
+- [x] 4.4 Commit (new files added individually), push, open PR based on `egor/dev-1847-…` (or `main` if DEV-1847 landed) — with the standing go-ahead gate
