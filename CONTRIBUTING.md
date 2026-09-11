@@ -155,4 +155,4 @@ zensical serve   # http://localhost:8000, live reload
 - Include tests for new functionality
 - Run `poetry run pytest` and `poetry run ruff check` before pushing
 - Keep PRs focused — one feature or fix per PR
-- Update docs if your change affects user-facing behavior (check CLAUDE.md, docs/, .claude/skills/)
+- Update docs if your change affects user-facing behavior (check CLAUDE.md, docs/)

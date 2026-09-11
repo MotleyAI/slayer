@@ -97,8 +97,7 @@ poetry run ruff check --fix slayer/ tests/    # auto-fix
 ALWAYS update documentation when making API or user-facing changes:
 
 - `docs/` — concept docs, getting-started, reference, configuration (user-facing only)
-- `.claude/skills/` — slayer-query.md, slayer-models.md, slayer-overview.md
-- When renaming a field or changing a response shape, grep all docs and skills for the old name
+- When renaming a field or changing a response shape, grep all docs for the old name
 - Behaviour is specified in `openspec/specs/` (via an OpenSpec change); cross-cutting
   principles and the query algebra live in `architecture/` (arc42 + status tags)
 
