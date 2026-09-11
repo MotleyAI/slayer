@@ -189,7 +189,8 @@ class TestNullEmptyKeyless:
             dimensions=["region"], filters=["product = 'Q'"],
             measures=[reagg("avg", INNER_CR, name="acr")]))
         regions = {k[0] for k in region_key(resp)}
-        assert "Gap" not in regions and "Void" not in regions
+        assert "Gap" not in regions
+        assert "Void" not in regions
         assert {"North", "South", "East"} <= regions
 
     async def test_row_filter_bounds_composite_cells(self, exec_engine):

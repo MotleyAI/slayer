@@ -3405,9 +3405,7 @@ class SQLGenerator:
         is_star = isinstance(agg_slot.key.source, StarKey)
         picked_alias = "_v"
         spec: Optional[AggRenderSpec] = None
-        if is_star:
-            pass
-        elif getattr(kernel, "null_safe", False):
+        if not is_star and getattr(kernel, "null_safe", False):
             # Re-aggregation (DEV-1847): the per-cell value is the carrier's
             # attached composite; render it through the scope (its placeholders
             # resolve to the carrier columns) and pick it once per cell.
@@ -3432,7 +3430,7 @@ class SQLGenerator:
                 this=exp.Max(this=value_expr.copy()),
                 alias=exp.to_identifier(picked_alias),
             ))
-        else:
+        elif not is_star:
             resolved = self._resolve_agg_inputs_via_scope(
                 base_render_order=[agg_slot.id], slots_by_id={agg_slot.id: agg_slot},
                 scope=scope,

@@ -80,29 +80,32 @@ class TestRejections:
         """Scenario: Column-reference outer parameter fails closed — explicit
         ``weight=id`` on the outer custom aggregation is a typed plan-time
         error, never invalid SQL over ``_base``."""
+        query = sales_q(
+            dimensions=["region"],
+            measures=[ModelMeasure(
+                formula=f"wavg({INNER_CR}, weight=id)", name="w")])
         with pytest.raises(SlayerError, match="column-reference parameter"):
-            await gen(sales_q(
-                dimensions=["region"],
-                measures=[ModelMeasure(
-                    formula=f"wavg({INNER_CR}, weight=id)", name="w")]))
+            await gen(query)
 
     async def test_column_default_parameter_on_outer_rejected(self):
         """Scenario: Column-reference outer parameter fails closed — the
         aggregation definition's parameter DEFAULT is a column."""
+        query = sales_q(
+            dimensions=["region"],
+            measures=[ModelMeasure(formula=f"wavg({INNER_CR})", name="w")])
         with pytest.raises(SlayerError, match="defaults to column"):
-            await gen(sales_q(
-                dimensions=["region"],
-                measures=[ModelMeasure(formula=f"wavg({INNER_CR})", name="w")]))
+            await gen(query)
 
     async def test_outer_window_fails_closed(self):
         """Scenario: Outer window and outer filter fail closed — window= over an
         attached operand is a typed error naming the combination, never a
         NotImplementedError."""
+        query = sales_q(
+            dimensions=["region"],
+            measures=[ModelMeasure(
+                formula=f"sum({INNER_CR}, window='90d')", name="w")])
         with pytest.raises((SlayerError, ValueError)) as ei:
-            await gen(sales_q(
-                dimensions=["region"],
-                measures=[ModelMeasure(
-                    formula=f"sum({INNER_CR}, window='90d')", name="w")]))
+            await gen(query)
         msg = str(ei.value)
         assert not isinstance(ei.value, NotImplementedError)
         # The pure-attached source is accepted; the rejection is the specific
@@ -117,19 +120,21 @@ class TestCrossModelAndFilteredOperandStillRejected:
 
     async def test_cross_model_expression_rejected(self):
         """The error states cross-model expression aggregation is unsupported."""
+        query = SlayerQuery(
+            source_model="corders",
+            dimensions=[ColumnRef(name="customer_id")],
+            measures=[ModelMeasure(formula="sum(amount - customers.region_id)",
+                                   name="x")])
         with pytest.raises((SlayerError, ValueError), match="(?i)cross-model"):
-            await gen(SlayerQuery(
-                source_model="corders",
-                dimensions=[ColumnRef(name="customer_id")],
-                measures=[ModelMeasure(formula="sum(amount - customers.region_id)",
-                                       name="x")]))
+            await gen(query)
 
     async def test_filtered_column_operand_rejected(self):
         """q_amount carries a column-level filter; the error names the column."""
+        query = sales_q(dimensions=["region"],
+                        measures=[ModelMeasure(formula="sum(q_amount - 1)",
+                                               name="x")])
         with pytest.raises((SlayerError, ValueError), match="q_amount"):
-            await gen(sales_q(dimensions=["region"],
-                              measures=[ModelMeasure(formula="sum(q_amount - 1)",
-                                                     name="x")]))
+            await gen(query)
 
 
 class TestFirstLastDispatchUnchanged:
@@ -149,7 +154,8 @@ class TestFirstLastDispatchUnchanged:
 class TestUnknownOuterAggregationRejectedAtBinding:
     async def test_unknown_custom_name_over_aggregate_errors(self):
         """Unknown custom-aggregation candidates are rejected at binding."""
+        query = sales_q(
+            dimensions=["region"],
+            measures=[ModelMeasure(formula=f"magic_fn({INNER_CR})", name="x")])
         with pytest.raises((SlayerError, ValueError), match="(?i)unknown aggregation"):
-            await gen(sales_q(
-                dimensions=["region"],
-                measures=[ModelMeasure(formula=f"magic_fn({INNER_CR})", name="x")]))
+            await gen(query)
