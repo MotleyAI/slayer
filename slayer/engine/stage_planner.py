@@ -13,11 +13,13 @@ from typing import (
     FrozenSet,
     Hashable,
     List,
+    Literal,
     Mapping,
     NamedTuple,
     Optional,
     Sequence,
     Tuple,
+    TypeGuard,
     Union,
 )
 
@@ -384,7 +386,7 @@ def _guard_partitioned_measures(
     *, measure_vks: list, filter_vks: list, order_vks: list,
     exclude: AbstractSet[AggregateKey] = frozenset(),
 ) -> None:
-    """Reject still-deferred cross-model partition_by shapes (first/last, nested-in-transform, in-filter), excluding computed-dimension aggregates."""
+    """Reject still-deferred cross-model partition_by shapes (first/last, nested-in-transform), excluding computed-dimension aggregates."""
     def _part(vk: ValueKey) -> list:
         return _partitioned_agg_keys(vk, exclude=exclude)
 
@@ -674,6 +676,17 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     for dm in declared_measures:
         if dm.is_dimension and dm.public_name is not None:
             filter_alias_map.setdefault(dm.public_name, dm.bound.value_key)
+    # ...and resolvable inside a filter/order ``partition_by=`` (DEV-1847 shape B).
+    _computed_names = frozenset(
+        d.name for d in (query.dimensions or []) if isinstance(d, ComputedDimension)
+    )
+    dim_alias_map: Dict[str, ValueKey] = {
+        dm.public_name: dm.bound.value_key
+        for dm in declared_measures
+        if dm.is_dimension
+        and dm.public_name is not None
+        and dm.public_name in _computed_names
+    }
 
     # Filter list in WHERE order: date_range, model filters (Mode-A SQL), then user query filters.
     bound_filters: List[BoundFilter] = []
@@ -712,6 +725,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
             scope=scope,
             bundle=bundle,
             alias_map=filter_alias_map,
+            dimension_alias_map=dim_alias_map,
         )
         if any(existing.value_key == bf.value_key for existing in bound_filters):
             continue
@@ -731,6 +745,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                     parsed=parse_expr(o.raw_formula),
                     scope=scope,
                     bundle=bundle,
+                    dimension_alias_map=dim_alias_map,
                 ),
                 direction=o.direction,
             ))
@@ -742,6 +757,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
             _part_bound = bind_expr(
                 parsed=parse_expr(o.raw_formula),
                 scope=scope, bundle=bundle,
+                dimension_alias_map=dim_alias_map,
             )
             if any(
                 isinstance(k, AggregateKey) and (
@@ -774,6 +790,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                 parsed=parse_expr(o.raw_formula),
                 scope=scope,
                 bundle=bundle,
+                dimension_alias_map=dim_alias_map,
             )
         else:
             # Bind the FULL reference — a dotted ORDER ColumnRef would otherwise rebind as the wrong host column.
@@ -859,13 +876,23 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     _combined_consumer_keys = frozenset(
         [*_consumers.local_partitioned, *_consumers.cross_model_partitioned]
     )
+    # A re-aggregation operand (DEV-1847) declares an internal producer grain, so
+    # its partition keys need not be query dimensions — the outer aggregation is
+    # the combined consumer and carries the rule.
+    _reagg_operand_keys = _reaggregation_operand_keys([
+        *[dm.bound.value_key for dm in declared_measures],
+        *[bf.value_key for bf in bound_filters],
+        *[sp.bound.value_key for sp in order_specs],
+    ])
 
     def _validate_partition_keys(key: ValueKey) -> frozenset:
         label = (
             f"Transform '{key.op}'" if isinstance(key, TransformKey)
             else f"Aggregation '{key.agg}'"
         )
-        lenient = key in _dim_agg_keys and key not in _combined_consumer_keys
+        lenient = (
+            key in _dim_agg_keys and key not in _combined_consumer_keys
+        ) or key in _reagg_operand_keys
         new_pks = []
         for pk in key.partition_keys or ():
             # A partition key over a join must be attributable from the root; else a hard error.
@@ -1079,38 +1106,6 @@ def _assert_attach_covers_producer_grain(
             "the join must cover the complete grain or it changes cardinality "
             "(DEV-1824)."
         )
-
-
-def _validate_nested_producer_plan(
-    *, producer_plan, producer_grain: Grain,
-) -> None:
-    """A union-grain producer MAY carry nested COMBINED regroup attaches; admit only well-formed ones (combined-phase, local, no deeper CTE, STRICT-subset grain)."""
-    for attach in producer_plan.regroup_attach_plans:
-        # A ROW attach groups into ``_base`` at any grain; only COMBINED nested attaches carry the strict-subset rule.
-        if attach.attach_phase == "row":
-            continue
-        nested = attach.producer_plan
-        if nested.regroup_attach_plans:
-            raise NotImplementedError(
-                "A union-grain producer's nested attach itself needs a further "
-                "regroup producer CTE, which is not supported (DEV-1847)."
-            )
-        grain = Grain.of(host_key for host_key, _ in attach.join_pairs)
-        # A WINDOWED nested attach joins at the FULL union grain, not a strict subset.
-        windowed_attach = any(
-            _window_kwarg_of(sub.original_key) is not None
-            for sub in attach.substitutions
-        )
-        ok = (
-            grain.broadcasts_into(producer_grain) if windowed_attach
-            else grain.is_strict_subgrain_of(producer_grain)
-        )
-        if not ok:
-            raise NotImplementedError(
-                "A union-grain producer's nested attach grain is not a subset "
-                "of the producer grain; only subset inner grains broadcast "
-                "(DEV-1847)."
-            )
 
 
 def _is_local_partitioned_agg(k: ValueKey) -> bool:
@@ -2363,7 +2358,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     projected_td_keys = context.projected_td_keys
     base_filters_with_text = context.base_filters_with_text
     scope, stage_schemas = context.scope, context.stage_schemas
-    target_path = tuple(agg.source.path)
+    target_path = tuple(getattr(agg.source, "path", ()) or ())
     root_model = walk_key_path(model=host_model, path=target_path, bundle=bundle)
     if root_model is None:  # pragma: no cover — bind resolved the path already
         raise ValueError(
@@ -2611,7 +2606,7 @@ def _synthesize_association_producer(  # NOSONAR(S3776) — one cohesive host-ro
         )
     # An input crossing an unproven/fanning hop is not constant per root entity,
     # so the level-1 per-entity pick would be arbitrary. Input safety is
-    # mode-invariant — reject exactly as the broadcast/error path does (DEV-1884
+    # mode-invariant — reject exactly as the broadcast/error path does (DEV-1892
     # tracks certifying such inputs via empirical to-one evidence).
     _assert_cross_model_inputs_safe(
         agg=agg, agg_rooted=reroot_value_key(agg, target_path=target_path),
@@ -2621,7 +2616,7 @@ def _synthesize_association_producer(  # NOSONAR(S3776) — one cohesive host-ro
     # A column-reference aggregate parameter (e.g. weighted_avg(weight=col))
     # binds against the host scope, but the level-2 aggregate runs over the
     # deduped ``_base`` (grain + entity key + one picked value) and cannot carry
-    # the column. Reject loudly; DEV-1884 tracks lifting such parameters.
+    # the column. Reject loudly; DEV-1892 tracks lifting such parameters.
     column_param = next(
         (v for v in (*agg.args, *(val for _, val in agg.kwargs))
          if isinstance(v, (ColumnKey, ColumnSqlKey))),
@@ -2732,6 +2727,541 @@ def _synthesize_association_producer(  # NOSONAR(S3776) — one cohesive host-ro
     )
 
 
+def _substitute_prebound(
+    prebound: PreboundQuery, mapping: Mapping[ValueKey, ValueKey],
+) -> PreboundQuery:
+    """Substitute value keys across a prebound's measures / filters / orders."""
+    return prebound.model_copy(update={
+        "declared_measures": [
+            dm.model_copy(update={"bound": BinderBoundExpr(
+                value_key=substitute_value_keys(dm.bound.value_key, mapping),
+            )})
+            for dm in prebound.declared_measures
+        ],
+        "bound_filters": [
+            substitute_in_bound_filter(bf, mapping) for bf in prebound.bound_filters
+        ],
+        "order_specs": [
+            sp.model_copy(update={"bound": BinderBoundExpr(
+                value_key=substitute_value_keys(sp.bound.value_key, mapping),
+            )})
+            for sp in prebound.order_specs
+        ],
+    })
+
+
+def _operand_aggregates(source: ValueKey) -> List[AggregateKey]:
+    """The top-level attached aggregates of a re-aggregation source (the direct
+    constituents, deduped — a composite may repeat one), not descending through
+    a nested aggregate's own source."""
+    out: List[AggregateKey] = []
+
+    def _walk(k: ValueKey) -> None:
+        if isinstance(k, AggregateKey):
+            if k not in out:
+                out.append(k)
+            return
+        for c in k.children():
+            _walk(c)
+
+    _walk(source)
+    return out
+
+
+def _is_reaggregation_key(k: ValueKey) -> TypeGuard[AggregateKey]:
+    """``k`` is a re-aggregation: an aggregate whose source carries attached
+    (aggregate) values (axiom 6, DEV-1847)."""
+    return isinstance(k, AggregateKey) and bool(_operand_aggregates(k.source))
+
+
+def _reaggregation_operand_keys(vks: Sequence[ValueKey]) -> FrozenSet[AggregateKey]:
+    """Every aggregate nested inside a re-aggregation root (at any depth) — the
+    operands exempt from the combined-consumer partition-key rule."""
+    out: set = set()
+
+    def _scan(k: ValueKey) -> None:
+        if _is_reaggregation_key(k):
+            out.update(
+                c for c in walk_value_keys(k.source) if isinstance(c, AggregateKey)
+            )
+            return
+        for c in k.children():
+            _scan(c)
+
+    for vk in vks:
+        _scan(vk)
+    return frozenset(out)
+
+
+def _discover_reaggregation_roots(prebound: PreboundQuery) -> List[AggregateKey]:
+    """Re-aggregation roots reachable from any measure / order / filter, first-seen."""
+    seen: set = set()
+    out: List[AggregateKey] = []
+
+    def _scan(vk: ValueKey) -> None:
+        # A re-aggregation root is opaque below itself — its constituents belong
+        # to its carrier, not to a separate main-query attach.
+        if _is_reaggregation_key(vk):
+            if vk not in seen:
+                seen.add(vk)
+                out.append(vk)
+            return
+        for c in vk.children():
+            _scan(c)
+
+    for dm in prebound.declared_measures:
+        _scan(dm.bound.value_key)
+    for sp in prebound.order_specs:
+        _scan(sp.bound.value_key)
+    for bf in prebound.bound_filters:
+        _scan(bf.value_key)
+    return out
+
+
+def _non_aggregate_leaf_check(
+    key: ValueKey, *, ok: Callable[[ValueKey], bool],
+) -> bool:
+    """Every column-ish leaf OUTSIDE embedded aggregates satisfies ``ok``;
+    unknown leaf kinds fail closed."""
+    if isinstance(key, (AggregateKey, LiteralKey)):
+        return True
+    if isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+        return ok(key)
+    if isinstance(key, (ScalarCallKey, ArithmeticKey, InKey)):
+        return all(_non_aggregate_leaf_check(c, ok=ok) for c in key.children())
+    return False
+
+
+def _grain_expression_determined(
+    *, key: ValueKey, union_grain: Grain, host_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel],
+) -> bool:
+    """An attach-carrying computed dimension is a function of the operand's
+    union-grain cell when every embedded aggregate is grained by a subset of it
+    and every leaf outside the aggregates is itself determined (DEV-1847)."""
+    aggs = _operand_aggregates(key)
+    if not aggs or isinstance(key, AggregateKey):
+        return False
+    for a in aggs:
+        if a.partition_keys is None or not all(
+            pk in union_grain for pk in a.partition_keys
+        ):
+            return False
+    return _non_aggregate_leaf_check(key, ok=lambda leaf: (
+        leaf in union_grain or _reaggregation_determined(
+            key=leaf, union_grain=union_grain, host_model=host_model,
+            models_by_name=models_by_name,
+        )
+    ))
+
+
+def _grain_seeds_chain(
+    *, key: ValueKey, union_grain: Grain, host_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel],
+) -> bool:
+    """The to-one chain to a joined outer dimension must be SEEDED by the grain:
+    its first hop's host-side join columns — or the host PK, which determines
+    them — are grain members. Bare to-one reachability from the host is NOT
+    determination by the operand's cells."""
+    grain_cols: set = set()
+    for g in union_grain:
+        if isinstance(g, ColumnKey) and not g.path:
+            grain_cols.add(g.leaf)
+        elif isinstance(g, ColumnSqlKey) and not g.path:
+            grain_cols.add(g.column_name)
+    if not grain_cols:
+        return False
+    pk_cols = {c.name for c in host_model.columns or [] if c.primary_key}
+    if pk_cols and pk_cols <= grain_cols:
+        return True
+    try:
+        edge = resolve_hop(
+            current=host_model, token=_key_host_path(key)[0],
+            models_by_name=models_by_name,
+        )
+    except AmbiguousJoinPathError:
+        return False
+    return edge is not None and all(p[0] in grain_cols for p in edge.join_pairs)
+
+
+def _reaggregation_determined(
+    *, key: ValueKey, union_grain: Grain, host_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel],
+) -> bool:
+    """Is an outer dimension determined by the operand dataset's union grain? A
+    bare host column is determined only when it is a grain member (handled by the
+    caller); a joined column is determined when an entity-key grain field seeds
+    its chain AND every hop is provably to-one."""
+    if not _key_host_path(key):
+        return False  # a bare host column determines only itself (in-grain)
+    return _grain_seeds_chain(
+        key=key, union_grain=union_grain, host_model=host_model,
+        models_by_name=models_by_name,
+    ) and _grain_member_attributable(
+        key=key, target_path=(), root_model=host_model,
+        models_by_name=models_by_name, host_name=host_model.name,
+    )
+
+
+def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive second-order synthesis (constituents → union grain → attributability/mode → carrier producer → outer producer → attach); the arms share the re-rooting state.
+    *,
+    root: AggregateKey,
+    placeholder: ValueKey,
+    attach_phase: Literal["row", "combined"],
+    public_alias: Optional[str],
+    context: _ProducerSynthesisContext,
+    declared_type: Optional[DataType],
+    producer_registry: Optional[Dict[Hashable, PlannedQuery]],
+    registry: RegroupPlaceholderRegistry,
+    inherited: List[BoundFilter],
+    n_date_range: int,
+) -> RegroupAttachPlan:
+    """Compile a re-aggregation (DEV-1847) as producer-over-producer: a carrier
+    at the operand's union grain (the inner producers) and an outer aggregate
+    grouping it by the attributable outer grain, reusing the association kernel."""
+    prebound, bundle = context.prebound, context.bundle
+    host_model, models_by_name = context.host_model, context.models_by_name
+    scope, stage_schemas = context.scope, context.stage_schemas
+    proj = [*context.projected_dim_keys, *context.projected_td_keys]
+
+    # Constituents and their grains; a constituent with no declared partition is
+    # typed at the query's dimensions. The union grain is the carrier grain.
+    constituents = _operand_aggregates(root.source)
+    union_grain = Grain.EMPTY
+    for c in constituents:
+        cg = Grain.of(c.partition_keys) if c.partition_keys is not None else Grain.of(proj)
+        union_grain = union_grain | cg
+
+    # A clean, stable name for the re-aggregation (the nested-aggregate source
+    # has no canonical alias of its own).
+    inner_alias = (
+        (canonical_aggregate_alias(constituents[0], profile="stage_formula")
+         if constituents else None)
+        or (constituents[0].agg if constituents else "reagg")
+    )
+    alias = (
+        public_alias
+        or canonical_aggregate_alias(root, profile="stage_formula")
+        or f"{root.agg}_{inner_alias}"
+    )
+
+    # window= on the outer aggregation has no defined cell-time semantics;
+    # name the combination instead of the misleading TD-resolution error.
+    if _window_kwarg_of(root) is not None:
+        raise SlayerError(
+            f"Re-aggregation {alias!r} cannot carry window= on its outer "
+            f"aggregation; apply the window inside the operand or consume the "
+            f"re-aggregated value through a transform."
+        )
+
+    # The outer level-2 aggregate runs over ``_base`` (grain + entity keys + the
+    # picked value) and cannot carry a column parameter; reject loudly (DEV-1892
+    # tracks lifting such parameters).
+    column_param = next(
+        (v for v in (*root.args, *(val for _, val in root.kwargs))
+         if isinstance(v, (ColumnKey, ColumnSqlKey))),
+        None,
+    )
+    if column_param is not None:
+        raise SlayerError(
+            f"Re-aggregation {alias!r} carries a column-reference parameter on "
+            f"its outer aggregation (e.g. weighted_avg(weight=…)), which is "
+            f"unsupported: the outer aggregate consumes only the operand's "
+            f"per-cell values. Drop the column parameter or use a numeric "
+            f"literal."
+        )
+
+    # Requested outer grain: explicit partition_by= (combined-consumer rule: each
+    # key must be a query dimension) else the query dimensions.
+    if root.partition_keys is not None:
+        requested = list(root.partition_keys)
+        proj_set = set(proj)
+        for g in requested:
+            if g not in proj_set:
+                raise ValueError(
+                    f"Re-aggregation {alias!r} declares partition_by="
+                    f"{_regroup_grain_name(g)}, which is not a query dimension; "
+                    f"every explicit partition key must be a query dimension — "
+                    f"add it to dimensions/time_dimensions."
+                )
+    else:
+        requested = list(proj)
+
+    # Attributability to the operand dataset: a grain member, or determined from
+    # an entity-key grain field over to-one hops. Unattributable dims resolve per
+    # to_many_handling, exactly as for model-rooted aggregates.
+    mode = prebound.to_many_handling
+    attributable: List[ValueKey] = []
+    unattributable: List[_UnattributableDim] = []
+    expression_determined: List[ValueKey] = []
+    for g in requested:
+        if g in union_grain or _reaggregation_determined(
+            key=g, union_grain=union_grain, host_model=host_model,
+            models_by_name=models_by_name,
+        ):
+            attributable.append(g)
+        elif _grain_expression_determined(
+            key=g, union_grain=union_grain, host_model=host_model,
+            models_by_name=models_by_name,
+        ):
+            attributable.append(g)
+            expression_determined.append(g)
+        else:
+            if _key_host_path(g) and _grain_member_attributable(
+                key=g, target_path=(), root_model=host_model,
+                models_by_name=models_by_name, host_name=host_model.name,
+            ):
+                # Reachable to-one but not SEEDED by the operand grain.
+                reason = (
+                    "not determined by the operand grain — add the join's "
+                    "entity key to the inner partition_by="
+                )
+            else:
+                reason = _broadcast_reason(
+                    host_path=_key_host_path(g), target_path=(),
+                    root_model=host_model,
+                    models_by_name=models_by_name, host_name=host_model.name,
+                )
+            unattributable.append(_UnattributableDim(
+                key=g, name=_regroup_grain_name(g), reason=reason,
+                reachable=reason != _UNREACHABLE_NO_PATH,
+            ))
+
+    associate_dims: List[_UnattributableDim] = []
+    broadcast_dims: List[Tuple[str, str]] = []
+    if unattributable:
+        if mode == "error":
+            names = ", ".join(u.name for u in unattributable)
+            raise ValueError(
+                f"Re-aggregation {alias!r} cannot attribute dimension(s) {names} "
+                f"to the operand dataset under to_many_handling='error'; add them "
+                f"to the inner partition_by= so the operand is grained by them, "
+                f"or choose 'broadcast'/'associate'."
+            )
+        if mode == "associate":
+            associate_dims = unattributable
+        else:
+            broadcast_dims = [(u.name, u.reason) for u in unattributable]
+
+    outer_grain = [*attributable, *[u.key for u in associate_dims]]
+    # Degenerate: operand grain equals the outer grain — the identity, warned.
+    degenerate = not broadcast_dims and Grain.of(union_grain) == Grain.of(outer_grain)
+
+    # An expression-determined outer dimension consumes carrier cells; its
+    # aggregates ride the carrier as extra constituents (grain ⊆ union grain
+    # keeps it fixed). A dim already IN the grain stays the carrier's grain key.
+    for g in expression_determined:
+        for a in _operand_aggregates(g):
+            if a not in constituents:
+                constituents.append(a)
+
+    # The carrier: one producer at the union grain carrying every constituent
+    # (coarser constituents broadcast within it), row-attached to the population.
+    constituent_placeholders: Dict[ValueKey, ValueKey] = {
+        c: registry.placeholder_for(c) for c in constituents
+    }
+    carrier_attach = _build_carrier_attach(
+        union_grain=union_grain, constituents=constituents,
+        constituent_placeholders=constituent_placeholders, host_model=host_model,
+        bundle=bundle, scope=scope, stage_schemas=stage_schemas,
+        inherited=inherited, n_date_range=n_date_range,
+        producer_source_model=host_model.name, producer_registry=producer_registry,
+    )
+
+    # The outer producer: OUTER_AGG over the constituent composite (placeholders),
+    # grouped by the outer grain. Its body renders via the association kernel with
+    # the carrier as the per-cell value; level 2 aggregates over the cells. An
+    # attach-carrying grain key becomes an expression over carrier placeholders.
+    outer_agg = root.model_copy(update={
+        "source": substitute_value_keys(root.source, constituent_placeholders),
+    })
+    original_by_pk: Dict[ValueKey, ValueKey] = {}
+    for g in outer_grain:
+        sub = substitute_value_keys(g, constituent_placeholders)
+        original_by_pk[sub] = g
+    outer_prebound, ordered_outer = _regroup_producer_prebound(
+        pks=Grain.of(original_by_pk), aggs=[outer_agg], model=host_model, bundle=bundle,
+        # Row filters define the population whose cells the outer aggregate
+        # consumes — without them a NULL-masking composite (coalesce) would
+        # fabricate cells for filtered-out entities.
+        inherited=inherited, n_date_range=n_date_range,
+        # A clean producer column name (the placeholder-sourced key would leak the
+        # reserved __regroup__ prefix into the emitted alias).
+        public_alias_by_agg={outer_agg: alias},
+        explicit_types={outer_agg: declared_type} if declared_type is not None else None,
+        to_many_handling=mode,
+    )
+    outer_plan = plan_query(
+        query=StrictQueryCarrier(
+            source_model=host_model.name, prebound=outer_prebound,
+        ),
+        bundle=bundle, scope=scope, stage_schemas=stage_schemas,
+        disable_host_rooted_isolation=True,
+        # An expression grain key (in-grain computed dim) desugars its own
+        # nested row attach inside the outer producer.
+        enable_producer_regroups=any(
+            isinstance(pk, (ScalarCallKey, ArithmeticKey, TransformKey))
+            or _is_local_partitioned_agg(pk)
+            for pk in ordered_outer
+        ),
+        prebound=outer_prebound, producer_registry=producer_registry,
+    )
+    # Keep any internal attach the outer plan desugared for an expression
+    # grain key; the carrier rides alongside. Entity keys must render inside
+    # the outer body, so they take the same internal desugar.
+    internal_map: Dict[ValueKey, ValueKey] = {
+        sub.original_key: sub.placeholder
+        for a in outer_plan.regroup_attach_plans
+        for sub in a.substitutions
+    }
+    entity_keys = [
+        substitute_value_keys(k, internal_map)
+        for k in _regroup_partition_order(union_grain)
+    ]
+    if internal_map:
+        carrier_attach = carrier_attach.model_copy(update={"join_pairs": [
+            (substitute_value_keys(hk, internal_map), sid)
+            for hk, sid in carrier_attach.join_pairs
+        ]})
+    outer_plan = outer_plan.model_copy(update={
+        "regroup_attach_plans": [*outer_plan.regroup_attach_plans, carrier_attach],
+    })
+
+    answer_slot = outer_plan.aggregate_slots[0].id
+    grain_ids = list(outer_plan.projection)[: len(ordered_outer)]
+    join_pairs: List[Tuple[ValueKey, SlotId]] = []
+    for i, g in enumerate(ordered_outer):
+        slot_id = next(
+            (s.id for s in outer_plan.row_slots if s.key == g), None,
+        )
+        # Join back on the ORIGINAL dimension key (the query slot's identity).
+        join_pairs.append((
+            original_by_pk.get(g, g),
+            slot_id if slot_id is not None else grain_ids[i],
+        ))
+    _assert_attach_covers_producer_grain(
+        joined_slot_ids={sid for _, sid in join_pairs},
+        producer_grain_slot_ids=_producer_grain_slot_ids(outer_plan),
+    )
+    degenerate_display = (
+        [_regroup_grain_name(g) for g in union_grain] if degenerate else []
+    )
+    return RegroupAttachPlan(
+        producer_plan=outer_plan,
+        alias_hint=alias,
+        attach_phase=attach_phase,
+        kernel=AssociationProducerKernel(
+            entity_keys=entity_keys, null_safe=True,
+        ),
+        join_pairs=join_pairs,
+        substitutions=[RegroupSubstitution(
+            placeholder=placeholder, producer_slot_id=answer_slot,
+            original_key=root,
+        )],
+        partition_display=[
+            _regroup_grain_name(original_by_pk.get(g, g)) for g in ordered_outer
+        ],
+        producer_root_model=host_model.name,
+        broadcast_measure=alias if broadcast_dims else None,
+        broadcast_dimensions=broadcast_dims,
+        associated_measure=alias if associate_dims else None,
+        associated_dimensions=[u.name for u in associate_dims],
+        degenerate_measure=alias if degenerate else None,
+        degenerate_operand_grain=degenerate_display,
+        degenerate_outer_grain=(
+            [_regroup_grain_name(g) for g in outer_grain] if degenerate else []
+        ),
+    )
+
+
+def _build_carrier_attach(
+    *,
+    union_grain: Grain,
+    constituents: List[AggregateKey],
+    constituent_placeholders: Dict[ValueKey, ValueKey],
+    host_model: SlayerModel,
+    bundle: ResolvedSourceBundle,
+    scope: Union[ModelScope, StageSchema],
+    stage_schemas: Dict[str, StageSchema],
+    inherited: List[BoundFilter],
+    n_date_range: int,
+    producer_source_model: Optional[str],
+    producer_registry: Optional[Dict[Hashable, PlannedQuery]],
+) -> RegroupAttachPlan:
+    """A row-attach producer at the union grain carrying every constituent (coarser
+    ones broadcast within it) — the carrier / level-1 of the re-aggregation."""
+    carrier_prebound, ordered_pks = _regroup_producer_prebound(
+        pks=union_grain, aggs=constituents, model=host_model, bundle=bundle,
+        inherited=inherited, n_date_range=n_date_range,
+    )
+    carrier_plan = plan_query(
+        query=StrictQueryCarrier(
+            source_model=producer_source_model, prebound=carrier_prebound,
+        ),
+        bundle=bundle, scope=scope, stage_schemas=stage_schemas,
+        disable_host_rooted_isolation=True,
+        # Discovery must re-run inside the carrier for a coarser constituent
+        # (nested broadcast), a constituent that is itself a re-aggregation, or
+        # an expression grain key needing its own nested row attach.
+        enable_producer_regroups=any(
+            (c.partition_keys is not None
+             and Grain.of(c.partition_keys) != union_grain)
+            or _is_reaggregation_key(c)
+            for c in constituents
+        ) or any(
+            isinstance(pk, (ScalarCallKey, ArithmeticKey, TransformKey))
+            or _is_local_partitioned_agg(pk)
+            for pk in union_grain
+        ),
+        prebound=carrier_prebound, producer_registry=producer_registry,
+    )
+    value_slots = [
+        *carrier_plan.aggregate_slots, *carrier_plan.combined_expression_slots,
+    ]
+    answer_ids = list(carrier_plan.projection)[len(ordered_pks):]
+    substitutions = [
+        RegroupSubstitution(
+            placeholder=constituent_placeholders[c],
+            producer_slot_id=_regroup_answer_slot_id(
+                value_slots=value_slots, key=c,
+                fallback=answer_ids[i] if i < len(answer_ids) else None,
+            ),
+            original_key=c,
+        )
+        for i, c in enumerate(constituents)
+    ]
+    grain_ids = list(carrier_plan.projection)[: len(ordered_pks)]
+    join_pairs: List[Tuple[ValueKey, SlotId]] = []
+    for i, pk in enumerate(ordered_pks):
+        slot_id = next((s.id for s in carrier_plan.row_slots if s.key == pk), None)
+        join_pairs.append((pk, slot_id if slot_id is not None else grain_ids[i]))
+    # A coarser constituent nests as a ROW attach whose placeholder lands in the
+    # carrier's row slots; it is an answer column (grain-determined), not a grain key.
+    answer_slot_ids = {sub.producer_slot_id for sub in substitutions}
+    _assert_attach_covers_producer_grain(
+        joined_slot_ids={sid for _, sid in join_pairs},
+        producer_grain_slot_ids=(
+            _producer_grain_slot_ids(carrier_plan) - answer_slot_ids
+        ),
+    )
+    return RegroupAttachPlan(
+        producer_plan=carrier_plan,
+        alias_hint=(
+            (canonical_aggregate_alias(constituents[0], profile="stage_formula")
+             if constituents else None)
+            or (constituents[0].agg if constituents else None)
+            or "carrier"
+        ),
+        attach_phase="row",
+        join_pairs=join_pairs,
+        substitutions=substitutions,
+        partition_display=[_regroup_grain_name(pk) for pk in ordered_pks],
+        # Host-rooted like a local row attach (root None), so a structurally
+        # identical standalone producer interns to one CTE.
+        producer_root_model=None,
+    )
+
+
 def _assert_total_routing(prebound: PreboundQuery) -> None:
     """Post-discovery total-routing invariant: every cross-model / partitioned aggregate leaf must be disposed; a survivor is an unrouted shape and raises."""
     roles: Tuple[Tuple[str, List[ValueKey]], ...] = (
@@ -2819,6 +3349,37 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
     local_discovery: bool = True,
 ) -> Optional[Tuple[PreboundQuery, List[RegroupAttachPlan]]]:
     """Discover partitioned aggregates and desugar into producer stages + reserved-leaf placeholders (row attach at base FROM, combined at the combined SELECT)."""
+    # DEV-1847: re-aggregation roots — an aggregate whose operand resolves to
+    # attached values. Pre-substitute each with a placeholder so the normal
+    # discovery below treats it opaquely (its constituents belong to the carrier,
+    # not a main-query attach); the producer-over-producer is synthesized later.
+    registry = RegroupPlaceholderRegistry()
+    reagg_roots = _discover_reaggregation_roots(prebound) if local_discovery else []
+    reagg_mapping: Dict[ValueKey, ValueKey] = {
+        root: registry.placeholder_for(root) for root in reagg_roots
+    }
+    reagg_public_alias: Dict[ValueKey, str] = {}
+    reagg_declared_type: Dict[ValueKey, DataType] = {}
+    reagg_phase: Dict[ValueKey, Literal["row", "combined"]] = {}
+    if reagg_mapping:
+        for dm in prebound.declared_measures:
+            vk = dm.bound.value_key
+            if vk in reagg_mapping:
+                if dm.public_name:
+                    reagg_public_alias.setdefault(vk, dm.public_name)
+                if dm.type_is_explicit and dm.type is not None:
+                    reagg_declared_type.setdefault(vk, dm.type)
+                reagg_phase[vk] = "row" if dm.is_dimension else "combined"
+        # A root reached from inside a computed dimension is a ROW attach (the
+        # dimension's expression consumes the value at row level).
+        for dm in prebound.declared_measures:
+            if dm.is_dimension:
+                for k in walk_value_keys(dm.bound.value_key):
+                    if k in reagg_mapping:
+                        reagg_phase[k] = "row"
+        for root in reagg_roots:
+            reagg_phase.setdefault(root, "combined")
+        prebound = _substitute_prebound(prebound, reagg_mapping)
     # Row-attach roots: a partitioned aggregate or a transform over one; row_inner_aggs are bare aggregates inside dimensions.
     if local_discovery:
         row_aggs = dimension_regroup_roots(prebound.declared_measures)
@@ -2950,7 +3511,10 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
             _scan_lb(bf.value_key)
         cm_combined = [*cm_combined, *local_broadcast]
     cm_type = dict(consumers.declared_type)
-    if not row_aggs and not combined_aggs and not cm_combined and not cm_row:
+    if (
+        not row_aggs and not combined_aggs and not cm_combined and not cm_row
+        and not reagg_roots
+    ):
         return None
     # A real column sharing the reserved placeholder prefix would shadow a placeholder at render; reject while a regroup is active.
     producer_model = scope.source_model if isinstance(scope, ModelScope) else None
@@ -2962,7 +3526,6 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
             f"Column(s) {reserved!r} use the reserved '__regroup__' prefix, which "
             f"collides with the regroup primitive's placeholders. Rename them."
         )
-    registry = RegroupPlaceholderRegistry()
     mapping: Dict[ValueKey, ValueKey] = {
         agg: registry.placeholder_for(agg)
         for agg in (*row_aggs, *combined_aggs, *cm_row, *cm_combined)
@@ -3071,11 +3634,8 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
                 prebound=producer_prebound,
                 producer_registry=producer_registry,
             )
-            # A union-grain producer MAY carry nested COMBINED attaches; admit them
-            # after structural validation.
-            _validate_nested_producer_plan(
-                producer_plan=producer_plan, producer_grain=pks,
-            )
+            # A union-grain producer MAY carry nested attaches at any depth; the
+            # complete-grain assert below is the admission rule (DEV-1847).
             # A bare aggregate root resolves to an aggregate slot; a transform root to a combined-expression slot.
             producer_value_slots = [
                 *producer_plan.aggregate_slots,
@@ -3105,7 +3665,9 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
                 )
                 if slot_id is None:
                     slot_id = producer_grain_ids[i]
-                join_pairs.append((pk, slot_id))
+                # A host-side grain key embedding another attach's aggregate
+                # renders via that attach's placeholder (DEV-1847 shape B).
+                join_pairs.append((substitute_value_keys(pk, mapping), slot_id))
             _assert_attach_covers_producer_grain(
                 joined_slot_ids={slot_id for _, slot_id in join_pairs},
                 producer_grain_slot_ids=_producer_grain_slot_ids(producer_plan),
@@ -3173,6 +3735,18 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
                 context=synthesis_context, declared_type=cm_type.get(agg),
                 producer_registry=producer_registry,
             ))
+
+    # DEV-1847: one producer-over-producer per re-aggregation root.
+    for root in reagg_roots:
+        attaches.append(_synthesize_reaggregation_producer(
+            root=root, placeholder=reagg_mapping[root],
+            attach_phase=reagg_phase.get(root, "combined"),
+            public_alias=reagg_public_alias.get(root),
+            context=synthesis_context,
+            declared_type=reagg_declared_type.get(root),
+            producer_registry=producer_registry, registry=registry,
+            inherited=inherited, n_date_range=n_inherited_date,
+        ))
 
     # The ROW substitution applies ONLY to computed DIMENSIONS; a non-dim measure keeps query-grain (its inners desugar to COMBINED placeholders).
     combined_mapping: Dict[ValueKey, ValueKey] = {
@@ -4044,39 +4618,20 @@ def _guard_computed_dimension(*, d: ComputedDimension, bound, query: SlayerQuery
     # A valid partitioned-aggregate dimension is desugared into a producer stage by ``_plan_regroups``.
 
 
-def _computed_dim_names(query: SlayerQuery) -> FrozenSet[str]:
-    return frozenset(
-        d.name for d in (query.dimensions or []) if isinstance(d, ComputedDimension)
-    )
-
-
-def _reraise_nested_attach(
-    err: UnknownReferenceError, *, computed_dim_names: FrozenSet[str],
-) -> None:
-    if err.name in computed_dim_names:
-        raise NotImplementedError(
-            f"An aggregate references the computed dimension {err.name!r} (e.g. "
-            f"via partition_by=), which would require a nested attach — not yet "
-            f"supported (DEV-1847)."
-        ) from err
-    raise err
-
-
 def _declared_computed_dimension(
     d: ComputedDimension,
     *,
     query: SlayerQuery,
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
+    dim_alias_map: Optional[Dict[str, ValueKey]] = None,
 ) -> DeclaredMeasure:
     _reject_computed_dim_name_collision(name=d.name, query=query, scope=scope)
     parsed = parse_expr(d.expression)
-    try:
-        bound = bind_expr(
-            parsed=parsed, scope=scope, bundle=bundle, allow_measures=True,
-        )
-    except UnknownReferenceError as err:
-        _reraise_nested_attach(err, computed_dim_names=_computed_dim_names(query))
+    bound = bind_expr(
+        parsed=parsed, scope=scope, bundle=bundle, allow_measures=True,
+        dimension_alias_map=dim_alias_map,
+    )
     _guard_computed_dimension(d=d, bound=bound, query=query)
     dim_type = _type_for_measure_formula(scope=scope, bound=bound)
     return DeclaredMeasure(
@@ -4112,13 +4667,19 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
             raise ValueError(_flatten_collision_message(flat_name))
         seen_flat[flat_name] = origin
 
+    # Computed-dimension names resolve inside later ``partition_by=`` values
+    # (DEV-1847 shape B); built in declaration order.
+    dim_alias_map: Dict[str, ValueKey] = {}
     for d in (query.dimensions or []):
         if isinstance(d, ComputedDimension):
             dm = _declared_computed_dimension(
                 d, query=query, scope=scope, bundle=bundle,
+                dim_alias_map=dim_alias_map,
             )
             _guard_flatten(flat_name=_flatten_dotted(d.name), origin=d.name)
             declared.append(dm)
+            if d.name is not None:
+                dim_alias_map[d.name] = dm.bound.value_key
             continue
         full = d.full_name
         # Bind first: a short-form dotted dim auto-routes, and its full routed
@@ -4169,14 +4730,10 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
         formula = m.formula
         explicit_name = m.name
         parsed = parse_expr(formula)
-        try:
-            bound = bind_expr(
-                parsed=parsed, scope=scope, bundle=bundle, allow_measures=True,
-            )
-        except UnknownReferenceError as err:
-            _reraise_nested_attach(
-                err, computed_dim_names=_computed_dim_names(query),
-            )
+        bound = bind_expr(
+            parsed=parsed, scope=scope, bundle=bundle, allow_measures=True,
+            dimension_alias_map=dim_alias_map,
+        )
         # The parsed tree drives text-shape alias derivation, so both spellings
         # of one formula share an alias (DEV-1826).
         canonical = _canonical_alias_for_formula(

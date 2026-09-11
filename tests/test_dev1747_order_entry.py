@@ -318,7 +318,7 @@ class TestHostGrainMarker:
         ]
         assert wraps, "no hidden order wrap was planned"
         assert wraps[0].grain == "host"
-        assert wraps[0].source.path == ("customers", "regions")
+        assert getattr(wraps[0].source, "path", None) == ("customers", "regions")
 
     def test_local_wrap_keeps_the_default_grain(self) -> None:
 

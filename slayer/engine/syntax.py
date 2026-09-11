@@ -58,9 +58,11 @@ class TupleLit(_BaseNode):
 
 
 class AggCall(_BaseNode):
-    # source may also be an aggregation-free scalar expression (``sum(a - b)``).
+    # source may also be an aggregation-free scalar expression (``sum(a - b)``),
+    # or — for a re-aggregation (DEV-1847) — a nested AggCall / composite of them.
     source: Union[
         Ref, DottedRef, StarSource, Literal, "ScalarCall", "Arith", "UnaryOp",
+        "AggCall", "Cmp", "BoolOp",
     ]
     agg: str
     args: Tuple[Any, ...] = ()
@@ -1079,14 +1081,46 @@ def _contains_agg_or_transform(node: Any) -> bool:
     return False
 
 
+def _source_leaves(node: Any):
+    """Composition leaves of an agg source, treating an inner AggCall /
+    TransformCall as opaque (not descended — its own source was already
+    validated when it was converted)."""
+    if isinstance(node, ScalarCall):
+        for a in node.args:
+            yield from _source_leaves(a)
+    elif isinstance(node, (Arith, Cmp)):
+        yield from _source_leaves(node.left)
+        yield from _source_leaves(node.right)
+    elif isinstance(node, UnaryOp):
+        yield from _source_leaves(node.operand)
+    elif isinstance(node, BoolOp):
+        for o in node.operands:
+            yield from _source_leaves(o)
+    else:
+        yield node
+
+
 def _validated_agg_source(source: Any, *, func_name: str, original: str) -> Any:
-    """Validate a functional aggregation's first argument as its source."""
-    if _contains_agg_or_transform(source):
+    """Validate a functional aggregation's first argument as its source.
+
+    A source resolving entirely to attached values (AggCalls, alone or composed
+    through arithmetic / scalar calls) is a re-aggregation (DEV-1847) and is
+    accepted; a transform nested in the source, or a source mixing row-level
+    references with attached values (DEV-1859's boundary), is rejected."""
+    leaves = list(_source_leaves(source))
+    if any(isinstance(leaf, TransformCall) for leaf in leaves):
         raise ValueError(
-            f"Invalid Mode-B expression {original!r}: aggregations and "
-            f"transforms cannot be nested inside the expression aggregated "
-            f"by {func_name!r}."
+            f"Invalid Mode-B expression {original!r}: transforms cannot be "
+            f"nested inside the expression aggregated by {func_name!r}."
         )
+    if any(isinstance(leaf, AggCall) for leaf in leaves):
+        if any(isinstance(leaf, (Ref, DottedRef, StarSource)) for leaf in leaves):
+            raise ValueError(
+                f"Invalid Mode-B expression {original!r}: the expression "
+                f"aggregated by {func_name!r} cannot mix row-level column "
+                f"references with attached (partitioned-aggregate) values."
+            )
+        return source
     if not isinstance(source, _AGG_SOURCE_KINDS):
         raise ValueError(
             f"Invalid Mode-B expression {original!r}: {func_name!r} cannot "
@@ -1196,9 +1230,13 @@ def _convert_call(  # NOSONAR(S3776) — the one call-dispatch ladder (colon pla
         return ScalarCall(name=func_name.lower(), args=args)
 
     # Unknown name with an aggregatable first arg → AggCall candidate (parity
-    # with ``x:whatever``), validated at binding.
+    # with ``x:whatever``), validated at binding. A custom aggregation over an
+    # attached source is a re-aggregation (DEV-1847), validated like any other.
     if args and isinstance(args[0], _AGG_SOURCE_KINDS) and not _contains_agg_or_transform(args[0]):
         return AggCall(source=args[0], agg=func_name, args=args[1:], kwargs=kwargs)
+    if args and any(isinstance(leaf, AggCall) for leaf in _source_leaves(args[0])):
+        source = _validated_agg_source(args[0], func_name=func_name, original=original)
+        return AggCall(source=source, agg=func_name, args=args[1:], kwargs=kwargs)
 
     raise UnknownFunctionError(
         name=func_name,

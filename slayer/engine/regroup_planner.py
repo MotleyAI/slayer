@@ -236,13 +236,21 @@ def combined_consumer_aggregates(  # NOSONAR(S3776) — one cohesive discovery w
                 continue
             _add(k)
 
+    def _walk_measure(k: ValueKey) -> None:
+        # A partition-key subtree references the GROUPED dimension value; its
+        # inner aggregates keep their ROW role (DEV-1847 shape B).
+        _add(k)
+        embedded_pks = frozenset(getattr(k, "partition_keys", None) or ())
+        for c in k.children():
+            if c not in embedded_pks:
+                _walk_measure(c)
+
     for dm in declared_measures:
         if dm.is_dimension:
             continue
         vk = dm.bound.value_key
         # A MEASURE keeps a dual-role partitioned aggregate (no row exclusion) so it is strict-checked.
-        for k in walk_value_keys(vk):
-            _add(k)
+        _walk_measure(vk)
         top = _combined_consumer_kind(vk)
         if top is not None and dm.public_name is not None:
             public_alias.setdefault(vk, dm.public_name)

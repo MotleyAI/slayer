@@ -331,6 +331,14 @@ BUILTIN_AGGREGATION_REQUIRED_PARAMS: dict[str, list[str]] = {
     "covar_pop": ["other"],
 }
 
+# Declared parameter order for built-in parametric aggregations: positional
+# call values fold onto these names at binding (`percentile(x, 0.9)` ≡ `p=0.9`).
+# first/last are absent on purpose — their positional arg is the ranking column.
+BUILTIN_AGGREGATION_PARAM_ORDER: dict[str, list[str]] = {
+    "percentile": ["p"],
+    **BUILTIN_AGGREGATION_REQUIRED_PARAMS,
+}
+
 # Aggregations that only make sense on numeric-valued measures. Applying them
 # to a non-numeric measure (e.g. AVG on a VARCHAR column) is always invalid
 # and is rejected during query binding rather than at SQL execution time.

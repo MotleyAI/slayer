@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.errors import SlayerError
+
 from tests._dev1824_fixtures import (
     BAND35,
     ModelMeasure,
@@ -203,9 +205,23 @@ class TestDimensionErrorSurface:
             await exec_engine.execute(query)
         assert "__regroup__" not in str(ei.value)
 
-    async def test_aggregate_over_attached_value_rejected(self, exec_engine) -> None:
+    async def test_windowed_reaggregation_root_fails_closed(self, exec_engine) -> None:
+        """window= on a re-aggregation's OUTER aggregation names the
+        combination even when a time dimension is present."""
+        query = q(
+            dimensions=["region"], time_dimensions=month_td(),
+            measures=[ModelMeasure(
+                formula="sum(amount:sum(partition_by=[region, city]), "
+                        "window='90d')",
+                name="w")])
+        with pytest.raises(SlayerError) as ei:
+            await exec_engine.execute(query)
+        assert "window= on its outer aggregation" in str(ei.value)
+
+    async def test_aggregate_over_attached_value_executes(self, exec_engine) -> None:
         # `b2` aggregates at the grain of `band`, whose own value needs a row
-        # attach first — the requires_nested_attach shape fails closed.
+        # attach first — legal since DEV-1847 (shape B); value oracles live in
+        # tests/test_dev1847_shape_b.py.
         query = q(
             dimensions=[
                 {"expression": BAND35, "name": "band"},
@@ -213,12 +229,12 @@ class TestDimensionErrorSurface:
             ],
             measures=[ModelMeasure(formula="amount:sum", name="s")],
         )
-        with pytest.raises((NotImplementedError, ValueError)) as ei:
-            await exec_engine.execute(query)
-        assert "not yet supported" in str(ei.value).lower()
-        assert "__regroup__" not in str(ei.value)
+        resp = await exec_engine.execute(query)
+        assert resp.data
+        for row in resp.data:
+            assert float(row["orders.b2"]) == float(row["orders.s"])
 
-    async def test_measure_partitioned_by_computed_dimension_rejected(
+    async def test_measure_partitioned_by_computed_dimension_executes(
         self, exec_engine,
     ) -> None:
         query = q(
@@ -227,10 +243,9 @@ class TestDimensionErrorSurface:
                 formula="amount:sum(partition_by=band)", name="bt",
             )],
         )
-        with pytest.raises((NotImplementedError, ValueError)) as ei:
-            await exec_engine.execute(query)
-        assert "not yet supported" in str(ei.value).lower()
-        assert "__regroup__" not in str(ei.value)
+        resp = await exec_engine.execute(query)
+        by = {row["orders.band"]: float(row["orders.bt"]) for row in resp.data}
+        assert by == {0: 60.0, 1: 150.0}
 
     async def test_grain_circular_dimension_rejected(self, exec_engine) -> None:
         circular = "CASE WHEN amount:sum(partition_by=selfband) > 10 THEN 1 ELSE 0 END"

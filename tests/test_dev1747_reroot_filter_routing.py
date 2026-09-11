@@ -10,6 +10,7 @@ import warnings
 import pytest
 
 from slayer.core.errors import UnreachableFilterDroppedWarning
+from slayer.core.keys import AggregateKey
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
 from slayer.engine import stage_planner
 from slayer.engine.stage_planner import plan_query
@@ -376,8 +377,9 @@ class TestFilteredLocalDispatchAccounting:
         ]
         assert attach.producer_root_model is None
         (sub,) = attach.substitutions
+        assert isinstance(sub.original_key, AggregateKey)
         assert sub.original_key.grain == "host"
-        assert sub.original_key.source.path == ("customers", "regions"), (
+        assert getattr(sub.original_key.source, "path", None) == ("customers", "regions"), (
             "the wrap lost its path on the way to the host-rooted route"
         )
 
