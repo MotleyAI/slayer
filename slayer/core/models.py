@@ -187,7 +187,7 @@ class Column(BaseModel):
 
 
 class ModelMeasure(BaseModel):
-    """A named formula evaluating to an aggregated value (grammar: ``slayer/core/formula.py``)."""
+    """A named aggregated value: ``formula`` is an aggregation expression — inline in a query's measures or saved on a model and referenced by bare name. ``name`` sets the result key, referenceable in filters and order by either the name or the formula text."""
     formula: str
     name: str | None = None
     label: str | None = None
