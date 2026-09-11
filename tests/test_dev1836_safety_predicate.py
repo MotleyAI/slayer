@@ -16,7 +16,7 @@ from slayer.engine.join_safety import (
     provably_to_one,
     safe_reachable,
 )
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import plan_query
 
 from tests._dev1836_fixtures import (

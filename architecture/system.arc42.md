@@ -20,6 +20,7 @@ flowchart TD
   core["Core domain models"]
   sql["SQL generation"]
   engine["Query engine"]
+  ir["Intermediate representation"]
   storage["Storage backends"]
   importers("Importers")
   search("Search & embeddings")
@@ -30,6 +31,7 @@ flowchart TD
   core -.-> sql
   core -.-> storage
   engine --> core
+  engine --> ir
   engine --> memories
   engine --> search
   engine --> sql
@@ -37,6 +39,7 @@ flowchart TD
   importers --> core
   importers --> engine
   importers --> sql
+  ir --> core
   memories --> core
   memories --> engine
   memories --> search
@@ -49,7 +52,7 @@ flowchart TD
   search --> memories
   search --> storage
   sql --> core
-  sql -.-> engine
+  sql --> ir
   storage --> core
   storage --> engine
   storage --> memories
@@ -67,7 +70,7 @@ flowchart TD
 *Dashed arrows: legacy edges slated to die.*
 <!-- /likec4:landscape -->
 
-Nine nodes: precise `core`, `sql`,
+Ten nodes: precise `core`, `sql`, `ir`,
 `engine`, `storage` around the query pipeline; virtual buckets `importers`,
 `search`, `memories`, `protocols`, `surfaces` for the rest. Package claims,
 contract baselines, and spec mapping are in [index.yaml](index.yaml).
@@ -76,9 +79,9 @@ contract baselines, and spec mapping are in [index.yaml](index.yaml).
 
 All code, old and new, MUST obey these.
 
-1. **Target layering**: `engine` → `sql` → `core`; a future `slayer/ir` slots in
-   between `sql` and `core` when extracted. The grandfathered edges (count = the
-   `layers` baseline in index.yaml) are dying, never growing. [enforced: layers]
+1. **Target layering**: `engine` → `sql` → `ir` → `core`. The grandfathered
+   edges (count = the `layers` baseline in index.yaml) are dying, never
+   growing. [enforced: layers]
 2. **`core` imports no other SLayer node.** The 3 remaining edge classes
    (`core → engine/sql/storage`) are grandfathered and slated to die.
    [enforced: layers] [enforced: forbidden]
@@ -171,6 +174,4 @@ constrained convention `arch_check` enforces (`model-identity`, `model-truth`,
 
 The wedge is focused on the query pipeline because that is where boundary
 violations accumulate (see `sql.arc42.md`); buckets stay coarse until real work
-touches them. Structure-shaping decision trails: the DEV-1450 typed-pipeline
-redesign and DEV-1742 consolidation (git history), and the archived changes
-under `openspec/changes/archive/`.
+touches them.

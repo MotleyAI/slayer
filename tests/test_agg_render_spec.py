@@ -47,18 +47,19 @@ from slayer.core.keys import (
     StarKey,
 )
 from slayer.core.models import Aggregation, AggregationParam, Column, SlayerModel
-from slayer.engine.planned import ValueSlot
-
-# These imports drive the failing-test contract — neither name exists on
-# the current codebase. Stage A landing flips them green.
-# ``_build_agg_render_spec_from_planned`` is a method on ``SQLGenerator``;
-# tests instantiate the generator to invoke it (see ``_invoke`` below).
+from slayer.ir.planned import ValueSlot
 from slayer.sql.generator import (  # type: ignore[attr-defined]
     AggRenderSpec,
     ResolvedAggKwarg,
     SQLGenerator,
 )
 from slayer.sql.render.aggregates import resolve_agg_entry
+
+
+# These imports drive the failing-test contract — neither name exists on
+# the current codebase. Stage A landing flips them green.
+# ``_build_agg_render_spec_from_planned`` is a method on ``SQLGenerator``;
+# tests instantiate the generator to invoke it (see ``_invoke`` below).
 
 
 def _str_kwarg(value: str) -> ResolvedAggKwarg:

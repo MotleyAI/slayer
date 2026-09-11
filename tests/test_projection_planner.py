@@ -17,12 +17,12 @@ from slayer.core.keys import (
     Phase,
 )
 from decimal import Decimal
-from slayer.engine.binding import BoundExpr, BoundFilter
 from slayer.engine.planning import (
     DeclaredMeasure,
     OrderSpec,
     ProjectionPlanner,
 )
+from slayer.ir.bound import BoundExpr, BoundFilter
 
 
 def _amount_sum() -> AggregateKey:

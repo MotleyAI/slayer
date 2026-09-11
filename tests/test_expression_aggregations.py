@@ -16,13 +16,7 @@ import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.format import NumberFormatType
-from slayer.core.keys import (
-    AggregateKey,
-    ArithmeticKey,
-    ColumnKey,
-    reroot_value_key,
-    substitute_value_keys,
-)
+from slayer.core.keys import AggregateKey, ArithmeticKey, ColumnKey, reroot_value_key, substitute_value_keys, walk_value_keys
 from slayer.core.models import (
     Aggregation,
     Column,
@@ -32,7 +26,6 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import OrderItem, SlayerQuery, TimeDimension
-from slayer.engine.binding import walk_value_keys
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.syntax import AggCall, Ref, canonical_measure_text, parse_expr
 from slayer.storage.yaml_storage import YAMLStorage

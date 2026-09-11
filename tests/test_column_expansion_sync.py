@@ -12,7 +12,7 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.errors import ColumnCycleError
 from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.engine.column_expansion import expand_derived_refs_sync
+from slayer.sql.column_expansion import expand_derived_refs_sync
 
 
 def _norm(sql: str) -> str:

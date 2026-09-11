@@ -13,7 +13,7 @@ from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.response_meta import build_response_metadata
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import plan_query
 from slayer.sql.generator import generate_from_planned
 

@@ -13,6 +13,9 @@ nodes:
   engine:
     package: slayer.engine
     arc42: architecture/engine.arc42.md
+  ir:
+    package: slayer.ir
+    arc42: architecture/ir.arc42.md
   storage:
     package: slayer.storage
   importers:
@@ -43,7 +46,7 @@ nodes:
 # Grandfathered-edge counts per import-linter contract; arch_check fails if a
 # contract's ignore_imports count differs from its baseline. Only ever lower these.
 contracts:
-  layers: {baseline: 14}
+  layers: {baseline: 5}
   forbidden: {baseline: 2}
 
 # Fail-closed deferral-site count (tests/test_law_guard_ratchet.py). Only ever lower.

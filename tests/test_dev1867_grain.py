@@ -1,6 +1,6 @@
 """DEV-1867 — Grain as a first-class type with lattice operations.
 
-Covers the new ``slayer/core/grain.py`` value type (construction, set protocol,
+Covers the new ``slayer/ir/grain.py`` value type (construction, set protocol,
 Grain-only equality, lattice predicates, operand contract) and the planner sites
 retyped to ``Grain``: ``regroup_root_grain``, ``_effective_root_grain``, and
 ``_prune_functionally_determined_grain``. (The ``_validate_nested_producer_plan``
@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from slayer.core.grain import Grain
+from slayer.ir.grain import Grain
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,

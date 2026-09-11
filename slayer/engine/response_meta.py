@@ -27,8 +27,8 @@ from slayer.core.keys import (
 )
 from slayer.core.models import Column, SlayerModel
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, expression_source_leaf
-from slayer.engine.planned import PlannedQuery, ValueSlot
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.planned import PlannedQuery, ValueSlot
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects import get_dialect
 from slayer.sql.naming import result_key, result_key_from_alias
 

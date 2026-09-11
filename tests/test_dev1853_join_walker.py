@@ -20,7 +20,7 @@ from slayer.core.join_walker import (
     walk,
 )
 from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.engine.column_expansion import resolve_ref_target
+from slayer.sql.column_expansion import resolve_ref_target
 
 
 def _model(name: str, cols: list[str], joins: list[ModelJoin] | None = None) -> SlayerModel:

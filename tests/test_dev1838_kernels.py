@@ -16,13 +16,13 @@ from slayer.core.keys import AggregateKey, ColumnKey, SqlExprKey
 from slayer.core.models import Column, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine import stage_planner
-from slayer.engine.planned import (
+from slayer.ir.planned import (
     PlainProducerKernel,
     RankedProducerKernel,
     RegroupAttachPlan,
     TrailingWindowProducerKernel,
 )
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._dev1748_fixtures import dev1748_bundle
 from tests._dev1838_fixtures import (
@@ -32,6 +32,7 @@ from tests._dev1838_fixtures import (
     month_td,
     q,
 )
+from slayer.ir import planned
 
 M = ModelMeasure(formula="amount:sum", name="m")
 
@@ -341,8 +342,8 @@ class TestKernelIdentity:
 
         a, b = windowed_attach("90d"), windowed_attach("45d")
         assert (
-            stage_planner.regroup_producer_identity(a)
-            != stage_planner.regroup_producer_identity(b)
+            planned.regroup_producer_identity(a)
+            != planned.regroup_producer_identity(b)
         )
 
 

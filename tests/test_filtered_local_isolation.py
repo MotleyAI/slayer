@@ -24,8 +24,8 @@ from slayer.core.models import (
 )
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.column_filter_paths import compute_column_filter_join_paths
-from slayer.engine.planned import MaskTyping
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.planned import MaskTyping
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import plan_query
 
 

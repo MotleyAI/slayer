@@ -49,7 +49,7 @@ from slayer.engine.filter_reachability import (
     filter_reachability_for,
     recompute_filter_reachability,
 )
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import (
     _bound_filter_from_key,
     _cross_model_inherited_filters,

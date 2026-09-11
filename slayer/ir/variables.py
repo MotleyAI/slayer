@@ -1,7 +1,4 @@
-"""Stage 7b.1 (DEV-1450) — variable substitution in the new pipeline.
-
-Handles the ``{var}`` placeholder substitution in a small,
-pipeline-friendly module.
+"""Variable substitution — ``{var}`` placeholder handling for the pipeline.
 
 Public surface:
 
@@ -24,9 +21,8 @@ Formula text, ``Column.sql``, ``Column.filter``, and
 ``SlayerModel.filters`` are NOT variable-substituted today, and this
 module preserves that contract.
 
-The dormant module is unwired from the engine in this commit; stage
-7b.15 (engine cutover) makes it the substitution path used by
-``engine.execute`` and ``engine.save_model``.
+This is the active substitution path used by ``engine.execute`` and
+``engine.save_model``.
 """
 
 from __future__ import annotations

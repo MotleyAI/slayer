@@ -17,11 +17,9 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import ModelExtension, SlayerQuery
-from slayer.engine.source_bundle import (
-    ResolvedSourceBundle,
-    build_resolved_source_bundle,
-)
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.storage.yaml_storage import YAMLStorage
+import slayer.engine.bundle_builder
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +132,7 @@ class TestSourceModelShapes:
     async def test_str_source_resolves_from_storage(self, tmp_path):
         storage = await _storage(tmp_path, _regions(), _customers(), _orders())
         query = SlayerQuery(source_model="orders")
-        bundle = await build_resolved_source_bundle(query=query, storage=storage)
+        bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
         assert isinstance(bundle, ResolvedSourceBundle)
         assert bundle.source_model is not None
         assert bundle.source_model.name == "orders"
@@ -146,7 +144,7 @@ class TestSourceModelShapes:
         storage = await _storage(tmp_path, _regions(), _customers())
         inline = _orders()
         query = SlayerQuery(source_model=inline)
-        bundle = await build_resolved_source_bundle(query=query, storage=storage)
+        bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
         assert bundle.source_model is not None
         assert bundle.source_model.name == "orders"
         # Join targets still resolve from storage.
@@ -160,7 +158,7 @@ class TestSourceModelShapes:
             joins=[],
         )
         query = SlayerQuery(source_model=ext)
-        bundle = await build_resolved_source_bundle(query=query, storage=storage)
+        bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
         assert bundle.source_model is not None
         assert bundle.source_model.name == "orders"
         col_names = {c.name for c in bundle.source_model.columns}
@@ -171,7 +169,7 @@ class TestSourceModelShapes:
         storage = await _storage(tmp_path, _regions(), _customers())
         inline = _orders().model_dump()
         query = SlayerQuery(source_model=inline)
-        bundle = await build_resolved_source_bundle(query=query, storage=storage)
+        bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
         assert bundle.source_model is not None
         assert bundle.source_model.name == "orders"
 
@@ -183,7 +181,7 @@ class TestSourceModelShapes:
                 "columns": [{"name": "discount", "type": "DOUBLE"}],
             }
         )
-        bundle = await build_resolved_source_bundle(query=query, storage=storage)
+        bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
         assert bundle.source_model is not None
         assert bundle.source_model.name == "orders"
         assert "discount" in {c.name for c in bundle.source_model.columns}
@@ -192,7 +190,7 @@ class TestSourceModelShapes:
         storage = await _storage(tmp_path, _regions())
         query = SlayerQuery(source_model="nope")
         with pytest.raises(ValueError, match="nope"):
-            await build_resolved_source_bundle(query=query, storage=storage)
+            await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
 
 
 # ---------------------------------------------------------------------------
@@ -204,7 +202,7 @@ class TestJoinGraphCollection:
     async def test_multi_hop_collects_all(self, tmp_path):
         storage = await _storage(tmp_path, _regions(), _customers(), _orders())
         query = SlayerQuery(source_model="orders")
-        bundle = await build_resolved_source_bundle(query=query, storage=storage)
+        bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
         # orders → customers → regions, plus orders → warehouses (absent here).
         names = _names(bundle)
         assert {"orders", "customers", "regions"}.issubset(names)
@@ -214,7 +212,7 @@ class TestJoinGraphCollection:
             tmp_path, _regions(), _customers(), _warehouses(), _orders()
         )
         query = SlayerQuery(source_model="orders")
-        bundle = await build_resolved_source_bundle(query=query, storage=storage)
+        bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
         names = [m.name for m in bundle.referenced_models]
         # regions is reachable via customers AND warehouses — collected once.
         assert names.count("regions") == 1
@@ -225,7 +223,7 @@ class TestJoinGraphCollection:
         # the walk is best-effort and must not raise on absent targets.
         storage = await _storage(tmp_path, _orders())
         query = SlayerQuery(source_model="orders")
-        bundle = await build_resolved_source_bundle(query=query, storage=storage)
+        bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
         assert bundle.get_referenced_model("orders") is not None
         assert bundle.get_referenced_model("customers") is None
 
@@ -239,7 +237,7 @@ class TestDatasourceHint:
     async def test_hint_recorded(self, tmp_path):
         storage = await _storage(tmp_path, _regions(), _customers(), _orders())
         query = SlayerQuery(source_model="orders")
-        bundle = await build_resolved_source_bundle(
+        bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=query, storage=storage, data_source="prod"
         )
         assert bundle.datasource_hint == "prod"
@@ -248,7 +246,7 @@ class TestDatasourceHint:
     async def test_no_hint_is_none(self, tmp_path):
         storage = await _storage(tmp_path, _regions(), _customers(), _orders())
         query = SlayerQuery(source_model="orders")
-        bundle = await build_resolved_source_bundle(query=query, storage=storage)
+        bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
         assert bundle.datasource_hint is None
 
 
@@ -266,7 +264,7 @@ class TestVariablePrecedence:
             _orders(query_variables={"region": "model_default", "limit": 10}),
         )
         query = SlayerQuery(source_model="orders", variables={"region": "query_val"})
-        bundle = await build_resolved_source_bundle(
+        bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=query, storage=storage, runtime_variables={"limit": 99}
         )
         # query var overrides model default; runtime overrides everything.
@@ -276,7 +274,7 @@ class TestVariablePrecedence:
     async def test_runtime_wins(self, tmp_path):
         storage = await _storage(tmp_path, _regions(), _customers(), _orders())
         query = SlayerQuery(source_model="orders", variables={"k": "stage"})
-        bundle = await build_resolved_source_bundle(
+        bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=query, storage=storage, runtime_variables={"k": "runtime"}
         )
         assert bundle.query_variables["k"] == "runtime"
@@ -291,7 +289,7 @@ class TestVariablePrecedence:
             _orders(query_variables={"a": "model", "b": "model", "c": "model"}),
         )
         query = SlayerQuery(source_model="orders", variables={"c": "stage"})
-        bundle = await build_resolved_source_bundle(
+        bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=query,
             storage=storage,
             outer_variables={"b": "outer", "c": "outer"},
@@ -316,7 +314,7 @@ class TestMultiStage:
             measures=[{"formula": "amount:sum"}],
         )
         root = SlayerQuery(source_model="stage1", dimensions=["status"])
-        bundle = await build_resolved_source_bundle(
+        bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=root, storage=storage, named_queries={"stage1": stage1}
         )
         assert "stage1" in bundle.named_queries
@@ -334,7 +332,7 @@ class TestMultiStage:
             measures=[{"formula": "amount:sum"}],
         )
         root = SlayerQuery(source_model="stage1", dimensions=["status"])
-        bundle = await build_resolved_source_bundle(
+        bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=root, storage=storage, named_queries={"stage1": stage1}
         )
         assert bundle.source_model is not None
@@ -351,7 +349,7 @@ class TestMultiStage:
             measures=[{"formula": "customers.revenue:sum"}],
         )
         root = SlayerQuery(source_model="stage1", dimensions=["status"])
-        bundle = await build_resolved_source_bundle(
+        bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=root, storage=storage, named_queries={"stage1": stage1}
         )
         assert bundle.get_referenced_model("customers") is not None
@@ -373,7 +371,7 @@ class TestMultiStage:
             dimensions=["status"],
         )
         root = SlayerQuery(source_model="orders", dimensions=["status"])
-        bundle = await build_resolved_source_bundle(
+        bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=root, storage=storage, named_queries={"aux": sibling}
         )
         assert bundle.source_model.name == "orders"
@@ -389,7 +387,7 @@ class TestMultiStage:
             measures=[{"formula": "amount:sum"}],
         )
         root = SlayerQuery(source_model="stage1", dimensions=["status"])
-        bundle = await build_resolved_source_bundle(
+        bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=root, storage=storage, named_queries={"stage1": stage1}
         )
         assert bundle.source_model.name == "orders"
@@ -401,7 +399,7 @@ class TestMultiStage:
         b = SlayerQuery(name="b", source_model="a")
         root = SlayerQuery(source_model="a")
         with pytest.raises(ValueError, match="[Cc]ircular"):
-            await build_resolved_source_bundle(
+            await slayer.engine.bundle_builder.build_resolved_source_bundle(
                 query=root, storage=storage, named_queries={"a": a, "b": b}
             )
 
@@ -441,7 +439,7 @@ class TestStorageReadEconomy:
                               measures=[{"formula": "amount:sum"}])
         root = SlayerQuery(source_model="stage_a",
                            measures=[{"formula": "*:count"}])
-        await build_resolved_source_bundle(
+        await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=root, storage=storage,
             named_queries={"stage_a": stage_a, "stage_b": stage_b},
         )

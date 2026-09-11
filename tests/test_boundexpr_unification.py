@@ -1,19 +1,13 @@
-"""Stage 7b.6 (DEV-1450) — BoundExpr type unification.
+"""BoundExpr type unification (DEV-1450 stage 7b.6).
 
-``slayer.engine.binding.BoundExpr`` and ``slayer.engine.planned.BoundExpr``
-were two different Pydantic classes (Codex HIGH F2 from the earlier
-round). The binder produced the former; ``ValueSlot.expression`` /
-filter expressions were typed as the latter. This is type
-unification, not field-fill.
-
-Decision: keep ``slayer.engine.binding.BoundExpr`` as the source of
-truth. ``sql_text`` is a render artifact, not a binder concern — drop
-it from ``planned.BoundExpr``. The planned-side import is a re-export
-of the binder's class.
+The binder and the planner once carried two different ``BoundExpr``
+classes; they were unified, and the single canonical home is now
+``slayer.ir.bound`` (DEV-1872) — no re-exports.
 
 Tests cover:
 
-1. Identity: ``planned.BoundExpr is binding.BoundExpr`` after re-export.
+1. Single home: ``BoundExpr`` lives in ``slayer.ir.bound`` and
+   ``planned`` no longer re-exports it.
 2. ``ValueSlot.expression`` is populated for every materialised slot
    (public and hidden) by ``ProjectionPlanner``.
 3. every filter conjunct's mask slot carries its bound key — user
@@ -24,16 +18,15 @@ Tests cover:
 
 from __future__ import annotations
 
+import slayer.ir.planned
 from slayer.core.enums import DataType
-from slayer.core.keys import AggregateKey, ColumnKey
+from slayer.core.keys import AggregateKey, ColumnKey, walk_value_keys
 from slayer.core.models import Column, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.binding import BoundExpr as BinderBoundExpr
-from slayer.engine.planned import BoundExpr as PlannedBoundExpr
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.bound import BoundExpr
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import plan_query
 from slayer.core.keys import ArithmeticKey
-from slayer.engine.binding import walk_value_keys
 
 
 # ---------------------------------------------------------------------------
@@ -66,11 +59,11 @@ def _bundle() -> ResolvedSourceBundle:
 
 
 class TestTypeUnification:
-    def test_planned_bound_expr_is_binder_bound_expr(self) -> None:
-        # After 7b.6, planned.BoundExpr must be the binder's class
-        # (re-export). Identity must hold so existing isinstance checks
-        # and Pydantic field types align.
-        assert PlannedBoundExpr is BinderBoundExpr
+    def test_bound_expr_single_home(self) -> None:
+        # One real home (DEV-1872): the class lives in ir.bound and the
+        # old planned-side re-export is gone from the public surface.
+        assert BoundExpr.__module__ == "slayer.ir.bound"
+        assert "BoundExpr" not in slayer.ir.planned.__all__
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +81,7 @@ class TestValueSlotExpressionPopulated:
         assert len(planned.aggregate_slots) == 1
         slot = planned.aggregate_slots[0]
         assert slot.expression is not None
-        assert isinstance(slot.expression, BinderBoundExpr)
+        assert isinstance(slot.expression, BoundExpr)
         # The expression's value_key matches the slot's key identity.
         assert slot.expression.value_key == slot.key
 

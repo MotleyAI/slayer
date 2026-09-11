@@ -25,10 +25,10 @@ from slayer.core.errors import IllegalScopeReferenceError
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.source_bundle import build_resolved_source_bundle
 from slayer.engine.stage_planner import plan_stages
 from slayer.sql.generator import generate_planned_stages
 from slayer.storage.yaml_storage import YAMLStorage
+import slayer.engine.bundle_builder
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +128,7 @@ async def _new_sql(
 ) -> str:
     root = stages[-1]
     named = {q.name: q for q in stages[:-1] if q.name}
-    bundle = await build_resolved_source_bundle(
+    bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
         query=root, storage=storage, named_queries=named
     )
     planned = plan_stages(queries=stages, bundle=bundle)
@@ -267,7 +267,7 @@ async def test_dev1448_named_join_measure_alias(harness):
         dimensions=["status"],
         measures=[{"formula": "rev:max"}],
     )
-    bundle = await build_resolved_source_bundle(
+    bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
         query=root, storage=storage, named_queries={"stage1": stage1}
     )
     planned = plan_stages(queries=[stage1, root], bundle=bundle)
@@ -300,7 +300,7 @@ async def test_dev1449_flat_name_resolves(harness):
         dimensions=["customers__region"],
         measures=[{"formula": "amount_sum:sum"}],
     )
-    bundle = await build_resolved_source_bundle(
+    bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
         query=root, storage=storage, named_queries={"stage1": stage1}
     )
     planned = plan_stages(queries=[stage1, root], bundle=bundle)
@@ -323,7 +323,7 @@ async def test_dev1449_dotted_form_raises(harness):
         dimensions=["customers.region"],
         measures=[{"formula": "amount_sum:sum"}],
     )
-    bundle = await build_resolved_source_bundle(
+    bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
         query=root, storage=storage, named_queries={"stage1": stage1}
     )
     with pytest.raises(IllegalScopeReferenceError):
@@ -352,7 +352,7 @@ async def _two_stage_bundle_and_plan(storage):
         dimensions=["customers__region"],
         measures=[{"formula": "amount_sum:sum"}],
     )
-    bundle = await build_resolved_source_bundle(
+    bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
         query=root, storage=storage, named_queries={"stage1": stage1}
     )
     planned = plan_stages(queries=[stage1, root], bundle=bundle)

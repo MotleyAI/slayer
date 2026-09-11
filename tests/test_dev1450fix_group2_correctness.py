@@ -29,7 +29,7 @@ from slayer.core.scope import ModelScope
 from slayer.engine.binding import bind_expr
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.schema_drift import _measure_formula_refs
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.syntax import parse_expr, parse_expr as _parse, parse_filter_expr
 from slayer.storage.yaml_storage import YAMLStorage
 

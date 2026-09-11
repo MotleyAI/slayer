@@ -93,7 +93,7 @@ from slayer.engine.cache import (
 )
 from slayer.engine.normalization import normalize_query
 from slayer.core.keys import REGROUP_LEAF_PREFIX
-from slayer.engine.planned import PlannedQuery
+from slayer.ir.planned import PlannedQuery
 from slayer.engine.schema_drift import (
     AppliedEntry,
     ApplyDriftResult,
@@ -107,15 +107,11 @@ from slayer.engine.response_meta import (
     build_response_metadata,
     projection_result_keys,
 )
-from slayer.engine.column_expansion import expand_derived_refs_sync
-from slayer.engine.source_bundle import (
-    ResolvedSourceBundle,
-    build_resolved_source_bundle,
-    expand_query_backed_models_in_bundle,
-)
+from slayer.sql.column_expansion import expand_derived_refs_sync
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_ordering import topologically_order_stages
 from slayer.engine.stage_planner import _topo_sort, plan_stages
-from slayer.engine.variables import apply_variables_to_query
+from slayer.ir.variables import apply_variables_to_query
 from slayer.engine.introspect_utils import _safe_get_columns
 from slayer.engine.schema_scope import SchemaRef
 from slayer.engine.join_graph import JoinGraph
@@ -142,6 +138,7 @@ from slayer.sql.session_policy import (
 )
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
 from slayer.storage.base import StorageBackend
+import slayer.engine.bundle_builder
 
 logger = logging.getLogger(__name__)
 
@@ -998,7 +995,7 @@ class SlayerQueryEngine:
 
         # Build the resolved bundle once — the only storage consult; the binder
         # then reads from the bundle purely.
-        bundle = await build_resolved_source_bundle(
+        bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=query,
             storage=self.storage,
             data_source=prefer_data_source,
@@ -1010,7 +1007,7 @@ class SlayerQueryEngine:
         # inline_extensions. Shared with ``_expand_query_backed_model`` so both
         # surfaces consume the identical expansion contract.
         original_source_model = bundle.source_model
-        bundle = await expand_query_backed_models_in_bundle(
+        bundle = await slayer.engine.bundle_builder.expand_query_backed_models_in_bundle(
             bundle=bundle,
             outer_vars=query.variables,
             runtime_kwarg=runtime_kwarg,
@@ -1861,7 +1858,7 @@ class SlayerQueryEngine:
             )
             if not model.source_queries:
                 probe_query = probe_query.model_copy(update={"source_model": model})
-            bundle = await build_resolved_source_bundle(
+            bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
                 query=probe_query,
                 storage=self.storage,
                 data_source=model.data_source or None,
@@ -1869,7 +1866,7 @@ class SlayerQueryEngine:
                 named_queries={},
             )
             # Expand nested query-backed models so the planner sees sql-mode shapes.
-            bundle = await expand_query_backed_models_in_bundle(
+            bundle = await slayer.engine.bundle_builder.expand_query_backed_models_in_bundle(
                 bundle=bundle,
                 outer_vars=None,
                 runtime_kwarg=None,
@@ -2690,7 +2687,7 @@ class SlayerQueryEngine:
         # Build the bundle for the final stage WITHOUT a DS hint, so inner
         # resolution falls back to the priority-list resolver — letting
         # ``get_column_types`` recover from a stale persisted ``data_source``.
-        bundle = await build_resolved_source_bundle(
+        bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=final_stage,
             storage=self.storage,
             data_source=None,
@@ -2703,7 +2700,7 @@ class SlayerQueryEngine:
         # names so a target referencing its parent short-circuits via cached SQL.
         # Pass the bundle's MERGED variables (not the bare stage dict) so nested
         # expansions keep the outer model's ``query_variables`` layer.
-        bundle = await expand_query_backed_models_in_bundle(
+        bundle = await slayer.engine.bundle_builder.expand_query_backed_models_in_bundle(
             bundle=bundle,
             outer_vars=bundle.query_variables,
             runtime_kwarg=runtime_kwarg,

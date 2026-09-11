@@ -29,19 +29,12 @@ import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.errors import AmbiguousReferenceError, UnknownReferenceError
-from slayer.core.keys import (
-    ArithmeticKey,
-    BetweenKey,
-    ColumnKey,
-    LiteralKey,
-    Phase,
-)
+from slayer.core.keys import ArithmeticKey, BetweenKey, ColumnKey, LiteralKey, Phase, walk_value_keys
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import _resolve_main_time_dimension, plan_query
 from slayer.core.keys import TimeTruncKey
-from slayer.engine.binding import walk_value_keys
 from slayer.sql.generator import _lower_positions
 
 

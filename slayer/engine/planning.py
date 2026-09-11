@@ -37,8 +37,8 @@ from slayer.core.keys import (
 )
 from slayer.core.formula import RANK_FAMILY_TRANSFORMS
 from slayer.sql.naming import canonical_aggregate_alias
-from slayer.engine.binding import BoundExpr, BoundFilter
-from slayer.engine.planned import SlotId, ValueSlot
+from slayer.ir.planned import SlotId, ValueSlot
+from slayer.ir.bound import BoundExpr, BoundFilter
 
 __all__ = [
     "DeclaredMeasure",
@@ -51,6 +51,10 @@ __all__ = [
     "filter_referenced_slot_ids",
     "lower_sugar_transforms",
 ]
+
+# Hoisted from the two signatures below: a paren inside a keyword-only default
+# string breaks rope's patchedast (dr-refactor), so keep the literal here.
+_HOST_FALLBACK_NAME = "(host)"
 
 
 # ValueRegistry
@@ -82,7 +86,7 @@ class ValueRegistry:
         self,
         *,
         source_column_names: Optional[FrozenSet[str]] = None,
-        host_model_name: str = "(host)",
+        host_model_name: str = _HOST_FALLBACK_NAME,
     ) -> None:
         self._source_columns: FrozenSet[str] = (
             source_column_names or frozenset()
@@ -500,7 +504,7 @@ class ProjectionPlanner:
         filters: List[BoundFilter],
         order: List[OrderSpec],
         source_column_names: Optional[FrozenSet[str]] = None,
-        host_model_name: str = "(host)",
+        host_model_name: str = _HOST_FALLBACK_NAME,
     ) -> ProjectionPlan:
         registry = ValueRegistry(
             source_column_names=source_column_names,

@@ -16,7 +16,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.engine import stage_planner
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._dev1838_fixtures import (
     BAND,
@@ -31,6 +31,7 @@ from tests._dev1838_fixtures import (
     month_td,
     q,
 )
+from slayer.ir import planned
 
 M = ModelMeasure(formula="amount:sum", name="m")
 
@@ -225,9 +226,9 @@ class TestProducersThatMustStaySeparate:
         conjunct must carry different interning identities. (The renderer
         cannot produce this divergence inside one stage today, so the pin
         lives on the identity function itself.)"""
-        identity = getattr(stage_planner, "regroup_producer_identity", None)
+        identity = getattr(planned, "regroup_producer_identity", None)
         assert identity is not None, (
-            "DEV-1838 D3: stage_planner.regroup_producer_identity is not "
+            "DEV-1838 D3: planned.regroup_producer_identity is not "
             "implemented yet"
         )
         models = dev1838_models()

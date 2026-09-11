@@ -18,15 +18,18 @@ flowchart TD
   core["Core domain models"]
   engine["Query engine"]
   sql["SQL generation"]
+  ir["Intermediate representation"]
   storage["Storage backends"]
   core -.-> engine
   core -.-> sql
   core -.-> storage
   engine --> core
+  engine --> ir
   engine --> sql
   engine --> storage
+  ir --> core
   sql --> core
-  sql -.-> engine
+  sql --> ir
   storage --> core
   storage --> engine
   storage --> sql
@@ -36,8 +39,9 @@ flowchart TD
 
 Stages:
 `normalization.py` → `syntax.py` (parse) → `binding.py` → `planning.py` /
-`stage_planner.py` (plan) → `planned.py` (the typed hand-off to `sql`), fed by
-`source_bundle.py`; `query_engine.py` orchestrates.
+`stage_planner.py` (plan) → `slayer/ir/planned.py` (the typed hand-off to
+`sql`), fed by `bundle_builder.py` (builds the `ir` source bundle);
+`query_engine.py` orchestrates.
 
 ## 3. Principles
 
@@ -73,9 +77,8 @@ Stages:
 
 ## 4. Rationale
 
-The pipeline shape is the end state of the DEV-1450 typed-pipeline redesign
-(structural identity replaced a monolithic string-rewriting enrichment pass;
-decision trail in git history and `openspec/changes/archive/`). Purity of
-binding (P3) is what removed the legacy `ContextVar` re-resolution tangle;
-schema-only composition (P5) is what makes downstream stages structurally
-unable to reach an upstream join graph.
+Structural identity end to end (P1) is what keeps enrichment from degenerating
+into string rewriting. Purity of binding (P3) is what keeps re-resolution
+state (context variables) unrepresentable; schema-only composition (P5) is
+what makes downstream stages structurally unable to reach an upstream join
+graph.

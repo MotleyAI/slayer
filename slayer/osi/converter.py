@@ -24,7 +24,7 @@ from slayer.core.formula import parse_formula
 from slayer.core.join_walker import resolve_hop
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.refs import IDENTIFIER_RE as _IDENTIFIER_RE
-from slayer.engine.column_expansion import _root_scope_column_ids, resolve_ref_target
+from slayer.sql.column_expansion import root_scope_column_ids, resolve_ref_target
 from slayer.engine.ingestion import introspect_table_to_model
 from slayer.engine.join_graph import JoinGraph, min_hops_root
 from slayer.ingest_report import ConversionResult, ConversionWarning
@@ -681,7 +681,7 @@ class OsiToSlayerConverter:
             tree = sqlglot.parse_one(sql)
         except sqlglot.errors.ParseError:
             return []
-        root_ids = _root_scope_column_ids(parsed=tree)
+        root_ids = root_scope_column_ids(parsed=tree)
         bad = []
         for col in tree.find_all(exp.Column):
             if id(col) not in root_ids:
