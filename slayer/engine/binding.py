@@ -1304,7 +1304,7 @@ def _resolve_agg_owner(
 
 
 def _declared_agg_param_names(
-    agg: str, source, bundle: ResolvedSourceBundle,
+    *, agg: str, source, bundle: ResolvedSourceBundle,
 ) -> List[str]:
     """Declared parameter order for ``agg`` — the owning model's custom
     definition wins over the built-in registry; ``[]`` when none declared."""
@@ -1327,7 +1327,7 @@ def _fold_positional_agg_args(
     stays in ``args``."""
     if not args:
         return args, kwargs
-    names = _declared_agg_param_names(agg, source, bundle)
+    names = _declared_agg_param_names(agg=agg, source=source, bundle=bundle)
     if not names:
         return args, kwargs
     if len(args) > len(names):

@@ -2945,6 +2945,15 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         or f"{root.agg}_{inner_alias}"
     )
 
+    # window= on the outer aggregation has no defined cell-time semantics;
+    # name the combination instead of the misleading TD-resolution error.
+    if _window_kwarg_of(root) is not None:
+        raise SlayerError(
+            f"Re-aggregation {alias!r} cannot carry window= on its outer "
+            f"aggregation; apply the window inside the operand or consume the "
+            f"re-aggregated value through a transform."
+        )
+
     # The outer level-2 aggregate runs over ``_base`` (grain + entity keys + the
     # picked value) and cannot carry a column parameter; reject loudly (DEV-1892
     # tracks lifting such parameters).

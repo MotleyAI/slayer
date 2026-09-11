@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.errors import SlayerError
+
 from tests._dev1824_fixtures import (
     BAND35,
     ModelMeasure,
@@ -202,6 +204,19 @@ class TestDimensionErrorSurface:
         with pytest.raises(ValueError, match=r"partition_by=") as ei:
             await exec_engine.execute(query)
         assert "__regroup__" not in str(ei.value)
+
+    async def test_windowed_reaggregation_root_fails_closed(self, exec_engine) -> None:
+        """window= on a re-aggregation's OUTER aggregation names the
+        combination even when a time dimension is present."""
+        query = q(
+            dimensions=["region"], time_dimensions=month_td(),
+            measures=[ModelMeasure(
+                formula="sum(amount:sum(partition_by=[region, city]), "
+                        "window='90d')",
+                name="w")])
+        with pytest.raises(SlayerError) as ei:
+            await exec_engine.execute(query)
+        assert "window= on its outer aggregation" in str(ei.value)
 
     async def test_aggregate_over_attached_value_executes(self, exec_engine) -> None:
         # `b2` aggregates at the grain of `band`, whose own value needs a row

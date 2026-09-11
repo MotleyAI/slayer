@@ -58,7 +58,8 @@ class TestBroadcast:
             assert float(value) == pytest.approx(BROADCAST_GLOBAL_AVG_CITY)
         (w,) = broadcast_warnings(resp)
         region_dims = [d for d in w.dimensions if d.dimension == "region"]
-        assert region_dims and region_dims[0].reason
+        assert region_dims
+        assert region_dims[0].reason
         assert "associate" in w.hint.lower()
 
 
@@ -87,8 +88,9 @@ class TestErrorMode:
     async def test_error_mode_refuses_with_clear_message(self, exec_engine):
         """Scenario: Unattributable outer dimension refuses under error mode —
         a clear error naming the dimension and the remedy, never wrong numbers."""
+        query = _q("error")
         with pytest.raises((SlayerError, ValueError)) as ei:
-            await exec_engine.execute(_q("error"))
+            await exec_engine.execute(query)
         msg = str(ei.value)
         assert not isinstance(ei.value, NotImplementedError)
         # a genuine error-mode refusal, not the generic expression-nesting gate
@@ -115,8 +117,9 @@ class TestExplicitOuterKeyUnattributable:
         assert any(d.dimension == "product" for d in w.dimensions)
 
     async def test_error_mode_refuses(self, exec_engine):
+        query = self._pq("error")
         with pytest.raises((SlayerError, ValueError)) as ei:
-            await exec_engine.execute(self._pq("error"))
+            await exec_engine.execute(query)
         assert not isinstance(ei.value, NotImplementedError)
         assert "product" in str(ei.value)
 

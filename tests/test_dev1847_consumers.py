@@ -175,11 +175,11 @@ class TestFirstLastDispatch:
     async def test_last_over_aggregate_stays_a_transform(self, exec_engine):
         """Scenario: First and last keep transform dispatch — last(sum(...)) is
         the last transform (needs a time dimension), never a re-aggregation."""
+        query = sales_q(
+            dimensions=["region"],
+            measures=[ModelMeasure(formula=f"last({INNER_CR})", name="L")])
         with pytest.raises(ValueError, match="(?i)time"):
-            await exec_engine.execute(sales_q(
-                dimensions=["region"],
-                measures=[ModelMeasure(
-                    formula=f"last({INNER_CR})", name="L")]))
+            await exec_engine.execute(query)
 
 
 class TestComputedDimensionConsumer:
