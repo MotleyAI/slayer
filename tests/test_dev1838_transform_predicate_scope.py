@@ -13,7 +13,7 @@ from slayer.core.keys import (
     Phase,
     TransformKey,
 )
-from slayer.engine.planned import (
+from slayer.ir.planned import (
     MaskEntry,
     MaskTyping,
     PlannedQuery,

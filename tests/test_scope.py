@@ -22,7 +22,7 @@ from sqlglot import exp
 from slayer.core.enums import DataType
 from slayer.core.keys import ColumnKey, ColumnSqlKey
 from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects import get_dialect
 from slayer.sql.generator import SQLGenerator
 from slayer.sql.naming import AliasAllocator

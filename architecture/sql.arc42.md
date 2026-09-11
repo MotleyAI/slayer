@@ -5,8 +5,8 @@
 `slayer/sql` turns a `PlannedQuery` (built by `engine`) into dialect-correct SQL
 text. Children: `render` (AST assembly: value keys, order terms, joins, CTE
 assembly) and `dialects` (per-dialect emission strategies). It must not know how
-plans are made — the grandfathered `sql → engine` edges die with the
-`slayer/ir` extraction slice.
+plans are made — it consumes the shared representation in `slayer/ir`, never
+`engine` internals.
 
 ## 2. Building blocks
 
@@ -19,15 +19,18 @@ flowchart TD
   core["Core domain models"]
   engine["Query engine"]
   sql["SQL generation"]
+  ir["Intermediate representation"]
   storage["Storage backends"]
   core -.-> engine
   core -.-> sql
   core -.-> storage
   engine --> core
+  engine --> ir
   engine --> sql
   engine --> storage
+  ir --> core
   sql --> core
-  sql -.-> engine
+  sql --> ir
   storage --> core
   storage --> engine
   storage --> sql
@@ -80,12 +83,9 @@ Children: `render`
 
 ## 4. Rationale
 
-The single-door / single-renderer / single-namer shape is the end state of the
-DEV-1742 consolidation (6 PRs, 2026-08), which replaced five per-path renderers,
-four ORDER BY resolvers, and regex-based join discovery — each a source of
-silent divergence. The layering target (`engine` → `sql` → `core`) still has
-grandfathered edges because `generator.py` consumes engine plan types directly;
-the `slayer/ir` extraction slice moves those types into a shared IR package.
-Recent structural trail in the archive: e.g.
-`openspec/changes/archive/2026-09-02-dev-1838-…` (node discipline in the
-generator's root SELECT).
+Parallel render paths diverge silently: per-path renderers, per-position ORDER
+BY resolvers, and regex-based join discovery each produce subtly different SQL
+for the same plan, so the single-door / single-renderer / single-namer shape
+makes that divergence structurally impossible. The layering
+`engine` → `sql` → `ir` → `core` holds because `generator.py` consumes the
+shared plan types from `slayer/ir`, never planner internals.

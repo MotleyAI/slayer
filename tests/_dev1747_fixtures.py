@@ -35,7 +35,7 @@ from sqlglot import exp
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._engine_helpers import make_seeded_sqlite_engine
 

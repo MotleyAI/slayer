@@ -47,16 +47,21 @@ from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.dialects import get_dialect
 from slayer.sql.naming import AliasAllocator
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.render.value_expr import (
     AliasFacilities,
+    CompositeFacilities,
     FilterFacilities,
     RenderContext,
+    _filter_cast_type,
+    _wrap_cast_for_type,
     contains_aggregate,
     render_value_key,
 )
 from slayer.sql.scope import ScopeFrame
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.core.keys import Phase, ScalarCallKey
+from slayer.ir.planned import ValueSlot
 
 
 # ===========================================================================
@@ -256,20 +261,13 @@ class TestFilterCastPolicyMovedToRenderPackage:
     types only."""
 
     def test_functions_importable_from_render_package(self) -> None:
-        from slayer.sql.render.value_expr import (  # noqa: F401
-            _filter_cast_type,
-            _wrap_cast_for_type,
-        )
+        assert callable(_filter_cast_type) and callable(_wrap_cast_for_type)
 
     def test_temporal_types_suppress_the_cast(self) -> None:
-        from slayer.sql.render.value_expr import _filter_cast_type
-
         assert _filter_cast_type(DataType.DATE) is None
         assert _filter_cast_type(DataType.TIMESTAMP) is None
 
     def test_non_temporal_type_passes_through(self) -> None:
-        from slayer.sql.render.value_expr import _filter_cast_type
-
         assert _filter_cast_type(DataType.DOUBLE) is DataType.DOUBLE
 
 
@@ -341,7 +339,6 @@ class TestAggregateBranchPrecedence:
         return AggregateKey(source=ColumnKey(leaf="amount"), agg="sum")
 
     def test_aliases_win_over_filter_builder(self) -> None:
-        from slayer.sql.render.value_expr import CompositeFacilities
 
         key = self._key()
         calls: list[str] = []
@@ -364,7 +361,6 @@ class TestAggregateBranchPrecedence:
         assert calls == [], "filter builder must not run when aliases resolve it"
 
     def test_filter_builder_wins_over_composite_builder(self) -> None:
-        from slayer.sql.render.value_expr import CompositeFacilities
 
         key = self._key()
 
@@ -382,7 +378,6 @@ class TestAggregateBranchPrecedence:
         assert _emit(render_value_key(key=key, ctx=ctx)) == "FILTER"
 
     def test_composite_builder_used_when_no_filter_builder(self) -> None:
-        from slayer.sql.render.value_expr import CompositeFacilities
 
         key = self._key()
         ctx = RenderContext(
@@ -392,7 +387,6 @@ class TestAggregateBranchPrecedence:
         assert _emit(render_value_key(key=key, ctx=ctx)) == "COMPOSITE"
 
     def test_builtin_fallback_when_no_builder(self) -> None:
-        from slayer.sql.render.value_expr import CompositeFacilities
 
         key = self._key()
         ctx = RenderContext(
@@ -452,8 +446,6 @@ class TestFilterAggBuilderSeam:
     having_full_alias)`` to the generator's builder."""
 
     def _slot(self, key):
-        from slayer.core.keys import Phase
-        from slayer.engine.planned import ValueSlot
 
         return ValueSlot(
             id="s1", key=key, declared_name="q", phase=Phase.AGGREGATE,
@@ -626,7 +618,6 @@ class TestContainsAggregateEquivalence:
         assert contains_aggregate(key) is True
 
     def test_scalar_over_aggregate_contains_aggregate(self) -> None:
-        from slayer.core.keys import ScalarCallKey
 
         key = ScalarCallKey(
             name="ifnull",

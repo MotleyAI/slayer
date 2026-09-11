@@ -47,7 +47,6 @@ from slayer.core.keys import TimeTruncKey
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import ColumnRef, ModelMeasure, SlayerQuery, TimeDimension
 from slayer.core.time_bounds import is_frame_bound, is_temporal_literal, strip_frame_bounds
-from slayer.engine.source_bundle import build_resolved_source_bundle
 from slayer.engine.stage_planner import plan_query
 from slayer.sql.scope_check import assert_scope_closed
 from slayer.storage.yaml_storage import YAMLStorage
@@ -58,6 +57,7 @@ from tests._engine_helpers import (
     _join_aliases,
     _norm,
 )
+import slayer.engine.bundle_builder
 
 # --------------------------------------------------------------------------- #
 # Key-tree fixtures for the pure-helper tests
@@ -403,7 +403,7 @@ async def _plan(query: SlayerQuery, model: SlayerModel, *, extra_models=None):
         await storage.save_model(model)
         for extra in extra_models or []:
             await storage.save_model(extra)
-        bundle = await build_resolved_source_bundle(query=query, storage=storage)
+        bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
         return plan_query(query=query, bundle=bundle)
 
 

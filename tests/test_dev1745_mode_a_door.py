@@ -38,10 +38,11 @@ from sqlglot import exp
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects import get_dialect
 from slayer.sql.naming import AliasAllocator
 from slayer.sql.scope import ScopeFrame
+from slayer.core.errors import SlayerError
 
 
 # --------------------------------------------------------------------------- #
@@ -295,21 +296,18 @@ class TestJoinRegistration:
 class TestParseFailureRaises:
 
     def test_unparseable_predicate_raises(self) -> None:
-        from slayer.core.errors import SlayerError
 
         scope = _scope()
         with pytest.raises(SlayerError):
             scope.enter_predicate("this is ( not sql")
 
     def test_unparseable_expression_raises(self) -> None:
-        from slayer.core.errors import SlayerError
 
         scope = _scope()
         with pytest.raises(SlayerError):
             scope.enter_expression("SELECT ((( FROM")
 
     def test_error_carries_the_original_fragment(self) -> None:
-        from slayer.core.errors import SlayerError
 
         fragment = "this is ( not sql"
         scope = _scope()
@@ -322,7 +320,6 @@ class TestParseFailureRaises:
     def test_unparseable_never_silently_drops_joins(self) -> None:
         """The old ``_filter_join_paths._scan`` swallowed the parse error and
         contributed zero paths — missing joins instead of a failure."""
-        from slayer.core.errors import SlayerError
 
         scope = _scope()
         with pytest.raises(SlayerError):

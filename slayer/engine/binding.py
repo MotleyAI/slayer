@@ -8,7 +8,7 @@ import os
 from decimal import Decimal
 from typing import Dict, List, Optional, Tuple, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 from slayer.core.errors import (
     AggregationNotAllowedError,
@@ -32,34 +32,14 @@ from slayer.core.enums import (
 )
 from slayer.core.formula import RANK_FAMILY_TRANSFORMS
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS
-from slayer.core.keys import (
-    SCALAR_FUNCTIONS,
-    check_scalar_arity,
-    AggregateKey,
-    ArithmeticKey,
-    ColumnKey,
-    ColumnSqlKey,
-    InKey,
-    LiteralKey,
-    Phase,
-    ScalarCallKey,
-    SqlExprKey,
-    StarKey,
-    TimeTruncKey,
-    TransformKey,
-    ValueKey,
-    column_leaf,
-    column_path,
-    normalize_scalar,
-    prepend_value_key,
-)
+from slayer.core.keys import SCALAR_FUNCTIONS, check_scalar_arity, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, ScalarCallKey, SqlExprKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, column_path, normalize_scalar, prepend_value_key, walk_value_keys
 from slayer.core.join_walker import resolve_hop, terminal_model
 from slayer.core.models import SlayerModel
 from slayer.engine import dimension_routing
 from slayer.core.query import TimeDimension
 from slayer.core.scope import ModelScope, StageSchema
 from slayer.engine.column_filter_paths import compute_column_filter_join_paths
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.syntax import (
     AggCall,
     Arith,
@@ -78,14 +58,12 @@ from slayer.engine.syntax import (
     walk_parsed_refs,
 )
 from slayer.sql.sql_expr import has_window_function
+from slayer.ir.bound import BoundExpr, BoundFilter
 
 __all__ = [
-    "BoundExpr",
-    "BoundFilter",
     "bind_expr",
     "bind_filter",
     "bind_time_dimension",
-    "walk_value_keys",
 ]
 
 
@@ -123,34 +101,6 @@ class MeasureResolutionCtx(BaseModel):
 def _fmt_measure_chain(chain: Tuple[Tuple[str, str], ...]) -> List[str]:
     """Render a ``(model, measure)`` chain as ``model.measure`` steps for errors."""
     return [f"{model}.{measure}" for model, measure in chain]
-
-
-class BoundExpr(BaseModel):
-    """A bound expression — its leaves are resolved ``ValueKey``s. ``routed_dotted``
-    is the full routed dotted path when the whole field is a short-form
-    ``DottedRef`` that auto-routed (DEV-1856), else ``None`` — the naming layer
-    surfaces a routed dimension under this full path, not the short form typed."""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
-
-    value_key: ValueKey
-    routed_dotted: Optional[str] = None
-
-    @property
-    def phase(self) -> Phase:
-        return self.value_key.phase
-
-
-class BoundFilter(BaseModel):
-    """A bound filter predicate: ``value_key`` (like ``BoundExpr``), ``phase``
-    (max phase any referenced slot reaches), and ``referenced_keys`` (every
-    ``ValueKey`` in the tree, for the cross-model planner's filter routing)."""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
-
-    value_key: ValueKey
-    phase: Phase
-    referenced_keys: Tuple[ValueKey, ...] = Field(default_factory=tuple)
 
 
 def bind_expr(
@@ -346,14 +296,6 @@ def bind_filter(
     return BoundFilter(
         value_key=value_key, phase=phase, referenced_keys=refs,
     )
-
-
-def walk_value_keys(key: ValueKey):
-    """Yield every ``ValueKey`` reachable from ``key``, including ``key`` —
-    total via the traversal protocol (a protocol-less kind raises)."""
-    yield key
-    for child in key.children():
-        yield from walk_value_keys(child)
 
 
 def _bind(

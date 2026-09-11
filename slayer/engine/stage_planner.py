@@ -4,7 +4,6 @@ Topo-sorted stages; downstream binds against the upstream flat ``StageSchema``."
 from __future__ import annotations
 
 from decimal import Decimal
-from enum import Enum
 from typing import (
     AbstractSet,
     Any,
@@ -28,35 +27,9 @@ from pydantic import BaseModel, ConfigDict
 from slayer.core.enums import DataType
 from slayer.core.formula import TIME_TRANSFORMS
 from slayer.core.format import NumberFormat
-from slayer.core.grain import Grain
-from slayer.core.errors import (
-    AmbiguousJoinPathError,
-    AmbiguousReferenceError,
-    DistinctDimensionValuesError,
-    PositionTypingError,
-    SlayerError,
-    UnknownReferenceError,
-)
-from slayer.core.keys import (
-    AggregateKey,
-    ArithmeticKey,
-    BetweenKey,
-    ColumnKey,
-    ColumnSqlKey,
-    InKey,
-    LiteralKey,
-    Phase,
-    ScalarCallKey,
-    StarKey,
-    TimeTruncKey,
-    TransformKey,
-    ValueKey,
-    column_leaf,
-    normalize_scalar,
-    reroot_value_key,
-    substitute_value_keys,
-)
-from slayer.core.errors import UnreachableFilterDroppedWarning
+from slayer.ir.grain import Grain
+from slayer.core.errors import AmbiguousJoinPathError, AmbiguousReferenceError, DistinctDimensionValuesError, PositionTypingError, SlayerError, UnknownReferenceError, UnreachableFilterDroppedWarning
+from slayer.core.keys import AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, normalize_scalar, reroot_value_key, substitute_value_keys, walk_value_keys
 from slayer.core.models import ModelMeasure, SlayerModel
 from slayer.engine import dimension_routing
 from slayer.engine.aggregate_input_paths import compute_aggregate_input_join_paths
@@ -80,25 +53,18 @@ from slayer.core.refs import (
     auto_name_from_expression,
     canonical_agg_name,
 )
-from slayer.sql.naming import canonical_aggregate_alias
+from slayer.sql.naming import canonical_aggregate_alias, flat_name
 from slayer.core.time_bounds import strip_frame_bounds
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.scope import ModelScope, StageColumn, StageSchema
-from slayer.engine.binding import (
-    BoundExpr as BinderBoundExpr,
-    BoundFilter,
-    bind_expr,
-    bind_filter,
-    bind_time_dimension,
-    walk_value_keys,
-)
+from slayer.engine.binding import bind_expr, bind_filter, bind_time_dimension
+from slayer.ir.bound import BoundExpr, BoundFilter
 from slayer.engine.filter_reachability import (
     compute_key_join_paths,
     key_has_host_local_ref,
 )
-from slayer.engine.planned import (
+from slayer.ir.planned import (
     AssociationProducerKernel,
-    BoundExpr as PlannedBoundExpr,
     EmptyBaseGrainPlan,
     FilterReachability,
     MaskEntry,
@@ -109,6 +75,7 @@ from slayer.engine.planned import (
     RankedProducerKernel,
     RegroupAttachPlan,
     RegroupSubstitution,
+    regroup_producer_identity,
     SemiJoinFilter,
     SemiJoinHop,
     SlotId,
@@ -155,7 +122,7 @@ from slayer.engine.regroup_planner import (
     substitute_in_bound_filter,
     type_position_conjunct,
 )
-from slayer.engine.source_bundle import (
+from slayer.ir.source_bundle import (
     ResolvedSourceBundle,
     _apply_extension_overlay,
     _source_name_if_sibling,
@@ -172,7 +139,6 @@ from slayer.engine.syntax import (
     parse_expr,
     parse_filter_expr,
 )
-from slayer.sql.naming import flat_name
 from slayer.sql.sql_expr import has_window_function
 from slayer.sql.sql_predicate import parse_sql_predicate
 
@@ -593,7 +559,7 @@ def _map_bound_keys(
 ) -> Tuple[List[DeclaredMeasure], List[BoundFilter], List[OrderSpec]]:
     new_measures = [
         DeclaredMeasure(
-            bound=BinderBoundExpr(
+            bound=BoundExpr(
                 value_key=key_fn(dm.bound.value_key),
                 routed_dotted=dm.bound.routed_dotted,
             ),
@@ -622,7 +588,7 @@ def _map_bound_keys(
         )
     new_specs = [
         OrderSpec(
-            bound=BinderBoundExpr(
+            bound=BoundExpr(
                 value_key=key_fn(spec.bound.value_key),
                 routed_dotted=spec.bound.routed_dotted,
             ),
@@ -655,7 +621,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     )
 
     # Alias lookup for ORDER BY, checked before bind_expr so aggregate aliases resolve via the registry.
-    declared_alias_to_bound: Dict[str, BinderBoundExpr] = {}
+    declared_alias_to_bound: Dict[str, BoundExpr] = {}
     for dm in declared_measures:
         for alias in (dm.public_name, dm.declared_name, dm.canonical_alias):
             if alias is not None:
@@ -1003,7 +969,7 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
         # A combined attach names its grain by the consumer's dimension name.
         name = grain_name_by_key.get(pk) or _regroup_grain_name(pk)
         grain_dms.append(DeclaredMeasure(
-            bound=BinderBoundExpr(value_key=pk),
+            bound=BoundExpr(value_key=pk),
             declared_name=name, public_name=name,
             type=d_type, format=d_fmt, description=d_desc,
             # A grain key is a dimension the producer GROUPS BY; marking a computed one makes its inner aggregate a ROW attach.
@@ -1026,7 +992,7 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
         else:
             a_type, a_fmt, a_desc = None, None, None
         agg_dms.append(DeclaredMeasure(
-            bound=BinderBoundExpr(value_key=agg),
+            bound=BoundExpr(value_key=agg),
             declared_name=canonical, public_name=canonical,
             type=explicit_types.get(agg, a_type), format=a_fmt, description=a_desc,
             type_is_explicit=agg in explicit_types,
@@ -2733,7 +2699,7 @@ def _substitute_prebound(
     """Substitute value keys across a prebound's measures / filters / orders."""
     return prebound.model_copy(update={
         "declared_measures": [
-            dm.model_copy(update={"bound": BinderBoundExpr(
+            dm.model_copy(update={"bound": BoundExpr(
                 value_key=substitute_value_keys(dm.bound.value_key, mapping),
             )})
             for dm in prebound.declared_measures
@@ -2742,7 +2708,7 @@ def _substitute_prebound(
             substitute_in_bound_filter(bf, mapping) for bf in prebound.bound_filters
         ],
         "order_specs": [
-            sp.model_copy(update={"bound": BinderBoundExpr(
+            sp.model_copy(update={"bound": BoundExpr(
                 value_key=substitute_value_keys(sp.bound.value_key, mapping),
             )})
             for sp in prebound.order_specs
@@ -3283,43 +3249,6 @@ def _assert_total_routing(prebound: PreboundQuery) -> None:
                     )
 
 
-def _structural_fingerprint(obj) -> Hashable:
-    if isinstance(obj, BaseModel):
-        return (
-            type(obj).__name__,
-            tuple(
-                (name, _structural_fingerprint(getattr(obj, name)))
-                for name in type(obj).model_fields
-            ),
-        )
-    if isinstance(obj, (list, tuple)):
-        return tuple(_structural_fingerprint(x) for x in obj)
-    if isinstance(obj, (set, frozenset)):
-        return frozenset(_structural_fingerprint(x) for x in obj)
-    if isinstance(obj, dict):
-        return tuple(sorted(
-            (
-                (_structural_fingerprint(k), _structural_fingerprint(v))
-                for k, v in obj.items()
-            ),
-            key=repr,
-        ))
-    if isinstance(obj, Enum) or obj is None or isinstance(
-        obj, (str, int, float, bool, bytes),
-    ):
-        return obj
-    return (type(obj).__name__, repr(obj))
-
-
-def regroup_producer_identity(attach: RegroupAttachPlan) -> Hashable:
-    """Interning identity of a regroup producer: its root plus the full structural spec of the producer body (never the render-level attach coordinates)."""
-    return (
-        attach.producer_root_model,
-        _structural_fingerprint(attach.kernel),
-        _structural_fingerprint(attach.producer_plan),
-    )
-
-
 def _intern_producer(
     attach: RegroupAttachPlan,
     registry: Optional[Dict[Hashable, PlannedQuery]],
@@ -3755,7 +3684,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
     rewritten = PreboundQuery(
         declared_measures=[
             DeclaredMeasure(
-                bound=BinderBoundExpr(
+                bound=BoundExpr(
                     value_key=substitute_value_keys(
                         dm.bound.value_key,
                         mapping if dm.is_dimension else combined_mapping,
@@ -3781,7 +3710,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
         n_date_range=prebound.n_date_range,
         order_specs=[
             OrderSpec(
-                bound=BinderBoundExpr(
+                bound=BoundExpr(
                     value_key=substitute_value_keys(sp.bound.value_key, mapping),
                 ),
                 direction=sp.direction,
@@ -4258,7 +4187,7 @@ def _plan_src_row_filters(
         if residual is not key:
             rewrites.append(SrcFilterRewrite(
                 filter_id=m.slot_id,
-                expression=PlannedBoundExpr(value_key=residual),
+                expression=BoundExpr(value_key=residual),
             ))
     return where_ids, rewrites
 
@@ -4849,7 +4778,7 @@ def _flatten_dotted(name: str) -> str:
 def _canonical_alias_for_formula(
     formula: str,
     *,
-    bound: Optional[BinderBoundExpr] = None,
+    bound: Optional[BoundExpr] = None,
     parsed: Optional[ParsedExpr] = None,
 ) -> str:
     """Canonical public alias for a measure formula: ``canonical_aggregate_alias``

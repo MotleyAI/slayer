@@ -21,7 +21,7 @@ import re
 
 from slayer.core.keys import REGROUP_LEAF_PREFIX, AggregateKey, ColumnKey
 from slayer.core.query import ModelMeasure, SlayerQuery
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import plan_query
 
 from tests._dev1739_fixtures import dev1739_models, gen, month_td

@@ -7,14 +7,9 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.keys import (
-    AggregateKey,
-    ColumnKey,
-    reroot_value_key,
-)
+from slayer.core.keys import AggregateKey, ColumnKey, reroot_value_key, walk_value_keys
 from slayer.core.models import Column, SlayerModel
 from slayer.core.query import ColumnRef, ModelMeasure, SlayerQuery, TimeDimension
-from slayer.engine.binding import walk_value_keys
 from slayer.sql.naming import canonical_aggregate_alias
 
 from tests._dev1739_fixtures import gen, month_td

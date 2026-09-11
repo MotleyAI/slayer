@@ -34,7 +34,7 @@ from typing import Dict, Literal
 from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
 
-from slayer.engine.planned import SlotId
+from slayer.ir.planned import SlotId
 from slayer.sql.dialects.base import SqlDialect
 
 __all__ = [

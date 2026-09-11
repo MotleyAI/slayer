@@ -27,7 +27,7 @@ from slayer.core.enums import DataType
 from slayer.core.errors import UnresolvableDimensionJoinError
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.column_expansion import _requalify
+from slayer.sql.column_expansion import _requalify
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 

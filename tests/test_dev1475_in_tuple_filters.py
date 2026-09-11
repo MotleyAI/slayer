@@ -46,6 +46,15 @@ from slayer.engine.syntax import (
     TupleLit,
     parse_filter_expr,
 )
+import asyncio
+from slayer.core.models import DatasourceConfig
+from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.storage.yaml_storage import YAMLStorage
+import tempfile
+from slayer.core.keys import ColumnKey
+from slayer.core.scope import ModelScope
+from slayer.engine.binding import bind_filter
+from slayer.ir.source_bundle import ResolvedSourceBundle
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +165,6 @@ class TestParserGuards:
         # the parser and constructs ``InKey(values=())`` directly, the
         # SQL generator must not emit invalid ``col IN ()``. The
         # field_validator on InKey raises at construction time.
-        from slayer.core.keys import ColumnKey
         with pytest.raises(ValueError, match="non-empty"):
             InKey(column=ColumnKey(leaf="status"), values=())
 
@@ -210,10 +218,6 @@ def _make_orders_joined_to_stores() -> tuple[SlayerModel, SlayerModel]:
 
 class TestBinder:
     def test_in_filter_binds_to_in_key(self):
-        from slayer.core.scope import ModelScope
-        from slayer.engine.binding import bind_filter
-        from slayer.engine.source_bundle import ResolvedSourceBundle
-        from slayer.engine.syntax import parse_filter_expr
 
         model = _make_orders_with_status()
         parsed = parse_filter_expr("status in ('completed', 'pending')")
@@ -231,9 +235,6 @@ class TestBinder:
         }
 
     def test_not_in_filter_binds_negated(self):
-        from slayer.core.scope import ModelScope
-        from slayer.engine.binding import bind_filter
-        from slayer.engine.source_bundle import ResolvedSourceBundle
 
         model = _make_orders_with_status()
         parsed = parse_filter_expr("status not in ('cancelled',)")
@@ -256,13 +257,8 @@ def _make_engine_with_orders() -> tuple:
     Returns (engine, model) tuple so tests can call ``engine.execute_sync``
     with dry_run=True (build SQL without hitting a database).
     """
-    import asyncio
 
-    from slayer.core.models import DatasourceConfig
-    from slayer.engine.query_engine import SlayerQueryEngine
-    from slayer.storage.yaml_storage import YAMLStorage
 
-    import tempfile
 
     tmp = tempfile.mkdtemp()
     storage = YAMLStorage(base_dir=tmp)
@@ -274,12 +270,7 @@ def _make_engine_with_orders() -> tuple:
 
 
 def _make_engine_with_orders_and_stores() -> tuple:
-    import asyncio
-    import tempfile
 
-    from slayer.core.models import DatasourceConfig
-    from slayer.engine.query_engine import SlayerQueryEngine
-    from slayer.storage.yaml_storage import YAMLStorage
 
     tmp = tempfile.mkdtemp()
     storage = YAMLStorage(base_dir=tmp)

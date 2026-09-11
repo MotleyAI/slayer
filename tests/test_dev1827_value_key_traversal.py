@@ -16,42 +16,20 @@ from typing import get_args
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.keys import (
-    KIND_POLICY,
-    VALUE_KEY_TYPES,
-    AggregateKey,
-    ArithmeticKey,
-    BetweenKey,
-    ColumnKey,
-    ColumnSqlKey,
-    InKey,
-    KindPolicy,
-    LiteralKey,
-    Phase,
-    ScalarCallKey,
-    SqlExprKey,
-    StarKey,
-    TimeTruncKey,
-    TransformKey,
-    ValueKey,
-    _FrozenKey,
-    reroot_value_key,
-    substitute_value_keys,
-)
+from slayer.core.keys import KIND_POLICY, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, KindPolicy, LiteralKey, Phase, ScalarCallKey, SqlExprKey, StarKey, TimeTruncKey, TransformKey, ValueKey, _FrozenKey, reroot_value_key, substitute_value_keys, walk_value_keys
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.aggregate_input_paths import compute_aggregate_input_join_paths
-from slayer.engine.binding import walk_value_keys
 from slayer.engine.planning import (
     _SLOTTABLE_KIND,
     _iter_slot_deps,
     lower_sugar_transforms,
     rewrite_rank_partition_keys,
 )
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects import get_dialect
-from slayer.engine.planned import BoundExpr
 from slayer.sql.generator import SQLGenerator, _LoweredFilter
+from slayer.ir.bound import BoundExpr
 from slayer.sql.render.value_expr import (
     RenderContext,
     contains_aggregate,

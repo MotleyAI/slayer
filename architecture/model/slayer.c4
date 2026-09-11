@@ -17,6 +17,7 @@ model {
     dialects = node 'Dialects'
   }
   engine = node 'Query engine'
+  ir = node 'Intermediate representation'
   storage = node 'Storage backends'
   importers = bucket 'Importers'
   search = bucket 'Search & embeddings'
@@ -28,6 +29,7 @@ model {
   core -> sql #legacy
   core -> storage #legacy
   engine -> core
+  engine -> ir
   engine -> memories
   engine -> search
   engine -> sql
@@ -35,6 +37,7 @@ model {
   importers -> core
   importers -> engine
   importers -> sql
+  ir -> core
   memories -> core
   memories -> engine
   memories -> search
@@ -47,7 +50,7 @@ model {
   search -> memories
   search -> storage
   sql -> core
-  sql -> engine #legacy
+  sql -> ir
   storage -> core
   storage -> engine
   storage -> memories

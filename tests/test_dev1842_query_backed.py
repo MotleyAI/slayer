@@ -23,14 +23,12 @@ from slayer.core.models import (
 )
 from slayer.core.query import ModelExtension, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.source_bundle import (
-    _apply_extension_overlay,
-    build_resolved_source_bundle,
-)
+from slayer.ir.source_bundle import _apply_extension_overlay
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._dev1842_fixtures import dev1842_models
 from tests._engine_helpers import _engine_generate
+import slayer.engine.bundle_builder
 
 
 class TestQueryBackedFailClosed:
@@ -240,7 +238,7 @@ class TestStageExtensionMeasuresOverQueryBackedRejected:
             )
             root = SlayerQuery(source_model="orders", dimensions=["status"])
             with pytest.raises(ValueError, match=r"may not add measures"):
-                await build_resolved_source_bundle(
+                await slayer.engine.bundle_builder.build_resolved_source_bundle(
                     query=root, storage=storage, data_source="ds",
                     named_queries={"s1": stage},
                 )

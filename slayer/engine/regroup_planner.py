@@ -10,22 +10,12 @@ from typing import Dict, List, Mapping, NamedTuple, Optional, Tuple
 
 from slayer.core.enums import DataType
 from slayer.core.errors import PositionTypingError
-from slayer.core.grain import Grain
-from slayer.core.keys import (
-    REGROUP_LEAF_PREFIX,
-    AggregateKey,
-    ArithmeticKey,
-    ColumnKey,
-    ColumnSqlKey,
-    TimeTruncKey,
-    TransformKey,
-    ValueKey,
-    substitute_value_keys,
-)
-from slayer.engine.binding import BoundFilter, walk_value_keys
-from slayer.engine.planned import MaskTyping
+from slayer.ir.grain import Grain
+from slayer.core.keys import REGROUP_LEAF_PREFIX, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, TimeTruncKey, TransformKey, ValueKey, substitute_value_keys, walk_value_keys
+from slayer.ir.planned import MaskTyping
 from slayer.engine.ranked_planner import RANKED_AGGREGATIONS
 from slayer.sql.naming import canonical_aggregate_alias
+from slayer.ir.bound import BoundFilter
 
 __all__ = [
     "REGROUP_LEAF_PREFIX",

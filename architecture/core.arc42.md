@@ -20,6 +20,7 @@ flowchart TD
   sql["SQL generation"]
   storage["Storage backends"]
   importers("Importers")
+  ir["Intermediate representation"]
   memories("Agent memories")
   protocols("BI wire protocols")
   search("Search & embeddings")
@@ -29,6 +30,7 @@ flowchart TD
   core -.-> storage
   engine --> core
   importers --> core
+  ir --> core
   memories --> core
   protocols --> core
   search --> core
@@ -66,8 +68,6 @@ models alongside.
 
 ## 4. Rationale
 
-Structural identity (P1) is the mechanism that made the historical duplicate/
-shared-slot bug family unrepresentable; one key shape (P2) keeps the
-intermediate representation free of parallel per-family tracks. The `core`
-principles are the future `slayer/ir` contract in embryo — the IR extraction
-slice moves the shared plan types down next to the keys.
+Structural identity (P1) keeps the duplicate/shared-slot bug family
+unrepresentable; one key shape (P2) keeps the intermediate representation free
+of parallel per-family tracks.

@@ -55,10 +55,10 @@ from slayer.core.errors import AmbiguousJoinPathError
 from slayer.core.join_walker import resolve_hop
 from slayer.core.models import SlayerModel
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, expression_source_leaf
-from slayer.engine.binding import BoundFilter
 from slayer.engine.introspect_utils import is_exact_numeric_db_type
 from slayer.engine.planning import DeclaredMeasure, OrderSpec
 from slayer.engine.response_meta import _infer_aggregated_format
+from slayer.ir.bound import BoundFilter
 
 
 __all__ = [

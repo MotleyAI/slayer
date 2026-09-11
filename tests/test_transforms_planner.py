@@ -48,7 +48,7 @@ from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.core.scope import ModelScope
 from slayer.engine.binding import bind_expr
 from slayer.engine.planning import _iter_slot_deps
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import plan_query
 from slayer.engine.syntax import parse_expr
 

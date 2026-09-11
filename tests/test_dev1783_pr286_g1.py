@@ -27,7 +27,7 @@ from types import SimpleNamespace
 import pytest
 
 from slayer.core.keys import ColumnKey, Phase, TransformKey
-from slayer.engine.planned import ValueSlot
+from slayer.ir.planned import ValueSlot
 from slayer.sql.generator import SQLGenerator
 
 

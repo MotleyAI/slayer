@@ -13,7 +13,7 @@ from sqlglot import exp
 from slayer.core.enums import DataType
 from slayer.core.keys import ColumnKey
 from slayer.core.models import Column, SlayerModel
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects import get_dialect
 from slayer.sql.naming import AliasAllocator
 from slayer.sql.scope import ScopeFrame

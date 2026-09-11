@@ -20,13 +20,13 @@ from slayer.core.keys import (
 )
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
-from slayer.engine.planned import ValueSlot
+from slayer.ir.planned import ValueSlot
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.ranked_planner import (
     explicit_ranking_time_arg,
     resolve_ranking_time_key,
 )
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import plan_query
 from slayer.sql.generator import SQLGenerator
 from slayer.sql.naming import AliasAllocator

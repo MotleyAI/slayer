@@ -809,6 +809,14 @@ def _map_value_key(key: _RerootableT, *, map_path) -> _RerootableT:
     )
 
 
+def walk_value_keys(key: ValueKey):
+    """Yield every ``ValueKey`` reachable from ``key``, including ``key`` —
+    total via the traversal protocol (a protocol-less kind raises)."""
+    yield key
+    for child in key.children():
+        yield from walk_value_keys(child)
+
+
 def reroot_value_key(
     key: _RerootableT, *, target_path: Tuple[str, ...],
 ) -> _RerootableT:

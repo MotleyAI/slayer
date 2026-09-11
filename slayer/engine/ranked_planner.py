@@ -20,11 +20,11 @@ from slayer.core.keys import (
 from slayer.core.errors import AmbiguousJoinPathError
 from slayer.core.join_walker import terminal_model, walk
 from slayer.core.models import SlayerModel
-from slayer.engine.planned import (
+from slayer.ir.planned import (
     SlotId,
     ValueSlot,
 )
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle
 
 __all__ = [
     "RANKED_AGGREGATIONS",

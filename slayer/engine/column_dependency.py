@@ -2,7 +2,7 @@
 
 A model whose derived ``Column.sql`` chain forms a cycle must be rejected at
 save time so the broken model never reaches a query. The compile-time guard
-in :mod:`slayer.engine.column_expansion` is the authoritative correctness
+in :mod:`slayer.sql.column_expansion` is the authoritative correctness
 boundary; this module is the early-failure UX layer.
 
 Wiring: :class:`slayer.storage.base.StorageBackend.save_model` calls
@@ -23,7 +23,7 @@ import sqlglot
 
 from slayer.core.errors import ColumnCycleError
 from slayer.core.models import Column, SlayerModel
-from slayer.engine.column_expansion import (
+from slayer.sql.column_expansion import (
     _is_trivial_base,
     _reference_sites,
     _root_scope_column_ids,
@@ -56,7 +56,7 @@ def _column_dependencies(
     silently dropped: they cannot participate in a derived-column cycle.
 
     DEV-1743: each reference is resolved through the shared
-    :func:`slayer.engine.column_expansion.resolve_ref_target` — exact-name-first
+    :func:`slayer.sql.column_expansion.resolve_ref_target` — exact-name-first
     (a ``__``-named DIRECT join target stays whole) then a dotted chain of exact
     hops (``customers.regions.label`` walks host→customers→regions), never
     ``__``-splitting. Opaque / physical refs simply fail to resolve and drop out.
