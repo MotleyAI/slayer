@@ -124,8 +124,8 @@ from slayer.engine.regroup_planner import (
 )
 from slayer.ir.source_bundle import (
     ResolvedSourceBundle,
-    _apply_extension_overlay,
-    _source_name_if_sibling,
+    apply_extension_overlay,
+    source_name_if_sibling,
     stage_bundle_with_siblings,
     synthetic_model_from_stage_schema,
 )
@@ -4209,14 +4209,14 @@ def _stage_scope_and_bundle(
     """Resolve one DAG stage's ``(scope, per-stage bundle)``; each stage binds against its OWN source, with sibling synthetic models threaded in."""
     src = query.source_model
     sibling_names = set(stage_schemas)
-    sib = _source_name_if_sibling(src, sibling_names)
+    sib = source_name_if_sibling(src, sibling_names)
 
     # 1. ModelExtension / dict OVER a sibling: overlay the extra columns onto a synthetic sibling model.
     if sib is not None and not isinstance(src, str):
         base = synthetic_model_from_stage_schema(
             name=sib, schema=stage_schemas[sib], data_source=data_source,
         )
-        overlaid = _apply_extension_overlay(base, _coerce_extension(src))
+        overlaid = apply_extension_overlay(base, _coerce_extension(src))
         others = {n: s for n, s in stage_schemas.items() if n != sib}
         sb = stage_bundle_with_siblings(
             bundle=bundle, source_model=overlaid,
@@ -4747,7 +4747,7 @@ def _topo_sort(queries: List[SlayerQuery]) -> List[SlayerQuery]:
     edges: Dict[str, List[str]] = {q.name: [] for q in named}
     for q in named:
         # A stage depends on a sibling its source_model reads from (bare-string OR ModelExtension/dict over the sibling).
-        dep = _source_name_if_sibling(q.source_model, by_name)
+        dep = source_name_if_sibling(q.source_model, by_name)
         if dep is not None and dep != q.name:
             in_degree[q.name] += 1
             edges[dep].append(q.name)

@@ -21,6 +21,18 @@ from slayer.core.query import ModelExtension, SlayerQuery
 if TYPE_CHECKING:
     from slayer.core.scope import StageSchema
 
+__all__ = [
+    "ResolvedSourceBundle",
+    "SourceSpec",
+    "apply_extension_overlay",
+    "as_extension_over_nonsibling",
+    "follow_sibling_chain",
+    "source_name_if_sibling",
+    "spec_adds_measures",
+    "stage_bundle_with_siblings",
+    "synthetic_model_from_stage_schema",
+]
+
 
 class ResolvedSourceBundle(BaseModel):
     """Eagerly resolved inputs to one query execution (P11)."""
@@ -55,7 +67,7 @@ class ResolvedSourceBundle(BaseModel):
 SourceSpec = Union[str, SlayerModel, ModelExtension, Dict[str, Any]]
 
 
-def _apply_extension_overlay(
+def apply_extension_overlay(
     base: SlayerModel, ext: ModelExtension
 ) -> SlayerModel:
     """Extend ``base`` with the extra columns / measures / joins of ``ext``."""
@@ -94,7 +106,7 @@ def _apply_extension_overlay(
     return merged
 
 
-def _source_name_if_sibling(
+def source_name_if_sibling(
     spec: SourceSpec, sibling_names: "set[str] | Dict[str, Any]"
 ) -> Optional[str]:
     """Return the sibling stage name a ``source_model`` spec reads from, if any.
@@ -112,7 +124,7 @@ def _source_name_if_sibling(
     return None
 
 
-def _spec_adds_measures(spec: SourceSpec) -> bool:
+def spec_adds_measures(spec: SourceSpec) -> bool:
     """True when a ``source_model`` spec is a ``ModelExtension`` carrying measures."""
     if isinstance(spec, ModelExtension):
         return bool(spec.measures)
@@ -121,13 +133,13 @@ def _spec_adds_measures(spec: SourceSpec) -> bool:
     return False
 
 
-def _follow_sibling_chain(
+def follow_sibling_chain(
     spec: SourceSpec, named_queries: Dict[str, SlayerQuery]
 ) -> SourceSpec:
     """Resolve a sibling-pointing ``source_model`` to the real base spec (cycle raises ``ValueError``)."""
     seen: List[str] = []
     while True:
-        sib = _source_name_if_sibling(spec, named_queries)
+        sib = source_name_if_sibling(spec, named_queries)
         if sib is None:
             return spec
         if sib in seen:
@@ -139,7 +151,7 @@ def _follow_sibling_chain(
         spec = named_queries[sib].source_model
 
 
-def _as_extension_over_nonsibling(
+def as_extension_over_nonsibling(
     spec: SourceSpec, sibling_names: "set[str]"
 ) -> Optional[ModelExtension]:
     """Return the ``ModelExtension`` if ``spec`` overlays a NON-sibling base.

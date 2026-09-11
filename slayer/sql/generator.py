@@ -43,7 +43,7 @@ from slayer.core.refs import (
 from slayer.core.time_bounds import strip_frame_bounds
 from slayer.core.window_duration import parse_window_duration as _parse_window_duration
 from slayer.sql.column_expansion import (
-    _is_trivial_base,
+    is_trivial_base,
     collect_root_scope_joined_paths,
     expand_derived_refs_sync,
 )
@@ -6601,7 +6601,7 @@ class SQLGenerator:
     def _is_nontrivial_derived(model, name: str) -> bool:
         """True iff ``name`` is a column on ``model`` whose ``Column.sql`` is a"""
         col = next((c for c in model.columns if c.name == name), None)
-        return col is not None and col.sql is not None and not _is_trivial_base(
+        return col is not None and col.sql is not None and not is_trivial_base(
             column=col,
         )
 

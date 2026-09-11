@@ -261,7 +261,8 @@ class TestFilterCastPolicyMovedToRenderPackage:
     types only."""
 
     def test_functions_importable_from_render_package(self) -> None:
-        assert callable(_filter_cast_type) and callable(_wrap_cast_for_type)
+        assert callable(_filter_cast_type)
+        assert callable(_wrap_cast_for_type)
 
     def test_temporal_types_suppress_the_cast(self) -> None:
         assert _filter_cast_type(DataType.DATE) is None

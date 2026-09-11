@@ -23,7 +23,7 @@ from slayer.core.models import (
 )
 from slayer.core.query import ModelExtension, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.ir.source_bundle import _apply_extension_overlay
+from slayer.ir.source_bundle import apply_extension_overlay
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._dev1842_fixtures import dev1842_models
@@ -185,7 +185,7 @@ class TestOverlayNamespaceDisjoint:
             columns=[Column(name="amount", type=DataType.DOUBLE)],
         )
         with pytest.raises(ValueError, match=r"duplicate column names"):
-            _apply_extension_overlay(base, ext)
+            apply_extension_overlay(base, ext)
 
     def test_overlay_measure_colliding_with_base_column_rejected(self) -> None:
         base = SlayerModel(
@@ -199,7 +199,7 @@ class TestOverlayNamespaceDisjoint:
         with pytest.raises(
             ValueError, match=r"name collision between columns and measures"
         ):
-            _apply_extension_overlay(base, ext)
+            apply_extension_overlay(base, ext)
 
 
 class TestStageExtensionMeasuresOverQueryBackedRejected:

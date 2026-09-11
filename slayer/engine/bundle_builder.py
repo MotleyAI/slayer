@@ -11,11 +11,11 @@ from slayer.core.query import ModelExtension, SlayerQuery
 from slayer.ir.source_bundle import (
     ResolvedSourceBundle,
     SourceSpec,
-    _apply_extension_overlay,
-    _as_extension_over_nonsibling,
-    _follow_sibling_chain,
-    _source_name_if_sibling,
-    _spec_adds_measures,
+    apply_extension_overlay,
+    as_extension_over_nonsibling,
+    follow_sibling_chain,
+    source_name_if_sibling,
+    spec_adds_measures,
 )
 from slayer.ir.variables import merge_query_variables
 
@@ -73,7 +73,7 @@ async def expand_query_backed_models_in_bundle(  # NOSONAR(S3776) — three sequ
     if bundle.source_model is not None and bundle.source_model.source_queries:
         expanded = await _expand_or_short_circuit(bundle.source_model)
         for ext in bundle.inline_extensions:
-            expanded = _apply_extension_overlay(expanded, ext)
+            expanded = apply_extension_overlay(expanded, ext)
         bundle = bundle.model_copy(
             update={
                 "source_model": expanded,
@@ -134,10 +134,10 @@ async def build_resolved_source_bundle(
     # source_model is the real base the root chain bottoms out at. A ROOT
     # ModelExtension over a NON-sibling base is recorded in inline_extensions so
     # the engine can re-apply the overlay after a query-backed base expands.
-    root_spec = _follow_sibling_chain(query.source_model, named_queries)
+    root_spec = follow_sibling_chain(query.source_model, named_queries)
     inline_extensions: List[ModelExtension] = []
-    if _source_name_if_sibling(root_spec, sibling_names) is None:
-        ext = _as_extension_over_nonsibling(root_spec, sibling_names)
+    if source_name_if_sibling(root_spec, sibling_names) is None:
+        ext = as_extension_over_nonsibling(root_spec, sibling_names)
         if ext is not None:
             inline_extensions.append(ext)
     source_model = await _resolve_source_spec(
@@ -159,7 +159,7 @@ async def build_resolved_source_bundle(
     # to its OWN concrete model so heterogeneous DAGs bind against the right host.
     stage_source_models: Dict[str, SlayerModel] = {}
     for nm, nq in named_queries.items():
-        if _source_name_if_sibling(nq.source_model, sibling_names) is not None:
+        if source_name_if_sibling(nq.source_model, sibling_names) is not None:
             continue  # sibling-sourced: planner resolves via upstream StageSchema
         # MUST resolve to a concrete model; a failure is a genuine error, not a
         # best-effort skip (would silently fall back to the root source).
@@ -168,7 +168,7 @@ async def build_resolved_source_bundle(
         )
         # Deferred-measure re-application is wired only for the ROOT source, not
         # stage sources — a stage extension's measures would silently drop.
-        if resolved_stage.source_queries and _spec_adds_measures(nq.source_model):
+        if resolved_stage.source_queries and spec_adds_measures(nq.source_model):
             raise ValueError(
                 f"Stage {nm!r}: a ModelExtension over query-backed model "
                 f"{resolved_stage.name!r} may not add measures — deferred-overlay "
@@ -196,27 +196,18 @@ async def build_resolved_source_bundle(
     )
 
 
-async def _collect_referenced_models(
+async def _preseed_sibling_models(
     *,
     source_model: SlayerModel,
     named_queries: Dict[str, SlayerQuery],
     storage: "StorageBackend",
     data_source: Optional[str],
-) -> List[SlayerModel]:
-    """Transitive join-graph walk (BFS) over the bidirectional edge set,
-    best-effort.
-
-    Seeds: the source model plus the real base of every named sibling stage.
-    Follows each edge in either direction — a model's ``joins[].target_model``
-    and any datasource model that declares a join *into* the frontier model
-    (DEV-1853) — so the closure is the datasource's connected component. The
-    source model is returned first.
-    """
-    # Models held concretely (host + each sibling's overlay-resolved base).
-    # Best-effort: a sibling whose base is absent is skipped.
+) -> Dict[str, SlayerModel]:
+    """Models held concretely: host + each sibling's overlay-resolved base.
+    Best-effort — a sibling whose base is absent is skipped."""
     preseeded: Dict[str, SlayerModel] = {source_model.name: source_model}
     for sib in named_queries.values():
-        spec = _follow_sibling_chain(sib.source_model, named_queries)
+        spec = follow_sibling_chain(sib.source_model, named_queries)
         try:
             sib_model = await _resolve_source_spec(
                 spec, storage=storage, data_source=data_source
@@ -225,11 +216,17 @@ async def _collect_referenced_models(
             logger.debug("sibling source resolution failed for %r: %s", spec, exc)
             continue
         preseeded.setdefault(sib_model.name, sib_model)
+    return preseeded
 
-    # Load the datasource's models once so reverse edges (a peer declaring a
-    # join into a frontier model) are discoverable. Bidirectional traversal
-    # makes the reachable set the connected component, not just forward targets.
-    ds = data_source or source_model.data_source
+
+async def _load_datasource_peers(
+    *,
+    preseeded: Dict[str, SlayerModel],
+    ds: Optional[str],
+    storage: "StorageBackend",
+) -> Dict[str, SlayerModel]:
+    """Preseeded plus every loadable datasource peer, so reverse edges (a peer
+    declaring a join *into* a frontier model) are discoverable."""
     all_models: Dict[str, SlayerModel] = dict(preseeded)
     try:
         peer_names = await storage.list_models(ds) if ds is not None else []
@@ -255,36 +252,88 @@ async def _collect_referenced_models(
     for nm, m in await asyncio.gather(*(_load_peer(nm) for nm in to_load)):
         if m is not None:
             all_models[nm] = m
-    incoming: Dict[str, List[str]] = {}
-    for m in all_models.values():
-        for join in m.joins:
-            incoming.setdefault(join.target_model, []).append(m.name)
+    return all_models
 
+
+async def _frontier_model(
+    *,
+    name: str,
+    all_models: Dict[str, SlayerModel],
+    storage: "StorageBackend",
+    ds: Optional[str],
+) -> Optional[SlayerModel]:
+    """The named model, loading it on demand; absent targets resolve to None."""
+    model = all_models.get(name)
+    if model is not None:
+        return model
+    try:
+        return await storage.get_model(name, data_source=ds)
+    except Exception as exc:  # best-effort; absent target is fine
+        logger.debug("join-target lookup failed for %r: %s", name, exc)
+        return None
+
+
+async def _bfs_connected_component(
+    *,
+    seeds: List[str],
+    all_models: Dict[str, SlayerModel],
+    incoming: Dict[str, List[str]],
+    storage: "StorageBackend",
+    ds: Optional[str],
+) -> Dict[str, SlayerModel]:
+    """Walk joins in both directions from the seeds; absent targets skipped."""
     collected: Dict[str, SlayerModel] = {}
     visited: set[str] = set()
-    frontier: List[str] = list(preseeded)
+    frontier: List[str] = list(seeds)
     while frontier:
         name = frontier.pop()
         if name in visited:
             continue
         visited.add(name)
-        model = all_models.get(name)
-        if model is None:
-            try:
-                model = await storage.get_model(name, data_source=ds)
-            except Exception as exc:  # best-effort; absent target is fine
-                logger.debug("join-target lookup failed for %r: %s", name, exc)
-                model = None
+        model = await _frontier_model(
+            name=name, all_models=all_models, storage=storage, ds=ds,
+        )
         if model is None:
             continue
         collected.setdefault(name, model)
-        for join in model.joins:
-            if join.target_model not in visited:
-                frontier.append(join.target_model)
-        for src_name in incoming.get(name, ()):
-            if src_name not in visited:
-                frontier.append(src_name)
+        neighbors = [j.target_model for j in model.joins]
+        neighbors.extend(incoming.get(name, ()))
+        frontier.extend(n for n in neighbors if n not in visited)
+    return collected
 
+
+async def _collect_referenced_models(
+    *,
+    source_model: SlayerModel,
+    named_queries: Dict[str, SlayerQuery],
+    storage: "StorageBackend",
+    data_source: Optional[str],
+) -> List[SlayerModel]:
+    """Transitive join-graph walk (BFS) over the bidirectional edge set,
+    best-effort.
+
+    Seeds: the source model plus the real base of every named sibling stage.
+    Follows each edge in either direction — a model's ``joins[].target_model``
+    and any datasource model that declares a join *into* the frontier model —
+    so the closure is the datasource's connected component. The source model
+    is returned first.
+    """
+    preseeded = await _preseed_sibling_models(
+        source_model=source_model, named_queries=named_queries,
+        storage=storage, data_source=data_source,
+    )
+    ds = data_source or source_model.data_source
+    all_models = await _load_datasource_peers(
+        preseeded=preseeded, ds=ds, storage=storage,
+    )
+    incoming: Dict[str, List[str]] = {}
+    for m in all_models.values():
+        for join in m.joins:
+            incoming.setdefault(join.target_model, []).append(m.name)
+    collected = await _bfs_connected_component(
+        seeds=list(preseeded), all_models=all_models, incoming=incoming,
+        storage=storage, ds=ds,
+    )
     ordered = [source_model]
     ordered.extend(m for n, m in collected.items() if n != source_model.name)
     return ordered
@@ -303,7 +352,7 @@ async def _resolve_source_spec(
         base = await storage.get_model(spec.source_name, data_source=data_source)
         if base is None:
             raise ValueError(f"Model '{spec.source_name}' not found")
-        return _apply_extension_overlay(base, spec)
+        return apply_extension_overlay(base, spec)
     if isinstance(spec, str):
         model = await storage.get_model(spec, data_source=data_source)
         if model is None:

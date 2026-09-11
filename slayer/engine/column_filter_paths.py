@@ -37,7 +37,7 @@ from sqlglot import exp
 
 from slayer.core.models import Column, SlayerModel
 from slayer.sql.column_expansion import (
-    _is_trivial_base,
+    is_trivial_base,
     collect_root_scope_joined_paths,
     expand_derived_refs_sync,
 )
@@ -128,7 +128,7 @@ def _is_nontrivial_derived(model: SlayerModel, name: str) -> bool:
     col: Optional[Column] = next(
         (c for c in model.columns if c.name == name), None,
     )
-    return col is not None and col.sql is not None and not _is_trivial_base(
+    return col is not None and col.sql is not None and not is_trivial_base(
         column=col,
     )
 

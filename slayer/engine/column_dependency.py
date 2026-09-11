@@ -24,9 +24,9 @@ import sqlglot
 from slayer.core.errors import ColumnCycleError
 from slayer.core.models import Column, SlayerModel
 from slayer.sql.column_expansion import (
-    _is_trivial_base,
-    _reference_sites,
-    _root_scope_column_ids,
+    is_trivial_base,
+    reference_sites,
+    root_scope_column_ids,
     resolve_ref_target,
 )
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
@@ -61,7 +61,7 @@ def _column_dependencies(
     hops (``customers.regions.label`` walks host→customers→regions), never
     ``__``-splitting. Opaque / physical refs simply fail to resolve and drop out.
     """
-    if column.sql is None or _is_trivial_base(column=column):
+    if column.sql is None or is_trivial_base(column=column):
         return []
     try:
         # DEV-1686: prequote reserved qualifiers/leaves so a derived column
@@ -76,16 +76,16 @@ def _column_dependencies(
         # the surface-level error (storage / pydantic) is what the user
         # sees, not a noisy validator complaint about unparseable SQL.
         return []
-    root_ids = _root_scope_column_ids(parsed=parsed)
+    root_ids = root_scope_column_ids(parsed=parsed)
     deps: list[tuple[str, str]] = []
-    for _node, quals, leaf in _reference_sites(parsed, root_ids):
+    for _node, quals, leaf in reference_sites(parsed, root_ids):
         target = resolve_ref_target(
             qualifiers=quals, source_model=host, models_by_name=reachable,
         )
         if target is None:
             continue
         target_col = target.get_column(leaf)
-        if target_col is None or _is_trivial_base(column=target_col):
+        if target_col is None or is_trivial_base(column=target_col):
             continue
         deps.append((target.name, target_col.name))
     return deps
@@ -197,7 +197,7 @@ async def validate_no_column_cycles(
     participates in a cycle.
 
     Best-effort: unresolved join targets are skipped; nested-scope refs
-    are excluded by the same ``_root_scope_column_ids`` rule used by the
+    are excluded by the same ``root_scope_column_ids`` rule used by the
     compile-time expander. The compile-time guard remains authoritative.
     """
     reachable = await _prefetch_reachable_models(model=model, storage=storage)
@@ -207,7 +207,7 @@ async def validate_no_column_cycles(
     for entity_name in sorted(reachable.keys()):
         entity = reachable[entity_name]
         for col in entity.columns:
-            if col.sql is None or _is_trivial_base(column=col):
+            if col.sql is None or is_trivial_base(column=col):
                 continue
             roots.append((entity_name, col.name))
     for root in roots:
