@@ -6,13 +6,12 @@
 (`engine`) and the renderer (`sql`): typed plan shapes (`planned.py`, incl.
 producer interning identity), bound expressions (`bound.py`), the resolved
 source bundle (`source_bundle.py`; the storage-backed builders live in
-`engine/bundle_builder.py`), query-variable merging (`variables.py`), and
-`Grain` (`grain.py`).
+`engine/bundle_builder.py`), and query-variable merging (`variables.py`).
 
 ## 2. Building blocks
 
 Flat submodules, no children: `planned.py`, `bound.py`, `source_bundle.py`,
-`variables.py`, `grain.py`.
+`variables.py`.
 
 ## 3. Principles
 

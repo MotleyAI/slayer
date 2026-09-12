@@ -17,7 +17,7 @@ from slayer.core.keys import (
     reroot_value_key,
     substitute_value_keys,
 )
-from slayer.ir.grain import Grain
+from slayer.core.keys import Grain
 
 _COL_A = ColumnKey(leaf="a")
 _COL_B = ColumnKey(leaf="b")

@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.keys import AggregateKey, ColumnKey, TransformKey
-from slayer.ir.grain import Grain
+from slayer.core.keys import Grain
 
 from slayer.ir.terms import (
     Aggregate,

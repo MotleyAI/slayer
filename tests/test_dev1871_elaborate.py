@@ -15,7 +15,7 @@ from slayer.core.models import Column, SlayerModel
 from slayer.core.query import ComputedDimension, SlayerQuery
 from slayer.engine.compile import compile_query
 from slayer.engine.compile.stages import bind_query_inputs, plan_query
-from slayer.ir.grain import Grain
+from slayer.core.keys import Grain
 from slayer.ir.planned import PlannedQuery
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.elaborate import elaborate_query

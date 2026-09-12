@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from slayer.ir.grain import Grain
+from slayer.core.keys import Grain
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
