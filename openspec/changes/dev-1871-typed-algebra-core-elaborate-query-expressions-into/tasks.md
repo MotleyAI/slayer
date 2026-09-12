@@ -59,8 +59,8 @@ Standing gates for EVERY numbered group below: golden baselines byte-identical w
 
 ## 17. Term boundary declaration (DEV-1897 regime — no import-linter, ever)
 
-- [ ] 17.1 [approval] Declare `syntax`, `binding`, `elaborate`, `compile` as engine children in `slayer.c4` with only the permitted arrows among them (none from `compile` into the other three; exact allowed set taken from measured edges at declaration time) + `children:` on the engine node in `index.yaml`; regenerate diagrams; diagram audit for every touched arc42 doc (right view, right entities — engine seam view decision presented); verify arch_check child-level model-truth green, and that adding a synthetic `compile → binding` import makes it fail
-- [ ] 17.2 [approval] engine + ir arc42 updates (building blocks, boundary principle tagged with the model-truth enforcement id per DEV-1897's tag convention, "terms add what keys lack"); verify tag validation
+- [x] 17.1 [approval] Declare `syntax`, `binding`, `elaborate`, `compile` as engine children in `slayer.c4` with only the permitted arrows among them (none from `compile` into the other three; exact allowed set taken from measured edges at declaration time) + `children:` on the engine node in `index.yaml`; regenerate diagrams; diagram audit for every touched arc42 doc (right view, right entities — engine seam view decision presented); verify arch_check child-level model-truth green, and that adding a synthetic `compile → binding` import makes it fail (approved variant: seven flat children incl. `bind_inputs`/`elaborate_env`/`plan`, nine measured arrows, `engine_focus` view)
+- [x] 17.2 [approval] engine + ir arc42 updates (building blocks, boundary principle tagged with the model-truth enforcement id per DEV-1897's tag convention, "terms add what keys lack"); verify tag validation
 
 ## 18. Population: anchors fold
 

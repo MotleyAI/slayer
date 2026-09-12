@@ -18,4 +18,9 @@ views {
     title 'SQL generation in context'
     include sql, sql -> *, * -> sql
   }
+
+  view engine_focus {
+    title 'Engine seam'
+    include engine
+  }
 }

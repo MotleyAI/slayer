@@ -1322,7 +1322,7 @@ def test_repo_index_diagrams_mapping():
     assert index.get("diagrams") == {
         "architecture/system.arc42.md": ["landscape"],
         "architecture/core.arc42.md": ["core_focus"],
-        "architecture/engine.arc42.md": ["query_pipeline"],
+        "architecture/engine.arc42.md": ["query_pipeline", "engine_focus"],
         "architecture/sql.arc42.md": ["sql_focus"],
     }
 
