@@ -279,7 +279,7 @@ def _scan_model_line(
     m = _ELEMENT_RE.match(code)
     if m:
         kind, title = m.group(2), m.group(3)
-        eid = _fqn(m.group(1), parents)
+        eid = _fqn(local=m.group(1), parents=parents)
         if eid in seen_ids:
             findings.append(f"duplicate element {eid}")
         else:
@@ -486,36 +486,40 @@ def _ancestor_chain(eid: str) -> list[str]:
     return [".".join(parts[: i + 1]) for i in range(len(parts))]
 
 
-def _build_view(spec: _RawView, depth: int, model: ModelParse) -> View:
-    """Expand base includes to `depth` (full subtree); predicate pulls add only the matched
-    endpoint (collapsed to `depth`) and its ancestor chain. Deeper edges roll up to the cutoff."""
-    among = set(spec.base)
-    matched = [
-        r for r in model.relations if _top(r.src) in spec.src_anchors or _top(r.dst) in spec.dst_anchors
-    ]
-    kids = _children_map(model)
+def _shown_ids(spec: _RawView, depth: int, model: ModelParse, kids: dict[str, list[str]]) -> set[str]:
+    """Elements the view renders: each base's subtree down to `depth`, plus every predicate-matched
+    endpoint collapsed to `depth` and its ancestor chain."""
     shown: set[str] = set()
     for top in spec.base:
-        for eid in _subtree(top, kids):
+        for eid in _subtree(root=top, kids=kids):
             if _level(eid) <= depth:
                 shown.add(eid)
-    for r in matched:
+    for r in model.relations:
+        if _top(r.src) not in spec.src_anchors and _top(r.dst) not in spec.dst_anchors:
+            continue
         for endpoint in (r.src, r.dst):
-            shown.update(_ancestor_chain(_ancestor_at_level(endpoint, min(depth, _level(endpoint)))))
+            shown.update(_ancestor_chain(_ancestor_at_level(eid=endpoint, level=min(depth, _level(endpoint)))))
+    return shown
 
-    def represent(eid: str) -> str | None:
-        for anc in reversed(_ancestor_chain(eid)):
-            if anc in shown:
-                return anc
-        return None
 
+def _represent(eid: str, shown: set[str]) -> str | None:
+    """The nearest shown ancestor of `eid` (itself if shown), or None."""
+    for anc in reversed(_ancestor_chain(eid)):
+        if anc in shown:
+            return anc
+    return None
+
+
+def _view_edges(model: ModelParse, spec: _RawView, among: set[str], shown: set[str]) -> list[Edge]:
+    """Model relations projected onto shown representatives, deduped in first-seen order; an edge is
+    legacy iff every contributing relation is."""
     contributors: dict[tuple[str, str], list[Relation]] = {}
     order: list[tuple[str, str]] = []
     for r in model.relations:
         in_view = (_top(r.src) in among and _top(r.dst) in among) or _top(r.src) in spec.src_anchors or _top(r.dst) in spec.dst_anchors
         if not in_view:
             continue
-        rep_src, rep_dst = represent(r.src), represent(r.dst)
+        rep_src, rep_dst = _represent(eid=r.src, shown=shown), _represent(eid=r.dst, shown=shown)
         if rep_src is None or rep_dst is None or rep_src == rep_dst:
             continue
         key = (rep_src, rep_dst)
@@ -523,7 +527,15 @@ def _build_view(spec: _RawView, depth: int, model: ModelParse) -> View:
             contributors[key] = []
             order.append(key)
         contributors[key].append(r)
-    edges = [Edge(src=s, dst=d, legacy=all(r.legacy for r in contributors[(s, d)])) for s, d in order]
+    return [Edge(src=s, dst=d, legacy=all(r.legacy for r in contributors[(s, d)])) for s, d in order]
+
+
+def _build_view(spec: _RawView, depth: int, model: ModelParse) -> View:
+    """Expand base includes to `depth` (full subtree); predicate pulls add only the matched
+    endpoint (collapsed to `depth`) and its ancestor chain. Deeper edges roll up to the cutoff."""
+    kids = _children_map(model)
+    shown = _shown_ids(spec=spec, depth=depth, model=model, kids=kids)
+    edges = _view_edges(model=model, spec=spec, among=set(spec.base), shown=shown)
     node_ids = [e.id for e in model.elements if e.id in shown]
     return View(id=spec.id, title=spec.title, node_ids=node_ids, edges=edges)
 
@@ -563,7 +575,7 @@ def render_mermaid(view: View, model: ModelParse) -> str:
         lines += _hierarchical_body(view=view, by_id=by_id, shown=shown, shown_kids=shown_kids)
     else:
         for nid in view.node_ids:
-            lines.append(_node_line(by_id.get(nid), nid, 2))
+            lines.append(_node_line(element=by_id.get(nid), nid=nid, indent=2))
         for edge in view.edges:
             lines.append(f"  {edge.src} {'-.->' if edge.legacy else '-->'} {edge.dst}")
     lines.append("```")
@@ -587,7 +599,7 @@ def _hierarchical_body(
             lines.append(f"{pad}end")
         else:
             leaves.append(_mangle(nid))
-            lines.append(_node_line(by_id.get(nid), nid, indent))
+            lines.append(_node_line(element=by_id.get(nid), nid=nid, indent=indent))
 
     for eid in view.node_ids:
         element = by_id.get(eid)

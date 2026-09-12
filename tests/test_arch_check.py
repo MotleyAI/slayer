@@ -200,7 +200,9 @@ def findings_for(root: Path, check_id: str) -> list[str]:
 
 def edit(root: Path, rel: str, old: str, new: str) -> None:
     path = root / rel
-    path.write_text(path.read_text(encoding="utf-8").replace(old, new), encoding="utf-8")
+    text = path.read_text(encoding="utf-8")
+    assert old in text, f"{rel}: edit target not found: {old!r}"
+    path.write_text(text.replace(old, new), encoding="utf-8")
 
 
 def append(root: Path, rel: str, text: str) -> None:
@@ -395,21 +397,24 @@ def test_legacy_arrows_missing_is_finding(tmp_path):
     root = make_repo(tmp_path)
     edit(root, "architecture/index.yaml", "legacy_arrows: {baseline: 1}\n", "")
     fs = findings_for(root, "baseline-ratchet")
-    assert fs and any("legacy_arrows" in f for f in fs)
+    assert fs
+    assert any("legacy_arrows" in f for f in fs)
 
 
 def test_legacy_arrows_non_integer_is_finding(tmp_path):
     root = make_repo(tmp_path)
     edit(root, "architecture/index.yaml", "baseline: 1", "baseline: fish")
     fs = findings_for(root, "baseline-ratchet")
-    assert fs and any("legacy_arrows" in f for f in fs)
+    assert fs
+    assert any("legacy_arrows" in f for f in fs)
 
 
 def test_legacy_arrows_negative_is_finding(tmp_path):
     root = make_repo(tmp_path)
     edit(root, "architecture/index.yaml", "baseline: 1", "baseline: -1")
     fs = findings_for(root, "baseline-ratchet")
-    assert fs and any("legacy_arrows" in f for f in fs)
+    assert fs
+    assert any("legacy_arrows" in f for f in fs)
 
 
 # --------------------------------------------------------------------------- children schema
@@ -639,6 +644,17 @@ def test_child_path_colliding_with_claim_flagged(tmp_path):
     index = CHILD_INDEX.replace(
         "    children: [syntax]\n    arc42: architecture/engine.arc42.md",
         "    children: [syntax]\n    claims: [pkg.core.query]\n    arc42: architecture/engine.arc42.md",
+    )
+    root = make_child_repo(tmp_path, index=index)
+    assert any("collides" in f and "pkg.core.query" in f for f in findings_for(root, "claims-exactly-once"))
+
+
+def test_child_path_nested_under_claim_flagged(tmp_path):
+    """Hierarchical overlap, not just exact: a claim nested inside a declared child's subtree
+    still splits it across nodes, since `_attribute` resolves by longest prefix."""
+    index = CHILD_INDEX.replace(
+        "    children: [syntax]\n    arc42: architecture/engine.arc42.md",
+        "    children: [syntax]\n    claims: [pkg.core.query.helpers]\n    arc42: architecture/engine.arc42.md",
     )
     root = make_child_repo(tmp_path, index=index)
     assert any("collides" in f and "pkg.core.query" in f for f in findings_for(root, "claims-exactly-once"))
