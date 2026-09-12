@@ -51,13 +51,23 @@ from slayer.core.refs import (
     AGG_REF_RE,
     auto_name_from_expression,
     canonical_agg_name,
+    dotted_key_display,
 )
 from slayer.sql.naming import canonical_aggregate_alias, flat_name
 from slayer.core.time_bounds import strip_frame_bounds
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.scope import ModelScope, StageColumn, StageSchema
 from slayer.engine.binding import bind_expr, bind_filter, bind_time_dimension
-from slayer.engine.elaborate_env import build_environment, check_computed_dimension, home_dataset
+from slayer.engine.elaborate_env import (
+    build_environment,
+    check_computed_dimension,
+    check_dimension_temporal_axis,
+    check_opaque_grouping_dim,
+    check_time_dimension_date_range,
+    check_time_transforms_resolved,
+    check_windowed_time_dimension,
+    home_dataset,
+)
 from slayer.ir.bound import BoundExpr, BoundFilter
 from slayer.engine.filter_reachability import (
     compute_key_join_paths,
@@ -203,73 +213,10 @@ def _attach_time_keys(
     return key
 
 
-def _partition_key_display(pk: ValueKey) -> str:
-    if isinstance(pk, ColumnKey):
-        return ".".join([*pk.path, pk.leaf])
-    if isinstance(pk, ColumnSqlKey):
-        return ".".join([*pk.path, pk.column_name])
-    if isinstance(pk, TimeTruncKey):
-        return _partition_key_display(pk.column)
-    return str(pk)
-
-
 def _row_key_path(key: ValueKey) -> tuple:
     if isinstance(key, TimeTruncKey):
         return _row_key_path(key.column)
     return tuple(getattr(key, "path", ()))
-
-
-def _find_unresolved_time_needing_op(key: ValueKey) -> Optional[str]:
-    if isinstance(key, TransformKey):
-        if key.op in _TIME_NEEDING_TRANSFORM_OPS and key.time_key is None:
-            return key.op
-        return _find_unresolved_time_needing_op(key.input)
-    if isinstance(key, ArithmeticKey):
-        for o in key.operands:
-            found = _find_unresolved_time_needing_op(o)
-            if found:
-                return found
-        return None
-    if isinstance(key, ScalarCallKey):
-        for a in key.args:
-            if isinstance(
-                a, (TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey),
-            ):
-                found = _find_unresolved_time_needing_op(a)
-                if found:
-                    return found
-        return None
-    if isinstance(key, BetweenKey):
-        for k in (key.column, key.low, key.high):
-            found = _find_unresolved_time_needing_op(k)
-            if found:
-                return found
-        return None
-    if isinstance(key, InKey):
-        return _find_unresolved_time_needing_op(key.column)
-    return None
-
-
-def _guard_dimension_temporal_axis(declared_measures) -> None:
-    """Fail closed if a time-ordered transform inside a dimension evaluates at a grain not containing its time axis (would duplicate result rows)."""
-    for dm in declared_measures:
-        if not dm.is_dimension:
-            continue
-        for tk in walk_value_keys(dm.bound.value_key):
-            if not isinstance(tk, TransformKey):
-                continue
-            if tk.op not in TIME_TRANSFORMS or tk.time_key is None:
-                continue
-            if tk.time_key not in regroup_root_grain(tk):
-                axis = _partition_key_display(tk.time_key)
-                raise NotImplementedError(
-                    f"A time-ordered transform '{tk.op}' inside a computed "
-                    f"dimension evaluates at a grain that does not contain its "
-                    f"time axis '{axis}'; a producer bucketed by time joined back "
-                    f"on the coarser grain would duplicate result rows. Include "
-                    f"the time key in the aggregate's partition_by= so the "
-                    f"transform accumulates within its own grain."
-                )
 
 
 # Duration-windowed measures (``window='90d'``).
@@ -328,12 +275,7 @@ def _guard_windowed_measures(
         for key in _windowed_agg_keys(vk):
             selected_windowed.setdefault(key, True)
 
-    if active_td_key is None:
-        raise ValueError(
-            "Windowed measure could not resolve its time dimension. Add a single "
-            "time_dimensions entry, or set main_time_dimension to select among "
-            "multiple time dimensions."
-        )
+    check_windowed_time_dimension(resolved=active_td_key is not None)
     return selected_windowed
 
 
@@ -392,12 +334,7 @@ def _windowed_slot_id_set(
         return windowed_slot_ids
 
     # Post-projection: the window TD must be a SELECTED query TD (interned as a row slot).
-    if active_td_slot_id is None:
-        raise ValueError(
-            "Windowed measure could not resolve its time dimension. Add a single "
-            "time_dimensions entry, or set main_time_dimension to select among "
-            "multiple time dimensions."
-        )
+    check_windowed_time_dimension(resolved=active_td_slot_id is not None)
 
     for key in selected_windowed:
         sid = registry.find_by_key(key)
@@ -663,15 +600,10 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     for td in (query.time_dimensions or []):
         if not td.date_range or len(td.date_range) != 2:
             continue
-        # A null bound is inexpressible as a range — fail loudly rather than emit
-        # `BETWEEN x AND NULL` (never true, silent zero rows). Checked before the
-        # scope skip so non-ModelScope stages raise too.
-        if any(bound is None for bound in td.date_range):
-            raise ValueError(
-                f"TimeDimension {td.dimension.full_name!r} has a date_range with a "
-                f"null bound ({td.date_range!r}); a null bound cannot be expressed "
-                f"as a range. Use a one-sided filter (e.g. '>=' / '<=') instead."
-            )
+        # Checked before the scope skip so non-ModelScope stages raise too.
+        check_time_dimension_date_range(
+            full_name=td.dimension.full_name, date_range=td.date_range,
+        )
         if not isinstance(scope, ModelScope):
             continue
         bf = _build_date_range_filter(td=td, scope=scope, bundle=bundle)
@@ -790,20 +722,11 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         )
 
     # Any time-needing transform still at time_key=None means no resolvable TD.
-    for bucket in (
-        [dm.bound.value_key for dm in declared_measures],
-        [bf.value_key for bf in bound_filters],
-        [spec.bound.value_key for spec in order_specs],
-    ):
-        for vk in bucket:
-            op = _find_unresolved_time_needing_op(vk)
-            if op is not None:
-                raise ValueError(
-                    f"Transform '{op}' requires an unambiguous time "
-                    f"dimension. Add a single time_dimensions entry, or "
-                    f"set main_time_dimension to select among multiple "
-                    f"time dimensions."
-                )
+    check_time_transforms_resolved(roots=[
+        *(dm.bound.value_key for dm in declared_measures),
+        *(bf.value_key for bf in bound_filters),
+        *(spec.bound.value_key for spec in order_specs),
+    ])
 
     # Sugar lowering runs AFTER patching so the desugared time_shift inherits the patched time_key.
     declared_measures, bound_filters, order_specs = _map_bound_keys(
@@ -870,7 +793,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
             elif pk in _td_ambiguous_sources:
                 raise ValueError(
                     f"{label}: partition_by column "
-                    f"'{_partition_key_display(pk)}' is ambiguous — it is a "
+                    f"'{dotted_key_display(pk)}' is ambiguous — it is a "
                     f"time dimension at multiple granularities. Partition by a "
                     f"single query dimension instead."
                 )
@@ -881,7 +804,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
             else:
                 raise ValueError(
                     f"{label}: partition_by column "
-                    f"'{_partition_key_display(pk)}' is not a query dimension. "
+                    f"'{dotted_key_display(pk)}' is not a query dimension. "
                     f"Add it to dimensions/time_dimensions, or choose one of: "
                     f"{', '.join(_available_dims) or '(none)'}."
                 )
@@ -897,7 +820,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         order_specs=order_specs,
     )
 
-    _guard_dimension_temporal_axis(declared_measures)
+    check_dimension_temporal_axis(declared_measures)
 
     return PreboundQuery(
         declared_measures=declared_measures,
@@ -1511,7 +1434,7 @@ def _assert_partition_key_attributable(
         host_name=host_m.name if agg_target else None,
     )
     raise ValueError(
-        f"{label}: partition_by column '{_partition_key_display(pk)}' {reason}; "
+        f"{label}: partition_by column '{dotted_key_display(pk)}' {reason}; "
         f"every partition key must be attributable from the aggregate's root — "
         f"declare join cardinality or a covering unique key on the target."
     )
@@ -4377,26 +4300,6 @@ def _opaque_dim_type(
     return _type_for_dimension(scope=scope, full_name=full_name, bundle=bundle)
 
 
-def _reject_opaque_grouping_dim(
-    *,
-    query: SlayerQuery,
-    scope: Union[ModelScope, StageSchema],
-    full_name: str,
-    bundle: ResolvedSourceBundle,
-) -> None:
-    """Raise if ``full_name`` is an opaque dimension this query will GROUP BY (no equality operator); raw-row mode projects without GROUP BY, so it's legal there."""
-    if not (bool(query.measures) or query.distinct_dimension_values):
-        return
-    dim_type = _opaque_dim_type(scope=scope, full_name=full_name, bundle=bundle)
-    if dim_type is not None and dim_type.is_opaque:
-        raise ValueError(
-            f"Column '{full_name}' cannot be used as a dimension: its type does "
-            f"not support the GROUP BY / DISTINCT this query requires. Define a "
-            f"derived column that extracts a comparable value instead, e.g. "
-            f"sql=\"payload->>'status'\" with type TEXT."
-        )
-
-
 def _terminal_model_for_dotted(
     *, source_model: SlayerModel, hops: List[str], bundle: ResolvedSourceBundle,
 ) -> Optional[SlayerModel]:
@@ -4596,8 +4499,11 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
             bundle=bundle,
         )
         canonical = bound.routed_dotted or full
-        _reject_opaque_grouping_dim(
-            query=query, scope=scope, full_name=canonical, bundle=bundle,
+        # Opaque-grouping rule lives in the checker (DEV-1871 G9); invoked here to preserve the per-dimension firing point.
+        check_opaque_grouping_dim(
+            full_name=canonical,
+            dim_type=_opaque_dim_type(scope=scope, full_name=canonical, bundle=bundle),
+            will_group_by=bool(query.measures) or query.distinct_dimension_values,
         )
         flat_name = _flatten_dotted(canonical)
         _guard_flatten(flat_name=flat_name, origin=canonical)

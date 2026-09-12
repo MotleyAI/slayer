@@ -21,6 +21,7 @@ from slayer.core.keys import (
     StarKey,
     TimeTruncKey,
     TransformKey,
+    ValueKey,
 )
 
 # Identifier shapes
@@ -233,6 +234,17 @@ def _partition_key_display(key: Any) -> str:
     else:
         parts = [legacy_key_str(key)]
     return _NON_IDENT_RE.sub("_", "_".join(parts)).strip("_")
+
+
+def dotted_key_display(pk: ValueKey) -> str:
+    """Human-readable dotted path for a key in error messages."""
+    if isinstance(pk, ColumnKey):
+        return ".".join([*pk.path, pk.leaf])
+    if isinstance(pk, ColumnSqlKey):
+        return ".".join([*pk.path, pk.column_name])
+    if isinstance(pk, TimeTruncKey):
+        return dotted_key_display(pk.column)
+    return str(pk)
 
 
 def partition_by_suffix(partition_keys) -> str:

@@ -45,8 +45,8 @@ Standing gates for EVERY numbered group below: golden baselines byte-identical w
 
 ## 9.–15. Family migrations (one commit each; guards relocate with their family; parity tests + ledger updated in lockstep; deferral-site list may move, count stays 5)
 
-- [ ] 9.1 Computed dimensions / regroup roots (ungrained-aggregate-in-dimension guard family) migrated to term consultation; verify parity + goldens + laws
-- [ ] 10.1 Transforms / time-axis (both time-axis guard sites) migrated; verify parity + goldens + laws
+- [x] 9.1 Computed dimensions / regroup roots (ungrained-aggregate-in-dimension guard family) migrated to term consultation; verify parity + goldens + laws (reserved-`__regroup__` raise stays in `_plan_regroups` until G16 — its firing condition is regroup discovery itself)
+- [x] 10.1 Transforms / time-axis (both time-axis guard sites) migrated; verify parity + goldens + laws
 - [ ] 11.1 Local partitioned aggregates + partition_by validation family migrated; verify parity + goldens + laws
 - [ ] 12.1 Cross-model producers (+ attributability guards) migrated; verify parity + goldens + laws
 - [ ] 13.1 Association producers (eligibility guards) migrated; verify parity + goldens + laws

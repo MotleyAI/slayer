@@ -10,18 +10,28 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple, Union
 
+from slayer.core.enums import DataType
 from slayer.core.errors import DistinctDimensionValuesError
 from slayer.core.formula import TIME_TRANSFORMS
 from slayer.core.keys import (
     AggregateKey,
+    ArithmeticKey,
+    BetweenKey,
     Grain,
+    InKey,
+    ScalarCallKey,
     TransformKey,
     ValueKey,
     walk_value_keys,
 )
 from slayer.core.models import SlayerModel
+from slayer.core.refs import dotted_key_display
 from slayer.core.scope import ModelScope, StageSchema
-from slayer.engine.compile.regroup import ConjunctTyping, type_position_conjunct
+from slayer.engine.compile.regroup import (
+    ConjunctTyping,
+    regroup_root_grain,
+    type_position_conjunct,
+)
 from slayer.ir.elaborated import ElaboratedQuery, ExpressionEntry, Term
 from slayer.ir.terms import (
     Aggregate,
@@ -153,6 +163,108 @@ def check_computed_dimension(*, name, bound, distinct_dimension_values) -> None:
                 f"'CASE WHEN amount:sum(partition_by=city) > 5000 THEN 1 ELSE 0 END'. "
                 f"Without partition_by the group key is a function of the query's "
                 f"own dimensions and adds no grouping."
+            )
+
+
+def check_opaque_grouping_dim(
+    *, full_name: str, dim_type: Optional[DataType], will_group_by: bool,
+) -> None:
+    """Reject an opaque dimension the query will GROUP BY (DEV-1871 G9, was ``_reject_opaque_grouping_dim``)."""
+    if not will_group_by:
+        return
+    if dim_type is not None and dim_type.is_opaque:
+        raise ValueError(
+            f"Column '{full_name}' cannot be used as a dimension: its type does "
+            f"not support the GROUP BY / DISTINCT this query requires. Define a "
+            f"derived column that extracts a comparable value instead, e.g. "
+            f"sql=\"payload->>'status'\" with type TEXT."
+        )
+
+
+def check_dimension_temporal_axis(declared_measures) -> None:
+    """Fail closed if a time-ordered transform inside a dimension evaluates at a grain not containing its time axis (DEV-1871 G10, was ``_guard_dimension_temporal_axis``)."""
+    for dm in declared_measures:
+        if not dm.is_dimension:
+            continue
+        for tk in walk_value_keys(dm.bound.value_key):
+            if not isinstance(tk, TransformKey):
+                continue
+            if tk.op not in TIME_TRANSFORMS or tk.time_key is None:
+                continue
+            if tk.time_key not in regroup_root_grain(tk):
+                axis = dotted_key_display(tk.time_key)
+                raise NotImplementedError(
+                    f"A time-ordered transform '{tk.op}' inside a computed "
+                    f"dimension evaluates at a grain that does not contain its "
+                    f"time axis '{axis}'; a producer bucketed by time joined back "
+                    f"on the coarser grain would duplicate result rows. Include "
+                    f"the time key in the aggregate's partition_by= so the "
+                    f"transform accumulates within its own grain."
+                )
+
+
+def check_windowed_time_dimension(*, resolved: bool) -> None:
+    """A windowed measure needs a resolvable query time dimension (DEV-1871 G10, both windowed guard sites)."""
+    if resolved:
+        return
+    raise ValueError(
+        "Windowed measure could not resolve its time dimension. Add a single "
+        "time_dimensions entry, or set main_time_dimension to select among "
+        "multiple time dimensions."
+    )
+
+
+def check_time_dimension_date_range(*, full_name: str, date_range) -> None:
+    """A null date_range bound is inexpressible as a range — fail loudly rather than emit ``BETWEEN x AND NULL`` (DEV-1871 G10)."""
+    if any(bound is None for bound in date_range):
+        raise ValueError(
+            f"TimeDimension {full_name!r} has a date_range with a "
+            f"null bound ({date_range!r}); a null bound cannot be expressed "
+            f"as a range. Use a one-sided filter (e.g. '>=' / '<=') instead."
+        )
+
+
+def _find_unresolved_time_needing_op(key: ValueKey) -> Optional[str]:
+    if isinstance(key, TransformKey):
+        if key.op in TIME_TRANSFORMS and key.time_key is None:
+            return key.op
+        return _find_unresolved_time_needing_op(key.input)
+    if isinstance(key, ArithmeticKey):
+        for o in key.operands:
+            found = _find_unresolved_time_needing_op(o)
+            if found:
+                return found
+        return None
+    if isinstance(key, ScalarCallKey):
+        for a in key.args:
+            if isinstance(
+                a, (TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey),
+            ):
+                found = _find_unresolved_time_needing_op(a)
+                if found:
+                    return found
+        return None
+    if isinstance(key, BetweenKey):
+        for k in (key.column, key.low, key.high):
+            found = _find_unresolved_time_needing_op(k)
+            if found:
+                return found
+        return None
+    if isinstance(key, InKey):
+        return _find_unresolved_time_needing_op(key.column)
+    return None
+
+
+def check_time_transforms_resolved(*, roots) -> None:
+    """A time-needing transform still at ``time_key=None`` after attachment means no resolvable TD (DEV-1871 G10)."""
+    for vk in roots:
+        op = _find_unresolved_time_needing_op(vk)
+        if op is not None:
+            raise ValueError(
+                f"Transform '{op}' requires an unambiguous time "
+                f"dimension. Add a single time_dimensions entry, or "
+                f"set main_time_dimension to select among multiple "
+                f"time dimensions."
             )
 
 

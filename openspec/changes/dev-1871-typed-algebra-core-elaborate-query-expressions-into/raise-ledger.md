@@ -7,10 +7,10 @@ interpolated segment; an empty message anchors by function.
 
 | module | function | exception | category | family | user | owner | sites | deferral | message |
 |---|---|---|---|---|---|---|---|---|---|
-| compile/stages.py | _guard_dimension_temporal_axis | NotImplementedError | checker | time-axis | yes | checker | 1 |  | A time-ordered transform '…' inside a computed dimension evaluates at a grain that does not contain its tim... |
+| elaborate_env.py | check_dimension_temporal_axis | NotImplementedError | checker | time-axis | yes | checker | 1 |  | A time-ordered transform '…' inside a computed dimension evaluates at a grain that does not contain its tim... |
 | compile/stages.py | _reject_unsupported_windowed_key | ValueError | checker | local-partitioned | yes | checker | 1 |  | Aggregation parameter 'window' is only supported for sum and avg, not '…'. |
 | compile/stages.py | _reject_unsupported_windowed_key | ValueError | checker | local-partitioned | yes | checker | 1 |  | Window duration must be a compact duration string like '90d', got …. Use syntax like '1y2m3w5d6h7min8s'. |
-| compile/stages.py | _guard_windowed_measures | ValueError | checker | time-axis | yes | checker | 2 |  | Windowed measure could not resolve its time dimension. Add a single time_dimensions entry, or set main_time... |
+| elaborate_env.py | check_windowed_time_dimension | ValueError | checker | time-axis | yes | checker | 1 |  | Windowed measure could not resolve its time dimension. Add a single time_dimensions entry, or set main_time... |
 | compile/stages.py | _guard_partitioned_measures | NotImplementedError | checker | local-partitioned | yes | checker | 1 | yes | partition_by on a cross-model first/last aggregation is not yet supported (DEV-1868); the aggregate must be... |
 | compile/stages.py | _guard_partitioned_measures | NotImplementedError | checker | local-partitioned | yes | checker | 1 | yes | A cross-model partition_by aggregate nested inside a transform is not yet supported (DEV-1868); the partiti... |
 | compile/stages.py | _windowed_slot_id_set | RuntimeError | internal | internal | no | compiler | 1 |  | Windowed measure … was selected but has no projection slot; planner/projection drift (DEV-1714). |
@@ -18,8 +18,8 @@ interpolated segment; an empty message anchors by function.
 | compile/stages.py | _reject_measure_refs_in_order | DistinctDimensionValuesError | checker | positions | yes | checker | 1 |  | distinct_dimension_values=False rejects measure references, but order item … contains one. … |
 | compile/stages.py | _reject_measure_refs_in_order | DistinctDimensionValuesError | checker | positions | yes | checker | 1 |  | distinct_dimension_values=False rejects measure references, but order item … resolves to a saved measure on... |
 | compile/stages.py | _reject_measure_refs_in_order | DistinctDimensionValuesError | checker | positions | yes | checker | 1 |  | distinct_dimension_values=False rejects measure references, but order item … resolves to a saved measure. … |
-| compile/stages.py | bind_query_inputs | ValueError | checker | time-axis | yes | checker | 1 |  | TimeDimension … has a date_range with a null bound (…); a null bound cannot be expressed as a range. Use a ... |
-| compile/stages.py | bind_query_inputs | ValueError | checker | time-axis | yes | checker | 1 |  | Transform '…' requires an unambiguous time dimension. Add a single time_dimensions entry, or set main_time_... |
+| elaborate_env.py | check_time_dimension_date_range | ValueError | checker | time-axis | yes | checker | 1 |  | TimeDimension … has a date_range with a null bound (…); a null bound cannot be expressed as a range. Use a ... |
+| elaborate_env.py | check_time_transforms_resolved | ValueError | checker | time-axis | yes | checker | 1 |  | Transform '…' requires an unambiguous time dimension. Add a single time_dimensions entry, or set main_time_... |
 | compile/stages.py | _validate_partition_keys | ValueError | checker | local-partitioned | yes | checker | 1 |  | …: partition_by column '…' is ambiguous — it is a time dimension at multiple granularities. Partition by a ... |
 | compile/stages.py | _validate_partition_keys | ValueError | checker | local-partitioned | yes | checker | 1 |  | …: partition_by column '…' is not a query dimension. Add it to dimensions/time_dimensions, or choose one of... |
 | compile/stages.py | _find_regroup_slot | ValueError | internal | internal | no | compiler | 1 |  | Regroup producer plan is missing the … slot for …; synthesis and planning disagree on its grain. |
@@ -52,12 +52,12 @@ interpolated segment; an empty message anchors by function.
 | compile/stages.py | plan_query | DistinctDimensionValuesError | checker | positions | yes | checker | 1 |  | distinct_dimension_values=False rejects measure references, but this query references the aggregation … in ... |
 | compile/stages.py | plan_query | RuntimeError | internal | internal | no | compiler | 1 |  | Cross-model aggregate slot … survived the regroup desugar (DEV-1838 D8); every cross-model aggregate must b... |
 | compile/stages.py | plan_query | PositionTypingError | checker | positions | yes | checker | 1 |  | ORDER BY expression is not supported: … has no materialisable slot. Order by an aggregate, a transform, a c... |
-| compile/stages.py | _reject_opaque_grouping_dim | ValueError | checker | regroup-roots | yes | checker | 1 |  | Column '…' cannot be used as a dimension: its type does not support the GROUP BY / DISTINCT this query requ... |
+| elaborate_env.py | check_opaque_grouping_dim | ValueError | checker | regroup-roots | yes | checker | 1 |  | Column '…' cannot be used as a dimension: its type does not support the GROUP BY / DISTINCT this query requ... |
 | compile/stages.py | _reject_computed_dim_name_collision | ValueError | checker | names | yes | checker | 1 |  | Computed dimension name … collides with an existing column or measure on model …. Choose a different name. |
 | compile/stages.py | _reject_computed_dim_name_collision | ValueError | checker | names | yes | checker | 1 |  | Computed dimension name … collides with a query measure of the same name. Choose a different name. |
-| compile/stages.py | _guard_computed_dimension | NotImplementedError | checker | regroup-roots | yes | checker | 1 | yes | A transform inside computed dimension … must wrap an explicitly-grained aggregate — declare partition_by= o... |
-| compile/stages.py | _guard_computed_dimension | DistinctDimensionValuesError | checker | positions | yes | checker | 1 |  | Computed dimension … references an aggregate, so it cannot be used with distinct_dimension_values=False (ra... |
-| compile/stages.py | _guard_computed_dimension | ValueError | checker | regroup-roots | yes | checker | 1 |  | The aggregate inside computed dimension … must declare the grain it aggregates over with partition_by=, e.g... |
+| elaborate_env.py | check_computed_dimension | NotImplementedError | checker | regroup-roots | yes | checker | 1 | yes | A transform inside computed dimension … must wrap an explicitly-grained aggregate — declare partition_by= o... |
+| elaborate_env.py | check_computed_dimension | DistinctDimensionValuesError | checker | positions | yes | checker | 1 |  | Computed dimension … references an aggregate, so it cannot be used with distinct_dimension_values=False (ra... |
+| elaborate_env.py | check_computed_dimension | ValueError | checker | regroup-roots | yes | checker | 1 |  | The aggregate inside computed dimension … must declare the grain it aggregates over with partition_by=, e.g... |
 | compile/stages.py | _guard_flatten | ValueError | checker | names | yes | checker | 1 |  |  |
 | compile/stages.py | _declared_measures_from_query | ValueError | checker | names | yes | checker | 1 |  | Measures … and … both derive the result key … but compute different values; rename one (set 'name') to disa... |
 | compile/stages.py | _declared_measures_from_query | ValueError | checker | names | yes | checker | 1 |  | Measures … and … merge into one result column … but declare different label/type; rename one (set 'name') t... |
