@@ -8,11 +8,12 @@ the compiler at their original checkpoints until the G16 reroute.
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple, Union
+from typing import AbstractSet, Dict, List, NoReturn, Optional, Sequence, Tuple, Union
 
 from slayer.core.enums import DataType
 from slayer.core.errors import DistinctDimensionValuesError
 from slayer.core.formula import TIME_TRANSFORMS
+from slayer.core.window_duration import parse_window_duration
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
@@ -266,6 +267,186 @@ def check_time_transforms_resolved(*, roots) -> None:
                 f"set main_time_dimension to select among multiple "
                 f"time dimensions."
             )
+
+
+def check_windowed_key_supported(*, key: AggregateKey, window_val) -> None:
+    """Per-key windowed guards (DEV-1871 G11, was ``_reject_unsupported_windowed_key``): sum/avg only, compact-duration-string window."""
+    if key.agg not in ("sum", "avg"):
+        raise ValueError(
+            f"Aggregation parameter 'window' is only supported for sum and avg, "
+            f"not '{key.agg}'."
+        )
+    if not isinstance(window_val, str):
+        raise ValueError(
+            f"Window duration must be a compact duration string like '90d', got "
+            f"{window_val!r}. Use syntax like '1y2m3w5d6h7min8s'."
+        )
+    parse_window_duration(window_val)  # raises on empty / malformed
+
+
+def _partitioned_agg_keys(
+    vk: ValueKey, *, exclude: AbstractSet[AggregateKey] = frozenset(),
+) -> list:
+    return [
+        k for k in walk_value_keys(vk)
+        if isinstance(k, AggregateKey)
+        and k.partition_keys is not None
+        and k not in exclude
+    ]
+
+
+def check_partitioned_measures(
+    *, measure_vks: list, filter_vks: list, order_vks: list,
+    exclude: AbstractSet[AggregateKey] = frozenset(),
+) -> None:
+    """Reject still-deferred cross-model partition_by shapes (DEV-1871 G11, was ``_guard_partitioned_measures``): first/last, nested-in-transform; computed-dimension aggregates excluded."""
+    def _part(vk: ValueKey) -> list:
+        return _partitioned_agg_keys(vk, exclude=exclude)
+
+    def _cross_model(k: AggregateKey) -> bool:
+        return bool(getattr(k.source, "path", ()))
+
+    all_vks = [*measure_vks, *filter_vks, *order_vks]
+    part_keys = [k for vk in all_vks for k in _part(vk)]
+    if not part_keys:
+        return
+    if any(k.agg in ("first", "last") and _cross_model(k) for k in part_keys):
+        raise NotImplementedError(
+            "partition_by on a cross-model first/last aggregation is not yet "
+            "supported (DEV-1868); the aggregate must be local to the query's "
+            "source."
+        )
+    # A cross-model partitioned aggregate nested in a transform is never desugared, so fail closed.
+    if any(
+        isinstance(tk, TransformKey) and any(_cross_model(k) for k in _part(tk.input))
+        for vk in all_vks for tk in walk_value_keys(vk)
+    ):
+        raise NotImplementedError(
+            "A cross-model partition_by aggregate nested inside a transform is "
+            "not yet supported (DEV-1868); the partitioned aggregate must be "
+            "local to the query's source."
+        )
+
+
+def check_partition_key_resolves(
+    *, label: str, pk: ValueKey, is_query_dim: bool, ambiguous: bool,
+    maps_to_bucket: bool, lenient: bool, available_dims: Sequence[str],
+) -> None:
+    """Every rank-family partition_by column resolves to a query dim/td (DEV-1871 G11, was inline in ``_validate_partition_keys``); a lenient key declares a finer producer grain (DEV-1825)."""
+    if is_query_dim:
+        return
+    if ambiguous:
+        raise ValueError(
+            f"{label}: partition_by column "
+            f"'{dotted_key_display(pk)}' is ambiguous — it is a "
+            f"time dimension at multiple granularities. Partition by a "
+            f"single query dimension instead."
+        )
+    if maps_to_bucket or lenient:
+        return
+    raise ValueError(
+        f"{label}: partition_by column "
+        f"'{dotted_key_display(pk)}' is not a query dimension. "
+        f"Add it to dimensions/time_dimensions, or choose one of: "
+        f"{', '.join(available_dims) or '(none)'}."
+    )
+
+
+def check_partition_key_attributable(
+    *, label: str, pk: ValueKey, attributable: bool, reason: Optional[str],
+) -> None:
+    """A partition key reached over a join must be attributable from the aggregate's root (DEV-1871 G11, was ``_assert_partition_key_attributable``); the compiler resolves ``attributable``/``reason``."""
+    if attributable:
+        return
+    raise ValueError(
+        f"{label}: partition_by column '{dotted_key_display(pk)}' {reason}; "
+        f"every partition key must be attributable from the aggregate's root — "
+        f"declare join cardinality or a covering unique key on the target."
+    )
+
+
+def check_local_producer_inputs_safe(
+    *, alias: Optional[str], host: str,
+    ranked_crossings: Sequence[Tuple[str, str]],
+    gated_crossings: Sequence[str],
+) -> None:
+    """Per-role crossing-input safety for a HOST-rooted producer answer (DEV-1871 G11, was ``_assert_local_producer_inputs_safe``); crossings are the compiler-resolved unproven hops."""
+    remedy = "declare join cardinality or a covering unique key on the target"
+    if ranked_crossings:
+        leaf, hop = ranked_crossings[0]
+        raise ValueError(
+            f"Aggregate {alias!r} ranks/reads by {leaf}, which crosses an "
+            f"unproven join hop to {hop} from {host}; "
+            f"{remedy}."
+        )
+    if gated_crossings:
+        raise ValueError(
+            f"Aggregate {alias!r} reads an input across an unproven join "
+            f"hop to {gated_crossings[0]} from {host}; {remedy}."
+        )
+
+
+def check_cross_model_source_resolves(*, target_path, host_name: str) -> NoReturn:
+    """An unresolvable cross-model source path (DEV-1871 G12, was inline in ``_synthesize_cross_model_producer``); bind resolves the path first, so the compiler calls this only on that invariant's breach."""
+    raise ValueError(  # pragma: no cover — bind resolved the path already
+        f"Cross-model aggregate source path {target_path!r} does not resolve "
+        f"to a model from {host_name}."
+    )
+
+
+def check_cross_model_partition_keys_attributable(
+    *, alias: Optional[str], root_name: str, explicit: bool,
+    unattributable: Sequence[Tuple[str, str]],
+) -> None:
+    """An unattributable EXPLICIT partition key on a cross-model aggregate is a hard error (DEV-1871 G12); an implicit grain broadcasts instead. ``unattributable`` = compiler-resolved (name, reason) pairs."""
+    if not explicit or not unattributable:
+        return
+    name, reason = unattributable[0]
+    raise ValueError(
+        f"Cross-model aggregate {alias!r} declares partition_by="
+        f"{name}, which {reason}; every explicit "
+        f"partition key must be attributable from {root_name} — declare "
+        f"join cardinality or a covering unique key on the target."
+    )
+
+
+def check_windowed_cross_model_time_axis(
+    *, alias: Optional[str], root_name: str, active_td_name: Optional[str],
+    attributable: bool,
+) -> None:
+    """A windowed cross-model aggregate needs the query's active time dimension, attributable from its root (DEV-1871 G12)."""
+    if active_td_name is None:
+        raise ValueError(
+            f"Windowed cross-model aggregate {alias!r} has no active time "
+            f"dimension; add a single time_dimensions entry."
+        )
+    if not attributable:
+        raise ValueError(
+            f"Windowed cross-model aggregate {alias!r} needs the query's "
+            f"active time dimension ('{active_td_name}') "
+            f"attributable from {root_name}, but it crosses a fanning join; "
+            f"declare join cardinality or a covering unique key on the target."
+        )
+
+
+def check_cross_model_inputs_safe(
+    *, alias: Optional[str], root_name: str,
+    unsafe_input_hops: Sequence[str], unattributable_arg_leaves: Sequence[str],
+) -> None:
+    """Every input of a cross-model aggregate must be attributable from its root (DEV-1871 G12, was the raises of ``_assert_cross_model_inputs_safe``); hops/leaves are the compiler-resolved violations."""
+    remedy = "declare join cardinality or a covering unique key on the target"
+    if unsafe_input_hops:
+        raise ValueError(
+            f"Cross-model aggregate {alias!r} "
+            f"reads an input across an unproven join hop to {unsafe_input_hops[0]} from "
+            f"{root_name}; {remedy}."
+        )
+    if unattributable_arg_leaves:
+        raise ValueError(
+            f"Cross-model aggregate {alias!r} "
+            f"ranks/reads by {unattributable_arg_leaves[0]}, which is not attributable from "
+            f"{root_name} (crosses a fanning join); {remedy}."
+        )
 
 
 def build_environment(
