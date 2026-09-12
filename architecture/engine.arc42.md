@@ -15,14 +15,34 @@ The `query_pipeline` view ([views.c4](views.c4)):
 ```mermaid
 flowchart TD
   %% query_pipeline: Query pipeline
-  core["Core domain models"]
-  engine["Query engine"]
-  sql["SQL generation"]
+  subgraph core["Core domain models"]
+    core__query["Query"]
+    core__models["Models"]
+  end
+  subgraph sql["SQL generation"]
+    sql__render["Render"]
+    sql__dialects["Dialects"]
+    sql__sql_predicate["SQL predicate"]
+    sql__window_detect["Window detect"]
+  end
+  subgraph engine["Query engine"]
+    engine__syntax["Syntax"]
+  end
   ir["Intermediate representation"]
-  storage["Storage backends"]
-  core -.-> engine
-  core -.-> sql
-  core -.-> storage
+  subgraph storage["Storage backends"]
+    storage__migrations["Migrations"]
+  end
+  core__query -.-> engine__syntax
+  core__models -.-> sql__dialects
+  core__models -.-> sql__sql_predicate
+  core__models -.-> sql__window_detect
+  core__query -.-> sql__window_detect
+  core__models -.-> storage__migrations
+  core__query -.-> storage__migrations
+  core__models -.-> core__query
+  core__query --> core__models
+  sql__render --> sql__dialects
+  sql__sql_predicate --> sql__window_detect
   engine --> core
   engine --> ir
   engine --> sql
@@ -33,6 +53,8 @@ flowchart TD
   storage --> core
   storage --> engine
   storage --> sql
+  classDef leaf fill:none;
+  class core__query,core__models,sql__render,sql__dialects,sql__sql_predicate,sql__window_detect,engine__syntax,ir,storage__migrations leaf;
 ```
 *Dashed arrows: legacy edges slated to die.*
 <!-- /likec4:query_pipeline -->
