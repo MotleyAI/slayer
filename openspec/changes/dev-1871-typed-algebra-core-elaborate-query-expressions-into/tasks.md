@@ -49,8 +49,8 @@ Standing gates for EVERY numbered group below: golden baselines byte-identical w
 - [x] 10.1 Transforms / time-axis (both time-axis guard sites) migrated; verify parity + goldens + laws
 - [x] 11.1 Local partitioned aggregates + partition_by validation family migrated; verify parity + goldens + laws
 - [x] 12.1 Cross-model producers (+ attributability guards) migrated; verify parity + goldens + laws
-- [ ] 13.1 Association producers (eligibility guards) migrated; verify parity + goldens + laws
-- [ ] 14.1 Reaggregation producers (union-grain residue, outer restrictions) migrated; verify parity + goldens + laws
+- [x] 13.1 Association producers (eligibility guards) migrated; verify parity + goldens + laws
+- [x] 14.1 Reaggregation producers (union-grain residue, outer restrictions) migrated; verify parity + goldens + laws
 - [ ] 15.1 Positions: filter/order typing (`type_position_conjunct`) relocated into the checker; verify parity + goldens + laws; broadcast-coherence assert live with its test
 
 ## 16. Orchestration reroute

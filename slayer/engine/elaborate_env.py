@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import AbstractSet, Dict, List, NoReturn, Optional, Sequence, Tuple, Union
 
 from slayer.core.enums import DataType
-from slayer.core.errors import DistinctDimensionValuesError
+from slayer.core.errors import DistinctDimensionValuesError, SlayerError
 from slayer.core.formula import TIME_TRANSFORMS
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.keys import (
@@ -447,6 +447,91 @@ def check_cross_model_inputs_safe(
             f"ranks/reads by {unattributable_arg_leaves[0]}, which is not attributable from "
             f"{root_name} (crosses a fanning join); {remedy}."
         )
+
+
+def check_association_windowed_ranked(*, alias: str, windowed_or_ranked: bool) -> None:
+    """window=/first/last cannot associate — the pick per entity is undefined (DEV-1871 G13)."""
+    if windowed_or_ranked:
+        raise SlayerError(
+            f"Aggregate {alias!r} needs distinct-entity association over an "
+            f"unattributable dimension, which is unsupported in combination with "
+            f"window=/first/last; drop the window/first-last or attribute the "
+            f"dimension."
+        )
+
+
+def check_association_root_unique_key(
+    *, alias: str, root_name: str, has_unique_key: bool,
+) -> None:
+    """The association root must declare a unique key to dedup its entities (DEV-1871 G13)."""
+    if not has_unique_key:
+        raise SlayerError(
+            f"Aggregate {alias!r} needs distinct-entity association, but its root "
+            f"model {root_name!r} declares no primary or unique key to deduplicate "
+            f"entities by; declare a primary or unique key on {root_name!r}."
+        )
+
+
+def check_association_column_param(*, alias: str, column_param) -> None:
+    """The level-2 aggregate runs over the deduped ``_base`` and cannot carry a column parameter (DEV-1871 G13; DEV-1892 tracks lifting them)."""
+    if column_param is not None:
+        raise SlayerError(
+            f"Aggregate {alias!r} needs distinct-entity association over an "
+            f"unattributable dimension, which is unsupported with a "
+            f"column-reference parameter (e.g. weighted_avg(weight=…)); the "
+            f"per-entity pick carries only the aggregate's own value. Attribute "
+            f"the dimension or drop the column parameter."
+        )
+
+
+def check_reaggregation_no_window(*, alias: str, window_val) -> None:
+    """window= on the outer aggregation has no defined cell-time semantics (DEV-1871 G14)."""
+    if window_val is not None:
+        raise SlayerError(
+            f"Re-aggregation {alias!r} cannot carry window= on its outer "
+            f"aggregation; apply the window inside the operand or consume the "
+            f"re-aggregated value through a transform."
+        )
+
+
+def check_reaggregation_no_column_param(*, alias: str, column_param) -> None:
+    """The outer aggregate consumes only the operand's per-cell values — no column parameter (DEV-1871 G14; DEV-1892 tracks lifting them)."""
+    if column_param is not None:
+        raise SlayerError(
+            f"Re-aggregation {alias!r} carries a column-reference parameter on "
+            f"its outer aggregation (e.g. weighted_avg(weight=…)), which is "
+            f"unsupported: the outer aggregate consumes only the operand's "
+            f"per-cell values. Drop the column parameter or use a numeric "
+            f"literal."
+        )
+
+
+def check_reaggregation_partition_key_is_query_dim(
+    *, alias: str, offending: Optional[str],
+) -> None:
+    """Every explicit outer partition key must be a query dimension (DEV-1871 G14); ``offending`` = the key's display name when it is not."""
+    if offending is not None:
+        raise ValueError(
+            f"Re-aggregation {alias!r} declares partition_by="
+            f"{offending}, which is not a query dimension; "
+            f"every explicit partition key must be a query dimension — "
+            f"add it to dimensions/time_dimensions."
+        )
+
+
+def check_reaggregation_dims_attributable(
+    *, alias: str, mode: str, unattributable_names: Sequence[str],
+) -> None:
+    """Unattributable outer dims are a hard error under to_many_handling='error' (DEV-1871 G14); associate/broadcast resolution stays compiler-side."""
+    if mode != "error" or not unattributable_names:
+        return
+    names = ", ".join(unattributable_names)
+    raise ValueError(
+        f"Re-aggregation {alias!r} cannot attribute dimension(s) {names} "
+        f"to the operand dataset under to_many_handling='error'; add them "
+        f"to the inner partition_by= so the operand is grained by them, "
+        f"or choose 'broadcast'/'associate'."
+    )
 
 
 def build_environment(

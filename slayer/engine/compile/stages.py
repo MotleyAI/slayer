@@ -27,7 +27,7 @@ from pydantic import BaseModel, ConfigDict
 from slayer.core.enums import DataType
 from slayer.core.formula import TIME_TRANSFORMS
 from slayer.core.format import NumberFormat
-from slayer.core.errors import AmbiguousJoinPathError, AmbiguousReferenceError, DistinctDimensionValuesError, PositionTypingError, SlayerError, UnknownReferenceError, UnreachableFilterDroppedWarning
+from slayer.core.errors import AmbiguousJoinPathError, AmbiguousReferenceError, DistinctDimensionValuesError, PositionTypingError, UnknownReferenceError, UnreachableFilterDroppedWarning
 from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, normalize_scalar, reroot_value_key, substitute_value_keys, walk_value_keys
 from slayer.core.models import ModelMeasure, SlayerModel
 from slayer.engine import dimension_routing
@@ -59,6 +59,9 @@ from slayer.core.scope import ModelScope, StageColumn, StageSchema
 from slayer.engine.binding import bind_expr, bind_filter, bind_time_dimension
 from slayer.engine.elaborate_env import (
     build_environment,
+    check_association_column_param,
+    check_association_root_unique_key,
+    check_association_windowed_ranked,
     check_computed_dimension,
     check_cross_model_inputs_safe,
     check_cross_model_partition_keys_attributable,
@@ -69,6 +72,10 @@ from slayer.engine.elaborate_env import (
     check_partition_key_attributable,
     check_partition_key_resolves,
     check_partitioned_measures,
+    check_reaggregation_dims_attributable,
+    check_reaggregation_no_column_param,
+    check_reaggregation_no_window,
+    check_reaggregation_partition_key_is_query_dim,
     check_time_dimension_date_range,
     check_time_transforms_resolved,
     check_windowed_cross_model_time_axis,
@@ -2400,24 +2407,17 @@ def _synthesize_association_producer(  # NOSONAR(S3776) — one cohesive host-ro
     base_filters_with_text = context.base_filters_with_text
     scope, stage_schemas = context.scope, context.stage_schemas
 
-    # window= / first / last cannot associate — the pick per entity is undefined.
-    if _window_kwarg_of(agg) is not None or (
-        isinstance(agg, AggregateKey) and agg.agg in RANKED_AGGREGATIONS
-    ):
-        raise SlayerError(
-            f"Aggregate {alias!r} needs distinct-entity association over an "
-            f"unattributable dimension, which is unsupported in combination with "
-            f"window=/first/last; drop the window/first-last or attribute the "
-            f"dimension."
-        )
-    # The root must declare a unique key to dedup its entities.
+    check_association_windowed_ranked(
+        alias=alias,
+        windowed_or_ranked=_window_kwarg_of(agg) is not None or (
+            isinstance(agg, AggregateKey) and agg.agg in RANKED_AGGREGATIONS
+        ),
+    )
+    # key_sets also feeds the entity keys below.
     key_sets = _unique_key_sets(root_model)
-    if not key_sets:
-        raise SlayerError(
-            f"Aggregate {alias!r} needs distinct-entity association, but its root "
-            f"model {root_name!r} declares no primary or unique key to deduplicate "
-            f"entities by; declare a primary or unique key on {root_name!r}."
-        )
+    check_association_root_unique_key(
+        alias=alias, root_name=root_name, has_unique_key=bool(key_sets),
+    )
     # An input crossing an unproven/fanning hop is not constant per root entity,
     # so the level-1 per-entity pick would be arbitrary. Input safety is
     # mode-invariant — reject exactly as the broadcast/error path does (DEV-1892
@@ -2427,23 +2427,14 @@ def _synthesize_association_producer(  # NOSONAR(S3776) — one cohesive host-ro
         root_model=root_model, root_name=root_name, target_path=target_path,
         bundle=bundle, models_by_name=models_by_name,
     )
-    # A column-reference aggregate parameter (e.g. weighted_avg(weight=col))
-    # binds against the host scope, but the level-2 aggregate runs over the
-    # deduped ``_base`` (grain + entity key + one picked value) and cannot carry
-    # the column. Reject loudly; DEV-1892 tracks lifting such parameters.
-    column_param = next(
-        (v for v in (*agg.args, *(val for _, val in agg.kwargs))
-         if isinstance(v, (ColumnKey, ColumnSqlKey))),
-        None,
+    check_association_column_param(
+        alias=alias,
+        column_param=next(
+            (v for v in (*agg.args, *(val for _, val in agg.kwargs))
+             if isinstance(v, (ColumnKey, ColumnSqlKey))),
+            None,
+        ),
     )
-    if column_param is not None:
-        raise SlayerError(
-            f"Aggregate {alias!r} needs distinct-entity association over an "
-            f"unattributable dimension, which is unsupported with a "
-            f"column-reference parameter (e.g. weighted_avg(weight=…)); the "
-            f"per-entity pick carries only the aggregate's own value. Attribute "
-            f"the dimension or drop the column parameter."
-        )
     entity_keys: List[ValueKey] = [
         ColumnKey(path=target_path, leaf=col) for col in key_sets[0]
     ]
@@ -2759,31 +2750,16 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         or f"{root.agg}_{inner_alias}"
     )
 
-    # window= on the outer aggregation has no defined cell-time semantics;
-    # name the combination instead of the misleading TD-resolution error.
-    if _window_kwarg_of(root) is not None:
-        raise SlayerError(
-            f"Re-aggregation {alias!r} cannot carry window= on its outer "
-            f"aggregation; apply the window inside the operand or consume the "
-            f"re-aggregated value through a transform."
-        )
-
-    # The outer level-2 aggregate runs over ``_base`` (grain + entity keys + the
-    # picked value) and cannot carry a column parameter; reject loudly (DEV-1892
-    # tracks lifting such parameters).
-    column_param = next(
-        (v for v in (*root.args, *(val for _, val in root.kwargs))
-         if isinstance(v, (ColumnKey, ColumnSqlKey))),
-        None,
+    # Checked before TD resolution — name the combination, not a misleading TD error.
+    check_reaggregation_no_window(alias=alias, window_val=_window_kwarg_of(root))
+    check_reaggregation_no_column_param(
+        alias=alias,
+        column_param=next(
+            (v for v in (*root.args, *(val for _, val in root.kwargs))
+             if isinstance(v, (ColumnKey, ColumnSqlKey))),
+            None,
+        ),
     )
-    if column_param is not None:
-        raise SlayerError(
-            f"Re-aggregation {alias!r} carries a column-reference parameter on "
-            f"its outer aggregation (e.g. weighted_avg(weight=…)), which is "
-            f"unsupported: the outer aggregate consumes only the operand's "
-            f"per-cell values. Drop the column parameter or use a numeric "
-            f"literal."
-        )
 
     # Requested outer grain: explicit partition_by= (combined-consumer rule: each
     # key must be a query dimension) else the query dimensions.
@@ -2791,13 +2767,10 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         requested = list(root.partition_keys)
         proj_set = set(proj)
         for g in requested:
-            if g not in proj_set:
-                raise ValueError(
-                    f"Re-aggregation {alias!r} declares partition_by="
-                    f"{_regroup_grain_name(g)}, which is not a query dimension; "
-                    f"every explicit partition key must be a query dimension — "
-                    f"add it to dimensions/time_dimensions."
-                )
+            check_reaggregation_partition_key_is_query_dim(
+                alias=alias,
+                offending=None if g in proj_set else _regroup_grain_name(g),
+            )
     else:
         requested = list(proj)
 
@@ -2844,14 +2817,10 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
     associate_dims: List[_UnattributableDim] = []
     broadcast_dims: List[Tuple[str, str]] = []
     if unattributable:
-        if mode == "error":
-            names = ", ".join(u.name for u in unattributable)
-            raise ValueError(
-                f"Re-aggregation {alias!r} cannot attribute dimension(s) {names} "
-                f"to the operand dataset under to_many_handling='error'; add them "
-                f"to the inner partition_by= so the operand is grained by them, "
-                f"or choose 'broadcast'/'associate'."
-            )
+        check_reaggregation_dims_attributable(
+            alias=alias, mode=mode,
+            unattributable_names=[u.name for u in unattributable],
+        )
         if mode == "associate":
             associate_dims = unattributable
         else:
