@@ -496,59 +496,7 @@
                 }
             }
         ],
-        "./slayer/engine/ingestion.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 15,
-                    "endColumn": 17,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 15,
-                    "endColumn": 17,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 36,
-                    "endColumn": 40,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 22,
-                    "endColumn": 26,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./slayer/engine/introspect_utils.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 42,
-                    "endColumn": 54,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportReturnType",
-                "range": {
-                    "startColumn": 15,
-                    "endColumn": 83,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./slayer/engine/planning.py": [
+        "./slayer/engine/compile/projection.py": [
             {
                 "code": "reportReturnType",
                 "range": {
@@ -622,267 +570,7 @@
                 }
             }
         ],
-        "./slayer/engine/prebound.py": [
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 27,
-                    "endColumn": 38,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 56,
-                    "endColumn": 59,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 56,
-                    "endColumn": 59,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 56,
-                    "endColumn": 59,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 56,
-                    "endColumn": 59,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 56,
-                    "endColumn": 59,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 56,
-                    "endColumn": 59,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 56,
-                    "endColumn": 59,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 56,
-                    "endColumn": 59,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 56,
-                    "endColumn": 59,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 56,
-                    "endColumn": 59,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 56,
-                    "endColumn": 59,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 56,
-                    "endColumn": 59,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 56,
-                    "endColumn": 59,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 56,
-                    "endColumn": 59,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 56,
-                    "endColumn": 59,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 56,
-                    "endColumn": 59,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 56,
-                    "endColumn": 59,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 56,
-                    "endColumn": 59,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 56,
-                    "endColumn": 59,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 56,
-                    "endColumn": 59,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./slayer/engine/query_engine.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 39,
-                    "endColumn": 44,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 42,
-                    "endColumn": 45,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 32,
-                    "endColumn": 35,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 40,
-                    "endColumn": 52,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 43,
-                    "endColumn": 49,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportCallIssue",
-                "range": {
-                    "startColumn": 24,
-                    "endColumn": 56,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 37,
-                    "endColumn": 39,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportOptionalMemberAccess",
-                "range": {
-                    "startColumn": 29,
-                    "endColumn": 33,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 26,
-                    "endColumn": 30,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 26,
-                    "endColumn": 30,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 44,
-                    "endColumn": 53,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./slayer/engine/regroup_planner.py": [
+        "./slayer/engine/compile/regroup.py": [
             {
                 "code": "reportArgumentType",
                 "range": {
@@ -892,43 +580,7 @@
                 }
             }
         ],
-        "./slayer/engine/response_meta.py": [
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 23,
-                    "endColumn": 36,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./slayer/engine/schema_drift.py": [
-            {
-                "code": "reportPrivateImportUsage",
-                "range": {
-                    "startColumn": 37,
-                    "endColumn": 47,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 48,
-                    "endColumn": 54,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./slayer/engine/stage_planner.py": [
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 20,
-                    "endColumn": 57,
-                    "lineCount": 1
-                }
-            },
+        "./slayer/engine/compile/stages.py": [
             {
                 "code": "reportAttributeAccessIssue",
                 "range": {
@@ -1118,22 +770,6 @@
                 "range": {
                     "startColumn": 27,
                     "endColumn": 28,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 28,
-                    "endColumn": 41,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 44,
-                    "endColumn": 57,
                     "lineCount": 1
                 }
             },
@@ -1415,22 +1051,6 @@
                     "startColumn": 21,
                     "endColumn": 33,
                     "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 29,
-                    "endColumn": 42,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 12,
-                    "endColumn": 46,
-                    "lineCount": 6
                 }
             },
             {
@@ -2094,6 +1714,356 @@
                 "range": {
                     "startColumn": 35,
                     "endColumn": 48,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./slayer/engine/elaborate_env.py": [
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 16,
+                    "endColumn": 23,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./slayer/engine/ingestion.py": [
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 15,
+                    "endColumn": 17,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 15,
+                    "endColumn": 17,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportAttributeAccessIssue",
+                "range": {
+                    "startColumn": 36,
+                    "endColumn": 40,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportAttributeAccessIssue",
+                "range": {
+                    "startColumn": 22,
+                    "endColumn": 26,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./slayer/engine/introspect_utils.py": [
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 42,
+                    "endColumn": 54,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportReturnType",
+                "range": {
+                    "startColumn": 15,
+                    "endColumn": 83,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./slayer/engine/prebound.py": [
+            {
+                "code": "reportAttributeAccessIssue",
+                "range": {
+                    "startColumn": 27,
+                    "endColumn": 38,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportAttributeAccessIssue",
+                "range": {
+                    "startColumn": 56,
+                    "endColumn": 59,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportAttributeAccessIssue",
+                "range": {
+                    "startColumn": 56,
+                    "endColumn": 59,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportAttributeAccessIssue",
+                "range": {
+                    "startColumn": 56,
+                    "endColumn": 59,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportAttributeAccessIssue",
+                "range": {
+                    "startColumn": 56,
+                    "endColumn": 59,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportAttributeAccessIssue",
+                "range": {
+                    "startColumn": 56,
+                    "endColumn": 59,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportAttributeAccessIssue",
+                "range": {
+                    "startColumn": 56,
+                    "endColumn": 59,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportAttributeAccessIssue",
+                "range": {
+                    "startColumn": 56,
+                    "endColumn": 59,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportAttributeAccessIssue",
+                "range": {
+                    "startColumn": 56,
+                    "endColumn": 59,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportAttributeAccessIssue",
+                "range": {
+                    "startColumn": 56,
+                    "endColumn": 59,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportAttributeAccessIssue",
+                "range": {
+                    "startColumn": 56,
+                    "endColumn": 59,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportAttributeAccessIssue",
+                "range": {
+                    "startColumn": 56,
+                    "endColumn": 59,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportAttributeAccessIssue",
+                "range": {
+                    "startColumn": 56,
+                    "endColumn": 59,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportAttributeAccessIssue",
+                "range": {
+                    "startColumn": 56,
+                    "endColumn": 59,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportAttributeAccessIssue",
+                "range": {
+                    "startColumn": 56,
+                    "endColumn": 59,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportAttributeAccessIssue",
+                "range": {
+                    "startColumn": 56,
+                    "endColumn": 59,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportAttributeAccessIssue",
+                "range": {
+                    "startColumn": 56,
+                    "endColumn": 59,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportAttributeAccessIssue",
+                "range": {
+                    "startColumn": 56,
+                    "endColumn": 59,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportAttributeAccessIssue",
+                "range": {
+                    "startColumn": 56,
+                    "endColumn": 59,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportAttributeAccessIssue",
+                "range": {
+                    "startColumn": 56,
+                    "endColumn": 59,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportAttributeAccessIssue",
+                "range": {
+                    "startColumn": 56,
+                    "endColumn": 59,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./slayer/engine/query_engine.py": [
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 39,
+                    "endColumn": 44,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 42,
+                    "endColumn": 45,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 32,
+                    "endColumn": 35,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 40,
+                    "endColumn": 52,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 43,
+                    "endColumn": 49,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportCallIssue",
+                "range": {
+                    "startColumn": 24,
+                    "endColumn": 56,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 37,
+                    "endColumn": 39,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportOptionalMemberAccess",
+                "range": {
+                    "startColumn": 29,
+                    "endColumn": 33,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 26,
+                    "endColumn": 30,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 26,
+                    "endColumn": 30,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 44,
+                    "endColumn": 53,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./slayer/engine/response_meta.py": [
+            {
+                "code": "reportAttributeAccessIssue",
+                "range": {
+                    "startColumn": 23,
+                    "endColumn": 36,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./slayer/engine/schema_drift.py": [
+            {
+                "code": "reportPrivateImportUsage",
+                "range": {
+                    "startColumn": 37,
+                    "endColumn": 47,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 48,
+                    "endColumn": 54,
                     "lineCount": 1
                 }
             }
@@ -19460,30 +19430,6 @@
         ],
         "./tests/test_dev1732_frame_bound_filters.py": [
             {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 23,
-                    "endColumn": 33,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 35,
-                    "endColumn": 44,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 67,
-                    "endColumn": 74,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportArgumentType",
                 "range": {
                     "startColumn": 25,
@@ -19897,38 +19843,6 @@
                     "startColumn": 25,
                     "endColumn": 29,
                     "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 49,
-                    "endColumn": 59,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 61,
-                    "endColumn": 70,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 12,
-                    "endColumn": 63,
-                    "lineCount": 3
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 12,
-                    "endColumn": 59,
-                    "lineCount": 3
                 }
             },
             {
@@ -20640,94 +20554,6 @@
         ],
         "./tests/test_dev1739_guards.py": [
             {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 43,
-                    "endColumn": 76,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 43,
-                    "endColumn": 74,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 43,
-                    "endColumn": 76,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 43,
-                    "endColumn": 76,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 45,
-                    "endColumn": 51,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 38,
-                    "endColumn": 81,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 53,
-                    "endColumn": 84,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 58,
-                    "endColumn": 91,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 12,
-                    "endColumn": 45,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 12,
-                    "endColumn": 46,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 12,
-                    "endColumn": 55,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportArgumentType",
                 "range": {
                     "startColumn": 23,
@@ -20888,14 +20714,6 @@
                 "range": {
                     "startColumn": 81,
                     "endColumn": 82,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 48,
-                    "endColumn": 79,
                     "lineCount": 1
                 }
             },
@@ -21716,14 +21534,6 @@
                 }
             },
             {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 38,
-                    "endColumn": 61,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportArgumentType",
                 "range": {
                     "startColumn": 47,
@@ -22343,16 +22153,6 @@
                     "startColumn": 25,
                     "endColumn": 63,
                     "lineCount": 1
-                }
-            }
-        ],
-        "./tests/test_dev1746_empty_base_plan.py": [
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 16,
-                    "endColumn": 42,
-                    "lineCount": 3
                 }
             }
         ],
@@ -23030,14 +22830,6 @@
         ],
         "./tests/test_dev1747_reroot_visitor.py": [
             {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 42,
-                    "endColumn": 85,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportAttributeAccessIssue",
                 "range": {
                     "startColumn": 25,
@@ -23114,14 +22906,6 @@
                 "range": {
                     "startColumn": 25,
                     "endColumn": 31,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 48,
-                    "endColumn": 79,
                     "lineCount": 1
                 }
             },
@@ -23198,14 +22982,6 @@
                 }
             },
             {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 24,
-                    "endColumn": 67,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportAttributeAccessIssue",
                 "range": {
                     "startColumn": 25,
@@ -23434,14 +23210,6 @@
                 "range": {
                     "startColumn": 25,
                     "endColumn": 39,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 54,
-                    "endColumn": 85,
                     "lineCount": 1
                 }
             },
@@ -24330,16 +24098,6 @@
                 }
             }
         ],
-        "./tests/test_dev1783_pr286_g1.py": [
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 24,
-                    "endColumn": 33,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./tests/test_dev1798_transform_two_names.py": [
             {
                 "code": "reportArgumentType",
@@ -24369,14 +24127,6 @@
             }
         ],
         "./tests/test_dev1825_regroup_planner.py": [
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 38,
-                    "endColumn": 69,
-                    "lineCount": 1
-                }
-            },
             {
                 "code": "reportArgumentType",
                 "range": {
@@ -24514,41 +24264,7 @@
                 }
             }
         ],
-        "./tests/test_dev1825_scope_attach.py": [
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 33,
-                    "endColumn": 44,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 33,
-                    "endColumn": 44,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 33,
-                    "endColumn": 44,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./tests/test_dev1825_substitute_keys.py": [
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 71,
-                    "endColumn": 75,
-                    "lineCount": 1
-                }
-            },
             {
                 "code": "reportArgumentType",
                 "range": {
@@ -24708,73 +24424,9 @@
                     "endColumn": 48,
                     "lineCount": 1
                 }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 41,
-                    "endColumn": 78,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 61,
-                    "endColumn": 65,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 42,
-                    "endColumn": 46,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 48,
-                    "endColumn": 53,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 43,
-                    "endColumn": 47,
-                    "lineCount": 1
-                }
             }
         ],
         "./tests/test_dev1827_value_key_traversal.py": [
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 71,
-                    "endColumn": 75,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 30,
-                    "endColumn": 36,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 30,
-                    "endColumn": 34,
-                    "lineCount": 1
-                }
-            },
             {
                 "code": "reportCallIssue",
                 "range": {
@@ -24788,22 +24440,6 @@
                 "range": {
                     "startColumn": 25,
                     "endColumn": 43,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 62,
-                    "endColumn": 66,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 68,
-                    "endColumn": 74,
                     "lineCount": 1
                 }
             },
@@ -25024,14 +24660,6 @@
                 }
             },
             {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 44,
-                    "endColumn": 50,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportAttributeAccessIssue",
                 "range": {
                     "startColumn": 19,
@@ -25116,22 +24744,6 @@
                 "range": {
                     "startColumn": 19,
                     "endColumn": 24,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 54,
-                    "endColumn": 60,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 47,
-                    "endColumn": 51,
                     "lineCount": 1
                 }
             },
@@ -25168,14 +24780,6 @@
                 }
             },
             {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 52,
-                    "endColumn": 56,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportArgumentType",
                 "range": {
                     "startColumn": 37,
@@ -25188,22 +24792,6 @@
                 "range": {
                     "startColumn": 37,
                     "endColumn": 42,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 50,
-                    "endColumn": 52,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 60,
-                    "endColumn": 62,
                     "lineCount": 1
                 }
             },
@@ -25592,30 +25180,6 @@
                 }
             },
             {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 60,
-                    "endColumn": 64,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 62,
-                    "endColumn": 66,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 30,
-                    "endColumn": 36,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportAttributeAccessIssue",
                 "range": {
                     "startColumn": 19,
@@ -25684,14 +25248,6 @@
                 "range": {
                     "startColumn": 19,
                     "endColumn": 33,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 48,
-                    "endColumn": 54,
                     "lineCount": 1
                 }
             },
@@ -25848,30 +25404,6 @@
                 }
             },
             {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 54,
-                    "endColumn": 60,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 64,
-                    "endColumn": 68,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 53,
-                    "endColumn": 59,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportAttributeAccessIssue",
                 "range": {
                     "startColumn": 19,
@@ -25944,30 +25476,6 @@
                 }
             },
             {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 48,
-                    "endColumn": 54,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 54,
-                    "endColumn": 60,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 21,
-                    "endColumn": 25,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportAttributeAccessIssue",
                 "range": {
                     "startColumn": 31,
@@ -26044,16 +25552,6 @@
                 "range": {
                     "startColumn": 31,
                     "endColumn": 39,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./tests/test_dev1829_planner.py": [
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 13,
-                    "endColumn": 46,
                     "lineCount": 1
                 }
             }
@@ -26073,32 +25571,6 @@
                     "startColumn": 23,
                     "endColumn": 13,
                     "lineCount": 9
-                }
-            }
-        ],
-        "./tests/test_dev1835_grain_prune.py": [
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 30,
-                    "endColumn": 36,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 20,
-                    "endColumn": 26,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 20,
-                    "endColumn": 26,
-                    "lineCount": 1
                 }
             }
         ],
@@ -27030,30 +26502,6 @@
         ],
         "./tests/test_dev1842_keys_prepend.py": [
             {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 42,
-                    "endColumn": 73,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 48,
-                    "endColumn": 91,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 42,
-                    "endColumn": 73,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportAttributeAccessIssue",
                 "range": {
                     "startColumn": 25,
@@ -27130,14 +26578,6 @@
                 "range": {
                     "startColumn": 25,
                     "endColumn": 31,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 48,
-                    "endColumn": 91,
                     "lineCount": 1
                 }
             },
@@ -27466,14 +26906,6 @@
                 "range": {
                     "startColumn": 23,
                     "endColumn": 29,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 38,
-                    "endColumn": 69,
                     "lineCount": 1
                 }
             }
@@ -29436,130 +28868,252 @@
         ],
         "./tests/test_dev1867_grain.py": [
             {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 81,
-                    "endColumn": 87,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 79,
-                    "endColumn": 83,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 16,
-                    "endColumn": 22,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 24,
-                    "endColumn": 28,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportArgumentType",
                 "range": {
                     "startColumn": 30,
                     "endColumn": 41,
                     "lineCount": 1
                 }
-            },
+            }
+        ],
+        "./tests/test_dev1871_anchors_fold.py": [
             {
-                "code": "reportUnhashable",
+                "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 26,
-                    "endColumn": 32,
+                    "startColumn": 28,
+                    "endColumn": 46,
                     "lineCount": 1
                 }
             },
             {
-                "code": "reportUnhashable",
+                "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 34,
-                    "endColumn": 38,
+                    "startColumn": 28,
+                    "endColumn": 46,
                     "lineCount": 1
                 }
             },
             {
-                "code": "reportUnhashable",
+                "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 31,
-                    "endColumn": 37,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 26,
-                    "endColumn": 32,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 36,
+                    "startColumn": 24,
                     "endColumn": 42,
                     "lineCount": 1
                 }
-            },
+            }
+        ],
+        "./tests/test_dev1871_elaborate.py": [
             {
-                "code": "reportUnhashable",
+                "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 32,
-                    "endColumn": 38,
+                    "startColumn": 24,
+                    "endColumn": 32,
                     "lineCount": 1
                 }
             },
             {
-                "code": "reportUnhashable",
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 21,
+                    "endColumn": 63,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 18,
+                    "endColumn": 60,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 24,
+                    "endColumn": 32,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 21,
+                    "endColumn": 63,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 24,
+                    "endColumn": 32,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 21,
+                    "endColumn": 63,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 16,
+                    "endColumn": 24,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 24,
+                    "endColumn": 32,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 21,
+                    "endColumn": 63,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 18,
+                    "endColumn": 60,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 24,
+                    "endColumn": 32,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 21,
+                    "endColumn": 63,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./tests/test_dev1871_grain_retype.py": [
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 65,
+                    "endColumn": 84,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 65,
+                    "endColumn": 69,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./tests/test_dev1871_population_routing.py": [
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 41,
+                    "endColumn": 74,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 41,
+                    "endColumn": 84,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
                 "range": {
                     "startColumn": 27,
-                    "endColumn": 33,
+                    "endColumn": 60,
                     "lineCount": 1
                 }
             },
             {
-                "code": "reportUnhashable",
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 39,
+                    "endColumn": 69,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
                 "range": {
                     "startColumn": 41,
-                    "endColumn": 45,
+                    "endColumn": 75,
                     "lineCount": 1
                 }
             },
             {
-                "code": "reportUnhashable",
+                "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 59,
-                    "endColumn": 63,
+                    "startColumn": 49,
+                    "endColumn": 53,
                     "lineCount": 1
                 }
             },
             {
-                "code": "reportUnhashable",
+                "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 41,
-                    "endColumn": 45,
+                    "startColumn": 39,
+                    "endColumn": 65,
                     "lineCount": 1
                 }
             },
             {
-                "code": "reportUnhashable",
+                "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 59,
-                    "endColumn": 63,
+                    "startColumn": 42,
+                    "endColumn": 75,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 46,
+                    "endColumn": 79,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./tests/test_dev1871_terms.py": [
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 64,
+                    "endColumn": 68,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 64,
+                    "endColumn": 75,
                     "lineCount": 1
                 }
             }
@@ -30452,14 +30006,6 @@
                 "range": {
                     "startColumn": 69,
                     "endColumn": 77,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 30,
-                    "endColumn": 54,
                     "lineCount": 1
                 }
             }
@@ -34596,58 +34142,10 @@
         ],
         "./tests/test_keys.py": [
             {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 16,
-                    "endColumn": 17,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 13,
-                    "endColumn": 22,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportArgumentType",
                 "range": {
                     "startColumn": 34,
                     "endColumn": 74,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 16,
-                    "endColumn": 49,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 16,
-                    "endColumn": 48,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 16,
-                    "endColumn": 48,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 16,
-                    "endColumn": 49,
                     "lineCount": 1
                 }
             }
@@ -48714,65 +48212,15 @@
                 }
             },
             {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 13,
-                    "endColumn": 14,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportAttributeAccessIssue",
                 "range": {
                     "startColumn": 24,
                     "endColumn": 35,
                     "lineCount": 1
                 }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 13,
-                    "endColumn": 14,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./tests/test_transform_lowerer.py": [
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 38,
-                    "endColumn": 44,
-                    "lineCount": 1
-                }
             }
         ],
         "./tests/test_transforms_planner.py": [
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 38,
-                    "endColumn": 44,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 38,
-                    "endColumn": 44,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnhashable",
-                "range": {
-                    "startColumn": 46,
-                    "endColumn": 54,
-                    "lineCount": 1
-                }
-            },
             {
                 "code": "reportArgumentType",
                 "range": {

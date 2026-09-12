@@ -14,6 +14,7 @@ from typing import (
     ClassVar,
     Iterable,
     Iterator,
+    List,
     Literal,
     Mapping,
     Optional,
@@ -140,7 +141,7 @@ def normalize_scalar(value):
     )
 
 
-class _FrozenKey(BaseModel):
+class _FrozenKey(BaseModel, frozen=True):
     """Common config for the typed-key family: frozen (hashable, immutable).
 
     Every kind overrides the total-traversal protocol: ``children()`` yields the
@@ -149,8 +150,6 @@ class _FrozenKey(BaseModel):
     rebuilds one level with ``fn`` applied at each ``children()`` position,
     returning ``self`` when no child changed identity (``is``).
     """
-
-    model_config = ConfigDict(frozen=True)
 
     def children(self) -> Tuple["ValueKey", ...]:
         raise NotImplementedError(
@@ -184,7 +183,7 @@ class _ChildMapper:
         return new
 
 
-class _LeafKey(_FrozenKey):
+class _LeafKey(_FrozenKey, frozen=True):
     """Traversal leaf: no embedded keys."""
 
     def children(self) -> Tuple["ValueKey", ...]:
@@ -219,7 +218,7 @@ def _typed_kwargs(kwargs):
     return tuple((k, _typed_leaf(v)) for k, v in kwargs)
 
 
-class ColumnKey(_LeafKey):
+class ColumnKey(_LeafKey, frozen=True):
     """Row-level reference to a base column on a model.
 
     ``path`` is the join walk from the query's source model to the terminal
@@ -235,7 +234,7 @@ class ColumnKey(_LeafKey):
         return Phase.ROW
 
 
-class ColumnSqlKey(_LeafKey):
+class ColumnSqlKey(_LeafKey, frozen=True):
     """Reference to a derived column (whose ``Column.sql`` is set).
 
     The expansion AST is recovered from the model at binding time — the key only
@@ -251,7 +250,7 @@ class ColumnSqlKey(_LeafKey):
         return Phase.ROW
 
 
-class TimeTruncKey(_FrozenKey):
+class TimeTruncKey(_FrozenKey, frozen=True):
     """Row-level reference to a time-truncated column, keyed by (column, granularity).
 
     ``column`` is a ``ColumnKey`` (base temporal column) or ``ColumnSqlKey``
@@ -287,7 +286,7 @@ def column_path(col: Union["ColumnKey", "ColumnSqlKey"]) -> Tuple[str, ...]:
     return col.path
 
 
-class StarKey(_LeafKey):
+class StarKey(_LeafKey, frozen=True):
     """Sentinel source for ``*:count`` aggregations.
 
     ``path`` is empty for the local star and non-empty for a cross-model star
@@ -301,7 +300,7 @@ class StarKey(_LeafKey):
         return Phase.ROW
 
 
-class LiteralKey(_LeafKey):
+class LiteralKey(_LeafKey, frozen=True):
     """Identity for a literal value inside an expression tree.
 
     Scalar normalization happens at the call site via ``normalize_scalar`` so
@@ -324,7 +323,7 @@ class LiteralKey(_LeafKey):
         return _typed_leaf(self.value) == _typed_leaf(other.value)
 
 
-class SqlExprKey(_LeafKey):
+class SqlExprKey(_LeafKey, frozen=True):
     """Identity for a Mode-A SQL fragment.
 
     Used as ``AggregateKey.column_filter_key`` so an attached ``Column.filter``
@@ -389,7 +388,7 @@ def _sort_kwargs_tuple(v):
     return tuple(sorted(v, key=lambda kv: kv[0]))
 
 
-class AggregateKey(_FrozenKey):
+class AggregateKey(_FrozenKey, frozen=True):
     """Identity for an aggregation slot (P3).
 
     Local and cross-model aggregates share this shape: ``source.path`` empty for
@@ -507,7 +506,7 @@ def reroot_aggregate_key(
     return reroot_value_key(key, target_path=target_path)
 
 
-class TransformKey(_FrozenKey):
+class TransformKey(_FrozenKey, frozen=True):
     """Identity for a transform slot (window / temporal operator over a value).
 
     ``input`` is the operated-on value. ``partition_keys`` is order-independent;
@@ -572,7 +571,7 @@ class TransformKey(_FrozenKey):
         )
 
 
-class ArithmeticKey(_FrozenKey):
+class ArithmeticKey(_FrozenKey, frozen=True):
     """Identity for an arithmetic / comparison / boolean expression.
 
     ``op`` is the operator symbol. Operand order matters (non-commutative ops,
@@ -608,7 +607,7 @@ def _arg_phase(arg) -> Optional[Phase]:
     return getattr(arg, "phase", None)
 
 
-class ScalarCallKey(_FrozenKey):
+class ScalarCallKey(_FrozenKey, frozen=True):
     """Identity for a closed-allowlist scalar function call (C12).
 
     ``name`` must be in ``SCALAR_FUNCTIONS``; the key does not validate this (the
@@ -645,7 +644,7 @@ class ScalarCallKey(_FrozenKey):
         )
 
 
-class BetweenKey(_FrozenKey):
+class BetweenKey(_FrozenKey, frozen=True):
     """Typed identity for a ``col BETWEEN low AND high`` predicate.
 
     The planner uses this to mark where ``BETWEEN`` is the right legacy-parity
@@ -675,7 +674,7 @@ class BetweenKey(_FrozenKey):
         return self.model_copy(update=update) if m.changed else self
 
 
-class InKey(_FrozenKey):
+class InKey(_FrozenKey, frozen=True):
     """Typed identity for a ``col IN (lit, …)`` / ``NOT IN`` predicate.
 
     Modelled on ``BetweenKey``: a column LHS and a fixed tuple of ``LiteralKey``
@@ -919,6 +918,25 @@ def walk_value_keys(key: ValueKey):
     yield key
     for child in key.children():
         yield from walk_value_keys(child)
+
+
+def grained_inner_aggregates(vk: ValueKey) -> List[AggregateKey]:
+    """Explicitly-partitioned ``AggregateKey``s reachable from ``vk``."""
+    return [
+        k for k in walk_value_keys(vk)
+        if isinstance(k, AggregateKey) and k.partition_keys is not None
+    ]
+
+
+def regroup_root_grain(root: ValueKey) -> Grain:
+    """Producer grain of a row-attach root: a transform evaluates at the set-union
+    of ALL inner aggregates' partition grains; a bare aggregate at its own grain."""
+    if isinstance(root, TransformKey):
+        grain = Grain.EMPTY
+        for inner in grained_inner_aggregates(root.input):
+            grain = grain | (inner.partition_keys or frozenset())
+        return grain
+    return Grain.of(getattr(root, "partition_keys", None) or frozenset())
 
 
 def reroot_value_key(

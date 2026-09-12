@@ -51,7 +51,7 @@ Standing gates for EVERY numbered group below: golden baselines byte-identical w
 - [x] 12.1 Cross-model producers (+ attributability guards) migrated; verify parity + goldens + laws
 - [x] 13.1 Association producers (eligibility guards) migrated; verify parity + goldens + laws
 - [x] 14.1 Reaggregation producers (union-grain residue, outer restrictions) migrated; verify parity + goldens + laws
-- [ ] 15.1 Positions: filter/order typing (`type_position_conjunct`) relocated into the checker; verify parity + goldens + laws; broadcast-coherence assert live with its test
+- [x] 15.1 Positions: filter/order typing (`type_position_conjunct`) relocated into the checker; verify parity + goldens + laws; broadcast-coherence assert live with its test
 
 ## 16. Orchestration reroute
 

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Protocol, Union, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, model_validator
 
 from slayer.core.formula import TIME_TRANSFORMS
 from slayer.core.keys import AggregateKey, Grain, TransformKey, ValueKey
@@ -26,11 +26,11 @@ class Dataset(Protocol):
     def kind(self) -> str: ...
 
 
-class _Term(BaseModel):
-    model_config = ConfigDict(frozen=True)
+class _Term(BaseModel, frozen=True):
+    pass
 
 
-class ModelDataset(_Term):
+class ModelDataset(_Term, frozen=True):
     """Model-backed dataset, identified by (datasource, model name)."""
 
     data_source: str
@@ -41,7 +41,7 @@ class ModelDataset(_Term):
         return "model"
 
 
-class StageDataset(_Term):
+class StageDataset(_Term, frozen=True):
     """Stage-backed dataset (a prior pipeline stage's output), by stage name."""
 
     stage_name: str
@@ -55,7 +55,7 @@ class StageDataset(_Term):
 DatasetT = Union[ModelDataset, StageDataset, "Aggregate"]
 
 
-class Aggregate(_Term):
+class Aggregate(_Term, frozen=True):
     """An aggregation of ``home`` at a total ``grain`` — itself a ``Dataset``."""
 
     home: DatasetT
@@ -67,7 +67,7 @@ class Aggregate(_Term):
         return "aggregate"
 
 
-class Transform(_Term):
+class Transform(_Term, frozen=True):
     """A window/temporal operator over an ``Aggregate``; grain-preserving.
 
     A time-ordered op (``TIME_TRANSFORMS``) must carry its axis at construction.
@@ -90,7 +90,7 @@ class Transform(_Term):
         return self.input.grain
 
 
-class Broadcast(_Term):
+class Broadcast(_Term, frozen=True):
     """Explicit coarse→fine coercion of ``source`` into the finer grain ``into``;
     the reverse direction needs a re-aggregation and is rejected."""
 
@@ -112,7 +112,7 @@ class Broadcast(_Term):
         return self.into
 
 
-class Field(_Term):
+class Field(_Term, frozen=True):
     """A row-level value on a dataset: the key, with its home made explicit."""
 
     home: DatasetT

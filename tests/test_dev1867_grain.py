@@ -20,7 +20,7 @@ from slayer.core.keys import (
     ColumnKey,
     TransformKey,
 )
-from slayer.engine.compile.regroup import regroup_root_grain
+from slayer.core.keys import regroup_root_grain
 from slayer.engine.compile.stages import (
     _effective_root_grain,
     _prune_functionally_determined_grain,

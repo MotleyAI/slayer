@@ -8,31 +8,36 @@ the compiler at their original checkpoints until the G16 reroute.
 
 from __future__ import annotations
 
-from typing import AbstractSet, Dict, List, NoReturn, Optional, Sequence, Tuple, Union
+from typing import (
+    TYPE_CHECKING, AbstractSet, Dict, List, NamedTuple, NoReturn, Optional,
+    Sequence, Tuple, Union,
+)
 
 from slayer.core.enums import DataType
-from slayer.core.errors import DistinctDimensionValuesError, SlayerError
+from slayer.core.errors import (
+    DistinctDimensionValuesError, PositionTypingError, SlayerError,
+)
 from slayer.core.formula import TIME_TRANSFORMS
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
     BetweenKey,
+    ColumnKey,
+    ColumnSqlKey,
     Grain,
     InKey,
     ScalarCallKey,
+    TimeTruncKey,
     TransformKey,
     ValueKey,
+    regroup_root_grain,
     walk_value_keys,
 )
 from slayer.core.models import SlayerModel
 from slayer.core.refs import dotted_key_display
 from slayer.core.scope import ModelScope, StageSchema
-from slayer.engine.compile.regroup import (
-    ConjunctTyping,
-    regroup_root_grain,
-    type_position_conjunct,
-)
+from slayer.ir.planned import MaskTyping
 from slayer.ir.elaborated import ElaboratedQuery, ExpressionEntry, Term
 from slayer.ir.terms import (
     Aggregate,
@@ -43,7 +48,8 @@ from slayer.ir.terms import (
     Transform,
 )
 
-from slayer.engine.prebound import PreboundQuery
+if TYPE_CHECKING:  # annotation-only: prebound's transitional compile import would cycle
+    from slayer.engine.prebound import PreboundQuery
 
 
 def home_dataset(
@@ -55,6 +61,110 @@ def home_dataset(
     if model is not None:
         return ModelDataset(data_source=model.data_source, model_name=model.name)
     return None
+
+
+class ConjunctTyping(NamedTuple):
+    """One position expression's typing: field/measure + stratum (0 = base-row population)."""
+
+    typing: MaskTyping
+    stratum: int
+
+
+def _field_blockers(cj: ValueKey, row_agg_set: frozenset) -> Tuple[List[ValueKey], bool]:
+    """(aggregates/transforms blocking field typing, saw-attached-ref); a ``row_agg_set``
+    aggregate resolves to its row-attached value and counts as aggregate-free."""
+    blockers: List[ValueKey] = []
+    attached = False
+
+    def _walk(k: ValueKey) -> None:
+        nonlocal attached
+        if isinstance(k, (AggregateKey, TransformKey)):
+            # A row-attach root (partitioned aggregate or transform root of a
+            # computed dimension) resolves row-side; its subtree is its own scope.
+            if k in row_agg_set:
+                attached = True
+            else:
+                blockers.append(k)
+            return
+        for c in k.children():
+            _walk(c)
+
+    _walk(cj)
+    return blockers, attached
+
+
+def _measure_blockers(cj: ValueKey, dim_keys: frozenset) -> List[ValueKey]:
+    """Row-level refs outside aggregate subtrees not available at query grain.
+    A subtree equal to a query dimension's bound key IS the grouped value —
+    available at query grain wholesale."""
+    blockers: List[ValueKey] = []
+
+    def _walk(k: ValueKey) -> None:
+        if k in dim_keys or isinstance(k, AggregateKey):
+            return
+        if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+            blockers.append(k)
+            return
+        if isinstance(k, TransformKey):
+            _walk(k.input)  # partition/time keys are transform machinery, not refs
+            return
+        for c in k.children():
+            _walk(c)
+
+    _walk(cj)
+    return blockers
+
+
+def _key_display(k: ValueKey) -> str:
+    if isinstance(k, AggregateKey):
+        leaf = getattr(k.source, "leaf", None) or getattr(k.source, "column_name", None) or "*"
+        path = getattr(k.source, "path", ())
+        name = f"{'.'.join((*path, leaf))}:{k.agg}"
+        return f"{name} (partition_by)" if k.partition_keys is not None else name
+    if isinstance(k, TransformKey):
+        return f"{k.op}(...)"
+    if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+        col = k.column if isinstance(k, TimeTruncKey) else k
+        leaf = getattr(col, "leaf", None) or getattr(col, "column_name", "?")
+        return ".".join((*col.path, leaf))
+    return type(k).__name__
+
+
+def type_position_conjunct(
+    cj: ValueKey,
+    *,
+    dim_keys: frozenset,
+    row_agg_set: frozenset = frozenset(),
+    has_measure_position: bool = True,
+    position: str = "filter",
+) -> ConjunctTyping:
+    """Type one conjunct as field (aggregate-free after resolution; attached refs count
+    as row-level) else measure (every bare ref available at query grain), else raise
+    :class:`PositionTypingError` naming both failures. Field wins a tie."""
+    field_blockers, attached = _field_blockers(cj, row_agg_set)
+    if not field_blockers:
+        return ConjunctTyping(MaskTyping.FIELD, 1 if attached else 0)
+    if has_measure_position:
+        measure_blockers = _measure_blockers(cj, dim_keys)
+        if not measure_blockers:
+            return ConjunctTyping(MaskTyping.MEASURE, 1)
+        raise PositionTypingError(
+            f"This {position} expression is valid as neither a field nor a "
+            f"measure. Field typing failed: it references "
+            f"{', '.join(_key_display(k) for k in field_blockers)}, available "
+            f"only after aggregation. Measure typing failed: it references "
+            f"row-level {', '.join(_key_display(k) for k in measure_blockers)}, "
+            f"not available at the query grain (not among the query "
+            f"dimensions). Split the top-level AND conjuncts so each resolves "
+            f"in one typing, or add the row-level reference to the query "
+            f"dimensions."
+        )
+    raise PositionTypingError(
+        f"This {position} expression references "
+        f"{', '.join(_key_display(k) for k in field_blockers)}, so it is not a "
+        f"field, and measure typing is unavailable because the query has no "
+        f"measure position (distinct_dimension_values=False)."
+    )
 
 
 def _terms_for(
@@ -531,6 +641,70 @@ def check_reaggregation_dims_attributable(
         f"to the operand dataset under to_many_handling='error'; add them "
         f"to the inner partition_by= so the operand is grained by them, "
         f"or choose 'broadcast'/'associate'."
+    )
+
+
+_RAW_ROW_FIX_HINT = (
+    "Either remove the measure reference, or set "
+    "distinct_dimension_values=True (the default) to keep the "
+    "auto-aggregating behaviour."
+)
+
+
+def check_raw_rows_filter_measure_ref(*, offending: Optional[str]) -> None:
+    """Raw-rows mode (distinct_dimension_values=False) rejects measure references in filters (DEV-1871 G15); ``offending`` = the raw filter string when one does."""
+    if offending is not None:
+        raise DistinctDimensionValuesError(
+            f"distinct_dimension_values=False rejects measure references, "
+            f"but filter {offending!r} contains one. {_RAW_ROW_FIX_HINT}"
+        )
+
+
+def check_raw_rows_order_measure_ref(
+    *, contains: Optional[str] = None, saved_name: Optional[str] = None,
+    source_name: Optional[str] = None, saved_dotted: Optional[str] = None,
+) -> None:
+    """Raw-rows mode rejects measure references in ORDER BY (DEV-1871 G15); at most one offense per call, resolution stays compiler-side."""
+    if contains is not None:
+        raise DistinctDimensionValuesError(
+            f"distinct_dimension_values=False rejects measure "
+            f"references, but order item {contains!r} contains one. "
+            f"{_RAW_ROW_FIX_HINT}"
+        )
+    if saved_name is not None:
+        raise DistinctDimensionValuesError(
+            f"distinct_dimension_values=False rejects measure references, "
+            f"but order item {saved_name!r} resolves to a saved measure on "
+            f"{source_name or 'the source model'!r}. "
+            f"{_RAW_ROW_FIX_HINT}"
+        )
+    if saved_dotted is not None:
+        raise DistinctDimensionValuesError(
+            f"distinct_dimension_values=False rejects measure references, "
+            f"but order item {saved_dotted!r} resolves to a saved measure. "
+            f"{_RAW_ROW_FIX_HINT}"
+        )
+
+
+def check_raw_rows_no_aggregate_slots(*, offender: str) -> NoReturn:
+    """An aggregate-phase slot under raw-rows mode came from a filter or order item (DEV-1871 G15; measures were rejected upstream)."""
+    raise DistinctDimensionValuesError(
+        f"distinct_dimension_values=False rejects measure references, but "
+        f"this query references the aggregation {offender!r} in its "
+        f"filters or order. Either remove the measure reference, or set "
+        f"distinct_dimension_values=True (the default) to keep the "
+        f"auto-aggregating behaviour."
+    )
+
+
+def check_order_target_has_slot(*, type_name: str) -> NoReturn:
+    """An order target with no materialisable slot would be silently dropped (DEV-1871 G15)."""
+    raise PositionTypingError(
+        f"ORDER BY expression is not supported: "
+        f"{type_name} has no materialisable "
+        f"slot. Order by an aggregate, a transform, a composite "
+        f"arithmetic / scalar expression, a dimension, or declare the "
+        f"expression as a measure and order by its name."
     )
 
 

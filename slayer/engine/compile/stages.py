@@ -27,8 +27,8 @@ from pydantic import BaseModel, ConfigDict
 from slayer.core.enums import DataType
 from slayer.core.formula import TIME_TRANSFORMS
 from slayer.core.format import NumberFormat
-from slayer.core.errors import AmbiguousJoinPathError, AmbiguousReferenceError, DistinctDimensionValuesError, PositionTypingError, UnknownReferenceError, UnreachableFilterDroppedWarning
-from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, normalize_scalar, reroot_value_key, substitute_value_keys, walk_value_keys
+from slayer.core.errors import AmbiguousJoinPathError, AmbiguousReferenceError, UnknownReferenceError, UnreachableFilterDroppedWarning
+from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, normalize_scalar, regroup_root_grain, reroot_value_key, substitute_value_keys, walk_value_keys
 from slayer.core.models import ModelMeasure, SlayerModel
 from slayer.engine import dimension_routing
 from slayer.engine.aggregate_input_paths import compute_aggregate_input_join_paths
@@ -58,6 +58,7 @@ from slayer.core.window_duration import parse_window_duration
 from slayer.core.scope import ModelScope, StageColumn, StageSchema
 from slayer.engine.binding import bind_expr, bind_filter, bind_time_dimension
 from slayer.engine.elaborate_env import (
+    ConjunctTyping,
     build_environment,
     check_association_column_param,
     check_association_root_unique_key,
@@ -71,7 +72,11 @@ from slayer.engine.elaborate_env import (
     check_opaque_grouping_dim,
     check_partition_key_attributable,
     check_partition_key_resolves,
+    check_order_target_has_slot,
     check_partitioned_measures,
+    check_raw_rows_filter_measure_ref,
+    check_raw_rows_no_aggregate_slots,
+    check_raw_rows_order_measure_ref,
     check_reaggregation_dims_attributable,
     check_reaggregation_no_column_param,
     check_reaggregation_no_window,
@@ -82,8 +87,11 @@ from slayer.engine.elaborate_env import (
     check_windowed_key_supported,
     check_windowed_time_dimension,
     home_dataset,
+    type_position_conjunct,
 )
 from slayer.ir.bound import BoundExpr, BoundFilter
+from slayer.ir.elaborated import ElaboratedQuery
+from slayer.ir.terms import Aggregate
 from slayer.engine.filter_reachability import (
     compute_key_join_paths,
     key_has_host_local_ref,
@@ -135,17 +143,14 @@ from slayer.engine.prebound import (
 )
 from slayer.engine.compile.regroup import (
     REGROUP_LEAF_PREFIX,
-    ConjunctTyping,
     RegroupPlaceholderRegistry,
     combined_consumer_aggregates,
     dimension_partitioned_aggregates,
     dimension_regroup_roots,
     is_local_combined_regroup_ref,
-    regroup_root_grain,
     reserved_prefix_columns,
     split_top_level_and,
     substitute_in_bound_filter,
-    type_position_conjunct,
 )
 from slayer.ir.source_bundle import (
     ResolvedSourceBundle,
@@ -303,13 +308,6 @@ def _windowed_slot_id_set(
     return windowed_slot_ids
 
 
-_RAW_ROW_FIX_HINT = (
-    "Either remove the measure reference, or set "
-    "distinct_dimension_values=True (the default) to keep the "
-    "auto-aggregating behaviour."
-)
-
-
 def _iter_expr_children(node):
     for attr in ("input", "left", "right", "this", "operand"):
         child = getattr(node, attr, None)
@@ -374,13 +372,11 @@ def _reject_measure_refs_in_filters(
             parsed = parse_filter_expr(f)
         except Exception:  # noqa: BLE001 — binder reports parse errors properly
             continue
-        if _expr_has_measure_ref(
-            parsed, measure_names=measure_names, scope=scope, bundle=bundle,
-        ):
-            raise DistinctDimensionValuesError(
-                f"distinct_dimension_values=False rejects measure references, "
-                f"but filter {f!r} contains one. {_RAW_ROW_FIX_HINT}"
-            )
+        check_raw_rows_filter_measure_ref(
+            offending=f if _expr_has_measure_ref(
+                parsed, measure_names=measure_names, scope=scope, bundle=bundle,
+            ) else None,
+        )
 
 
 def _parse_order_formula(raw: str):
@@ -402,32 +398,23 @@ def _reject_measure_refs_in_order(
         raw = getattr(item, "raw_formula", None)
         if raw:
             parsed = _parse_order_formula(raw)
-            if parsed is not None and _expr_has_measure_ref(
-                parsed, measure_names=measure_names, scope=scope, bundle=bundle,
-            ):
-                raise DistinctDimensionValuesError(
-                    f"distinct_dimension_values=False rejects measure "
-                    f"references, but order item {raw!r} contains one. "
-                    f"{_RAW_ROW_FIX_HINT}"
-                )
-        name = getattr(getattr(item, "column", None), "name", None)
-        if name and name in measure_names:
-            raise DistinctDimensionValuesError(
-                f"distinct_dimension_values=False rejects measure references, "
-                f"but order item {name!r} resolves to a saved measure on "
-                f"{source_name or 'the source model'!r}. "
-                f"{_RAW_ROW_FIX_HINT}"
+            check_raw_rows_order_measure_ref(
+                contains=raw if parsed is not None and _expr_has_measure_ref(
+                    parsed, measure_names=measure_names, scope=scope, bundle=bundle,
+                ) else None,
             )
+        name = getattr(getattr(item, "column", None), "name", None)
+        check_raw_rows_order_measure_ref(
+            saved_name=name if name and name in measure_names else None,
+            source_name=source_name,
+        )
         # A dotted ORDER BY column whose leaf is a saved measure on the terminal model is a measure ref too.
         full = getattr(getattr(item, "column", None), "full_name", None)
-        if full and "." in full and _resolve_saved_measure_ref(
-            scope=scope, bundle=bundle, formula=full,
-        ) is not None:
-            raise DistinctDimensionValuesError(
-                f"distinct_dimension_values=False rejects measure references, "
-                f"but order item {full!r} resolves to a saved measure. "
-                f"{_RAW_ROW_FIX_HINT}"
-            )
+        check_raw_rows_order_measure_ref(
+            saved_dotted=full if full and "." in full and _resolve_saved_measure_ref(
+                scope=scope, bundle=bundle, formula=full,
+            ) is not None else None,
+        )
 
 
 def _resolve_scope(
@@ -3066,6 +3053,43 @@ def _assert_total_routing(prebound: PreboundQuery) -> None:
                     )
 
 
+def _assert_broadcast_coherence(
+    *, env: ElaboratedQuery, measure_roots: List[ValueKey],
+    attach_plans: List[RegroupAttachPlan],
+) -> None:
+    """D5 coherence: a measure the compiler attaches at differing grains must carry the environment's Broadcast insertions for every non-union-grain term."""
+    combined = {
+        s.original_key
+        for plan in attach_plans if plan.attach_phase == "combined"
+        for s in plan.substitutions
+    }
+    if not combined:
+        return
+    for root, entry in zip(measure_roots, env.measures):
+        # Every aggregate term under the root (inline ones included): the
+        # combine mixes grains iff their grains differ, and only a root with a
+        # combined attach is a compiler-witnessed combine.
+        terms: Dict[ValueKey, Aggregate] = {}
+        has_combined = False
+        for k in walk_value_keys(root):
+            has_combined = has_combined or k in combined
+            if k not in terms:
+                term = env.terms.get(k)
+                if isinstance(term, Aggregate):
+                    terms[k] = term
+        if not has_combined or len({t.grain for t in terms.values()}) < 2:
+            continue
+        recorded = {b.source.recipe for b in entry.broadcasts}
+        missing = [
+            k for k, t in terms.items()
+            if t.grain != entry.grain and k not in recorded
+        ]
+        assert not missing, (
+            f"broadcast-coherence (D5): grain-differing combine lacks "
+            f"Broadcast insertions for {sorted(str(k) for k in missing)}"
+        )
+
+
 def _intern_producer(
     attach: RegroupAttachPlan,
     registry: Optional[Dict[Hashable, PlannedQuery]],
@@ -3604,8 +3628,9 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
             position="order",
         )
     # DEV-1871 D9 stage 2: the typing environment is built for every planned
-    # query (raw and prebound entries alike) but informs nothing yet.
-    build_environment(
+    # query (raw and prebound entries alike); it informs only the D5 coherence
+    # assert below until the G16 reroute.
+    env = build_environment(
         prebound=prebound,
         home=home_dataset(scope=scope, model=render_source_model),
         dim_keys=_order_dim_keys,
@@ -3620,6 +3645,10 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     n_dims = prebound.n_dims
     n_tds = prebound.n_time_dimensions
     distinct_dimension_values = prebound.distinct_dimension_values
+    # Pre-substitution measure roots, positionally aligned with env.measures.
+    _coh_measure_roots = [
+        dm.bound.value_key for dm in declared_measures[n_dims + n_tds:]
+    ]
 
     # Deferred partition_by shape guards run on the pre-substitution trees; computed-dimension aggregates are excluded (the desugar consumes them).
     _orig_row_aggs = frozenset(
@@ -3665,6 +3694,10 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     # At the top consumer level every cross-model / partitioned leaf must now be a placeholder; sub-plans are exempt.
     if not disable_host_rooted_isolation and not enable_producer_regroups:
         _assert_total_routing(prebound)
+    _assert_broadcast_coherence(
+        env=env, measure_roots=_coh_measure_roots,
+        attach_plans=regroup_attach_plans,
+    )
 
     # SlayerModel.filters — Mode-A SQL WHERE, scope-derived so a sub-plan gets its own.
     mode_a_filters: List[ModeAFilter] = []
@@ -3697,15 +3730,10 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         projection.registry.slots,
     )
 
-    # Raw-rows mode: any aggregate-phase slot came from a filter or order item (measures rejected upstream), which the flag forbids.
+    # Raw-rows mode: any aggregate-phase slot came from a filter or order item, which the flag forbids.
     if distinct_dimension_values is False and agg_slots:
-        offender = _canonical_name(agg_slots[0].key)
-        raise DistinctDimensionValuesError(
-            f"distinct_dimension_values=False rejects measure references, but "
-            f"this query references the aggregation {offender!r} in its "
-            f"filters or order. Either remove the measure reference, or set "
-            f"distinct_dimension_values=True (the default) to keep the "
-            f"auto-aggregating behaviour."
+        check_raw_rows_no_aggregate_slots(
+            offender=_canonical_name(agg_slots[0].key),
         )
 
     # Detect the selected windowed slots (window TD = the resolved active TD).
@@ -3873,12 +3901,8 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         sid = projection.registry.find_by_key(okey)
         if sid is None:
             # An unslotted order target would be silently dropped; fail loudly instead.
-            raise PositionTypingError(
-                f"ORDER BY expression is not supported: "
-                f"{type(spec.bound.value_key).__name__} has no materialisable "
-                f"slot. Order by an aggregate, a transform, a composite "
-                f"arithmetic / scalar expression, a dimension, or declare the "
-                f"expression as a measure and order by its name."
+            check_order_target_has_slot(
+                type_name=type(spec.bound.value_key).__name__,
             )
         order_slot = projection.registry.get(sid)
         order_entries.append(OrderEntry(

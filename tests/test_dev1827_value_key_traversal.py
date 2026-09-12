@@ -92,7 +92,7 @@ SAMPLES = {
 LEAF_KINDS = (ColumnKey, ColumnSqlKey, StarKey, LiteralKey, SqlExprKey)
 
 
-class DummyKey(_FrozenKey):
+class DummyKey(_FrozenKey, frozen=True):
     """A protocol-implementing kind outside the union."""
 
     child: ValueKey
@@ -111,7 +111,7 @@ class DummyKey(_FrozenKey):
         return self.model_copy(update={"child": new})
 
 
-class DummyOpaqueKey(_FrozenKey):
+class DummyOpaqueKey(_FrozenKey, frozen=True):
     """A kind WITHOUT protocol overrides — every generic visitor must raise."""
 
     marker: str = "opaque"

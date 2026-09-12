@@ -134,7 +134,7 @@ class TestConstructionInvariants:
         term = _aggregate()
         hash(term)
         with pytest.raises(ValueError):
-            term.grain = Grain.EMPTY
+            term.grain = Grain.EMPTY  # pyright: ignore[reportAttributeAccessIssue] — the frozen violation under test
         dataset = _model_ds()
         with pytest.raises(ValueError):
-            dataset.model_name = "other"
+            dataset.model_name = "other"  # pyright: ignore[reportAttributeAccessIssue] — the frozen violation under test

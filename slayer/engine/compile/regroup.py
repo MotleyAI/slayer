@@ -1,35 +1,29 @@
 """The regroup primitive's structural core: an aggregation-based dimension groups
 by a value that exists only after aggregating at a finer grain. Owns the pieces
-shared by discovery and substitution, plus the position typing pass (every filter
-conjunct / order target is a field or a measure); orchestration lives in
-``stage_planner``."""
+shared by discovery and substitution (the position typing pass lives in the
+checker, ``elaborate_env``); orchestration lives in ``stage_planner``."""
 
 from __future__ import annotations
 
-from typing import Dict, List, Mapping, NamedTuple, Optional, Tuple
+from typing import Dict, List, Mapping, NamedTuple, Optional
 
 from slayer.core.enums import DataType
-from slayer.core.errors import PositionTypingError
-from slayer.core.keys import Grain, REGROUP_LEAF_PREFIX, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, TimeTruncKey, TransformKey, ValueKey, substitute_value_keys, walk_value_keys
-from slayer.ir.planned import MaskTyping
+from slayer.core.keys import REGROUP_LEAF_PREFIX, AggregateKey, ArithmeticKey, ColumnKey, TransformKey, ValueKey, grained_inner_aggregates, substitute_value_keys, walk_value_keys
 from slayer.engine.ranked_planner import RANKED_AGGREGATIONS
 from slayer.sql.naming import canonical_aggregate_alias
 from slayer.ir.bound import BoundFilter
 
 __all__ = [
     "REGROUP_LEAF_PREFIX",
-    "ConjunctTyping",
     "RegroupPlaceholderRegistry",
     "dimension_partitioned_aggregates",
     "dimension_regroup_roots",
-    "regroup_root_grain",
     "CombinedConsumers",
     "combined_consumer_aggregates",
     "is_local_combined_regroup_ref",
     "split_top_level_and",
     "substitute_in_bound_filter",
     "reserved_prefix_columns",
-    "type_position_conjunct",
 ]
 
 #: Reused from ``ranked_planner`` so the two stay in step.
@@ -104,24 +98,6 @@ def dimension_partitioned_aggregates(declared_measures) -> List[AggregateKey]:
     return out
 
 
-def _grained_inner_aggregates(vk: ValueKey) -> List[AggregateKey]:
-    return [
-        k for k in walk_value_keys(vk)
-        if isinstance(k, AggregateKey) and k.partition_keys is not None
-    ]
-
-
-def regroup_root_grain(root: ValueKey) -> Grain:
-    """Producer grain of a row-attach root: a transform evaluates at the set-union
-    of ALL inner aggregates' partition grains; a bare aggregate at its own grain."""
-    if isinstance(root, TransformKey):
-        grain = Grain.EMPTY
-        for inner in _grained_inner_aggregates(root.input):
-            grain = grain | (inner.partition_keys or frozenset())
-        return grain
-    return Grain.of(getattr(root, "partition_keys", None) or frozenset())
-
-
 def dimension_regroup_roots(declared_measures) -> List[ValueKey]:  # NOSONAR(S3776) — one discovery walk; the transform-root and bare-aggregate arms share the seen/covered state, so splitting scatters it.
     """Row-attach producer ROOTS inside computed dimensions: a transform over an
     explicitly-grained aggregate (evaluated at the PRODUCER grain, so ``rank`` ranks
@@ -134,7 +110,7 @@ def dimension_regroup_roots(declared_measures) -> List[ValueKey]:  # NOSONAR(S37
         all_keys = list(walk_value_keys(dm.bound.value_key))
         transform_roots = [
             k for k in all_keys
-            if isinstance(k, TransformKey) and _grained_inner_aggregates(k.input)
+            if isinstance(k, TransformKey) and grained_inner_aggregates(k.input)
         ]
         covered: set = set()
         for t in transform_roots:
@@ -286,110 +262,6 @@ def split_top_level_and(vk: ValueKey) -> List[ValueKey]:
             out.extend(split_top_level_and(o))
         return out
     return [vk]
-
-
-class ConjunctTyping(NamedTuple):
-    """One position expression's typing: field/measure + stratum (0 = base-row population)."""
-
-    typing: MaskTyping
-    stratum: int
-
-
-def _field_blockers(cj: ValueKey, row_agg_set: frozenset) -> Tuple[List[ValueKey], bool]:
-    """(aggregates/transforms blocking field typing, saw-attached-ref); a ``row_agg_set``
-    aggregate resolves to its row-attached value and counts as aggregate-free."""
-    blockers: List[ValueKey] = []
-    attached = False
-
-    def _walk(k: ValueKey) -> None:
-        nonlocal attached
-        if isinstance(k, (AggregateKey, TransformKey)):
-            # A row-attach root (partitioned aggregate or transform root of a
-            # computed dimension) resolves row-side; its subtree is its own scope.
-            if k in row_agg_set:
-                attached = True
-            else:
-                blockers.append(k)
-            return
-        for c in k.children():
-            _walk(c)
-
-    _walk(cj)
-    return blockers, attached
-
-
-def _measure_blockers(cj: ValueKey, dim_keys: frozenset) -> List[ValueKey]:
-    """Row-level refs outside aggregate subtrees not available at query grain.
-    A subtree equal to a query dimension's bound key IS the grouped value —
-    available at query grain wholesale."""
-    blockers: List[ValueKey] = []
-
-    def _walk(k: ValueKey) -> None:
-        if k in dim_keys or isinstance(k, AggregateKey):
-            return
-        if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
-            blockers.append(k)
-            return
-        if isinstance(k, TransformKey):
-            _walk(k.input)  # partition/time keys are transform machinery, not refs
-            return
-        for c in k.children():
-            _walk(c)
-
-    _walk(cj)
-    return blockers
-
-
-def _key_display(k: ValueKey) -> str:
-    if isinstance(k, AggregateKey):
-        leaf = getattr(k.source, "leaf", None) or getattr(k.source, "column_name", None) or "*"
-        path = getattr(k.source, "path", ())
-        name = f"{'.'.join((*path, leaf))}:{k.agg}"
-        return f"{name} (partition_by)" if k.partition_keys is not None else name
-    if isinstance(k, TransformKey):
-        return f"{k.op}(...)"
-    if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
-        col = k.column if isinstance(k, TimeTruncKey) else k
-        leaf = getattr(col, "leaf", None) or getattr(col, "column_name", "?")
-        return ".".join((*col.path, leaf))
-    return type(k).__name__
-
-
-def type_position_conjunct(
-    cj: ValueKey,
-    *,
-    dim_keys: frozenset,
-    row_agg_set: frozenset = frozenset(),
-    has_measure_position: bool = True,
-    position: str = "filter",
-) -> ConjunctTyping:
-    """Type one conjunct as field (aggregate-free after resolution; attached refs count
-    as row-level) else measure (every bare ref available at query grain), else raise
-    :class:`PositionTypingError` naming both failures. Field wins a tie."""
-    field_blockers, attached = _field_blockers(cj, row_agg_set)
-    if not field_blockers:
-        return ConjunctTyping(MaskTyping.FIELD, 1 if attached else 0)
-    if has_measure_position:
-        measure_blockers = _measure_blockers(cj, dim_keys)
-        if not measure_blockers:
-            return ConjunctTyping(MaskTyping.MEASURE, 1)
-        raise PositionTypingError(
-            f"This {position} expression is valid as neither a field nor a "
-            f"measure. Field typing failed: it references "
-            f"{', '.join(_key_display(k) for k in field_blockers)}, available "
-            f"only after aggregation. Measure typing failed: it references "
-            f"row-level {', '.join(_key_display(k) for k in measure_blockers)}, "
-            f"not available at the query grain (not among the query "
-            f"dimensions). Split the top-level AND conjuncts so each resolves "
-            f"in one typing, or add the row-level reference to the query "
-            f"dimensions."
-        )
-    raise PositionTypingError(
-        f"This {position} expression references "
-        f"{', '.join(_key_display(k) for k in field_blockers)}, so it is not a "
-        f"field, and measure typing is unavailable because the query has no "
-        f"measure position (distinct_dimension_values=False)."
-    )
 
 
 def substitute_in_bound_filter(
