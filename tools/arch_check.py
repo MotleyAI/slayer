@@ -390,9 +390,40 @@ def _package_units(nodes: dict) -> set[str]:
     return units
 
 
+def _dotted_overlap(a: str, b: str) -> bool:
+    """a and b name the same subtree, or one nests inside the other (dotted-path prefix)."""
+    return a == b or a.startswith(b + ".") or b.startswith(a + ".")
+
+
+def _child_collision(dotted: str, package: str, owned: set[str]) -> str | None:
+    """The declared unit a child overlaps, or None. A child nests only under its own node's
+    package; equalling, containing, or nesting inside any other package/claim splits it across
+    nodes (`_attribute` would then assign the overlapping subtree elsewhere)."""
+    for unit in owned:
+        if unit != package and _dotted_overlap(dotted, unit):
+            return unit
+    return None
+
+
+def _node_child_findings(root: Path, node_id: str, package: str, children: list[str], owned: set[str]) -> list[str]:
+    findings: list[str] = []
+    seen: set[str] = set()
+    for child in children:
+        dotted = f"{package}.{child}"
+        if child in seen:
+            findings.append(f"claims-exactly-once: {node_id} declares child {child} more than once")
+        seen.add(child)
+        clash = _child_collision(dotted=dotted, package=package, owned=owned)
+        if clash is not None:
+            findings.append(f"claims-exactly-once: {node_id} child {child} ({dotted}) collides with declared unit {clash}")
+        if _module_path(root, dotted) is None:
+            findings.append(f"claims-exist: {node_id} declares child {child}, which does not exist on disk")
+    return findings
+
+
 def _check_children(root: Path, nodes: dict) -> list[str]:
     """Declared children resolve on disk under their node's package, are named at most once, and
-    do not collide with another node's package or claim."""
+    nest only under their own node — never overlapping another node's package or claim."""
     findings: list[str] = []
     owned = _package_units(nodes)
     for node_id, spec in nodes.items():
@@ -402,19 +433,9 @@ def _check_children(root: Path, nodes: dict) -> list[str]:
         if spec.get("virtual"):
             findings.append(f"claims-exist: virtual node {node_id} may not declare children")
             continue
-        package = spec["package"]
-        seen: set[str] = set()
-        for child in children:
-            dotted = f"{package}.{child}"
-            if child in seen:
-                findings.append(f"claims-exactly-once: {node_id} declares child {child} more than once")
-            seen.add(child)
-            if dotted in owned:
-                findings.append(
-                    f"claims-exactly-once: {node_id} child {child} ({dotted}) collides with a declared package/claim"
-                )
-            if _module_path(root, dotted) is None:
-                findings.append(f"claims-exist: {node_id} declares child {child}, which does not exist on disk")
+        findings += _node_child_findings(
+            root=root, node_id=node_id, package=spec["package"], children=children, owned=owned
+        )
     return findings
 
 

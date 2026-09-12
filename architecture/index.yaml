@@ -73,4 +73,4 @@ diagrams:
   architecture/system.arc42.md: [landscape]
   architecture/core.arc42.md: [core_focus]
   architecture/engine.arc42.md: [query_pipeline]
-  architecture/sql.arc42.md: [query_pipeline]
+  architecture/sql.arc42.md: [sql_focus]

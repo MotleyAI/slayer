@@ -13,4 +13,9 @@ views {
     title 'Core in context'
     include core, core -> *, * -> core
   }
+
+  view sql_focus {
+    title 'SQL generation in context'
+    include sql, sql -> *, * -> sql
+  }
 }
