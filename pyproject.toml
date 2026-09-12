@@ -129,7 +129,6 @@ jpype1 = "^1.5.0"
 # importable before invoking pytest so a missing dep surfaces as failure.
 testcontainers = {extras = ["mysql", "clickhouse", "mssql"], version = "^4.0"}
 basedpyright = "^1.39.10"
-import-linter = "^2.14"
 pytest-xdist = ">=3.6"
 
 [tool.pytest.ini_options]
@@ -140,36 +139,6 @@ markers = [
     "metabase_e2e: live-Metabase end-to-end suite (requires Docker)",
 ]
 asyncio_mode = "auto"
-
-[tool.importlinter]
-root_package = "slayer"
-exclude_type_checking_imports = true
-
-# Grandfathered edges below are a ratchet: entries may only ever be REMOVED
-# (baselines in architecture/index.yaml, checked by tools/arch_check.py).
-[[tool.importlinter.contracts]]
-name = "layers"
-type = "layers"
-layers = ["slayer.engine", "slayer.sql", "slayer.ir", "slayer.core"]
-unmatched_ignore_imports_alerting = "error"
-ignore_imports = [
-    "slayer.core.query -> slayer.engine.syntax",
-    "slayer.core.models -> slayer.sql.dialects",
-    "slayer.core.models -> slayer.sql.sql_predicate",
-    "slayer.core.models -> slayer.sql.window_detect",
-    "slayer.core.query -> slayer.sql.window_detect",
-]
-
-[[tool.importlinter.contracts]]
-name = "forbidden"
-type = "forbidden"
-source_modules = ["slayer.core"]
-forbidden_modules = ["slayer.storage"]
-unmatched_ignore_imports_alerting = "error"
-ignore_imports = [
-    "slayer.core.models -> slayer.storage.migrations",
-    "slayer.core.query -> slayer.storage.migrations",
-]
 
 [tool.basedpyright]
 typeCheckingMode = "basic"

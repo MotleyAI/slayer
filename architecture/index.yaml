@@ -1,23 +1,28 @@
-# Cross-walk between the LikeC4 model, import-linter contracts, arc42 files,
-# and OpenSpec specs. Checked by tools/arch_check.py; schema in system.arc42.md.
+# Cross-walk between the LikeC4 model, arc42 files, and OpenSpec specs.
+# Checked by tools/arch_check.py; schema in system.arc42.md §3/§5.
+
+root_package: slayer
 
 nodes:
   core:
     package: slayer.core
     claims: [slayer.async_utils]
+    children: [query, models]
     arc42: architecture/core.arc42.md
   sql:
     package: slayer.sql
-    children: [render, dialects]
+    children: [render, dialects, sql_predicate, window_detect]
     arc42: architecture/sql.arc42.md
   engine:
     package: slayer.engine
+    children: [syntax]
     arc42: architecture/engine.arc42.md
   ir:
     package: slayer.ir
     arc42: architecture/ir.arc42.md
   storage:
     package: slayer.storage
+    children: [migrations]
   importers:
     virtual: true
     packages: [slayer.dbt, slayer.cube, slayer.osi, slayer.ingest_report]
@@ -43,11 +48,9 @@ nodes:
       - slayer.demo
       - slayer.__main__
 
-# Grandfathered-edge counts per import-linter contract; arch_check fails if a
-# contract's ignore_imports count differs from its baseline. Only ever lower these.
-contracts:
-  layers: {baseline: 5}
-  forbidden: {baseline: 2}
+# Count of `#legacy` arrows in the model; arch_check fails if the model's count
+# differs. Only ever lower this — every legacy arrow is a door slated to die.
+legacy_arrows: {baseline: 8}
 
 # Fail-closed deferral-site count (tests/test_law_guard_ratchet.py). Only ever lower.
 guards: {baseline: 5}
@@ -63,8 +66,11 @@ cross_cutting_arc42: [architecture/semantics.arc42.md]
 # arc42 doc -> LikeC4 view ids embedded as mermaid between <!-- likec4:<id> --> markers.
 # arch_check's diagrams-fresh enforces byte-for-byte freshness; regenerate with
 # `poetry run python tools/arch_diagrams.py`. Keys are repo-relative architecture/*.arc42.md.
+# view_depth (default 3) sets how many levels each view expands before collapsing.
+view_depth:
+  landscape: 1
 diagrams:
   architecture/system.arc42.md: [landscape]
   architecture/core.arc42.md: [core_focus]
   architecture/engine.arc42.md: [query_pipeline]
-  architecture/sql.arc42.md: [query_pipeline]
+  architecture/sql.arc42.md: [sql_focus]

@@ -4,8 +4,10 @@
 
 `slayer/core` holds the domain models, the `ValueKey` structural-identity
 family, and the typed error/warning vocabulary. It is the bottom layer: it is
-meant to import no other SLayer node; the remaining `core → engine/sql/storage`
-edges are grandfathered and slated to die (system principle 2).
+meant to import no other SLayer node; the remaining crossings are the
+grandfathered child-level `#legacy` doors (`core.query`/`core.models` →
+`engine.syntax`, `sql.*`, `storage.migrations`), slated to die (system
+principle 2).
 
 ## 2. Building blocks
 
@@ -15,19 +17,36 @@ The `core_focus` view ([views.c4](views.c4)) — `core` and its incident edges:
 ```mermaid
 flowchart TD
   %% core_focus: Core in context
-  core["Core domain models"]
-  engine["Query engine"]
-  sql["SQL generation"]
-  storage["Storage backends"]
-  importers("Importers")
+  subgraph core["Core domain models"]
+    core__query["Query"]
+    core__models["Models"]
+  end
+  subgraph sql["SQL generation"]
+    sql__dialects["Dialects"]
+    sql__sql_predicate["SQL predicate"]
+    sql__window_detect["Window detect"]
+  end
+  subgraph engine["Query engine"]
+    engine__syntax["Syntax"]
+  end
   ir["Intermediate representation"]
+  subgraph storage["Storage backends"]
+    storage__migrations["Migrations"]
+  end
+  importers("Importers")
+  search("Search & embeddings")
   memories("Agent memories")
   protocols("BI wire protocols")
-  search("Search & embeddings")
   surfaces("User-facing surfaces")
-  core -.-> engine
-  core -.-> sql
-  core -.-> storage
+  core__query -.-> engine__syntax
+  core__models -.-> sql__dialects
+  core__models -.-> sql__sql_predicate
+  core__models -.-> sql__window_detect
+  core__query -.-> sql__window_detect
+  core__models -.-> storage__migrations
+  core__query -.-> storage__migrations
+  core__models -.-> core__query
+  core__query --> core__models
   engine --> core
   importers --> core
   ir --> core
@@ -37,6 +56,8 @@ flowchart TD
   sql --> core
   storage --> core
   surfaces --> core
+  classDef leaf fill:none;
+  class core__query,core__models,sql__dialects,sql__sql_predicate,sql__window_detect,engine__syntax,ir,storage__migrations,importers,search,memories,protocols,surfaces leaf;
 ```
 *Dashed arrows: legacy edges slated to die.*
 <!-- /likec4:core_focus -->

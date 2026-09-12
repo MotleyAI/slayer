@@ -25,13 +25,17 @@ arch_check = _load("arch_check")
 FIX_CMD = "poetry run python tools/arch_diagrams.py"
 
 
-def arch_only(tmp_path: Path, model_text: str, views_text: str | None = None) -> Path:
-    """Write just architecture/model + optional views under tmp_path, return it as root."""
+def arch_only(
+    tmp_path: Path, model_text: str, views_text: str | None = None, index_text: str | None = None
+) -> Path:
+    """Write just architecture/model + optional views/index under tmp_path, return it as root."""
     model_dir = tmp_path / "architecture" / "model"
     model_dir.mkdir(parents=True)
     (model_dir / "m.c4").write_text(textwrap.dedent(model_text), encoding="utf-8")
     if views_text is not None:
         (tmp_path / "architecture" / "views.c4").write_text(textwrap.dedent(views_text), encoding="utf-8")
+    if index_text is not None:
+        (tmp_path / "architecture" / "index.yaml").write_text(textwrap.dedent(index_text), encoding="utf-8")
     return tmp_path
 
 
@@ -86,7 +90,7 @@ def test_parse_model_relations_and_legacy(tmp_path):
     ]
 
 
-def test_parse_model_child_records_parent(tmp_path):
+def test_parse_model_child_gets_fqn_id_and_parent(tmp_path):
     model = """
     specification { element node }
     model {
@@ -97,7 +101,86 @@ def test_parse_model_child_records_parent(tmp_path):
     }
     """
     mp = arch_diagrams.parse_model(arch_only(tmp_path, model))
-    assert {e.id: e.parent for e in mp.elements} == {"p": None, "kid": "p", "q": None}
+    assert {e.id: e.parent for e in mp.elements} == {"p": None, "p.kid": "p", "q": None}
+    assert mp.findings == []
+
+
+def test_parse_model_same_leaf_name_under_two_parents_legal(tmp_path):
+    model = """
+    specification { element node }
+    model {
+      p = node 'P' {
+        kid = node 'K1'
+      }
+      q = node 'Q' {
+        kid = node 'K2'
+      }
+    }
+    """
+    mp = arch_diagrams.parse_model(arch_only(tmp_path, model))
+    assert {e.id for e in mp.elements} == {"p", "p.kid", "q", "q.kid"}
+    assert mp.findings == []
+
+
+def test_parse_model_duplicate_child_in_same_parent_is_finding(tmp_path):
+    model = """
+    specification { element node }
+    model {
+      p = node 'P' {
+        kid = node 'K'
+        kid = node 'K again'
+      }
+    }
+    """
+    mp = arch_diagrams.parse_model(arch_only(tmp_path, model))
+    assert any("p.kid" in f for f in mp.findings)
+
+
+def test_parse_model_dotted_relation_endpoints(tmp_path):
+    model = """
+    specification { element node  tag legacy }
+    model {
+      p = node 'P' {
+        kid = node 'K'
+      }
+      q = node 'Q'
+      p.kid -> q #legacy
+      q -> p.kid
+    }
+    """
+    mp = arch_diagrams.parse_model(arch_only(tmp_path, model))
+    assert [(r.src, r.dst, r.legacy) for r in mp.relations] == [("p.kid", "q", True), ("q", "p.kid", False)]
+    assert mp.findings == []
+
+
+def test_parse_model_unknown_dotted_endpoint_is_finding(tmp_path):
+    model = """
+    specification { element node }
+    model {
+      p = node 'P' {
+        kid = node 'K'
+      }
+      q = node 'Q'
+      p.ghost -> q
+    }
+    """
+    mp = arch_diagrams.parse_model(arch_only(tmp_path, model))
+    assert any("p.ghost" in f for f in mp.findings)
+
+
+def test_parse_model_local_child_name_endpoint_is_finding(tmp_path):
+    model = """
+    specification { element node }
+    model {
+      p = node 'P' {
+        kid = node 'K'
+      }
+      q = node 'Q'
+      kid -> q
+    }
+    """
+    mp = arch_diagrams.parse_model(arch_only(tmp_path, model))
+    assert any("kid" in f for f in mp.findings)
 
 
 def test_parse_model_unrecognized_model_line_is_finding(tmp_path):
@@ -320,9 +403,9 @@ def test_parse_views_include_star(tmp_path):
     assert findings == []
 
 
-def test_parse_views_star_excludes_children(tmp_path):
+def test_parse_views_star_shows_children_to_depth(tmp_path):
     v, _ = parsed_view(tmp_path, CHILD_MODEL, "views { view v { title 'V' include * } }", "v")
-    assert v.node_ids == ["p", "q"]
+    assert v.node_ids == ["p", "p.kid", "q"]
     assert edge_tuples(v) == [("p", "q", False)]
 
 
@@ -391,9 +474,14 @@ def test_parse_views_unknown_id_is_finding(tmp_path):
     assert any("ghost" in f for f in findings)
 
 
-def test_parse_views_child_id_is_finding(tmp_path):
+def test_parse_views_local_child_name_is_finding(tmp_path):
     _, findings = parsed_view(tmp_path, CHILD_MODEL, "views { view v { title 'V' include kid } }", "v")
     assert any("kid" in f for f in findings)
+
+
+def test_parse_views_child_fqn_is_finding(tmp_path):
+    _, findings = parsed_view(tmp_path, CHILD_MODEL, "views { view v { title 'V' include p.kid } }", "v")
+    assert any("p.kid" in f for f in findings)
 
 
 def test_parse_views_unknown_predicate_anchor_is_finding(tmp_path):
@@ -402,8 +490,8 @@ def test_parse_views_unknown_predicate_anchor_is_finding(tmp_path):
 
 
 def test_parse_views_child_predicate_anchor_is_finding(tmp_path):
-    _, findings = parsed_view(tmp_path, CHILD_MODEL, "views { view v { title 'V' include kid -> * } }", "v")
-    assert any("kid" in f for f in findings)
+    _, findings = parsed_view(tmp_path, CHILD_MODEL, "views { view v { title 'V' include p.kid -> * } }", "v")
+    assert any("p.kid" in f for f in findings)
 
 
 def test_parse_views_unsupported_predicate_is_finding(tmp_path):
@@ -525,22 +613,16 @@ def test_render_mermaid_escapes_double_quote_in_title(tmp_path):
 # --------------------------------------------------------------------------- fixture repo for generate + diagrams-fresh
 
 PYPROJECT = """
-[tool.importlinter]
-root_package = "pkg"
-
-[[tool.importlinter.contracts]]
-name = "layers"
-type = "layers"
-layers = ["pkg.engine", "pkg.core"]
-ignore_imports = ["pkg.core.a -> pkg.engine.b"]
+[tool.poetry]
+name = "fixture"
 """
 
 INDEX_BASE = """
+root_package: pkg
 nodes:
   core: {package: pkg.core}
   engine: {package: pkg.engine, arc42: architecture/engine.arc42.md}
-contracts:
-  layers: {baseline: 1}
+legacy_arrows: {baseline: 1}
 cross_cutting_specs:
   queries: {touches: [core, engine]}
 """
@@ -573,7 +655,7 @@ views {
 SYSTEM_MD = """
 # System
 
-1. Layering. [enforced: layers]
+1. One law. [enforced: arch_check:model-truth]
 2. Soft rule. [review]
 
 ## Diagrams
@@ -585,7 +667,7 @@ SYSTEM_MD = """
 SYSTEM_MD_NO_MARKERS = """
 # System
 
-1. Layering. [enforced: layers]
+1. One law. [enforced: arch_check:model-truth]
 2. Soft rule. [review]
 """
 
@@ -693,7 +775,7 @@ views {
 SYSTEM_MD_TWO = """
 # System
 
-1. Layering. [enforced: layers]
+1. One law. [enforced: arch_check:model-truth]
 2. Soft rule. [review]
 
 ## Diagrams
@@ -936,6 +1018,260 @@ def test_diagrams_fresh_whitespace_variant_marker_flagged(tmp_path):
     assert any("land" in f for f in fresh_findings(root))
 
 
+# --------------------------------------------------------------------------- view depth, roll-up, subgraphs
+
+CHILD_VIEW_MODEL = """
+specification { element node  tag legacy }
+model {
+  p = node 'P' {
+    kid = node 'Kid'
+    kid2 = node 'Kid two'
+  }
+  q = node 'Q'
+  r = node 'R'
+  p.kid -> q #legacy
+  p.kid2 -> q
+  p.kid -> p.kid2
+  q -> r
+}
+"""
+
+DEPTH_MODEL = """
+specification { element node }
+model {
+  p = node 'P' {
+    kid = node 'Kid' {
+      grand = node 'Grand' {
+        leaf = node 'Leaf'
+      }
+    }
+  }
+  q = node 'Q'
+  p.kid.grand.leaf -> q
+}
+"""
+
+ONE_VIEW = "views { view v { title 'V' include * } }"
+
+STYLING_PREFIXES = ("classDef", "class ", "style ", "direction ")
+
+
+def structural(text: str) -> list[str]:
+    """Mermaid lines minus styling/layout directives — the styling pass may tune those freely."""
+    return [line for line in text.splitlines() if not line.strip().startswith(STYLING_PREFIXES)]
+
+
+def depth_view(tmp_path, model_text, index_text, view_id):
+    root = arch_only(tmp_path, model_text, ONE_VIEW, index_text=index_text)
+    vp = arch_diagrams.parse_views(root, arch_diagrams.parse_model(root))
+    return view_by_id(vp.views, view_id)
+
+
+def test_view_depth_default_shows_three_levels(tmp_path):
+    v, findings = parsed_view(tmp_path, DEPTH_MODEL, ONE_VIEW, "v")
+    assert v.node_ids == ["p", "p.kid", "p.kid.grand", "q"]
+    assert edge_tuples(v) == [("p.kid.grand", "q", False)]
+    assert findings == []
+
+
+def test_view_depth_override_collapses_children(tmp_path):
+    v = depth_view(tmp_path, DEPTH_MODEL, "view_depth:\n  v: 2\n", "v")
+    assert v.node_ids == ["p", "p.kid", "q"]
+    assert edge_tuples(v) == [("p.kid", "q", False)]
+
+
+def test_view_depth_one_reduces_to_node_level(tmp_path):
+    v = depth_view(tmp_path, DEPTH_MODEL, "view_depth:\n  v: 1\n", "v")
+    assert v.node_ids == ["p", "q"]
+    assert edge_tuples(v) == [("p", "q", False)]
+
+
+def test_rollup_dedupes_and_drops_self_edges(tmp_path):
+    v = depth_view(tmp_path, CHILD_VIEW_MODEL, "view_depth:\n  v: 1\n", "v")
+    assert v.node_ids == ["p", "q", "r"]
+    assert edge_tuples(v) == [("p", "q", False), ("q", "r", False)]
+
+
+def test_rollup_dashed_iff_all_contributors_legacy(tmp_path):
+    model = CHILD_VIEW_MODEL.replace("  p.kid2 -> q\n", "  p.kid2 -> q #legacy\n")
+    v = depth_view(tmp_path, model, "view_depth:\n  v: 1\n", "v")
+    assert edge_tuples(v) == [("p", "q", True), ("q", "r", False)]
+
+
+def test_listed_include_expands_children_and_scopes_edges(tmp_path):
+    v, _ = parsed_view(tmp_path, CHILD_VIEW_MODEL, "views { view v { title 'V' include p, q } }", "v")
+    assert v.node_ids == ["p", "p.kid", "p.kid2", "q"]
+    assert edge_tuples(v) == [("p.kid", "q", True), ("p.kid2", "q", False), ("p.kid", "p.kid2", False)]
+
+
+def test_focus_src_predicate_matches_by_top_ancestor(tmp_path):
+    v, _ = parsed_view(tmp_path, CHILD_VIEW_MODEL, "views { view v { title 'V' include r, p -> * } }", "v")
+    assert set(v.node_ids) == {"r", "p", "p.kid", "p.kid2", "q"}
+    assert set(edge_tuples(v)) == {("p.kid", "q", True), ("p.kid2", "q", False), ("p.kid", "p.kid2", False)}
+
+
+def test_focus_dst_predicate_matches_by_top_ancestor(tmp_path):
+    v, _ = parsed_view(tmp_path, CHILD_VIEW_MODEL, "views { view v { title 'V' include r, * -> q } }", "v")
+    assert set(v.node_ids) == {"r", "p", "p.kid", "p.kid2", "q"}
+    assert set(edge_tuples(v)) == {("p.kid", "q", True), ("p.kid2", "q", False)}
+
+
+FOCUS_SUBTREE_MODEL = """
+specification { element node }
+model {
+  p = node 'P' {
+    kid = node 'Kid'
+    kid2 = node 'Kid two'
+  }
+  q = node 'Q'
+  q -> p.kid
+}
+"""
+
+
+def test_focus_predicate_pulls_ancestor_chain_not_whole_subtree(tmp_path):
+    # `q -> *` matches only q -> p.kid; it pulls p.kid + its ancestor p, never the unrelated p.kid2.
+    v, findings = parsed_view(tmp_path, FOCUS_SUBTREE_MODEL, "views { view v { title 'V' include q, q -> * } }", "v")
+    assert set(v.node_ids) == {"q", "p", "p.kid"}
+    assert "p.kid2" not in v.node_ids
+    assert edge_tuples(v) == [("q", "p.kid", False)]
+    assert findings == []
+
+
+def test_render_mermaid_subgraphs_golden(tmp_path):
+    root = arch_only(tmp_path, CHILD_VIEW_MODEL, ONE_VIEW)
+    expected = [
+        "```mermaid",
+        "flowchart TD",
+        "  %% v: V",
+        '  subgraph p["P"]',
+        '    p__kid["Kid"]',
+        '    p__kid2["Kid two"]',
+        "  end",
+        '  q["Q"]',
+        '  r["R"]',
+        "  p__kid -.-> q",
+        "  p__kid2 --> q",
+        "  p__kid --> p__kid2",
+        "  q --> r",
+        "```",
+        "*Dashed arrows: legacy edges slated to die.*",
+    ]
+    assert structural(render(root, "v")) == expected
+
+
+def test_render_mermaid_nested_subgraphs_golden(tmp_path):
+    root = arch_only(tmp_path, DEPTH_MODEL, ONE_VIEW)
+    expected = [
+        "```mermaid",
+        "flowchart TD",
+        "  %% v: V",
+        '  subgraph p["P"]',
+        '    subgraph p__kid["Kid"]',
+        '      p__kid__grand["Grand"]',
+        "    end",
+        "  end",
+        '  q["Q"]',
+        "  p__kid__grand --> q",
+        "```",
+    ]
+    assert structural(render(root, "v")) == expected
+
+
+def test_render_mermaid_subgraph_view_has_classdef_styling(tmp_path):
+    root = arch_only(tmp_path, CHILD_VIEW_MODEL, ONE_VIEW)
+    assert any(line.strip().startswith("classDef") for line in render(root, "v").splitlines())
+
+
+def test_render_collapsed_view_matches_classic_emission(tmp_path):
+    root = arch_only(tmp_path, DEPTH_MODEL, ONE_VIEW, index_text="view_depth:\n  v: 1\n")
+    expected = "\n".join(
+        [
+            "```mermaid",
+            "flowchart TD",
+            "  %% v: V",
+            '  p["P"]',
+            '  q["Q"]',
+            "  p --> q",
+            "```",
+        ]
+    )
+    assert render(root, "v") == expected
+
+
+MODEL_WITH_CHILD = """
+specification {
+  element node
+  tag legacy
+}
+model {
+  core = node 'Core' {
+    query = node 'Query'
+  }
+  engine = node 'Engine'
+  core.query -> engine #legacy
+  engine -> core
+}
+"""
+
+
+def test_generate_fills_subgraph_blocks(tmp_path):
+    root = make_repo(tmp_path, regenerate=False, model=MODEL_WITH_CHILD)
+    arch_diagrams.generate(root)
+    text = (root / "architecture" / "system.arc42.md").read_text(encoding="utf-8")
+    assert 'subgraph core["Core"]' in text
+    assert 'core__query["Query"]' in text
+    assert "core__query -.-> engine" in text
+    assert "engine --> core" in text
+    assert arch_diagrams.generate(root) == []
+
+
+def test_diagrams_fresh_child_model_healthy(tmp_path):
+    assert fresh_findings(make_repo(tmp_path, model=MODEL_WITH_CHILD)) == []
+
+
+def test_diagrams_fresh_child_edit_without_regen_flagged(tmp_path):
+    root = make_repo(tmp_path, model=MODEL_WITH_CHILD)
+    model = root / "architecture" / "model" / "pkg.c4"
+    model.write_text(
+        model.read_text(encoding="utf-8").replace("query = node 'Query'", "query = node 'Q2'"), encoding="utf-8"
+    )
+    findings = fresh_findings(root)
+    assert findings
+    assert any(FIX_CMD in f for f in findings)
+
+
+def test_view_depth_non_integer_is_finding(tmp_path):
+    index = INDEX + "view_depth:\n  land: fish\n"
+    root = make_repo(tmp_path, regenerate=False, index=index, system_md=SYSTEM_MD_NO_MARKERS)
+    assert any("view_depth" in f for f in arch_check.run_checks(root))
+
+
+def test_view_depth_unknown_view_id_is_finding(tmp_path):
+    index = INDEX + "view_depth:\n  ghost: 2\n"
+    root = make_repo(tmp_path, regenerate=False, index=index, system_md=SYSTEM_MD_NO_MARKERS)
+    assert any("ghost" in f for f in arch_check.run_checks(root))
+
+
+def test_view_depth_zero_is_finding(tmp_path):
+    index = INDEX + "view_depth:\n  land: 0\n"
+    root = make_repo(tmp_path, regenerate=False, index=index, system_md=SYSTEM_MD_NO_MARKERS)
+    assert any("view_depth" in f for f in arch_check.run_checks(root))
+
+
+def test_view_depth_negative_is_finding(tmp_path):
+    index = INDEX + "view_depth:\n  land: -1\n"
+    root = make_repo(tmp_path, regenerate=False, index=index, system_md=SYSTEM_MD_NO_MARKERS)
+    assert any("view_depth" in f for f in arch_check.run_checks(root))
+
+
+def test_generate_raises_on_malformed_view_depth(tmp_path):
+    index = INDEX + "view_depth:\n  land: fish\n"
+    root = make_repo(tmp_path, regenerate=False, index=index)
+    with pytest.raises(ValueError):
+        arch_diagrams.generate(root)
+
+
 # --------------------------------------------------------------------------- parser consolidation (task 2.1)
 
 
@@ -950,9 +1286,12 @@ def test_model_identity_finding_text_unchanged(tmp_path):
     assert "model-identity: element ghost maps to no node or declared child in index.yaml" in arch_check.run_checks(root)
 
 
-def test_model_truth_finding_text_unchanged(tmp_path):
+def test_model_truth_missing_finding_names_module_witness(tmp_path):
     root = make_repo(tmp_path, regenerate=False, model=MODEL.replace("  engine -> core\n", ""))
-    assert "model-truth: measured runtime edge engine -> core is missing from the model" in arch_check.run_checks(root)
+    assert (
+        "model-truth: measured runtime edge engine -> core is missing from the model"
+        " (import pkg.engine.b -> pkg.core)"
+    ) in arch_check.run_checks(root)
 
 
 # --------------------------------------------------------------------------- real repo (tasks 3.1-3.4, freshness)
@@ -970,13 +1309,21 @@ def test_repo_views_has_core_focus():
     assert "* -> core" in views
 
 
+def test_repo_views_has_sql_focus():
+    views = (REPO_ROOT / "architecture" / "views.c4").read_text(encoding="utf-8")
+    assert "view sql_focus" in views
+    assert "SQL generation in context" in views
+    assert "sql -> *" in views
+    assert "* -> sql" in views
+
+
 def test_repo_index_diagrams_mapping():
     index = yaml.safe_load((REPO_ROOT / "architecture" / "index.yaml").read_text(encoding="utf-8"))
     assert index.get("diagrams") == {
         "architecture/system.arc42.md": ["landscape"],
         "architecture/core.arc42.md": ["core_focus"],
         "architecture/engine.arc42.md": ["query_pipeline"],
-        "architecture/sql.arc42.md": ["query_pipeline"],
+        "architecture/sql.arc42.md": ["sql_focus"],
     }
 
 
@@ -985,7 +1332,7 @@ def test_repo_mapped_docs_have_markers():
         ("system.arc42.md", "landscape"),
         ("core.arc42.md", "core_focus"),
         ("engine.arc42.md", "query_pipeline"),
-        ("sql.arc42.md", "query_pipeline"),
+        ("sql.arc42.md", "sql_focus"),
     ]:
         text = (REPO_ROOT / "architecture" / doc).read_text(encoding="utf-8")
         assert f"<!-- likec4:{view} -->" in text

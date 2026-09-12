@@ -10,33 +10,44 @@ plans are made — it consumes the shared representation in `slayer/ir`, never
 
 ## 2. Building blocks
 
-The `query_pipeline` view ([views.c4](views.c4)):
+The `sql_focus` view ([views.c4](views.c4)):
 
-<!-- likec4:query_pipeline -->
+<!-- likec4:sql_focus -->
 ```mermaid
 flowchart TD
-  %% query_pipeline: Query pipeline
-  core["Core domain models"]
+  %% sql_focus: SQL generation in context
+  subgraph core["Core domain models"]
+    core__query["Query"]
+    core__models["Models"]
+  end
+  subgraph sql["SQL generation"]
+    sql__render["Render"]
+    sql__dialects["Dialects"]
+    sql__sql_predicate["SQL predicate"]
+    sql__window_detect["Window detect"]
+  end
   engine["Query engine"]
-  sql["SQL generation"]
   ir["Intermediate representation"]
   storage["Storage backends"]
-  core -.-> engine
-  core -.-> sql
-  core -.-> storage
-  engine --> core
-  engine --> ir
+  importers("Importers")
+  surfaces("User-facing surfaces")
+  core__models -.-> sql__dialects
+  core__models -.-> sql__sql_predicate
+  core__models -.-> sql__window_detect
+  core__query -.-> sql__window_detect
+  sql__render --> sql__dialects
+  sql__sql_predicate --> sql__window_detect
   engine --> sql
-  engine --> storage
-  ir --> core
+  importers --> sql
   sql --> core
   sql --> ir
-  storage --> core
-  storage --> engine
   storage --> sql
+  surfaces --> sql
+  classDef leaf fill:none;
+  class core__query,core__models,sql__render,sql__dialects,sql__sql_predicate,sql__window_detect,engine,ir,storage,importers,surfaces leaf;
 ```
 *Dashed arrows: legacy edges slated to die.*
-<!-- /likec4:query_pipeline -->
+<!-- /likec4:sql_focus -->
 
 Children: `render`
 (value keys, aggregates, order terms, joins, node assembly) and `dialects`.
