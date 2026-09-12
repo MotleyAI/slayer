@@ -5,7 +5,7 @@ SLayer carries an agent-memory layer alongside the semantic layer. A
 the schema, optionally bundled with an example `SlayerQuery`. Memories
 are indexed by the **canonical entities** they reference (models,
 columns, named measures, custom aggregations), so before issuing a new
-query an agent can call the [search](search.md) tool and pull back every note
+query an agent can call [`search`](search.md) and pull back every note
 or example previously saved against the entities in its draft (plus
 canonical entity matches via tantivy full-text — see the search docs).
 
@@ -56,11 +56,11 @@ record.
 
 ## The two write-side MCP tools
 
-Memory retrieval is part of [search](search.md) (one tool covers
+Memory retrieval is part of [`search`](search.md) (one tool covers
 both memories and canonical entity discovery). This page covers only
 the write side.
 
-### `save_memory(learning, linked_entities, id=None, description=None)`
+### `save_memory(learning, linked_entities, id?, description?)`
 
 Persist a memory. `linked_entities` accepts either form:
 
@@ -171,7 +171,7 @@ The memory write-side tools are also available outside MCP:
   (constructed with `storage=`) skips HTTP and goes through
   `MemoryService` directly.
 
-For retrieval, see [search](search.md) (MCP `search`, REST `POST
+For retrieval, see [`search`](search.md) (MCP `search`, REST `POST
 /search`, CLI `slayer search`, `SlayerClient.search`).
 
 ## Storage layout
