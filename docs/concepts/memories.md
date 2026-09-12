@@ -5,7 +5,7 @@ SLayer carries an agent-memory layer alongside the semantic layer. A
 the schema, optionally bundled with an example `SlayerQuery`. Memories
 are indexed by the **canonical entities** they reference (models,
 columns, named measures, custom aggregations), so before issuing a new
-query an agent can call [`search`](search.md) and pull back every note
+query an agent can call the [search](search.md) tool and pull back every note
 or example previously saved against the entities in its draft (plus
 canonical entity matches via tantivy full-text — see the search docs).
 
