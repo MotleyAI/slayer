@@ -18,7 +18,7 @@ Flat submodules, no children: `planned.py`, `bound.py`, `source_bundle.py`,
 
 1. **Representation only**: data shapes and pure functions over them — no
    storage, no I/O, no planning or rendering logic. [review]
-2. **`ir` imports `core` only.** [enforced: layers]
+2. **`ir` imports `core` only.** [enforced: arch_check:model-truth]
 3. **`__init__.py` stays a docstring**: import from submodules; no re-export
    surface. [review]
 

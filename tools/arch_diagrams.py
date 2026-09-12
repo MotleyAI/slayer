@@ -53,14 +53,46 @@ class ViewsParse(BaseModel):
     findings: list[str]
 
 
+class _RawView(BaseModel):
+    """A view's include grammar, parsed before the depth knob is known."""
+
+    id: str
+    title: str
+    base: list[str]
+    src_anchors: set[str]
+    dst_anchors: set[str]
+
+
 _ELEMENT_RE = re.compile(r"^(\w+)\s*=\s*(\w+)\s+'([^']*)'(?:\s*\{)?\s*$")
-_RELATION_RE = re.compile(r"^(\w+)\s*->\s*(\w+)(\s+#legacy)?\s*$")
+_RELATION_RE = re.compile(r"^([\w.]+)\s*->\s*([\w.]+)(\s+#legacy)?\s*$")
 _SPEC_ELEMENT_RE = re.compile(r"^element\s+(\w+)(?:\s*\{)?\s*$")
 _TAG_DECL_RE = re.compile(r"^tag\s+\w+$")
 _BLOCK_RE = re.compile(r"^(specification|model|views)\b")
 _BRACES_ONLY_RE = re.compile(r"^[{}]+$")
-_TOKEN_RE = re.compile(r"'[^']*'|->|\w+|\S")
+_TOKEN_RE = re.compile(r"'[^']*'|->|[\w.]+|\S")
 _MARKER_RE = re.compile(r"<!--\s+(/?)likec4:(\w+)\s+-->")
+
+DEFAULT_VIEW_DEPTH = 3
+
+
+def _fqn(local: str, parents: list[str]) -> str:
+    return f"{parents[-1]}.{local}" if parents else local
+
+
+def _top(eid: str) -> str:
+    return eid.split(".")[0]
+
+
+def _level(eid: str) -> int:
+    return eid.count(".") + 1
+
+
+def _ancestor_at_level(eid: str, level: int) -> str:
+    return ".".join(eid.split(".")[:level])
+
+
+def _is_or_ancestor(anc: str, eid: str) -> bool:
+    return anc == eid or eid.startswith(anc + ".")
 
 
 def _read_exact(path: Path) -> str:
@@ -182,9 +214,10 @@ def _scan_model_file(  # NOSONAR(S3776) — cohesive brace/region state machine;
             continue
         delta = _brace_delta(code)
         if region == "specification":
-            spec_kind = _scan_spec_line(
-                code=code, kinds=kinds, spec_kind=spec_kind, delta=delta, findings=findings
-            )
+            for stmt in _split_spec_statements(code) if delta == 0 else [code]:
+                spec_kind = _scan_spec_line(
+                    code=stmt, kinds=kinds, spec_kind=spec_kind, delta=delta, findings=findings
+                )
         elif region == "model":
             _scan_model_line(
                 code=code,
@@ -207,6 +240,11 @@ def _scan_model_file(  # NOSONAR(S3776) — cohesive brace/region state machine;
             spec_kind = None
         elif region == "specification" and depth == 1:
             spec_kind = None
+
+
+def _split_spec_statements(code: str) -> list[str]:
+    """Split a brace-free specification line into its `element`/`tag` statements."""
+    return [part for part in re.split(r"\s+(?=(?:element|tag)\b)", code) if part]
 
 
 def _scan_spec_line(
@@ -240,7 +278,8 @@ def _scan_model_line(
 ) -> None:
     m = _ELEMENT_RE.match(code)
     if m:
-        eid, kind, title = m.group(1), m.group(2), m.group(3)
+        kind, title = m.group(2), m.group(3)
+        eid = _fqn(m.group(1), parents)
         if eid in seen_ids:
             findings.append(f"duplicate element {eid}")
         else:
@@ -318,7 +357,7 @@ def parse_views(root: Path, model: ModelParse) -> ViewsParse:  # NOSONAR(S3776) 
             return False
         return True
 
-    def parse_body(vid: str) -> View:
+    def parse_body(vid: str) -> _RawView:
         title = ""
         base: list[str] = []
         base_seen: set[str] = set()
@@ -382,15 +421,9 @@ def parse_views(root: Path, model: ModelParse) -> ViewsParse:  # NOSONAR(S3776) 
                 findings.append(f"view {vid} has unrecognized directive {tok[1]!r}")
         if cur()[0] == "}":
             advance()
-        return _build_view(
-            vid=vid,
-            title=title,
-            base=base,
-            src_anchors=src_anchors,
-            dst_anchors=dst_anchors,
-            model=model,
-        )
+        return _RawView(id=vid, title=title, base=base, src_anchors=src_anchors, dst_anchors=dst_anchors)
 
+    raw: list[_RawView] = []
     if advance() != ("word", "views") or advance()[0] != "{":
         findings.append("views.c4 does not open with a `views {` block")
         return ViewsParse(views=views, findings=findings)
@@ -402,62 +435,170 @@ def parse_views(root: Path, model: ModelParse) -> ViewsParse:  # NOSONAR(S3776) 
         if idt[0] != "word" or advance()[0] != "{":
             findings.append("malformed view declaration")
             continue
-        view = parse_body(idt[1])
+        raw.append(parse_body(idt[1]))
         if idt[1] in seen_ids:
             findings.append(f"duplicate view id {idt[1]}")
         seen_ids.add(idt[1])
-        views.append(view)
+    depths = _view_depths(root=root, valid_ids=seen_ids, findings=findings)
+    views = [
+        _build_view(spec=spec, depth=depths.get(spec.id, DEFAULT_VIEW_DEPTH), model=model) for spec in raw
+    ]
     return ViewsParse(views=views, findings=findings)
 
 
-def _build_view(
-    vid: str,
-    title: str,
-    base: list[str],
-    src_anchors: set[str],
-    dst_anchors: set[str],
-    model: ModelParse,
-) -> View:
-    among = set(base)
-    predicate_edges = [
-        r for r in model.relations if r.src in src_anchors or r.dst in dst_anchors
+def _view_depths(root: Path, valid_ids: set[str], findings: list[str]) -> dict[str, int]:
+    """Per-view render depth from index.yaml `view_depth`; malformed entries are findings, not raises."""
+    index_path = root / "architecture" / "index.yaml"
+    if not index_path.is_file():
+        return {}
+    try:
+        index = yaml.safe_load(index_path.read_text(encoding="utf-8"))
+    except yaml.YAMLError:
+        return {}
+    depth_map = index.get("view_depth") if isinstance(index, dict) else None
+    if depth_map is None:
+        return {}
+    if not isinstance(depth_map, dict):
+        findings.append("view_depth must map view ids to positive integers")
+        return {}
+    depths: dict[str, int] = {}
+    for vid, value in depth_map.items():
+        if vid not in valid_ids:
+            findings.append(f"view_depth references unknown view id {vid}")
+        elif not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            findings.append(f"view_depth[{vid}] must be a positive integer, got {value!r}")
+        else:
+            depths[vid] = value
+    return depths
+
+
+def _children_map(model: ModelParse) -> dict[str, list[str]]:
+    kids: dict[str, list[str]] = {}
+    for e in model.elements:
+        if e.parent is not None:
+            kids.setdefault(e.parent, []).append(e.id)
+    return kids
+
+
+def _ancestor_chain(eid: str) -> list[str]:
+    """`eid` and every ancestor id, top-level first (`a.b.c` -> [a, a.b, a.b.c])."""
+    parts = eid.split(".")
+    return [".".join(parts[: i + 1]) for i in range(len(parts))]
+
+
+def _build_view(spec: _RawView, depth: int, model: ModelParse) -> View:
+    """Expand base includes to `depth` (full subtree); predicate pulls add only the matched
+    endpoint (collapsed to `depth`) and its ancestor chain. Deeper edges roll up to the cutoff."""
+    among = set(spec.base)
+    matched = [
+        r for r in model.relations if _top(r.src) in spec.src_anchors or _top(r.dst) in spec.dst_anchors
     ]
-    edges = [
-        Edge(src=r.src, dst=r.dst, legacy=r.legacy)
-        for r in model.relations
-        if (r.src in among and r.dst in among) or r.src in src_anchors or r.dst in dst_anchors
-    ]
-    node_ids: list[str] = []
-    seen: set[str] = set()
-    for name in base:
-        if name not in seen:
-            seen.add(name)
-            node_ids.append(name)
-    for r in predicate_edges:
+    kids = _children_map(model)
+    shown: set[str] = set()
+    for top in spec.base:
+        for eid in _subtree(top, kids):
+            if _level(eid) <= depth:
+                shown.add(eid)
+    for r in matched:
         for endpoint in (r.src, r.dst):
-            if endpoint not in seen:
-                seen.add(endpoint)
-                node_ids.append(endpoint)
-    return View(id=vid, title=title, node_ids=node_ids, edges=edges)
+            shown.update(_ancestor_chain(_ancestor_at_level(endpoint, min(depth, _level(endpoint)))))
+
+    def represent(eid: str) -> str | None:
+        for anc in reversed(_ancestor_chain(eid)):
+            if anc in shown:
+                return anc
+        return None
+
+    contributors: dict[tuple[str, str], list[Relation]] = {}
+    order: list[tuple[str, str]] = []
+    for r in model.relations:
+        in_view = (_top(r.src) in among and _top(r.dst) in among) or _top(r.src) in spec.src_anchors or _top(r.dst) in spec.dst_anchors
+        if not in_view:
+            continue
+        rep_src, rep_dst = represent(r.src), represent(r.dst)
+        if rep_src is None or rep_dst is None or rep_src == rep_dst:
+            continue
+        key = (rep_src, rep_dst)
+        if key not in contributors:
+            contributors[key] = []
+            order.append(key)
+        contributors[key].append(r)
+    edges = [Edge(src=s, dst=d, legacy=all(r.legacy for r in contributors[(s, d)])) for s, d in order]
+    node_ids = [e.id for e in model.elements if e.id in shown]
+    return View(id=spec.id, title=spec.title, node_ids=node_ids, edges=edges)
+
+
+def _subtree(root: str, kids: dict[str, list[str]]) -> list[str]:
+    """Pre-order ids of `root` and all its descendants (model declaration order within a parent)."""
+    out = [root]
+    for child in kids.get(root, []):
+        out.extend(_subtree(child, kids))
+    return out
+
+
+def _mangle(eid: str) -> str:
+    return eid.replace(".", "__")
+
+
+def _escape_title(title: str) -> str:
+    return title.replace('"', "#quot;")
+
+
+def _node_line(element: Element | None, nid: str, indent: int) -> str:
+    title = _escape_title(element.title if element else nid)
+    shape = f'("{title}")' if element is not None and element.virtual else f'["{title}"]'
+    return f"{' ' * indent}{_mangle(nid)}{shape}"
 
 
 def render_mermaid(view: View, model: ModelParse) -> str:
-    """Deterministic classic-syntax mermaid for one view; legend iff a legacy edge is present."""
+    """Deterministic mermaid for one view: nested subgraphs when children are shown, else flat."""
     by_id = {e.id: e for e in model.elements}
+    shown = set(view.node_ids)
+    shown_kids: dict[str, list[str]] = {}
+    for e in model.elements:
+        if e.id in shown and e.parent in shown:
+            shown_kids.setdefault(e.parent, []).append(e.id)
     lines = ["```mermaid", "flowchart TD", f"  %% {view.id}: {view.title}"]
-    for nid in view.node_ids:
-        element = by_id.get(nid)
-        title = (element.title if element else nid).replace('"', "#quot;")
-        if element is not None and element.virtual:
-            lines.append(f'  {nid}("{title}")')
-        else:
-            lines.append(f'  {nid}["{title}"]')
-    for edge in view.edges:
-        lines.append(f"  {edge.src} {'-.->' if edge.legacy else '-->'} {edge.dst}")
+    if any(shown_kids.values()):
+        lines += _hierarchical_body(view=view, by_id=by_id, shown=shown, shown_kids=shown_kids)
+    else:
+        for nid in view.node_ids:
+            lines.append(_node_line(by_id.get(nid), nid, 2))
+        for edge in view.edges:
+            lines.append(f"  {edge.src} {'-.->' if edge.legacy else '-->'} {edge.dst}")
     lines.append("```")
     if any(edge.legacy for edge in view.edges):
         lines.append("*Dashed arrows: legacy edges slated to die.*")
     return "\n".join(lines)
+
+
+def _hierarchical_body(
+    view: View, by_id: dict[str, Element], shown: set[str], shown_kids: dict[str, list[str]]
+) -> list[str]:
+    lines: list[str] = []
+    leaves: list[str] = []
+
+    def emit(nid: str, indent: int) -> None:
+        pad = " " * indent
+        if shown_kids.get(nid):
+            lines.append(f'{pad}subgraph {_mangle(nid)}["{_escape_title(by_id[nid].title)}"]')
+            for child in shown_kids[nid]:
+                emit(child, indent + 2)
+            lines.append(f"{pad}end")
+        else:
+            leaves.append(_mangle(nid))
+            lines.append(_node_line(by_id.get(nid), nid, indent))
+
+    for eid in view.node_ids:
+        element = by_id.get(eid)
+        if element is None or element.parent not in shown:
+            emit(eid, 2)
+    for edge in view.edges:
+        lines.append(f"  {_mangle(edge.src)} {'-.->' if edge.legacy else '-->'} {_mangle(edge.dst)}")
+    if leaves:
+        lines.append("  classDef leaf fill:none;")
+        lines.append(f"  class {','.join(leaves)} leaf;")
+    return lines
 
 
 def _open_marker(vid: str) -> str:

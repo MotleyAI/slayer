@@ -6,7 +6,7 @@ import ast
 import importlib.util
 import re
 import sys
-import tomllib
+from functools import lru_cache
 from pathlib import Path
 
 import yaml
@@ -24,11 +24,13 @@ def _load_arch_diagrams():
 
 arch_diagrams = _load_arch_diagrams()
 
+# Element-tree helpers shared with the single parser (FQN = dotted path).
+_is_or_ancestor = arch_diagrams._is_or_ancestor
+
 CHECK_IDS = frozenset(
     {
         "claims-exist",
         "claims-exactly-once",
-        "contracts-known",
         "arc42-exists",
         "model-identity",
         "spec-mapping",
@@ -51,9 +53,9 @@ def _load_index(root: Path) -> dict:
     return yaml.safe_load((root / "architecture" / "index.yaml").read_text(encoding="utf-8"))
 
 
-def _pyproject_importlinter(root: Path) -> dict:
-    data = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
-    return data.get("tool", {}).get("importlinter", {})
+def _root_package(index: dict) -> str:
+    pkg = index.get("root_package")
+    return pkg if isinstance(pkg, str) and pkg else "slayer"
 
 
 def _node_claims(nodes: dict) -> dict[str, list[str]]:
@@ -65,6 +67,34 @@ def _node_claims(nodes: dict) -> dict[str, list[str]]:
         else:
             claims[node_id] = [spec["package"], *spec.get("claims", [])]
     return claims
+
+
+def _dotted_to_element(nodes: dict) -> dict[str, str]:
+    """Declared dotted module path -> element FQN (node id, or `<node>.<child>` for children)."""
+    mapping: dict[str, str] = {}
+    for node_id, spec in nodes.items():
+        if spec.get("virtual"):
+            for pkg in spec.get("packages", []):
+                mapping[pkg] = node_id
+            continue
+        package = spec["package"]
+        mapping[package] = node_id
+        for claim in spec.get("claims", []):
+            mapping[claim] = node_id
+        for child in spec.get("children", []):
+            mapping[f"{package}.{child}"] = f"{node_id}.{child}"
+    return mapping
+
+
+def _attribute(module: str, dotted_to_element: dict[str, str]) -> str | None:
+    """The finest declared element a module belongs to (longest dotted-path prefix), or None."""
+    best_dotted: str | None = None
+    for dotted in dotted_to_element:
+        if (module == dotted or module.startswith(dotted + ".")) and (
+            best_dotted is None or len(dotted) > len(best_dotted)
+        ):
+            best_dotted = dotted
+    return dotted_to_element[best_dotted] if best_dotted is not None else None
 
 
 def _module_path(root: Path, dotted: str) -> Path | None:
@@ -205,44 +235,130 @@ def _runtime_import_targets(tree: ast.Module, module_parts: list[str], is_pkg_in
     return targets
 
 
-def _source_unit(rel: Path, root_package: str, top_to_node: dict[str, str]) -> tuple[list[str], bool, str] | None:
-    """(module_parts, is_pkg_init, src_node) for a repo-relative .py path, or None if node-less."""
+def _source_module(rel: Path, root_package: str) -> str | None:
+    """Dotted module id for a repo-relative .py path, or None for the exempt root __init__."""
     parts = list(rel.with_suffix("").parts)
-    is_pkg_init = parts[-1] == "__init__"
-    if is_pkg_init:
+    if parts[-1] == "__init__":
         parts = parts[:-1]
     if parts == [root_package]:
         return None
-    src_node = top_to_node.get(parts[1])
-    if src_node is None:
-        return None
-    return parts, is_pkg_init, src_node
+    return ".".join(parts)
 
 
-def _target_node(target: str, root_package: str, top_to_node: dict[str, str]) -> str | None:
-    tparts = target.split(".")
-    if tparts[0] != root_package or len(tparts) < 2:
-        return None
-    return top_to_node.get(tparts[1])
+def _internal(src_elem: str, dst_elem: str) -> bool:
+    """Self-pairs and ancestor<->descendant pairs are internal plumbing, never governed by arrows."""
+    return _is_or_ancestor(src_elem, dst_elem) or _is_or_ancestor(dst_elem, src_elem)
 
 
-def measure_runtime_node_edges(root: Path, root_package: str, top_to_node: dict[str, str]) -> set[tuple[str, str]]:
-    """Node-level runtime import edges, AST-measured; the root __init__ is exempt."""
-    edges: set[tuple[str, str]] = set()
+def measure_runtime_edges(
+    root: Path, root_package: str, dotted_to_element: dict[str, str]
+) -> dict[tuple[str, str], tuple[str, str]]:
+    """Element-level runtime import edges -> a witness (importing module, imported module).
+
+    Endpoints attribute to their finest declared element; self- and ancestor/descendant pairs
+    drop as internal; TYPE_CHECKING-guarded imports are excluded; the root __init__ is exempt.
+    """
+    witnesses: dict[tuple[str, str], tuple[str, str]] = {}
     for py in sorted((root / root_package).rglob("*.py")):
         rel = py.relative_to(root)
         if "__pycache__" in rel.parts:
             continue
-        unit = _source_unit(rel, root_package, top_to_node)
-        if unit is None:
+        parts = list(rel.with_suffix("").parts)
+        is_pkg_init = parts[-1] == "__init__"
+        src_module = _source_module(rel, root_package)
+        if src_module is None:
             continue
-        parts, is_pkg_init, src_node = unit
+        src_elem = _attribute(src_module, dotted_to_element)
+        if src_elem is None:
+            continue
+        module_parts = parts[:-1] if is_pkg_init else parts
         tree = ast.parse(py.read_text(encoding="utf-8"))
-        for target in _runtime_import_targets(tree, parts, is_pkg_init):
-            dst_node = _target_node(target, root_package, top_to_node)
-            if dst_node is not None and dst_node != src_node:
-                edges.add((src_node, dst_node))
-    return edges
+        for target in sorted(_runtime_import_targets(tree, module_parts, is_pkg_init)):
+            dst_elem = _attribute(target, dotted_to_element)
+            if dst_elem is None or src_elem == dst_elem or _internal(src_elem, dst_elem):
+                continue
+            witnesses.setdefault((src_elem, dst_elem), (src_module, target))
+    return witnesses
+
+
+def _covers(arrow: tuple[str, str], edge: tuple[str, str]) -> bool:
+    return _is_or_ancestor(arrow[0], edge[0]) and _is_or_ancestor(arrow[1], edge[1])
+
+
+def _more_specific(a: tuple[str, str], b: tuple[str, str]) -> bool:
+    """a is strictly more specific than b: descends-from b on both endpoints, and differs."""
+    return a != b and _is_or_ancestor(b[0], a[0]) and _is_or_ancestor(b[1], a[1])
+
+
+def _arrow_is_live(arrow: tuple[str, str], edges: list[tuple[str, str]], arrows: list[tuple[str, str]]) -> bool:
+    """An arrow is live iff it is a most-specific cover of at least one measured edge."""
+    covered = [e for e in edges if _covers(arrow, e)]
+    if not covered:
+        return False
+    for edge in covered:
+        rivals = [a for a in arrows if _covers(a, edge)]
+        if not any(_more_specific(a, arrow) for a in rivals):
+            return True
+    return False
+
+
+def _check_model_truth(
+    root: Path, root_package: str, nodes: dict, arrows: list[tuple[str, str]]
+) -> list[str]:
+    dotted_to_element = _dotted_to_element(nodes)
+    witnesses = measure_runtime_edges(root, root_package, dotted_to_element)
+    edges = list(witnesses)
+    findings: list[str] = []
+    # A parent<->child arrow is meaningless (those edges are internal, never measured) and would
+    # asymmetrically cover sibling edges — reject it and keep it out of the coverage computation.
+    valid = [a for a in arrows if not _internal(a[0], a[1])]
+    for src, dst in arrows:
+        if _internal(src, dst):
+            findings.append(
+                f"model-truth: modeled relation {src} -> {dst} connects an element to its own"
+                " ancestor or descendant; such edges are internal and never declared"
+            )
+    for edge in sorted(edges):
+        if not any(_covers(arrow, edge) for arrow in valid):
+            src_mod, dst_mod = witnesses[edge]
+            findings.append(
+                f"model-truth: measured runtime edge {edge[0]} -> {edge[1]} is missing from the model"
+                f" (import {src_mod} -> {dst_mod})"
+            )
+    for arrow in valid:
+        if any(_covers(arrow, e) for e in edges):
+            if not _arrow_is_live(arrow, edges, valid):
+                findings.append(f"model-truth: modeled relation {arrow[0]} -> {arrow[1]} is fully shadowed")
+        else:
+            findings.append(f"model-truth: modeled relation {arrow[0]} -> {arrow[1]} has no measured runtime edge")
+    return findings
+
+
+@lru_cache(maxsize=None)
+def _license_model(root_str: str) -> tuple[tuple[tuple[str, str], ...], tuple[tuple[str, str], ...]]:
+    """Cached (dotted-path, element) pairs plus arrow set for `license`, keyed by repo root."""
+    root = Path(root_str)
+    index = _load_index(root)
+    mapping = tuple(_dotted_to_element(index.get("nodes", {})).items())
+    arrows = tuple(
+        (r.src, r.dst) for r in arch_diagrams.parse_model(root).relations if not _internal(r.src, r.dst)
+    )
+    return mapping, arrows
+
+
+def license(*, root: Path, src: str, dst: str) -> bool:
+    """Whether the model licenses a runtime import from module `src` to module `dst`.
+
+    Internal (self / ancestor-descendant) and unmodelled endpoints are never banned; otherwise
+    the edge must be covered by a declared arrow. Exposes the one import law for parity testing.
+    """
+    mapping, arrows = _license_model(str(root))
+    dotted_to_element = dict(mapping)
+    src_elem = _attribute(src, dotted_to_element)
+    dst_elem = _attribute(dst, dotted_to_element)
+    if src_elem is None or dst_elem is None or _internal(src_elem, dst_elem):
+        return True
+    return any(_covers(arrow, (src_elem, dst_elem)) for arrow in arrows)
 
 
 def _check_claims(root: Path, root_package: str, claims: dict[str, list[str]]) -> list[str]:
@@ -262,17 +378,43 @@ def _check_claims(root: Path, root_package: str, claims: dict[str, list[str]]) -
     return findings
 
 
-def _check_contracts(index: dict, importlinter: dict) -> list[str]:
+def _package_units(nodes: dict) -> set[str]:
+    """Every dotted package/claim a node owns (for cross-node child collision detection)."""
+    units: set[str] = set()
+    for spec in nodes.values():
+        if spec.get("virtual"):
+            units.update(spec.get("packages", []))
+        else:
+            units.add(spec["package"])
+            units.update(spec.get("claims", []))
+    return units
+
+
+def _check_children(root: Path, nodes: dict) -> list[str]:
+    """Declared children resolve on disk under their node's package, are named at most once, and
+    do not collide with another node's package or claim."""
     findings: list[str] = []
-    index_contracts = set(index.get("contracts", {}))
-    for spec in index.get("nodes", {}).values():
-        if "contract" in spec:
-            index_contracts.add(spec["contract"])
-    pyproject_contracts = {c.get("name") for c in importlinter.get("contracts", [])}
-    for name in sorted(index_contracts - pyproject_contracts):
-        findings.append(f"contracts-known: contract {name} is in index.yaml but not in [tool.importlinter]")
-    for name in sorted(pyproject_contracts - index_contracts):
-        findings.append(f"contracts-known: contract {name} is in [tool.importlinter] but unknown to index.yaml")
+    owned = _package_units(nodes)
+    for node_id, spec in nodes.items():
+        children = spec.get("children", [])
+        if not children:
+            continue
+        if spec.get("virtual"):
+            findings.append(f"claims-exist: virtual node {node_id} may not declare children")
+            continue
+        package = spec["package"]
+        seen: set[str] = set()
+        for child in children:
+            dotted = f"{package}.{child}"
+            if child in seen:
+                findings.append(f"claims-exactly-once: {node_id} declares child {child} more than once")
+            seen.add(child)
+            if dotted in owned:
+                findings.append(
+                    f"claims-exactly-once: {node_id} child {child} ({dotted}) collides with a declared package/claim"
+                )
+            if _module_path(root, dotted) is None:
+                findings.append(f"claims-exist: {node_id} declares child {child}, which does not exist on disk")
     return findings
 
 
@@ -301,9 +443,13 @@ def _check_arc42(root: Path, index: dict) -> list[str]:
     return findings
 
 
+def _declared_children(nodes: dict) -> set[str]:
+    return {f"{node_id}.{child}" for node_id, spec in nodes.items() for child in spec.get("children", [])}
+
+
 def _check_model_identity(nodes: dict, elements: set[str]) -> list[str]:
     findings: list[str] = []
-    children = {child for spec in nodes.values() for child in spec.get("children", [])}
+    children = _declared_children(nodes)
     for node_id in nodes:
         if node_id not in elements:
             findings.append(f"model-identity: node {node_id} is not declared as an element in model/*.c4")
@@ -349,33 +495,17 @@ def _check_spec_mapping(root: Path, index: dict) -> list[str]:
     return findings
 
 
-def _check_baselines(index: dict, importlinter: dict) -> list[str]:
-    findings: list[str] = []
-    by_name = {c.get("name"): c for c in importlinter.get("contracts", [])}
-    for name, spec in index.get("contracts", {}).items():
-        contract = by_name.get(name)
-        if contract is None:
-            continue  # reported by contracts-known
-        actual = len(contract.get("ignore_imports", []))
-        baseline = spec.get("baseline", 0)
-        if actual != baseline:
-            findings.append(
-                f"baseline-ratchet: contract {name} has {actual} ignore_imports, baseline is {baseline}"
-            )
-    return findings
-
-
-def _check_model_truth(
-    root: Path, root_package: str, claims: dict[str, list[str]], modeled: set[tuple[str, str]]
-) -> list[str]:
-    top_to_node = {unit.split(".", 1)[1]: node for node, units in claims.items() for unit in units}
-    measured = measure_runtime_node_edges(root, root_package, top_to_node)
-    findings: list[str] = []
-    for src, dst in sorted(measured - modeled):
-        findings.append(f"model-truth: measured runtime edge {src} -> {dst} is missing from the model")
-    for src, dst in sorted(modeled - measured):
-        findings.append(f"model-truth: modeled relation {src} -> {dst} has no measured runtime edge")
-    return findings
+def _check_legacy_ratchet(index: dict, arrows_legacy: int) -> list[str]:
+    """The count of `#legacy` arrows in the model must equal the declared baseline (only ever lowered)."""
+    spec = index.get("legacy_arrows")
+    if not isinstance(spec, dict) or "baseline" not in spec:
+        return ["baseline-ratchet: legacy_arrows.baseline is missing from index.yaml"]
+    baseline = spec["baseline"]
+    if not isinstance(baseline, int) or isinstance(baseline, bool) or baseline < 0:
+        return [f"baseline-ratchet: legacy_arrows.baseline must be a non-negative integer, got {baseline!r}"]
+    if arrows_legacy != baseline:
+        return [f"baseline-ratchet: model has {arrows_legacy} legacy arrow(s), baseline is {baseline}"]
+    return []
 
 
 def _parse_tag_id(rest: str) -> str | None:
@@ -388,7 +518,7 @@ def _parse_tag_id(rest: str) -> str | None:
     return tag_id
 
 
-def _tag_occurrence(kind: str, rest: str, name: str, contract_names: set[str]) -> tuple[bool, list[str]]:
+def _tag_occurrence(kind: str, rest: str, name: str) -> tuple[bool, list[str]]:
     """(counts as status coverage, findings) for one bracket tag."""
     if kind == "review":
         return (True, []) if not rest else (False, [f"enforced-tags: malformed [review] tag in {name}"])
@@ -399,7 +529,7 @@ def _tag_occurrence(kind: str, rest: str, name: str, contract_names: set[str]) -
         if _TARGET_ID_RE.fullmatch(tag_id) is None:
             return False, [f"enforced-tags: {name} target tag id {tag_id!r} does not match DEV-<number>"]
         return True, []
-    if tag_id in contract_names or (tag_id.startswith("test:") and tag_id != "test:"):
+    if tag_id.startswith("test:") and tag_id != "test:":
         return True, []
     if tag_id.startswith("arch_check:") and tag_id.removeprefix("arch_check:") in CHECK_IDS:
         return True, []
@@ -442,9 +572,8 @@ def _principle_items(text: str) -> list[tuple[str, str]]:
     return items
 
 
-def _check_enforced_tags(root: Path, importlinter: dict) -> list[str]:
+def _check_enforced_tags(root: Path) -> list[str]:
     findings: list[str] = []
-    contract_names = {c.get("name") for c in importlinter.get("contracts", [])}
     for path in sorted((root / "architecture").glob("*.arc42.md")):
         text = _strip_fences(path.read_text(encoding="utf-8"))
         occurrences = list(_TAG_RE.finditer(text))
@@ -454,11 +583,10 @@ def _check_enforced_tags(root: Path, importlinter: dict) -> list[str]:
             if starts != closed:
                 findings.append(f"enforced-tags: malformed [{kind}: …] tag in {path.name}")
         for m in occurrences:
-            findings += _tag_occurrence(m.group(1), m.group(2), path.name, contract_names)[1]
+            findings += _tag_occurrence(m.group(1), m.group(2), path.name)[1]
         for num, body in _principle_items(text):
             covered = any(
-                _tag_occurrence(t.group(1), t.group(2), path.name, contract_names)[0]
-                for t in _TAG_RE.finditer(body)
+                _tag_occurrence(t.group(1), t.group(2), path.name)[0] for t in _TAG_RE.finditer(body)
             )
             if not covered:
                 findings.append(f"enforced-tags: {path.name} principle item {num} has no status tag")
@@ -467,23 +595,23 @@ def _check_enforced_tags(root: Path, importlinter: dict) -> list[str]:
 
 def run_checks(root: Path) -> list[str]:
     index = _load_index(root)
-    importlinter = _pyproject_importlinter(root)
-    root_package = importlinter.get("root_package", "slayer")
+    root_package = _root_package(index)
     nodes = index.get("nodes", {})
     claims = _node_claims(nodes)
     model = arch_diagrams.parse_model(root)
     views = arch_diagrams.parse_views(root=root, model=model)
     elements = {e.id for e in model.elements}
-    modeled = {(r.src, r.dst) for r in model.relations}
+    arrows = [(r.src, r.dst) for r in model.relations]
+    legacy_count = sum(1 for r in model.relations if r.legacy)
     findings: list[str] = []
     findings += _check_claims(root, root_package, claims)
-    findings += _check_contracts(index, importlinter)
+    findings += _check_children(root, nodes)
     findings += _check_arc42(root, index)
     findings += _check_model_identity(nodes=nodes, elements=elements)
     findings += _check_spec_mapping(root, index)
-    findings += _check_baselines(index, importlinter)
-    findings += _check_model_truth(root=root, root_package=root_package, claims=claims, modeled=modeled)
-    findings += _check_enforced_tags(root, importlinter)
+    findings += _check_legacy_ratchet(index, legacy_count)
+    findings += _check_model_truth(root=root, root_package=root_package, nodes=nodes, arrows=arrows)
+    findings += _check_enforced_tags(root)
     findings += arch_diagrams.check_diagrams_fresh(root=root, model=model, views=views)
     return findings
 

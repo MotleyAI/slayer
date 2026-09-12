@@ -1,6 +1,8 @@
-// ONE LikeC4 model of SLayer's top-level structure. Model truth: relations are
-// the AST-measured runtime import edges at this commit (tools/arch_check.py
-// enforces exact equality). Authoring convention: see system.arc42.md.
+// ONE LikeC4 model of SLayer's structure. Model truth: relations are the
+// AST-measured runtime import edges at every declared granularity — modules
+// attribute to their finest declared child, coverage licenses each edge by its
+// most-specific arrow (tools/arch_check.py). Authoring convention: see
+// system.arc42.md §5.
 specification {
   element node
   element bucket {
@@ -11,23 +13,40 @@ specification {
 }
 
 model {
-  core = node 'Core domain models'
+  core = node 'Core domain models' {
+    query = node 'Query'
+    models = node 'Models'
+  }
   sql = node 'SQL generation' {
     render = node 'Render'
     dialects = node 'Dialects'
+    sql_predicate = node 'SQL predicate'
+    window_detect = node 'Window detect'
   }
-  engine = node 'Query engine'
+  engine = node 'Query engine' {
+    syntax = node 'Syntax'
+  }
   ir = node 'Intermediate representation'
-  storage = node 'Storage backends'
+  storage = node 'Storage backends' {
+    migrations = node 'Migrations'
+  }
   importers = bucket 'Importers'
   search = bucket 'Search & embeddings'
   memories = bucket 'Agent memories'
   protocols = bucket 'BI wire protocols'
   surfaces = bucket 'User-facing surfaces'
 
-  core -> engine #legacy
-  core -> sql #legacy
-  core -> storage #legacy
+  core.query -> engine.syntax #legacy
+  core.models -> sql.dialects #legacy
+  core.models -> sql.sql_predicate #legacy
+  core.models -> sql.window_detect #legacy
+  core.query -> sql.window_detect #legacy
+  core.models -> storage.migrations #legacy
+  core.query -> storage.migrations #legacy
+  core.models -> core.query #legacy
+  core.query -> core.models
+  sql.render -> sql.dialects
+  sql.sql_predicate -> sql.window_detect
   engine -> core
   engine -> ir
   engine -> memories
