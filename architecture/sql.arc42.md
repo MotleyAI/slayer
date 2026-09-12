@@ -4,9 +4,10 @@
 
 `slayer/sql` turns a `PlannedQuery` (built by `engine`) into dialect-correct SQL
 text. Children: `render` (AST assembly: value keys, order terms, joins, CTE
-assembly) and `dialects` (per-dialect emission strategies). It must not know how
-plans are made — it consumes the shared representation in `slayer/ir`, never
-`engine` internals.
+assembly) and `dialects` (per-dialect emission strategies), plus the leaf
+modules `sql_predicate` and `window_detect` that the grandfathered `core`
+`#legacy` doors land on. It must not know how plans are made — it consumes the
+shared representation in `slayer/ir`, never `engine` internals.
 
 ## 2. Building blocks
 
@@ -48,9 +49,6 @@ flowchart TD
 ```
 *Dashed arrows: legacy edges slated to die.*
 <!-- /likec4:sql_focus -->
-
-Children: `render`
-(value keys, aggregates, order terms, joins, node assembly) and `dialects`.
 
 ## 3. Principles
 
