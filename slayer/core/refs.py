@@ -5,15 +5,22 @@ from __future__ import annotations
 import hashlib
 import re
 from decimal import Decimal
-from typing import Any
+from operator import attrgetter
+from typing import Any, Callable
 
 from slayer.core.keys import (
+    AggregateKey,
     ArithmeticKey,
+    BetweenKey,
     ColumnKey,
     ColumnSqlKey,
+    InKey,
     LiteralKey,
     ScalarCallKey,
+    SqlExprKey,
+    StarKey,
     TimeTruncKey,
+    TransformKey,
 )
 
 # Identifier shapes
@@ -62,6 +69,99 @@ def auto_name_from_expression(expression: str) -> str:
 EXPRESSION_SOURCE_KINDS = (ArithmeticKey, ScalarCallKey, LiteralKey)
 
 
+# The pinned legacy key spelling (DEV-1871 D6): the historical Pydantic
+# str/repr of every key kind, frozen as literals so emitted SQL aliases never
+# move when Python field/class names do. Goldens pin the exact tokens.
+_LegacyFields = tuple[tuple[str, Callable[[Any], Any]], ...]
+
+_LEGACY_KEY_SPELLINGS: dict[type, tuple[str, _LegacyFields]] = {
+    ColumnKey: ("ColumnKey", (
+        ("path", attrgetter("path")), ("leaf", attrgetter("leaf")),
+    )),
+    ColumnSqlKey: ("ColumnSqlKey", (
+        ("path", attrgetter("path")), ("model", attrgetter("model")),
+        ("column_name", attrgetter("column_name")),
+    )),
+    TimeTruncKey: ("TimeTruncKey", (
+        ("column", attrgetter("column")),
+        ("granularity", attrgetter("granularity")),
+    )),
+    StarKey: ("StarKey", (("path", attrgetter("path")),)),
+    LiteralKey: ("LiteralKey", (("value", attrgetter("value")),)),
+    SqlExprKey: ("SqlExprKey", (
+        ("canonical_sql", attrgetter("canonical_sql")),
+        ("referenced_join_paths", attrgetter("referenced_join_paths")),
+    )),
+    AggregateKey: ("AggregateKey", (
+        ("source", attrgetter("source")), ("agg", attrgetter("agg")),
+        ("args", attrgetter("args")), ("kwargs", attrgetter("kwargs")),
+        ("column_filter_key", attrgetter("column_filter_key")),
+        ("grain", attrgetter("locus")),
+        ("partition_keys", lambda k: (
+            None if k.partition_keys is None else k.partition_keys.keys
+        )),
+    )),
+    TransformKey: ("TransformKey", (
+        ("op", attrgetter("op")), ("input", attrgetter("input")),
+        ("args", attrgetter("args")), ("kwargs", attrgetter("kwargs")),
+        ("partition_keys", lambda k: k.partition_keys.keys),
+        ("time_key", attrgetter("time_key")),
+    )),
+    ArithmeticKey: ("ArithmeticKey", (
+        ("op", attrgetter("op")), ("operands", attrgetter("operands")),
+    )),
+    ScalarCallKey: ("ScalarCallKey", (
+        ("name", attrgetter("name")), ("args", attrgetter("args")),
+    )),
+    BetweenKey: ("BetweenKey", (
+        ("column", attrgetter("column")), ("low", attrgetter("low")),
+        ("high", attrgetter("high")),
+    )),
+    InKey: ("InKey", (
+        ("column", attrgetter("column")), ("values", attrgetter("values")),
+        ("negated", attrgetter("negated")),
+    )),
+}
+
+
+def _legacy_value_spelling(value: Any) -> str:
+    if type(value) in _LEGACY_KEY_SPELLINGS:
+        return legacy_key_repr(value)
+    if isinstance(value, tuple):
+        inner = [_legacy_value_spelling(x) for x in value]
+        if len(inner) == 1:
+            return f"({inner[0]},)"
+        return "(" + ", ".join(inner) + ")"
+    if isinstance(value, frozenset):
+        if not value:
+            return "frozenset()"
+        return (
+            "frozenset({"
+            + ", ".join(_legacy_value_spelling(x) for x in value)
+            + "})"
+        )
+    return repr(value)
+
+
+def _legacy_key_fields(key: Any) -> tuple[str, list[tuple[str, str]]]:
+    spelled_cls, fields = _LEGACY_KEY_SPELLINGS[type(key)]
+    return spelled_cls, [
+        (name, _legacy_value_spelling(get(key))) for name, get in fields
+    ]
+
+
+def legacy_key_repr(key: Any) -> str:
+    """``repr``-position spelling: ``ClassName(field=..., ...)``."""
+    spelled_cls, fields = _legacy_key_fields(key)
+    return spelled_cls + "(" + ", ".join(f"{n}={v}" for n, v in fields) + ")"
+
+
+def legacy_key_str(key: Any) -> str:
+    """``str``-position spelling: ``field=... field=...``."""
+    _, fields = _legacy_key_fields(key)
+    return " ".join(f"{n}={v}" for n, v in fields)
+
+
 def _value_key_display(key: Any) -> str:
     """Canonical text of a row-level bound expression, for name derivation.
 
@@ -90,7 +190,7 @@ def _value_key_display(key: Any) -> str:
     if isinstance(key, ScalarCallKey):
         args = ", ".join(_value_key_display(a) for a in key.args)
         return f"{key.name}({args})"
-    return str(key)
+    return legacy_key_str(key)
 
 
 def expression_source_leaf(source: Any) -> str:
@@ -131,7 +231,7 @@ def _partition_key_display(key: Any) -> str:
     elif isinstance(key, ColumnSqlKey):
         parts = [*key.path, key.column_name]
     else:
-        parts = [str(key)]
+        parts = [legacy_key_str(key)]
     return _NON_IDENT_RE.sub("_", "_".join(parts)).strip("_")
 
 

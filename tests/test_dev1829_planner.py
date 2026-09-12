@@ -19,10 +19,10 @@ from __future__ import annotations
 
 import re
 
-from slayer.core.keys import REGROUP_LEAF_PREFIX, AggregateKey, ColumnKey
+from slayer.core.keys import REGROUP_LEAF_PREFIX, AggregateKey, ColumnKey, Grain
 from slayer.core.query import ModelMeasure, SlayerQuery
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.engine.stage_planner import plan_query
+from slayer.engine.compile.stages import plan_query
 
 from tests._dev1739_fixtures import dev1739_models, gen, month_td
 
@@ -102,7 +102,7 @@ class TestCombinedAttachReplacesCrossModelPlan:
         sub = rap.substitutions[0]
         # original_key is the partitioned aggregate...
         assert isinstance(sub.original_key, AggregateKey)
-        assert sub.original_key.partition_keys == frozenset(
+        assert sub.original_key.partition_keys == Grain.of(
             {ColumnKey(path=(), leaf="region")}
         )
         # ...swapped for a reserved-leaf placeholder ColumnKey...

@@ -20,8 +20,8 @@ from slayer.core.keys import (
     ColumnKey,
     TransformKey,
 )
-from slayer.engine.regroup_planner import regroup_root_grain
-from slayer.engine.stage_planner import (
+from slayer.engine.compile.regroup import regroup_root_grain
+from slayer.engine.compile.stages import (
     _effective_root_grain,
     _prune_functionally_determined_grain,
 )
@@ -32,8 +32,8 @@ CHANNEL = ColumnKey(path=(), leaf="channel")
 MONTH = ColumnKey(path=(), leaf="month")
 AMOUNT = ColumnKey(path=(), leaf="amount")
 
-SUM_BY_REGION = AggregateKey(source=AMOUNT, agg="sum", partition_keys=frozenset({REGION}))
-SUM_BY_CITY = AggregateKey(source=AMOUNT, agg="sum", partition_keys=frozenset({CITY}))
+SUM_BY_REGION = AggregateKey(source=AMOUNT, agg="sum", partition_keys=Grain.of({REGION}))
+SUM_BY_CITY = AggregateKey(source=AMOUNT, agg="sum", partition_keys=Grain.of({CITY}))
 BARE_SUM = AggregateKey(source=AMOUNT, agg="sum")
 WINDOW_SUM = AggregateKey(source=AMOUNT, agg="sum", kwargs=(("window", "90d"),))
 # rank(sum(partition_by=region) + sum(partition_by=city)) — union grain {region, city}.

@@ -257,7 +257,7 @@ def canonical_aggregate_alias(  # NOSONAR(S3776) — sequential dispatch over th
     )
 
     # Host-grain and target-grain aggregates intern separately; ``_host`` keeps their columns distinct.
-    if getattr(key, "grain", "target") == "host":
+    if key.locus == "host":
         canonical = f"{canonical}_host"
 
     canonical = f"{canonical}{partition_by_suffix(getattr(key, 'partition_keys', None))}"

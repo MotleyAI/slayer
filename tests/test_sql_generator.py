@@ -15,7 +15,7 @@ from slayer.core.models import Aggregation, AggregationParam, Column, Datasource
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.engine.stage_planner import plan_query
+from slayer.engine.compile.stages import plan_query
 from slayer.sql.generator import (
     AggRenderSpec,
     SQLGenerator,

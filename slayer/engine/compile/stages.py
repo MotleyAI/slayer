@@ -27,9 +27,8 @@ from pydantic import BaseModel, ConfigDict
 from slayer.core.enums import DataType
 from slayer.core.formula import TIME_TRANSFORMS
 from slayer.core.format import NumberFormat
-from slayer.ir.grain import Grain
 from slayer.core.errors import AmbiguousJoinPathError, AmbiguousReferenceError, DistinctDimensionValuesError, PositionTypingError, SlayerError, UnknownReferenceError, UnreachableFilterDroppedWarning
-from slayer.core.keys import AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, normalize_scalar, reroot_value_key, substitute_value_keys, walk_value_keys
+from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, normalize_scalar, reroot_value_key, substitute_value_keys, walk_value_keys
 from slayer.core.models import ModelMeasure, SlayerModel
 from slayer.engine import dimension_routing
 from slayer.engine.aggregate_input_paths import compute_aggregate_input_join_paths
@@ -58,6 +57,7 @@ from slayer.core.time_bounds import strip_frame_bounds
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.scope import ModelScope, StageColumn, StageSchema
 from slayer.engine.binding import bind_expr, bind_filter, bind_time_dimension
+from slayer.engine.elaborate_env import build_environment, home_dataset
 from slayer.ir.bound import BoundExpr, BoundFilter
 from slayer.engine.filter_reachability import (
     compute_key_join_paths,
@@ -89,7 +89,7 @@ from slayer.engine.ranked_planner import (
     ordered_row_keys,
     resolve_ranking_time_key,
 )
-from slayer.engine.planning import (
+from slayer.engine.compile.projection import (
     DeclaredMeasure,
     OrderSpec,
     ProjectionPlanner,
@@ -108,7 +108,7 @@ from slayer.engine.prebound import (
     partition_declared_measures,
     walk_key_path,
 )
-from slayer.engine.regroup_planner import (
+from slayer.engine.compile.regroup import (
     REGROUP_LEAF_PREFIX,
     ConjunctTyping,
     RegroupPlaceholderRegistry,
@@ -851,7 +851,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         *[sp.bound.value_key for sp in order_specs],
     ])
 
-    def _validate_partition_keys(key: ValueKey) -> frozenset:
+    def _validate_partition_keys(key: ValueKey) -> Grain:
         label = (
             f"Transform '{key.op}'" if isinstance(key, TransformKey)
             else f"Aggregation '{key.agg}'"
@@ -885,7 +885,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                     f"Add it to dimensions/time_dimensions, or choose one of: "
                     f"{', '.join(_available_dims) or '(none)'}."
                 )
-        return frozenset(new_pks)
+        return Grain.of(new_pks)
 
     def _rw(vk: ValueKey) -> ValueKey:
         return rewrite_rank_partition_keys(vk, rewrite_fn=_validate_partition_keys)
@@ -1311,11 +1311,11 @@ def _partition_free_identity(agg: ValueKey):  # NOSONAR(S8495) — distinct-shap
 
 # Cross-model aggregates as target-rooted regroup producers.
 def _is_cross_model_agg(k: ValueKey) -> bool:
-    """A cross-model AggregateKey (source names another model); a host-grain wrap (grain="host") is excluded."""
+    """A cross-model AggregateKey (source names another model); a host-grain wrap (locus="host") is excluded."""
     return (
         isinstance(k, AggregateKey)
         and bool(getattr(k.source, "path", ()))
-        and getattr(k, "grain", "target") != "host"
+        and k.locus != "host"
     )
 
 
@@ -2603,7 +2603,7 @@ def _synthesize_association_producer(  # NOSONAR(S3776) — one cohesive host-ro
     # A HOST-grain wrap of the aggregate compiles inline at the producer's full
     # grain (never re-routed as unattributable); the kernel's level-1 dedup
     # removes the reverse-hop fan-out.
-    assoc_agg = agg.model_copy(update={"grain": "host"})
+    assoc_agg = agg.model_copy(update={"locus": "host"})
     grain_keys = Grain.of(requested)
     # A conjunct the metric-root routing cannot handle (e.g. an OR mixing the
     # entity's own column with a host predicate) would inline fan-dependently at
@@ -3402,7 +3402,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
         def _local_broadcasts(k: ValueKey) -> bool:
             if (
                 not isinstance(k, AggregateKey) or _is_cross_model_agg(k)
-                or getattr(k, "grain", "target") == "host"
+                or k.locus == "host"
                 or k.partition_keys is not None or _is_crossing_local_root(k)
                 # first/last and windowed aggregates have deliberate per-group
                 # semantics over a fan-out grain (DEV-1748) and their own producer
@@ -3786,6 +3786,15 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
             has_measure_position=prebound.distinct_dimension_values is not False,
             position="order",
         )
+    # DEV-1871 D9 stage 2: the typing environment is built for every planned
+    # query (raw and prebound entries alike) but informs nothing yet.
+    build_environment(
+        prebound=prebound,
+        home=home_dataset(scope=scope, model=render_source_model),
+        dim_keys=_order_dim_keys,
+        row_agg_set=_order_row_aggs,
+        filter_typings=filter_typings,
+    )
     declared_measures = list(prebound.declared_measures)
     bound_filters = list(prebound.bound_filters)
     n_date_range = prebound.n_date_range
@@ -3927,7 +3936,7 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
                 source=src,
                 agg="min" if spec.direction == "asc" else "max",
                 # A JOINED sort key is host-grain; a target-rooted CTE would degenerate to a scalar CROSS JOIN.
-                grain="host" if path else "target",
+                locus="host" if path else "target",
             )
             if projection.registry.find_by_key(wrap_key) is None:
                 projection.registry.intern(
@@ -4030,7 +4039,7 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         if (
             isinstance(key, AggregateKey)
             and getattr(key.source, "path", ())
-            and getattr(key, "grain", "target") != "host"
+            and key.locus != "host"
         ):
             raise RuntimeError(
                 f"Cross-model aggregate slot {slot.id!r} survived the regroup "

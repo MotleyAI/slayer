@@ -10,8 +10,7 @@ from typing import Dict, List, Mapping, NamedTuple, Optional, Tuple
 
 from slayer.core.enums import DataType
 from slayer.core.errors import PositionTypingError
-from slayer.ir.grain import Grain
-from slayer.core.keys import REGROUP_LEAF_PREFIX, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, TimeTruncKey, TransformKey, ValueKey, substitute_value_keys, walk_value_keys
+from slayer.core.keys import Grain, REGROUP_LEAF_PREFIX, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, TimeTruncKey, TransformKey, ValueKey, substitute_value_keys, walk_value_keys
 from slayer.ir.planned import MaskTyping
 from slayer.engine.ranked_planner import RANKED_AGGREGATIONS
 from slayer.sql.naming import canonical_aggregate_alias
@@ -180,7 +179,7 @@ def _combined_consumer_kind(k: ValueKey) -> Optional[str]:
     partitioned = k.partition_keys is not None
     if not getattr(k.source, "path", ()):
         return "local_partitioned" if partitioned else None
-    if getattr(k, "grain", "target") == "host":
+    if k.locus == "host":
         return None
     return "cross_model_partitioned" if partitioned else "cross_model_bare"
 

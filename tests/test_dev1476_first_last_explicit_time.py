@@ -27,7 +27,7 @@ from slayer.engine.ranked_planner import (
     resolve_ranking_time_key,
 )
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.engine.stage_planner import plan_query
+from slayer.engine.compile.stages import plan_query
 from slayer.sql.generator import SQLGenerator
 from slayer.sql.naming import AliasAllocator
 from slayer.sql.scope import ScopeFrame
@@ -689,7 +689,7 @@ class TestTimeArgJoinDiscovery:
             s for s in attach.producer_plan.aggregate_slots
             if isinstance(s.key, AggregateKey) and s.key.agg == "last"
         )
-        assert prod_agg.key.grain == "target", prod_agg.key
+        assert prod_agg.key.locus == "target", prod_agg.key
         assert not any(isinstance(s.key, AggregateKey) for s in slots.values())
         gen = self._gen()
         scope = _host_scope(gen, source_model=_u_orders(), bundle=bundle)

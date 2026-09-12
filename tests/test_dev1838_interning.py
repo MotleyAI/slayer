@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.engine import stage_planner
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._dev1838_fixtures import (
@@ -32,6 +31,7 @@ from tests._dev1838_fixtures import (
     q,
 )
 from slayer.ir import planned
+from slayer.engine.compile import stages
 
 M = ModelMeasure(formula="amount:sum", name="m")
 
@@ -235,11 +235,11 @@ class TestProducersThatMustStaySeparate:
         bundle = ResolvedSourceBundle(
             source_model=models[0], referenced_models=models[1:],
         )
-        base = stage_planner.plan_query(query=q(
+        base = stages.plan_query(query=q(
             dimensions=["region", BAND],
             measures=[M],
         ), bundle=bundle)
-        filtered = stage_planner.plan_query(query=q(
+        filtered = stages.plan_query(query=q(
             dimensions=["region", BAND],
             measures=[M], filters=["status = 'ok'"],
         ), bundle=bundle)

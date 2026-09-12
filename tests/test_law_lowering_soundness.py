@@ -13,7 +13,7 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.engine.stage_planner import plan_query
+from slayer.engine.compile.stages import plan_query
 from slayer.sql.generator import SQLGenerator
 
 from tests._dev1739_fixtures import dev1739_models

@@ -6,7 +6,7 @@ Distinct-entity association; cross-model-aggregates › Producer filter routing.
 
 from __future__ import annotations
 
-from slayer.engine.stage_planner import plan_query
+from slayer.engine.compile.stages import plan_query
 
 from tests._dev1840_fixtures import bundle, dev1840_models
 from tests._dev1841_fixtures import ModelMeasure, assoc_q

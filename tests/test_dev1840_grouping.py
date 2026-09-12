@@ -9,7 +9,7 @@ per-node identity so repeated models bind distinct aliases.
 from __future__ import annotations
 
 from slayer.engine.query_engine import _walk_regroup_attaches
-from slayer.engine.stage_planner import plan_query
+from slayer.engine.compile.stages import plan_query
 
 from tests._dev1840_fixtures import (
     ModelMeasure,

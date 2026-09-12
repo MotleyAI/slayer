@@ -57,6 +57,7 @@ from slayer.core.keys import (
     TimeTruncKey,
     TransformKey,
 )
+from slayer.core.keys import Grain
 from slayer.core.models import (
     Aggregation,
     Column,
@@ -1765,7 +1766,7 @@ class TestContainsAggregateTransformDependencies:
         key = TransformKey(
             op="rank",
             input=ColumnKey(leaf="amount"),
-            partition_keys=frozenset({agg}),
+            partition_keys=Grain.of({agg}),
         )
         assert contains_aggregate(key) is True
 
@@ -1780,7 +1781,7 @@ class TestContainsAggregateTransformDependencies:
         key = TransformKey(
             op="rank",
             input=ColumnKey(leaf="amount"),
-            partition_keys=frozenset({ColumnKey(leaf="label")}),
+            partition_keys=Grain.of({ColumnKey(leaf="label")}),
             time_key=ColumnKey(leaf="created_at"),
         )
         assert contains_aggregate(key) is False

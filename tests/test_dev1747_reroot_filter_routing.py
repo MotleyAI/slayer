@@ -12,8 +12,7 @@ import pytest
 from slayer.core.errors import UnreachableFilterDroppedWarning
 from slayer.core.keys import AggregateKey
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
-from slayer.engine import stage_planner
-from slayer.engine.stage_planner import plan_query
+from slayer.engine.compile.stages import plan_query
 from slayer.sql.generator import _lower_positions
 from tests._dev1747_fixtures import (
     ALPHA_SPEND_ALL,
@@ -27,6 +26,7 @@ from tests._dev1747_fixtures import (
     seed_dev1747_sqlite,
 )
 import inspect
+from slayer.engine.compile import stages
 
 #: Cross-model aggregate + a dimension a hop past the target → planner re-roots the CTE at ``customers``.
 _CROSS_MODEL_MEASURE = {"formula": "customers.spend:sum", "name": "cs"}
@@ -132,7 +132,7 @@ def _classifier_spy(monkeypatch) -> list:
     """Record every ``_cross_model_inherited_filters`` call and its arguments (once per producer)."""
 
     calls: list = []
-    original = stage_planner._cross_model_inherited_filters
+    original = stages._cross_model_inherited_filters
 
     def _recording(**kwargs):
         result = original(**kwargs)
@@ -140,7 +140,7 @@ def _classifier_spy(monkeypatch) -> list:
         return result
 
     monkeypatch.setattr(
-        stage_planner, "_cross_model_inherited_filters", _recording,
+        stages, "_cross_model_inherited_filters", _recording,
     )
     return calls
 
@@ -283,7 +283,7 @@ class TestInternalFailuresRaise:
             "_attributable_from_root",
             "_reroot_from_root",
         ):
-            target = getattr(stage_planner, name, None)
+            target = getattr(stages, name, None)
             assert target is not None, (
                 f"{name} is gone — the reroot path was renamed and this guard "
                 f"now checks nothing"
@@ -317,7 +317,7 @@ class TestInternalFailuresRaise:
             raise boom
 
         monkeypatch.setattr(
-            stage_planner, "_cross_model_inherited_filters", _explode, raising=True,
+            stages, "_cross_model_inherited_filters", _explode, raising=True,
         )
         with pytest.raises(RuntimeError, match="planner exploded"):
             _attaches(FILTER_REACHABLE)
@@ -354,7 +354,7 @@ class TestUnreachableDimensionsStillDrop:
 
 
 class TestFilteredLocalDispatchAccounting:
-    """A ``grain="host"`` wrap (path is its crossing) must take the HOST-rooted route; a target-rooted producer would degenerate to a scalar CROSS JOIN (D2)."""
+    """A ``locus="host"`` wrap (path is its crossing) must take the HOST-rooted route; a target-rooted producer would degenerate to a scalar CROSS JOIN (D2)."""
 
     def _grouped_joined_order(self) -> SlayerQuery:
         return SlayerQuery(
@@ -378,7 +378,7 @@ class TestFilteredLocalDispatchAccounting:
         assert attach.producer_root_model is None
         (sub,) = attach.substitutions
         assert isinstance(sub.original_key, AggregateKey)
-        assert sub.original_key.grain == "host"
+        assert sub.original_key.locus == "host"
         assert getattr(sub.original_key.source, "path", None) == ("customers", "regions"), (
             "the wrap lost its path on the way to the host-rooted route"
         )

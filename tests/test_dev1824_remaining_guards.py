@@ -16,7 +16,7 @@ import re
 
 import pytest
 
-from slayer.engine.stage_planner import _assert_attach_covers_producer_grain
+from slayer.engine.compile.stages import _assert_attach_covers_producer_grain
 from tests._dev1824_fixtures import ModelMeasure, gen, month_td, q
 
 

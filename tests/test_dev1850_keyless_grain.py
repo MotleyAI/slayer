@@ -22,7 +22,7 @@ import pytest
 
 from slayer.ir.planned import MaskTyping
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.engine.stage_planner import (
+from slayer.engine.compile.stages import (
     _crossing_local_root_predicate,
     _plan_regroups,
     _resolve_scope,

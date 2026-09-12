@@ -570,8 +570,8 @@ def _wrap_filter(sql_str: str, filter_sql: Optional[str]) -> str:
 
 
 def _is_host_grain(key) -> bool:
-    """True for an ``AggregateKey`` marked ``grain="host"`` (DEV-1747 D2)."""
-    return getattr(key, "grain", "target") == "host"
+    """True for an ``AggregateKey`` marked ``locus="host"`` (DEV-1747 D2)."""
+    return getattr(key, "locus", "target") == "host"
 
 
 def _first_bare_column_name(key) -> Optional[str]:
@@ -3036,7 +3036,7 @@ class SQLGenerator:
     def _render_ranked_cte_from_planned(  # NOSONAR(S3776) — single linear ranked-CTE assembly (src → ROW_NUMBER → collapse); the branches are sequential dialect/shape guards, not nested logic
         self,
         *,
-        plan,
+        plan: "_RankedEmission",
         agg_slot,
         bundle,
         planned_query,

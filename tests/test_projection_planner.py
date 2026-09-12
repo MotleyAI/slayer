@@ -17,7 +17,7 @@ from slayer.core.keys import (
     Phase,
 )
 from decimal import Decimal
-from slayer.engine.planning import (
+from slayer.engine.compile.projection import (
     DeclaredMeasure,
     OrderSpec,
     ProjectionPlanner,

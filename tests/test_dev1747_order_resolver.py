@@ -39,7 +39,7 @@ from tests._dev1747_fixtures import (
 )
 from tests._engine_helpers import _engine_generate
 
-from slayer.engine.stage_planner import plan_query
+from slayer.engine.compile.stages import plan_query
 from slayer.sql.generator import generate_from_planned
 from slayer.sql.render.order_terms import (
     OrderEnv,

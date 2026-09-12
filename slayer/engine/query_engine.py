@@ -110,7 +110,7 @@ from slayer.engine.response_meta import (
 from slayer.sql.column_expansion import expand_derived_refs_sync
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_ordering import topologically_order_stages
-from slayer.engine.stage_planner import _topo_sort, plan_stages
+from slayer.engine.compile.stages import _topo_sort, plan_stages
 from slayer.ir.variables import apply_variables_to_query
 from slayer.engine.introspect_utils import _safe_get_columns
 from slayer.engine.schema_scope import SchemaRef

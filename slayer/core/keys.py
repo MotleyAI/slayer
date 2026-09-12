@@ -9,7 +9,11 @@ from __future__ import annotations
 from decimal import Decimal
 from enum import IntEnum
 from typing import (
+    AbstractSet,
     Callable,
+    ClassVar,
+    Iterable,
+    Iterator,
     Literal,
     Mapping,
     Optional,
@@ -20,7 +24,7 @@ from typing import (
     get_args,
 )
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat
@@ -394,7 +398,7 @@ class AggregateKey(_FrozenKey):
     ``ColumnKey``/``ColumnSqlKey``; kwargs canonicalized to sorted order).
     ``column_filter_key`` folds any attached ``Column.filter`` into identity.
 
-    ``grain`` (DEV-1747 D2) names where a cross-model aggregate is evaluated:
+    ``locus`` (DEV-1747 D2) names where a cross-model aggregate is evaluated:
     ``"target"`` (default) rooted at the target, one value per target row-group;
     ``"host"`` rooted at the host, one value per host group (needed by the
     DEV-1735 order wrap). It participates in identity — the two are different
@@ -406,8 +410,9 @@ class AggregateKey(_FrozenKey):
     args: Tuple[_AggregateArgValue, ...] = ()
     kwargs: Tuple[Tuple[str, _AggregateKwargValue], ...] = ()
     column_filter_key: Optional[SqlExprKey] = None
-    grain: Literal["target", "host"] = "target"
-    partition_keys: Optional[frozenset["ValueKey"]] = None
+    locus: Literal["target", "host"] = "target"
+    # None = grain inherited from context; Grain.EMPTY = explicitly scalar.
+    partition_keys: Optional["Grain"] = None
 
     @field_validator("kwargs", mode="before")
     @classmethod
@@ -439,7 +444,7 @@ class AggregateKey(_FrozenKey):
             "kwargs": tuple((k, m(v)) for k, v in self.kwargs),
             "partition_keys": (
                 None if self.partition_keys is None
-                else frozenset(m(p) for p in self.partition_keys)
+                else Grain.of(m(p) for p in self.partition_keys)
             ),
         }
         return self.model_copy(update=update) if m.changed else self
@@ -452,7 +457,7 @@ class AggregateKey(_FrozenKey):
             _typed_args(self.args),
             _typed_kwargs(self.kwargs),
             self.column_filter_key,
-            self.grain,
+            self.locus,
             self.partition_keys,
         ))
 
@@ -465,7 +470,7 @@ class AggregateKey(_FrozenKey):
             and _typed_args(self.args) == _typed_args(other.args)
             and _typed_kwargs(self.kwargs) == _typed_kwargs(other.kwargs)
             and self.column_filter_key == other.column_filter_key
-            and self.grain == other.grain
+            and self.locus == other.locus
             and self.partition_keys == other.partition_keys
         )
 
@@ -513,7 +518,7 @@ class TransformKey(_FrozenKey):
     input: "ValueKey"
     args: Tuple[Scalar, ...] = ()
     kwargs: Tuple[Tuple[str, Scalar], ...] = ()
-    partition_keys: frozenset["ValueKey"] = frozenset()
+    partition_keys: "Grain" = Field(default_factory=lambda: Grain.EMPTY)
     time_key: Optional["ValueKey"] = None
 
     @field_validator("kwargs", mode="before")
@@ -538,7 +543,7 @@ class TransformKey(_FrozenKey):
         m = _ChildMapper(fn)
         update = {
             "input": m(self.input),
-            "partition_keys": frozenset(m(p) for p in self.partition_keys),
+            "partition_keys": Grain.of(m(p) for p in self.partition_keys),
             "time_key": None if self.time_key is None else m(self.time_key),
         }
         return self.model_copy(update=update) if m.changed else self
@@ -729,6 +734,103 @@ ValueKey = Union[
 ]
 
 
+class Grain(BaseModel):
+    """The grain of an aggregate — its dimension-key set — as a first-class value type.
+
+    Grains form a lattice under inclusion: ``union`` is the join, a coarser grain
+    is a subgrain of a finer one, and broadcast is the coarse->fine coercion.
+    Set-like dunders carry the mechanical set algebra; the named predicates spell
+    out the lattice reading. Comparisons and ``union`` accept a ``Grain`` only;
+    ``__or__`` / ``__sub__`` also accept any ``AbstractSet[ValueKey]``; ``__eq__``
+    is ``Grain``-only so mixed-representation drift fails loudly.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    keys: frozenset[ValueKey] = frozenset()
+
+    EMPTY: ClassVar["Grain"]
+
+    @classmethod
+    def of(cls, keys: Iterable[ValueKey]) -> "Grain":
+        return cls(keys=frozenset(keys))
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.keys
+
+    def union(self, other: "Grain") -> "Grain":
+        """The join: the grain containing every key of both."""
+        return Grain(keys=self.keys | other.keys)
+
+    def is_subgrain_of(self, other: "Grain") -> bool:
+        """``self`` is coarser than or equal to ``other`` (reflexive)."""
+        return self.keys <= other.keys
+
+    def is_strict_subgrain_of(self, other: "Grain") -> bool:
+        """``self`` is strictly coarser than ``other`` (irreflexive)."""
+        return self.keys < other.keys
+
+    def broadcasts_into(self, finer: "Grain") -> bool:
+        """A coarse value coerces up to ``finer`` iff ``self`` is a subgrain of it;
+        the reverse needs a second-order aggregation, never a broadcast."""
+        return self.is_subgrain_of(finer)
+
+    def __contains__(self, key: object) -> bool:
+        return key in self.keys
+
+    def __iter__(self) -> Iterator[ValueKey]:  # type: ignore[override]
+        return iter(self.keys)
+
+    def __len__(self) -> int:
+        return len(self.keys)
+
+    def __bool__(self) -> bool:
+        return bool(self.keys)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, Grain):
+            return self.keys == other.keys
+        return NotImplemented
+
+    def __hash__(self) -> int:
+        return hash(self.keys)
+
+    def __le__(self, other: object) -> bool:
+        if isinstance(other, Grain):
+            return self.keys <= other.keys
+        return NotImplemented
+
+    def __lt__(self, other: object) -> bool:
+        if isinstance(other, Grain):
+            return self.keys < other.keys
+        return NotImplemented
+
+    def __ge__(self, other: object) -> bool:
+        if isinstance(other, Grain):
+            return self.keys >= other.keys
+        return NotImplemented
+
+    def __gt__(self, other: object) -> bool:
+        if isinstance(other, Grain):
+            return self.keys > other.keys
+        return NotImplemented
+
+    def __or__(self, other: object) -> "Grain":
+        if isinstance(other, Grain):
+            return Grain(keys=self.keys | other.keys)
+        if isinstance(other, AbstractSet):
+            return Grain(keys=self.keys | frozenset(other))
+        return NotImplemented
+
+    def __sub__(self, other: object) -> "Grain":
+        if isinstance(other, Grain):
+            return Grain(keys=self.keys - other.keys)
+        if isinstance(other, AbstractSet):
+            return Grain(keys=self.keys - frozenset(other))
+        return NotImplemented
+
+
 # Resolve the recursive forward references on the keys that take ValueKey.
 TransformKey.model_rebuild()
 ArithmeticKey.model_rebuild()
@@ -738,6 +840,8 @@ InKey.model_rebuild()
 TimeTruncKey.model_rebuild()
 # AggregateKey.source forward-references the expression composites (DEV-1826).
 AggregateKey.model_rebuild()
+Grain.model_rebuild()
+Grain.EMPTY = Grain(keys=frozenset())
 
 
 VALUE_KEY_TYPES: Tuple[type, ...] = get_args(ValueKey)

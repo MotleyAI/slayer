@@ -10,14 +10,13 @@ from __future__ import annotations
 
 from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.engine import stage_planner
 from slayer.engine.join_safety import (
     may_inline_crossing_inputs,
     provably_to_one,
     safe_reachable,
 )
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.engine.stage_planner import plan_query
+from slayer.engine.compile.stages import plan_query
 
 from tests._dev1836_fixtures import (
     customers_model,
@@ -28,6 +27,7 @@ from tests._dev1836_fixtures import (
     regions_model,
     segments_model,
 )
+from slayer.engine.compile import stages
 
 
 def _models_by_name() -> dict[str, SlayerModel]:
@@ -261,7 +261,7 @@ class TestMayInlineSeam:
             "fixture rot: the crossing-input aggregate no longer desugars"
         )
         monkeypatch.setattr(
-            stage_planner, "may_inline_crossing_inputs", lambda paths: True,
+            stages, "may_inline_crossing_inputs", lambda paths: True,
         )
         planned = plan_query(query=query, bundle=bundle)
         assert not planned.regroup_attach_plans, (

@@ -19,6 +19,7 @@ from slayer.core.keys import (
     BetweenKey,
     ColumnKey,
     ColumnSqlKey,
+    Grain,
     InKey,
     KIND_POLICY,
     LiteralKey,
@@ -353,7 +354,7 @@ def lower_sugar_transforms(key: ValueKey) -> ValueKey:
 
 
 def rewrite_rank_partition_keys(
-    key: ValueKey, *, rewrite_fn: Callable[[TransformKey], FrozenSet],
+    key: ValueKey, *, rewrite_fn: Callable[[TransformKey], Grain],
 ) -> ValueKey:
     """Replace every rank-family ``TransformKey``'s / partitioned aggregate's ``partition_keys`` via ``rewrite_fn``; identity-preserving, runs before interning. Post-order; ``rewrite_fn`` receives the pre-rebuild node."""
     rebuilt = key.map_children(

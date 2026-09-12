@@ -26,7 +26,8 @@ from slayer.core.keys import (
     ScalarCallKey,
     TransformKey,
 )
-from slayer.engine.planning import desugar_change, desugar_change_pct
+from slayer.core.keys import Grain
+from slayer.engine.compile.projection import desugar_change, desugar_change_pct
 
 
 def _amount_sum() -> AggregateKey:
@@ -59,7 +60,7 @@ class TestDesugarChange:
         change_key = TransformKey(
             op="change",
             input=_amount_sum(),
-            partition_keys=frozenset({region}),
+            partition_keys=Grain.of({region}),
         )
         lowered = desugar_change(change_key)
         assert isinstance(lowered, ArithmeticKey)
