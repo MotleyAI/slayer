@@ -25,7 +25,7 @@ from slayer.core.errors import IllegalScopeReferenceError
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.compile.stages import plan_stages
+from slayer.engine.plan import plan_stages
 from slayer.sql.generator import generate_planned_stages
 from slayer.storage.yaml_storage import YAMLStorage
 import slayer.engine.bundle_builder

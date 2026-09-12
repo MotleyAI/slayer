@@ -18,6 +18,7 @@ from slayer.core.keys import (
     reroot_value_key,
 )
 from slayer.core.errors import AmbiguousJoinPathError
+from slayer.core.enums import RANKED_AGGREGATIONS
 from slayer.core.join_walker import terminal_model, walk
 from slayer.core.models import SlayerModel
 from slayer.ir.planned import (
@@ -27,14 +28,10 @@ from slayer.ir.planned import (
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 __all__ = [
-    "RANKED_AGGREGATIONS",
     "explicit_ranking_time_arg",
     "ordered_row_keys",
     "resolve_ranking_time_key",
 ]
-
-#: The aggregations that rank; named once so classifier, planner and renderer agree.
-RANKED_AGGREGATIONS = ("first", "last")
 
 _TEMPORAL_TYPES = (DataType.DATE, DataType.TIMESTAMP)
 

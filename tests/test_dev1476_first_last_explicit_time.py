@@ -27,7 +27,7 @@ from slayer.engine.ranked_planner import (
     resolve_ranking_time_key,
 )
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.engine.compile.stages import plan_query
+from slayer.engine.plan import plan_query
 from slayer.sql.generator import SQLGenerator
 from slayer.sql.naming import AliasAllocator
 from slayer.sql.scope import ScopeFrame

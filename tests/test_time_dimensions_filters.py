@@ -33,7 +33,8 @@ from slayer.core.keys import ArithmeticKey, BetweenKey, ColumnKey, LiteralKey, P
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.engine.compile.stages import _resolve_main_time_dimension, plan_query
+from slayer.engine.bind_inputs import _resolve_main_time_dimension
+from slayer.engine.plan import plan_query
 from slayer.core.keys import TimeTruncKey
 from slayer.sql.generator import _lower_positions
 

@@ -8,7 +8,7 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery
-from slayer.engine.compile import stages
+from slayer.engine import elaborate, plan
 from slayer.ir.planned import PlannedQuery
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
@@ -39,13 +39,13 @@ _INLINE_PLUS_ATTACHED = "amount:sum + amount:sum(partition_by=status)"
 
 @pytest.mark.parametrize("formula", [_TWO_ATTACHED, _INLINE_PLUS_ATTACHED])
 def test_mixed_grain_combine_plans_under_the_assert(formula) -> None:
-    planned = stages.plan_query(query=_query(formula), bundle=_bundle())
+    planned = plan.plan_query(query=_query(formula), bundle=_bundle())
     assert isinstance(planned, PlannedQuery)
 
 
 @pytest.mark.parametrize("formula", [_TWO_ATTACHED, _INLINE_PLUS_ATTACHED])
 def test_assert_fires_when_elaboration_drops_broadcasts(monkeypatch, formula) -> None:
-    real = stages.build_environment
+    real = elaborate.build_environment
 
     def stripped(**kwargs):
         env = real(**kwargs)
@@ -53,6 +53,6 @@ def test_assert_fires_when_elaboration_drops_broadcasts(monkeypatch, formula) ->
             e.model_copy(update={"broadcasts": ()}) for e in env.measures
         )})
 
-    monkeypatch.setattr(stages, "build_environment", stripped)
+    monkeypatch.setattr(elaborate, "build_environment", stripped)
     with pytest.raises(AssertionError, match="broadcast-coherence"):
-        stages.plan_query(query=_query(formula), bundle=_bundle())
+        plan.plan_query(query=_query(formula), bundle=_bundle())

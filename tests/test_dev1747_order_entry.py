@@ -24,7 +24,7 @@ from pydantic import ValidationError
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.core.enums import TimeGranularity
 from slayer.ir.planned import OrderEntry
-from slayer.engine.compile.stages import plan_query
+from slayer.engine.plan import plan_query
 from slayer.sql.generator import _lower_positions
 from slayer.sql.render.order_terms import OrderScope, ScopedOrder
 from tests._dev1747_fixtures import dev1747_bundle

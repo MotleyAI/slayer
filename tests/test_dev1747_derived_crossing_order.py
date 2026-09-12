@@ -47,7 +47,7 @@ from tests._dev1747_fixtures import (
 from tests._engine_helpers import _engine_generate
 from slayer.sql.generator import _lower_positions
 from slayer.sql.render.order_terms import OrderScope
-from slayer.engine.compile.stages import plan_query
+from slayer.engine.plan import plan_query
 
 
 def _squash(sql: str) -> str:

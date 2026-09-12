@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Callable, Dict, FrozenSet, List, Optional
+from typing import Dict, FrozenSet, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat
-from slayer.core.errors import (
-    CanonicalAliasShadowsColumnError,
-    DuplicateMeasureNameError,
-    MeasureNameCollidesWithColumnError,
+from slayer.engine.elaborate_env import (
+    check_canonical_alias_shadows_column,
+    check_duplicate_measure_name,
+    check_measure_name_collision,
 )
 from slayer.core.keys import (
     AggregateKey,
@@ -19,7 +19,6 @@ from slayer.core.keys import (
     BetweenKey,
     ColumnKey,
     ColumnSqlKey,
-    Grain,
     InKey,
     KIND_POLICY,
     LiteralKey,
@@ -34,12 +33,10 @@ from slayer.core.keys import (
     ValueKey,
     column_leaf,
     column_path,
-    normalize_scalar,
 )
-from slayer.core.formula import RANK_FAMILY_TRANSFORMS
 from slayer.sql.naming import canonical_aggregate_alias
 from slayer.ir.planned import SlotId, ValueSlot
-from slayer.ir.bound import BoundExpr, BoundFilter
+from slayer.ir.bound import BoundExpr, BoundFilter, DeclaredMeasure, OrderSpec
 
 __all__ = [
     "DeclaredMeasure",
@@ -47,10 +44,7 @@ __all__ = [
     "ProjectionPlan",
     "ProjectionPlanner",
     "ValueRegistry",
-    "desugar_change",
-    "desugar_change_pct",
     "filter_referenced_slot_ids",
-    "lower_sugar_transforms",
 ]
 
 # Hoisted from the two signatures below: a paren inside a keyword-only default
@@ -154,25 +148,24 @@ class ValueRegistry:
         is_pathed_projection = (
             isinstance(key, (ColumnKey, ColumnSqlKey)) and key.path != ()
         )
-        if (
-            public_name is not None
-            and public_name in self._source_columns
-            and not is_self_named_dimension
-            and not is_unnamed_star_agg
-            and not is_pathed_projection
-        ):
-            raise MeasureNameCollidesWithColumnError(
-                name=public_name, model=self._host_model_name,
-            )
-        if (
-            canonical_alias is not None
-            and canonical_alias in self._source_columns
-        ):
-            raise CanonicalAliasShadowsColumnError(
-                formula=declared_name,
-                canonical=canonical_alias,
-                model=self._host_model_name,
-            )
+        check_measure_name_collision(
+            name=public_name if (
+                public_name is not None
+                and public_name in self._source_columns
+                and not is_self_named_dimension
+                and not is_unnamed_star_agg
+                and not is_pathed_projection
+            ) else None,
+            model=self._host_model_name,
+        )
+        check_canonical_alias_shadows_column(
+            formula=declared_name,
+            canonical=canonical_alias if (
+                canonical_alias is not None
+                and canonical_alias in self._source_columns
+            ) else None,
+            model=self._host_model_name,
+        )
 
     def intern(
         self,  # NOSONAR(S107) — keyword-only slot metadata, not positional sprawl
@@ -218,7 +211,7 @@ class ValueRegistry:
         if public_name is not None:
             owner = self._declared_names.get(public_name)
             if owner is not None:
-                raise DuplicateMeasureNameError(
+                check_duplicate_measure_name(
                     name=public_name,
                     occurrences=[
                         self._slots[owner].declared_name,
@@ -277,7 +270,7 @@ class ValueRegistry:
         if public_name is not None and public_name not in slot.public_aliases:
             owner = self._declared_names.get(public_name)
             if owner is not None and owner != existing_sid:
-                raise DuplicateMeasureNameError(
+                check_duplicate_measure_name(
                     name=public_name,
                     occurrences=[
                         self._slots[owner].declared_name,
@@ -322,107 +315,7 @@ class ValueRegistry:
         return list(self._slots.values())
 
 
-# TransformLowerer
-
-
-def desugar_change(key: TransformKey) -> ArithmeticKey:
-    """``change(x)`` → ``x - time_shift(x, periods=-1)``; inner ``x`` is identity-preserving so the registry interns it once."""
-    if key.op != "change":
-        raise ValueError(
-            f"desugar_change expected op='change', got {key.op!r}."
-        )
-    inner = key.input
-    shifted = TransformKey(
-        op="time_shift",
-        input=inner,
-        kwargs=(("periods", normalize_scalar(-1)),),
-        partition_keys=key.partition_keys,
-        time_key=key.time_key,
-    )
-    return ArithmeticKey(op="-", operands=(inner, shifted))
-
-
-def lower_sugar_transforms(key: ValueKey) -> ValueKey:
-    """Recursively lower ``change``/``change_pct`` TransformKeys to desugared arithmetic, preserving the inner aggregate's identity. Post-order over ``map_children``."""
-    lowered = key.map_children(lower_sugar_transforms)
-    if isinstance(lowered, TransformKey):
-        if lowered.op == "change":
-            return desugar_change(lowered)
-        if lowered.op == "change_pct":
-            return desugar_change_pct(lowered)
-    return lowered
-
-
-def rewrite_rank_partition_keys(
-    key: ValueKey, *, rewrite_fn: Callable[[TransformKey], Grain],
-) -> ValueKey:
-    """Replace every rank-family ``TransformKey``'s / partitioned aggregate's ``partition_keys`` via ``rewrite_fn``; identity-preserving, runs before interning. Post-order; ``rewrite_fn`` receives the pre-rebuild node."""
-    rebuilt = key.map_children(
-        lambda c: rewrite_rank_partition_keys(key=c, rewrite_fn=rewrite_fn),
-    )
-    wants_rewrite = (
-        isinstance(key, TransformKey)
-        and key.op in RANK_FAMILY_TRANSFORMS
-        and key.partition_keys
-    ) or (isinstance(key, AggregateKey) and key.partition_keys)
-    if wants_rewrite:
-        new_pk = rewrite_fn(key)
-        if new_pk != rebuilt.partition_keys:
-            rebuilt = rebuilt.model_copy(update={"partition_keys": new_pk})
-    return rebuilt
-
-
-def desugar_change_pct(key: TransformKey) -> ArithmeticKey:
-    """``change_pct(x)`` → ``(x - time_shift(x,-1)) / NULLIF(time_shift(x,-1), 0)``; NULLIF guards a zero prior value."""
-    if key.op != "change_pct":
-        raise ValueError(
-            f"desugar_change_pct expected op='change_pct', got {key.op!r}."
-        )
-    inner = key.input
-    shifted = TransformKey(
-        op="time_shift",
-        input=inner,
-        kwargs=(("periods", normalize_scalar(-1)),),
-        partition_keys=key.partition_keys,
-        time_key=key.time_key,
-    )
-    numerator = ArithmeticKey(op="-", operands=(inner, shifted))
-    guarded_divisor = ScalarCallKey(
-        name="nullif", args=(shifted, normalize_scalar(0)),
-    )
-    return ArithmeticKey(op="/", operands=(numerator, guarded_divisor))
-
-
 # ProjectionPlanner
-
-
-class DeclaredMeasure(BaseModel):
-    """One declared measure; ``type`` follows the aggregation (count → INT, avg → DOUBLE, else source type)."""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    bound: BoundExpr
-    declared_name: str
-    public_name: Optional[str] = None
-    label: Optional[str] = None
-    canonical_alias: Optional[str] = None
-    type: Optional[DataType] = None
-    type_is_explicit: bool = False
-    preserve_native_type: bool = False
-    format: Optional[NumberFormat] = None
-    description: Optional[str] = None
-    # A computed dimension is a ROW-phase composite projected AND grouped; the
-    # flag distinguishes it from a bare-measure expression.
-    is_dimension: bool = False
-
-
-class OrderSpec(BaseModel):
-    """One ORDER BY entry on a query."""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    bound: BoundExpr
-    direction: str = "asc"
 
 
 class ProjectionPlan(BaseModel):

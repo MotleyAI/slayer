@@ -17,7 +17,7 @@ from slayer.core.errors import ForcedFilterError, SlayerError
 from slayer.core.models import DatasourceConfig
 from slayer.core.policy import JoinFilterRule, JoinFilterRuleset, SessionPolicy
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.compile.stages import plan_query
+from slayer.engine.plan import plan_query
 from slayer.sql.client import SlayerSQLClient
 from slayer.sql.session_policy import (
     _attach_ch_correlated_setting,

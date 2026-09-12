@@ -41,7 +41,8 @@ from slayer.core.models import (
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.compile.projection import _canonical_name
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.compile.stages import _canonical_alias_for_formula
+from slayer.engine import bind_inputs
+from slayer.engine.bind_inputs import _canonical_alias_for_formula
 from slayer.sql import generator as generator_module
 from slayer.sql import naming
 from slayer.sql import stage_wrapper as sw_module
@@ -880,7 +881,7 @@ class TestProductionCallersDelegate:
 
         # Callers import by name, so patch the binding in each caller's namespace.
         for module in (
-            naming, generator_module, projection, stages,
+            naming, generator_module, projection, stages, bind_inputs,
         ):
             if getattr(module, "canonical_aggregate_alias", None) is not None:
                 monkeypatch.setattr(
@@ -897,7 +898,7 @@ class TestProductionCallersDelegate:
         projection._canonical_name(key)
         assert calls[-1].get("profile") == "declared_name"
 
-        stages._canonical_alias_for_formula(
+        bind_inputs._canonical_alias_for_formula(
             "IGNORED_TEXT", bound=BoundExpr(value_key=key),
         )
         assert calls[-1].get("profile") == "stage_formula"

@@ -55,7 +55,7 @@ Standing gates for EVERY numbered group below: golden baselines byte-identical w
 
 ## 16. Orchestration reroute
 
-- [ ] 16.1 query_engine orchestrates elaborate→compile directly; compilers' remaining user-facing raises are exactly the ledger's non-checker rows; internal invariants become asserts; verify position×family test matrix, multi-stage + prebound recursion tests, full suite
+- [x] 16.1 query_engine orchestrates elaborate→compile directly; compilers' remaining user-facing raises are exactly the ledger's non-checker rows; internal invariants become asserts; verify position×family test matrix, multi-stage + prebound recursion tests, full suite
 
 ## 17. Term boundary declaration (DEV-1897 regime — no import-linter, ever)
 

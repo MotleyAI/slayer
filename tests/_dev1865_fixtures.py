@@ -13,7 +13,7 @@ from typing import List, Optional
 
 from slayer.core.query import SlayerQuery
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.engine.compile.stages import plan_query
+from slayer.engine.plan import plan_query
 
 from tests._dev1824_fixtures import (  # noqa: F401 — re-exported fixture surface
     BAND35,

@@ -32,7 +32,8 @@ from tests._dev1838_fixtures import (
     q,
 )
 from slayer.ir import planned
-from slayer.engine.compile import stages
+from slayer.engine import join_safety
+from slayer.engine import plan
 
 M = ModelMeasure(formula="amount:sum", name="m")
 
@@ -45,7 +46,7 @@ def _bundle() -> ResolvedSourceBundle:
 
 
 def _plan(query):
-    return stages.plan_query(query=query, bundle=_bundle())
+    return plan.plan_query(query=query, bundle=_bundle())
 
 
 def _combined_attaches(planned):
@@ -168,7 +169,7 @@ class TestRankedKernelSynthesis:
 
 
 def _plan48(query):
-    return stages.plan_query(query=query, bundle=dev1748_bundle())
+    return plan.plan_query(query=query, bundle=dev1748_bundle())
 
 
 def _q48(**kw) -> SlayerQuery:
@@ -233,7 +234,7 @@ class TestRankingKeyPrecedence:
             measures=[{"formula": "amount:last", "name": "l"}],
         )
         with pytest.raises(ValueError) as excinfo:
-            stages.plan_query(query=query, bundle=bundle)
+            plan.plan_query(query=query, bundle=bundle)
         assert str(excinfo.value) == (
             "first/last aggregation requires a ranking time column "
             "(a time_dimension, a DATE/TIMESTAMP dimension, or the "
@@ -368,7 +369,7 @@ class TestKernelModel:
 
 class TestCrossingInputPathsUnionFilterAndStructural:
     """DEV-1783 item 6, re-homed from the retired isolation classifier —
-    ``_local_crossing_input_paths`` must UNION a local aggregate's
+    ``local_crossing_input_paths`` must UNION a local aggregate's
     ``Column.filter`` crossings with its structural input crossings (source
     ``Column.sql`` / args / kwargs). Reporting the filter paths alone hides a
     crossing kwarg from the desugar and lets a fan-multiplying aggregate
@@ -385,7 +386,7 @@ class TestCrossingInputPathsUnionFilterAndStructural:
             ),
         )
         bundle = _bundle()
-        paths = stages._local_crossing_input_paths(
+        paths = join_safety.local_crossing_input_paths(
             key=key, bundle=bundle, host_model=bundle.source_model,
         )
         assert ("customers", "regions") in paths, paths  # column_filter_key

@@ -21,11 +21,10 @@ from slayer.core.keys import KIND_POLICY, VALUE_KEY_TYPES, AggregateKey, Arithme
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.aggregate_input_paths import compute_aggregate_input_join_paths
+from slayer.core.keys import lower_sugar_transforms, rewrite_rank_partition_keys
 from slayer.engine.compile.projection import (
     _SLOTTABLE_KIND,
     _iter_slot_deps,
-    lower_sugar_transforms,
-    rewrite_rank_partition_keys,
 )
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects import get_dialect

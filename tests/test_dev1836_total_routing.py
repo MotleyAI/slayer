@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.engine.compile.stages import plan_query
+from slayer.engine.plan import plan_query
 from slayer.sql.generator import SQLGenerator
 
 from tests._dev1836_fixtures import (
@@ -21,7 +21,8 @@ from tests._dev1836_fixtures import (
     make_exec_engine,
     q,
 )
-from slayer.engine.compile import regroup, stages
+from slayer.engine.compile import stages
+from slayer.ir import bound as ir_bound
 
 LOCAL_BAND = {
     "expression": "CASE WHEN amount:sum(partition_by=channel) > 30 THEN 1 ELSE 0 END",
@@ -32,7 +33,7 @@ LOCAL_BAND = {
 def _blind_consumers(*_args, **_kwargs):
     """Blind the unified combined-consumer discovery (local + cross-model buckets) so
     an undisposed aggregate must be caught by ``_assert_total_routing``."""
-    return regroup.CombinedConsumers([], [], [], {}, {})
+    return ir_bound.CombinedConsumers([], [], [], {}, {})
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -100,7 +101,7 @@ class TestTotalRoutingInvariant:
     def test_unrouted_aggregate_raises_explicit_planner_error(self, monkeypatch):
         """Blind the combined-producer discovery to every partitioned leaf: the
         post-discovery invariant must catch the now-undisposed aggregate."""
-        for mod in (regroup, stages):
+        for mod in (ir_bound, stages):
             if hasattr(mod, "combined_consumer_aggregates"):
                 monkeypatch.setattr(
                     mod, "combined_consumer_aggregates", _blind_consumers,

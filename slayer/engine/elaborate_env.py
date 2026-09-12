@@ -1,26 +1,33 @@
-"""Builds the ``ElaboratedQuery`` typing environment from a typed prebound (D2).
+"""THE checker + the ``ElaboratedQuery`` environment builder (D2, D4).
 
-Split from ``elaborate.py`` so the transitional in-planner call needs no import
-cycle: this module never imports the planner. The environment informs nothing
-yet; the checker owns the migrated algebra guards (DEV-1871 G9+), invoked from
-the compiler at their original checkpoints until the G16 reroute.
+Never imports a planner module: binding and compilation both consult it — every
+algebra type error raises here, each invoked at its family's original checkpoint.
 """
 
 from __future__ import annotations
 
 from typing import (
-    TYPE_CHECKING, AbstractSet, Dict, List, NamedTuple, NoReturn, Optional,
+    AbstractSet, Callable, Dict, List, NoReturn, Optional,
     Sequence, Tuple, Union,
 )
 
 from slayer.core.enums import DataType
 from slayer.core.errors import (
-    DistinctDimensionValuesError, PositionTypingError, SlayerError,
+    CanonicalAliasShadowsColumnError,
+    DistinctDimensionValuesError,
+    DuplicateMeasureNameError,
+    MeasureNameCollidesWithColumnError,
+    PositionTypingError,
+    SlayerError,
 )
 from slayer.core.formula import TIME_TRANSFORMS
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.keys import (
     AggregateKey,
+    is_cross_model_agg,
+    is_local_combined_regroup_ref,
+    is_local_partitioned_agg,
+    split_top_level_and,
     ArithmeticKey,
     BetweenKey,
     ColumnKey,
@@ -37,8 +44,12 @@ from slayer.core.keys import (
 from slayer.core.models import SlayerModel
 from slayer.core.refs import dotted_key_display
 from slayer.core.scope import ModelScope, StageSchema
-from slayer.ir.planned import MaskTyping
-from slayer.ir.elaborated import ElaboratedQuery, ExpressionEntry, Term
+from slayer.sql.sql_expr import has_window_function
+from slayer.sql.sql_predicate import parse_sql_predicate
+from slayer.ir.planned import MaskTyping, ModeAFilter
+from slayer.ir.elaborated import ConjunctTyping, ElaboratedQuery, ExpressionEntry, Term
+from slayer.ir.bound import BoundFilter, bound_filter_from_key
+from slayer.ir.prebound import PreboundQuery, position_typing_context
 from slayer.ir.terms import (
     Aggregate,
     Broadcast,
@@ -47,10 +58,6 @@ from slayer.ir.terms import (
     StageDataset,
     Transform,
 )
-
-if TYPE_CHECKING:  # annotation-only: prebound's transitional compile import would cycle
-    from slayer.engine.prebound import PreboundQuery
-
 
 def home_dataset(
     *, scope: Union[ModelScope, StageSchema], model: Optional[SlayerModel],
@@ -61,13 +68,6 @@ def home_dataset(
     if model is not None:
         return ModelDataset(data_source=model.data_source, model_name=model.name)
     return None
-
-
-class ConjunctTyping(NamedTuple):
-    """One position expression's typing: field/measure + stratum (0 = base-row population)."""
-
-    typing: MaskTyping
-    stratum: int
 
 
 def _field_blockers(cj: ValueKey, row_agg_set: frozenset) -> Tuple[List[ValueKey], bool]:
@@ -167,6 +167,189 @@ def type_position_conjunct(
     )
 
 
+
+
+def type_and_split_filters(
+    prebound: PreboundQuery,
+    *,
+    crossing_root: Optional[Callable[[ValueKey], bool]] = None,
+    split: bool = True,
+) -> Tuple[PreboundQuery, List[ConjunctTyping]]:
+    """Type every filter conjunct as field or measure (raising the typing error for
+    neither), splitting a filter string into per-conjunct masks when its conjuncts
+    route differently. Returns (rebuilt prebound, typings aligned with its filters)."""
+    old = list(prebound.bound_filters)
+    dim_keys, row_agg_set = position_typing_context(prebound)
+    has_measure_position = prebound.distinct_dimension_values is not False
+
+    def _has_partitioned_ref(vk: ValueKey) -> bool:
+        # ANY partitioned / cross-model / crossing aggregate ref forces the split so
+        # each conjunct lowers to its own placement.
+        return any(
+            is_local_combined_regroup_ref(k, row_agg_set=row_agg_set)
+            or is_local_partitioned_agg(k)
+            or is_cross_model_agg(k)
+            or (crossing_root is not None and crossing_root(k))
+            for k in walk_value_keys(vk)
+        )
+
+    def _typed(cj: ValueKey) -> ConjunctTyping:
+        return type_position_conjunct(
+            cj, dim_keys=dim_keys, row_agg_set=row_agg_set,
+            has_measure_position=has_measure_position,
+        )
+
+    texts = list(prebound.bound_filter_texts)
+    new_filters: List[BoundFilter] = []
+    new_texts: List[Optional[str]] = []
+    typings: List[ConjunctTyping] = []
+    changed = False
+    for i, bf in enumerate(old):
+        conjuncts = (
+            split_top_level_and(bf.value_key)
+            if split and i >= prebound.n_date_range
+            else [bf.value_key]
+        )
+        conjunct_typings = [_typed(cj) for cj in conjuncts]
+        if len(conjuncts) > 1 and (
+            _has_partitioned_ref(bf.value_key)
+            or len(set(conjunct_typings)) > 1
+        ):
+            changed = True
+            for cj, ct in zip(conjuncts, conjunct_typings):
+                new_filters.append(bound_filter_from_key(cj))
+                new_texts.append(None)
+                typings.append(ct)
+        else:
+            new_filters.append(bf)
+            new_texts.append(texts[i])
+            typings.append(max(conjunct_typings, key=lambda ct: ct.stratum))
+    if not changed:
+        return prebound, typings
+    updated = prebound.model_copy(update={
+        "bound_filters": new_filters,
+        "bound_filter_texts": new_texts,
+    })
+    return updated, typings
+
+
+def type_order_positions(prebound: "PreboundQuery") -> None:
+    """Type every ORDER target (field / measure / typing error) — the same pass
+    ``build_environment`` runs; kept callable for compiler-synthesized sub-plans."""
+    dim_keys, row_agg_set = position_typing_context(prebound)
+    for spec in prebound.order_specs:
+        type_position_conjunct(
+            spec.bound.value_key,
+            dim_keys=dim_keys,
+            row_agg_set=row_agg_set,
+            has_measure_position=prebound.distinct_dimension_values is not False,
+            position="order",
+        )
+
+
+def check_computed_dim_name_collision(
+    *, name: str, model_name: Optional[str], query_measure_collision: bool,
+) -> None:
+    """A computed dimension's name must not shadow a model column/measure or a query measure (DEV-1871 G16, was ``_reject_computed_dim_name_collision``)."""
+    if model_name is not None:
+        raise ValueError(
+            f"Computed dimension name {name!r} collides with an existing "
+            f"column or measure on model {model_name!r}. Choose a different "
+            f"name."
+        )
+    if query_measure_collision:
+        raise ValueError(
+            f"Computed dimension name {name!r} collides with a query measure "
+            f"of the same name. Choose a different name."
+        )
+
+
+def check_stage_flatten_collision(*, flat_name: str, collides: bool) -> None:
+    """Two projected columns must not flatten to one downstream name (DEV-1871 G16; both the declaration-time and stage-schema firing points)."""
+    if collides:
+        raise ValueError(flatten_collision_message(flat_name))
+
+
+def check_measure_dedupe_collision(
+    *, prior_formula: str, formula: str, public_name: str,
+    same_key: bool, same_meta: bool,
+) -> None:
+    """Unnamed measures sharing a derived result key must be the same value with the same metadata (DEV-1871 G16, was inline in ``_declared_measures_from_query``)."""
+    if not same_key:
+        raise ValueError(
+            f"Measures {prior_formula!r} and {formula!r} both derive "
+            f"the result key {public_name!r} but compute different "
+            f"values; rename one (set 'name') to disambiguate."
+        )
+    if not same_meta:
+        raise ValueError(
+            f"Measures {prior_formula!r} and {formula!r} merge into "
+            f"one result column {public_name!r} but declare "
+            f"different label/type; rename one (set 'name') to "
+            f"disambiguate."
+        )
+
+
+def check_measure_name_collision(*, name: Optional[str], model: str) -> None:
+    """A public measure name shadowing a source column raises (DEV-1871 G16, was in ``_validate_alias_collisions``)."""
+    if name is not None:
+        raise MeasureNameCollidesWithColumnError(name=name, model=model)
+
+
+def check_canonical_alias_shadows_column(
+    *, formula: str, canonical: Optional[str], model: str,
+) -> None:
+    """A renamed measure's canonical alias shadowing a source column raises (DEV-1871 G16, was in ``_validate_alias_collisions``)."""
+    if canonical is not None:
+        raise CanonicalAliasShadowsColumnError(
+            formula=formula, canonical=canonical, model=model,
+        )
+
+
+def check_duplicate_measure_name(*, name: str, occurrences: List[str]) -> NoReturn:
+    """Two different expressions may not claim one public name (DEV-1871 G16; both registry firing points)."""
+    raise DuplicateMeasureNameError(name=name, occurrences=occurrences)
+
+
+def check_reserved_regroup_prefix(columns: List[str]) -> None:
+    """A real column may not carry the reserved regroup placeholder prefix while a regroup is active (DEV-1871 G16, was in ``_plan_regroups``)."""
+    if columns:
+        raise ValueError(
+            f"Column(s) {columns!r} use the reserved '__regroup__' prefix, which "
+            f"collides with the regroup primitive's placeholders. Rename them."
+        )
+
+
+def validate_model_filter(
+    *,
+    mf: str,
+    idx: int,
+    model: SlayerModel,
+) -> ModeAFilter:
+    """Validate a ``SlayerModel.filters`` entry and emit its Mode-A text carrier (rejects same-model ModelMeasure and window-function column refs)."""
+    parsed = parse_sql_predicate(mf)
+    measure_names = {m.name for m in (model.measures or [])}
+    windowed_columns = {
+        c.name for c in model.columns
+        if c.sql and has_window_function(c.sql)
+    }
+    for col in parsed.columns:
+        if col in measure_names:
+            raise ValueError(
+                f"Model filter {mf!r} references measure {col!r}. "
+                f"Model filters can only reference table columns (WHERE). "
+                f"Use query-level filters for measure conditions."
+            )
+        if col in windowed_columns:
+            raise ValueError(
+                f"Model filter {mf!r} references column {col!r} whose "
+                f"SQL contains a window function. Factor it into a "
+                f"multi-stage source_queries model or use a rank-family "
+                f"transform at query time."
+            )
+    return ModeAFilter(id=f"mf{idx}", text=mf)
+
+
 def _terms_for(
     roots: List[ValueKey], *, home: Optional[DatasetT], query_grain: Grain,
 ) -> Dict[ValueKey, Term]:
@@ -238,6 +421,14 @@ def _entry(
         grain = next(iter(grains))
     return ExpressionEntry(
         verdict=verdict, home=home, grain=grain, broadcasts=broadcasts,
+    )
+
+
+def flatten_collision_message(flat_name: str) -> str:
+    return (
+        f"Stage column name collision on {flat_name!r}: two projected "
+        f"columns flatten to the same downstream name. Give one an "
+        f"explicit measure `name` to disambiguate."
     )
 
 

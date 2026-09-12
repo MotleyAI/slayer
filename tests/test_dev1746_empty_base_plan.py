@@ -41,7 +41,7 @@ from slayer.core.models import ModelMeasure
 from slayer.core.query import ColumnRef, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.engine.compile.stages import plan_query
+from slayer.engine.plan import plan_query
 from slayer.sql.generator import SQLGenerator
 
 from tests._cross_model_chain import (

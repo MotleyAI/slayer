@@ -21,7 +21,7 @@ from sqlglot import exp
 
 import slayer
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.engine.compile.stages import plan_query
+from slayer.engine.plan import plan_query
 from slayer.sql.generator import SQLGenerator
 
 from tests._dev1837_fixtures import (

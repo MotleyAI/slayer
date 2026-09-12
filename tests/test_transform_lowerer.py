@@ -27,7 +27,7 @@ from slayer.core.keys import (
     TransformKey,
 )
 from slayer.core.keys import Grain
-from slayer.engine.compile.projection import desugar_change, desugar_change_pct
+from slayer.core.keys import desugar_change, desugar_change_pct
 
 
 def _amount_sum() -> AggregateKey:

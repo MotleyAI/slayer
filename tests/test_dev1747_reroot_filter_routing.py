@@ -12,7 +12,7 @@ import pytest
 from slayer.core.errors import UnreachableFilterDroppedWarning
 from slayer.core.keys import AggregateKey
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
-from slayer.engine.compile.stages import plan_query
+from slayer.engine.plan import plan_query
 from slayer.sql.generator import _lower_positions
 from tests._dev1747_fixtures import (
     ALPHA_SPEND_ALL,
@@ -26,6 +26,7 @@ from tests._dev1747_fixtures import (
     seed_dev1747_sqlite,
 )
 import inspect
+from slayer.engine import join_safety
 from slayer.engine.compile import stages
 
 #: Cross-model aggregate + a dimension a hop past the target → planner re-roots the CTE at ``customers``.
@@ -278,12 +279,12 @@ class TestInternalFailuresRaise:
         """No swallowing ``except`` in the reroot functions: a broad tuple, ``except Exception``, or bare ``except:`` all reintroduce the B6 defect."""
         broad = {"Exception", "BaseException", "ValueError"}
         checked = 0
-        for name in (
-            "_cross_model_inherited_filters",
-            "_attributable_from_root",
-            "_reroot_from_root",
+        for mod, name in (
+            (stages, "_cross_model_inherited_filters"),
+            (join_safety, "attributable_from_root"),
+            (join_safety, "reroot_from_root"),
         ):
-            target = getattr(stages, name, None)
+            target = getattr(mod, name, None)
             assert target is not None, (
                 f"{name} is gone — the reroot path was renamed and this guard "
                 f"now checks nothing"

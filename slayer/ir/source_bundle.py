@@ -4,7 +4,7 @@ The orchestrator builds this once at execute start; the binder reads it purely.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -18,10 +18,10 @@ from slayer.core.models import (
 )
 from slayer.core.query import ModelExtension, SlayerQuery
 
-if TYPE_CHECKING:
-    from slayer.core.scope import StageSchema
+from slayer.core.scope import ModelScope, StageSchema
 
 __all__ = [
+    "resolve_scope",
     "ResolvedSourceBundle",
     "SourceSpec",
     "apply_extension_overlay",
@@ -221,3 +221,16 @@ def stage_bundle_with_siblings(
     )
 
 
+
+
+def resolve_scope(
+    *,
+    query,
+    bundle: "ResolvedSourceBundle",
+    stage_schemas: Optional[Dict[str, "StageSchema"]],
+):
+    """The scope a query binds against: its named sibling stage's schema, else the bundle's model."""
+    source = query.source_model
+    if isinstance(source, str) and source in (stage_schemas or {}):
+        return (stage_schemas or {})[source]
+    return ModelScope(source_model=bundle.source_model)

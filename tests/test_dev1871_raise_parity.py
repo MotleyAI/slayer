@@ -73,9 +73,24 @@ def _row_key(row: LedgerRow) -> tuple[str, str]:
     return (row.exc, row.message if row.message else "@" + row.function)
 
 
+# Scanned unconditionally (not derived from ROWS): a raise added to a module
+# whose rows all migrated away (e.g. compile/regroup.py) must still hit parity.
+SCANNED_MODULES = (
+    "bind_inputs.py",
+    "compile/projection.py",
+    "compile/regroup.py",
+    "compile/stages.py",
+    "elaborate_env.py",
+)
+
+
 class TestLedgerParity:
+    def test_ledger_modules_are_scanned(self) -> None:
+        unscanned = {r.module for r in ROWS} - set(SCANNED_MODULES)
+        assert not unscanned, f"ledger rows in unscanned modules: {unscanned}"
+
     def test_every_raise_matches_exactly_one_row(self) -> None:
-        for module in sorted({r.module for r in ROWS}):
+        for module in SCANNED_MODULES:
             actual = Counter(_raise_keys(module))
             expected = Counter()
             for row in ROWS:

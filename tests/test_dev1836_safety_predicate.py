@@ -16,7 +16,7 @@ from slayer.engine.join_safety import (
     safe_reachable,
 )
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.engine.compile.stages import plan_query
+from slayer.engine.plan import plan_query
 
 from tests._dev1836_fixtures import (
     customers_model,
@@ -27,7 +27,7 @@ from tests._dev1836_fixtures import (
     regions_model,
     segments_model,
 )
-from slayer.engine.compile import stages
+from slayer.engine import join_safety
 
 
 def _models_by_name() -> dict[str, SlayerModel]:
@@ -261,7 +261,7 @@ class TestMayInlineSeam:
             "fixture rot: the crossing-input aggregate no longer desugars"
         )
         monkeypatch.setattr(
-            stages, "may_inline_crossing_inputs", lambda paths: True,
+            join_safety, "may_inline_crossing_inputs", lambda paths: True,
         )
         planned = plan_query(query=query, bundle=bundle)
         assert not planned.regroup_attach_plans, (

@@ -9,14 +9,26 @@ aggregate/transform occurrence gets one term, memoized by key identity in
 
 from __future__ import annotations
 
-from typing import Any, Dict, Literal, Optional, Tuple, Union
+from typing import Dict, Literal, NamedTuple, Optional, Tuple, Union
 
 from pydantic import BaseModel, ConfigDict, Field as PydanticField
 
 from slayer.core.keys import Grain, ValueKey
+from slayer.core.query import SlayerQuery
+from slayer.core.scope import ModelScope, StageSchema
+from slayer.ir.planned import MaskTyping
+from slayer.ir.prebound import PreboundQuery, StrictQueryCarrier
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.ir.terms import Aggregate, Broadcast, DatasetT, Transform
 
 PositionVerdict = Literal["field", "measure"]
+
+
+class ConjunctTyping(NamedTuple):
+    """One position expression's typing: field/measure + stratum (0 = base-row population)."""
+
+    typing: MaskTyping
+    stratum: int
 
 Term = Union[Aggregate, Transform]
 
@@ -32,34 +44,35 @@ class ExpressionEntry(BaseModel):
     broadcasts: Tuple[Broadcast, ...] = ()
 
 
-class ElaborationSource(BaseModel):
-    """Opaque handles to what was elaborated, so a compiler can consume the
-    environment without re-deriving its inputs. Transitional: dies when the
-    orchestrator passes compile inputs explicitly (DEV-1871 group 16)."""
-
-    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
-
-    query: Any = None
-    bundle: Any = None
-    scope: Any = None
-    stage_schemas: Any = None
-    prebound: Any = None
-
-
 class ElaboratedQuery(BaseModel):
-    """The typing environment for one bound query stage.
+    """The typing environment for one bound query stage, over the typed bound
+    query it types (``query`` / ``scope`` / ``bundle`` / ``stage_schemas`` /
+    ``prebound`` / ``filter_typings`` are the compiler's explicit inputs).
 
-    Equality is semantic — the ``source`` carrier is excluded.
+    Equality is semantic — only the typing surface participates.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     dimensions: Tuple[ExpressionEntry, ...] = ()
     measures: Tuple[ExpressionEntry, ...] = ()
     filters: Tuple[ExpressionEntry, ...] = ()
     order: Tuple[ExpressionEntry, ...] = ()
     terms: Dict[ValueKey, Term] = PydanticField(default_factory=dict)
-    source: Optional[ElaborationSource] = PydanticField(default=None, repr=False)
+    query: Optional[Union[SlayerQuery, StrictQueryCarrier]] = PydanticField(
+        default=None, repr=False,
+    )
+    scope: Optional[Union[ModelScope, StageSchema]] = PydanticField(
+        default=None, repr=False,
+    )
+    bundle: Optional[ResolvedSourceBundle] = PydanticField(default=None, repr=False)
+    stage_schemas: Dict[str, StageSchema] = PydanticField(
+        default_factory=dict, repr=False,
+    )
+    prebound: Optional[PreboundQuery] = PydanticField(default=None, repr=False)
+    filter_typings: Tuple[ConjunctTyping, ...] = PydanticField(
+        default=(), repr=False,
+    )
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, ElaboratedQuery):

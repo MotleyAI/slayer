@@ -205,6 +205,14 @@ BUILTIN_AGGREGATIONS: frozenset[str] = frozenset({
     "corr", "covar_samp", "covar_pop",
 })
 
+# The aggregations that rank; named once so classifier, planner and renderer agree.
+RANKED_AGGREGATIONS = ("first", "last")
+
+# Transforms whose default partition is "no partition" (rank across the entire
+# result set) rather than the query's group-by dimensions. They accept an
+# explicit ``partition_by=`` kwarg to opt into per-partition ranking.
+RANK_FAMILY_TRANSFORMS = {"rank", "percent_rank", "dense_rank", "ntile"}
+
 # Aggregation value classification (DEV-1788). One classifier,
 # ``classify_aggregation``, buckets every aggregation by how its result relates
 # to the source column. Both ``aggregated_type`` (slot DataType) and

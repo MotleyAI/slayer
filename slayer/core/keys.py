@@ -9,6 +9,9 @@ from __future__ import annotations
 from decimal import Decimal
 from enum import IntEnum
 from typing import (
+    FrozenSet,
+    Sequence,
+    TypeGuard,
     AbstractSet,
     Callable,
     ClassVar,
@@ -27,7 +30,11 @@ from typing import (
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from slayer.core.enums import DataType
+from slayer.core.enums import (
+    DataType,
+    RANK_FAMILY_TRANSFORMS,
+    RANKED_AGGREGATIONS,
+)
 from slayer.core.format import NumberFormat
 
 
@@ -1041,3 +1048,168 @@ def conditional_number_format(
 ) -> Optional[NumberFormat]:
     """A conditional carries a number format only when both branches agree."""
     return a if (a is not None and a == b) else None
+
+
+# ---------------------------------------------------------------------------
+# Key classification and rewrites shared by binding, elaboration and compilation
+# ---------------------------------------------------------------------------
+
+
+def window_kwarg_of(key: ValueKey):
+    """The ``window=`` kwarg value of an ``AggregateKey``, or ``None``."""
+    if isinstance(key, AggregateKey):
+        for k, v in key.kwargs:
+            if k == "window":
+                return v
+    return None
+
+
+def is_local_partitioned_agg(k: ValueKey) -> bool:
+    """A LOCAL aggregate with an explicit ``partition_by=`` grain."""
+    return (
+        isinstance(k, AggregateKey)
+        and k.partition_keys is not None
+        and not getattr(k.source, "path", ())
+    )
+
+
+def is_cross_model_agg(k: ValueKey) -> bool:
+    """A cross-model AggregateKey (source names another model); a host-grain wrap (locus="host") is excluded."""
+    return (
+        isinstance(k, AggregateKey)
+        and bool(getattr(k.source, "path", ()))
+        and k.locus != "host"
+    )
+
+
+def is_local_combined_regroup_ref(
+    k: ValueKey, *, row_agg_set: frozenset = frozenset(),
+) -> bool:
+    """A LOCAL aggregate attached at the COMBINED SELECT (explicit ``partition_by=``
+    or a bare windowed/first/last measure); ``row_agg_set`` aggregates excluded."""
+    return (
+        isinstance(k, AggregateKey)
+        and not getattr(k.source, "path", ())
+        and k not in row_agg_set
+        and (
+            k.partition_keys is not None
+            or any(kw == "window" for kw, _ in k.kwargs)
+            or k.agg in RANKED_AGGREGATIONS
+        )
+    )
+
+
+def split_top_level_and(vk: ValueKey) -> List[ValueKey]:
+    """Top-level AND conjuncts; only ``and`` splits (OR/comparisons stay whole)."""
+    if isinstance(vk, ArithmeticKey) and vk.op == "and":
+        out: List[ValueKey] = []
+        for o in vk.operands:
+            out.extend(split_top_level_and(o))
+        return out
+    return [vk]
+
+
+def rewrite_rank_partition_keys(
+    key: ValueKey, *, rewrite_fn: Callable[[TransformKey], Grain],
+) -> ValueKey:
+    """Replace every rank-family ``TransformKey``'s / partitioned aggregate's ``partition_keys`` via ``rewrite_fn``; identity-preserving, runs before interning. Post-order; ``rewrite_fn`` receives the pre-rebuild node."""
+    rebuilt = key.map_children(
+        lambda c: rewrite_rank_partition_keys(key=c, rewrite_fn=rewrite_fn),
+    )
+    wants_rewrite = (
+        isinstance(key, TransformKey)
+        and key.op in RANK_FAMILY_TRANSFORMS
+        and key.partition_keys
+    ) or (isinstance(key, AggregateKey) and key.partition_keys)
+    if wants_rewrite:
+        new_pk = rewrite_fn(key)
+        if new_pk != rebuilt.partition_keys:
+            rebuilt = rebuilt.model_copy(update={"partition_keys": new_pk})
+    return rebuilt
+
+
+def desugar_change(key: TransformKey) -> ArithmeticKey:
+    """``change(x)`` → ``x - time_shift(x, periods=-1)``; inner ``x`` is identity-preserving so the registry interns it once."""
+    assert key.op == "change", f"desugar_change expected op='change', got {key.op!r}."
+    inner = key.input
+    shifted = TransformKey(
+        op="time_shift",
+        input=inner,
+        kwargs=(("periods", normalize_scalar(-1)),),
+        partition_keys=key.partition_keys,
+        time_key=key.time_key,
+    )
+    return ArithmeticKey(op="-", operands=(inner, shifted))
+
+
+def desugar_change_pct(key: TransformKey) -> ArithmeticKey:
+    """``change_pct(x)`` → ``(x - time_shift(x,-1)) / NULLIF(time_shift(x,-1), 0)``; NULLIF guards a zero prior value."""
+    assert key.op == "change_pct", (
+        f"desugar_change_pct expected op='change_pct', got {key.op!r}."
+    )
+    inner = key.input
+    shifted = TransformKey(
+        op="time_shift",
+        input=inner,
+        kwargs=(("periods", normalize_scalar(-1)),),
+        partition_keys=key.partition_keys,
+        time_key=key.time_key,
+    )
+    numerator = ArithmeticKey(op="-", operands=(inner, shifted))
+    guarded_divisor = ScalarCallKey(
+        name="nullif", args=(shifted, normalize_scalar(0)),
+    )
+    return ArithmeticKey(op="/", operands=(numerator, guarded_divisor))
+
+
+def lower_sugar_transforms(key: ValueKey) -> ValueKey:
+    """Recursively lower ``change``/``change_pct`` TransformKeys to desugared arithmetic, preserving the inner aggregate's identity. Post-order over ``map_children``."""
+    lowered = key.map_children(lower_sugar_transforms)
+    if isinstance(lowered, TransformKey):
+        if lowered.op == "change":
+            return desugar_change(lowered)
+        if lowered.op == "change_pct":
+            return desugar_change_pct(lowered)
+    return lowered
+
+def operand_aggregates(source: ValueKey) -> List[AggregateKey]:
+    """The top-level attached aggregates of a re-aggregation source (the direct
+    constituents, deduped — a composite may repeat one), not descending through
+    a nested aggregate's own source."""
+    out: List[AggregateKey] = []
+
+    def _walk(k: ValueKey) -> None:
+        if isinstance(k, AggregateKey):
+            if k not in out:
+                out.append(k)
+            return
+        for c in k.children():
+            _walk(c)
+
+    _walk(source)
+    return out
+
+
+def is_reaggregation_key(k: ValueKey) -> TypeGuard[AggregateKey]:
+    """``k`` is a re-aggregation: an aggregate whose source carries attached
+    (aggregate) values (axiom 6, DEV-1847)."""
+    return isinstance(k, AggregateKey) and bool(operand_aggregates(k.source))
+
+
+def reaggregation_operand_keys(vks: Sequence[ValueKey]) -> FrozenSet[AggregateKey]:
+    """Every aggregate nested inside a re-aggregation root (at any depth) — the
+    operands exempt from the combined-consumer partition-key rule."""
+    out: set = set()
+
+    def _scan(k: ValueKey) -> None:
+        if is_reaggregation_key(k):
+            out.update(
+                c for c in walk_value_keys(k.source) if isinstance(c, AggregateKey)
+            )
+            return
+        for c in k.children():
+            _scan(c)
+
+    for vk in vks:
+        _scan(vk)
+    return frozenset(out)
