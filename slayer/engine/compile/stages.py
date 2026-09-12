@@ -57,7 +57,7 @@ from slayer.core.time_bounds import strip_frame_bounds
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.scope import ModelScope, StageColumn, StageSchema
 from slayer.engine.binding import bind_expr, bind_filter, bind_time_dimension
-from slayer.engine.elaborate_env import build_environment, home_dataset
+from slayer.engine.elaborate_env import build_environment, check_computed_dimension, home_dataset
 from slayer.ir.bound import BoundExpr, BoundFilter
 from slayer.engine.filter_reachability import (
     compute_key_join_paths,
@@ -4519,43 +4519,6 @@ def _reject_computed_dim_name_collision(
             )
 
 
-def _guard_computed_dimension(*, d: ComputedDimension, bound, query: SlayerQuery) -> None:  # NOSONAR(S3776) — sequential fail-closed guard checks over one shared walk (all_keys / transforms / inner_aggs); each arm raises its own contract error, and extracting them scatters the shared state and the ordered narrative.
-    """Grain-self-containment rules for a computed dimension: every aggregate must carry ``partition_by=``, fail closed on raw-rows mode; temporal-axis rule runs later."""
-    all_keys = list(walk_value_keys(bound.value_key))
-    transforms = [k for k in all_keys if isinstance(k, TransformKey)]
-    for tk in transforms:
-        inner_aggs = [
-            k for k in walk_value_keys(tk.input) if isinstance(k, AggregateKey)
-        ]
-        # A transform is legal in a dimension only over an explicitly-grained aggregate.
-        if not inner_aggs or any(a.partition_keys is None for a in inner_aggs):
-            raise NotImplementedError(
-                f"A transform inside computed dimension {d.name!r} must wrap an "
-                f"explicitly-grained aggregate — declare partition_by= on the "
-                f"aggregate it transforms (DEV-1868)."
-            )
-    aggs = [k for k in all_keys if isinstance(k, AggregateKey)]
-    if not aggs:
-        return  # row-level
-    if not query.distinct_dimension_values:
-        raise DistinctDimensionValuesError(
-            f"Computed dimension {d.name!r} references an aggregate, so it cannot "
-            f"be used with distinct_dimension_values=False (raw rows). Remove the "
-            f"flag (the default aggregates) or drop the aggregate from the "
-            f"dimension."
-        )
-    for agg in aggs:
-        if agg.partition_keys is None:
-            raise ValueError(
-                f"The aggregate inside computed dimension {d.name!r} must declare "
-                f"the grain it aggregates over with partition_by=, e.g. "
-                f"'CASE WHEN amount:sum(partition_by=city) > 5000 THEN 1 ELSE 0 END'. "
-                f"Without partition_by the group key is a function of the query's "
-                f"own dimensions and adds no grouping."
-            )
-    # A valid partitioned-aggregate dimension is desugared into a producer stage by ``_plan_regroups``.
-
-
 def _declared_computed_dimension(
     d: ComputedDimension,
     *,
@@ -4570,7 +4533,11 @@ def _declared_computed_dimension(
         parsed=parsed, scope=scope, bundle=bundle, allow_measures=True,
         dimension_alias_map=dim_alias_map,
     )
-    _guard_computed_dimension(d=d, bound=bound, query=query)
+    # Grain rules live in the checker (DEV-1871 G9); invoked here to preserve the bind-time firing point / precedence.
+    check_computed_dimension(
+        name=d.name, bound=bound,
+        distinct_dimension_values=query.distinct_dimension_values,
+    )
     dim_type = _type_for_measure_formula(scope=scope, bound=bound)
     return DeclaredMeasure(
         bound=bound,

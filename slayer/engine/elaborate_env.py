@@ -1,14 +1,16 @@
 """Builds the ``ElaboratedQuery`` typing environment from a typed prebound (D2).
 
 Split from ``elaborate.py`` so the transitional in-planner call needs no import
-cycle: this module never imports the planner. Inert in DEV-1871 group 7 — the
-environment informs nothing yet and the checker raises nothing here.
+cycle: this module never imports the planner. The environment informs nothing
+yet; the checker owns the migrated algebra guards (DEV-1871 G9+), invoked from
+the compiler at their original checkpoints until the G16 reroute.
 """
 
 from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple, Union
 
+from slayer.core.errors import DistinctDimensionValuesError
 from slayer.core.formula import TIME_TRANSFORMS
 from slayer.core.keys import (
     AggregateKey,
@@ -116,6 +118,42 @@ def _entry(
     return ExpressionEntry(
         verdict=verdict, home=home, grain=grain, broadcasts=broadcasts,
     )
+
+
+def check_computed_dimension(*, name, bound, distinct_dimension_values) -> None:  # NOSONAR(S3776) — sequential fail-closed guard checks over one shared walk (all_keys / transforms / inner_aggs); each arm raises its own contract error, and extracting them scatters the shared state and the ordered narrative.
+    """Grain rules for one computed dimension (DEV-1871 G9, was ``_guard_computed_dimension``)."""
+    all_keys = list(walk_value_keys(bound.value_key))
+    transforms = [k for k in all_keys if isinstance(k, TransformKey)]
+    for tk in transforms:
+        inner_aggs = [
+            k for k in walk_value_keys(tk.input) if isinstance(k, AggregateKey)
+        ]
+        # A transform is legal in a dimension only over an explicitly-grained aggregate.
+        if not inner_aggs or any(a.partition_keys is None for a in inner_aggs):
+            raise NotImplementedError(
+                f"A transform inside computed dimension {name!r} must wrap an "
+                f"explicitly-grained aggregate — declare partition_by= on the "
+                f"aggregate it transforms (DEV-1868)."
+            )
+    aggs = [k for k in all_keys if isinstance(k, AggregateKey)]
+    if not aggs:
+        return  # row-level
+    if not distinct_dimension_values:
+        raise DistinctDimensionValuesError(
+            f"Computed dimension {name!r} references an aggregate, so it cannot "
+            f"be used with distinct_dimension_values=False (raw rows). Remove the "
+            f"flag (the default aggregates) or drop the aggregate from the "
+            f"dimension."
+        )
+    for agg in aggs:
+        if agg.partition_keys is None:
+            raise ValueError(
+                f"The aggregate inside computed dimension {name!r} must declare "
+                f"the grain it aggregates over with partition_by=, e.g. "
+                f"'CASE WHEN amount:sum(partition_by=city) > 5000 THEN 1 ELSE 0 END'. "
+                f"Without partition_by the group key is a function of the query's "
+                f"own dimensions and adds no grouping."
+            )
 
 
 def build_environment(

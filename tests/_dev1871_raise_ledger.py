@@ -47,6 +47,7 @@ def _row(module, function, exc, message, category, family, user, owner,
 _SP = "compile/stages.py"
 _RP = "compile/regroup.py"
 _PL = "compile/projection.py"
+_EE = "elaborate_env.py"  # the checker (DEV-1871 G9+): guards relocate here from the compilers
 
 ROWS: Tuple[LedgerRow, ...] = (
     _row(_SP, "_guard_dimension_temporal_axis", "NotImplementedError",
@@ -192,13 +193,13 @@ ROWS: Tuple[LedgerRow, ...] = (
     _row(_SP, "_reject_computed_dim_name_collision", "ValueError",
          "Computed dimension name … collides with a query measure of the same name. Choose a different name.",
          "checker", "names", True, "checker"),
-    _row(_SP, "_guard_computed_dimension", "NotImplementedError",
+    _row(_EE, "check_computed_dimension", "NotImplementedError",
          "A transform inside computed dimension … must wrap an explicitly-grained aggregate — declare partition_by= on the aggregate it transforms (DEV-1868).",
          "checker", "regroup-roots", True, "checker", deferral=True),
-    _row(_SP, "_guard_computed_dimension", "DistinctDimensionValuesError",
+    _row(_EE, "check_computed_dimension", "DistinctDimensionValuesError",
          "Computed dimension … references an aggregate, so it cannot be used with distinct_dimension_values=False (raw rows). Remove the flag (the default aggregates) or drop the aggregate from the dimension.",
          "checker", "positions", True, "checker"),
-    _row(_SP, "_guard_computed_dimension", "ValueError",
+    _row(_EE, "check_computed_dimension", "ValueError",
          "The aggregate inside computed dimension … must declare the grain it aggregates over with partition_by=, e.g. 'CASE WHEN amount:sum(partition_by=city) > 5000 THEN 1 ELSE 0 END'. Without partition_by the group key is a function of the query's own dimensions and adds no grouping.",
          "checker", "regroup-roots", True, "checker"),
     _row(_SP, "_guard_flatten", "ValueError", "",
