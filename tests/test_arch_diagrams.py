@@ -1309,13 +1309,21 @@ def test_repo_views_has_core_focus():
     assert "* -> core" in views
 
 
+def test_repo_views_has_sql_focus():
+    views = (REPO_ROOT / "architecture" / "views.c4").read_text(encoding="utf-8")
+    assert "view sql_focus" in views
+    assert "SQL generation in context" in views
+    assert "sql -> *" in views
+    assert "* -> sql" in views
+
+
 def test_repo_index_diagrams_mapping():
     index = yaml.safe_load((REPO_ROOT / "architecture" / "index.yaml").read_text(encoding="utf-8"))
     assert index.get("diagrams") == {
         "architecture/system.arc42.md": ["landscape"],
         "architecture/core.arc42.md": ["core_focus"],
         "architecture/engine.arc42.md": ["query_pipeline"],
-        "architecture/sql.arc42.md": ["query_pipeline"],
+        "architecture/sql.arc42.md": ["sql_focus"],
     }
 
 
@@ -1324,7 +1332,7 @@ def test_repo_mapped_docs_have_markers():
         ("system.arc42.md", "landscape"),
         ("core.arc42.md", "core_focus"),
         ("engine.arc42.md", "query_pipeline"),
-        ("sql.arc42.md", "query_pipeline"),
+        ("sql.arc42.md", "sql_focus"),
     ]:
         text = (REPO_ROOT / "architecture" / doc).read_text(encoding="utf-8")
         assert f"<!-- likec4:{view} -->" in text

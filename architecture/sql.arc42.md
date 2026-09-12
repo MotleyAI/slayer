@@ -10,12 +10,12 @@ plans are made — it consumes the shared representation in `slayer/ir`, never
 
 ## 2. Building blocks
 
-The `query_pipeline` view ([views.c4](views.c4)):
+The `sql_focus` view ([views.c4](views.c4)):
 
-<!-- likec4:query_pipeline -->
+<!-- likec4:sql_focus -->
 ```mermaid
 flowchart TD
-  %% query_pipeline: Query pipeline
+  %% sql_focus: SQL generation in context
   subgraph core["Core domain models"]
     core__query["Query"]
     core__models["Models"]
@@ -26,39 +26,28 @@ flowchart TD
     sql__sql_predicate["SQL predicate"]
     sql__window_detect["Window detect"]
   end
-  subgraph engine["Query engine"]
-    engine__syntax["Syntax"]
-  end
+  engine["Query engine"]
   ir["Intermediate representation"]
-  subgraph storage["Storage backends"]
-    storage__migrations["Migrations"]
-  end
-  core__query -.-> engine__syntax
+  storage["Storage backends"]
+  importers("Importers")
+  surfaces("User-facing surfaces")
   core__models -.-> sql__dialects
   core__models -.-> sql__sql_predicate
   core__models -.-> sql__window_detect
   core__query -.-> sql__window_detect
-  core__models -.-> storage__migrations
-  core__query -.-> storage__migrations
-  core__models -.-> core__query
-  core__query --> core__models
   sql__render --> sql__dialects
   sql__sql_predicate --> sql__window_detect
-  engine --> core
-  engine --> ir
   engine --> sql
-  engine --> storage
-  ir --> core
+  importers --> sql
   sql --> core
   sql --> ir
-  storage --> core
-  storage --> engine
   storage --> sql
+  surfaces --> sql
   classDef leaf fill:none;
-  class core__query,core__models,sql__render,sql__dialects,sql__sql_predicate,sql__window_detect,engine__syntax,ir,storage__migrations leaf;
+  class core__query,core__models,sql__render,sql__dialects,sql__sql_predicate,sql__window_detect,engine,ir,storage,importers,surfaces leaf;
 ```
 *Dashed arrows: legacy edges slated to die.*
-<!-- /likec4:query_pipeline -->
+<!-- /likec4:sql_focus -->
 
 Children: `render`
 (value keys, aggregates, order terms, joins, node assembly) and `dialects`.
