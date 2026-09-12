@@ -26,6 +26,7 @@ from importlib.resources import files
 
 from pydantic import BaseModel
 
+from slayer.core.errors import MemoryNotFoundError
 from slayer.storage.base import StorageBackend
 
 _CONTENT_SUBDIR = "help_content"
@@ -34,18 +35,24 @@ _ID_PREFIX = "help."
 #: Authored one-line previews (<=500 chars) surfaced by search(compact=True)
 #: and inspect(compact=True). Keyed by the topic key (``NN_`` prefix stripped).
 _DESCRIPTIONS: dict[str, str] = {
-    "intro": "What {{product}} is, the core entities, the query shape, and the biggest gotchas.",
-    "queries": "Anatomy of a SlayerQuery: source_model, measures, dimensions, filters, order, limit.",
-    "formulas": "Writing measure formulas: colon aggregations, arithmetic, and saved measures.",
-    "aggregations": "Built-in and custom aggregations, colon syntax, *:count, and allowed_aggregations.",
-    "transforms": "cumsum, time_shift, change, the rank family, lag/lead, and their wrapping rules.",
-    "time": "Time dimensions, granularities, and time-ordered formula resolution.",
-    "filters": "WHERE vs HAVING routing, filters on measures/transforms, and {variable} placeholders.",
-    "joins": "Reaching joined data via dotted paths and how joins auto-resolve.",
-    "models": "What a model is: columns, measures, source modes, and model-level filters.",
-    "extending": "Ad hoc columns/measures/joins via ModelExtension and saving queries as models.",
-    "workflow": "Recommended tool-chaining order for an agent: inspect -> search -> inspect -> query.",
+    "intro": "What {{product}} is, the judgment calls queries require, and the deep-dive topics.",
+    "models": "Authoring models: columns, saved measures, custom aggregations, joins, filters, query-backed models, result keys.",
+    "workflow": "Tool-chaining for discovery, query building, and connecting databases, plus an error decoder.",
 }
+
+#: Former built-in topic ids (query-language content now lives on the ``query``
+#: tool's docstring and schema). Seeding deletes them from warm stores so
+#: retired bodies stop being served; host-namespaced ids are never touched.
+RETIRED_HELP_IDS: tuple[str, ...] = (
+    "help.queries",
+    "help.formulas",
+    "help.aggregations",
+    "help.transforms",
+    "help.time",
+    "help.filters",
+    "help.joins",
+    "help.extending",
+)
 
 
 class HelpTopic(BaseModel):
@@ -188,7 +195,8 @@ async def seed_help_memories(
     storage: StorageBackend, *, topics: Sequence[HelpTopic] | None = None,
 ) -> int:
     """Idempotently seed the help topics as memories. Returns the number of
-    rows actually written (0 on a warm, unchanged store).
+    rows actually written (0 on a warm, unchanged store). Rows under
+    :data:`RETIRED_HELP_IDS` are deleted first.
 
     Upsert-always with skip-if-unchanged: an existing ``help.*`` row whose
     ``learning`` + ``description`` already match the shipped content is left
@@ -197,6 +205,11 @@ async def seed_help_memories(
     embedding channel is refreshed via ``SearchService.upsert_memory`` — the
     storage layer does not embed on its own.
     """
+    for stale_id in RETIRED_HELP_IDS:
+        try:
+            await storage.delete_memory(stale_id)
+        except MemoryNotFoundError:
+            pass
     written = 0
     for topic in (HELP_TOPICS if topics is None else topics):
         existing = await storage.get_memory_row(topic.id)

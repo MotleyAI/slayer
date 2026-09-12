@@ -436,12 +436,14 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     mcp = FastMCP(
         "SLayer",
         instructions=(
-            "SLayer is a semantic layer for querying databases. "
-            "Instead of writing SQL, describe what data you want using models, measures, dimensions, and filters. "
-            "New to SLayer? Start with inspect(reference='memory:help.intro', entity_type='memory') for an overview of core concepts and the query shape — it lists the deep-dive topics you can inspect the same way. "
-            "Use search(question='...') to find relevant concepts, models, and saved learnings. "
-            "Typical workflow: inspect(memory:help.intro) → search → inspect → query. "
-            "To connect a new database: create_datasource → describe_datasource (verify + list tables) → ingest_datasource_models → models_summary."
+            """SLayer is a semantic layer for querying databases. Instead of writing SQL, describe what data you want using measures, dimensions, and filters.
+SLayer queries allow you to do multistage aggregations, arithmetic, time shifts and much more right inside the query, including across multiple models (SLayer writes the joins for you).
+Before assuming you can't express certain logic (like aggregations of aggregations, or different grains in the same query) in SLayer,
+MAKE SURE to inspect(reference='memory:help.intro', entity_type='memory') for an overview of what it can do.
+DO NOT fall back on manipulating the raw data yourself unless you've read the help and are SURE SLayer can't do it.
+Use search(question='...') to find relevant concepts, models, and saved learnings.
+Typical workflow: inspect(memory:help.intro) → search → inspect → query.
+To connect a new database: create_datasource → describe_datasource (verify + list tables) → ingest_datasource_models → models_summary."""
         ),
     )
     _set_server_version(mcp)
@@ -460,76 +462,101 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         explain: bool = False,
         format: str = "markdown",
     ) -> str:
-        """Query data from a semantic model. Call inspect(reference="<ds>.<model>", entity_type="model") first to see available columns and measures.
+        """Query data from a semantic model. Call inspect(reference="<datasource>.<model>", entity_type="model") first to see available columns and measures, and ``search`` (with the entities you plan to use and/or a free-text question) to surface saved learnings and example queries before finalizing a query.
 
-        The ``query`` argument mirrors the engine's accepted input — one of three forms:
+        The ``query`` argument takes one of three forms:
 
-        - **Model name** (string) — run a query-backed model by name, e.g. ``"monthly_revenue"``.
-          Its stored backing query runs (honoring ``variables``). A model that is not
-          query-backed raises an error naming the ``source_model=`` remedy.
-        - **Query object** (dict) — a single query (fields below).
-        - **Multi-stage list** (list of query objects) — a DAG of stages (rules below);
-          the last entry is the root whose rows are returned.
+        - **Model name** (string) — run a query-backed saved model by name, e.g. ``"monthly_revenue"``
+          (honors ``variables``; every other setting comes from the stored query).
+        - **Query object** (dict) — a single query; per-field documentation is on the SlayerQuery schema.
+        - **Multi-stage list** (list of query objects) — a DAG of stages. Every entry except the last
+          MUST carry a ``name``; the last entry is the root whose rows are returned. Stages reference
+          one another by that name — as a ``source_model`` or via a join in an inline ModelExtension —
+          and the engine orders them topologically. An inner stage's result columns become plain
+          columns of the outer stage (dotted paths flatten: ``stores.name`` -> ``stores__name``); a
+          stage may reference only what its own source defines or what a prior stage projected —
+          define before you reference. Use stages when a whole result set must be re-queried,
+          joined, or reused; single-query nesting and computed dimensions already cover
+          re-aggregation.
 
-        Multi-stage list rules: every entry except the last MUST carry a ``name``; the last
-        entry is the root (its rows are returned), so the intended root MUST be placed last.
-        Stages reference one another by that name — as a ``source_model`` or a
-        ``source_model.joins[].target_model`` (there is no top-level ``joins`` field). The engine topologically reorders the non-root stages so
-        references resolve (their relative order is arbitrary); an unresolved reference or a
-        cycle raises, and an empty list is rejected.
+        Expressions — one language, used in measures, computed dimensions, filters, and order. The
+        same expression returns its value as a measure, groups by it as a computed dimension, masks
+        as a filter (routed automatically to WHERE / HAVING / post-aggregation), and sorts in order.
 
-        Query object fields:
-            source_model: One of three forms:
-                - **Model name** (string) — name of a saved model from models_summary, e.g. ``"orders"``.
-                - **Inline ModelExtension** (dict) — extend an existing model with extra columns/joins/measures
-                  for this one query: ``{"source_name": "orders", "columns": [{"name": "double_amount",
-                  "sql": "amount * 2", "type": "DOUBLE"}]}``.
-                - **Inline SlayerModel** (dict) — define a model ad-hoc:
-                  ``{"name": "ad_hoc", "sql_table": "things", "data_source": "test", "columns": [...]}``.
-            measures: Aggregated values to return. Each is a formula: {"formula": "*:count"},
-                {"formula": "revenue:sum / *:count", "name": "aov"} (arithmetic),
-                {"formula": "cumsum(revenue:sum)"} (cumulative sum),
-                {"formula": "change(revenue:sum)"} (period-over-period difference),
-                {"formula": "change_pct(revenue:sum)"} (period-over-period % change, e.g. month-over-month growth),
-                {"formula": "time_shift(revenue:sum, -1)"} (the shifted value itself, one time bucket back),
-                {"formula": "time_shift(revenue:sum, -1, 'year')"} (value from one year earlier, for custom arithmetic),
-                {"formula": "lag(revenue:sum, 1)"} (previous row via window function; shifts by row position, NULL at edges),
-                {"formula": "lead(revenue:sum, 1)"} (next row via window function), {"formula": "last(revenue:sum)"} (most recent),
-                {"formula": "rank(revenue:sum)"} (ranking). A bare name like {"formula": "aov"} resolves to a saved ModelMeasure on the model.
-                change / change_pct / time_shift are calendar-aware and partition-safe: change and change_pct compare
-                each row against the prior time bucket (one step back at the query's own granularity), while time_shift
-                compares at its explicitly requested offset and granularity. All three join on the same non-time
-                dimension values, so per-group series reset cleanly — safe for grouped queries like month-over-month
-                revenue by store.
-                For period-over-period growth, prefer change_pct (or change for the absolute delta); use time_shift
-                only when you need the shifted value itself as a term in your own arithmetic.
-            dimensions: List of dimension names to group by, e.g. ["status", "region"].
-            filters: Filter conditions as formula strings. Examples: "status == 'completed'",
-                "amount > 100", "status in ('a', 'b')", "status is None",
-                "name like '%acme%'". Filters on measures are automatically routed to HAVING.
-                Supports and/or: "status == 'a' or status == 'b'".
-                Filters can also reference computed measure names or contain inline transforms:
-                "change(revenue:sum) > 0", "last(change(revenue:sum)) < 0".
-            time_dimensions: Time grouping. Format: {"dimension": "created_at", "granularity": "day|week|month|quarter|year", "date_range": ["2024-01-01", "2024-12-31"]}.
-            main_time_dimension: Name of the time dimension transforms (change/lag/etc.) key off; overrides auto-detection when a query has multiple time dimensions.
-            order: Sorting. Format: {"column": "measure_or_dim_name", "direction": "asc|desc"}.
-            limit: Max rows to return, trusted verbatim; without it the response is capped at 20 rows with a truncation notice.
-            offset: Number of rows to skip.
-            whole_periods_only: When true, snap date filters to time bucket boundaries based on granularity, exclude the current incomplete time bucket.
-            to_many_handling: How an aggregate resolves query dimensions unattributable from its root — "broadcast" (default; repeat the value, warn), "associate" (per-cell value over the distinct associated entities), or "error" (refuse). The retired ``strict`` flag is rejected with this remedy. A query-object field only; a run-by-name string carries no fields, so set it on the stored query instead.
-            distinct_dimension_values: Default True (Cube.js-style auto-dedup for dim-only queries — emits GROUP BY <dim aliases>). Set False to emit raw rows: no top-level GROUP BY, just SELECT <dimensions/time_dimensions> with the usual WHERE/ORDER BY/LIMIT. Any measure reference (in measures, filters, or order) raises an error in this mode.
-            variables: Per-query {placeholder} values, scoped to this query object / stage (same substitution as the top-level ``variables`` arg). Overridden by the top-level value — see precedence below.
+        - Aggregations are function calls over a column or a same-model scalar expression:
+          ``count(*)``, ``sum(total)``, ``sum(amount - cost)``, ``percentile(price, p=0.95)``.
+          Available: sum, avg (both take window='90d' for trailing time windows), min, max, count,
+          count_distinct, count_distinct_approx, median, percentile(x, p=),
+          weighted_avg(x, weight=col), stddev_samp, stddev_pop, var_samp, var_pop,
+          corr(x, other=col), covar_samp(x, other=col), covar_pop(x, other=col),
+          first(x[, time_col]) / last(x[, time_col]) (earliest/latest record's value per group),
+          plus model-defined custom aggregations. Write count_distinct(x), never count(distinct x).
+        - All aggregations support ``partition_by=`` (bare names: ``partition_by=region``,
+          ``partition_by=[region, city]``, ``partition_by=[]`` for the grand total), computing the
+          aggregate at that coarser grain; the result is broadcast over the missing dimensions.
+        - Combine aggregations with arithmetic and transforms — missing dimensions broadcast on
+          both sides. E.g. with dimensions ["city", "region"], the measure
+          {"formula": "sum(total) / sum(total, partition_by=region)", "name": "share_of_region"}
+          is each city's share of its region's total.
+        - Aggregations nest: "avg(sum(total, partition_by=[region, city]), partition_by=[region])"
+          averages the per-city totals within each region. The top-level partition_by must be a
+          subset of the query's dimensions; inner aggregations' partition_by need not be.
+        - Transforms wrap aggregated expressions: cumsum(x); change(x) / change_pct(x)
+          (period-over-period delta / % change — calendar-aware and partition-safe, prefer these
+          for growth); time_shift(x, -1[, 'year']) (the shifted value itself, for custom
+          arithmetic); lag(x, n) / lead(x, n) (row-position shift, NULL at edges); first(x) /
+          last(x) (broadcast the earliest/latest bucket's value); consecutive_periods(predicate)
+          (trailing run length); rank(x), dense_rank(x), percent_rank(x), ntile(x, n=N) (rank
+          family — optional partition_by=, no time dimension needed). All other transforms require
+          a time_dimensions entry. Not supported: a transform as the input of
+          time_shift/change/change_pct, and mixing row-level columns with another aggregation's
+          value inside one aggregation source.
+        - Cross-model: reference any joined model's field as ``model_name.field_name`` (or a
+          longer dotted path) and the engine figures out the join paths, avoiding fan-outs and
+          chasm traps — each aggregation computes over its own model's rows exactly once;
+          ambiguous routes error naming the candidates, and result keys use the full routed path.
+          An aggregation sliced by a dimension not attributable to it broadcasts its value with a
+          warning — see ``to_many_handling`` to attribute or error instead.
+
+        Method — decompose the question into blocks first: every qualifier, projected column,
+        filter, grouping, unit, rounding, and ordering hint is one block, and each must map to a
+        named column/measure/filter/dimension. Never drop a qualifier because no entity matched —
+        search for it, else encode it as an expression or an inline ModelExtension column;
+        reference already-encoded quantities by name rather than re-deriving their logic. Pin
+        explicitly rather than guessing: which aggregation ("typical" is not automatically avg vs
+        median), the grouping column and raw-vs-standardized labels, each aggregate's scope (all
+        rows vs a filtered subset), sort column + direction + tie-break, NULL handling, units and
+        rounding, exact numeric constants. "How many / count of" -> a scalar count(*); "which /
+        list / show" -> the rows. Project exactly the columns the question names — no extras,
+        none missing.
+
+        Filter literals — build every ==/in/like predicate on a text column from that column's
+        sampled values (inspect it), never a guessed spelling; a literal absent from the samples
+        means don't write that predicate. Compare case/whitespace-insensitively in the FILTER
+        position only, never on a projected, grouped, or join-key column; abbreviations that
+        case-folding can't unify go in the IN-set. Apply only the transformations
+        (TRIM/ROUND/CAST/dedup) the question or a governing definition requires.
+
+        Verify — run the exact final query and read the result (show_sql=true when unsure): row
+        count plausible; no dimension-only GROUP BY when you wanted per-record rows
+        (distinct_dimension_values: false); sort column + direction as asked; each aggregate's
+        scope right; NULL behavior intended; string values carry the expected casing. On a wrong
+        result, change ONE variable at a time — two changes per attempt make the outcome
+        uninterpretable.
 
         Top-level arguments (siblings of ``query``, NOT fields inside it):
-            variables: Values for {placeholder} substitutions in filters / model SQL. Also settable per query object (above). Precedence: runtime (top-level) > named-stage > outer-query > model.query_variables.
+            variables: Values for {placeholder} substitutions in filters / model SQL. Also
+                settable per query object; precedence: runtime (top-level) > named-stage >
+                outer-query > model.query_variables.
             show_sql: When true, include the generated SQL in the response for debugging.
             dry_run: When true, generate and return the SQL without executing it.
             explain: When true, run EXPLAIN ANALYZE and return the query plan.
-            format: Output format — "markdown" (default, compact and LLM-friendly), "json" (structured), or "csv" (most compact). Case-insensitive.
+            format: Output format — "markdown" (default, compact) | "json" | "csv". Case-insensitive.
 
-        Example: query(query={"source_model": "orders", "measures": [{"formula": "*:count"}], "dimensions": ["status"], "filters": ["status == 'completed'"]})
+        Without an explicit ``limit`` the response is capped at 20 rows with a truncation notice.
 
-        Before calling this tool, run ``search`` first, supplying the entities you're thinking of using (and/or the query itself via the ``query`` arg, or a free-text ``question``). Read the returned memories and consider any matching example queries before formulating the final query.
+        Example: query(query={"source_model": "orders", "dimensions": ["status"],
+        "measures": [{"formula": "count(*)"}], "filters": ["status == 'completed'"]})
         """
         try:
             fmt = format.lower().strip()
@@ -730,6 +757,12 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         memories. Use ``search`` instead when you want an entity surfaced *in
         context* (with related memories and ranked neighbours).
 
+        Before using a column as a filter, projection, group-by, or join
+        key, inspect it and read its ``Description:`` (the schema author's
+        intent) and ``Sample values:`` (the authoritative inventory of the
+        literal forms actually stored — build text predicates from these,
+        never a guessed spelling). Never pick a column from its name alone.
+
         Collection (DEV-1667): omit ``reference`` (or pass ``None`` / ``[]``)
         to list a whole kind. ``entity_type="model"`` lists all models grouped
         by datasource (compact=True: one terse line per model; compact=False:
@@ -804,13 +837,22 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     ) -> str:
         """Create a new semantic model, either from a database table or from a query.
 
-        **From a table** (provide sql_table or sql):
+        Host a column/measure on the model whose row grain is 1:1 with what
+        it describes — not merely one where its input columns live. Choose
+        join keys by column ``Description`` (author intent); on ties take the
+        shortest declared join path (long chains through lookup/log tables
+        fan out rows). Encode definitions in dependency order, referencing
+        already-defined entities by name rather than re-deriving them inline;
+        in row-level SQL parenthesise weighted sums in comparisons
+        (``(a*w1 + b*w2) > t``).
+
+        **From a table or sql query** (provide sql_table or sql):
             create_model(name="orders", sql_table="public.orders", data_source="mydb",
                          columns=[...], measures=[...])
 
         **From a query** (provide query):
             create_model(name="monthly_summary", query={"source_model": "orders",
-                         "measures": ["*:count", "amount:sum"],
+                         "measures": ["count(*)", "sum(amount)"],
                          "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]})
             Columns are auto-introspected from the query result.
 
@@ -827,7 +869,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 (CASE WHEN inside aggregation), ``label``, ``description``, ``hidden``,
                 ``meta``.
             measures: List of named formula definitions on the model. Each:
-                {"name": "aov", "formula": "revenue:sum / *:count", "label": "...",
+                {"name": "aov", "formula": "sum(revenue) / count(*)", "label": "...",
                  "description": "...", "meta": {...}}.
                 Queries can reference these by bare name (e.g. ``{"formula": "aov"}``).
                 ``meta`` is an optional opaque dict for caller bookkeeping
@@ -964,6 +1006,15 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         """Edit an existing model in a single call — update metadata, upsert columns/measures/aggregations/joins,
         manage filters, and remove entities.
 
+        Host a column/measure on the model whose row grain is 1:1 with what
+        it describes — not merely one where its input columns live. Choose
+        join keys by column ``Description`` (author intent); on ties take the
+        shortest declared join path (long chains through lookup/log tables
+        fan out rows). Encode definitions in dependency order, referencing
+        already-defined entities by name rather than re-deriving them inline;
+        in row-level SQL parenthesise weighted sums in comparisons
+        (``(a*w1 + b*w2) > t``).
+
         Args:
             model_name: Name of the model to edit.
             description: New model description.
@@ -997,7 +1048,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 (``primary_key`` already implies it); it is used to infer join
                 cardinality.
             measures: Named formula measures to create or update (upsert by name). Each dict:
-                {"name": "aov", "formula": "revenue:sum / *:count", "label": "...",
+                {"name": "aov", "formula": "sum(revenue) / count(*)", "label": "...",
                  "description": "...", "meta": {...}}.
                 Queries can reference these by bare name (e.g. ``{"formula": "aov"}``).
                 ``meta`` is an optional opaque dict for caller bookkeeping.
@@ -1025,7 +1076,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         Example — update a column and add a named measure:
             edit_model(model_name="orders",
                        columns=[{"name": "status", "type": "string"}],
-                       measures=[{"name": "aov", "formula": "revenue:sum / *:count"}])
+                       measures=[{"name": "aov", "formula": "sum(revenue) / count(*)"}])
         Example — remove a measure:
             edit_model(model_name="orders", remove={"measures": ["old_metric"]})
         """
@@ -1624,15 +1675,18 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         paths are ready to drop into a query whose ``source_model`` is the
         recommended root — e.g. a joined column comes back as
         ``customers.regions.name`` and a root-owned one as ``status``;
-        aggregation suffixes (``:sum``) are preserved.
+        aggregation spellings (``sum(revenue)`` / ``revenue:sum``) are preserved.
 
         When no single model reaches everything, ``root_model`` is null and
         ``coverage`` lists the best partial roots so you can split the
         request into a multi-stage query.
 
+        Call this once your item list is final, not as a schema browser —
+        explore with ``search`` / ``inspect`` first.
+
         Args:
             items: entity references (``orders.revenue``, ``customers.name``,
-                ``orders.revenue:sum``, bare ``aov`` for a saved metric...).
+                ``orders.revenue:sum`` / ``sum(orders.revenue)``, bare ``aov`` for a saved metric...).
             data_source: optional datasource scope; when omitted, names
                 resolve via the datasource-priority list. All items must
                 resolve to a single datasource.
@@ -1836,7 +1890,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 learning="Paid revenue by status",
                 linked_entities={
                     "source_model": "orders",
-                    "measures": [{"formula": "amount:sum"}],
+                    "measures": [{"formula": "sum(amount)"}],
                     "filters": ["status = 'paid'"],
                 },
                 id="kb.paid-revenue",
@@ -1902,6 +1956,12 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         queries previously saved against the entities you're
         considering.
 
+        Discovery, not detail: hits come back as one-line descriptions —
+        pick candidate ids here, then read their full bodies with
+        ``inspect`` (batching same-kind ids in one call). A broad
+        ``compact=False`` search drags full renders into cached context on
+        every later turn for no added signal.
+
         Channel 1 (entity-overlap BM25 over memories): runs when
         ``entities`` and/or ``query`` is supplied. Memories whose
         canonical entity tags overlap the resolved input are ranked.
@@ -1942,12 +2002,15 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             max_results: Maximum total number of hits to return (default 10).
             cypher_filter: Optional openCypher MATCH query returning
                 ``… AS id`` that pre-filters all three channels to the
-                returned canonical IDs. When ``advanced_search`` is not
-                installed, only simple
+                returned canonical IDs — narrow to one kind so
+                ``max_results`` isn't spent on an RRF-fused mix of
+                memories, columns, measures, and models. When
+                ``advanced_search`` is not installed, only simple
                 ``MATCH (n:Label1:Label2) RETURN n.id AS id`` patterns are
                 supported as a kind filter (multi-label uses union
                 semantics; allowed labels: Memory, Datasource, Model,
-                Column, Measure, Aggregation).
+                ModelColumn, Measure, Aggregation — use ``ModelColumn``,
+                not ``Column``, which resolves only on the naive fallback).
         """
         try:
             response = await search_service.search(
