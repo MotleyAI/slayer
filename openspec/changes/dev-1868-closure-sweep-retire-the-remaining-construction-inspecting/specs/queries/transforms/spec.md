@@ -20,7 +20,7 @@ evaluates under exactly one:
   SHALL apply per leaf without leaking between leaves.
 - **Series regime** (new): an input containing a nested transform anywhere in
   its tree, a cross-model aggregate leaf, or a top-level aggregate-typed
-  predicate (`IN` / `BETWEEN` / comparison over aggregates). The input's
+  predicate (`IN` / comparison over aggregates). The input's
   materialised result series is shifted: each row reads the series value at the
   shifted bucket within the same partition, and a shifted bucket absent from
   the series — filtered out, outside the query's date range, or before the

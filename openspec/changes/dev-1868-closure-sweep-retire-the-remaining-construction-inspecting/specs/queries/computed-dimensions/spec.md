@@ -3,15 +3,15 @@
 ## MODIFIED Requirements
 
 ### Requirement: Grain self-containment error surface
-Expressions that are not grain-self-contained SHALL fail with clear errors naming the offending construct: a bare aggregate without `partition_by=`, an aggregate over another attached aggregate value, and an aggregate whose partition keys or inputs are not attributable from its root. Two deliberate, permanent type rules govern transforms in dimension position — they are typed residue of the closure axiom, not deferrals, and their errors SHALL cite no tracking issue: a transform inside a dimension expression SHALL have at least one aggregate in its input (a transform acts on aggregates), and every aggregate contained in such a transform SHALL declare `partition_by=` explicitly — the ungrained default (the query's dimensions) would include the dimension being defined, a self-referential grain. The two violations SHALL raise distinct errors, each naming its own remedy.
+Expressions that are not grain-self-contained SHALL fail with clear errors naming the offending construct: a bare aggregate without `partition_by=`, and an aggregate whose partition keys or inputs are not attributable from its root. Two deliberate, permanent type rules govern transforms in dimension position — they are typed residue of the closure axiom, not deferrals, and their errors SHALL cite no tracking issue: a transform inside a dimension expression SHALL have at least one aggregate in its input (a transform acts on aggregates), and every aggregate contained in such a transform SHALL declare `partition_by=` explicitly — the ungrained default (the query's dimensions) would include the dimension being defined, a self-referential grain. The two violations SHALL raise distinct errors, each naming its own remedy.
 
 #### Scenario: Bare aggregate in a dimension is rejected
 - WHEN a dimension expression contains an aggregate with no `partition_by=`
 - THEN the query fails with an error stating that aggregates in dimension expressions must declare `partition_by=`
 
-#### Scenario: Aggregate over an attached value is rejected
+#### Scenario: Aggregate over an attached value executes
 - WHEN a dimension expression aggregates over a subexpression that itself contains a partitioned aggregate
-- THEN the query fails with a clear not-yet-supported error, not an internal error
+- THEN the query executes as a second-order re-aggregation (lifted by DEV-1847), with correct executed values
 
 #### Scenario: Unattributable partition key in a dimension expression is rejected
 - WHEN a dimension expression's aggregate declares a partition key reachable from its root only across a join with unproven arity

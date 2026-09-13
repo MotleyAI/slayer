@@ -378,23 +378,19 @@ class TestPredicateTypingContract:
 
 
 class TestUniformFailClosed:
-    #: shape id -> the still-unsupported time_shift input.
+    #: shape id -> the still-unsupported time_shift input: row-level leaves
+    #: only (DEV-1868 lifted nested transforms, cross-model leaves, and
+    #: aggregate-typed predicates into the series regime).
     SHAPES = {
-        "nested_transform": "time_shift(cumsum(revenue:sum), -1)",
         "mixed_composite": "time_shift(revenue:sum * weight, -1)",
         "pure_row_composite": "time_shift(weight * qty, -1)",
-        "cross_model_leaf": "time_shift(revenue:sum + regions.factor:sum, -1)",
-        # Top-level predicate: no base slot, so the pre-fix guard let it fall
-        # through to a RuntimeError; it must fail closed as a ValueError.
-        "predicate_input": "time_shift(store in ('A', 'B'), -1)",
+        "row_predicate_input": "time_shift(store in ('A', 'B'), -1)",
     }
     #: shape id -> substrings the user-facing message must name.
     TOKENS = {
-        "nested_transform": ("time_shift", "transform", "source_queries"),
         "mixed_composite": ("time_shift", "row", "source_queries"),
         "pure_row_composite": ("time_shift", "row", "source_queries"),
-        "cross_model_leaf": ("time_shift", "cross-model", "source_queries"),
-        "predicate_input": ("time_shift", "inkey", "source_queries"),
+        "row_predicate_input": ("time_shift", "row", "source_queries"),
     }
 
     @pytest.mark.parametrize("shape", list(SHAPES))

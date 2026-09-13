@@ -71,10 +71,15 @@ to already-legal shapes' SQL (byte-identical goldens, class-a).
   `generator.py::_validate_time_shift_input` to a checker (`check_time_shift_input` in
   `elaborate_env.py`), message unchanged; the generator keeps only internal invariants.
   DEV-1859 is notified of the new location.
-- **D8 — Law pools grow with the algebra.** Cross-model partitioned operands
-  (`customers.spend:sum(partition_by=region)`, `customers.spend:last(partition_by=region)`)
-  join `OPERANDS`/`MEASURE_POOL` + `OPERAND_GRAIN`; shape ids reshuffle (accepted); any
-  latent failure surfaced is fixed in this PR. `EXPECTED_RAISES` stays empty.
+- **D8 — Law pools grow with the algebra** (amended at spec-tests with user OK: a
+  host-column partition key is unattributable from `customers` — typed residue — and the
+  DEV-1739 `customers` had no ranking column). Operands `cm_part`/`cm_last` =
+  `customers.spend:sum|last(partition_by=customers.regions.name)` join
+  `OPERANDS`/`MEASURE_POOL` + `OPERAND_GRAIN`; the DEV-1739 `customers` gains
+  `signup_at` + `default_time_dimension` (additive); the law harness gains the `cmgrain`
+  family (`region`, `customers.regions.name`), a required-family constraint in
+  `sample_shapes`, and pair grain `rn`. Shape ids reshuffle (accepted); any latent
+  failure surfaced is fixed in this PR. `EXPECTED_RAISES` stays empty.
 
 ## Risks / Trade-offs
 
@@ -91,6 +96,30 @@ to already-legal shapes' SQL (byte-identical goldens, class-a).
 - [Dialect divergence in new emission (grouped booleans, alias reuse)] → compile-level
   generated-SQL coverage across Tier-1 dialects for the new shapes (F8); executed oracles
   on SQLite + DuckDB.
+
+## Characterization outcomes (spec-tests stage, executed 2026-09-13)
+
+- **W1/W2: substrate complete.** With `check_partitioned_measures` no-opped, every W1/W2
+  shape executes with correct values (`tests/test_dev1868_characterization.py`) — tasks
+  3.1/3.2 are exactly the two raise removals, no stage fix.
+- **W3: seam already unreachable.** Every composite shape (remote+local, remote+literal,
+  multi-remote, scalar-call, two-roots, coexistence) executes today; task 3.3 is the
+  invariant flip only, and the W3 exec tests are pins, not failing tests.
+- **Predicates:** a top-level comparison over aggregates ALREADY executes via
+  re-aggregation; per D4's typed regime it moves to series semantics — observable only at
+  the date-range edge (D10 class c, enumerate in the PR). `between` does not parse in the
+  formula grammar (delta amended). `change(pred)` currently computes silent 0/1 arithmetic
+  on SQLite and leaks a DuckDB binder error — the typed rejection is new behavior.
+- **Delta amendments (user-approved):** computed-dimensions attached-value scenario
+  corrected to the DEV-1847 lifted contract — in the base spec too (stale since DEV-1847;
+  the validator's scenario-name parity requires base + delta in lockstep); `BETWEEN`
+  dropped from the transforms delta (unparseable in the formula grammar).
+- **Pending at implementation:** bless `tests/golden/dev1868_sql_baseline.json`; re-bless
+  the `guard/transform_in_dim` entries of `dev1740_regroup_baseline.json` (class d);
+  update/replace the superseded rejection pins in
+  `tests/test_dev1846_composite_transforms.py::TestUniformFailClosed`,
+  `tests/test_dev1846_golden_sql.py` (`reject/ts_*` keys), and
+  `tests/test_dev1824_remaining_guards.py` (first/last + nested-transform tests).
 
 ## Migration Plan
 

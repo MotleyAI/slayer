@@ -7,6 +7,7 @@ from __future__ import annotations
 import pytest
 
 from tests._law_harness import (
+    CM_PARTITIONED_OPERANDS,
     DEFERRAL_SITES,
     EXPECTED_RAISES,
     PAIRS_BY_GRAIN,
@@ -71,8 +72,11 @@ class TestHarnessSelfChecks:
 
     def test_shape_and_pair_ids_are_stable_across_collections(self) -> None:
         assert sample_shapes() == SHAPES
-        assert sample_pairs() == PAIRS_BY_GRAIN["rc"]
-        assert sample_pairs(exclude=frozenset({"part_city"})) == PAIRS_BY_GRAIN["rm"]
+        assert sample_pairs(exclude=CM_PARTITIONED_OPERANDS) == PAIRS_BY_GRAIN["rc"]
+        assert sample_pairs(
+            exclude=CM_PARTITIONED_OPERANDS | {"part_city"},
+        ) == PAIRS_BY_GRAIN["rm"]
+        assert sample_pairs(exclude=frozenset({"part_city"})) == PAIRS_BY_GRAIN["rn"]
 
     async def test_registry_expectation_is_strict(self, monkeypatch) -> None:
         """A registered expected raise that stops raising fails loudly — the

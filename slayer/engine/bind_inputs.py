@@ -57,6 +57,7 @@ from slayer.engine.elaborate_env import (
     check_raw_rows_filter_measure_ref,
     check_raw_rows_order_measure_ref,
     check_time_dimension_date_range,
+    check_time_shift_input,
     check_time_transforms_resolved,
 )
 from slayer.engine.join_safety import assert_partition_key_attributable
@@ -510,6 +511,14 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
 
     # Any time-needing transform still at time_key=None means no resolvable TD.
     check_time_transforms_resolved(roots=[
+        *(dm.bound.value_key for dm in declared_measures),
+        *(bf.value_key for bf in bound_filters),
+        *(spec.bound.value_key for spec in order_specs),
+    ])
+
+    # time_shift-family input typing runs pre-lowering, where change/change_pct
+    # are still single nodes (their desugar duplicates the offending input).
+    check_time_shift_input(roots=[
         *(dm.bound.value_key for dm in declared_measures),
         *(bf.value_key for bf in bound_filters),
         *(spec.bound.value_key for spec in order_specs),

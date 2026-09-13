@@ -381,7 +381,7 @@ errors (their partition is fixed to the query's dimensions). To coarsen the
 
 The self-join matches on **every projected dimension as well as the shifted time column** — plain columns, joined columns (`stores.name`), derived columns, and any secondary time dimension all take part in the join grain (e.g. `ON base.month IS NOT DISTINCT FROM shifted.month AND base.store IS NOT DISTINCT FROM shifted.store`). So these transforms are partition-safe: each group's series is compared only against itself, and per-group series reset cleanly. One store's first month is never diffed against another store's last month. The grain match is **null-safe** (`IS NOT DISTINCT FROM`, or the dialect equivalent), so a group with a NULL dimension value — for example rows with no matching row across a LEFT join — still lines up against its own prior period instead of dropping to a NULL shifted value.
 
-`time_shift` (and `change` / `change_pct`) also accepts a composite input whose leaves are all aggregates (e.g. `time_shift(revenue:sum / qty:sum, -1)`), re-aggregating each leaf in the shifted period, while a nested transform, a row-level column, or a cross-model leaf *inside the composite* is rejected (a bare cross-model input like `time_shift(customers.spend:sum, -1)` renders).
+`time_shift` (and `change` / `change_pct`) also accepts a composite input whose leaves are all aggregates (e.g. `time_shift(revenue:sum / qty:sum, -1)`), re-aggregating each leaf in the shifted period; an input containing a nested transform, a cross-model aggregate leaf, or a top-level predicate over aggregates (`time_shift(revenue:sum > 100, -1)`) instead shifts its materialised result series — NULL where the shifted bucket falls outside the series — and only a row-level column inside a composite is rejected.
 
 **Intent recipes:**
 
@@ -415,7 +415,7 @@ comparisons:
 
 ### Nesting
 
-Field formulas support nesting — window transforms can wrap self-join transforms (but not vice versa, though `consecutive_periods` may nest a transform in its predicate):
+Field formulas support nesting — window transforms can wrap self-join transforms and vice versa (`change(cumsum(x))` shifts the cumulative series; `consecutive_periods` may also nest a transform in its predicate):
 
 ```json
 "measures": [
