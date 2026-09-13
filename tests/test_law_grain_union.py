@@ -50,6 +50,9 @@ def _grain_projection(key: tuple, *, shape, grain: tuple) -> tuple:
     parts = []
     if "region" in grain:
         parts.append(key[0])
+    if "cmregion" in grain:  # customers.regions.name, key slot 1 of cmgrain
+        assert shape.dim_family == "cmgrain"
+        parts.append(key[1])
     if "month" in grain:
         assert shape.with_month
         parts.append(key[-1])
@@ -79,6 +82,10 @@ async def test_population_and_operand_broadcast_constancy(law_case):
         grain = OPERAND_GRAIN.get(meas)
         if grain is None:
             continue
+        if meas == "cm" and shape.dim_family == "cmgrain":
+            # regions.name is attributable from customers, so the ungrained
+            # cross-model sum participates at that grain instead of ().
+            grain = ("cmregion",)
         cells: dict[tuple, set] = {}
         for key, row in full_rows.items():
             cell = _grain_projection(key, shape=shape, grain=grain)
@@ -91,7 +98,7 @@ async def test_population_and_operand_broadcast_constancy(law_case):
                        f"grain cell {cell}: {sorted(map(str, values))}",
                 shape=shape,
             )
-        if meas == "cm" and shape.filter is None:
+        if meas == "cm" and shape.filter is None and grain == ():
             (value,) = cells[()]
             law_assert(
                 value == CM_TOTAL,

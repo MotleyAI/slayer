@@ -43,7 +43,10 @@ extensions, inline models, multi-stage formulas, computed-dimension
 expressions, transform and arithmetic operands) and for **every** aggregation
 — builtin, aliased (`countD(x)` ≡ `x:count_distinct`), and model-defined
 custom aggregations. Neither spelling is rewritten or warned about; a saved
-model keeps the author's spelling.
+model keeps the author's spelling. Declared parameters may be passed
+positionally in declaration order — `percentile(price, 0.9)` and
+`price:percentile(0.9)` both mean `p=0.9` (`first`/`last` keep their
+positional ranking column instead).
 
 | Colon form | Functional form |
 |---|---|

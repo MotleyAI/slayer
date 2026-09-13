@@ -26,6 +26,7 @@ from slayer.core.keys import (
     ValueKey,
     normalize_scalar,
 )
+from slayer.core.keys import Grain
 
 
 # ---------------------------------------------------------------------------
@@ -303,7 +304,7 @@ class TestTransformKey:
         a = TransformKey(
             op="cumsum",
             input=agg,
-            partition_keys=frozenset({
+            partition_keys=Grain.of({
                 ColumnKey(path=(), leaf="region"),
                 ColumnKey(path=(), leaf="store"),
             }),
@@ -311,7 +312,7 @@ class TestTransformKey:
         b = TransformKey(
             op="cumsum",
             input=agg,
-            partition_keys=frozenset({
+            partition_keys=Grain.of({
                 ColumnKey(path=(), leaf="store"),
                 ColumnKey(path=(), leaf="region"),
             }),

@@ -62,7 +62,7 @@ class AggCall(_BaseNode):
     # or — for a re-aggregation (DEV-1847) — a nested AggCall / composite of them.
     source: Union[
         Ref, DottedRef, StarSource, Literal, "ScalarCall", "Arith", "UnaryOp",
-        "AggCall",
+        "AggCall", "Cmp", "BoolOp",
     ]
     agg: str
     args: Tuple[Any, ...] = ()

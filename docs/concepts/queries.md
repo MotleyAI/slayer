@@ -125,14 +125,11 @@ An aggregate partitioned by another computed dimension — even one carrying an
 attached aggregate — compiles as a nested producer
 ([re-aggregation](formulas.md#re-aggregation-aggregate-over-an-attached-value)).
 
-Deferred shapes (raise a clear error citing the follow-up): a bare aggregate
-without `partition_by=`, a computed dimension combined with a bare windowed
-(`window=` without `partition_by=`) or `first` / `last` measure, a
-**mixed-grain** transform any of whose inner aggregates is windowed or `first`
-/ `last` (its union would need the synthesized time bucket), and a time-ordered
-transform (`cumsum`, `lag`, …) whose evaluation grain lacks its time-ordering
-key — include that key in `partition_by=` so the transform accumulates within
-its own grain.
+Ill-typed shapes (raise a clear error naming the remedy, by design): a bare
+aggregate without `partition_by=` — the ungrained default would include the
+dimension being defined — and a time-ordered transform (`cumsum`, `lag`, …)
+whose evaluation grain lacks its time-ordering key — include that key in
+`partition_by=` so the transform accumulates within its own grain.
 
 ### Dim-only queries deduplicate
 
@@ -532,7 +529,7 @@ infers population `customers` (one row per region present among customers, order
 
 Inference fails closed with a `PopulationInferenceError` naming the candidates when no single model determines everything, several minimal candidates tie, a dimension's join path is ambiguous, or the referenced models don't scope to exactly one datasource. Name `source_model` explicitly (any model — including a bridge that owns none of the queried items) to override inference.
 
-Inference reads dimensions as literal join paths, so when you omit `source_model`, write cross-model dimensions as full dotted paths (`customers.regions.name`) — short-form auto-routing needs a declared root, so a bare `regions.name` will fail closed or pick the wrong population; name `source_model` if you want short forms.
+Inference is routing-aware: a short-form cross-model dimension (bare `regions.name`) is probed per candidate through the same auto-routing binding applies, so it infers the same population as its full dotted path (`customers.regions.name`) — or fails closed identically.
 
 ## Choosing a root model
 

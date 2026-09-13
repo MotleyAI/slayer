@@ -51,14 +51,12 @@ class TestPartitionByBandedDimension:
     async def test_partition_by_computed_dim_no_longer_raises_nested_attach(
         self, exec_engine,
     ):
-        """Partitioning by an attach-carrying computed dimension compiles."""
-        try:
-            await exec_engine.execute(sales_q(
-                dimensions=["region", BAND],
-                measures=[ModelMeasure(formula="amount:sum(partition_by=spend_band)",
-                                       name="bt")]))
-        except NotImplementedError as exc:  # pragma: no cover - the contract
-            pytest.fail(f"nested-attach guard still present: {exc}")
+        """Partitioning by an attach-carrying computed dimension compiles — a
+        NotImplementedError here means the nested-attach guard is back."""
+        await exec_engine.execute(sales_q(
+            dimensions=["region", BAND],
+            measures=[ModelMeasure(formula="amount:sum(partition_by=spend_band)",
+                                   name="bt")]))
 
     async def test_nested_inside_another_computed_dimension(self, exec_engine):
         """A second computed dimension partitioned by spend_band executes."""
@@ -73,23 +71,21 @@ class TestPartitionByBandedDimension:
 
 class TestCombinedConsumerExemption:
     async def test_reaggregation_operand_keeps_finer_grain_exemption(self, exec_engine):
-        """An inner partition key that is not a query dimension is legal."""
-        try:
-            resp = await exec_engine.execute(sales_q(
-                dimensions=["region"],
-                measures=[reagg("avg", INNER_CR, name="acr")]))
-        except SlayerError as exc:
-            pytest.fail(f"re-aggregation operand wrongly hit the partition-key "
-                        f"rule: {exc}")
+        """An inner partition key that is not a query dimension is legal — a
+        SlayerError here means the operand wrongly hit the partition-key rule."""
+        resp = await exec_engine.execute(sales_q(
+            dimensions=["region"],
+            measures=[reagg("avg", INNER_CR, name="acr")]))
         vals = {k[0]: v["sales.acr"] for k, v in region_key(resp).items()}
         assert float(vals["North"]) == pytest.approx(AVG_CITY_TOTAL_BY_REGION["North"])
 
     async def test_outer_explicit_key_still_carries_the_rule(self, exec_engine):
         """The outer's OWN explicit partition key must be a query dimension."""
+        query = sales_q(
+            dimensions=["region"],
+            measures=[reagg("avg", INNER_CR, name="acr", partition_by="product")])
         with pytest.raises((SlayerError, ValueError)) as ei:
-            await exec_engine.execute(sales_q(
-                dimensions=["region"],
-                measures=[reagg("avg", INNER_CR, name="acr", partition_by="product")]))
+            await exec_engine.execute(query)
         msg = str(ei.value)
         assert not isinstance(ei.value, NotImplementedError)
         # The pure-attached operand is accepted; the failure is the outer key's
@@ -108,7 +104,8 @@ class TestFilterAndOrderSurfaces:
             measures=[ModelMeasure(formula="amount:sum", name="tot")],
             filters=["amount:sum(partition_by=spend_band) > 100"]))
         labels = {row["sales.spend_band"] for row in resp.data}
-        assert resp.data and labels == {"hi"}
+        assert resp.data
+        assert labels == {"hi"}
 
     async def test_order_partition_by_computed_dim(self, exec_engine):
         """A raw ORDER BY target's partition_by= resolves it as well — hi band

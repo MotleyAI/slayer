@@ -49,12 +49,12 @@ from slayer.engine.filter_reachability import (
     filter_reachability_for,
     recompute_filter_reachability,
 )
-from slayer.engine.source_bundle import ResolvedSourceBundle
-from slayer.engine.stage_planner import (
-    _bound_filter_from_key,
+from slayer.ir.bound import bound_filter_from_key
+from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.engine.compile.stages import (
     _cross_model_inherited_filters,
-    plan_query,
 )
+from slayer.engine.plan import plan_query
 
 
 # --------------------------------------------------------------------------- #
@@ -334,7 +334,7 @@ class TestProducerInheritanceRouting:
         }
         host = models["orders"]
         return _cross_model_inherited_filters(
-            base_filters=[(_bound_filter_from_key(key), "f")],
+            base_filters=[(bound_filter_from_key(key), "f")],
             target_path=tuple(target_path),
             root_model=models[target_path[-1]],
             models_by_name=models,

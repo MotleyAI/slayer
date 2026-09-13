@@ -25,7 +25,12 @@ from slayer.core.models import SlayerModel
 from slayer.engine.join_graph import JoinGraph
 from slayer.engine.join_safety import provably_to_one
 
-__all__ = ["short_form_route_or_none", "route_dotted_target"]
+__all__ = [
+    "resolve_route",
+    "safe_route_reachable",
+    "short_form_route_or_none",
+    "route_dotted_target",
+]
 
 
 def _safe_hops_for_neighbor(
@@ -155,7 +160,7 @@ def _shortest_safe_route(
     return best.get(target_model)
 
 
-def _resolve_route(
+def resolve_route(
     *, root: SlayerModel, target_model: str, models_by_name: dict[str, SlayerModel]
 ) -> Tuple[Optional[list[str]], str]:
     """``(route, status)`` where status is ``"ok"`` / ``"ambiguous"`` /
@@ -176,12 +181,19 @@ def _resolve_route(
     return None, "ambiguous"
 
 
+def safe_route_reachable(
+    *, root: SlayerModel, target_model: str, models_by_name: dict[str, SlayerModel]
+) -> bool:
+    """Whether at least one fan-out-free executable route reaches ``target_model``."""
+    return target_model in _safe_bfs_dist(root=root, models_by_name=models_by_name)
+
+
 def short_form_route_or_none(
     *, root: SlayerModel, target_model: str, models_by_name: dict[str, SlayerModel]
 ) -> Optional[list[str]]:
     """The executable hop-token route (excl. ``root``, incl. ``target_model``)
     for a uniquely-routable target, else ``None``. Never raises."""
-    route, status = _resolve_route(
+    route, status = resolve_route(
         root=root, target_model=target_model, models_by_name=models_by_name
     )
     return route if status == "ok" else None
@@ -197,7 +209,7 @@ def route_dotted_target(
     """Like :func:`short_form_route_or_none`, but raise
     :class:`UnresolvableDimensionJoinError` (route-aware ``suggested_path``
     including ``leaf``) on an ambiguous or unreachable target."""
-    route, status = _resolve_route(
+    route, status = resolve_route(
         root=root, target_model=target_model, models_by_name=models_by_name
     )
     if status == "ok":

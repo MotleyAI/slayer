@@ -115,3 +115,12 @@ class ModelScope(BaseModel):
     """
 
     source_model: Optional[SlayerModel] = None
+
+
+def host_model_name(scope) -> str:
+    """The host relation's display name for alias-collision reporting."""
+    if isinstance(scope, ModelScope) and scope.source_model is not None:
+        return scope.source_model.name
+    if isinstance(scope, StageSchema):
+        return scope.relation_name
+    return "(stage)"

@@ -208,7 +208,10 @@ class TestSourceQueriesRealizesOracle:
         resp = await engine.execute("avg_city_total_by_region")
         region_col = next(c for c in resp.columns if c.endswith(".region"))
         acr_col = next(c for c in resp.columns if c.endswith(".acr"))
-        got = {row[region_col]: row[acr_col] for row in resp.data
-               if row[acr_col] is not None}
+        rows = [row for row in resp.data if row[acr_col] is not None]
+        # One row per region — duplicates must not hide behind the dict build.
+        assert sorted(row[region_col] for row in rows) == sorted(
+            AVG_CITY_TOTAL_BY_REGION)
+        got = {row[region_col]: row[acr_col] for row in rows}
         for region, expected in AVG_CITY_TOTAL_BY_REGION.items():
             assert got[region] == pytest.approx(expected)

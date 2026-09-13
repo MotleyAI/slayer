@@ -12,8 +12,9 @@ import re
 import pytest
 
 from slayer.core.keys import AggregateKey, ColumnKey, SqlExprKey
+from slayer.core.keys import Grain
 from slayer.core.query import ModelMeasure, SlayerQuery
-from slayer.engine.regroup_planner import (
+from slayer.engine.compile.regroup import (
     REGROUP_LEAF_PREFIX,
     RegroupPlaceholderRegistry,
 )
@@ -48,7 +49,7 @@ class TestPlaceholderRegistry:
         base = dict(
             source=ColumnKey(path=(), leaf="amount"),
             agg="sum",
-            partition_keys=frozenset({ColumnKey(path=(), leaf="city")}),
+            partition_keys=Grain.of({ColumnKey(path=(), leaf="city")}),
         )
         plain = AggregateKey(**base)
         filtered = AggregateKey(

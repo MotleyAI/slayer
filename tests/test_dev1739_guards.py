@@ -7,14 +7,10 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.keys import (
-    AggregateKey,
-    ColumnKey,
-    reroot_value_key,
-)
+from slayer.core.keys import AggregateKey, ColumnKey, reroot_value_key, walk_value_keys
+from slayer.core.keys import Grain
 from slayer.core.models import Column, SlayerModel
 from slayer.core.query import ColumnRef, ModelMeasure, SlayerQuery, TimeDimension
-from slayer.engine.binding import walk_value_keys
 from slayer.sql.naming import canonical_aggregate_alias
 
 from tests._dev1739_fixtures import gen, month_td
@@ -163,18 +159,18 @@ def _agg(**kw) -> AggregateKey:
 class TestPartitionKeyIdentity:
     def test_absent_differs_from_explicit_empty(self) -> None:
         absent = _agg()
-        empty = _agg(partition_keys=frozenset())
+        empty = _agg(partition_keys=Grain.EMPTY)
         assert absent != empty
         assert len({absent, empty}) == 2
 
     def test_different_partition_sets_differ(self) -> None:
-        a = _agg(partition_keys=frozenset({ColumnKey(path=(), leaf="region")}))
-        b = _agg(partition_keys=frozenset({ColumnKey(path=(), leaf="city")}))
+        a = _agg(partition_keys=Grain.of({ColumnKey(path=(), leaf="region")}))
+        b = _agg(partition_keys=Grain.of({ColumnKey(path=(), leaf="city")}))
         assert a != b
 
     def test_same_partition_set_is_equal_and_interns(self) -> None:
-        a = _agg(partition_keys=frozenset({ColumnKey(path=(), leaf="region")}))
-        b = _agg(partition_keys=frozenset({ColumnKey(path=(), leaf="region")}))
+        a = _agg(partition_keys=Grain.of({ColumnKey(path=(), leaf="region")}))
+        b = _agg(partition_keys=Grain.of({ColumnKey(path=(), leaf="region")}))
         assert a == b
         assert hash(a) == hash(b)
         assert len({a, b}) == 1
@@ -186,16 +182,16 @@ class TestPartitionKeyIdentity:
 class TestStructuralTraversal:
     def test_walk_yields_partition_keys(self) -> None:
         region = ColumnKey(path=(), leaf="region")
-        key = _agg(partition_keys=frozenset({region}))
+        key = _agg(partition_keys=Grain.of({region}))
         assert region in list(walk_value_keys(key))
 
     def test_reroot_strips_partition_key_prefix(self) -> None:
         key = AggregateKey(
             source=ColumnKey(path=("customers",), leaf="spend"), agg="sum",
-            partition_keys=frozenset({ColumnKey(path=("customers",), leaf="tier")}),
+            partition_keys=Grain.of({ColumnKey(path=("customers",), leaf="tier")}),
         )
         rerooted = reroot_value_key(key, target_path=("customers",))
-        assert rerooted.partition_keys == frozenset({ColumnKey(path=(), leaf="tier")})
+        assert rerooted.partition_keys == Grain.of({ColumnKey(path=(), leaf="tier")})
 
     def test_reroot_preserves_absent_and_empty(self) -> None:
         absent = AggregateKey(
@@ -203,10 +199,10 @@ class TestStructuralTraversal:
         )
         empty = AggregateKey(
             source=ColumnKey(path=("customers",), leaf="spend"), agg="sum",
-            partition_keys=frozenset(),
+            partition_keys=Grain.EMPTY,
         )
         assert reroot_value_key(absent, target_path=("customers",)).partition_keys is None
-        assert reroot_value_key(empty, target_path=("customers",)).partition_keys == frozenset()
+        assert reroot_value_key(empty, target_path=("customers",)).partition_keys == Grain.EMPTY
 
 
 class TestCanonicalAliasSuffix:
@@ -217,12 +213,12 @@ class TestCanonicalAliasSuffix:
 
     def test_single_key_suffix(self) -> None:
         base = self._alias(_agg())
-        part = self._alias(_agg(partition_keys=frozenset({ColumnKey(path=(), leaf="region")})))
+        part = self._alias(_agg(partition_keys=Grain.of({ColumnKey(path=(), leaf="region")})))
         assert part == f"{base}_partition_by_region"
 
     def test_multi_key_suffix_is_sorted(self) -> None:
         base = self._alias(_agg())
-        part = self._alias(_agg(partition_keys=frozenset({
+        part = self._alias(_agg(partition_keys=Grain.of({
             ColumnKey(path=(), leaf="region"),
             ColumnKey(path=(), leaf="channel"),
         })))
@@ -230,12 +226,12 @@ class TestCanonicalAliasSuffix:
 
     def test_empty_set_suffix(self) -> None:
         base = self._alias(_agg())
-        part = self._alias(_agg(partition_keys=frozenset()))
+        part = self._alias(_agg(partition_keys=Grain.EMPTY))
         assert part == f"{base}_partition_by"
 
     def test_dotted_key_flattened(self) -> None:
         base = self._alias(_agg())
-        part = self._alias(_agg(partition_keys=frozenset({
+        part = self._alias(_agg(partition_keys=Grain.of({
             ColumnKey(path=("customers",), leaf="tier"),
         })))
         assert part == f"{base}_partition_by_customers_tier"

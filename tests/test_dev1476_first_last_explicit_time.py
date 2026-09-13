@@ -20,14 +20,14 @@ from slayer.core.keys import (
 )
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
-from slayer.engine.planned import ValueSlot
+from slayer.ir.planned import ValueSlot
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.ranked_planner import (
     explicit_ranking_time_arg,
     resolve_ranking_time_key,
 )
-from slayer.engine.source_bundle import ResolvedSourceBundle
-from slayer.engine.stage_planner import plan_query
+from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.engine.plan import plan_query
 from slayer.sql.generator import SQLGenerator
 from slayer.sql.naming import AliasAllocator
 from slayer.sql.scope import ScopeFrame
@@ -689,7 +689,7 @@ class TestTimeArgJoinDiscovery:
             s for s in attach.producer_plan.aggregate_slots
             if isinstance(s.key, AggregateKey) and s.key.agg == "last"
         )
-        assert prod_agg.key.grain == "target", prod_agg.key
+        assert prod_agg.key.locus == "target", prod_agg.key
         assert not any(isinstance(s.key, AggregateKey) for s in slots.values())
         gen = self._gen()
         scope = _host_scope(gen, source_model=_u_orders(), bundle=bundle)

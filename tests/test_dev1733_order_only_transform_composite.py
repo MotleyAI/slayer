@@ -25,7 +25,7 @@ from slayer.core.errors import (
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.core.keys import ColumnKey, Phase
-from slayer.engine.planned import OrderEntry, PlannedQuery, ValueSlot
+from slayer.ir.planned import OrderEntry, PlannedQuery, ValueSlot
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.generator import SQLGenerator
 from slayer.sql.scope_check import assert_scope_closed

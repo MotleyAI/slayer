@@ -36,12 +36,12 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.models import Column, SlayerModel
-from slayer.engine.column_expansion import (
-    _is_trivial_base,
+from slayer.sql.column_expansion import (
+    is_trivial_base,
     collect_root_scope_joined_paths,
     expand_derived_refs_sync,
 )
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle
 
 
 # Fallback dialect chain (Codex round 7) — the planner doesn't carry the
@@ -128,7 +128,7 @@ def _is_nontrivial_derived(model: SlayerModel, name: str) -> bool:
     col: Optional[Column] = next(
         (c for c in model.columns if c.name == name), None,
     )
-    return col is not None and col.sql is not None and not _is_trivial_base(
+    return col is not None and col.sql is not None and not is_trivial_base(
         column=col,
     )
 

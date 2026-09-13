@@ -51,12 +51,12 @@ from slayer.core.keys import (
     TimeTruncKey,
     TransformKey,
 )
-from slayer.engine.column_expansion import collect_root_scope_joined_paths
+from slayer.sql.column_expansion import collect_root_scope_joined_paths
 from slayer.engine.column_filter_paths import (
     _expand_derived_refs_any_dialect,
     _parse_filter_sql_any_dialect,
 )
-from slayer.engine.planned import FilterReachability
+from slayer.ir.planned import FilterReachability
 
 Path = Tuple[str, ...]
 

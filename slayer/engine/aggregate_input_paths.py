@@ -18,7 +18,7 @@ from slayer.core.keys import (
 )
 from slayer.core.models import SlayerModel
 from slayer.engine.column_filter_paths import compute_column_filter_join_paths
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle
 
 _PathList = List[Tuple[str, ...]]
 

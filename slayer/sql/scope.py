@@ -40,11 +40,11 @@ from slayer.core.keys import (
     ScalarCallKey,
 )
 from slayer.core.models import SlayerModel
-from slayer.engine.column_expansion import (
+from slayer.sql.column_expansion import (
     collect_root_scope_joined_paths,
     expand_derived_refs_sync,
 )
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.naming import AliasAllocator
 from slayer.sql.render.parse import parse_expression, parse_predicate

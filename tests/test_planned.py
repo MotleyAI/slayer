@@ -23,8 +23,8 @@ from slayer.core.keys import (
     StarKey,
 )
 from slayer.core.scope import StageColumn, StageSchema
-from slayer.engine.planned import (
-    BoundExpr,
+from slayer.ir.bound import BoundExpr
+from slayer.ir.planned import (
     JoinRequirement,
     MaskEntry,
     MaskTyping,

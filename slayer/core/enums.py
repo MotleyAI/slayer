@@ -205,6 +205,14 @@ BUILTIN_AGGREGATIONS: frozenset[str] = frozenset({
     "corr", "covar_samp", "covar_pop",
 })
 
+# The aggregations that rank; named once so classifier, planner and renderer agree.
+RANKED_AGGREGATIONS = ("first", "last")
+
+# Transforms whose default partition is "no partition" (rank across the entire
+# result set) rather than the query's group-by dimensions. They accept an
+# explicit ``partition_by=`` kwarg to opt into per-partition ranking.
+RANK_FAMILY_TRANSFORMS = {"rank", "percent_rank", "dense_rank", "ntile"}
+
 # Aggregation value classification (DEV-1788). One classifier,
 # ``classify_aggregation``, buckets every aggregation by how its result relates
 # to the source column. Both ``aggregated_type`` (slot DataType) and
@@ -329,6 +337,14 @@ BUILTIN_AGGREGATION_REQUIRED_PARAMS: dict[str, list[str]] = {
     "corr": ["other"],
     "covar_samp": ["other"],
     "covar_pop": ["other"],
+}
+
+# Declared parameter order for built-in parametric aggregations: positional
+# call values fold onto these names at binding (`percentile(x, 0.9)` ≡ `p=0.9`).
+# first/last are absent on purpose — their positional arg is the ranking column.
+BUILTIN_AGGREGATION_PARAM_ORDER: dict[str, list[str]] = {
+    "percentile": ["p"],
+    **BUILTIN_AGGREGATION_REQUIRED_PARAMS,
 }
 
 # Aggregations that only make sense on numeric-valued measures. Applying them
