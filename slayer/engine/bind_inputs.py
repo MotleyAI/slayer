@@ -121,7 +121,7 @@ def _attach_time_to_scalar_call(key: ScalarCallKey, *, td_key: TimeTruncKey) -> 
     new_args = tuple(
         _attach_time_keys(a, td_key=td_key)
         if isinstance(
-            a, (TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey),
+            a, (TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey, InKey),
         )
         else a
         for a in key.args
