@@ -123,23 +123,25 @@ class TestRowLeafRejectionAtPlanTime:
     during planning, before any SQL generation."""
 
     def test_mixed_composite_rejected_by_plan_query(self) -> None:
+        query = _q46(
+            measures=[ModelMeasure(formula="time_shift(revenue:sum * weight, -1)",
+                                   name="t")])
+        bundle = _bundle46()
         with pytest.raises(ValueError) as ei:
-            plan_query(query=_q46(
-                measures=[ModelMeasure(formula="time_shift(revenue:sum * weight, -1)",
-                                       name="t")]),
-                bundle=_bundle46())
+            plan_query(query=query, bundle=bundle)
         message = str(ei.value)
         assert "time_shift" in message
         assert re.search(r"(?i)row", message)
         assert "source_queries" in message
 
     def test_row_predicate_rejected_by_plan_query(self) -> None:
+        query = _q46(
+            dimensions=["store"],
+            measures=[ModelMeasure(formula="time_shift(store in ('A', 'B'), -1)",
+                                   name="t")])
+        bundle = _bundle46()
         with pytest.raises(ValueError) as ei:
-            plan_query(query=_q46(
-                dimensions=["store"],
-                measures=[ModelMeasure(formula="time_shift(store in ('A', 'B'), -1)",
-                                       name="t")]),
-                bundle=_bundle46())
+            plan_query(query=query, bundle=bundle)
         message = str(ei.value)
         assert "time_shift" in message
         assert re.search(r"(?i)row", message)
