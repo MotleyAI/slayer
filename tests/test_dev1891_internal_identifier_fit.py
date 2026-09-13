@@ -638,6 +638,19 @@ class TestMasking:
         assert literal in out
         assert out.count(f'"{FIT_LONG}"') == 1
 
+    @pytest.mark.parametrize("weird", ["a'b", "a--b", "a/*b", "a$tag$b", 'a""b'])
+    def test_delimiter_inside_a_quoted_identifier_does_not_corrupt_masking(
+        self, weird: str,
+    ) -> None:
+        """A string/comment delimiter inside a quoted identifier is opaque: it must
+        not hijack masking and corrupt fitting of a following over-limit alias."""
+        ident = f'"{weird}"'
+        sql = f'SELECT x AS {ident}, y AS "{LONG}" FROM t GROUP BY "{LONG}"'
+        out = _pg_rewrite(sql)
+        assert ident in out                     # the odd identifier survives verbatim
+        assert out.count(f'"{FIT_LONG}"') == 2  # the over-limit alias still fits
+        assert LONG not in out
+
 
 # Masking is dialect-aware: comment nesting, dollar-quoting and
 # ordinary-string backslash escapes are gated by sqlglot's tokenizer, so the masker
@@ -665,6 +678,11 @@ class TestMaskingLexis:
         assert lexis.nested_comments == nested
         assert lexis.backslash_escapes == backslash
         assert lexis.dollar_quotes == dollar
+
+    @pytest.mark.parametrize("dialect", ["postgres", "mysql", "tsql", "bigquery"])
+    def test_lexis_identifier_quote_matches_emitter_anchor(self, dialect: str) -> None:
+        d = get_dialect(dialect)
+        assert d.identifier_masking_lexis.identifier_quote == d._identifier_quote_anchors()
 
     def test_non_nesting_dialect_closes_block_comment_at_first_terminator(self) -> None:
         """MySQL (no nesting) exposes text after the first ``*/``; a nesting dialect

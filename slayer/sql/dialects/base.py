@@ -262,10 +262,13 @@ class SqlDialect(BaseModel):
     @property
     def identifier_masking_lexis(self) -> SqlLexis:
         """Lexical rules for the identifier masker (ordinary-string backslash
-        escapes, ``/* */`` nesting, dollar-quoting), so masking of user literals/
-        comments matches this dialect's grammar rather than over/under-masking a
-        Postgres-shaped default. Derived from sqlglot's tokenizer."""
-        return _sqlglot_masking_lexis(self.sqlglot_name)
+        escapes, ``/* */`` nesting, dollar-quoting, and this dialect's identifier
+        quote pair), so masking of user literals/comments matches this dialect's
+        grammar rather than over/under-masking a Postgres-shaped default. Derived
+        from sqlglot's tokenizer plus the emitter's own identifier quote."""
+        return _sqlglot_masking_lexis(self.sqlglot_name).model_copy(
+            update={"identifier_quote": self._identifier_quote_anchors()},
+        )
 
     # ------------------------------------------------------------------
     # Null-safe equality (DEV-1708 / Codex F2)

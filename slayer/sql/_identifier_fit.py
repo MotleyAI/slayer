@@ -39,6 +39,10 @@ class SqlLexis(BaseModel):
     backslash_escapes: bool = False  # ordinary ``'...'`` honour ``\`` escapes (MySQL, …)
     nested_comments: bool = False    # ``/* */`` nests (Postgres, T-SQL, DuckDB, …)
     dollar_quotes: bool = False      # ``$$``/``$tag$`` literals (Postgres, DuckDB, …)
+    #: The dialect's identifier quote pair (e.g. ``('"', '"')``, ``('[', ']')``).
+    #: When set, such spans are copied verbatim so a delimiter inside an identifier
+    #: (``"a'b"``, ``"a--b"``) cannot hijack literal/comment scanning.
+    identifier_quote: tuple[str, str] | None = None
 
 
 _DEFAULT_LEXIS = SqlLexis()
@@ -209,9 +213,33 @@ def _scan_dollar_quote(sql: str, i: int) -> tuple[str, int] | None:
     return delim + _MASK * (close - body) + delim, close + len(delim)
 
 
+def _scan_identifier(
+    sql: str, i: int, *, quote_open: str, quote_close: str,
+) -> tuple[str, int] | None:
+    """Copy a whole quoted-identifier span at ``i`` verbatim (a doubled close-quote
+    is an embedded escape), or ``None``. Keeping the span opaque stops a delimiter
+    inside the identifier (``"a'b"``, ``"a--b"``) from hijacking literal/comment
+    scanning and corrupting the following SQL."""
+    if sql[i] != quote_open:
+        return None
+    j, n = i + 1, len(sql)
+    while j < n:
+        if sql[j] == quote_close:
+            if j + 1 < n and sql[j + 1] == quote_close:
+                j += 2
+                continue
+            j += 1
+            break
+        j += 1
+    return sql[i:j], j
+
+
 def _scan_span(sql: str, i: int, *, lexis: SqlLexis) -> tuple[str, int] | None:
     """The masked literal/comment span opening at ``i``, or ``None`` for plain SQL.
     Which forms are recognised is gated by ``lexis`` (dialect lexical rules)."""
+    idq = lexis.identifier_quote
+    if idq is not None and sql[i] == idq[0]:
+        return _scan_identifier(sql, i, quote_open=idq[0], quote_close=idq[1])
     esc = _scan_escape_string(sql, i)
     if esc is not None:
         return esc
