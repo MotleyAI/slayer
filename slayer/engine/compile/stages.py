@@ -509,39 +509,58 @@ def _cross_model_input_paths(
     return out
 
 
-def _assert_cross_model_inputs_safe(
-    *, agg: AggregateKey, agg_rooted: AggregateKey, root_model: SlayerModel,
-    root_name: str, target_path: Tuple[str, ...], bundle: ResolvedSourceBundle,
-    models_by_name: Dict[str, SlayerModel],
-) -> None:
-    """Resolve every cross-model input's attributability from its root; the checker raises on a fanning/unproven join."""
+def _first_unsafe_input_hop(
+    *, agg_rooted: AggregateKey, root_model: SlayerModel, root_name: str,
+    bundle: ResolvedSourceBundle, models_by_name: Dict[str, SlayerModel],
+) -> List[str]:
     # Source-column / kwarg / column-filter refs, in the root's coordinates.
-    unsafe_input_hops: List[str] = []
     for path in _cross_model_input_paths(
         agg_rooted=agg_rooted, root_model=root_model, root_name=root_name, bundle=bundle,
     ):
         if not safe_reachable(
             root=root_model, path=path, models_by_name=models_by_name,
         ):
-            unsafe_input_hops.append(path[-1] if path else root_name)
-            break  # first violation wins; the checker raises it
+            # First violation wins; the checker raises it.
+            return [path[-1] if path else root_name]
+    return []
+
+
+def _first_unattributable_arg_leaf(
+    *, agg: AggregateKey, target_path: Tuple[str, ...],
+    root_model: SlayerModel, models_by_name: Dict[str, SlayerModel],
+) -> List[str]:
     # Positional args in HOST coordinates (a ranking first/last time key).
-    unattributable_arg_leaves: List[str] = []
-    if not unsafe_input_hops:
-        for arg in agg.args:
-            if not isinstance(arg, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
-                continue
-            hp = key_host_path(arg)
-            if not attributable_from_root(
-                host_path=hp, target_path=target_path, root_model=root_model,
-                models_by_name=models_by_name,
-            ):
-                unattributable_arg_leaves.append(
-                    getattr(arg, "leaf", None) or getattr(
-                        getattr(arg, "column", None), "leaf", None,
-                    ) or "input"
-                )
-                break
+    for arg in agg.args:
+        if not isinstance(arg, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+            continue
+        hp = key_host_path(arg)
+        if not attributable_from_root(
+            host_path=hp, target_path=target_path, root_model=root_model,
+            models_by_name=models_by_name,
+        ):
+            leaf = getattr(arg, "leaf", None) or getattr(
+                getattr(arg, "column", None), "leaf", None,
+            ) or "input"
+            return [leaf]
+    return []
+
+
+def _assert_cross_model_inputs_safe(
+    *, agg: AggregateKey, agg_rooted: AggregateKey, root_model: SlayerModel,
+    root_name: str, target_path: Tuple[str, ...], bundle: ResolvedSourceBundle,
+    models_by_name: Dict[str, SlayerModel],
+) -> None:
+    """Resolve every cross-model input's attributability from its root; the checker raises on a fanning/unproven join."""
+    unsafe_input_hops = _first_unsafe_input_hop(
+        agg_rooted=agg_rooted, root_model=root_model, root_name=root_name,
+        bundle=bundle, models_by_name=models_by_name,
+    )
+    unattributable_arg_leaves = [] if unsafe_input_hops else (
+        _first_unattributable_arg_leaf(
+            agg=agg, target_path=target_path, root_model=root_model,
+            models_by_name=models_by_name,
+        )
+    )
     check_cross_model_inputs_safe(
         alias=canonical_aggregate_alias(agg, profile="stage_formula"),
         root_name=root_name,
@@ -2037,6 +2056,21 @@ def _assert_total_routing(prebound: PreboundQuery) -> None:
                     )
 
 
+def _aggregate_terms_under_root(
+    *, root: ValueKey, env: ElaboratedQuery, combined: set,
+) -> Tuple[Dict[ValueKey, Aggregate], bool]:
+    """(aggregate terms under ``root``, whether any key has a combined attach)."""
+    terms: Dict[ValueKey, Aggregate] = {}
+    has_combined = False
+    for k in walk_value_keys(root):
+        has_combined = has_combined or k in combined
+        if k not in terms:
+            term = env.terms.get(k)
+            if isinstance(term, Aggregate):
+                terms[k] = term
+    return terms, has_combined
+
+
 def _assert_broadcast_coherence(
     *, env: ElaboratedQuery, measure_roots: List[ValueKey],
     attach_plans: List[RegroupAttachPlan],
@@ -2053,14 +2087,9 @@ def _assert_broadcast_coherence(
         # Every aggregate term under the root (inline ones included): the
         # combine mixes grains iff their grains differ, and only a root with a
         # combined attach is a compiler-witnessed combine.
-        terms: Dict[ValueKey, Aggregate] = {}
-        has_combined = False
-        for k in walk_value_keys(root):
-            has_combined = has_combined or k in combined
-            if k not in terms:
-                term = env.terms.get(k)
-                if isinstance(term, Aggregate):
-                    terms[k] = term
+        terms, has_combined = _aggregate_terms_under_root(
+            root=root, env=env, combined=combined,
+        )
         if not has_combined or len({t.grain for t in terms.values()}) < 2:
             continue
         recorded = {b.source.recipe for b in entry.broadcasts}
@@ -3097,12 +3126,10 @@ def _emit_stage_schema(
     )
 
 
-def _emit_transform_layers(*, slots: List[ValueSlot]) -> List[TransformLayer]:
-    """One TransformLayer per TransformKey slot, in dependency order (innermost first) so an inner window/self-join renders before the outer one consumes it."""
-    transform_slots = [
-        s for s in slots if isinstance(s.key, TransformKey)
-    ]
-    # Topological order: a slot whose TransformKey.input references another slot's key must come after it.
+def _transform_dep_graph(
+    *, transform_slots: List[ValueSlot],
+) -> Tuple[Dict[str, int], Dict[str, List[str]]]:
+    """(in-degree, dependents) per slot id; an inner input's slot precedes its consumer."""
     slot_by_key = {s.key: s for s in transform_slots}
     in_degree = {s.id: 0 for s in transform_slots}
     deps_of: Dict[str, List[str]] = {s.id: [] for s in transform_slots}
@@ -3115,6 +3142,13 @@ def _emit_transform_layers(*, slots: List[ValueSlot]) -> List[TransformLayer]:
                 continue
             deps_of[dep_slot.id].append(s.id)
             in_degree[s.id] += 1
+    return in_degree, deps_of
+
+
+def _toposort_slot_ids(
+    *, transform_slots: List[ValueSlot], in_degree: Dict[str, int],
+    deps_of: Dict[str, List[str]],
+) -> List[str]:
     ready = [s.id for s in transform_slots if in_degree[s.id] == 0]
     ordered_ids: List[str] = []
     while ready:
@@ -3129,8 +3163,23 @@ def _emit_transform_layers(*, slots: List[ValueSlot]) -> List[TransformLayer]:
     for s in transform_slots:
         if s.id not in seen:
             ordered_ids.append(s.id)
-    by_id = {s.id: s for s in transform_slots}
+    return ordered_ids
+
+
+def _emit_transform_layers(*, slots: List[ValueSlot]) -> List[TransformLayer]:
+    """One TransformLayer per TransformKey slot, in dependency order (innermost first) so an inner window/self-join renders before the outer one consumes it."""
+    transform_slots = [
+        s for s in slots if isinstance(s.key, TransformKey)
+    ]
+    # Topological order: a slot whose TransformKey.input references another slot's key must come after it.
+    in_degree, deps_of = _transform_dep_graph(transform_slots=transform_slots)
+    ordered_ids = _toposort_slot_ids(
+        transform_slots=transform_slots, in_degree=in_degree, deps_of=deps_of,
+    )
+    op_by_id = {
+        s.id: s.key.op for s in slots if isinstance(s.key, TransformKey)
+    }
     return [
-        TransformLayer(op=by_id[sid].key.op, slot_ids=[sid])
+        TransformLayer(op=op_by_id[sid], slot_ids=[sid])
         for sid in ordered_ids
     ]

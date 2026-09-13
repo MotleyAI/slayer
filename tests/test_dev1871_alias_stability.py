@@ -105,6 +105,11 @@ class TestPinnedSpellings:
             "source_columnkey_path_leaf_a_116b989e_s_none_1"
         )
 
+    def test_expression_source_leaf_over_a_raw_scalar_arg(self) -> None:
+        """Desugared change_pct keeps a raw Decimal in nullif's args."""
+        source = ScalarCallKey(name="nullif", args=(_AMOUNT, Decimal("0")))
+        assert expression_source_leaf(source) == "nullif_amount_0"
+
 
 class TestProducerInterningStability:
     def _attach(self, *, alias_hint: str, relation: str = "r") -> RegroupAttachPlan:

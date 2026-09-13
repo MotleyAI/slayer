@@ -54,5 +54,7 @@ def test_assert_fires_when_elaboration_drops_broadcasts(monkeypatch, formula) ->
         )})
 
     monkeypatch.setattr(elaborate, "build_environment", stripped)
+    query = _query(formula)
+    bundle = _bundle()
     with pytest.raises(AssertionError, match="broadcast-coherence"):
-        plan.plan_query(query=_query(formula), bundle=_bundle())
+        plan.plan_query(query=query, bundle=bundle)

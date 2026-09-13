@@ -1110,18 +1110,17 @@ def split_top_level_and(vk: ValueKey) -> List[ValueKey]:
 
 
 def rewrite_rank_partition_keys(
-    key: ValueKey, *, rewrite_fn: Callable[[TransformKey], Grain],
+    key: ValueKey, *, rewrite_fn: Callable[[Union[AggregateKey, TransformKey]], Grain],
 ) -> ValueKey:
     """Replace every rank-family ``TransformKey``'s / partitioned aggregate's ``partition_keys`` via ``rewrite_fn``; identity-preserving, runs before interning. Post-order; ``rewrite_fn`` receives the pre-rebuild node."""
     rebuilt = key.map_children(
         lambda c: rewrite_rank_partition_keys(key=c, rewrite_fn=rewrite_fn),
     )
-    wants_rewrite = (
+    if (
         isinstance(key, TransformKey)
         and key.op in RANK_FAMILY_TRANSFORMS
-        and key.partition_keys
-    ) or (isinstance(key, AggregateKey) and key.partition_keys)
-    if wants_rewrite:
+        and bool(key.partition_keys)
+    ) or (isinstance(key, AggregateKey) and bool(key.partition_keys)):
         new_pk = rewrite_fn(key)
         if new_pk != rebuilt.partition_keys:
             rebuilt = rebuilt.model_copy(update={"partition_keys": new_pk})

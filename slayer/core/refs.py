@@ -134,7 +134,7 @@ def _legacy_value_spelling(value: Any) -> str:
             return "frozenset()"
         return (
             "frozenset({"
-            + ", ".join(_legacy_value_spelling(x) for x in value)
+            + ", ".join(sorted(_legacy_value_spelling(x) for x in value))
             + "})"
         )
     return repr(value)
@@ -187,6 +187,8 @@ def _value_key_display(key: Any) -> str:
     if isinstance(key, ScalarCallKey):
         args = ", ".join(_value_key_display(a) for a in key.args)
         return f"{key.name}({args})"
+    if type(key) not in _LEGACY_KEY_SPELLINGS:
+        return str(key)  # raw scalar arg (e.g. Decimal in nullif/round)
     return legacy_key_str(key)
 
 

@@ -98,50 +98,70 @@ __all__ = [
 _TIME_NEEDING_TRANSFORM_OPS = TIME_TRANSFORMS
 
 
+def _attach_time_to_transform(key: TransformKey, *, td_key: TimeTruncKey) -> ValueKey:
+    new_input = _attach_time_keys(key.input, td_key=td_key)
+    out = key
+    if new_input is not key.input:
+        out = out.model_copy(update={"input": new_input})
+    if out.op in _TIME_NEEDING_TRANSFORM_OPS and out.time_key is None:
+        out = out.model_copy(update={"time_key": td_key})
+    return out
+
+
+def _attach_time_to_arithmetic(key: ArithmeticKey, *, td_key: TimeTruncKey) -> ValueKey:
+    new_ops = tuple(
+        _attach_time_keys(o, td_key=td_key) for o in key.operands
+    )
+    if all(a is b for a, b in zip(new_ops, key.operands)):
+        return key
+    return ArithmeticKey(op=key.op, operands=new_ops)
+
+
+def _attach_time_to_scalar_call(key: ScalarCallKey, *, td_key: TimeTruncKey) -> ValueKey:
+    new_args = tuple(
+        _attach_time_keys(a, td_key=td_key)
+        if isinstance(
+            a, (TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey, InKey),
+        )
+        else a
+        for a in key.args
+    )
+    if all(a is b for a, b in zip(new_args, key.args)):
+        return key
+    return ScalarCallKey(name=key.name, args=new_args)
+
+
+def _attach_time_to_between(key: BetweenKey, *, td_key: TimeTruncKey) -> ValueKey:
+    nc = _attach_time_keys(key.column, td_key=td_key)
+    nl = _attach_time_keys(key.low, td_key=td_key)
+    nh = _attach_time_keys(key.high, td_key=td_key)
+    if nc is key.column and nl is key.low and nh is key.high:
+        return key
+    return BetweenKey(column=nc, low=nl, high=nh)
+
+
+def _attach_time_to_in(key: InKey, *, td_key: TimeTruncKey) -> ValueKey:
+    # Only the LHS column can carry a transform; values are literals.
+    nc = _attach_time_keys(key.column, td_key=td_key)
+    if nc is key.column:
+        return key
+    return InKey(column=nc, values=key.values, negated=key.negated)
+
+
 def _attach_time_keys(
     key: ValueKey, *, td_key: TimeTruncKey,
 ) -> ValueKey:
     """Set ``time_key=td_key`` on every time-needing TransformKey with a null one (identity-preserving)."""
     if isinstance(key, TransformKey):
-        new_input = _attach_time_keys(key.input, td_key=td_key)
-        out = key
-        if new_input is not key.input:
-            out = out.model_copy(update={"input": new_input})
-        if out.op in _TIME_NEEDING_TRANSFORM_OPS and out.time_key is None:
-            out = out.model_copy(update={"time_key": td_key})
-        return out
+        return _attach_time_to_transform(key, td_key=td_key)
     if isinstance(key, ArithmeticKey):
-        new_ops = tuple(
-            _attach_time_keys(o, td_key=td_key) for o in key.operands
-        )
-        if all(a is b for a, b in zip(new_ops, key.operands)):
-            return key
-        return ArithmeticKey(op=key.op, operands=new_ops)
+        return _attach_time_to_arithmetic(key, td_key=td_key)
     if isinstance(key, ScalarCallKey):
-        new_args = tuple(
-            _attach_time_keys(a, td_key=td_key)
-            if isinstance(
-                a, (TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey),
-            )
-            else a
-            for a in key.args
-        )
-        if all(a is b for a, b in zip(new_args, key.args)):
-            return key
-        return ScalarCallKey(name=key.name, args=new_args)
+        return _attach_time_to_scalar_call(key, td_key=td_key)
     if isinstance(key, BetweenKey):
-        nc = _attach_time_keys(key.column, td_key=td_key)
-        nl = _attach_time_keys(key.low, td_key=td_key)
-        nh = _attach_time_keys(key.high, td_key=td_key)
-        if nc is key.column and nl is key.low and nh is key.high:
-            return key
-        return BetweenKey(column=nc, low=nl, high=nh)
+        return _attach_time_to_between(key, td_key=td_key)
     if isinstance(key, InKey):
-        # Only the LHS column can carry a transform; values are literals.
-        nc = _attach_time_keys(key.column, td_key=td_key)
-        if nc is key.column:
-            return key
-        return InKey(column=nc, values=key.values, negated=key.negated)
+        return _attach_time_to_in(key, td_key=td_key)
     return key
 
 
@@ -541,7 +561,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         *[sp.bound.value_key for sp in order_specs],
     ])
 
-    def _validate_partition_keys(key: ValueKey) -> Grain:
+    def _validate_partition_keys(key: Union[AggregateKey, TransformKey]) -> Grain:
         label = (
             f"Transform '{key.op}'" if isinstance(key, TransformKey)
             else f"Aggregation '{key.agg}'"
@@ -804,7 +824,9 @@ def _declared_computed_dimension(
     bundle: ResolvedSourceBundle,
     dim_alias_map: Optional[Dict[str, ValueKey]] = None,
 ) -> DeclaredMeasure:
-    _reject_computed_dim_name_collision(name=d.name, query=query, scope=scope)
+    name = d.name
+    assert name is not None  # _fill_name auto-names from the expression
+    _reject_computed_dim_name_collision(name=name, query=query, scope=scope)
     parsed = parse_expr(d.expression)
     bound = bind_expr(
         parsed=parsed, scope=scope, bundle=bundle, allow_measures=True,
@@ -812,14 +834,14 @@ def _declared_computed_dimension(
     )
     # Grain rules live in the checker (DEV-1871 G9); invoked here to preserve the bind-time firing point / precedence.
     check_computed_dimension(
-        name=d.name, bound=bound,
+        name=name, bound=bound,
         distinct_dimension_values=query.distinct_dimension_values,
     )
     dim_type = _type_for_measure_formula(scope=scope, bound=bound)
     return DeclaredMeasure(
         bound=bound,
-        declared_name=d.name,
-        public_name=d.name,
+        declared_name=name,
+        public_name=name,
         type=dim_type,
         is_dimension=True,
     )
@@ -852,10 +874,12 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
                 d, query=query, scope=scope, bundle=bundle,
                 dim_alias_map=dim_alias_map,
             )
-            _guard_flatten(flat_name=_flatten_dotted(d.name), origin=d.name)
+            _guard_flatten(
+                flat_name=_flatten_dotted(dm.declared_name),
+                origin=dm.declared_name,
+            )
             declared.append(dm)
-            if d.name is not None:
-                dim_alias_map[d.name] = dm.bound.value_key
+            dim_alias_map[dm.declared_name] = dm.bound.value_key
             continue
         full = d.full_name
         # Bind first: a short-form dotted dim auto-routes, and its full routed
@@ -1026,7 +1050,9 @@ def _build_date_range_filter(
         f"column reference; got {type(col_key).__name__}."
     )
 
-    start, end = td.date_range[0], td.date_range[1]
+    date_range = td.date_range
+    assert date_range is not None  # caller builds this only for 2-element date_ranges
+    start, end = date_range[0], date_range[1]
     predicate = BetweenKey(
         column=col_key,
         low=LiteralKey(value=normalize_scalar(start)),
@@ -1037,6 +1063,26 @@ def _build_date_range_filter(
     return BoundFilter(
         value_key=predicate, phase=phase, referenced_keys=refs,
     )
+
+
+def _named_td_matches(
+    *, tds: List[TimeDimension], target: str,
+) -> Tuple[Optional[TimeDimension], List[TimeDimension]]:
+    """(full-name match, leaf matches) for ``target`` among ``tds``."""
+    for td in tds:
+        if td.dimension.full_name == target:
+            return td, []
+    return None, [td for td in tds if td.dimension.name == target]
+
+
+def _host_local_default_td(
+    *, tds: List[TimeDimension], default: str,
+) -> Optional[TimeDimension]:
+    # The default points only at the host model; prefer a host-local TD over a same-leaf joined one.
+    for td in tds:
+        if td.dimension.model is None and td.dimension.name == default:
+            return td
+    return None
 
 
 def _resolve_main_time_dimension(
@@ -1054,10 +1100,9 @@ def _resolve_main_time_dimension(
     if query.main_time_dimension:
         target = query.main_time_dimension
         # Prefer full-name (more specific) over leaf match.
-        for td in tds:
-            if td.dimension.full_name == target:
-                return td
-        leaf_matches = [td for td in tds if td.dimension.name == target]
+        full_match, leaf_matches = _named_td_matches(tds=tds, target=target)
+        if full_match is not None:
+            return full_match
         if len(leaf_matches) == 1:
             return leaf_matches[0]
         if len(leaf_matches) > 1:
@@ -1078,8 +1123,5 @@ def _resolve_main_time_dimension(
 
     default = model.default_time_dimension
     if default:
-        # The default points only at the host model; prefer a host-local TD over a same-leaf joined one.
-        for td in tds:
-            if td.dimension.model is None and td.dimension.name == default:
-                return td
+        return _host_local_default_td(tds=tds, default=default)
     return None

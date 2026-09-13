@@ -95,10 +95,13 @@ class TestConstructionInvariants:
         assert term.recipe is recipe
 
     def test_aggregate_grain_totality(self) -> None:
+        home = _model_ds()
+        recipe = _recipe()
+        raw_set = frozenset()
         with pytest.raises(ValueError):
-            Aggregate(home=_model_ds(), recipe=_recipe(), grain=None)
+            Aggregate(home=home, recipe=recipe, grain=None)  # pyright: ignore[reportArgumentType] — the None rejection under test
         with pytest.raises(ValueError):
-            Aggregate(home=_model_ds(), recipe=_recipe(), grain=frozenset())
+            Aggregate(home=home, recipe=recipe, grain=raw_set)  # pyright: ignore[reportArgumentType] — the raw-set rejection under test
 
     def test_transform_time_axis_checked_at_construction(self) -> None:
         home = _aggregate()
@@ -118,12 +121,12 @@ class TestConstructionInvariants:
         fine = Grain.of({_STATUS})
         broadcast = Broadcast(source=scalar, into=fine)
         assert broadcast.grain == fine
+        fine_agg = _aggregate(grain=fine)
         with pytest.raises(ValueError):
-            Broadcast(source=_aggregate(grain=fine), into=Grain.EMPTY)
+            Broadcast(source=fine_agg, into=Grain.EMPTY)
+        tier_agg = _aggregate(grain=Grain.of({_TIER}))
         with pytest.raises(ValueError):
-            Broadcast(
-                source=_aggregate(grain=Grain.of({_TIER})), into=fine,
-            )
+            Broadcast(source=tier_agg, into=fine)
 
     def test_field_carries_home_and_key(self) -> None:
         field = Field(home=_model_ds(), key=_STATUS)
