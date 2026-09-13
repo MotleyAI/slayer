@@ -621,15 +621,40 @@ def check_windowed_key_supported(*, key: AggregateKey, window_val) -> None:
 
 def _row_level_leaf_in(key: ValueKey) -> bool:
     """A row-level (non-aggregate) leaf anywhere in a composite/predicate tree;
-    aggregates and transforms are opaque leaves."""
-    if isinstance(key, (AggregateKey, TransformKey)):
+    aggregates are opaque, a transform is checked through its input (its
+    time/partition keys are series parameters, not leaves)."""
+    if isinstance(key, AggregateKey):
         return False
+    if isinstance(key, TransformKey):
+        return _row_level_leaf_in(key.input)
     if isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
         return True
     return any(_row_level_leaf_in(c) for c in key.children())
 
 
 _SHIFT_FAMILY_OPS = frozenset({"time_shift", "change", "change_pct"})
+
+
+def _check_shift_family_key(k: TransformKey) -> None:
+    inner = k.input
+    if k.op != "time_shift" and is_boolean_shaped(inner):
+        raise ValueError(
+            f"'{k.op}' cannot consume a boolean-shaped predicate: its "
+            f"desugared arithmetic subtracts the shifted series, and "
+            f"subtraction over truth values is undefined. Shift the "
+            f"predicate itself with time_shift, or compare the shifted "
+            f"values instead."
+        )
+    if isinstance(inner, (AggregateKey, ColumnKey, ColumnSqlKey)):
+        return  # bare-leaf regimes
+    if _row_level_leaf_in(inner):
+        raise ValueError(
+            f"'{k.op}' does not support a row-level (non-aggregate) "
+            f"leaf inside a composite or nested-transform input; every "
+            f"leaf must be an aggregate. Compute the row-level value "
+            f"in an earlier stage of a multi-stage `source_queries` "
+            f"model and reference its aggregate here."
+        )
 
 
 def check_time_shift_input(*, roots) -> None:
@@ -639,29 +664,8 @@ def check_time_shift_input(*, roots) -> None:
     series (their desugared arithmetic has no defined truth-value operands)."""
     for root in roots:
         for k in walk_value_keys(root):
-            if not (isinstance(k, TransformKey) and k.op in _SHIFT_FAMILY_OPS):
-                continue
-            inner = k.input
-            if k.op != "time_shift" and is_boolean_shaped(inner):
-                raise ValueError(
-                    f"'{k.op}' cannot consume a boolean-shaped predicate: its "
-                    f"desugared arithmetic subtracts the shifted series, and "
-                    f"subtraction over truth values is undefined. Shift the "
-                    f"predicate itself with time_shift, or compare the shifted "
-                    f"values instead."
-                )
-            if isinstance(
-                inner, (AggregateKey, ColumnKey, ColumnSqlKey, TransformKey),
-            ):
-                continue  # bare-leaf regimes / series over an inner transform
-            if _row_level_leaf_in(inner):
-                raise ValueError(
-                    "'time_shift' does not support a row-level (non-aggregate) "
-                    "leaf inside a composite input; every leaf must be an "
-                    "aggregate. Compute the row-level value in an earlier stage "
-                    "of a multi-stage `source_queries` model and reference its "
-                    "aggregate here."
-                )
+            if isinstance(k, TransformKey) and k.op in _SHIFT_FAMILY_OPS:
+                _check_shift_family_key(k)
 
 
 def check_partition_key_resolves(

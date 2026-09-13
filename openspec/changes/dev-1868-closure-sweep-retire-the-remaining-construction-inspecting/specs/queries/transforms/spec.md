@@ -19,7 +19,8 @@ evaluates under exactly one:
   `coalesce`. Aggregation parameters, parameter fragments, and column filters
   SHALL apply per leaf without leaking between leaves.
 - **Series regime** (new): an input containing a nested transform anywhere in
-  its tree, a cross-model aggregate leaf, or a top-level aggregate-typed
+  its tree, a cross-model aggregate leaf inside a composite (a bare cross-model
+  aggregate stays re-aggregation), or a top-level aggregate-typed
   predicate (`IN` / comparison over aggregates). The input's
   materialised result series is shifted: each row reads the series value at the
   shifted bucket within the same partition, and a shifted bucket absent from
@@ -135,3 +136,10 @@ error, before any SQL is generated.
   is a plain column
 - **THEN** the query fails with the row-level-leaf `ValueError` naming the shape
   and the remedy, rather than leaking an internal `RuntimeError`
+
+#### Scenario: Row leaf hidden inside a nested transform rejected
+
+- **WHEN** a query requests `time_shift(cumsum(weight), -1)` where `weight` is
+  a plain column
+- **THEN** the query fails with the row-level-leaf `ValueError` — a nested
+  transform does not launder its row-level input into a series

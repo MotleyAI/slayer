@@ -104,10 +104,11 @@ class TestRanklessTargetStaysTyped:
     async def test_no_ranking_column_is_a_clear_error(self, exec_engine) -> None:
         # customers has no default_time_dimension: the typed ranking-time error
         # (not a deferral) names the remedy.
+        query = q(
+            dimensions=["customers.tier"],
+            measures=[ModelMeasure(
+                formula="customers.spend:last(partition_by=customers.tier)",
+                name="l")],
+        )
         with pytest.raises(ValueError, match=r"ranking time column"):
-            await exec_engine.execute(q(
-                dimensions=["customers.tier"],
-                measures=[ModelMeasure(
-                    formula="customers.spend:last(partition_by=customers.tier)",
-                    name="l")],
-            ))
+            await exec_engine.execute(query)

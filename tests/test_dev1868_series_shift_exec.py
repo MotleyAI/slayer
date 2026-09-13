@@ -143,12 +143,13 @@ class TestAggregateTypedPredicateInput:
     async def test_change_over_a_predicate_stays_rejected(self, exec_engine) -> None:
         # The desugared subtraction consumes a boolean — typed error, no
         # silent 0/1 arithmetic and no engine-level error.
+        query = _q(
+            time_dimensions=month_td(),
+            measures=[ModelMeasure(formula="change(revenue:sum > 100)",
+                                   name="t")],
+        )
         with pytest.raises(ValueError, match=r"(?i)boolean"):
-            await exec_engine.execute(_q(
-                time_dimensions=month_td(),
-                measures=[ModelMeasure(formula="change(revenue:sum > 100)",
-                                       name="t")],
-            ))
+            await exec_engine.execute(query)
 
 
 class TestSeriesEdgeVsReaggregation:
@@ -246,26 +247,41 @@ class TestManyToOneCalendarShift:
 
 
 class TestRowLeafStaysFailClosed:
-    async def test_mixed_aggregate_and_row_composite(self, exec_engine) -> None:
+    async def _assert_row_leaf_rejected(self, exec_engine, query) -> None:
         with pytest.raises(ValueError) as ei:
-            await exec_engine.execute(_q(
-                time_dimensions=month_td(),
-                measures=[ModelMeasure(formula="time_shift(revenue:sum * weight, -1)",
-                                       name="t")],
-            ))
+            await exec_engine.execute(query)
         message = str(ei.value)
         assert "time_shift" in message
         assert re.search(r"(?i)row", message)
         assert "source_queries" in message
 
+    async def test_mixed_aggregate_and_row_composite(self, exec_engine) -> None:
+        await self._assert_row_leaf_rejected(exec_engine, _q(
+            time_dimensions=month_td(),
+            measures=[ModelMeasure(formula="time_shift(revenue:sum * weight, -1)",
+                                   name="t")],
+        ))
+
     async def test_row_level_predicate_input(self, exec_engine) -> None:
-        with pytest.raises(ValueError) as ei:
-            await exec_engine.execute(_q(
-                dimensions=["store"], time_dimensions=month_td(),
-                measures=[ModelMeasure(formula="time_shift(store in ('A', 'B'), -1)",
-                                       name="t")],
-            ))
-        message = str(ei.value)
-        assert "time_shift" in message
-        assert re.search(r"(?i)row", message)
-        assert "source_queries" in message
+        await self._assert_row_leaf_rejected(exec_engine, _q(
+            dimensions=["store"], time_dimensions=month_td(),
+            measures=[ModelMeasure(formula="time_shift(store in ('A', 'B'), -1)",
+                                   name="t")],
+        ))
+
+    async def test_nested_transform_over_row_leaf(self, exec_engine) -> None:
+        await self._assert_row_leaf_rejected(exec_engine, _q(
+            time_dimensions=month_td(),
+            measures=[ModelMeasure(formula="time_shift(cumsum(weight), -1)",
+                                   name="t")],
+        ))
+
+    async def test_composite_hiding_transform_over_row_leaf(
+        self, exec_engine,
+    ) -> None:
+        await self._assert_row_leaf_rejected(exec_engine, _q(
+            time_dimensions=month_td(),
+            measures=[ModelMeasure(
+                formula="time_shift(revenue:sum + cumsum(weight), -1)",
+                name="t")],
+        ))
