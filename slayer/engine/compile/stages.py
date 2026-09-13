@@ -324,15 +324,6 @@ def _regroup_inherited_filters(
     return [*date_bounds, *others], len(date_bounds)
 
 
-def _find_regroup_slot(slots: List[ValueSlot], key: ValueKey, *, role: str) -> SlotId:
-    found = next((slot.id for slot in slots if slot.key == key), None)
-    assert found is not None, (
-        f"Regroup producer plan is missing the {role} slot for "
-        f"{type(key).__name__}; synthesis and planning disagree on its grain."
-    )
-    return found
-
-
 def _regroup_answer_slot_id(
     *, value_slots: List[ValueSlot], key: ValueKey, fallback: Optional[SlotId],
 ) -> SlotId:

@@ -5,9 +5,8 @@ safe-route enumeration binding applies, per candidate) and the
 ``queries/dotted-dimension-routing`` delta scenario "Inference and binding
 agree on a routed short form".
 
-Tests marked xfail(strict) pin the target behaviour and flip green when the
-route-aware probe lands (tasks group 19); unmarked tests are guard pins that
-already hold and must survive the restructure.
+Route-target tests pin the route-aware probe; the rest are guard pins that
+predate it and must survive the restructure.
 """
 
 from __future__ import annotations
@@ -31,10 +30,6 @@ from tests._dev1871_fixtures import (
     make_routing_storage,
 )
 
-_ROUTE_XFAIL = pytest.mark.xfail(
-    strict=True, reason="route-aware rootless inference lands with DEV-1871 group 19",
-)
-
 
 @pytest.fixture
 async def storage():
@@ -51,7 +46,6 @@ def _canon(rows: list[dict]) -> list[tuple]:
     return sorted((tuple(sorted(r.items())) for r in rows), key=repr)
 
 
-@_ROUTE_XFAIL
 class TestShortFormParity:
     """Spec: Short-form dimension infers like its full path."""
 
@@ -146,7 +140,6 @@ class TestVerdictConsistency:
             assert not verdict.ambiguous_blocked
 
 
-@_ROUTE_XFAIL
 class TestAmbiguousRoutes:
     async def test_two_safe_routes_fail_closed_as_ambiguous(self, storage) -> None:
         """A routed probe with two fan-out-free routes reports the same
@@ -160,7 +153,6 @@ class TestAmbiguousRoutes:
         assert "city.name" in str(err)
 
 
-@_ROUTE_XFAIL
 class TestRoutedHops:
     def test_hops_counted_along_the_selected_route(self) -> None:
         """Spec: hops are counted along the selected route (orders reaches
@@ -179,7 +171,6 @@ class TestRoutedHops:
         assert verdicts["orders"].total_hops == 2
 
 
-@_ROUTE_XFAIL
 class TestInferenceBindingAgreement:
     """Spec (dotted-dimension-routing): Inference and binding agree on a routed short form."""
 

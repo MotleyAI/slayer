@@ -28376,8 +28376,8 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 39,
-                    "endColumn": 72,
+                    "startColumn": 41,
+                    "endColumn": 74,
                     "lineCount": 1
                 }
             },

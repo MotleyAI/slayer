@@ -32,10 +32,6 @@ IDENTIFIER_RE = re.compile(r"^[a-zA-Z_]\w*$")
 # An identifier or dotted path; used to scan formula text for reference candidates.
 IDENT_OR_PATH_RE = re.compile(r"[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*")
 
-# Exactly a chain of ``.``-joined identifiers — distinguishes a dotted ref from a
-# SQL fragment that merely contains a dot.
-DOTTED_IDENT_REF_RE = re.compile(r"^[A-Za-z_]\w*(\.[A-Za-z_]\w*)+$")
-
 # Aggregation colon syntax (``revenue:sum``, ``*:count``). Group 1 measure name,
 # group 2 aggregation name, group 3 optional ``(...)`` arglist.
 AGG_REF_RE = re.compile(

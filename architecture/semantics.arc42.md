@@ -33,10 +33,12 @@ is the coercion from coarser to finer.
    counting). [enforced: test:tests/test_dev1836_producer_execution.py]
 5. **Grain and cells**: an aggregate is typed by its grain — its partition_by
    dimension set, defaulting to the query's dimensions; one combination of
-   grain values is a cell. [review]
-6. **An aggregate is a dataset**: it can be filtered, queried, and aggregated
-   again; a strictly coarser grain is reached only through an explicit
-   second-order aggregation — the implicit collapse is a typed error
+   grain values is a cell. [enforced: test:tests/test_dev1871_grain_retype.py]
+6. **An aggregate is a dataset**
+   [enforced: test:tests/test_dev1871_terms.py]: it can be filtered, queried,
+   and aggregated again; a strictly coarser grain is reached only through an
+   explicit second-order aggregation — the implicit collapse is a typed
+   error
    [enforced: test:tests/test_dev1824_partitioned_execution.py]; second-order
    aggregation over attached values
    [enforced: test:tests/test_dev1847_reaggregation_exec.py]; aggregation sources
@@ -71,7 +73,8 @@ is the coercion from coarser to finer.
     Grain-union broadcasting). [enforced: test:tests/test_dev1739_execution.py]
 11. **Transforms are typed**: transforms act on aggregates, preserving or
     dropping grain dimensions; a time-ordered transform requires the time axis
-    in its operand's grain and fails with the remedy otherwise. [review]
+    in its operand's grain and fails with the remedy otherwise.
+    [enforced: test:tests/test_dev1871_terms.py]
 12. **Population**: the population is the query's quantifier — exactly one
     result row per combination of dimension values among its row-filtered rows
     (raw-row mode is the one documented exception; spec: `queries/semantics` ›

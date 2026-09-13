@@ -21,6 +21,7 @@ from slayer.core.errors import (
 from slayer.core.join_walker import neighbors, resolve_hop
 from slayer.core.models import SlayerModel
 from slayer.core.query import ComputedDimension, SlayerQuery, render_probe_text
+from slayer.engine.dimension_routing import resolve_route, safe_route_reachable
 from slayer.engine.join_safety import provably_to_one
 from slayer.engine.syntax import (
     AggCall,
@@ -37,6 +38,8 @@ from slayer.storage.base import StorageBackend
 _OK = "ok"
 _UNREACHABLE = "unreachable"
 _AMBIGUOUS = "ambiguous"
+# Internal to probe_item: the anchor hop has no literal edge (short-form fallback).
+_NO_EDGE = "no_edge"
 
 
 class PopulationChoice(BaseModel):
@@ -141,14 +144,19 @@ def _parsed_filter_refs(filter_str: str) -> tuple[list[str], bool]:
     return [_ref_str(n) for n in nodes if isinstance(n, (Ref, DottedRef))], True
 
 
-def _filter_refs(filter_str: str, *, models_by_name: dict[str, SlayerModel]) -> list[str]:
+def _filter_refs(
+    filter_str: str, *, model_scopes: list[dict[str, SlayerModel]]
+) -> list[str]:
     """Field references of one query filter; drops aggregate-bearing filters and saved-measure refs.
 
     All ``{var}`` are masked to a neutral literal first, so a reference introduced
     only by a variable value never participates.
     """
     refs, _ = _parsed_filter_refs(filter_str)
-    return [r for r in refs if not _is_saved_measure_ref(r, models_by_name=models_by_name)]
+    return [
+        r for r in refs
+        if not _saved_measure_in_every_scope(r, model_scopes=model_scopes)
+    ]
 
 
 def _query_dimension_refs(query: SlayerQuery) -> list[str]:
@@ -172,6 +180,7 @@ def determination_items(
     query: SlayerQuery,
     *,
     models_by_name: dict[str, SlayerModel],
+    model_scopes: list[dict[str, SlayerModel]] | None = None,
 ) -> list[str]:
     """The dimensions + time dimensions + field-typed filter refs that the population must determine.
 
@@ -179,7 +188,10 @@ def determination_items(
     model-level filters contribute nothing. Deduped, preserving first occurrence.
     Runtime variable values never participate — a filter's ``{var}`` is masked to a
     neutral literal before parsing, so an injected value can't introduce a ref.
+    ``model_scopes`` widens saved-measure classification beyond ``models_by_name``
+    (the anchors-fold scopes), so items and anchors can't disagree.
     """
+    scopes = model_scopes if model_scopes is not None else [models_by_name]
     items: list[str] = []
     seen: set[str] = set()
 
@@ -191,7 +203,7 @@ def determination_items(
     for ref in _query_dimension_refs(query):
         _add(ref)
     for f in query.filters or []:
-        for ref in _filter_refs(f, models_by_name=models_by_name):
+        for ref in _filter_refs(f, model_scopes=scopes):
             _add(ref)
     return items
 
@@ -199,11 +211,45 @@ def determination_items(
 # --------------------------------------------------------------------------- #
 # Per-candidate determination probe (design §2).
 # --------------------------------------------------------------------------- #
-def probe_item(*, root: str, item: str, models_by_name: dict[str, SlayerModel]) -> tuple[str, int]:
-    """Route ``item``'s literal dotted path from ``root``; ``(verdict, hops)``.
+def _walk_to_one(
+    *, start: SlayerModel, tokens: list[str], models_by_name: dict[str, SlayerModel]
+) -> tuple[SlayerModel | None, str, int]:
+    """Walk ``tokens`` from ``start``; ``(terminal model, verdict, hops)``.
 
-    Verdict is ``_OK`` when every oriented hop is provably to-one and the leaf is a
-    column on the terminal model, ``_AMBIGUOUS`` when a hop spans parallel edges,
+    Every oriented hop must be provably to-one; ``_NO_EDGE`` distinguishes a token
+    with no literal edge from a resolved-but-unsafe (``_UNREACHABLE``) hop.
+    """
+    current = start
+    visited = {start.name}
+    hops = 0
+    for token in tokens:
+        try:
+            edge = resolve_hop(current=current, token=token, models_by_name=models_by_name)
+        except AmbiguousJoinPathError:
+            return (None, _AMBIGUOUS, 0)
+        if edge is None:
+            return (None, _NO_EDGE, 0)
+        if edge.target_model in visited:
+            return (None, _UNREACHABLE, 0)
+        target = models_by_name.get(edge.target_model)
+        if target is None or not provably_to_one(edge=edge, target_model=target):
+            return (None, _UNREACHABLE, 0)
+        visited.add(edge.target_model)
+        current = target
+        hops += 1
+    return (current, _OK, hops)
+
+
+def probe_item(*, root: str, item: str, models_by_name: dict[str, SlayerModel]) -> tuple[str, int]:
+    """Route ``item``'s dotted path from ``root``; ``(verdict, hops)``.
+
+    Literal resolution first: the spelled path is walked hop by hop, and a path
+    that resolves literally is never reinterpreted through routing. A single-token
+    anchor with no literal edge falls back to short-form routing — the same route
+    enumeration binding applies — viable only when every hop of the selected route
+    is provably to-one, with hops counted along it. Verdict is ``_OK`` when the
+    walk succeeds and the leaf is a column on the terminal model, ``_AMBIGUOUS``
+    when a hop spans parallel edges (or the routed probe finds two safe routes),
     else ``_UNREACHABLE``. A leading self-prefix (``root.``) is stripped first.
     """
     parts = item.split(".")
@@ -211,25 +257,29 @@ def probe_item(*, root: str, item: str, models_by_name: dict[str, SlayerModel]) 
     path = parts[:-1]
     if path and path[0] == root:
         path = path[1:]
-    current = models_by_name.get(root)
-    if current is None:
+    start = models_by_name.get(root)
+    if start is None:
         return (_UNREACHABLE, 0)
-    visited = {root}
-    hops = 0
-    for token in path:
-        try:
-            edge = resolve_hop(current=current, token=token, models_by_name=models_by_name)
-        except AmbiguousJoinPathError:
-            return (_AMBIGUOUS, 0)
-        if edge is None or edge.target_model in visited:
+    terminal, verdict, hops = _walk_to_one(start=start, tokens=path, models_by_name=models_by_name)
+    if verdict == _NO_EDGE and len(path) == 1:
+        route, status = resolve_route(
+            root=start, target_model=path[0], models_by_name=models_by_name
+        )
+        if status == "ambiguous":
+            # Two safe routes are genuinely ambiguous; many routes with none
+            # safe leave nothing for determination — unreachable, not ambiguous.
+            reachable = safe_route_reachable(
+                root=start, target_model=path[0], models_by_name=models_by_name
+            )
+            return (_AMBIGUOUS, 0) if reachable else (_UNREACHABLE, 0)
+        if route is None:
             return (_UNREACHABLE, 0)
-        target = models_by_name.get(edge.target_model)
-        if target is None or not provably_to_one(edge=edge, target_model=target):
-            return (_UNREACHABLE, 0)
-        visited.add(edge.target_model)
-        current = target
-        hops += 1
-    if current.get_column(leaf) is None:
+        terminal, verdict, hops = _walk_to_one(
+            start=start, tokens=route, models_by_name=models_by_name
+        )
+    if terminal is None:
+        return (_UNREACHABLE if verdict == _NO_EDGE else verdict, 0)
+    if terminal.get_column(leaf) is None:
         return (_UNREACHABLE, 0)
     return (_OK, hops)
 
@@ -359,31 +409,72 @@ def select_from_verdicts(verdicts: list[CandidateVerdict]) -> tuple[str | None, 
 # --------------------------------------------------------------------------- #
 # Datasource scoping (spec: Datasource scoping for root-less queries).
 # --------------------------------------------------------------------------- #
-def _anchor_names(query: SlayerQuery) -> set[str]:
+def _saved_measure_in_every_scope(
+    ref: str, *, model_scopes: list[dict[str, SlayerModel]]
+) -> bool:
+    """Whether ``ref`` resolves to a saved measure in every scope holding its anchor model.
+
+    A scope where the anchor model is absent abstains; a real column in any scope
+    keeps the reference (column-wins precedence, extended across datasources).
+    """
+    scopes = [s for s in model_scopes if ref.split(".")[0] in s]
+    return bool(scopes) and all(
+        _is_saved_measure_ref(ref, models_by_name=s) for s in scopes
+    )
+
+
+def _anchor_names(
+    query: SlayerQuery, *, model_scopes: list[dict[str, SlayerModel]] | None = None
+) -> set[str]:
     """First segments of the dotted references that drive inference — dimensions,
     time dimensions, and field-typed filters only.
 
     Measures are excluded (they must never influence the population, datasource
     scoping, or sibling detection); references are read from the parser, so string
-    literals never surface as anchors.
+    literals never surface as anchors. With ``model_scopes`` (phase 2 of the fold),
+    a filter reference resolving to a saved measure is excluded too — the same
+    classification :func:`determination_items` applies.
     """
     refs = _query_dimension_refs(query)
     for f in query.filters or []:
         filter_refs, _ = _parsed_filter_refs(f)
-        refs.extend(filter_refs)
+        refs.extend(
+            r for r in filter_refs
+            if not model_scopes
+            or not _saved_measure_in_every_scope(r, model_scopes=model_scopes)
+        )
     return {ref.split(".")[0] for ref in refs if ref}
 
 
-async def _resolve_datasource(
+async def _classification_scopes(
     *, storage: StorageBackend, data_source: str | None, anchors: set[str]
+) -> tuple[dict[str, dict[str, SlayerModel]], dict[str, set[str]]]:
+    """``(models-by-name per candidate datasource, datasources per model name)``.
+
+    Candidates are the datasources holding at least one syntactic anchor model —
+    or just the explicit ``data_source``, which pins scoping before anchor voting.
+    """
+    ds_by_model: dict[str, set[str]] = {}
+    if data_source is not None:
+        candidates = {data_source}
+    else:
+        for ds, name in await storage._list_all_model_identities():
+            ds_by_model.setdefault(name, set()).add(ds)
+        candidates = set().union(
+            *(ds_by_model[a] for a in anchors if a in ds_by_model)
+        )
+    scopes: dict[str, dict[str, SlayerModel]] = {}
+    for ds in sorted(candidates):
+        scopes[ds] = {m.name: m for m in await _all_models_in_datasource(storage, ds)}
+    return scopes, ds_by_model
+
+
+def _resolve_datasource(
+    *, ds_by_model: dict[str, set[str]], data_source: str | None, anchors: set[str]
 ) -> str:
     """The single datasource holding every referenced anchor model, or fail closed."""
     if data_source is not None:
         return data_source
-    identities = await storage._list_all_model_identities()
-    ds_by_model: dict[str, set[str]] = {}
-    for ds, name in identities:
-        ds_by_model.setdefault(name, set()).add(ds)
     relevant = [a for a in anchors if a in ds_by_model]
     if not relevant:
         raise PopulationInferenceError(PopulationErrorReason.NO_DATASOURCE)
@@ -418,11 +509,23 @@ async def infer_population(
     if not (query.dimensions or query.time_dimensions or query.filters):
         raise PopulationInferenceError(PopulationErrorReason.EMPTY_DETERMINATION)
 
-    anchors = _anchor_names(query)
+    # Phase 1 — syntactic anchors only pick the model scopes to classify against;
+    # every verdict below re-runs on the model-aware classification.
+    syntactic = _anchor_names(query)
 
     # No dimensions and only aggregate-bearing filters ⇒ nothing to infer from;
     # a dedicated error, not the NO_DATASOURCE that empty anchors would otherwise
     # trigger at datasource resolution.
+    if not syntactic:
+        raise PopulationInferenceError(PopulationErrorReason.EMPTY_DETERMINATION)
+
+    scopes, ds_by_model = await _classification_scopes(
+        storage=storage, data_source=data_source, anchors=syntactic
+    )
+
+    # Phase 2 — anchors reclassified saved-measure-excluding, precedence re-run:
+    # EMPTY_DETERMINATION, then SIBLING_STAGE, then datasource resolution.
+    anchors = _anchor_names(query, model_scopes=list(scopes.values()))
     if not anchors:
         raise PopulationInferenceError(PopulationErrorReason.EMPTY_DETERMINATION)
 
@@ -438,11 +541,12 @@ async def infer_population(
             ),
         )
 
-    ds = await _resolve_datasource(storage=storage, data_source=data_source, anchors=anchors)
-    models = await _all_models_in_datasource(storage, ds)
-    models_by_name = {m.name: m for m in models}
+    ds = _resolve_datasource(ds_by_model=ds_by_model, data_source=data_source, anchors=anchors)
+    models_by_name = scopes[ds]  # the winning datasource always holds a loaded anchor
 
-    items = determination_items(query, models_by_name=models_by_name)
+    items = determination_items(
+        query, models_by_name=models_by_name, model_scopes=list(scopes.values())
+    )
     if not items:
         raise PopulationInferenceError(PopulationErrorReason.EMPTY_DETERMINATION)
 

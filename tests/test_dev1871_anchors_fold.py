@@ -2,8 +2,8 @@
 
 Covers the ``queries/population`` datasource-scoping delta: a filter reference
 resolving to a saved measure (including via a named join) contributes no anchor
-to datasource scoping or sibling-stage detection. xfail(strict) tests flip with
-tasks group 18; the rest are guard pins on the two-phase restructure.
+to datasource scoping or sibling-stage detection, plus guard pins on the
+two-phase restructure.
 """
 
 from __future__ import annotations
@@ -16,10 +16,6 @@ from slayer.engine.population import infer_population
 
 from tests._dev1866_fixtures import DS_CHAIN, make_inference_storage
 
-_FOLD_XFAIL = pytest.mark.xfail(
-    strict=True, reason="anchor classification fold lands with DEV-1871 group 18",
-)
-
 
 @pytest.fixture
 async def storage():
@@ -27,7 +23,6 @@ async def storage():
 
 
 class TestSavedMeasureAnchors:
-    @_FOLD_XFAIL
     async def test_named_join_saved_measure_does_not_steer_datasource_scoping(
         self, storage
     ) -> None:
@@ -44,7 +39,6 @@ class TestSavedMeasureAnchors:
         assert choice.model_name == "customers"
         assert choice.data_source == DS_CHAIN
 
-    @_FOLD_XFAIL
     async def test_saved_measure_colliding_with_sibling_stage_name(
         self, storage
     ) -> None:

@@ -4,7 +4,7 @@ Standing gates for EVERY numbered group below: golden baselines byte-identical w
 
 ## 1. Prerequisite sync (DEV-1897 regime)
 
-- [ ] 1.1 Confirm DEV-1897 is merged into this branch (import-linter gone, child-level model-truth in CI); read its OpenSpec change and system §3/§5 for the measurement/coverage semantics; verify `poetry run python tools/arch_check.py` green on the merged tree and no `[tool.importlinter]` remains. (Only group 17 depends on this — the spec-tests stage and groups 2–16 do not block on DEV-1897.)
+- [x] 1.1 Confirm DEV-1897 is merged into this branch (import-linter gone, child-level model-truth in CI); read its OpenSpec change and system §3/§5 for the measurement/coverage semantics; verify `poetry run python tools/arch_check.py` green on the merged tree and no `[tool.importlinter]` remains. (Only group 17 depends on this — the spec-tests stage and groups 2–16 do not block on DEV-1897.)
 
 ## 2. Alias insulation (before any key-shape change)
 
@@ -64,17 +64,17 @@ Standing gates for EVERY numbered group below: golden baselines byte-identical w
 
 ## 18. Population: anchors fold
 
-- [ ] 18.1 Two-phase anchor classification per design D11; ordering invariants (EMPTY_DETERMINATION, SIBLING_STAGE before NO_DATASOURCE) pinned by existing DEV-1866 tests; verify both new regressions (named-join saved-measure datasource scoping; sibling-name collision) plus existing fail-closed tests green
+- [x] 18.1 Two-phase anchor classification per design D11; ordering invariants (EMPTY_DETERMINATION, SIBLING_STAGE before NO_DATASOURCE) pinned by existing DEV-1866 tests; verify both new regressions (named-join saved-measure datasource scoping; sibling-name collision) plus existing fail-closed tests green
 
 ## 19. Population: route-aware inference
 
-- [ ] 19.1 Route-aware `probe_item` per design D11 (literal-first, provably-to-one hops, consistent verdicts, selected-route hops); verify all six routing regression cases green
-- [ ] 19.2 Flip `test_short_form_cross_model_dim_not_routed_when_rootless` (consented) to routes-and-infers; update `docs/concepts/queries.md#population`; verify `test_law_population_invariance` and spec scenarios green
+- [x] 19.1 Route-aware `probe_item` per design D11 (literal-first, provably-to-one hops, consistent verdicts, selected-route hops); verify all six routing regression cases green
+- [x] 19.2 Flip `test_short_form_cross_model_dim_not_routed_when_rootless` (consented) to routes-and-infers; update `docs/concepts/queries.md#population`; verify `test_law_population_invariance` and spec scenarios green
 
 ## 20. Cleanup and closure
 
-- [ ] 20.1 Delete dead derivation code (`_root_grain` re-derivations etc.); verify goldens + suite green and coverage of deleted paths gone
-- [ ] 20.2 [approval] semantics tag flips only where a new test honestly enforces an axiom (candidates 5, 6-dimension-position, 11), each proposed separately; verify arch_check tag validation
-- [ ] 20.3 Docs/skills sweep for touched behaviour; verify grep for stale names clean; zensical nav unchanged (no new pages)
-- [ ] 20.4 Post the raw-key-consumer inventory (DEV-1896's migration input) as a comment on DEV-1896; verify comment posted
-- [ ] 20.5 Final: full suite (`integration or not integration` where DBs available), ruff, enforcement bundle, benchmark re-run; verify all green
+- [x] 20.1 Delete dead derivation code (`_root_grain` re-derivations etc.); verify goldens + suite green and coverage of deleted paths gone
+- [x] 20.2 [approval] semantics tag flips only where a new test honestly enforces an axiom (candidates 5, 6-dimension-position, 11), each proposed separately; verify arch_check tag validation
+- [x] 20.3 Docs/skills sweep for touched behaviour; verify grep for stale names clean; zensical nav unchanged (no new pages)
+- [x] 20.4 Post the raw-key-consumer inventory (DEV-1896's migration input) as a comment on DEV-1896; verify comment posted
+- [x] 20.5 Final: full suite (`integration or not integration` where DBs available), ruff, enforcement bundle, benchmark re-run; verify all green
