@@ -21,7 +21,8 @@ evaluates under exactly one:
 - **Series regime** (new): an input containing a nested transform anywhere in
   its tree, a cross-model aggregate leaf inside a composite (a bare cross-model
   aggregate stays re-aggregation), or a top-level aggregate-typed
-  predicate (`IN` / comparison over aggregates). The input's
+  predicate (`IN` / comparison over aggregates; `time_shift` only —
+  `change` / `change_pct` reject boolean-shaped inputs). The input's
   materialised result series is shifted: each row reads the series value at the
   shifted bucket within the same partition, and a shifted bucket absent from
   the series — filtered out, outside the query's date range, or before the

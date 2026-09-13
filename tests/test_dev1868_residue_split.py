@@ -18,7 +18,7 @@ async def _raises(band: str) -> str:
         measures=[ModelMeasure(formula="amount:sum", name="s")],
     )
     with pytest.raises(ValueError) as ei:
-        await gen(query)
+        await gen(query=query)
     message = str(ei.value)
     assert not re.search(r"DEV-\d+", message)  # a type rule, not a deferral
     return message
