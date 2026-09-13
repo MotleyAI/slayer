@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict
 
@@ -315,14 +315,18 @@ _QUOTE_STYLES = (('"', '"'), ("`", "`"), ("[", "]"))
 
 
 def overlimit_tokens(
-    text: str, *, limit: int | None, lexis: SqlLexis = _DEFAULT_LEXIS,
+    text: str, *, limit: int | None,
+    quote_styles: Sequence[tuple[str, str]] = _QUOTE_STYLES,
+    lexis: SqlLexis = _DEFAULT_LEXIS,
 ) -> list[str]:
-    """Distinct over-limit identifier-shaped tokens in ``text`` — bare ``\\w+``
-    runs and whole quoted spans (any of the three quote styles) alike.
+    """Distinct over-limit identifier-shaped tokens in ``text`` — bare ``\\w+`` runs
+    and whole quoted spans of each ``(open, close)`` in ``quote_styles``.
 
     Masks literals/comments first. Used to enumerate a bundle's user-authored
     surfaces (the exemption inventory) and, on final SQL, to backstop survivors.
-    ``None`` limit yields nothing (unbounded dialect)."""
+    Callers pass only the dialect's own identifier quote style so, e.g., a Postgres
+    ``ARRAY[…]`` literal isn't misread as one oversized ``[…]`` identifier. ``None``
+    limit yields nothing (unbounded dialect)."""
     if limit is None:
         return []
     masked = _mask_sql(text, lexis=lexis)
@@ -333,7 +337,7 @@ def overlimit_tokens(
         # identifier — don't let a long number trip the backstop.
         if not m.group(0)[0].isdigit() and len(m.group(0).encode("utf-8")) > limit
     }
-    for quote_open, quote_close in _QUOTE_STYLES:
+    for quote_open, quote_close in quote_styles:
         out.update(find_overlimit_quoted(
             text, limit=limit, quote_open=quote_open, quote_close=quote_close, lexis=lexis,
         ))

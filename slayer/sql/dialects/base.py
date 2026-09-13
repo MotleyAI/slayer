@@ -909,7 +909,8 @@ class SqlDialect(BaseModel):
             return
         survivors = [
             t for t in overlimit_tokens(
-                sql, limit=limit, lexis=self.identifier_masking_lexis,
+                sql, limit=limit, quote_styles=[self._identifier_quote_anchors()],
+                lexis=self.identifier_masking_lexis,
             )
             if t not in exempt
         ]

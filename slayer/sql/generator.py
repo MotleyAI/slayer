@@ -6909,9 +6909,13 @@ def _user_authored_exemptions(
         for col in ext.columns or []:
             surfaces.extend(_col_surfaces(col))
     tokens: set[str] = set()
+    quote_styles = [d._identifier_quote_anchors()]
     for text in surfaces:
         tokens.update(
-            overlimit_tokens(text, limit=limit, lexis=d.identifier_masking_lexis)
+            overlimit_tokens(
+                text, limit=limit, quote_styles=quote_styles,
+                lexis=d.identifier_masking_lexis,
+            )
         )
     return frozenset(tokens)
 

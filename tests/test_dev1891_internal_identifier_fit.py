@@ -758,6 +758,22 @@ class TestBackstop:
         assert "63" in str(exc.value)
         assert "amount_sum_partition_by" in str(exc.value)
 
+    def test_bracket_array_syntax_is_not_flagged_on_a_non_bracket_dialect(self) -> None:
+        """``[…]`` is array syntax on Postgres, not an identifier: a long array
+        literal must not trip the backstop. The scan uses only the dialect's own
+        identifier quote style, so ``[…]`` is inert here (unlike T-SQL below)."""
+        d = get_dialect("postgres")
+        arr = "ARRAY[" + ", ".join(str(i) for i in range(40)) + "]"  # >63-byte [...] span
+        d.assert_no_overlimit_identifiers(f"SELECT {arr} AS a FROM t")  # must not raise
+
+    def test_overlimit_bracket_identifier_is_still_flagged_on_tsql(self) -> None:
+        """T-SQL quotes identifiers with ``[…]``, so an over-limit bracketed survivor
+        there is still rejected — the fix narrows scanning by dialect, not blindly."""
+        d = get_dialect("tsql")
+        over = "z" * 130  # over T-SQL's 128-byte limit
+        with pytest.raises(_need(IdentifierLengthError)):
+            d.assert_no_overlimit_identifiers(f"SELECT 1 AS [{over}]")
+
 
 # Fitting composes with dialect alias mangling (requirement 6): budgets sized
 # against the post-mangle form, result keys stay canonical.
