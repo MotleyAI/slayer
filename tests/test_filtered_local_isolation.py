@@ -26,7 +26,7 @@ from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.column_filter_paths import compute_column_filter_join_paths
 from slayer.ir.planned import MaskTyping
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.engine.stage_planner import plan_query
+from slayer.engine.plan import plan_query
 
 
 # Fixtures

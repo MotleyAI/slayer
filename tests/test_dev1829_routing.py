@@ -13,7 +13,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
-from slayer.engine.stage_planner import plan_stages
+from slayer.engine.plan import plan_stages
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._dev1739_fixtures import (

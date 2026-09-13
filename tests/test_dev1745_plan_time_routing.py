@@ -21,7 +21,7 @@ from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.ir.planned import PlannedQuery
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.engine.stage_planner import plan_query
+from slayer.engine.plan import plan_query
 from slayer.sql.generator import SQLGenerator, _lower_positions
 
 from tests._engine_helpers import _engine_generate, _outer_select

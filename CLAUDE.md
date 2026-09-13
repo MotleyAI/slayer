@@ -29,7 +29,10 @@ present the exact edit and wait for the OK, even when a broader plan already men
 ```bash
 poetry install -E all                                # install with all extras
 poetry run pytest -m "not integration"               # unit tests (excludes integration)
-poetry run pytest tests/integration/ -m integration  # all integration tests
+poetry run pytest tests/ -m "integration and not metabase_e2e" -n logical --dist loadscope \
+  --ignore=tests/integration/test_integration_mysql.py \
+  --ignore=tests/integration/test_integration_clickhouse.py \
+  --ignore=tests/integration/test_integration_sqlserver.py   # integration tests (CI settings — see Testing)
 poetry run pytest tests/test_sql_generator.py -v     # one file
 poetry run slayer serve                              # REST API server
 poetry run slayer mcp                                # MCP server
@@ -49,12 +52,18 @@ poetry run ruff check slayer/ tests/                 # lint
 ## Testing
 
 Integration tests are marked `@pytest.mark.integration` and skip when their DB is
-unavailable; shared fixtures in `tests/conftest.py`.
+unavailable; shared fixtures in `tests/conftest.py`. ALWAYS run the integration
+suite with the CI invocation from `.github/workflows/ci.yml` (`-n logical
+--dist loadscope` + its `--ignore`s) — plain `-n auto` races the notebook
+suite's shared on-disk fixtures.
 
 ```bash
 poetry run pytest -m "not integration"                        # unit only
-poetry run pytest tests/integration/ -m integration           # integration
-poetry run pytest tests/ -m "integration or not integration"  # everything
+poetry run pytest tests/ -m "integration and not metabase_e2e" -n logical --dist loadscope \
+  --ignore=tests/integration/test_integration_mysql.py \
+  --ignore=tests/integration/test_integration_clickhouse.py \
+  --ignore=tests/integration/test_integration_sqlserver.py   # integration (CI settings)
+poetry run pytest tests/ -m "integration or not integration" -n logical --dist loadscope  # everything
 poetry run pytest -m metabase_e2e tests/integration/test_metabase_e2e.py  # live Metabase e2e (needs Docker)
 ```
 
@@ -72,8 +81,7 @@ poetry run ruff check --fix slayer/ tests/    # auto-fix
 ALWAYS update documentation when making API or user-facing changes:
 
 - `docs/` — concept docs, getting-started, reference, configuration (user-facing only)
-- `.claude/skills/` — slayer-query.md, slayer-models.md, slayer-overview.md
-- When renaming a field or changing a response shape, grep all docs and skills for the old name
+- When renaming a field or changing a response shape, grep all docs for the old name
 - Behaviour is specified in `openspec/specs/` (via an OpenSpec change); cross-cutting
   principles and the query algebra live in `architecture/` (arc42 + status tags)
 

@@ -9,7 +9,7 @@ descend a ``TransformKey``'s input, a discriminating column inside e.g.
 wrongly pruned, collapsing the producer to ``region`` alone.
 """
 
-from slayer.ir.grain import Grain
+from slayer.core.keys import Grain
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
@@ -17,7 +17,7 @@ from slayer.core.keys import (
     ScalarCallKey,
     TransformKey,
 )
-from slayer.engine.stage_planner import (
+from slayer.engine.compile.stages import (
     _prune_functionally_determined_grain,
     _scalar_free_columns,
 )
@@ -26,7 +26,7 @@ REGION = ColumnKey(path=(), leaf="region")
 CITY = ColumnKey(path=(), leaf="city")
 SUM_BY_REGION = AggregateKey(
     source=ColumnKey(path=(), leaf="amount"), agg="sum",
-    partition_keys=frozenset({REGION}),
+    partition_keys=Grain.of({REGION}),
 )
 # rank(amount:sum(partition_by=region) + city) — city is a free scalar axis.
 RANK_WITH_FREE_CITY = TransformKey(

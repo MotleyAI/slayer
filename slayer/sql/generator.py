@@ -31,7 +31,7 @@ from slayer.core.enums import (
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from slayer.core.errors import AggregationNotAllowedError, SlayerError
-from slayer.core.formula import RANK_FAMILY_TRANSFORMS
+from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.keys import KIND_POLICY, REGROUP_LEAF_PREFIX, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, column_leaf, column_path, substitute_value_keys, walk_value_keys
 from slayer.core.join_walker import resolve_hop, terminal_model
 from slayer.core.models import Aggregation
@@ -526,12 +526,6 @@ _BUILTIN_BAREARG_AGGS_LOCAL_SLICE: frozenset[str] = BUILTIN_AGGREGATIONS
 
 _SQL_AND_JOINER = " AND "
 
-_SQL_COL_SEP = ",\n    "
-
-_SQL_WITH = "WITH "
-_SQL_PARTITION_BY = "PARTITION BY "
-_SQL_SELECT_HEAD = "SELECT\n  "
-
 # Safe agg-param values: identifiers, qualified names, numeric literals.
 _SAFE_AGG_PARAM_RE = re.compile(
     r'^(?:'
@@ -570,8 +564,8 @@ def _wrap_filter(sql_str: str, filter_sql: Optional[str]) -> str:
 
 
 def _is_host_grain(key) -> bool:
-    """True for an ``AggregateKey`` marked ``grain="host"`` (DEV-1747 D2)."""
-    return getattr(key, "grain", "target") == "host"
+    """True for an ``AggregateKey`` marked ``locus="host"`` (DEV-1747 D2)."""
+    return getattr(key, "locus", "target") == "host"
 
 
 def _first_bare_column_name(key) -> Optional[str]:
@@ -851,18 +845,6 @@ def _validate_agg_param_value(value: str, param_name: str, agg_name: str) -> Non
         )
 
 
-_GRANULARITY_MAP = {
-    TimeGranularity.SECOND: "second",
-    TimeGranularity.MINUTE: "minute",
-    TimeGranularity.HOUR: "hour",
-    TimeGranularity.DAY: "day",
-    TimeGranularity.WEEK: "week",
-    TimeGranularity.MONTH: "month",
-    TimeGranularity.QUARTER: "quarter",
-    TimeGranularity.YEAR: "year",
-}
-
-
 
 
 
@@ -888,11 +870,6 @@ def _effective_src_filters(*, lowered_filters, plan) -> list:
 
 
 
-_TRAILING_OFFSET_RE = re.compile(r"(?is)\s*OFFSET\s+\d+\s*\Z")
-_TRAILING_LIMIT_OFFSET_RE = re.compile(
-    r"(?is)\s*LIMIT\s+\d+\s+OFFSET\s+\d+\s*\Z"
-)
-_TRAILING_LIMIT_RE = re.compile(r"(?is)\s*LIMIT\s+\d+\s*\Z")
 
 # A bare-identifier Column.sql renames a physical column; dots are rejected (a dotted ref is a crossing, not a column
 # here).
@@ -3036,7 +3013,7 @@ class SQLGenerator:
     def _render_ranked_cte_from_planned(  # NOSONAR(S3776) — single linear ranked-CTE assembly (src → ROW_NUMBER → collapse); the branches are sequential dialect/shape guards, not nested logic
         self,
         *,
-        plan,
+        plan: "_RankedEmission",
         agg_slot,
         bundle,
         planned_query,

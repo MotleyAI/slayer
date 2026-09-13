@@ -21,7 +21,7 @@ from slayer.core.keys import (
     LiteralKey,
     ScalarCallKey,
 )
-from slayer.engine.planning import _iter_slot_deps
+from slayer.engine.compile.projection import _iter_slot_deps
 
 from tests._dev1846_fixtures import (
     ModelMeasure,

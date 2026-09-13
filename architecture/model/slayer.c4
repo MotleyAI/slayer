@@ -25,6 +25,12 @@ model {
   }
   engine = node 'Query engine' {
     syntax = node 'Syntax'
+    binding = node 'Binding'
+    bind_inputs = node 'Bind inputs'
+    elaborate_env = node 'Checker'
+    elaborate = node 'Elaborate'
+    compile = node 'Compile'
+    plan = node 'Plan'
   }
   ir = node 'Intermediate representation'
   storage = node 'Storage backends' {
@@ -47,6 +53,15 @@ model {
   core.query -> core.models
   sql.render -> sql.dialects
   sql.sql_predicate -> sql.window_detect
+  engine.binding -> engine.syntax
+  engine.bind_inputs -> engine.binding
+  engine.bind_inputs -> engine.elaborate_env
+  engine.bind_inputs -> engine.syntax
+  engine.compile -> engine.elaborate_env
+  engine.elaborate -> engine.bind_inputs
+  engine.elaborate -> engine.elaborate_env
+  engine.plan -> engine.compile
+  engine.plan -> engine.elaborate
   engine -> core
   engine -> ir
   engine -> memories

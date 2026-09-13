@@ -16,15 +16,15 @@ from typing import get_args
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.keys import Grain
 from slayer.core.keys import KIND_POLICY, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, KindPolicy, LiteralKey, Phase, ScalarCallKey, SqlExprKey, StarKey, TimeTruncKey, TransformKey, ValueKey, _FrozenKey, reroot_value_key, substitute_value_keys, walk_value_keys
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.aggregate_input_paths import compute_aggregate_input_join_paths
-from slayer.engine.planning import (
+from slayer.core.keys import lower_sugar_transforms, rewrite_rank_partition_keys
+from slayer.engine.compile.projection import (
     _SLOTTABLE_KIND,
     _iter_slot_deps,
-    lower_sugar_transforms,
-    rewrite_rank_partition_keys,
 )
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects import get_dialect
@@ -47,7 +47,7 @@ TT = TimeTruncKey(column=TS, granularity="month")
 AGG = AggregateKey(source=AMOUNT, agg="sum")
 FILT = SqlExprKey(canonical_sql="status = 'ok'")
 CHANGE_TR = TransformKey(op="change", input=AGG, time_key=TT)
-RANK_TR = TransformKey(op="rank", input=AGG, partition_keys=frozenset({CITY}))
+RANK_TR = TransformKey(op="rank", input=AGG, partition_keys=Grain.of({CITY}))
 
 AGG_FULL = AggregateKey(
     source=AMOUNT,
@@ -55,15 +55,15 @@ AGG_FULL = AggregateKey(
     args=(TS, Decimal("2")),
     kwargs=(("p", Decimal("0.5")), ("weight", CITY)),
     column_filter_key=FILT,
-    grain="host",
-    partition_keys=frozenset({REGION}),
+    locus="host",
+    partition_keys=Grain.of({REGION}),
 )
 TR_FULL = TransformKey(
     op="cumsum",
     input=AGG,
     args=(Decimal("1"),),
     kwargs=(("k", "v"),),
-    partition_keys=frozenset({CITY}),
+    partition_keys=Grain.of({CITY}),
     time_key=TT,
 )
 AR = ArithmeticKey(op="+", operands=(AMOUNT, LiteralKey(value=Decimal("1"))))
@@ -91,7 +91,7 @@ SAMPLES = {
 LEAF_KINDS = (ColumnKey, ColumnSqlKey, StarKey, LiteralKey, SqlExprKey)
 
 
-class DummyKey(_FrozenKey):
+class DummyKey(_FrozenKey, frozen=True):
     """A protocol-implementing kind outside the union."""
 
     child: ValueKey
@@ -110,7 +110,7 @@ class DummyKey(_FrozenKey):
         return self.model_copy(update={"child": new})
 
 
-class DummyOpaqueKey(_FrozenKey):
+class DummyOpaqueKey(_FrozenKey, frozen=True):
     """A kind WITHOUT protocol overrides — every generic visitor must raise."""
 
     marker: str = "opaque"
@@ -252,7 +252,7 @@ class TestMapChildrenContract:
         # Two iterations of the SAME frozenset instance agree, so recording
         # order matches children() order even with several members.
         tr = TransformKey(
-            op="cumsum", input=AGG, partition_keys=frozenset({CITY, REGION}),
+            op="cumsum", input=AGG, partition_keys=Grain.of({CITY, REGION}),
         )
         _, seen = _record_map(tr)
         assert [id(s) for s in seen] == [id(c) for c in tr.children()]
@@ -271,7 +271,7 @@ class TestMapChildrenContract:
     def test_column_filter_key_survives_a_rebuild(self) -> None:
         out = AGG_FULL.map_children(lambda c: c.model_copy())
         assert out.column_filter_key is FILT
-        assert out.grain == "host"
+        assert out.locus == "host"
 
     def test_aggregate_none_partition_keys_stays_none(self) -> None:
         out = AGG.map_children(lambda c: c.model_copy())
@@ -281,7 +281,7 @@ class TestMapChildrenContract:
     def test_transform_empty_partition_keys_stays_empty(self) -> None:
         tr = TransformKey(op="cumsum", input=AGG)
         out = tr.map_children(lambda c: c.model_copy())
-        assert out.partition_keys == frozenset()
+        assert out.partition_keys == Grain.EMPTY
         assert out.time_key is None
 
 
@@ -339,9 +339,9 @@ class TestDummyFlowsThroughGenericVisitors:
     def test_rank_rewrite_reaches_a_nested_rank(self) -> None:
         out = rewrite_rank_partition_keys(
             key=DummyKey(child=RANK_TR),
-            rewrite_fn=lambda k: frozenset({REGION}),
+            rewrite_fn=lambda k: Grain.of({REGION}),
         )
-        assert out.child.partition_keys == frozenset({REGION})
+        assert out.child.partition_keys == Grain.of({REGION})
 
     def test_reroot_reaches_the_dummy_child(self) -> None:
         out = reroot_value_key(
@@ -379,7 +379,7 @@ class TestOpaqueDummyFailsClosed:
     def test_rank_rewrite_raises(self) -> None:
         key = DummyOpaqueKey()
         with pytest.raises(NotImplementedError):
-            rewrite_rank_partition_keys(key=key, rewrite_fn=lambda k: frozenset())
+            rewrite_rank_partition_keys(key=key, rewrite_fn=lambda k: Grain.EMPTY)
 
     def test_reroot_raises(self) -> None:
         key = DummyOpaqueKey()
@@ -518,7 +518,7 @@ class TestLowerSugarTraversal:
 
     def test_change_in_transform_partition_keys_is_lowered(self) -> None:
         key = TransformKey(
-            op="cumsum", input=AGG, partition_keys=frozenset({CHANGE_TR}),
+            op="cumsum", input=AGG, partition_keys=Grain.of({CHANGE_TR}),
         )
         out = lower_sugar_transforms(key)
         assert all(isinstance(p, ArithmeticKey) for p in out.partition_keys)
@@ -541,7 +541,7 @@ class TestLowerSugarTraversal:
                 agg="sum",
             ),
             TransformKey(
-                op="cumsum", input=AGG, partition_keys=frozenset({RANK_TR}),
+                op="cumsum", input=AGG, partition_keys=Grain.of({RANK_TR}),
             ),
             TransformKey(op="cumsum", input=AGG, time_key=RANK_TR),
         ):
@@ -554,37 +554,37 @@ class TestLowerSugarTraversal:
 class TestRankRewriteContract:
     def test_rewrite_fn_receives_the_pre_rebuild_node(self) -> None:
         inner = TransformKey(
-            op="rank", input=AGG, partition_keys=frozenset({CITY}),
+            op="rank", input=AGG, partition_keys=Grain.of({CITY}),
         )
         outer = TransformKey(
-            op="rank", input=inner, partition_keys=frozenset({CITY}),
+            op="rank", input=inner, partition_keys=Grain.of({CITY}),
         )
         seen = []
 
         def fn(k):
             seen.append(k)
-            return frozenset({REGION})
+            return Grain.of({REGION})
 
         out = rewrite_rank_partition_keys(key=outer, rewrite_fn=fn)
         assert seen[0] is inner
         assert seen[1] is outer
         assert seen[1].input is inner
-        assert out.partition_keys == frozenset({REGION})
-        assert out.input.partition_keys == frozenset({REGION})
+        assert out.partition_keys == Grain.of({REGION})
+        assert out.input.partition_keys == Grain.of({REGION})
 
     def test_aggregate_partition_keys_still_rewritten(self) -> None:
         agg = AggregateKey(
-            source=AMOUNT, agg="sum", partition_keys=frozenset({CITY}),
+            source=AMOUNT, agg="sum", partition_keys=Grain.of({CITY}),
         )
         out = rewrite_rank_partition_keys(
-            key=agg, rewrite_fn=lambda k: frozenset({REGION}),
+            key=agg, rewrite_fn=lambda k: Grain.of({REGION}),
         )
-        assert out.partition_keys == frozenset({REGION})
+        assert out.partition_keys == Grain.of({REGION})
 
     def test_identity_preserved_without_rank_keys(self) -> None:
         tree = ArithmeticKey(op="+", operands=(AGG, CITY))
         out = rewrite_rank_partition_keys(
-            key=tree, rewrite_fn=lambda k: frozenset({REGION}),
+            key=tree, rewrite_fn=lambda k: Grain.of({REGION}),
         )
         assert out is tree
 
