@@ -63,12 +63,18 @@ everywhere internal.
    identical-spelling internal alias degrades to today's uniform-truncation behaviour.
    Per-occurrence provenance tracking rejected as complexity without a realistic case.
 4. **Masking shared by scan and substitution.** `substitute_quoted` becomes
-   literal/comment-safe (mask `'…'` with `''` doubling, `--` and `/* */` comments,
-   Postgres `$$` bodies; substitute; unmask), fixing the pre-existing DEV-1756
-   exposure too. Candidates containing the dialect's quote character are skipped —
-   SLayer-minted names never contain quotes, so those are user text. A full
-   dialect-aware lexer was rejected: the exposure window is quoted spans, over-limit,
-   non-exempt only.
+   literal/comment-safe (mask `'…'` with `''` doubling, `E'…'` escape strings, `--`
+   and `/* */` comments, `$$`/tagged-`$tag$` bodies; substitute; unmask), fixing the
+   pre-existing DEV-1756 exposure too. The dialect-specific lexical rules —
+   ordinary-string backslash escapes, `/* */` nesting, dollar-quoting — are gated by
+   a `SqlLexis` value object derived from sqlglot's tokenizer
+   (`SqlDialect.identifier_masking_lexis`, the same source as the parser), so the
+   masker matches each dialect's grammar instead of over/under-masking a
+   Postgres-shaped default (e.g. MySQL nests no comments and honours backslash
+   escapes in ordinary strings). Candidates containing the dialect's quote character
+   are skipped — SLayer-minted names never contain quotes, so those are user text. A
+   full dialect-aware lexer was still rejected: the exposure window is quoted spans,
+   over-limit, non-exempt only.
 5. **Two fail-closed guards.** (a) Collision: two distinct names fitting to one form,
    or a fitted form equal to any token already present (exempt included) →
    `IdentifierCollisionError`; the guard never polices pre-existing short names
@@ -91,6 +97,14 @@ everywhere internal.
   wrong bindings (principle 9), and the exemption inventory is tested per surface.
 - [Substitution hits an exempt-shaped token inside a literal] → masking removes
   literal/comment content from both scan and substitution.
+- [Masker heuristic still has residual per-dialect lexical corners it does not model
+  (e.g. MySQL's whitespace-after-`--` rule, `#` line comments)] → accepted, not chased
+  to a full tokenizer: principle 1 forbids re-parsing emitted SQL and decision 4
+  rejects a full lexer, so `SqlLexis` covers only the flags derivable from sqlglot's
+  tokenizer config (backslash escapes, comment nesting, dollar-quoting). A residual
+  corner would over-mask only *inside* a user raw-SQL fragment on the same emitted
+  line as a SLayer over-limit alias — pathological, and that fragment's identifiers
+  are exempt regardless.
 
 ## Migration Plan
 

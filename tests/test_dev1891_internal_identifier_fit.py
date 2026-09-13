@@ -1,7 +1,7 @@
-"""DEV-1891: fit over-limit INTERNAL identifiers at emission.
+"""Fit over-limit INTERNAL identifiers at emission.
 
-DEV-1756 fits only the plan-derived projection aliases; internal CTE column
-aliases (canonical aggregate names, up to 305 bytes in ``lift/nested_attach``)
+The prior projection-alias pass fits only the plan-derived projection aliases;
+internal CTE column aliases (canonical aggregate names, up to 305 bytes in ``lift/nested_attach``)
 reach Postgres unfitted and are silently truncated at 63 bytes — two aliases
 sharing their first 63 bytes collapse. The emission pass must scan the
 assembled SQL for over-limit quoted identifiers (literals/comments masked),
@@ -27,7 +27,7 @@ from slayer.core.errors import IdentifierCollisionError
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import ColumnRef, ModelExtension, ModelMeasure, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql._identifier_fit import fit_identifier, substitute_quoted
+from slayer.sql._identifier_fit import SqlLexis, fit_identifier, substitute_quoted
 from slayer.sql.dialects import get_dialect
 from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.naming import encode_alias
@@ -164,7 +164,8 @@ class TestPremise:
         names = await _canonical_internal_aliases()
         prefixed = [n for n in names if n.startswith("orders.")]
         bare = [n for n in names if not n.startswith("orders.")]
-        assert len(prefixed) == 1 and len(bare) == 1, names
+        assert len(prefixed) == 1, names
+        assert len(bare) == 1, names
         assert all(_nbytes(n) > 256 for n in names)              # duckdb-relevant
         assert _nbytes(bare[0]) > 128                            # tsql-relevant
         assert _nbytes(encode_alias(prefixed[0])) > 300          # bigquery post-mangle
@@ -432,7 +433,7 @@ class TestUserSurfacesExempt:
 
     async def test_column_name_is_exempt_but_its_projection_alias_is_fitted(self) -> None:
         """The bare user column NAME passes through; the SLayer-minted dotted
-        alias built FROM it is a different spelling and stays fitted (DEV-1756)."""
+        alias built FROM it is a different spelling and stays fitted."""
         model = self._orders(extra_columns=[
             Column(name=LONG_COL_NAME, type=DataType.DOUBLE),
         ])
@@ -512,7 +513,7 @@ class TestEmissionScan:
 
 
 # Fitting never rewrites literals or comments (requirement 4) — masking shared
-# by the scan and by substitute_quoted (also hardening the DEV-1756 pass).
+# by the scan and by substitute_quoted (also hardening the projection-alias pass).
 
 
 class TestMasking:
@@ -544,6 +545,65 @@ class TestMasking:
         assert body in out
         assert out.count(f'"{FIT_LONG}"') == 1
 
+    def test_scan_leaves_escape_string_with_escaped_quote(self) -> None:
+        """A backslash-escaped quote in an ``E'...'`` literal must not end the
+        literal early and expose the trailing identifier to fitting."""
+        literal = f"E'left \\' ref \"{LONG}\" right'"
+        sql = f'SELECT t.x AS "{LONG}", {literal} AS note FROM t'
+        out = _pg_rewrite(sql)
+        assert literal in out
+        assert out.count(f'"{FIT_LONG}"') == 1
+
+    def test_scan_leaves_tagged_dollar_quoted_bodies(self) -> None:
+        body = f'$tag$ref "{LONG}"$tag$'
+        sql = f'SELECT t.x AS "{LONG}", {body} AS doc FROM t'
+        out = _pg_rewrite(sql)
+        assert body in out
+        assert out.count(f'"{FIT_LONG}"') == 1
+
+    def test_scan_leaves_nested_block_comments(self) -> None:
+        comment = f'/* outer /* inner "{LONG}" */ still "{LONG}" */'
+        sql = f'SELECT t.x AS "{LONG}" FROM t {comment}'
+        out = _pg_rewrite(sql)
+        assert comment in out
+        assert out.count(f'"{FIT_LONG}"') == 1
+
+    def test_scan_leaves_multibyte_literal_content(self) -> None:
+        """Masking is code-point aligned: a multibyte char inside a literal keeps
+        offsets valid, so the literal survives and only the outside alias is fitted."""
+        literal = f'\'café "{LONG}" note\''
+        sql = f'SELECT t.x AS "{LONG}", {literal} AS n FROM t'
+        out = _pg_rewrite(sql)
+        assert literal in out
+        assert out.count(f'"{FIT_LONG}"') == 1
+
+    def test_dollar_quote_requires_a_boundary_before_the_opener(self) -> None:
+        """On a dollar-quoting dialect, a ``$`` right after an identifier char does
+        not open a dollar-quote (body stays visible); at a boundary it does (masked)."""
+        dq = SqlLexis(dollar_quotes=True)
+        assert "body" in fitmod._mask_sql("a$$body$$", lexis=dq)
+        assert "body" in fitmod._mask_sql("a$tag$body$tag$", lexis=dq)
+        assert "body" not in fitmod._mask_sql(" $$body$$", lexis=dq)
+        assert "body" not in fitmod._mask_sql(" $tag$body$tag$", lexis=dq)
+
+    def test_mask_sql_ordinary_string_honours_backslash_escapes_when_flagged(self) -> None:
+        """Ordinary ``'...'`` masking closes at ``\\'`` only with escapes OFF
+        (Postgres); ON (MySQL) the escaped quote stays inside the masked body."""
+        assert "tail" in fitmod._mask_sql("'a\\' tail'")
+        assert "tail" not in fitmod._mask_sql("'a\\' tail'", lexis=SqlLexis(backslash_escapes=True))
+
+    def test_scan_leaves_backslash_escaped_ordinary_string_on_mysql(self) -> None:
+        """MySQL ordinary strings honour backslash escapes, so ``'..\\'..'`` masks
+        its whole body — the trailing identifier must not be exposed to fitting."""
+        d = get_dialect("mysql")
+        assert d.backslash_escapes_strings and d.max_identifier_bytes is not None
+        quote = d.quote_identifier
+        literal = f"'left \\' ref {quote(LONG)} right'"
+        sql = f"SELECT t.x AS {quote(LONG)}, {literal} AS note FROM t"
+        out = d.rewrite_emitted_sql(sql)
+        assert literal in out
+        assert out.count(quote(d.fit_alias(LONG))) == 1
+
     def test_substitute_quoted_leaves_literals(self) -> None:
         quote = get_dialect("postgres").quote_identifier
         literal = f'\'ref: "{LONG}"\''
@@ -567,6 +627,64 @@ class TestMasking:
         out = substitute_quoted(sql, {LONG: FIT_LONG}, quote=quote)
         assert f'"prefix""{LONG}"' in out
         assert out.count(f'"{FIT_LONG}"') == 1
+
+    def test_substitute_quoted_leaves_escape_string(self) -> None:
+        """The shared mask keeps ``substitute_quoted`` off ``E'...'`` bodies whose
+        escaped quote would otherwise expose a mapped identifier."""
+        quote = get_dialect("postgres").quote_identifier
+        literal = f"E'left \\' \"{LONG}\"'"
+        sql = f'SELECT {literal} AS lit, t.x AS "{LONG}" FROM t'
+        out = substitute_quoted(sql, {LONG: FIT_LONG}, quote=quote)
+        assert literal in out
+        assert out.count(f'"{FIT_LONG}"') == 1
+
+
+# Masking is dialect-aware: comment nesting, dollar-quoting and
+# ordinary-string backslash escapes are gated by sqlglot's tokenizer, so the masker
+# never over-masks live SQL on a dialect whose grammar differs from Postgres.
+
+
+class TestMaskingLexis:
+    @pytest.mark.parametrize(
+        "dialect,nested,backslash,dollar",
+        [
+            ("postgres", True, False, True),
+            ("mysql", False, True, False),
+            ("tsql", True, False, False),
+            ("duckdb", True, False, True),
+            ("bigquery", False, True, False),
+            ("sqlite", False, False, False),
+            ("clickhouse", True, True, True),
+            ("snowflake", False, True, True),
+        ],
+    )
+    def test_lexis_derived_from_sqlglot(
+        self, dialect: str, nested: bool, backslash: bool, dollar: bool,
+    ) -> None:
+        lexis = get_dialect(dialect).identifier_masking_lexis
+        assert lexis.nested_comments == nested
+        assert lexis.backslash_escapes == backslash
+        assert lexis.dollar_quotes == dollar
+
+    def test_non_nesting_dialect_closes_block_comment_at_first_terminator(self) -> None:
+        """MySQL (no nesting) exposes text after the first ``*/``; a nesting dialect
+        masks through to the outer close — universal nesting would fail open."""
+        mysql = get_dialect("mysql").identifier_masking_lexis
+        assert not mysql.nested_comments
+        assert "live" in fitmod._mask_sql("/* a /* b */ live */", lexis=mysql)
+        assert "live" not in fitmod._mask_sql(
+            "/* a /* b */ live */", lexis=SqlLexis(nested_comments=True)
+        )
+
+    def test_dialect_without_dollar_quotes_leaves_them_as_live_sql(self) -> None:
+        """MySQL has no dollar-quoting, so ``$tag$...$tag$`` stays live SQL rather
+        than a masked literal (universal masking would hide identifiers inside)."""
+        mysql = get_dialect("mysql").identifier_masking_lexis
+        assert not mysql.dollar_quotes
+        assert "body" in fitmod._mask_sql(" $tag$body$tag$", lexis=mysql)
+        assert "body" not in fitmod._mask_sql(
+            " $tag$body$tag$", lexis=SqlLexis(dollar_quotes=True)
+        )
 
 
 # The shared scan/extraction helpers (tasks 2.1).

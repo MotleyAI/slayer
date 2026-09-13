@@ -6881,10 +6881,11 @@ def _user_authored_exemptions(
     """Over-limit identifier-shaped tokens from every user-authored raw-SQL surface
     in ``bundle`` — model ``sql``/``sql_table``/``filters`` and per-column
     ``name``/``sql``/``filter`` across the source, referenced, per-stage source and
-    inline-extension models (DEV-1891 decision 2). These pass through emission
+    inline-extension models. These pass through emission
     unfitted; SLayer-generated ``backing_query_sql`` and synthetic stage-schema
     models (built later) are deliberately excluded."""
-    limit = get_dialect(dialect).max_identifier_bytes
+    d = get_dialect(dialect)
+    limit = d.max_identifier_bytes
     if limit is None:
         return frozenset()
 
@@ -6909,7 +6910,9 @@ def _user_authored_exemptions(
             surfaces.extend(_col_surfaces(col))
     tokens: set[str] = set()
     for text in surfaces:
-        tokens.update(overlimit_tokens(text, limit=limit))
+        tokens.update(
+            overlimit_tokens(text, limit=limit, lexis=d.identifier_masking_lexis)
+        )
     return frozenset(tokens)
 
 

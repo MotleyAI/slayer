@@ -1,4 +1,4 @@
-"""DEV-1756: shared identifier-length fitting + the write-side substitution.
+"""Shared identifier-length fitting + the write-side substitution.
 
 Postgres SILENTLY truncates identifiers past 63 bytes (a NOTICE, never an
 error), so SLayer's ``<root>.<join.path>.<column>`` aliases can collapse two
@@ -17,6 +17,8 @@ import hashlib
 import re
 from collections.abc import Callable, Iterator, Mapping
 
+from pydantic import BaseModel, ConfigDict
+
 
 HASH_LEN = 8  # digest hex chars; collisions are caught per-namespace, not by width
 MIN_LIMIT = 16  # floor so a mis-configured limit fails loudly, not silently
@@ -25,6 +27,21 @@ _TRIM = "._"  # trimmed off head/tail so the marker never abuts a separator
 #: Same-length filler for masked literal/comment content; never appears in SQL.
 _MASK = "\x1f"
 _WORD = re.compile(r"\w+")
+
+
+class SqlLexis(BaseModel):
+    """Dialect lexical rules the identifier masker needs. Kept sqlglot-free here;
+    the dialect layer derives each flag from sqlglot's tokenizer and passes this in.
+    Defaults are the strict standard-SQL subset (Postgres-family for comments)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    backslash_escapes: bool = False  # ordinary ``'...'`` honour ``\`` escapes (MySQL, …)
+    nested_comments: bool = False    # ``/* */`` nests (Postgres, T-SQL, DuckDB, …)
+    dollar_quotes: bool = False      # ``$$``/``$tag$`` literals (Postgres, DuckDB, …)
+
+
+_DEFAULT_LEXIS = SqlLexis()
 
 
 def _digest(name: str) -> str:
@@ -81,8 +98,8 @@ def fit_identifier(
         avail = budget - _MARKER_LEN
         tail_n = avail // 2
         head_n = avail - tail_n
-        head = _head_bytes(name, head_n).rstrip(_TRIM)
-        tail = _tail_bytes(name, tail_n).lstrip(_TRIM)
+        head = _head_bytes(name, n=head_n).rstrip(_TRIM)
+        tail = _tail_bytes(name, n=tail_n).lstrip(_TRIM)
         candidate = f"{head}{marker}{tail}"
         if len(grow(candidate).encode("utf-8")) <= limit:
             return candidate
@@ -92,48 +109,145 @@ def fit_identifier(
     )
 
 
-def _mask_sql(sql: str) -> str:
+#: Opening delimiter of a Postgres dollar-quote: ``$$`` or a tagged ``$name$``.
+_DOLLAR_OPEN = re.compile(r"\$(?:[^\d\W]\w*)?\$")
+
+
+def _is_ident_char(c: str) -> bool:
+    """Identifier-continuation char (Postgres allows ``$`` mid-identifier)."""
+    return c.isalnum() or c in "_$"
+
+
+def _scan_string(sql: str, i: int, *, escapes: bool = False) -> tuple[str, int] | None:
+    """Mask a single-quoted literal at ``i`` (interior blanked, quotes kept), or
+    ``None`` if ``sql[i]`` is not a quote. ``''`` doubling always embeds; ``escapes``
+    additionally honours backslash escapes (Postgres ``E'...'``; MySQL et al.'s
+    ordinary strings — see :meth:`SqlDialect.backslash_escapes_strings`)."""
+    if sql[i] != "'":
+        return None
+    out = ["'"]
+    j, n = i + 1, len(sql)
+    while j < n:
+        ch = sql[j]
+        if escapes and ch == "\\" and j + 1 < n:
+            out.append(_MASK * 2)
+            j += 2
+            continue
+        if ch == "'":
+            if j + 1 < n and sql[j + 1] == "'":
+                out.append(_MASK * 2)
+                j += 2
+                continue
+            out.append("'")
+            return "".join(out), j + 1
+        out.append(_MASK)
+        j += 1
+    return "".join(out), j  # unterminated
+
+
+def _scan_escape_string(sql: str, i: int) -> tuple[str, int] | None:
+    """Mask a Postgres ``E'...'``/``e'...'`` escape-string literal (backslash
+    escapes honoured), or ``None`` if no such literal opens at ``i``."""
+    if sql[i] not in "Ee" or sql[i + 1 : i + 2] != "'":
+        return None
+    if i > 0 and _is_ident_char(sql[i - 1]):
+        return None
+    inner = _scan_string(sql, i + 1, escapes=True)
+    if inner is None:  # unreachable: sql[i + 1] == "'"
+        return None
+    chunk, end = inner
+    return sql[i] + chunk, end
+
+
+def _scan_line_comment(sql: str, i: int) -> tuple[str, int] | None:
+    """Mask a ``-- ...`` line comment (newline stays outside), or ``None``."""
+    if sql[i : i + 2] != "--":
+        return None
+    j, n = i + 2, len(sql)
+    while j < n and sql[j] != "\n":
+        j += 1
+    return "--" + _MASK * (j - i - 2), j
+
+
+def _scan_block_comment(sql: str, i: int, *, nested: bool) -> tuple[str, int] | None:
+    """Mask a ``/* ... */`` block comment, or ``None`` if none opens at ``i``.
+    ``nested`` tracks ``/* */`` depth (Postgres/T-SQL/DuckDB nest); otherwise the
+    first ``*/`` closes (MySQL/BigQuery/standard SQL)."""
+    if sql[i : i + 2] != "/*":
+        return None
+    out = ["/*"]
+    j, n, depth = i + 2, len(sql), 1
+    while j < n and depth > 0:
+        pair = sql[j : j + 2]
+        if nested and pair == "/*":
+            depth += 1
+            out.append(_MASK * 2)
+            j += 2
+        elif pair == "*/":
+            depth -= 1
+            out.append("*/" if depth == 0 else _MASK * 2)
+            j += 2
+        else:
+            out.append(_MASK)
+            j += 1
+    return "".join(out), j
+
+
+def _scan_dollar_quote(sql: str, i: int) -> tuple[str, int] | None:
+    """Mask a Postgres dollar-quoted literal (``$$...$$`` or tagged ``$t$...$t$``),
+    or ``None``. A ``$`` right after an identifier char is not an opener."""
+    if i > 0 and _is_ident_char(sql[i - 1]):
+        return None
+    m = _DOLLAR_OPEN.match(sql, i)
+    if m is None:
+        return None
+    delim = m.group(0)
+    body = m.end()
+    close = sql.find(delim, body)
+    if close == -1:  # unterminated
+        return delim + _MASK * (len(sql) - body), len(sql)
+    return delim + _MASK * (close - body) + delim, close + len(delim)
+
+
+def _scan_span(sql: str, i: int, *, lexis: SqlLexis) -> tuple[str, int] | None:
+    """The masked literal/comment span opening at ``i``, or ``None`` for plain SQL.
+    Which forms are recognised is gated by ``lexis`` (dialect lexical rules)."""
+    esc = _scan_escape_string(sql, i)
+    if esc is not None:
+        return esc
+    if sql[i] == "'":
+        return _scan_string(sql, i, escapes=lexis.backslash_escapes)
+    lc = _scan_line_comment(sql, i)
+    if lc is not None:
+        return lc
+    bc = _scan_block_comment(sql, i, nested=lexis.nested_comments)
+    if bc is not None:
+        return bc
+    if lexis.dollar_quotes:
+        return _scan_dollar_quote(sql, i)
+    return None
+
+
+def _mask_sql(sql: str, *, lexis: SqlLexis = _DEFAULT_LEXIS) -> str:
     """Same-length copy of ``sql`` with string-literal and comment CONTENT blanked.
 
-    Delimiters (quotes, ``--``, ``/* */``, ``$$``) are kept in place; only the
-    bytes between them become :data:`_MASK`. Length and every non-masked offset
-    are preserved, so a match position in the mask is a valid position in ``sql``.
-    Handles ``''`` doubling inside single-quoted literals.
+    Delimiters (quotes, ``E'``, ``--``, ``/* */``, ``$$``/``$tag$``) are kept in
+    place; every other code point becomes one :data:`_MASK` code point. Character
+    length and every non-masked code-point offset are preserved (consumers index
+    by code point, not bytes), so a match position in the mask is a valid position
+    in ``sql``. ``lexis`` gates the dialect-specific forms (ordinary-string
+    backslash escapes, comment nesting, dollar-quoting).
     """
     out: list[str] = []
     i, n = 0, len(sql)
     while i < n:
-        c = sql[i]
-        two = sql[i : i + 2]
-        if c == "'":
-            out.append(c)
+        span = _scan_span(sql, i, lexis=lexis)
+        if span is None:
+            out.append(sql[i])
             i += 1
-            while i < n:
-                if sql[i] == "'":
-                    if i + 1 < n and sql[i + 1] == "'":
-                        out.append(_MASK * 2)
-                        i += 2
-                        continue
-                    out.append("'")
-                    i += 1
-                    break
-                out.append(_MASK)
-                i += 1
-            continue
-        if two in ("--", "/*", "$$"):
-            close = {"--": "\n", "/*": "*/", "$$": "$$"}[two]
-            keep_close = two != "--"  # newline stays outside the comment
-            out.append(two)
-            i += 2
-            while i < n and sql[i : i + len(close)] != close:
-                out.append(_MASK)
-                i += 1
-            if keep_close and i < n:
-                out.append(close)
-                i += len(close)
-            continue
-        out.append(c)
-        i += 1
+        else:
+            chunk, i = span
+            out.append(chunk)
     return "".join(out)
 
 
@@ -164,20 +278,21 @@ def _iter_quoted(
 
 
 def quoted_identifiers(
-    sql: str, *, quote_open: str, quote_close: str,
+    sql: str, *, quote_open: str, quote_close: str, lexis: SqlLexis = _DEFAULT_LEXIS,
 ) -> set[str]:
     """Every distinct quoted identifier in ``sql`` (literals/comments masked out,
     escaped-quote spans skipped) — the set a fitted form must not collide with."""
-    masked = _mask_sql(sql)
+    masked = _mask_sql(sql, lexis=lexis)
     return {
         sql[s:e]
-        for s, e, escaped in _iter_quoted(masked, quote_open, quote_close)
+        for s, e, escaped in _iter_quoted(masked, quote_open=quote_open, quote_close=quote_close)
         if not escaped
     }
 
 
 def find_overlimit_quoted(
     sql: str, *, limit: int | None, quote_open: str, quote_close: str,
+    lexis: SqlLexis = _DEFAULT_LEXIS,
 ) -> list[str]:
     """Distinct quoted identifiers in ``sql`` whose content exceeds ``limit`` bytes.
 
@@ -190,7 +305,7 @@ def find_overlimit_quoted(
     return sorted(
         name
         for name in quoted_identifiers(
-            sql, quote_open=quote_open, quote_close=quote_close,
+            sql, quote_open=quote_open, quote_close=quote_close, lexis=lexis,
         )
         if len(name.encode("utf-8")) > limit
     )
@@ -199,7 +314,9 @@ def find_overlimit_quoted(
 _QUOTE_STYLES = (('"', '"'), ("`", "`"), ("[", "]"))
 
 
-def overlimit_tokens(text: str, *, limit: int | None) -> list[str]:
+def overlimit_tokens(
+    text: str, *, limit: int | None, lexis: SqlLexis = _DEFAULT_LEXIS,
+) -> list[str]:
     """Distinct over-limit identifier-shaped tokens in ``text`` — bare ``\\w+``
     runs and whole quoted spans (any of the three quote styles) alike.
 
@@ -208,7 +325,7 @@ def overlimit_tokens(text: str, *, limit: int | None) -> list[str]:
     ``None`` limit yields nothing (unbounded dialect)."""
     if limit is None:
         return []
-    masked = _mask_sql(text)
+    masked = _mask_sql(text, lexis=lexis)
     out = {
         m.group(0)
         for m in _WORD.finditer(masked)
@@ -218,7 +335,7 @@ def overlimit_tokens(text: str, *, limit: int | None) -> list[str]:
     }
     for quote_open, quote_close in _QUOTE_STYLES:
         out.update(find_overlimit_quoted(
-            text, limit=limit, quote_open=quote_open, quote_close=quote_close,
+            text, limit=limit, quote_open=quote_open, quote_close=quote_close, lexis=lexis,
         ))
     return sorted(out)
 
@@ -228,6 +345,7 @@ def substitute_quoted(
     mapping: Mapping[str, str],
     *,
     quote: Callable[[str], str],
+    lexis: SqlLexis = _DEFAULT_LEXIS,
 ) -> str:
     """Replace each quoted ``canonical`` identifier token with its ``emitted`` form.
 
@@ -242,10 +360,10 @@ def substitute_quoted(
         return sql
     probe = quote("x")
     quote_open, quote_close = probe[0], probe[-1]
-    masked = _mask_sql(sql)
+    masked = _mask_sql(sql, lexis=lexis)
     out: list[str] = []
     pos = 0
-    for start, end, escaped in _iter_quoted(masked, quote_open, quote_close):
+    for start, end, escaped in _iter_quoted(masked, quote_open=quote_open, quote_close=quote_close):
         if escaped:
             continue
         emitted = mapping.get(sql[start:end])
