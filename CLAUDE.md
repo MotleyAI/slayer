@@ -29,7 +29,7 @@ present the exact edit and wait for the OK, even when a broader plan already men
 ```bash
 poetry install -E all                                # install with all extras
 poetry run pytest -m "not integration"               # unit tests (excludes integration)
-poetry run pytest tests/integration/ -m integration  # all integration tests
+poetry run pytest tests/ -m "integration and not metabase_e2e" -n logical --dist loadscope  # integration tests (CI settings — see Testing)
 poetry run pytest tests/test_sql_generator.py -v     # one file
 poetry run slayer serve                              # REST API server
 poetry run slayer mcp                                # MCP server
@@ -49,12 +49,15 @@ poetry run ruff check slayer/ tests/                 # lint
 ## Testing
 
 Integration tests are marked `@pytest.mark.integration` and skip when their DB is
-unavailable; shared fixtures in `tests/conftest.py`.
+unavailable; shared fixtures in `tests/conftest.py`. ALWAYS run the integration
+suite with the CI invocation from `.github/workflows/ci.yml` (`-n logical
+--dist loadscope` + its `--ignore`s) — plain `-n auto` races the notebook
+suite's shared on-disk fixtures.
 
 ```bash
 poetry run pytest -m "not integration"                        # unit only
-poetry run pytest tests/integration/ -m integration           # integration
-poetry run pytest tests/ -m "integration or not integration"  # everything
+poetry run pytest tests/ -m "integration and not metabase_e2e" -n logical --dist loadscope  # integration (CI settings; add ci.yml's --ignores)
+poetry run pytest tests/ -m "integration or not integration" -n logical --dist loadscope  # everything
 poetry run pytest -m metabase_e2e tests/integration/test_metabase_e2e.py  # live Metabase e2e (needs Docker)
 ```
 
