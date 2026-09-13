@@ -557,7 +557,7 @@ def _time_search_children(key: ValueKey) -> List[ValueKey]:
         return [
             a for a in key.args
             if isinstance(
-                a, (TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey),
+                a, (TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey, InKey),
             )
         ]
     if isinstance(key, BetweenKey):

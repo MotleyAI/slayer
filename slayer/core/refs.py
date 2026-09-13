@@ -187,6 +187,8 @@ def _value_key_display(key: Any) -> str:
     if isinstance(key, ScalarCallKey):
         args = ", ".join(_value_key_display(a) for a in key.args)
         return f"{key.name}({args})"
+    if type(key) not in _LEGACY_KEY_SPELLINGS:
+        return str(key)  # raw scalar arg (e.g. Decimal in nullif/round)
     return legacy_key_str(key)
 
 
