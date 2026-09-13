@@ -240,6 +240,25 @@ def _walk_to_one(
     return (current, _OK, hops)
 
 
+def _short_form_probe(
+    *, start: SlayerModel, target: str, models_by_name: dict[str, SlayerModel]
+) -> tuple[SlayerModel | None, str, int]:
+    """Routed fallback for a single-token anchor with no literal edge."""
+    route, status = resolve_route(
+        root=start, target_model=target, models_by_name=models_by_name
+    )
+    if status == "ambiguous":
+        # Two safe routes are genuinely ambiguous; many routes with none
+        # safe leave nothing for determination — unreachable, not ambiguous.
+        reachable = safe_route_reachable(
+            root=start, target_model=target, models_by_name=models_by_name
+        )
+        return (None, _AMBIGUOUS if reachable else _UNREACHABLE, 0)
+    if route is None:
+        return (None, _UNREACHABLE, 0)
+    return _walk_to_one(start=start, tokens=route, models_by_name=models_by_name)
+
+
 def probe_item(*, root: str, item: str, models_by_name: dict[str, SlayerModel]) -> tuple[str, int]:
     """Route ``item``'s dotted path from ``root``; ``(verdict, hops)``.
 
@@ -262,20 +281,8 @@ def probe_item(*, root: str, item: str, models_by_name: dict[str, SlayerModel]) 
         return (_UNREACHABLE, 0)
     terminal, verdict, hops = _walk_to_one(start=start, tokens=path, models_by_name=models_by_name)
     if verdict == _NO_EDGE and len(path) == 1:
-        route, status = resolve_route(
-            root=start, target_model=path[0], models_by_name=models_by_name
-        )
-        if status == "ambiguous":
-            # Two safe routes are genuinely ambiguous; many routes with none
-            # safe leave nothing for determination — unreachable, not ambiguous.
-            reachable = safe_route_reachable(
-                root=start, target_model=path[0], models_by_name=models_by_name
-            )
-            return (_AMBIGUOUS, 0) if reachable else (_UNREACHABLE, 0)
-        if route is None:
-            return (_UNREACHABLE, 0)
-        terminal, verdict, hops = _walk_to_one(
-            start=start, tokens=route, models_by_name=models_by_name
+        terminal, verdict, hops = _short_form_probe(
+            start=start, target=path[0], models_by_name=models_by_name
         )
     if terminal is None:
         return (_UNREACHABLE if verdict == _NO_EDGE else verdict, 0)
@@ -332,7 +339,7 @@ def to_one_reachable(
         model = models_by_name.get(node)
         if model is None:
             continue
-        for target, _token in _to_one_hops(model, models_by_name):
+        for target, _ in _to_one_hops(model, models_by_name):
             if target not in dist:
                 dist[target] = dist[node] + 1
                 queue.append(target)

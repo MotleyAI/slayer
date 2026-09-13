@@ -409,15 +409,14 @@ def assert_partition_key_attributable(
     )
     models_by_name = {m.name: m for m in bundle.referenced_models}
     root = walk_key_path(model=host_m, path=agg_target, bundle=bundle) or host_m
+    host_name = host_m.name if agg_target else None
     attributable = attributable_from_root(
         host_path=hp, target_path=agg_target, root_model=root,
-        models_by_name=models_by_name,
-        host_name=host_m.name if agg_target else None,
+        models_by_name=models_by_name, host_name=host_name,
     )
     reason = None if attributable else broadcast_reason(
         host_path=hp, target_path=agg_target, root_model=root,
-        models_by_name=models_by_name,
-        host_name=host_m.name if agg_target else None,
+        models_by_name=models_by_name, host_name=host_name,
     )
     check_partition_key_attributable(
         label=label, pk=pk, attributable=attributable, reason=reason,
@@ -506,12 +505,12 @@ def crossing_local_root_predicate(
             and window_kwarg_of(k) is None
             and k.agg not in RANKED_AGGREGATIONS
             and host_model is not None
-            and _crosses(k)
+            and _crosses(k, host=host_model)
         )
 
-    def _crosses(k: AggregateKey) -> bool:
+    def _crosses(k: AggregateKey, *, host: SlayerModel) -> bool:
         crossed = local_crossing_input_paths(
-            key=k, bundle=bundle, host_model=host_model,
+            key=k, bundle=bundle, host_model=host,
         )
         return bool(crossed) and not may_inline_crossing_inputs(crossed)
 

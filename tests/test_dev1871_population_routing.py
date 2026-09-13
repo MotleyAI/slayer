@@ -117,10 +117,9 @@ class TestFanningRoute:
             ["firm.title", "desks.id_tag"],
             ["firm.title", "office.desks.id_tag"],
         ):
+            query = SlayerQuery.model_validate({"dimensions": dims})
             with pytest.raises(PopulationInferenceError) as ei:
-                await infer_population(
-                    query=SlayerQuery(dimensions=dims), storage=storage,
-                )
+                await infer_population(query=query, storage=storage)
             assert ei.value.reason is PopulationErrorReason.NO_VIABLE_CANDIDATE
             assert set(ei.value.candidates) == {"desks", "firm", "office"}
 

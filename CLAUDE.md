@@ -29,7 +29,10 @@ present the exact edit and wait for the OK, even when a broader plan already men
 ```bash
 poetry install -E all                                # install with all extras
 poetry run pytest -m "not integration"               # unit tests (excludes integration)
-poetry run pytest tests/ -m "integration and not metabase_e2e" -n logical --dist loadscope  # integration tests (CI settings — see Testing)
+poetry run pytest tests/ -m "integration and not metabase_e2e" -n logical --dist loadscope \
+  --ignore=tests/integration/test_integration_mysql.py \
+  --ignore=tests/integration/test_integration_clickhouse.py \
+  --ignore=tests/integration/test_integration_sqlserver.py   # integration tests (CI settings — see Testing)
 poetry run pytest tests/test_sql_generator.py -v     # one file
 poetry run slayer serve                              # REST API server
 poetry run slayer mcp                                # MCP server
@@ -56,7 +59,10 @@ suite's shared on-disk fixtures.
 
 ```bash
 poetry run pytest -m "not integration"                        # unit only
-poetry run pytest tests/ -m "integration and not metabase_e2e" -n logical --dist loadscope  # integration (CI settings; add ci.yml's --ignores)
+poetry run pytest tests/ -m "integration and not metabase_e2e" -n logical --dist loadscope \
+  --ignore=tests/integration/test_integration_mysql.py \
+  --ignore=tests/integration/test_integration_clickhouse.py \
+  --ignore=tests/integration/test_integration_sqlserver.py   # integration (CI settings)
 poetry run pytest tests/ -m "integration or not integration" -n logical --dist loadscope  # everything
 poetry run pytest -m metabase_e2e tests/integration/test_metabase_e2e.py  # live Metabase e2e (needs Docker)
 ```

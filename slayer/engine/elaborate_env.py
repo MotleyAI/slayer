@@ -47,7 +47,9 @@ from slayer.core.scope import ModelScope, StageSchema
 from slayer.sql.sql_expr import has_window_function
 from slayer.sql.sql_predicate import parse_sql_predicate
 from slayer.ir.planned import MaskTyping, ModeAFilter
-from slayer.ir.elaborated import ConjunctTyping, ElaboratedQuery, ExpressionEntry, Term
+from slayer.ir.elaborated import (
+    ConjunctTyping, ElaboratedQuery, ExpressionEntry, PositionVerdict, Term,
+)
 from slayer.ir.bound import BoundFilter, bound_filter_from_key
 from slayer.ir.prebound import PreboundQuery, position_typing_context
 from slayer.ir.terms import (
@@ -350,6 +352,38 @@ def validate_model_filter(
     return ModeAFilter(id=f"mf{idx}", text=mf)
 
 
+def _aggregate_terms(
+    roots: List[ValueKey], *, home: DatasetT, query_grain: Grain,
+) -> Tuple[Dict[ValueKey, Term], List[TransformKey]]:
+    """(aggregate terms, transform keys seen) across ``roots``."""
+    terms: Dict[ValueKey, Term] = {}
+    transforms: List[TransformKey] = []
+    for root in roots:
+        for k in walk_value_keys(root):
+            if isinstance(k, AggregateKey) and k not in terms:
+                grain = (
+                    k.partition_keys if k.partition_keys is not None
+                    else query_grain
+                )
+                terms[k] = Aggregate(home=home, recipe=k, grain=grain)
+            elif isinstance(k, TransformKey):
+                transforms.append(k)
+    return terms, transforms
+
+
+def _add_transform_terms(
+    *, terms: Dict[ValueKey, Term], transforms: List[TransformKey],
+) -> None:
+    for tk in transforms:
+        if tk in terms or not isinstance(tk.input, AggregateKey):
+            continue
+        if tk.op in TIME_TRANSFORMS and tk.time_key is None:
+            continue
+        inner = terms.get(tk.input)
+        if isinstance(inner, Aggregate):
+            terms[tk] = Transform(input=inner, recipe=tk)
+
+
 def _terms_for(
     roots: List[ValueKey], *, home: Optional[DatasetT], query_grain: Grain,
 ) -> Dict[ValueKey, Term]:
@@ -359,38 +393,26 @@ def _terms_for(
     a transform term exists where its input is an aggregate with a term (the
     checker owns rejecting the rest — inert here).
     """
-    terms: Dict[ValueKey, Term] = {}
     if home is None:
-        return terms
-    transforms: List[TransformKey] = []
-    for root in roots:
-        for k in walk_value_keys(root):
-            if isinstance(k, AggregateKey) and k not in terms:
-                terms[k] = Aggregate(
-                    home=home,
-                    recipe=k,
-                    grain=(
-                        k.partition_keys if k.partition_keys is not None
-                        else query_grain
-                    ),
-                )
-            elif isinstance(k, TransformKey):
-                transforms.append(k)
-    for tk in transforms:
-        if tk in terms or not isinstance(tk.input, AggregateKey):
-            continue
-        if tk.op in TIME_TRANSFORMS and tk.time_key is None:
-            continue
-        inner = terms.get(tk.input)
-        if isinstance(inner, Aggregate):
-            terms[tk] = Transform(input=inner, recipe=tk)
+        return {}
+    terms, transforms = _aggregate_terms(
+        roots, home=home, query_grain=query_grain,
+    )
+    _add_transform_terms(terms=terms, transforms=transforms)
     return terms
+
+
+_FIELD: PositionVerdict = "field"
+_MEASURE: PositionVerdict = "measure"
+_VERDICT_OF: Dict[MaskTyping, PositionVerdict] = {
+    MaskTyping.FIELD: _FIELD, MaskTyping.MEASURE: _MEASURE,
+}
 
 
 def _entry(
     root: ValueKey,
     *,
-    verdict: str,
+    verdict: PositionVerdict,
     home: Optional[DatasetT],
     query_grain: Grain,
     terms: Dict[ValueKey, Term],
@@ -526,34 +548,36 @@ def check_time_dimension_date_range(*, full_name: str, date_range) -> None:
         )
 
 
-def _find_unresolved_time_needing_op(key: ValueKey) -> Optional[str]:
+def _time_search_children(key: ValueKey) -> List[ValueKey]:
     if isinstance(key, TransformKey):
-        if key.op in TIME_TRANSFORMS and key.time_key is None:
-            return key.op
-        return _find_unresolved_time_needing_op(key.input)
+        return [key.input]
     if isinstance(key, ArithmeticKey):
-        for o in key.operands:
-            found = _find_unresolved_time_needing_op(o)
-            if found:
-                return found
-        return None
+        return list(key.operands)
     if isinstance(key, ScalarCallKey):
-        for a in key.args:
+        return [
+            a for a in key.args
             if isinstance(
                 a, (TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey),
-            ):
-                found = _find_unresolved_time_needing_op(a)
-                if found:
-                    return found
-        return None
+            )
+        ]
     if isinstance(key, BetweenKey):
-        for k in (key.column, key.low, key.high):
-            found = _find_unresolved_time_needing_op(k)
-            if found:
-                return found
-        return None
+        return [key.column, key.low, key.high]
     if isinstance(key, InKey):
-        return _find_unresolved_time_needing_op(key.column)
+        return [key.column]
+    return []
+
+
+def _find_unresolved_time_needing_op(key: ValueKey) -> Optional[str]:
+    if (
+        isinstance(key, TransformKey)
+        and key.op in TIME_TRANSFORMS
+        and key.time_key is None
+    ):
+        return key.op
+    for child in _time_search_children(key):
+        found = _find_unresolved_time_needing_op(child)
+        if found:
+            return found
     return None
 
 
@@ -924,16 +948,18 @@ def build_environment(
         home=home, query_grain=query_grain,
     )
 
-    def _typed_verdict(root: ValueKey) -> str:
-        return type_position_conjunct(
+    def _typed_verdict(root: ValueKey) -> PositionVerdict:
+        return _VERDICT_OF[type_position_conjunct(
             root,
             dim_keys=dim_keys,
             row_agg_set=row_agg_set,
             has_measure_position=prebound.distinct_dimension_values is not False,
             position="order",
-        ).typing.value
+        ).typing]
 
-    def _entries(roots: List[ValueKey], verdicts: List[str]) -> tuple:
+    def _entries(
+        roots: List[ValueKey], verdicts: List[PositionVerdict],
+    ) -> tuple:
         return tuple(
             _entry(
                 root, verdict=v, home=home,
@@ -943,10 +969,10 @@ def build_environment(
         )
 
     return ElaboratedQuery(
-        dimensions=_entries(dim_roots, ["field"] * len(dim_roots)),
-        measures=_entries(measure_roots, ["measure"] * len(measure_roots)),
+        dimensions=_entries(dim_roots, [_FIELD] * len(dim_roots)),
+        measures=_entries(measure_roots, [_MEASURE] * len(measure_roots)),
         filters=_entries(
-            filter_roots, [ct.typing.value for ct in filter_typings],
+            filter_roots, [_VERDICT_OF[ct.typing] for ct in filter_typings],
         ),
         order=_entries(order_roots, [_typed_verdict(r) for r in order_roots]),
         terms=terms,

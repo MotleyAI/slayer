@@ -134,7 +134,7 @@ def _legacy_value_spelling(value: Any) -> str:
             return "frozenset()"
         return (
             "frozenset({"
-            + ", ".join(_legacy_value_spelling(x) for x in value)
+            + ", ".join(sorted(_legacy_value_spelling(x) for x in value))
             + "})"
         )
     return repr(value)

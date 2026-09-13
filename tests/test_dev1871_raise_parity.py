@@ -2,9 +2,10 @@
 
 Every raise in the planner modules must match exactly one ledger row with a
 byte-identical collapsed message (``…`` = interpolated segment), and every row
-must be realized by exactly ``sites`` raises in the module it names. A guard
-relocation updates the row's module in lockstep; changing an exception type or
-any literal message byte breaks parity here.
+must be realized by exactly ``sites`` raises in the module and function it
+names. A guard relocation updates the row's module/function anchor in
+lockstep; changing an exception type or any literal message byte breaks
+parity here.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ _ENGINE_DIR = Path(slayer.engine.__file__).parent
 PLACEHOLDER = "…"
 
 
-def _collapsed(exc: ast.expr | None, src: str) -> str:
+def _collapsed(exc: ast.expr | None) -> str:
     if not isinstance(exc, ast.Call) or not exc.args:
         return ""
     arg = exc.args[0]
@@ -44,8 +45,8 @@ def _exc_name(exc: ast.expr | None) -> str:
     return getattr(target, "id", getattr(target, "attr", "?"))
 
 
-def _raise_keys(module: str) -> list[tuple[str, str]]:
-    """(exception type, collapsed message or @innermost-function) per raise."""
+def _raise_keys(module: str) -> list[tuple[str, str, str]]:
+    """(exception type, innermost function, collapsed message) per raise."""
     src = (_ENGINE_DIR / module).read_text()
     tree = ast.parse(src)
     spans = [
@@ -61,16 +62,16 @@ def _raise_keys(module: str) -> list[tuple[str, str]]:
     out = []
     for n in ast.walk(tree):
         if isinstance(n, ast.Raise):
-            msg = _collapsed(n.exc, src)
             out.append((
                 _exc_name(n.exc),
-                msg if msg else "@" + innermost(n.lineno),
+                innermost(n.lineno),
+                _collapsed(n.exc),
             ))
     return out
 
 
-def _row_key(row: LedgerRow) -> tuple[str, str]:
-    return (row.exc, row.message if row.message else "@" + row.function)
+def _row_key(row: LedgerRow) -> tuple[str, str, str]:
+    return (row.exc, row.function, row.message)
 
 
 # Scanned unconditionally (not derived from ROWS): a raise added to a module
@@ -127,3 +128,8 @@ class TestLedgerParity:
             assert any(f in row.message for f in fragments), (
                 f"deferral row not in DEFERRAL_SITES: {row.message[:60]}"
             )
+        for row in ROWS:
+            if row.exc == "NotImplementedError" and any(
+                f in row.message for f in fragments
+            ):
+                assert row.deferral, f"pinned deferral site not marked: {row}"

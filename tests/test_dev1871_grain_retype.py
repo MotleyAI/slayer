@@ -44,12 +44,14 @@ class TestGrainTypedPartitionKeys:
         assert key.partition_keys == Grain.of({_COL_A})
 
     def test_raw_set_likes_are_rejected(self) -> None:
+        raw_a = frozenset({_COL_A})
+        raw_b = frozenset({_COL_B})
         with pytest.raises(ValueError):
-            _agg(partition_keys=frozenset({_COL_A}))
+            _agg(partition_keys=raw_a)
         with pytest.raises(ValueError):
             _agg(partition_keys=[_COL_A])
         with pytest.raises(ValueError):
-            TransformKey(op="rank", input=_COL_A, partition_keys=frozenset({_COL_B}))
+            TransformKey(op="rank", input=_COL_A, partition_keys=raw_b)  # pyright: ignore[reportArgumentType] — the raw-set rejection under test
 
     def test_none_stays_distinct_from_explicit_scalar(self) -> None:
         inherited = _agg(partition_keys=None)
