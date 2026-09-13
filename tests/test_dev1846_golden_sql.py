@@ -108,14 +108,8 @@ def _cases() -> dict:
         "cp/change_gt_anchor": _q(measures=[
             {"formula": "consecutive_periods(change(revenue:sum) > 0)", "name": "streak"},
         ]),
-        # Still fail-closed — records the raise (must stay a ValueError post-lift).
-        "reject/ts_nested_transform": _q(measures=[
-            {"formula": "time_shift(cumsum(revenue:sum), -1)", "name": "prev"},
-        ]),
-        "reject/ts_cross_model_leaf": _q(measures=[
-            {"formula": "time_shift(revenue:sum + regions.factor:sum, -1)",
-             "name": "prev"},
-        ]),
+        # Still fail-closed — records the raise. The DEV-1868 series-regime
+        # lifts moved the ts_* shapes to tests/test_dev1868_golden_sql.py.
         "reject/cp_boolean_numeric": _q(measures=[
             {"formula": "consecutive_periods((revenue:sum > 0) + (cost:sum > 0))",
              "name": "x"},

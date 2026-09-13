@@ -49,18 +49,6 @@ class TestCrossModelPartitionedStillGuarded:
             await gen(query)
         assert re.search(r"(?i)cross-model|partition", str(ei.value))
         assert "__regroup__" not in str(ei.value)
-
-    async def test_cross_model_partitioned_inside_transform(self) -> None:
-        query = q(
-            dimensions=["customers.tier"], time_dimensions=month_td(),
-            measures=[ModelMeasure(
-                formula="cumsum(customers.spend:sum(partition_by=customers.tier))",
-                name="c",
-            )],
-        )
-        with pytest.raises((NotImplementedError, ValueError)) as ei:
-            await gen(query)
-        assert re.search(r"(?i)cross-model|partition", str(ei.value))
         assert "__regroup__" not in str(ei.value)
 
     async def test_filter_on_cross_model_partitioned_now_compiles(self) -> None:

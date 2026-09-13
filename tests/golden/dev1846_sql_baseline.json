@@ -99,46 +99,6 @@
     "error": "ValueError",
     "message": "'consecutive_periods' cannot use a string-valued predicate (lower(...)): a string has no truthiness. Compare it explicitly (e.g. `length(...) > 0`) to form a predicate."
   },
-  "reject/ts_cross_model_leaf::bigquery": {
-    "error": "ValueError",
-    "message": "'time_shift' does not support a cross-model aggregate leaf inside a composite input; compute it in an earlier stage of a multi-stage `source_queries` model and reference its output here."
-  },
-  "reject/ts_cross_model_leaf::duckdb": {
-    "error": "ValueError",
-    "message": "'time_shift' does not support a cross-model aggregate leaf inside a composite input; compute it in an earlier stage of a multi-stage `source_queries` model and reference its output here."
-  },
-  "reject/ts_cross_model_leaf::postgres": {
-    "error": "ValueError",
-    "message": "'time_shift' does not support a cross-model aggregate leaf inside a composite input; compute it in an earlier stage of a multi-stage `source_queries` model and reference its output here."
-  },
-  "reject/ts_cross_model_leaf::sqlite": {
-    "error": "ValueError",
-    "message": "'time_shift' does not support a cross-model aggregate leaf inside a composite input; compute it in an earlier stage of a multi-stage `source_queries` model and reference its output here."
-  },
-  "reject/ts_cross_model_leaf::tsql": {
-    "error": "ValueError",
-    "message": "'time_shift' does not support a cross-model aggregate leaf inside a composite input; compute it in an earlier stage of a multi-stage `source_queries` model and reference its output here."
-  },
-  "reject/ts_nested_transform::bigquery": {
-    "error": "ValueError",
-    "message": "Nesting a transform inside 'time_shift' is not supported. Compute the inner transform in an earlier stage of a multi-stage `source_queries` model and reference its output in this stage."
-  },
-  "reject/ts_nested_transform::duckdb": {
-    "error": "ValueError",
-    "message": "Nesting a transform inside 'time_shift' is not supported. Compute the inner transform in an earlier stage of a multi-stage `source_queries` model and reference its output in this stage."
-  },
-  "reject/ts_nested_transform::postgres": {
-    "error": "ValueError",
-    "message": "Nesting a transform inside 'time_shift' is not supported. Compute the inner transform in an earlier stage of a multi-stage `source_queries` model and reference its output in this stage."
-  },
-  "reject/ts_nested_transform::sqlite": {
-    "error": "ValueError",
-    "message": "Nesting a transform inside 'time_shift' is not supported. Compute the inner transform in an earlier stage of a multi-stage `source_queries` model and reference its output in this stage."
-  },
-  "reject/ts_nested_transform::tsql": {
-    "error": "ValueError",
-    "message": "Nesting a transform inside 'time_shift' is not supported. Compute the inner transform in an earlier stage of a multi-stage `source_queries` model and reference its output in this stage."
-  },
   "ts/change_pct_ratio::bigquery": "SELECT\n    `sales___store`,\n    `sales___ordered_at`,\n    `sales___pct`\nFROM (\nWITH base AS (\n  SELECT\n    sales.store AS `sales___store`,\n    DATE_TRUNC(sales.ordered_at, MONTH) AS `sales___ordered_at`,\n    SUM(sales.revenue) AS `sales___revenue_sum`,\n    COUNT(*) AS `sales____count`\n  FROM sales AS sales\n  GROUP BY\n    sales.store,\n    DATE_TRUNC(sales.ordered_at, MONTH)\n), shifted__time_shift_inner AS (\n  SELECT\n    DATE_TRUNC(sales.ordered_at, MONTH) + INTERVAL 1 MONTH AS `sales___ordered_at`,\n    sales.store AS `sales___store`,\n    SUM(sales.revenue) / COUNT(*) AS `_time_shift_inner__ts`\n  FROM sales AS sales\n  GROUP BY\n    DATE_TRUNC(sales.ordered_at, MONTH) + INTERVAL 1 MONTH,\n    sales.store\n), sjoin__time_shift_inner AS (\n  SELECT\n    base.`sales___store`,\n    base.`sales___ordered_at`,\n    base.`sales___revenue_sum`,\n    base.`sales____count`,\n    shifted__time_shift_inner.`_time_shift_inner__ts` AS `sales____time_shift_inner`\n  FROM base\n  LEFT JOIN shifted__time_shift_inner\n    ON base.`sales___ordered_at` IS NOT DISTINCT FROM shifted__time_shift_inner.`sales___ordered_at`\n    AND base.`sales___store` IS NOT DISTINCT FROM shifted__time_shift_inner.`sales___store`\n), step1 AS (\n  SELECT\n    `sales___store`,\n    `sales___ordered_at`,\n    `sales___revenue_sum`,\n    `sales____count`,\n    `sales____time_shift_inner`,\n    (\n      `sales___revenue_sum` / `sales____count` - `sales____time_shift_inner`\n    ) / NULLIF(`sales____time_shift_inner`, 0) AS `sales___pct`\n  FROM sjoin__time_shift_inner\n)\nSELECT\n  `sales___store`,\n  `sales___ordered_at`,\n  `sales___revenue_sum`,\n  `sales____count`,\n  `sales____time_shift_inner`,\n  `sales___pct`\nFROM step1\n) AS _outer",
   "ts/change_pct_ratio::duckdb": "SELECT\n    \"sales.store\",\n    \"sales.ordered_at\",\n    \"sales.pct\"\nFROM (\nWITH base AS (\n  SELECT\n    sales.store AS \"sales.store\",\n    DATE_TRUNC('MONTH', sales.ordered_at) AS \"sales.ordered_at\",\n    SUM(sales.revenue) AS \"sales.revenue_sum\",\n    COUNT(*) AS \"sales._count\"\n  FROM sales AS sales\n  GROUP BY\n    sales.store,\n    DATE_TRUNC('MONTH', sales.ordered_at)\n), shifted__time_shift_inner AS (\n  SELECT\n    DATE_TRUNC('MONTH', sales.ordered_at) + INTERVAL 1 MONTH AS \"sales.ordered_at\",\n    sales.store AS \"sales.store\",\n    SUM(sales.revenue) / COUNT(*) AS \"_time_shift_inner__ts\"\n  FROM sales AS sales\n  GROUP BY\n    DATE_TRUNC('MONTH', sales.ordered_at) + INTERVAL 1 MONTH,\n    sales.store\n), sjoin__time_shift_inner AS (\n  SELECT\n    base.\"sales.store\",\n    base.\"sales.ordered_at\",\n    base.\"sales.revenue_sum\",\n    base.\"sales._count\",\n    shifted__time_shift_inner.\"_time_shift_inner__ts\" AS \"sales._time_shift_inner\"\n  FROM base\n  LEFT JOIN shifted__time_shift_inner\n    ON base.\"sales.ordered_at\" IS NOT DISTINCT FROM shifted__time_shift_inner.\"sales.ordered_at\"\n    AND base.\"sales.store\" IS NOT DISTINCT FROM shifted__time_shift_inner.\"sales.store\"\n), step1 AS (\n  SELECT\n    \"sales.store\",\n    \"sales.ordered_at\",\n    \"sales.revenue_sum\",\n    \"sales._count\",\n    \"sales._time_shift_inner\",\n    (\n      \"sales.revenue_sum\" / \"sales._count\" - \"sales._time_shift_inner\"\n    ) / NULLIF(\"sales._time_shift_inner\", 0) AS \"sales.pct\"\n  FROM sjoin__time_shift_inner\n)\nSELECT\n  \"sales.store\",\n  \"sales.ordered_at\",\n  \"sales.revenue_sum\",\n  \"sales._count\",\n  \"sales._time_shift_inner\",\n  \"sales.pct\"\nFROM step1\n) AS _outer",
   "ts/change_pct_ratio::postgres": "SELECT\n    \"sales.store\",\n    \"sales.ordered_at\",\n    \"sales.pct\"\nFROM (\nWITH base AS (\n  SELECT\n    sales.store AS \"sales.store\",\n    DATE_TRUNC('MONTH', sales.ordered_at) AS \"sales.ordered_at\",\n    SUM(sales.revenue) AS \"sales.revenue_sum\",\n    COUNT(*) AS \"sales._count\"\n  FROM sales AS sales\n  GROUP BY\n    sales.store,\n    DATE_TRUNC('MONTH', sales.ordered_at)\n), shifted__time_shift_inner AS (\n  SELECT\n    DATE_TRUNC('MONTH', sales.ordered_at) + INTERVAL '1 MONTH' AS \"sales.ordered_at\",\n    sales.store AS \"sales.store\",\n    CAST(SUM(sales.revenue) AS DOUBLE PRECISION) / COUNT(*) AS \"_time_shift_inner__ts\"\n  FROM sales AS sales\n  GROUP BY\n    DATE_TRUNC('MONTH', sales.ordered_at) + INTERVAL '1 MONTH',\n    sales.store\n), sjoin__time_shift_inner AS (\n  SELECT\n    base.\"sales.store\",\n    base.\"sales.ordered_at\",\n    base.\"sales.revenue_sum\",\n    base.\"sales._count\",\n    shifted__time_shift_inner.\"_time_shift_inner__ts\" AS \"sales._time_shift_inner\"\n  FROM base\n  LEFT JOIN shifted__time_shift_inner\n    ON base.\"sales.ordered_at\" IS NOT DISTINCT FROM shifted__time_shift_inner.\"sales.ordered_at\"\n    AND base.\"sales.store\" IS NOT DISTINCT FROM shifted__time_shift_inner.\"sales.store\"\n), step1 AS (\n  SELECT\n    \"sales.store\",\n    \"sales.ordered_at\",\n    \"sales.revenue_sum\",\n    \"sales._count\",\n    \"sales._time_shift_inner\",\n    CAST((\n      CAST(\"sales.revenue_sum\" AS DOUBLE PRECISION) / \"sales._count\" - \"sales._time_shift_inner\"\n    ) AS DOUBLE PRECISION) / NULLIF(\"sales._time_shift_inner\", 0) AS \"sales.pct\"\n  FROM sjoin__time_shift_inner\n)\nSELECT\n  \"sales.store\",\n  \"sales.ordered_at\",\n  \"sales.revenue_sum\",\n  \"sales._count\",\n  \"sales._time_shift_inner\",\n  \"sales.pct\"\nFROM step1\n) AS _outer",

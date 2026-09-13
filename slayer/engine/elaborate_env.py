@@ -7,7 +7,7 @@ algebra type error raises here, each invoked at its family's original checkpoint
 from __future__ import annotations
 
 from typing import (
-    AbstractSet, Callable, Dict, List, NoReturn, Optional,
+    Callable, Dict, List, NoReturn, Optional,
     Sequence, Tuple, Union,
 )
 
@@ -24,6 +24,7 @@ from slayer.core.formula import TIME_TRANSFORMS
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.keys import (
     AggregateKey,
+    is_boolean_shaped,
     is_cross_model_agg,
     is_local_combined_regroup_ref,
     is_local_partitioned_agg,
@@ -462,12 +463,21 @@ def check_computed_dimension(*, name, bound, distinct_dimension_values) -> None:
         inner_aggs = [
             k for k in walk_value_keys(tk.input) if isinstance(k, AggregateKey)
         ]
-        # A transform is legal in a dimension only over an explicitly-grained aggregate.
-        if not inner_aggs or any(a.partition_keys is None for a in inner_aggs):
-            raise NotImplementedError(
-                f"A transform inside computed dimension {name!r} must wrap an "
-                f"explicitly-grained aggregate — declare partition_by= on the "
-                f"aggregate it transforms (DEV-1868)."
+        # Two permanent type rules (closure-axiom typed residue), not deferrals.
+        if not inner_aggs:
+            raise ValueError(
+                f"The transform '{tk.op}' inside computed dimension {name!r} "
+                f"must take an aggregate input — a transform acts on "
+                f"aggregates, e.g. {tk.op}(amount:sum(partition_by=city))."
+            )
+        ungrained = [a for a in inner_aggs if a.partition_keys is None]
+        if ungrained:
+            raise ValueError(
+                f"The aggregate '{dotted_key_display(ungrained[0].source)}"
+                f":{ungrained[0].agg}' inside the transform in computed "
+                f"dimension {name!r} must declare partition_by= explicitly: "
+                f"the ungrained default (the query's own dimensions) would "
+                f"include the dimension being defined."
             )
     aggs = [k for k in all_keys if isinstance(k, AggregateKey)]
     if not aggs:
@@ -609,48 +619,53 @@ def check_windowed_key_supported(*, key: AggregateKey, window_val) -> None:
     parse_window_duration(window_val)  # raises on empty / malformed
 
 
-def _partitioned_agg_keys(
-    vk: ValueKey, *, exclude: AbstractSet[AggregateKey] = frozenset(),
-) -> list:
-    return [
-        k for k in walk_value_keys(vk)
-        if isinstance(k, AggregateKey)
-        and k.partition_keys is not None
-        and k not in exclude
-    ]
+def _row_level_leaf_in(key: ValueKey) -> bool:
+    """A row-level (non-aggregate) leaf anywhere in a composite/predicate tree;
+    aggregates are opaque, a transform is checked through its input (its
+    time/partition keys are series parameters, not leaves)."""
+    if isinstance(key, AggregateKey):
+        return False
+    if isinstance(key, TransformKey):
+        return _row_level_leaf_in(key.input)
+    if isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+        return True
+    return any(_row_level_leaf_in(c) for c in key.children())
 
 
-def check_partitioned_measures(
-    *, measure_vks: list, filter_vks: list, order_vks: list,
-    exclude: AbstractSet[AggregateKey] = frozenset(),
-) -> None:
-    """Reject still-deferred cross-model partition_by shapes (DEV-1871 G11, was ``_guard_partitioned_measures``): first/last, nested-in-transform; computed-dimension aggregates excluded."""
-    def _part(vk: ValueKey) -> list:
-        return _partitioned_agg_keys(vk, exclude=exclude)
+_SHIFT_FAMILY_OPS = frozenset({"time_shift", "change", "change_pct"})
 
-    def _cross_model(k: AggregateKey) -> bool:
-        return bool(getattr(k.source, "path", ()))
 
-    all_vks = [*measure_vks, *filter_vks, *order_vks]
-    part_keys = [k for vk in all_vks for k in _part(vk)]
-    if not part_keys:
-        return
-    if any(k.agg in ("first", "last") and _cross_model(k) for k in part_keys):
-        raise NotImplementedError(
-            "partition_by on a cross-model first/last aggregation is not yet "
-            "supported (DEV-1868); the aggregate must be local to the query's "
-            "source."
+def _check_shift_family_key(k: TransformKey) -> None:
+    inner = k.input
+    if k.op != "time_shift" and is_boolean_shaped(inner):
+        raise ValueError(
+            f"'{k.op}' cannot consume a boolean-shaped predicate: its "
+            f"desugared arithmetic subtracts the shifted series, and "
+            f"subtraction over truth values is undefined. Shift the "
+            f"predicate itself with time_shift, or compare the shifted "
+            f"values instead."
         )
-    # A cross-model partitioned aggregate nested in a transform is never desugared, so fail closed.
-    if any(
-        isinstance(tk, TransformKey) and any(_cross_model(k) for k in _part(tk.input))
-        for vk in all_vks for tk in walk_value_keys(vk)
-    ):
-        raise NotImplementedError(
-            "A cross-model partition_by aggregate nested inside a transform is "
-            "not yet supported (DEV-1868); the partitioned aggregate must be "
-            "local to the query's source."
+    if isinstance(inner, (AggregateKey, ColumnKey, ColumnSqlKey)):
+        return  # bare-leaf regimes
+    if _row_level_leaf_in(inner):
+        raise ValueError(
+            f"'{k.op}' does not support a row-level (non-aggregate) "
+            f"leaf inside a composite or nested-transform input; every "
+            f"leaf must be an aggregate. Compute the row-level value "
+            f"in an earlier stage of a multi-stage `source_queries` "
+            f"model and reference its aggregate here."
         )
+
+
+def check_time_shift_input(*, roots) -> None:
+    """time_shift-family input typing (engine P9, was the generator's
+    validation gate), on the pre-lowering trees: no row-level leaf inside a
+    composite/predicate input, and ``change``/``change_pct`` consume no boolean
+    series (their desugared arithmetic has no defined truth-value operands)."""
+    for root in roots:
+        for k in walk_value_keys(root):
+            if isinstance(k, TransformKey) and k.op in _SHIFT_FAMILY_OPS:
+                _check_shift_family_key(k)
 
 
 def check_partition_key_resolves(

@@ -1099,6 +1099,24 @@ def is_local_combined_regroup_ref(
     )
 
 
+PREDICATE_COMPARISON_OPS = frozenset(
+    {"==", "=", "!=", "<>", "<", "<=", ">", ">=", "is", "is not"}
+)
+BOOL_CONNECTIVE_OPS = frozenset({"and", "or", "not"})
+
+
+def is_boolean_shaped(key: "ValueKey") -> bool:
+    """Whether ``key`` renders as a SQL predicate (truth value) rather than a
+    numeric/text value: a comparison, a null test, BETWEEN, IN, or an
+    ``and`` / ``or`` / ``not`` connective."""
+    if isinstance(key, ArithmeticKey):
+        return (
+            key.op in PREDICATE_COMPARISON_OPS
+            or key.op in BOOL_CONNECTIVE_OPS
+        )
+    return isinstance(key, (BetweenKey, InKey))
+
+
 def split_top_level_and(vk: ValueKey) -> List[ValueKey]:
     """Top-level AND conjuncts; only ``and`` splits (OR/comparisons stay whole)."""
     if isinstance(vk, ArithmeticKey) and vk.op == "and":

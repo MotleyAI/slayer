@@ -32,7 +32,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 from slayer.core.errors import AggregationNotAllowedError, SlayerError
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
-from slayer.core.keys import KIND_POLICY, REGROUP_LEAF_PREFIX, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, column_leaf, column_path, substitute_value_keys, walk_value_keys
+from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, column_leaf, column_path, is_boolean_shaped, substitute_value_keys, walk_value_keys
 from slayer.core.join_walker import resolve_hop, terminal_model
 from slayer.core.models import Aggregation
 from slayer.core.refs import (
@@ -590,13 +590,8 @@ def _first_bare_column_name(key) -> Optional[str]:
     return None
 
 
-# --- Transform-input shape classification, shared by the hoisted validation
-# gate and the consecutive_periods emitter. ---
-
-_PREDICATE_COMPARISON_OPS = frozenset(
-    {"==", "=", "!=", "<>", "<", "<=", ">", ">=", "is", "is not"}
-)
-_BOOL_CONNECTIVE_OPS = frozenset({"and", "or", "not"})
+# --- Transform-input shape classification, shared by the series-regime
+# time_shift selector and the consecutive_periods emitter. ---
 
 # SCALAR_PASSTHROUGH members whose result is a string (no defined truthiness);
 # length / instr return numbers and are intentionally excluded.
@@ -610,20 +605,6 @@ _COMPOUND_VALUE_KEYS = (
     ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey,
     AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey, InKey,
 )
-
-
-def _is_boolean_shaped(key) -> bool:
-    """Whether ``key`` renders as a SQL predicate (truth value) rather than a
-    numeric/text value: a comparison, a null test (``is`` / ``is not``),
-    BETWEEN, IN, or an ``and`` / ``or`` / ``not`` connective. Recursive by
-    construction — a connective's operands are themselves boolean-shaped
-    (enforced by the typing contract)."""
-    if isinstance(key, ArithmeticKey):
-        return (
-            key.op in _PREDICATE_COMPARISON_OPS
-            or key.op in _BOOL_CONNECTIVE_OPS
-        )
-    return isinstance(key, (BetweenKey, InKey))
 
 
 def _regroup_placeholder_map(planned_query):
@@ -700,47 +681,21 @@ def _classify_time_shift_composite(key, *, placeholder_to_original) -> Tuple[boo
     return tuple(flags)  # type: ignore[return-value]
 
 
-def _nested_transform_msg(op: str) -> str:
-    return (
-        f"Nesting a transform inside {op!r} is not supported. Compute the inner "
-        f"transform in an earlier stage of a multi-stage `source_queries` model "
-        f"and reference its output in this stage."
-    )
-
-
-def _validate_time_shift_input(*, op: str, inner, placeholder_to_original) -> None:
-    """Fail closed on an unsupported ``time_shift`` input shape. Only a bare
-    aggregate/column leaf or an aggregate-only composite passes; a predicate
-    (IN / BETWEEN) or other non-leaf raises rather than leaking a RuntimeError."""
-    if isinstance(inner, TransformKey):
-        raise ValueError(_nested_transform_msg(op))
-    if not isinstance(inner, (ArithmeticKey, ScalarCallKey)):
-        if isinstance(inner, (AggregateKey, ColumnKey, ColumnSqlKey)):
-            return  # bare aggregate → re-aggregate; column → read-and-rebucket
-        raise ValueError(
-            f"{op!r} does not support a {type(inner).__name__} input; only a bare "
-            f"aggregate or column leaf, or an aggregate-only composite, is "
-            f"supported. Compute this value in an earlier stage of a multi-stage "
-            f"`source_queries` model and reference its aggregate here."
+def _time_shift_series_mode(inner, *, placeholder_to_original) -> bool:
+    """Whether a ``time_shift`` input shifts its materialised series (D4): a
+    nested transform, a predicate root, or a composite containing a transform
+    or a cross-model aggregate leaf. Bare leaves and all-local aggregate
+    composites keep the re-aggregation regime byte-identically."""
+    if isinstance(inner, TransformKey) or is_boolean_shaped(inner):
+        return True
+    if isinstance(inner, (ArithmeticKey, ScalarCallKey)):
+        has_transform, _has_row_leaf, has_cross_model = (
+            _classify_time_shift_composite(
+                inner, placeholder_to_original=placeholder_to_original,
+            )
         )
-    has_transform, has_row_leaf, has_cross_model = _classify_time_shift_composite(
-        inner, placeholder_to_original=placeholder_to_original,
-    )
-    if has_transform:
-        raise ValueError(_nested_transform_msg(op))
-    if has_row_leaf:
-        raise ValueError(
-            f"{op!r} does not support a row-level (non-aggregate) leaf inside a "
-            f"composite input; every leaf must be an aggregate. Compute the "
-            f"row-level value in an earlier stage of a multi-stage "
-            f"`source_queries` model and reference its aggregate here."
-        )
-    if has_cross_model:
-        raise ValueError(
-            f"{op!r} does not support a cross-model aggregate leaf inside a "
-            f"composite input; compute it in an earlier stage of a multi-stage "
-            f"`source_queries` model and reference its output here."
-        )
+        return has_transform or has_cross_model
+    return False
 
 
 def _validate_consecutive_periods_input(*, op: str, inner) -> None:
@@ -802,10 +757,10 @@ def _walk_cp_predicate(*, op: str, key, expect: str) -> None:
     (must be boolean-shaped), 'value' (must not be), or 'either' (predicate top
     level / iif condition)."""
     _assert_cp_shape(
-        op=op, key=key, expect=expect, node_is_bool=_is_boolean_shaped(key),
+        op=op, key=key, expect=expect, node_is_bool=is_boolean_shaped(key),
     )
     if isinstance(key, ArithmeticKey):
-        child_expect = "bool" if key.op in _BOOL_CONNECTIVE_OPS else "value"
+        child_expect = "bool" if key.op in BOOL_CONNECTIVE_OPS else "value"
         for o in key.operands:
             _walk_cp_predicate(op=op, key=o, expect=child_expect)
     elif isinstance(key, ScalarCallKey):
@@ -2120,10 +2075,9 @@ class SQLGenerator:
 
     @staticmethod
     def _validate_transform_input_shapes(*, planned_query) -> None:
-        """Reject unsupported ``time_shift`` / ``consecutive_periods`` input
-        shapes uniformly, before any render path (plain, combined-attaches,
-        kernel body) branches. The message names the transform, the offending
-        shape, and the multi-stage ``source_queries`` remedy."""
+        """Reject unsupported ``consecutive_periods`` input shapes before any
+        render path branches (``time_shift`` inputs are checker-typed at plan
+        time — engine P9)."""
         slots_map = {
             s.id: s
             for s in (
@@ -2132,22 +2086,16 @@ class SQLGenerator:
                 + list(planned_query.combined_expression_slots)
             )
         }
-        placeholder_to_original, _ = _regroup_placeholder_map(planned_query)
         for layer in planned_query.transform_layers:
-            if layer.op not in ("time_shift", "consecutive_periods"):
+            if layer.op != "consecutive_periods":
                 continue
             for sid in layer.slot_ids:
                 slot = slots_map.get(sid)
                 if slot is None or not isinstance(slot.key, TransformKey):
                     continue
-                inner = slot.key.input
-                if layer.op == "time_shift":
-                    _validate_time_shift_input(
-                        op=layer.op, inner=inner,
-                        placeholder_to_original=placeholder_to_original,
-                    )
-                else:
-                    _validate_consecutive_periods_input(op=layer.op, inner=inner)
+                _validate_consecutive_periods_input(
+                    op=layer.op, inner=slot.key.input,
+                )
 
     @staticmethod
     def _composite_has_remote_operand(
@@ -2639,11 +2587,10 @@ class SQLGenerator:
                         continue
                     if not _is_host_grain(key):
                         raise NotImplementedError(
-                            f"DEV-1450 stage 7b.12: cross-model aggregate "
-                            f"(source.path={agg_path!r}) reached the local "
-                            f"base SELECT path. The cross-model orchestrator "
-                            f"should have routed this through `_render_with_"
-                            f"cross_model_plans`."
+                            f"cross-model aggregate (source.path={agg_path!r}) "
+                            f"reached the local base SELECT path; the regroup "
+                            f"desugar should have isolated it into a producer "
+                            f"CTE."
                         )
                 synth = self._build_agg_render_spec_from_planned(
                     slot=slot,
@@ -2701,10 +2648,13 @@ class SQLGenerator:
 
         def build(agg_key) -> exp.Expression:
             if getattr(agg_key.source, "path", ()):
-                raise NotImplementedError(
-                    "A cross-model aggregate operand inside an AGGREGATE-phase "
-                    "composite is not yet supported (DEV-1868); factor it "
-                    "into a multi-stage source_queries model."
+                # Internal invariant: cross-model operands desugar to regroup
+                # placeholders before phase classification, so none reaches
+                # this seam.
+                raise RuntimeError(
+                    f"cross-model aggregate operand {agg_key!r} reached the "
+                    f"AGGREGATE-phase composite seam; the regroup desugar "
+                    f"should have replaced it with a placeholder."
                 )
             synth = self._build_agg_render_spec_from_planned(
                 slot=slot, key=agg_key, source_model=source_model,
@@ -5164,15 +5114,21 @@ class SQLGenerator:
             )
         inner_key = key.input
         time_key = key.time_key
-        # A COMPOSITE re-aggregates each aggregate leaf in the shifted CTE: any
-        # regroup-isolated leaf (a join-crossing fragment aggregation the planner
-        # moved into a _cm_* CTE) is substituted back to its original aggregate so
-        # the builder can re-aggregate it. A BARE leaf keeps its DEV-1750 path
+        # Two regimes (D4). RE-AGGREGATION: a composite re-aggregates each
+        # aggregate leaf in the shifted CTE (regroup-isolated leaves substituted
+        # back to their originals); a BARE leaf keeps its DEV-1750 path
         # (aggregate → re-aggregate; column / regroup-placeholder → read-and-
-        # rebucket its base-slot value), leaving single-leaf SQL byte-identical.
-        is_composite = isinstance(inner_key, (ArithmeticKey, ScalarCallKey))
+        # rebucket), leaving single-leaf SQL byte-identical. SERIES: the input's
+        # materialised series (its chain aliases) is read shifted — no join
+        # discovery, no re-applied WHERE — and joined back on the series grain.
         placeholder_to_original, regroup_slot_by_key = _regroup_placeholder_map(
             planned_query,
+        )
+        series_mode = _time_shift_series_mode(
+            inner_key, placeholder_to_original=placeholder_to_original,
+        )
+        is_composite = not series_mode and isinstance(
+            inner_key, (ArithmeticKey, ScalarCallKey),
         )
         shifted_input_key = (
             substitute_value_keys(key=inner_key, mapping=placeholder_to_original)
@@ -5226,7 +5182,7 @@ class SQLGenerator:
             available_alias_by_slot_id.get(input_sid)
             if input_sid is not None else None
         )
-        if not is_composite and input_alias is None:
+        if not is_composite and not series_mode and input_alias is None:
             raise RuntimeError(
                 f"time_shift input not materialised in base CTE: "
                 f"slot id={slot.id!r}, input={inner_key!r}.",
@@ -5276,7 +5232,11 @@ class SQLGenerator:
             if pk_sid == time_sid or pk_sid in seen_partition_sids:
                 return
             pk_alias = available_alias_by_slot_id[pk_sid]
-            partition_specs.append((pk_sid, pk_alias, _resolve_partition_expr(pk_obj)))
+            pk_expr = (
+                exp.column(pk_alias, quoted=True) if series_mode
+                else _resolve_partition_expr(pk_obj)
+            )
+            partition_specs.append((pk_sid, pk_alias, pk_expr))
             seen_partition_sids.add(pk_sid)
 
         grain_sids = set(self._transform_grain_slot_ids(
@@ -5311,11 +5271,6 @@ class SQLGenerator:
                 raise RuntimeError(
                     f"time_shift composite leaf not materialised: "
                     f"slot id={slot.id!r}, leaf={leaf_key!r}.",
-                )
-            if getattr(leaf_key.source, "path", ()):  # gate rejects this shape
-                raise RuntimeError(
-                    f"time_shift reached a cross-model aggregate leaf "
-                    f"{leaf_key!r} in the shifted CTE (slot id={slot.id!r}).",
                 )
             leaf_frag_kwargs: "Dict[str, ResolvedAggKwarg]" = {}
             if isinstance(leaf_key.source, ColumnSqlKey):
@@ -5361,28 +5316,33 @@ class SQLGenerator:
             str(shift_gran_raw) if shift_gran_raw is not None
             else time_key.granularity
         )
-        raw_time_col_expr = shifted_scope.resolve(time_key.column)
         # Truncate BEFORE shifting: offsetting a raw timestamp overflows on non-clamping dialects (SQLite: Jan 31 + 1
         # month = Mar 2), dropping period-tail rows; the outer re-trunc is skipped only for bucket-aligned offsets.
+        # A series CTE keeps its buckets UNSHIFTED: the consumer side of the
+        # join-back looks up its own shifted bucket instead, so a many-to-one
+        # calendar shift (day buckets, month offset — Jan 28..31 clamp to
+        # Feb 28) can never fan out the join.
         bucket_granularity = TimeGranularity(time_key.granularity)
-        bucketed_time_expr = self._build_date_trunc(
-            col_expr=raw_time_col_expr,
-            granularity=bucket_granularity,
-        )
-        shifted_raw_expr = self._build_time_offset_expr(
-            col_expr=bucketed_time_expr,
-            offset=-periods,
-            granularity=shift_granularity,
-        )
-        if _shift_preserves_bucket_starts(
-            bucket=bucket_granularity, shift=shift_granularity,
-        ):
-            shifted_trunc_expr = shifted_raw_expr
+        if series_mode:
+            shifted_trunc_expr = exp.column(time_alias, quoted=True)
         else:
-            shifted_trunc_expr = self._build_date_trunc(
-                col_expr=shifted_raw_expr,
-                granularity=bucket_granularity,
+            shifted_raw_expr = self._build_time_offset_expr(
+                col_expr=self._build_date_trunc(
+                    col_expr=shifted_scope.resolve(time_key.column),
+                    granularity=bucket_granularity,
+                ),
+                offset=-periods,
+                granularity=shift_granularity,
             )
+            if _shift_preserves_bucket_starts(
+                bucket=bucket_granularity, shift=shift_granularity,
+            ):
+                shifted_trunc_expr = shifted_raw_expr
+            else:
+                shifted_trunc_expr = self._build_date_trunc(
+                    col_expr=shifted_raw_expr,
+                    granularity=bucket_granularity,
+                )
 
         shifted_select_parts: List[exp.Expression] = []
         shifted_group_by: List[exp.Expression] = []
@@ -5390,13 +5350,29 @@ class SQLGenerator:
         shifted_select_parts.append(
             shifted_trunc_expr.as_(time_alias, quoted=True),
         )
-        shifted_group_by.append(shifted_trunc_expr.copy())
+        if not series_mode:
+            shifted_group_by.append(shifted_trunc_expr.copy())
 
         for _, pk_alias, pk_expr in partition_specs:
             shifted_select_parts.append(pk_expr.as_(pk_alias, quoted=True))
-            shifted_group_by.append(pk_expr.copy())
+            if not series_mode:
+                shifted_group_by.append(pk_expr.copy())
 
-        if not is_composite and isinstance(inner_key, (ColumnKey, ColumnSqlKey)):
+        if series_mode:
+            # D4: the series value re-renders over the chain's aliases — the
+            # inner transform / combined composite / predicate is computed once
+            # upstream; this CTE only relabels it onto the shifted bucket.
+            shifted_value_expr = render_value_key(
+                key=inner_key,
+                ctx=self._alias_render_ctx(
+                    slot_id_by_key=slot_id_by_key,
+                    available_alias_by_slot_id=available_alias_by_slot_id,
+                ),
+            )
+            shifted_value_alias = input_alias or cte_allocator.allocate_cte(
+                f"{slot.declared_name}__ts",
+            )
+        elif not is_composite and isinstance(inner_key, (ColumnKey, ColumnSqlKey)):
             # Bare column or regroup placeholder: grouped and projected directly
             # (read-and-rebucket of its base-slot value — DEV-1750, unchanged).
             shifted_value_expr = shifted_scope.resolve(inner_key)
@@ -5423,51 +5399,63 @@ class SQLGenerator:
             shifted_value_expr.as_(shifted_value_alias, quoted=True),
         )
 
-        # A composite re-aggregates every leaf from source, so it reads no _cm_*
-        # value — omit the regroup attaches (a bare read-and-rebucket still needs
-        # them to resolve its placeholder column).
-        regroup_attach_conditions = (
-            []
-            if is_composite
-            else self._resolve_regroup_attach_conditions(
-                regroup_join_specs=render.regroup_join_specs, scope=shifted_scope,
-            )
-        )
-        for _p in shifted_where_join_paths:
-            shifted_scope.join_paths.add(_p)
-        shifted_join_paths = shifted_scope.join_paths.as_list()
-        if shifted_join_paths:
-            from_clause, shifted_joins = self._build_from_and_joins(
-                source_model=source_model,
-                source_relation=source_relation,
-                joined_paths=shifted_join_paths,
-                bundle=bundle,
+        if series_mode:
+            # The series CTE reads only the chain tail: filters, joins, and
+            # producer attaches already shaped the series exactly once.
+            regroup_attach_conditions = []
+            shifted_select = exp.Select().select(*shifted_select_parts).from_(
+                chain_tail,
             )
         else:
-            from_clause = self._build_from_clause_from_planned(
-                source_model=source_model, source_relation=source_relation,
+            # A composite re-aggregates every leaf from source, so it reads no
+            # _cm_* value — omit the regroup attaches (a bare read-and-rebucket
+            # still needs them to resolve its placeholder column).
+            regroup_attach_conditions = (
+                []
+                if is_composite
+                else self._resolve_regroup_attach_conditions(
+                    regroup_join_specs=render.regroup_join_specs,
+                    scope=shifted_scope,
+                )
             )
-            shifted_joins = []
-
-        shifted_select = exp.Select().select(*shifted_select_parts).from_(
-            from_clause,
-        )
-        shifted_select = _apply_joins(select=shifted_select, joins=shifted_joins)
-        for _cte_name, _condition in regroup_attach_conditions:
-            if _condition is None:
-                shifted_select = shifted_select.join(
-                    exp.to_identifier(_cte_name), join_type="CROSS",
+            for _p in shifted_where_join_paths:
+                shifted_scope.join_paths.add(_p)
+            shifted_join_paths = shifted_scope.join_paths.as_list()
+            if shifted_join_paths:
+                from_clause, shifted_joins = self._build_from_and_joins(
+                    source_model=source_model,
+                    source_relation=source_relation,
+                    joined_paths=shifted_join_paths,
+                    bundle=bundle,
                 )
             else:
-                shifted_select = shifted_select.join(
-                    exp.to_identifier(_cte_name), on=_condition, join_type="LEFT",
+                from_clause = self._build_from_clause_from_planned(
+                    source_model=source_model, source_relation=source_relation,
                 )
-        for _where_part in shifted_where_parts:
-            shifted_select = shifted_select.where(
-                self._parse_predicate(_where_part),
+                shifted_joins = []
+
+            shifted_select = exp.Select().select(*shifted_select_parts).from_(
+                from_clause,
             )
-        for _gb in shifted_group_by:
-            shifted_select = shifted_select.group_by(_gb)
+            shifted_select = _apply_joins(
+                select=shifted_select, joins=shifted_joins,
+            )
+            for _cte_name, _condition in regroup_attach_conditions:
+                if _condition is None:
+                    shifted_select = shifted_select.join(
+                        exp.to_identifier(_cte_name), join_type="CROSS",
+                    )
+                else:
+                    shifted_select = shifted_select.join(
+                        exp.to_identifier(_cte_name), on=_condition,
+                        join_type="LEFT",
+                    )
+            for _where_part in shifted_where_parts:
+                shifted_select = shifted_select.where(
+                    self._parse_predicate(_where_part),
+                )
+            for _gb in shifted_group_by:
+                shifted_select = shifted_select.group_by(_gb)
 
         # A hidden inner time_shift slot's declared_name isn't unique across sibling shifts with different offsets;
         # allocate a unique internal alias so growth_2m doesn't collapse onto growth_1m.
@@ -5491,7 +5479,10 @@ class SQLGenerator:
 
         ctes.append(CteEntry(
             name=shifted_cte_name, query=shifted_select,
-            depends_on=[name for name, _ in regroup_attach_conditions],
+            depends_on=(
+                [chain_tail] if series_mode
+                else [name for name, _ in regroup_attach_conditions]
+            ),
         ))
 
         prev_cte = chain_tail  # the chain tail this pair extends
@@ -5511,17 +5502,36 @@ class SQLGenerator:
                 ).as_(full_slot_alias, quoted=True),
             )
 
-        grain_alias_names = [time_alias] + [
-            pk_alias for _, pk_alias, _ in partition_specs
-        ]
-        sjoin_on = build_grain_joinback_condition(
-            pairs=[
-                (
-                    grain_alias_column(alias=a, table=prev_cte),
-                    grain_alias_column(alias=a, table=shifted_cte_name),
+        if series_mode:
+            # Consumer-side lookup: each row reads the series at ITS shifted
+            # bucket — total and deterministic even when the calendar shift is
+            # many-to-one.
+            lookup_expr = self._build_time_offset_expr(
+                col_expr=grain_alias_column(alias=time_alias, table=prev_cte),
+                offset=periods,
+                granularity=shift_granularity,
+            )
+            if not _shift_preserves_bucket_starts(
+                bucket=bucket_granularity, shift=shift_granularity,
+            ):
+                lookup_expr = self._build_date_trunc(
+                    col_expr=lookup_expr, granularity=bucket_granularity,
                 )
-                for a in grain_alias_names
-            ],
+            prev_time_side = lookup_expr
+        else:
+            prev_time_side = grain_alias_column(alias=time_alias, table=prev_cte)
+        grain_pairs = [
+            (prev_time_side, grain_alias_column(alias=time_alias, table=shifted_cte_name)),
+        ]
+        grain_pairs.extend(
+            (
+                grain_alias_column(alias=pk_alias, table=prev_cte),
+                grain_alias_column(alias=pk_alias, table=shifted_cte_name),
+            )
+            for _, pk_alias, _ in partition_specs
+        )
+        sjoin_on = build_grain_joinback_condition(
+            pairs=grain_pairs,
             dialect=self._dialect,
         )
         sjoin_select = exp.Select().select(*sjoin_select_parts).from_(
@@ -5581,7 +5591,7 @@ class SQLGenerator:
         # One render path for every input shape (the gate already rejected the
         # unsupported ones). A boolean-shaped tree IS the predicate; a
         # value-shaped tree drives the streak by non-NULL / non-zero truthiness.
-        predicate_is_boolean = _is_boolean_shaped(inner_key)
+        predicate_is_boolean = is_boolean_shaped(inner_key)
         rendered = render_value_key(
             key=inner_key,
             ctx=self._alias_render_ctx(

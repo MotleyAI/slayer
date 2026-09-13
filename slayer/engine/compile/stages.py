@@ -64,7 +64,6 @@ from slayer.engine.elaborate_env import (
     check_cross_model_source_resolves,
     check_local_producer_inputs_safe,
     check_order_target_has_slot,
-    check_partitioned_measures,
     check_raw_rows_no_aggregate_slots,
     check_reaggregation_dims_attributable,
     check_reaggregation_no_column_param,
@@ -2632,18 +2631,7 @@ def compile_prebound(  # NOSONAR(S3776) — compiler entry-point dispatcher. The
         if env is not None else []
     )
 
-    # Deferred partition_by shape guards run on the pre-substitution trees; computed-dimension aggregates are excluded (the desugar consumes them).
-    _orig_row_aggs = frozenset(
-        dimension_partitioned_aggregates(declared_measures),
-    )
-    check_partitioned_measures(
-        measure_vks=[dm.bound.value_key for dm in declared_measures],
-        filter_vks=[bf.value_key for bf in bound_filters],
-        order_vks=[sp.bound.value_key for sp in order_specs],
-        exclude=_orig_row_aggs,
-    )
-
-    # Desugar partitioned aggregates into producer stages + reserved-leaf placeholders, AFTER the guard above.
+    # Desugar partitioned aggregates into producer stages + reserved-leaf placeholders.
     regroup_attach_plans: List[RegroupAttachPlan] = []
     if isinstance(query.source_model, str):
         _producer_source_model = query.source_model
