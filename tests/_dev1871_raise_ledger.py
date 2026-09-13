@@ -48,8 +48,19 @@ _SP = "compile/stages.py"
 _PL = "compile/projection.py"
 _EE = "elaborate_env.py"  # the checker (DEV-1871 G9+): guards relocate here from the compilers
 _BI = "bind_inputs.py"  # the query-level bind pass (DEV-1871 G16): the bind block left the compiler
+_EL = "elaborate.py"  # the one elaboration pass (entry API)
+_CI = "compile/__init__.py"  # the compile entry API
 
 ROWS: Tuple[LedgerRow, ...] = (
+    _row(_EL, "elaborate_query", "ValueError",
+         "elaborate_query needs query= or an explicit scope=.",
+         "internal", "internal", False, "checker"),
+    _row(_EL, "elaborate_query", "ValueError",
+         "elaborate_query needs query= or prebound=.",
+         "internal", "internal", False, "checker"),
+    _row(_CI, "compile_query", "ValueError",
+         "compile_query needs an environment produced by elaborate_query (its compile inputs are unset).",
+         "internal", "internal", False, "compiler"),
     _row(_EE, "check_dimension_temporal_axis", "NotImplementedError",
          "A time-ordered transform '…' inside a computed dimension evaluates at a grain that does not contain its time axis '…'; a producer bucketed by time joined back on the coarser grain would duplicate result rows. Include the time key in the aggregate's partition_by= so the transform accumulates within its own grain.",
          "checker", "time-axis", True, "checker"),

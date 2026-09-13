@@ -77,9 +77,11 @@ def _row_key(row: LedgerRow) -> tuple[str, str]:
 # whose rows all migrated away (e.g. compile/regroup.py) must still hit parity.
 SCANNED_MODULES = (
     "bind_inputs.py",
+    "compile/__init__.py",
     "compile/projection.py",
     "compile/regroup.py",
     "compile/stages.py",
+    "elaborate.py",
     "elaborate_env.py",
 )
 
