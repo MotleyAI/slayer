@@ -7,7 +7,7 @@ Both orientations of every declared edge participate; proof is per orientation
 from __future__ import annotations
 
 import re
-from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Callable, Dict, List, Optional, Sequence, Tuple, TypeVar, Union
 
 from pydantic import BaseModel
 
@@ -314,10 +314,13 @@ def _reroot_leaf_via_host(
     return r.model_copy(update={"path": via_host})
 
 
+_RerootableT = TypeVar("_RerootableT", bound=ValueKey)
+
+
 def reroot_from_root(
-    key: ValueKey, *, target_path: Tuple[str, ...], root_model: SlayerModel,
+    key: _RerootableT, *, target_path: Tuple[str, ...], root_model: SlayerModel,
     models_by_name: Dict[str, SlayerModel], host_name: str,
-) -> ValueKey:
+) -> _RerootableT:
     """Re-anchor a host-coordinate key into the root's coordinates, per leaf, by the same rules ``attributable_from_root`` proves safety with."""
     tp = tuple(target_path)
     mapping: Dict[ValueKey, ValueKey] = {}
@@ -484,7 +487,7 @@ def grain_determines(
     *, key: ValueKey, grain: Grain, host_model: SlayerModel,
     models_by_name: Dict[str, SlayerModel],
 ) -> bool:
-    """Does a dataset grain determine ``key`` (DEV-1892, Axiom 1)? True iff ``key``
+    """Does a dataset grain determine ``key`` (Axiom 1)? True iff ``key``
     is a grain member, an aggregate whose ``partition_by=`` grain ⊆ the grain (a
     cell of the same dataset), or a column reached over provably to-one hops from
     a model the grain pins — pinned by that model's unique key lying in the grain

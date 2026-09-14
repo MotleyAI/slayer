@@ -290,7 +290,7 @@ def agg_kwarg_canonical_str(value: Any) -> str:
             return ".".join(value.path) + "." + value.column_name
         return value.column_name
     if isinstance(value, AggregateKey):
-        # DEV-1892: an aggregate-valued parameter — a canonical fragment for
+        # An aggregate-valued parameter — a canonical fragment for
         # alias/identity; render-time reads the picked ``_p<i>`` column instead.
         parts = [value.agg]
         if isinstance(value.source, (ColumnKey, ColumnSqlKey)):

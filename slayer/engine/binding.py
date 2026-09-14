@@ -1383,7 +1383,7 @@ def _bind_agg_arg(
     bundle: ResolvedSourceBundle,
 ):
     """Bind one aggregation arg: identifiers → ``ColumnKey`` / ``ColumnSqlKey``,
-    a nested aggregate → ``AggregateKey`` (DEV-1892 aggregate-valued parameter),
+    a nested aggregate → ``AggregateKey`` (aggregate-valued parameter),
     literals → inline scalar via ``normalize_scalar`` (stored inline, not as LiteralKey)."""
     if isinstance(parsed, Literal):
         return normalize_scalar(parsed.value)

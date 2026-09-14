@@ -837,7 +837,7 @@ def check_attached_param_requires_attached_source(
     (a re-aggregation), so the parameter is a cell of the same operand dataset. On
     a row-level source the parameter would need the attached value on the
     aggregation's own input rows — a typed error naming the parameter and the
-    remedy. (The row-attach mechanism lands in a later change.)"""
+    remedy. (The row-attach mechanism lands with DEV-1859.)"""
     if offending_param is None:
         return
     raise SlayerError(
@@ -856,18 +856,6 @@ def check_reaggregation_no_window(*, alias: str, window_val) -> None:
             f"Re-aggregation {alias!r} cannot carry window= on its outer "
             f"aggregation; apply the window inside the operand or consume the "
             f"re-aggregated value through a transform."
-        )
-
-
-def check_reaggregation_no_column_param(*, alias: str, column_param) -> None:
-    """The outer aggregate consumes only the operand's per-cell values — no column parameter (DEV-1871 G14; DEV-1892 tracks lifting them)."""
-    if column_param is not None:
-        raise SlayerError(
-            f"Re-aggregation {alias!r} carries a column-reference parameter on "
-            f"its outer aggregation (e.g. weighted_avg(weight=…)), which is "
-            f"unsupported: the outer aggregate consumes only the operand's "
-            f"per-cell values. Drop the column parameter or use a numeric "
-            f"literal."
         )
 
 

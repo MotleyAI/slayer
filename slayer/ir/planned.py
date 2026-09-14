@@ -257,7 +257,7 @@ class TrailingWindowProducerKernel(BaseModel):
 
 
 class PickedParam(BaseModel):
-    """An aggregation parameter lifted onto the two-level kernel (DEV-1892):
+    """An aggregation parameter lifted onto the two-level kernel:
     picked once per level-1 cell as ``MAX(<value>) AS _p<i>`` and read by level 2
     as ``_base._p<i>``. Exactly one source form is set — ``key`` (a column /
     placeholder / composite value key rendered through the scope, with a
@@ -283,7 +283,7 @@ class AssociationProducerKernel(BaseModel):
     excluding them — a re-aggregation's entity is an inner-grain cell whose NULL
     component is its own cell (null-safe second-order aggregation).
 
-    ``picked_params`` (DEV-1892) are the aggregation parameters the grain
+    ``picked_params`` are the aggregation parameters the grain
     determines, each picked once per level-1 cell alongside the aggregate's own
     value; level 2 reads them as ``_base._p<i>``."""
 

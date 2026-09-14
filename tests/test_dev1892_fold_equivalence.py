@@ -24,8 +24,13 @@ from tests._dev1892_fixtures import (
     ASSOC_WSUM_BY_STATUS,
     expr_default_name_models,
     shared_default_name_models,
+    toone_default_models,
     toone_filter_models,
 )
+
+#: wsum3 weight default = to-one path regions.pop, picked once per entity:
+#: SUM(spend*pop) over distinct customers (c4's NULL pop drops its term).
+ASSOC_WSUM3_BY_STATUS = {"ok": 56000.0, "new": 25000.0}
 
 #: north_spend = spend filtered to the to-one path regions.name='North' (r1):
 #: ok distinct {c1 100, c2 150, c6 30} North; new {c1 100, c2 150} North.
@@ -57,6 +62,12 @@ async def shared_default_engine(request):
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def expr_default_engine(request):
     async for engine in make_exec_engine(request, models=expr_default_name_models()):
+        yield engine
+
+
+@pytest.fixture(params=["sqlite", "duckdb"])
+async def toone_default_engine(request):
+    async for engine in make_exec_engine(request, models=toone_default_models()):
         yield engine
 
 
@@ -119,4 +130,15 @@ class TestParameterOverSourceShapes:
             measures=[ModelMeasure(formula="customers.spend:wsum2", name="w")]))
         vals = _vals(resp, "orders.w")
         for status, expected in ASSOC_WSUM_BY_STATUS.items():
+            assert float(vals[status]) == pytest.approx(expected)
+
+    async def test_to_one_path_default_joins_from_owner(self, toone_default_engine):
+        """A definition default over a to-one path (``regions.pop``) anchors on the
+        owner (customers) and joins its hop, picked once per entity —
+        SUM(spend * pop)."""
+        resp = await toone_default_engine.execute(assoc_q(
+            dimensions=["status"],
+            measures=[ModelMeasure(formula="customers.spend:wsum3", name="w")]))
+        vals = _vals(resp, "orders.w")
+        for status, expected in ASSOC_WSUM3_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)

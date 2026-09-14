@@ -498,9 +498,16 @@ def _cross_model_input_paths(
 ) -> List[Tuple[str, ...]]:
     out: List[Tuple[str, ...]] = []
     if agg_rooted.column_filter_key is not None:
+        # referenced_join_paths are OWNER-relative (anchored at the source
+        # column's owner via source.path) and are never re-rooted; prefix each
+        # with the source path and register every prefix, as filter_reachability
+        # does. Today owner == root, so the prefix was empty.
+        source_path = key_host_path(agg_rooted.source)
         for p in agg_rooted.column_filter_key.referenced_join_paths:
-            if tuple(p) not in out:
-                out.append(tuple(p))
+            full = source_path + tuple(p)
+            for i in range(1, len(full) + 1):
+                if full[:i] not in out:
+                    out.append(full[:i])
     for p in compute_aggregate_input_join_paths(
         key=agg_rooted, anchor_model=root_model, anchor_relation=root_name,
         bundle=bundle,
@@ -529,15 +536,19 @@ def _first_unsafe_input_hop(
 def _first_unattributable_arg_leaf(
     *, agg: AggregateKey, target_path: Tuple[str, ...],
     root_model: SlayerModel, models_by_name: Dict[str, SlayerModel],
+    host_name: Optional[str] = None,
 ) -> List[str]:
-    # Positional args in HOST coordinates (a ranking first/last time key).
-    for arg in agg.args:
+    # Positional args and column-valued kwargs in HOST coordinates (a ranking
+    # first/last time key, a weight column); a fail-closed backstop under the
+    # home rule, which certifies legal inputs upstream. host_name lets an off-home
+    # input traverse a proven reverse hop, exactly as _home_path judged it.
+    for arg in (*agg.args, *(v for _, v in agg.kwargs)):
         if not isinstance(arg, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
             continue
         hp = key_host_path(arg)
         if not attributable_from_root(
             host_path=hp, target_path=target_path, root_model=root_model,
-            models_by_name=models_by_name,
+            models_by_name=models_by_name, host_name=host_name,
         ):
             leaf = getattr(arg, "leaf", None) or getattr(
                 getattr(arg, "column", None), "leaf", None,
@@ -549,7 +560,7 @@ def _first_unattributable_arg_leaf(
 def _assert_cross_model_inputs_safe(
     *, agg: AggregateKey, agg_rooted: AggregateKey, root_model: SlayerModel,
     root_name: str, target_path: Tuple[str, ...], bundle: ResolvedSourceBundle,
-    models_by_name: Dict[str, SlayerModel],
+    models_by_name: Dict[str, SlayerModel], host_name: Optional[str] = None,
 ) -> None:
     """Resolve every cross-model input's attributability from its root; the checker raises on a fanning/unproven join."""
     unsafe_input_hops = _first_unsafe_input_hop(
@@ -559,7 +570,7 @@ def _assert_cross_model_inputs_safe(
     unattributable_arg_leaves = [] if unsafe_input_hops else (
         _first_unattributable_arg_leaf(
             agg=agg, target_path=target_path, root_model=root_model,
-            models_by_name=models_by_name,
+            models_by_name=models_by_name, host_name=host_name,
         )
     )
     check_cross_model_inputs_safe(
@@ -1223,7 +1234,10 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     projected_td_keys = context.projected_td_keys
     base_filters_with_text = context.base_filters_with_text
     scope, stage_schemas = context.scope, context.stage_schemas
-    target_path = tuple(getattr(agg.source, "path", ()) or ())
+    target_path = _home_path(
+        agg=agg, host_model=host_model, models_by_name=models_by_name,
+        bundle=bundle,
+    )
     root_model = walk_key_path(model=host_model, path=target_path, bundle=bundle)
     if root_model is None:  # pragma: no cover — bind resolved the path already
         check_cross_model_source_resolves(
@@ -1296,10 +1310,20 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     )
     broadcast: List[Tuple[str, str]] = [(u.name, u.reason) for u in unattributable]
 
-    agg_rooted = reroot_value_key(agg, target_path=target_path)
+    if target_path != key_host_path(agg.source):
+        # The source sits beyond the home; re-anchor off-home inputs via the host
+        # and render it inline as a host-locus aggregate joining the to-one path
+        # from the home, never a source-rooted producer.
+        agg_rooted = reroot_from_root(
+            agg, target_path=target_path, root_model=root_model,
+            models_by_name=models_by_name, host_name=host_model.name,
+        ).model_copy(update={"locus": "host"})
+    else:
+        agg_rooted = reroot_value_key(agg, target_path=target_path)
     _assert_cross_model_inputs_safe(
         agg=agg, agg_rooted=agg_rooted, root_model=root_model, root_name=root_name,
         target_path=target_path, bundle=bundle, models_by_name=models_by_name,
+        host_name=host_model.name,
     )
 
     # A windowed cross-model aggregate folds the active TD into its grain as the bucket (must be attributable from the root).
@@ -1418,11 +1442,12 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
 
 
 _BARE_IDENT_RE = re.compile(r"^[A-Za-z_]\w*$")
+_DOTTED_PATH_RE = re.compile(r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+$")
 _IDENT_RE = re.compile(r"[A-Za-z_]\w*")
 
 
 class _ParamSpec(NamedTuple):
-    """A resolved aggregation parameter that references data (DEV-1892): a bound
+    """A resolved aggregation parameter that references data: a bound
     ``key`` (column / aggregate) or an ``expr_sql`` expression default, at
     ``owner_path``. Literal params never become a ``_ParamSpec``."""
     name: str
@@ -1430,14 +1455,48 @@ class _ParamSpec(NamedTuple):
     expr_sql: Optional[str]
 
 
+def _column_default_key(
+    *, path: Tuple[str, ...], leaf: str, base: Optional[SlayerModel],
+) -> ValueKey:
+    """A ``ColumnSqlKey`` when ``leaf`` names a derived column on ``base`` (so its
+    ``Column.sql`` expands), else a plain ``ColumnKey``."""
+    if base is not None:
+        col = next((c for c in (base.columns or []) if c.name == leaf), None)
+        if col is not None and col.sql:
+            return ColumnSqlKey(path=path, model=base.name, column_name=leaf)
+    return ColumnKey(path=path, leaf=leaf)
+
+
 def _default_param_value_key(
     *, sql: str, owner_path: Tuple[str, ...],
-) -> Optional[ColumnKey]:
-    """A bare-identifier definition default → a ``ColumnKey`` in the owner's
-    coordinates (so a host column of the same name never captures it); an
+    owner_model: Optional[SlayerModel] = None,
+    bundle: Optional[ResolvedSourceBundle] = None,
+) -> Optional[ValueKey]:
+    """A bare-identifier or dotted-path definition default → a structured key in
+    the owner's coordinates (so a host column of the same name never captures it,
+    and a to-one path like ``regions.pop`` is picked once per cell), a
+    ``ColumnSqlKey`` when the named column is derived so its SQL expands; an
     expression or literal default → ``None``."""
     text = sql.strip()
-    return ColumnKey(path=tuple(owner_path), leaf=text) if _BARE_IDENT_RE.match(text) else None
+    if _BARE_IDENT_RE.match(text):
+        return _column_default_key(path=tuple(owner_path), leaf=text, base=owner_model)
+    if _DOTTED_PATH_RE.match(text):
+        parts = text.split(".")
+        # A leading owner-model qualifier is a self-reference, not a hop.
+        if owner_model is not None and parts[0] == owner_model.name:
+            parts = parts[1:]
+        if len(parts) == 1:
+            return _column_default_key(
+                path=tuple(owner_path), leaf=parts[0], base=owner_model,
+            )
+        terminal = (
+            walk_key_path(model=owner_model, path=tuple(parts[:-1]), bundle=bundle)
+            if owner_model is not None and bundle is not None else None
+        )
+        return _column_default_key(
+            path=tuple(owner_path) + tuple(parts[:-1]), leaf=parts[-1], base=terminal,
+        )
+    return None
 
 
 def _expr_default_columns(*, sql: str, owner_model: Optional[SlayerModel]) -> List[str]:
@@ -1446,14 +1505,65 @@ def _expr_default_columns(*, sql: str, owner_model: Optional[SlayerModel]) -> Li
     return [t for t in _IDENT_RE.findall(sql) if t in names]
 
 
+def _longest_common_prefix(paths: List[Tuple[str, ...]]) -> Tuple[str, ...]:
+    if not paths:
+        return ()
+    common = paths[0]
+    for p in paths[1:]:
+        i = 0
+        while i < len(common) and i < len(p) and common[i] == p[i]:
+            i += 1
+        common = common[:i]
+    return common
+
+
+def _home_path(
+    *, agg: AggregateKey, host_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+) -> Tuple[str, ...]:
+    """The home dataset for a cross-model aggregate (Axiom 2): the deepest join
+    path that determines every input — the source column plus each column-valued
+    arg/kwarg — over provably to-one hops. Candidates are the input paths and
+    their longest common prefix, deepest first (ties prefer the source path); the
+    first one every input is attributable from wins. Falls back to the source path
+    (today's root), where input safety then raises on an unproven hop."""
+    source_path = key_host_path(agg.source)
+    input_paths: List[Tuple[str, ...]] = [source_path]
+    # A ranked aggregate's positional args are its ranking keys, not value inputs;
+    # they must stay attributable from the source (checked downstream), never pull
+    # the home shallower.
+    arg_values = () if agg.agg in RANKED_AGGREGATIONS else agg.args
+    for v in (*arg_values, *(val for _, val in agg.kwargs)):
+        if isinstance(v, (ColumnKey, ColumnSqlKey)):
+            input_paths.append(key_host_path(v))
+    candidates = sorted(
+        {source_path, _longest_common_prefix(input_paths), *input_paths},
+        key=lambda p: (-len(p), p != source_path, p),
+    )
+    for p in candidates:
+        model_at_p = walk_key_path(model=host_model, path=p, bundle=bundle)
+        if model_at_p is None:
+            continue
+        if all(
+            attributable_from_root(
+                host_path=q, target_path=p, root_model=model_at_p,
+                models_by_name=models_by_name, host_name=host_model.name,
+            )
+            for q in input_paths
+        ):
+            return p
+    return source_path
+
+
 def _resolve_aggregation_params(
     *, agg: AggregateKey, owner_model: Optional[SlayerModel],
-    owner_path: Tuple[str, ...],
+    owner_path: Tuple[str, ...], bundle: Optional[ResolvedSourceBundle] = None,
 ) -> List[_ParamSpec]:
     """Every aggregation parameter that references data — explicit non-scalar
-    args/kwargs and non-overridden definition defaults (a bare-identifier default
-    → a ``ColumnKey``; an expression default → its SQL). Literal params are
-    omitted: they ride the existing kwarg/default machinery unchanged."""
+    args/kwargs and non-overridden definition defaults (a bare-identifier or
+    dotted-path default → a column key, a derived one a ``ColumnSqlKey``; an
+    expression default → its SQL). Literal params are omitted: they ride the
+    existing kwarg/default machinery unchanged."""
     explicit = {name for name, _ in agg.kwargs}
     out: List[_ParamSpec] = [
         _ParamSpec(name=name, key=v, expr_sql=None)
@@ -1467,7 +1577,10 @@ def _resolve_aggregation_params(
         for p in agg_def.params:
             if p.name in explicit:
                 continue
-            vk = _default_param_value_key(sql=p.sql, owner_path=owner_path)
+            vk = _default_param_value_key(
+                sql=p.sql, owner_path=owner_path, owner_model=owner_model,
+                bundle=bundle,
+            )
             if vk is not None:
                 out.append(_ParamSpec(name=p.name, key=vk, expr_sql=None))
             elif _expr_default_columns(sql=p.sql, owner_model=owner_model):
@@ -1539,35 +1652,46 @@ def _synthesize_association_producer(  # NOSONAR(S3776) — one cohesive host-ro
     )
     # An input crossing an unproven/fanning hop is not constant per root entity,
     # so the level-1 per-entity pick would be arbitrary. Input safety is
-    # mode-invariant — reject exactly as the broadcast/error path does (DEV-1892
-    # tracks certifying such inputs via empirical to-one evidence).
+    # mode-invariant — reject exactly as the broadcast/error path does (DEV-1884
+    # certifies such inputs empirically).
+    # locus="host" so default-fragment discovery looks the definition up on the
+    # source model (not the home) when the source sits beyond the home.
     _assert_cross_model_inputs_safe(
-        agg=agg, agg_rooted=reroot_value_key(agg, target_path=target_path),
+        agg=agg, agg_rooted=reroot_from_root(
+            agg, target_path=target_path, root_model=root_model,
+            models_by_name=models_by_name, host_name=host_model.name,
+        ).model_copy(update={"locus": "host"}),
         root_model=root_model, root_name=root_name, target_path=target_path,
-        bundle=bundle, models_by_name=models_by_name,
+        bundle=bundle, models_by_name=models_by_name, host_name=host_model.name,
     )
     entity_keys: List[ValueKey] = [
         ColumnKey(path=target_path, leaf=col) for col in key_sets[0]
     ]
-    # DEV-1892: type each parameter against the entity grain (requested dims ∪
-    # entity keys) and lift the legal ones — picked once per associated entity
-    # alongside the aggregate's own value. The residue is a typed error.
+    # Type each parameter against the entity grain (requested dims ∪ entity keys)
+    # and lift the legal ones — picked once per associated entity alongside the
+    # aggregate's own value; the residue is a typed error. Definition defaults are
+    # declared on the source column's model, which equals the home only when the
+    # home is the source path.
+    source_path = key_host_path(agg.source)
+    source_model = walk_key_path(
+        model=host_model, path=source_path, bundle=bundle,
+    ) or root_model
     assoc_grain = Grain.of([*requested, *entity_keys])
     picked_params: List[PickedParam] = []
     for _ps in _resolve_aggregation_params(
-        agg=agg, owner_model=root_model, owner_path=target_path,
+        agg=agg, owner_model=source_model, owner_path=source_path, bundle=bundle,
     ):
         check_parameter_determined(
             alias=alias, param_name=_ps.name, grain_display=_grain_display(assoc_grain),
             determined=_param_is_determined(
-                spec=_ps, owner_model=root_model, owner_path=target_path,
+                spec=_ps, owner_model=source_model, owner_path=source_path,
                 grain=assoc_grain, host_model=host_model,
                 models_by_name=models_by_name,
             ),
         )
         picked_params.append(PickedParam(
             name=_ps.name, key=_ps.key, sql=_ps.expr_sql,
-            anchor_path=tuple(target_path),
+            anchor_path=tuple(source_path),
         ))
 
     # A HOST-grain wrap of the aggregate compiles inline at the producer's full
@@ -1755,7 +1879,7 @@ def _reaggregation_determined(
     models_by_name: Dict[str, SlayerModel],
 ) -> bool:
     """Is an outer dimension determined by the operand dataset's union grain?
-    Delegates to the one determination rule (DEV-1892): a grain member, or a
+    Delegates to the one determination rule: a grain member, or a
     column reached over provably to-one hops from a model the grain pins."""
     return grain_determines(
         key=key, grain=union_grain, host_model=host_model,
@@ -1807,11 +1931,11 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
 
     # Checked before TD resolution — name the combination, not a misleading TD error.
     check_reaggregation_no_window(alias=alias, window_val=window_kwarg_of(root))
-    # DEV-1892: type each outer parameter against the operand grain; a legal
+    # Type each outer parameter against the operand grain; a legal
     # aggregate-valued parameter rides the carrier as an extra constituent, a
     # legal column parameter is picked once per cell. The residue is a typed error.
     reagg_param_specs = _resolve_aggregation_params(
-        agg=root, owner_model=host_model, owner_path=(),
+        agg=root, owner_model=host_model, owner_path=(), bundle=bundle,
     )
     for _ps in reagg_param_specs:
         check_parameter_determined(
@@ -1919,10 +2043,10 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
     # grouped by the outer grain. Its body renders via the association kernel with
     # the carrier as the per-cell value; level 2 aggregates over the cells. An
     # attach-carrying grain key becomes an expression over carrier placeholders.
-    # DEV-1892: substitute the WHOLE root (source AND params) so an aggregate-valued
+    # Substitute the WHOLE root (source AND params) so an aggregate-valued
     # parameter references its carrier placeholder like the source constituents do.
     outer_agg = substitute_value_keys(root, constituent_placeholders)
-    # Each legal parameter is picked once per cell (DEV-1892): an aggregate-valued
+    # Each legal parameter is picked once per cell: an aggregate-valued
     # one from its carrier placeholder, a column/expression one from the operand
     # scope; level 2 reads it as ``_base._p<i>``.
     reagg_picked_params = [

@@ -108,7 +108,9 @@ class TestEmittedShape:
             dimensions=["region"],
             measures=[ModelMeasure(formula=_WAVG_REAGG, name="w")]))
         # value (amount:sum) and weight (id:count) ride ONE operand carrier.
-        assert len(set(re.findall(r"_cm_\w+", sql))) == 1, sql
+        ctes = re.findall(r"(_cm_\w+) AS \(", sql)
+        carriers = [n for n in ctes if "weighted_avg" not in n]
+        assert carriers == ["_cm_amount_sum_partition_by_city_region"], ctes
         assert_scope_closed(sql)
 
     @pytest.mark.parametrize("dialect", ["sqlite", "duckdb", "postgres", "bigquery"])

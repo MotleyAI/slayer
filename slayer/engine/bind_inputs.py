@@ -328,7 +328,7 @@ def _map_bound_keys(
 
 def _attached_param_on_row_source(root: ValueKey) -> Optional[str]:
     """First parameter name where an aggregate-valued arg/kwarg rides an
-    aggregation whose source is row-level (not a re-aggregation) — DEV-1892's
+    aggregation whose source is row-level (not a re-aggregation) — the
     typed residue: such a parameter would need the attached value on the
     aggregation's own input rows."""
     for k in walk_value_keys(root):
@@ -542,7 +542,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         *(spec.bound.value_key for spec in order_specs),
     ])
 
-    # An aggregate-valued parameter (DEV-1892) needs an attached source; on a
+    # An aggregate-valued parameter needs an attached source; on a
     # row-level source it fails closed in every mode. Pre-lowering, like above.
     for _dm in declared_measures:
         check_attached_param_requires_attached_source(

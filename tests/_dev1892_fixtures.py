@@ -84,13 +84,58 @@ def expr_default_name_models() -> List[SlayerModel]:
 
 
 def toone_filter_models() -> List[SlayerModel]:
-    """customers gains ``north_spend`` = spend filtered to a to-one region path
-    (``regions.name = 'North'``): a measure-local filter over a target-relative
-    to-one path, picked once per entity through the folded path."""
+    """customers gains ``north_spend`` (spend filtered on ``regions.name='North'``),
+    plus ``wsum`` (weight default ``spend``) and ``wsum4`` (``scale`` default over
+    the to-one ``regions.pop``) for home-shorter-than-source rendering."""
     models = dev1840_models()
-    _customers(models).columns.append(
+    cust = _customers(models)
+    cust.columns.append(
         Column(name="north_spend", type=DataType.DOUBLE, sql="spend",
                filter="regions.name = 'North'"),
+    )
+    cust.aggregations.append(
+        Aggregation(name="wsum", formula="SUM({value} * {weight})",
+                    params=[AggregationParam(name="weight", sql="spend")]),
+    )
+    cust.aggregations.append(
+        Aggregation(name="wsum4", formula="SUM({value} * {weight} * {scale})",
+                    params=[AggregationParam(name="weight", sql="spend"),
+                            AggregationParam(name="scale", sql="regions.pop")]),
+    )
+    return models
+
+
+def toone_default_models() -> List[SlayerModel]:
+    """A custom ``wsum3`` on customers whose ``weight`` default is a to-one path
+    (``regions.pop``): the owner-anchored default joins customers→regions per entity."""
+    models = dev1840_models()
+    _customers(models).aggregations.append(
+        Aggregation(name="wsum3", formula="SUM({value} * {weight})",
+                    params=[AggregationParam(name="weight", sql="regions.pop")]),
+    )
+    return models
+
+
+def derived_default_models() -> List[SlayerModel]:
+    """``wsum5`` on customers with a default over a to-one path to a DERIVED column
+    (``regions.derived_pop`` = ``pop * 2``): the default must expand its SQL."""
+    models = dev1840_models()
+    next(m for m in models if m.name == "regions").columns.append(
+        Column(name="derived_pop", type=DataType.DOUBLE, sql="pop * 2"),
+    )
+    _customers(models).aggregations.append(
+        Aggregation(name="wsum5", formula="SUM({value} * {weight})",
+                    params=[AggregationParam(name="weight", sql="regions.derived_pop")]),
+    )
+    return models
+
+
+def fanning_derived_source_models() -> List[SlayerModel]:
+    """customers gains ``bad_spend`` = ``spend + orders.amount``: a derived source
+    crossing the fanning customers→orders hop, which must fail closed."""
+    models = dev1840_models()
+    _customers(models).columns.append(
+        Column(name="bad_spend", type=DataType.DOUBLE, sql="spend + orders.amount"),
     )
     return models
 
@@ -120,28 +165,22 @@ def weighted_sales_models() -> List[SlayerModel]:
     return dev1847_models() + [weighted_source_queries_model()]
 
 
-# --------------------------------------------------------------------------- #
-# Association oracles (orders→customers graph; per-cell = DISTINCT customers).
-# Distinct customers by status: ok {c1,c2,c3,c5,c6}, new {c1,c2,c4}.
-# spends: c1 100, c2 150, c3 60, c4 40, c5 80, c6 30.
-# --------------------------------------------------------------------------- #
+# Association oracles (per-cell = DISTINCT customers by status:
+# ok {c1,c2,c3,c5,c6}, new {c1,c2,c4}; spends c1 100 c2 150 c3 60 c4 40 c5 80 c6 30).
 #: weighted_avg(spend, weight=spend) = SUM(spend^2) / SUM(spend) per cell.
 ASSOC_WAVG_SPEND_BY_STATUS = {"ok": 43400.0 / 420.0, "new": 34100.0 / 290.0}
 #: naive join-multiplied ``ok`` (c1 counted twice: +100^2 numerator, +100 denom).
 ASSOC_WAVG_OK_FAN_DEFECT = 53400.0 / 520.0
 #: wsum default (weight defaults to the spend column) = SUM(spend^2) per cell.
 ASSOC_WSUM_BY_STATUS = {"ok": 43400.0, "new": 34100.0}
-#: weighted_avg(spend, weight=customers.regions.pop): pops c1/c2/c6=100,
-#: c3/c5=200, c4=NULL. ok = 56000/700; new numerator drops c4's NULL-weight
-#: term, denom NULLIF(200) -> 25000/200.
+#: weighted_avg(spend, weight=customers.regions.pop): ok=56000/700; new drops
+#: c4's NULL-weight term, denom NULLIF -> 25000/200.
 ASSOC_WAVG_POP_BY_STATUS = {"ok": 56000.0 / 700.0, "new": 25000.0 / 200.0}
 
-# --------------------------------------------------------------------------- #
 # Re-aggregation oracles (sales graph; [city, region] cell totals / id counts).
 #   North: Alpha 30/3, Beta 60/1 | South: Alpha 40/2, Gamma 100/1
 #   East: Delta 50/1, Epsilon 50/1, Zeta 80/1 | Gap: NULL 12/2, Kappa 8/1
 #   Void: Xi NULL/2
-# --------------------------------------------------------------------------- #
 #: weighted_avg(city_total, weight=id_count) by region = SUM(t*c)/SUM(c).
 #: Void's only cell has a NULL total -> NULL.
 WAVG_CITY_BY_REGION = {
@@ -177,7 +216,8 @@ __all__ = [
     "ColumnRef", "ModelMeasure", "SlayerQuery", "SlayerError",
     "assert_ref_free", "assert_grain_residue",
     "shared_default_name_models", "expr_default_name_models",
-    "toone_filter_models", "weighted_source_queries_model",
+    "toone_filter_models", "toone_default_models", "derived_default_models",
+    "fanning_derived_source_models", "weighted_source_queries_model",
     "weighted_sales_models",
     "ASSOC_WAVG_SPEND_BY_STATUS", "ASSOC_WAVG_OK_FAN_DEFECT",
     "ASSOC_WSUM_BY_STATUS", "ASSOC_WAVG_POP_BY_STATUS",

@@ -383,7 +383,7 @@ _AggregateSource = Union[
     "ArithmeticKey", "ScalarCallKey", "LiteralKey", "AggregateKey",
 ]
 # Positional and kwarg arg values share one union: `last(created_at)` binds an
-# identifier column, `weighted_avg(weight=qty)` a column, and (DEV-1892)
+# identifier column, `weighted_avg(weight=qty)` a column, and
 # `weighted_avg(weight=count(id, partition_by=…))` an aggregate — all via
 # `_bind_agg_arg`.
 _AggregateArgValue = Union[
@@ -1221,7 +1221,7 @@ def reaggregation_operand_keys(vks: Sequence[ValueKey]) -> FrozenSet[AggregateKe
     """Every aggregate nested inside a re-aggregation root (at any depth) — the
     operands exempt from the combined-consumer partition-key rule. A root's
     source AND its args/kwargs are scanned: an aggregate-valued parameter
-    (DEV-1892) is an operand of the same carrier and shares the exemption."""
+    is an operand of the same carrier and shares the exemption."""
     out: set = set()
 
     def _scan(k: ValueKey) -> None:
