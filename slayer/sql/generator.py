@@ -3365,12 +3365,23 @@ class SQLGenerator:
                 ),
             )
 
-        # Pick each legal parameter once per cell as _p<i>.
+        # Pick each legal parameter once per cell as _p<i>, under the SAME
+        # measure-local filter as the source value — else an excluded row still
+        # contributes its weight to a level-2 denominator (a weighted average
+        # over filtered rows). Literal defaults never carry a filter.
         picked_kwarg_exprs: Dict[str, ResolvedAggKwarg] = {}
         for _i, _pp in enumerate(picked_params):
             _p_alias = f"_p{_i}"
+            _picked = self._render_picked_param_value(pp=_pp, ctx=ctx)
+            if (
+                spec is not None and spec.filter_sql
+                and not isinstance(_picked, exp.Literal)
+            ):
+                _picked = exp.Case(ifs=[exp.If(
+                    this=self._parse(spec.filter_sql), true=_picked,
+                )])
             inner_cols.append(exp.Alias(
-                this=exp.Max(this=self._render_picked_param_value(pp=_pp, ctx=ctx)),
+                this=exp.Max(this=_picked),
                 alias=exp.to_identifier(_p_alias),
             ))
             picked_kwarg_exprs[_pp.name] = ResolvedAggKwarg(

@@ -11,6 +11,10 @@ from pathlib import Path
 
 from tests._dev1841_fixtures import column_default_agg_models, dev1840_models
 from tests._dev1847_fixtures import INNER_CR, dev1847_models
+from tests._dev1892_fixtures import (
+    qualified_expr_default_models,
+    qualified_reagg_default_models,
+)
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
 from slayer.core.query import SlayerQuery
@@ -22,7 +26,9 @@ ALLOWED_DELTAS: dict[str, str] = {}
 _MODEL_SETS = {
     "orders": dev1840_models,
     "orders_coldef": column_default_agg_models,
+    "orders_wsum6": qualified_expr_default_models,
     "sales": dev1847_models,
+    "sales_cwavg": qualified_reagg_default_models,
 }
 _WEIGHT_COUNT = "weight=count(id, partition_by=[city, region])"
 
@@ -54,6 +60,15 @@ def _cases() -> dict:
             "kw": {"measures": [
                 {"formula": ("weighted_avg(sum(amount, partition_by=customer_id), "
                              "weight=customers.region_id)"), "name": "w"}]}},
+        "assoc/wsum6_expr_default": {
+            "models": "orders_wsum6", "source": "orders", "mode": "associate",
+            "kw": {"dimensions": ["status"],
+                   "measures": [{"formula": "customers.spend:wsum6", "name": "w"}]}},
+        "reagg/corders_expr_default": {
+            "models": "sales_cwavg", "source": "corders", "mode": None,
+            "kw": {"measures": [
+                {"formula": "cwavg(sum(amount, partition_by=customer_id))",
+                 "name": "w"}]}},
     }
 
 

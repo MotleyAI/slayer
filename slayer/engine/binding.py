@@ -1127,7 +1127,8 @@ def _bind_agg(
     # ``partition_by`` is lifted out of kwargs onto ``partition_keys``
     # (``None`` means no partition, ``[]`` means grand total).
     args = tuple(
-        _bind_agg_arg(a, scope=scope, bundle=bundle) for a in parsed.args
+        _bind_agg_arg(a, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map)
+        for a in parsed.args
     )
     partition_keys: Optional[Grain] = None
     kwargs_list: List = []
@@ -1137,7 +1138,9 @@ def _bind_agg(
                 value=v, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
             )
             continue
-        kwargs_list.append((k, _bind_agg_arg(v, scope=scope, bundle=bundle)))
+        kwargs_list.append((
+            k, _bind_agg_arg(v, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map),
+        ))
     kwargs = tuple(kwargs_list)
     # Propagate ``Column.filter`` into the AggregateKey's identity: two
     # aggregates over the same column with different filters differ at the key
@@ -1381,14 +1384,19 @@ def _bind_agg_arg(
     parsed: ParsedExpr, *,
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
+    dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ):
     """Bind one aggregation arg: identifiers → ``ColumnKey`` / ``ColumnSqlKey``,
     a nested aggregate → ``AggregateKey`` (aggregate-valued parameter),
-    literals → inline scalar via ``normalize_scalar`` (stored inline, not as LiteralKey)."""
+    literals → inline scalar via ``normalize_scalar`` (stored inline, not as LiteralKey).
+    ``dim_alias_map`` rides into a nested aggregate so its ``partition_by=`` can
+    name a computed dimension (as the outer aggregate's can)."""
     if isinstance(parsed, Literal):
         return normalize_scalar(parsed.value)
     if isinstance(parsed, AggCall):
-        return _bind_agg(parsed, scope=scope, bundle=bundle)
+        return _bind_agg(
+            parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
+        )
     if isinstance(parsed, (Ref, DottedRef)):
         return _bind(parsed, scope=scope, bundle=bundle, in_filter=False)
     raise ValueError(

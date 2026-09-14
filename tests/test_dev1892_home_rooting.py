@@ -160,12 +160,11 @@ class TestDerivedColumnEdgeCases:
     async def test_fanning_derived_source_fails_closed(self) -> None:
         """A host-locus source whose Column.sql crosses a fanning hop is rejected,
         never emitted as a multiplying join."""
+        query = bcast_q(dimensions=["status"], measures=[ModelMeasure(
+            formula="customers.bad_spend:weighted_avg(weight=amount)", name="w")])
+        models = fanning_derived_source_models()
         with pytest.raises(ValueError, match="unproven join hop"):
-            await gen(
-                bcast_q(dimensions=["status"], measures=[ModelMeasure(
-                    formula="customers.bad_spend:weighted_avg(weight=amount)",
-                    name="w")]),
-                models=fanning_derived_source_models())
+            await gen(query, models=models)
 
 
 class TestCardinalityInvariant:

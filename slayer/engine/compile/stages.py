@@ -29,7 +29,10 @@ from slayer.core.errors import AmbiguousJoinPathError, UnreachableFilterDroppedW
 from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, regroup_root_grain, reroot_value_key, substitute_value_keys, walk_value_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_local_partitioned_agg, split_top_level_and, window_kwarg_of, is_reaggregation_key, operand_aggregates
 from slayer.core.models import SlayerModel
 from slayer.engine.aggregate_input_paths import compute_aggregate_input_join_paths
-from slayer.engine.column_filter_paths import compute_column_filter_join_paths
+from slayer.engine.column_filter_paths import (
+    compute_column_filter_join_paths,
+    compute_expr_reference_columns,
+)
 from slayer.core.join_walker import resolve_hop, walk
 from slayer.engine.join_safety import (
     UNREACHABLE_NO_PATH,
@@ -1443,16 +1446,17 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
 
 _BARE_IDENT_RE = re.compile(r"^[A-Za-z_]\w*$")
 _DOTTED_PATH_RE = re.compile(r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+$")
-_IDENT_RE = re.compile(r"[A-Za-z_]\w*")
 
 
 class _ParamSpec(NamedTuple):
     """A resolved aggregation parameter that references data: a bound
-    ``key`` (column / aggregate) or an ``expr_sql`` expression default, at
-    ``owner_path``. Literal params never become a ``_ParamSpec``."""
+    ``key`` (column / aggregate) or an ``expr_sql`` expression default whose
+    referenced columns are ``expr_refs`` (``None`` = an unresolvable qualifier,
+    fails closed). Literal params never become a ``_ParamSpec``."""
     name: str
     key: Optional[ValueKey]
     expr_sql: Optional[str]
+    expr_refs: Tuple[Optional[ValueKey], ...] = ()
 
 
 def _column_default_key(
@@ -1499,10 +1503,28 @@ def _default_param_value_key(
     return None
 
 
-def _expr_default_columns(*, sql: str, owner_model: Optional[SlayerModel]) -> List[str]:
-    """Owner columns an expression default references (bare-token match)."""
-    names = {c.name for c in (owner_model.columns or [])} if owner_model else set()
-    return [t for t in _IDENT_RE.findall(sql) if t in names]
+def _expr_default_ref_keys(
+    *, sql: str, owner_model: Optional[SlayerModel],
+    owner_path: Tuple[str, ...], bundle: Optional[ResolvedSourceBundle],
+) -> List[Optional[ValueKey]]:
+    """Parse-based column refs of an expression default, as keys in the host's
+    coordinates. A bare ref is owner-anchored (modeled or physical, like a bare
+    default); string literals never contribute; ``None`` entries — an
+    unresolvable qualifier, or a fragment that could not be analyzed at all —
+    fail closed at typing."""
+    if owner_model is None or bundle is None:
+        return []
+    refs = compute_expr_reference_columns(
+        canonical_sql=sql, anchor_model=owner_model,
+        anchor_relation=owner_model.name, bundle=bundle,
+    )
+    if refs is None:
+        return [None]
+    return [
+        ColumnKey(path=tuple(owner_path) + path, leaf=leaf)
+        if path is not None else None
+        for path, leaf in refs
+    ]
 
 
 def _longest_common_prefix(paths: List[Tuple[str, ...]]) -> Tuple[str, ...]:
@@ -1583,29 +1605,36 @@ def _resolve_aggregation_params(
             )
             if vk is not None:
                 out.append(_ParamSpec(name=p.name, key=vk, expr_sql=None))
-            elif _expr_default_columns(sql=p.sql, owner_model=owner_model):
-                out.append(_ParamSpec(name=p.name, key=None, expr_sql=p.sql))
+            else:
+                refs = _expr_default_ref_keys(
+                    sql=p.sql, owner_model=owner_model, owner_path=owner_path,
+                    bundle=bundle,
+                )
+                if refs:
+                    out.append(_ParamSpec(
+                        name=p.name, key=None, expr_sql=p.sql,
+                        expr_refs=tuple(refs),
+                    ))
     return out
 
 
 def _param_is_determined(
-    *, spec: _ParamSpec, owner_model: Optional[SlayerModel],
-    owner_path: Tuple[str, ...], grain: Grain, host_model: SlayerModel,
+    *, spec: _ParamSpec, grain: Grain, host_model: SlayerModel,
     models_by_name: Dict[str, SlayerModel],
 ) -> bool:
     """A parameter is legal iff the dataset grain determines it — the bound key,
-    or (for an expression default) every owner column it references."""
+    or (for an expression default) every column it references."""
     if spec.key is not None:
         return grain_determines(
             key=spec.key, grain=grain, host_model=host_model,
             models_by_name=models_by_name,
         )
     return all(
-        grain_determines(
-            key=ColumnKey(path=tuple(owner_path), leaf=c), grain=grain,
-            host_model=host_model, models_by_name=models_by_name,
+        k is not None and grain_determines(
+            key=k, grain=grain, host_model=host_model,
+            models_by_name=models_by_name,
         )
-        for c in _expr_default_columns(sql=spec.expr_sql or "", owner_model=owner_model)
+        for k in spec.expr_refs
     )
 
 
@@ -1684,8 +1713,7 @@ def _synthesize_association_producer(  # NOSONAR(S3776) — one cohesive host-ro
         check_parameter_determined(
             alias=alias, param_name=_ps.name, grain_display=_grain_display(assoc_grain),
             determined=_param_is_determined(
-                spec=_ps, owner_model=source_model, owner_path=source_path,
-                grain=assoc_grain, host_model=host_model,
+                spec=_ps, grain=assoc_grain, host_model=host_model,
                 models_by_name=models_by_name,
             ),
         )
@@ -1941,8 +1969,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         check_parameter_determined(
             alias=alias, param_name=_ps.name, grain_display=_grain_display(union_grain),
             determined=_param_is_determined(
-                spec=_ps, owner_model=host_model, owner_path=(),
-                grain=union_grain, host_model=host_model,
+                spec=_ps, grain=union_grain, host_model=host_model,
                 models_by_name=models_by_name,
             ),
         )

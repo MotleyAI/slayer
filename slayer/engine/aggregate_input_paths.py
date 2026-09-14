@@ -208,7 +208,7 @@ def compute_aggregate_input_join_paths(
         )
     if include_source:
         _collect_host_locus_source_paths(
-            key, anchor_model=anchor_model, bundle=bundle, out=out,
+            key=key, anchor_model=anchor_model, bundle=bundle, out=out,
         )
     _collect_default_fragment_paths(
         key,

@@ -140,6 +140,144 @@ def fanning_derived_source_models() -> List[SlayerModel]:
     return models
 
 
+def qualified_expr_default_models() -> List[SlayerModel]:
+    """``wsum6`` on customers: weight default is an EXPRESSION over a to-one
+    qualified ref (``regions.pop * 2``) — extraction must see through the expression."""
+    models = dev1840_models()
+    _customers(models).aggregations.append(
+        Aggregation(name="wsum6", formula="SUM({value} * {weight})",
+                    params=[AggregationParam(name="weight", sql="regions.pop * 2")]),
+    )
+    return models
+
+
+def mixed_expr_default_models() -> List[SlayerModel]:
+    """``wsum7`` on customers: weight default mixes an owner column with a
+    qualified ref (``spend * regions.pop``)."""
+    models = dev1840_models()
+    _customers(models).aggregations.append(
+        Aggregation(name="wsum7", formula="SUM({value} * {weight})",
+                    params=[AggregationParam(name="weight", sql="spend * regions.pop")]),
+    )
+    return models
+
+
+def fanning_expr_default_models() -> List[SlayerModel]:
+    """``wbad`` on customers: weight default crosses the fanning customers→orders
+    hop — must stay a loud refusal."""
+    models = dev1840_models()
+    _customers(models).aggregations.append(
+        Aggregation(name="wbad", formula="SUM({value} * {weight})",
+                    params=[AggregationParam(name="weight", sql="orders.amount + 0")]),
+    )
+    return models
+
+
+def self_qualified_expr_default_models() -> List[SlayerModel]:
+    """``wsum8`` on customers: weight default self-qualifies the owner
+    (``customers.spend * 1``) — a local ref, not a hop."""
+    models = dev1840_models()
+    _customers(models).aggregations.append(
+        Aggregation(name="wsum8", formula="SUM({value} * {weight})",
+                    params=[AggregationParam(name="weight", sql="customers.spend * 1")]),
+    )
+    return models
+
+
+def derived_local_expr_default_models() -> List[SlayerModel]:
+    """``wsum9`` on customers: weight default mixes a DERIVED local column with a
+    qualified ref (``double_spend * regions.pop``)."""
+    models = dev1840_models()
+    cust = _customers(models)
+    cust.columns.append(
+        Column(name="double_spend", type=DataType.DOUBLE, sql="spend * 2"),
+    )
+    cust.aggregations.append(
+        Aggregation(name="wsum9", formula="SUM({value} * {weight})",
+                    params=[AggregationParam(name="weight",
+                                             sql="double_spend * regions.pop")]),
+    )
+    return models
+
+
+def literal_only_reagg_models() -> List[SlayerModel]:
+    """``wconst`` on sales: expr default referencing NO columns, only literals —
+    must ride the plain default machinery, never a false ``amount`` dependency."""
+    models = dev1847_models()
+    sales = next(m for m in models if m.name == "sales")
+    sales.aggregations.append(
+        Aggregation(name="wconst", formula="SUM({value} * {weight}) / SUM({weight})",
+                    params=[AggregationParam(
+                        name="weight",
+                        sql="CASE WHEN 'amount' = 'amount' THEN 2.0 ELSE 1.0 END")]),
+    )
+    return models
+
+
+def unmodeled_physical_expr_default_models() -> List[SlayerModel]:
+    """``wphys`` on customers with ``tier`` REMOVED from the model: the weight
+    default references the physical-only column — lifted like a bare default."""
+    models = dev1840_models()
+    cust = _customers(models)
+    cust.columns = [c for c in cust.columns if c.name != "tier"]
+    cust.aggregations.append(
+        Aggregation(name="wphys", formula="SUM({value} * {weight})",
+                    params=[AggregationParam(
+                        name="weight",
+                        sql="CASE WHEN tier = 'gold' THEN 2.0 ELSE 1.0 END")]),
+    )
+    return models
+
+
+def unparseable_expr_default_models() -> List[SlayerModel]:
+    """``wugly`` on customers: weight default no dialect parses — must fail
+    closed, never render raw."""
+    models = dev1840_models()
+    _customers(models).aggregations.append(
+        Aggregation(name="wugly", formula="SUM({value} * {weight})",
+                    params=[AggregationParam(name="weight", sql=")((( bad")]),
+    )
+    return models
+
+
+def opaque_expr_default_models() -> List[SlayerModel]:
+    """``wopq`` on customers: weight default references an unresolvable qualifier
+    (``nosuch.col``) — must fail closed, never render raw."""
+    models = dev1840_models()
+    _customers(models).aggregations.append(
+        Aggregation(name="wopq", formula="SUM({value} * {weight})",
+                    params=[AggregationParam(name="weight", sql="nosuch.col + 1")]),
+    )
+    return models
+
+
+def literal_collision_reagg_models() -> List[SlayerModel]:
+    """``wlit`` on sales: expr default whose string literal equals a non-grain
+    column name (``'amount'``) — the literal must not read as a dependency."""
+    models = dev1847_models()
+    sales = next(m for m in models if m.name == "sales")
+    sales.aggregations.append(
+        Aggregation(name="wlit", formula="SUM({value} * {weight}) / SUM({weight})",
+                    params=[AggregationParam(
+                        name="weight",
+                        sql="CASE WHEN region = 'amount' THEN 1.0 ELSE 2.0 END")]),
+    )
+    return models
+
+
+def qualified_reagg_default_models() -> List[SlayerModel]:
+    """``cwavg`` on corders: weight default is a qualified expr over the to-one
+    chain FK-seeded by the operand grain (``customers.region_id * 1``)."""
+    models = dev1847_models()
+    corders = next(m for m in models if m.name == "corders")
+    corders.aggregations.append(
+        Aggregation(name="cwavg", formula="SUM({value} * {weight}) / SUM({weight})",
+                    params=[AggregationParam(name="weight",
+                                             sql="customers.region_id * 1")]),
+    )
+    return models
+
+
 def weighted_source_queries_model() -> SlayerModel:
     """The manual two-stage encoding of
     ``weighted_avg(sum(amount, partition_by=[city, region]),
@@ -176,6 +314,14 @@ ASSOC_WSUM_BY_STATUS = {"ok": 43400.0, "new": 34100.0}
 #: weighted_avg(spend, weight=customers.regions.pop): ok=56000/700; new drops
 #: c4's NULL-weight term, denom NULLIF -> 25000/200.
 ASSOC_WAVG_POP_BY_STATUS = {"ok": 56000.0 / 700.0, "new": 25000.0 / 200.0}
+#: wsum6 (weight default regions.pop * 2) = 2 * SUM(spend * pop) per cell.
+ASSOC_WSUM6_BY_STATUS = {"ok": 112000.0, "new": 50000.0}
+#: wsum7 (weight default spend * regions.pop) = SUM(spend^2 * pop) per cell.
+ASSOC_WSUM7_BY_STATUS = {"ok": 5340000.0, "new": 3250000.0}
+#: wsum9 (weight default double_spend * regions.pop) = 2 * SUM(spend^2 * pop).
+ASSOC_WSUM9_BY_STATUS = {"ok": 10680000.0, "new": 6500000.0}
+#: wphys (weight = 2.0 for gold, 1.0 else; gold c1,c3,c6, silver c2,c5, bronze c4).
+ASSOC_WPHYS_BY_STATUS = {"ok": 610.0, "new": 390.0}
 
 # Re-aggregation oracles (sales graph; [city, region] cell totals / id counts).
 #   North: Alpha 30/3, Beta 60/1 | South: Alpha 40/2, Gamma 100/1
@@ -219,8 +365,16 @@ __all__ = [
     "toone_filter_models", "toone_default_models", "derived_default_models",
     "fanning_derived_source_models", "weighted_source_queries_model",
     "weighted_sales_models",
+    "qualified_expr_default_models", "mixed_expr_default_models",
+    "fanning_expr_default_models", "opaque_expr_default_models",
+    "self_qualified_expr_default_models", "derived_local_expr_default_models",
+    "unmodeled_physical_expr_default_models", "unparseable_expr_default_models",
+    "literal_collision_reagg_models", "literal_only_reagg_models",
+    "qualified_reagg_default_models",
     "ASSOC_WAVG_SPEND_BY_STATUS", "ASSOC_WAVG_OK_FAN_DEFECT",
     "ASSOC_WSUM_BY_STATUS", "ASSOC_WAVG_POP_BY_STATUS",
+    "ASSOC_WSUM6_BY_STATUS", "ASSOC_WSUM7_BY_STATUS", "ASSOC_WSUM9_BY_STATUS",
+    "ASSOC_WPHYS_BY_STATUS",
     "WAVG_CITY_BY_REGION", "UNWEIGHTED_CITY_BY_REGION",
     "DEGENERATE_WAVG_BY_REGION", "CORDERS_GLOBAL_WAVG",
     "CORDERS_GLOBAL_UNWEIGHTED", "SEEDED_AVG_BY_REGION_ID",

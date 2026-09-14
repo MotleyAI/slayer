@@ -500,33 +500,75 @@ def grain_determines(
             pk in grain for pk in key.partition_keys)
     if not isinstance(key, (ColumnKey, ColumnSqlKey)):
         return False
+    return _column_grain_determined(
+        key=key, grain=grain, host_model=host_model, models_by_name=models_by_name,
+    )
+
+
+def _physical_grain_leaves(*, grain: Grain, at: Tuple[str, ...], model: SlayerModel) -> set:
+    """The grain's leaves at path ``at``, spelled physically for ``model`` — so a
+    logical ``ColumnKey.leaf`` matches a ``_unique_key_sets`` entry carrying a
+    bare-identifier ``Column.sql`` rename."""
+    by_name = {c.name: _physical_name(c) for c in model.columns}
+    return {
+        by_name.get(leaf, leaf)
+        for g in grain
+        if key_host_path(g) == at and (leaf := _grain_leaf_name(g)) is not None
+    }
+
+
+def _entity_seeded(*, grain: Grain, model: SlayerModel, at: Tuple[str, ...]) -> bool:
+    """The grain pins ``model`` at ``at`` iff its leaves there cover a unique key
+    set (both physical spelling)."""
+    here = _physical_grain_leaves(grain=grain, at=at, model=model)
+    return any(ks and set(ks) <= here for ks in _unique_key_sets(model))
+
+
+def _hop_pins(
+    *, edge, src_model: Optional[SlayerModel], tgt: SlayerModel, grain: Grain,
+    path: Tuple[str, ...], i: int, pinned_before: bool,
+) -> bool:
+    """The to-one target of ``edge`` stays pinned iff its own entity key is seeded,
+    its host-side FK columns are grain members, or the source was pinned and the hop
+    is provably to-one. ``join_pairs`` source columns are PHYSICAL names, matched
+    against the grain's physical leaves at the source (same normalization the
+    entity-key seed uses, so a renamed FK still seeds)."""
+    to_one = provably_to_one(edge=edge, target_model=tgt)
+    src_leaves = (
+        _physical_grain_leaves(grain=grain, at=path[:i], model=src_model)
+        if src_model is not None else set()
+    )
+    fk_seed = to_one and bool(edge.join_pairs) and all(
+        src in src_leaves for src, _ in edge.join_pairs)
+    return (
+        _entity_seeded(grain=grain, model=tgt, at=path[: i + 1])
+        or fk_seed
+        or (pinned_before and to_one)
+    )
+
+
+def _column_grain_determined(
+    *, key: ValueKey, grain: Grain, host_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel],
+) -> bool:
+    """The column arm of ``grain_determines``: pinned from the host over provably
+    to-one hops, each hop reseeded by an entity or FK key in the grain."""
     path = key_host_path(key)
-    grain_leaves: Dict[Tuple[str, ...], set] = {}
-    for g in grain:
-        leaf = _grain_leaf_name(g)
-        if leaf is not None:
-            grain_leaves.setdefault(key_host_path(g), set()).add(leaf)
-
-    def _entity_seeded(model: SlayerModel, at: Tuple[str, ...]) -> bool:
-        here = grain_leaves.get(at, set())
-        return any(ks and set(ks) <= here for ks in _unique_key_sets(model))
-
     try:
         chain = walk(root=host_model, path=path, models_by_name=models_by_name)
     except AmbiguousJoinPathError:
         return False
     if path and chain is None:
         return False
-    pinned = _entity_seeded(host_model, ())
+    pinned = _entity_seeded(grain=grain, model=host_model, at=())
     for i, e in enumerate(chain or []):
         tgt = models_by_name.get(e.target_model)
         if tgt is None:
             return False
-        to_one = provably_to_one(edge=e, target_model=tgt)
-        fk_seed = to_one and bool(e.join_pairs) and all(
-            src in grain_leaves.get(path[:i], set()) for src, _ in e.join_pairs)
-        pinned = (
-            _entity_seeded(tgt, path[: i + 1]) or fk_seed or (pinned and to_one)
+        src_model = host_model if i == 0 else models_by_name.get(e.source_model)
+        pinned = _hop_pins(
+            edge=e, src_model=src_model, tgt=tgt, grain=grain,
+            path=path, i=i, pinned_before=pinned,
         )
     return pinned
 
