@@ -43,7 +43,9 @@ Oracle.
 Some databases cap identifier length (Postgres is the tightest at 63 bytes, and
 truncates over-limit names *silently*). SLayer's join-path aliases like
 `orders.customers.regions.name` can exceed that on a deep chain, so any
-over-limit alias is trimmed at emission to `<head>_<hash>_<tail>`. This does
+over-limit alias is trimmed at emission to `<head>_<hash>_<tail>`. The same
+trimming applies to internal query-generated identifiers (e.g. CTE column
+aliases), while identifiers you write yourself pass through untouched. This does
 **not** affect output column names — `response.data` / `response.columns` keep
 the canonical dotted alias — but `response.sql` (and `dry_run` / `EXPLAIN`)
 shows the trimmed form, so account for it if you introspect the SQL.

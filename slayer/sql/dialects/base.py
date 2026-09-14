@@ -23,8 +23,14 @@ from sqlglot import exp
 from sqlglot.dialects.dialect import Dialect as _SqlglotDialect
 
 from slayer.core.enums import TimeGranularity
-from slayer.core.errors import IdentifierCollisionError
-from slayer.sql._identifier_fit import fit_identifier, substitute_quoted
+from slayer.core.errors import IdentifierCollisionError, IdentifierLengthError
+from slayer.sql._identifier_fit import (
+    SqlLexis,
+    fit_identifier,
+    overlimit_tokens,
+    quoted_identifiers,
+    substitute_quoted,
+)
 from slayer.sql.naming_bijection import decode_alias, encode_alias
 
 if TYPE_CHECKING:
@@ -172,6 +178,31 @@ def _sqlglot_backslash_escapes(sqlglot_name: str) -> bool:
     return "\\" in escapes
 
 
+@lru_cache(maxsize=None)
+def _sqlglot_masking_lexis(sqlglot_name: str) -> SqlLexis:
+    """Lexical rules the identifier masker needs, read from sqlglot's tokenizer
+    (same source as the parser, so masking can't drift from it): ordinary-string
+    backslash escapes, ``/* */`` nesting, and ``$$``/``$tag$`` dollar-quoting. Guards
+    the semi-internal attributes so a sqlglot reshape fails loudly here."""
+    tokenizer = _SqlglotDialect.get_or_raise(sqlglot_name).tokenizer_class
+    nested = getattr(tokenizer, "NESTED_COMMENTS", None)
+    heredoc = getattr(tokenizer, "HEREDOC_STRINGS", None)
+    raw = getattr(tokenizer, "RAW_STRINGS", None)
+    if not isinstance(nested, bool) or not isinstance(
+        heredoc, (list, tuple, set, frozenset)
+    ) or not isinstance(raw, (list, tuple, set, frozenset)):
+        raise RuntimeError(
+            f"Cannot derive the masking lexis for sqlglot dialect {sqlglot_name!r}: "
+            f"tokenizer NESTED_COMMENTS/HEREDOC_STRINGS/RAW_STRINGS shape changed. A "
+            f"sqlglot upgrade may have changed these internal APIs."
+        )
+    return SqlLexis(
+        backslash_escapes=_sqlglot_backslash_escapes(sqlglot_name),
+        nested_comments=nested,
+        dollar_quotes="$" in heredoc or any("$" in str(r) for r in raw),
+    )
+
+
 def _digest(secret: str | None) -> str:
     """Non-reversible id for secret material in cache keys. 16 hex chars keeps
     it log-readable; collisions are negligible at this scale."""
@@ -227,6 +258,17 @@ class SqlDialect(BaseModel):
         disagree with the parser; a pinning test freezes the expected value.
         """
         return _sqlglot_backslash_escapes(self.sqlglot_name)
+
+    @property
+    def identifier_masking_lexis(self) -> SqlLexis:
+        """Lexical rules for the identifier masker (ordinary-string backslash
+        escapes, ``/* */`` nesting, dollar-quoting, and this dialect's identifier
+        quote pair), so masking of user literals/comments matches this dialect's
+        grammar rather than over/under-masking a Postgres-shaped default. Derived
+        from sqlglot's tokenizer plus the emitter's own identifier quote."""
+        return _sqlglot_masking_lexis(self.sqlglot_name).model_copy(
+            update={"identifier_quote": self._identifier_quote_anchors()},
+        )
 
     # ------------------------------------------------------------------
     # Null-safe equality (DEV-1708 / Codex F2)
@@ -789,22 +831,96 @@ class SqlDialect(BaseModel):
             out[decoded] = value
         return out
 
+    def _identifier_quote_anchors(self) -> tuple[str, str]:
+        """This dialect's identifier open/close quote chars (``"``/``"``,
+        `` ` ``/`` ` ``, ``[``/``]``), read off ``quote_identifier`` so the scan
+        can't drift from the emitter."""
+        probe = self.quote_identifier("x")
+        return probe[0], probe[-1]
+
+    def _emission_fit_map(
+        self, *, sql: str, aliases: Sequence[str], exempt: frozenset[str],
+    ) -> dict[str, str]:
+        """``{canonical: fitted}`` for every over-limit SLayer-minted identifier —
+        the plan-derived projection ``aliases`` plus internal CTE columns scanned
+        off the assembled SQL. Exempt names pass through unfitted (they win on a
+        spelling tie). Fails closed on a fitted-form collision."""
+        limit = self.max_identifier_bytes
+        if limit is None:
+            return {}
+        quote_open, quote_close = self._identifier_quote_anchors()
+        present = quoted_identifiers(
+            sql, quote_open=quote_open, quote_close=quote_close,
+            lexis=self.identifier_masking_lexis,
+        )
+        # ``fit_alias`` sizes against the post-mangle form (BigQuery/T-SQL dot
+        # expansion), so this also catches a dotted alias under the raw limit that
+        # mangling would push over.
+        scanned = sorted(n for n in present if self.fit_alias(n) != n)
+        allocation: dict[str, str] = {}
+        owner: dict[str, str] = {}
+        for name in (*aliases, *scanned):
+            if name in exempt or name in allocation:
+                continue
+            fitted = self.fit_alias(name)
+            prior = owner.get(fitted)
+            if prior is not None and prior != name:
+                raise IdentifierCollisionError(
+                    first=prior, second=name, emitted=fitted,
+                    dialect=self.sqlglot_name, limit=limit,
+                )
+            owner[fitted] = name
+            allocation[name] = fitted
+        for name, fitted in allocation.items():
+            if fitted != name and fitted in present and fitted not in allocation:
+                raise IdentifierCollisionError(
+                    first=name, second=fitted, emitted=fitted,
+                    dialect=self.sqlglot_name, limit=limit,
+                )
+        return {k: v for k, v in allocation.items() if k != v}
+
     def rewrite_emitted_sql(
-        self, sql: str, *, aliases: Sequence[str] = (),
+        self, sql: str, *, aliases: Sequence[str] = (), exempt: frozenset[str] = frozenset(),
     ) -> str:
         """Post-pass string rewrite of the final SQL; write-side companion to
         ``rewrite_parsed_ast``, applied at the end of ``generate()``.
 
-        Base impl fits over-limit aliases (DEV-1756), replacing each canonical
-        token everywhere it occurs. Driven by the query's own alias set, not a
-        length regex, which bounds what it can touch (see :func:`substitute_quoted`).
-        Empty ``aliases`` is a no-op. Must preserve query semantics, not shape.
-        BigQuery/T-SQL compose dot-mangling after this pass.
+        Fits every over-limit SLayer-minted identifier — the plan-derived
+        projection ``aliases`` and internal CTE columns scanned off the assembled
+        SQL — replacing each canonical token everywhere it occurs (literals/comments
+        excepted). ``exempt`` names user-authored
+        identifiers that pass through byte-identical. Under-limit SQL is
+        byte-identical; unbounded dialects are a no-op. BigQuery/T-SQL compose
+        dot-mangling after this pass.
         """
-        mapping = self.alias_rewrite_map(aliases)
+        mapping = self._emission_fit_map(sql=sql, aliases=aliases, exempt=exempt)
         if not mapping:
             return sql
-        return substitute_quoted(sql=sql, mapping=mapping, quote=self.quote_identifier)
+        return substitute_quoted(
+            sql=sql, mapping=mapping, quote=self.quote_identifier,
+            lexis=self.identifier_masking_lexis,
+        )
+
+    def assert_no_overlimit_identifiers(
+        self, sql: str, *, exempt: frozenset[str] = frozenset(),
+    ) -> None:
+        """Always-on emission backstop: raise if the final SQL still carries a
+        non-exempt over-limit identifier — an unaccounted name the database would
+        truncate silently (sql principle 9)."""
+        limit = self.max_identifier_bytes
+        if limit is None:
+            return
+        survivors = [
+            t for t in overlimit_tokens(
+                sql, limit=limit, quote_styles=[self._identifier_quote_anchors()],
+                lexis=self.identifier_masking_lexis,
+            )
+            if t not in exempt
+        ]
+        if survivors:
+            raise IdentifierLengthError(
+                tokens=survivors, dialect=self.sqlglot_name, limit=limit,
+            )
 
     def decode_result_keys(
         self,
@@ -963,10 +1079,10 @@ class DottedAliasManglingMixin:
         return encode_alias(self.fit_alias(alias))
 
     def rewrite_emitted_sql(
-        self, sql: str, *, aliases: Sequence[str] = (),
+        self, sql: str, *, aliases: Sequence[str] = (), exempt: frozenset[str] = frozenset(),
     ) -> str:
         """Base LENGTH pass, then ``.`` -> ``___`` inside quoted identifiers."""
-        sql = super().rewrite_emitted_sql(sql=sql, aliases=aliases)
+        sql = super().rewrite_emitted_sql(sql=sql, aliases=aliases, exempt=exempt)
         return self.dotted_alias_re.sub(
             lambda m: (
                 f"{self.alias_quote_open}{encode_alias(m.group(1))}"

@@ -49,9 +49,11 @@ from slayer.sql.column_expansion import (
 )
 from slayer.ir.planned import MaskTyping, RankedGrainMember, ValueSlot, regroup_producer_identity
 from slayer.ir.source_bundle import (
+    ResolvedSourceBundle,
     stage_bundle_with_siblings,
     synthetic_model_from_stage_schema,
 )
+from slayer.sql._identifier_fit import overlimit_tokens
 from slayer.sql.dialects import SqlDialect, get_dialect
 from slayer.sql.naming import (
     FILTERED_ALIAS,
@@ -6883,6 +6885,51 @@ def _bundle_for_stage(planned_query, bundle, schema_by_name):
     )
 
 
+def _user_authored_exemptions(
+    *, bundle: ResolvedSourceBundle, dialect: str,
+) -> frozenset[str]:
+    """Over-limit identifier-shaped tokens from every user-authored raw-SQL surface
+    in ``bundle`` — model ``sql``/``sql_table``/``filters`` and per-column
+    ``name``/``sql``/``filter`` across the source, referenced, per-stage source and
+    inline-extension models. These pass through emission
+    unfitted; SLayer-generated ``backing_query_sql`` and synthetic stage-schema
+    models (built later) are deliberately excluded."""
+    d = get_dialect(dialect)
+    limit = d.max_identifier_bytes
+    if limit is None:
+        return frozenset()
+
+    def _col_surfaces(col) -> list[str]:
+        # ext.columns may still be raw dicts (not yet coerced to Column).
+        get = col.get if isinstance(col, dict) else lambda k: getattr(col, k, None)
+        return [s for s in (get("name"), get("sql"), get("filter")) if s]
+
+    surfaces: List[str] = []
+    models = [
+        *([bundle.source_model] if bundle.source_model is not None else []),
+        *bundle.referenced_models,
+        *bundle.stage_source_models.values(),
+    ]
+    for model in models:
+        surfaces.extend(s for s in (model.sql, model.sql_table) if s)
+        surfaces.extend(model.filters)
+        for col in model.columns:
+            surfaces.extend(_col_surfaces(col))
+    for ext in bundle.inline_extensions:
+        for col in ext.columns or []:
+            surfaces.extend(_col_surfaces(col))
+    tokens: set[str] = set()
+    quote_styles = [d._identifier_quote_anchors()]
+    for text in surfaces:
+        tokens.update(
+            overlimit_tokens(
+                text, limit=limit, quote_styles=quote_styles,
+                lexis=d.identifier_masking_lexis,
+            )
+        )
+    return frozenset(tokens)
+
+
 def generate_planned_stages(
     planned_queries,
     *,
@@ -6893,14 +6940,18 @@ def generate_planned_stages(
     """Render a multi-stage DAG (``plan_stages`` output) to one SQL string."""
     if not planned_queries:
         raise ValueError("generate_planned_stages requires at least one stage")
+    exempt = _user_authored_exemptions(bundle=bundle, dialect=dialect)
     if len(planned_queries) == 1:
         sql = generate_from_planned(
             planned_queries[0], bundle=bundle, dialect=dialect,
         )
         # Length-fit over-limit projection aliases from the plan-derived canonical keys, not parsed off the SQL —
         # BigQuery can't parse a backticked dotted alias.
-        sql = get_dialect(dialect).rewrite_emitted_sql(sql, aliases=projection_aliases)
+        sql = get_dialect(dialect).rewrite_emitted_sql(
+            sql, aliases=projection_aliases, exempt=exempt,
+        )
         maybe_validate_scopes(sql, dialect=dialect)
+        get_dialect(dialect).assert_no_overlimit_identifiers(sql, exempt=exempt)
         return sql
 
     schema_by_name = {
@@ -6958,8 +7009,11 @@ def generate_planned_stages(
         root_ast = root_ast.with_(cte.args["alias"], as_=cte.this, dialect=dialect)
 
     sql = root_ast.sql(dialect=dialect, pretty=True)
-    sql = get_dialect(dialect).rewrite_emitted_sql(sql, aliases=projection_aliases)
+    sql = get_dialect(dialect).rewrite_emitted_sql(
+        sql, aliases=projection_aliases, exempt=exempt,
+    )
     maybe_validate_scopes(sql, dialect=dialect)
+    get_dialect(dialect).assert_no_overlimit_identifiers(sql, exempt=exempt)
     return sql
 
 
