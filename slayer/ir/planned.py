@@ -27,6 +27,7 @@ __all__ = [
     "MaskTyping",
     "ModeAFilter",
     "OrderEntry",
+    "PickedParam",
     "PlainProducerKernel",
     "PlannedQuery",
     "ProducerKernel",
@@ -255,6 +256,23 @@ class TrailingWindowProducerKernel(BaseModel):
     src_filter_rewrites: List["SrcFilterRewrite"] = Field(default_factory=list)
 
 
+class PickedParam(BaseModel):
+    """An aggregation parameter lifted onto the two-level kernel (DEV-1892):
+    picked once per level-1 cell as ``MAX(<value>) AS _p<i>`` and read by level 2
+    as ``_base._p<i>``. Exactly one source form is set — ``key`` (a column /
+    placeholder / composite value key rendered through the scope, with a
+    ``ColumnSqlKey`` taking the derived expansion) or ``sql`` (an owner-anchored
+    Mode-A fragment for an expression default). ``anchor_path`` is the owner join
+    path an expression default (or bare-name default) expands against."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    name: str
+    key: Optional[ValueKey] = None
+    sql: Optional[str] = None
+    anchor_path: Tuple[str, ...] = ()
+
+
 class AssociationProducerKernel(BaseModel):
     """A distinct-entity association producer (DEV-1841): level 1 groups by
     (grain × the root's ``entity_keys``) picking each input once per entity;
@@ -263,13 +281,18 @@ class AssociationProducerKernel(BaseModel):
 
     ``null_safe`` (DEV-1847) keeps NULL entity cells as distinct cells instead of
     excluding them — a re-aggregation's entity is an inner-grain cell whose NULL
-    component is its own cell (null-safe second-order aggregation)."""
+    component is its own cell (null-safe second-order aggregation).
+
+    ``picked_params`` (DEV-1892) are the aggregation parameters the grain
+    determines, each picked once per level-1 cell alongside the aggregate's own
+    value; level 2 reads them as ``_base._p<i>``."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     kind: Literal["association"] = "association"
     entity_keys: List[ValueKey] = Field(default_factory=list)
     null_safe: bool = False
+    picked_params: List[PickedParam] = Field(default_factory=list)
 
 
 ProducerKernel = Union[

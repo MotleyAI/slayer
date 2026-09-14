@@ -18,6 +18,7 @@ from slayer.core.keys import (
     AggregateKey,
     ColumnKey,
     ColumnSqlKey,
+    Grain,
     StarKey,
     TimeTruncKey,
     ValueKey,
@@ -468,6 +469,63 @@ def grain_member_attributable(
             ):
                 return False
     return saw
+
+
+def _grain_leaf_name(key: ValueKey) -> Optional[str]:
+    """The physical leaf a column-ish grain member / dimension names, else None."""
+    if isinstance(key, ColumnKey):
+        return key.leaf
+    if isinstance(key, ColumnSqlKey):
+        return key.column_name
+    return None
+
+
+def grain_determines(
+    *, key: ValueKey, grain: Grain, host_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel],
+) -> bool:
+    """Does a dataset grain determine ``key`` (DEV-1892, Axiom 1)? True iff ``key``
+    is a grain member, an aggregate whose ``partition_by=`` grain ⊆ the grain (a
+    cell of the same dataset), or a column reached over provably to-one hops from
+    a model the grain pins — pinned by that model's unique key lying in the grain
+    at its path (an entity-key seed) or by the host-side join columns of the hop
+    into it (a foreign-key seed: the fixed key pins the to-one target row)."""
+    if key in grain:
+        return True
+    if isinstance(key, AggregateKey):
+        return key.partition_keys is not None and all(
+            pk in grain for pk in key.partition_keys)
+    if not isinstance(key, (ColumnKey, ColumnSqlKey)):
+        return False
+    path = key_host_path(key)
+    grain_leaves: Dict[Tuple[str, ...], set] = {}
+    for g in grain:
+        leaf = _grain_leaf_name(g)
+        if leaf is not None:
+            grain_leaves.setdefault(key_host_path(g), set()).add(leaf)
+
+    def _entity_seeded(model: SlayerModel, at: Tuple[str, ...]) -> bool:
+        here = grain_leaves.get(at, set())
+        return any(ks and set(ks) <= here for ks in _unique_key_sets(model))
+
+    try:
+        chain = walk(root=host_model, path=path, models_by_name=models_by_name)
+    except AmbiguousJoinPathError:
+        return False
+    if path and chain is None:
+        return False
+    pinned = _entity_seeded(host_model, ())
+    for i, e in enumerate(chain or []):
+        tgt = models_by_name.get(e.target_model)
+        if tgt is None:
+            return False
+        to_one = provably_to_one(edge=e, target_model=tgt)
+        fk_seed = to_one and bool(e.join_pairs) and all(
+            src in grain_leaves.get(path[:i], set()) for src, _ in e.join_pairs)
+        pinned = (
+            _entity_seeded(tgt, path[: i + 1]) or fk_seed or (pinned and to_one)
+        )
+    return pinned
 
 
 def local_crossing_input_paths(

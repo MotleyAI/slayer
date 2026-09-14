@@ -812,16 +812,41 @@ def check_association_root_unique_key(
         )
 
 
-def check_association_column_param(*, alias: str, column_param) -> None:
-    """The level-2 aggregate runs over the deduped ``_base`` and cannot carry a column parameter (DEV-1871 G13; DEV-1892 tracks lifting them)."""
-    if column_param is not None:
-        raise SlayerError(
-            f"Aggregate {alias!r} needs distinct-entity association over an "
-            f"unattributable dimension, which is unsupported with a "
-            f"column-reference parameter (e.g. weighted_avg(weight=…)); the "
-            f"per-entity pick carries only the aggregate's own value. Attribute "
-            f"the dimension or drop the column parameter."
-        )
+def check_parameter_determined(
+    *, alias: str, param_name: str, grain_display: str, determined: bool,
+) -> None:
+    """One rule for every aggregation parameter: it must be determined by the
+    grain of the dataset the aggregation runs over — a grain member, a cell of
+    that dataset (an aggregate grained within it), or a column the grain pins
+    over to-one hops. The residue names the parameter, the grain, and the
+    remedy."""
+    if determined:
+        return
+    raise SlayerError(
+        f"Aggregation {alias!r} parameter {param_name!r} is not determined by "
+        f"the operand grain ({grain_display}); the aggregation reads one value "
+        f"per cell of that grain. Aggregate the parameter to that grain, or add "
+        f"its determining keys to the operand's partition_by=."
+    )
+
+
+def check_attached_param_requires_attached_source(
+    *, alias: str, offending_param: Optional[str],
+) -> None:
+    """An aggregate-valued parameter needs the aggregation's source to be attached
+    (a re-aggregation), so the parameter is a cell of the same operand dataset. On
+    a row-level source the parameter would need the attached value on the
+    aggregation's own input rows — a typed error naming the parameter and the
+    remedy. (The row-attach mechanism lands in a later change.)"""
+    if offending_param is None:
+        return
+    raise SlayerError(
+        f"Aggregation {alias!r} parameter {offending_param!r} is a partitioned "
+        f"aggregate, but the aggregation's source is a row-level value; the "
+        f"parameter would need the attached value on the aggregation's own input "
+        f"rows. Aggregate the source to the parameter's grain, or use a row-level "
+        f"parameter."
+    )
 
 
 def check_reaggregation_no_window(*, alias: str, window_val) -> None:

@@ -3,6 +3,7 @@ Binding lives in ``bind_inputs``; typing and the checker in ``elaborate_env``.""
 
 from __future__ import annotations
 
+import re
 from decimal import Decimal
 from typing import (
     AbstractSet,
@@ -35,6 +36,7 @@ from slayer.engine.join_safety import (
     attributable_from_root,
     broadcast_reason,
     crossing_local_root_predicate,
+    grain_determines,
     grain_member_attributable,
     key_host_path,
     local_crossing_input_paths,
@@ -56,7 +58,6 @@ from slayer.engine.elaborate_env import (
     validate_model_filter,
     type_and_split_filters,
     type_order_positions,
-    check_association_column_param,
     check_association_root_unique_key,
     check_association_windowed_ranked,
     check_cross_model_inputs_safe,
@@ -64,9 +65,9 @@ from slayer.engine.elaborate_env import (
     check_cross_model_source_resolves,
     check_local_producer_inputs_safe,
     check_order_target_has_slot,
+    check_parameter_determined,
     check_raw_rows_no_aggregate_slots,
     check_reaggregation_dims_attributable,
-    check_reaggregation_no_column_param,
     check_reaggregation_no_window,
     check_reaggregation_partition_key_is_query_dim,
     check_windowed_cross_model_time_axis,
@@ -88,6 +89,7 @@ from slayer.ir.planned import (
     MaskTyping,
     ModeAFilter,
     OrderEntry,
+    PickedParam,
     PlannedQuery,
     RankedProducerKernel,
     RegroupAttachPlan,
@@ -1415,6 +1417,91 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     )
 
 
+_BARE_IDENT_RE = re.compile(r"^[A-Za-z_]\w*$")
+_IDENT_RE = re.compile(r"[A-Za-z_]\w*")
+
+
+class _ParamSpec(NamedTuple):
+    """A resolved aggregation parameter that references data (DEV-1892): a bound
+    ``key`` (column / aggregate) or an ``expr_sql`` expression default, at
+    ``owner_path``. Literal params never become a ``_ParamSpec``."""
+    name: str
+    key: Optional[ValueKey]
+    expr_sql: Optional[str]
+
+
+def _default_param_value_key(
+    *, sql: str, owner_path: Tuple[str, ...],
+) -> Optional[ColumnKey]:
+    """A bare-identifier definition default → a ``ColumnKey`` in the owner's
+    coordinates (so a host column of the same name never captures it); an
+    expression or literal default → ``None``."""
+    text = sql.strip()
+    return ColumnKey(path=tuple(owner_path), leaf=text) if _BARE_IDENT_RE.match(text) else None
+
+
+def _expr_default_columns(*, sql: str, owner_model: Optional[SlayerModel]) -> List[str]:
+    """Owner columns an expression default references (bare-token match)."""
+    names = {c.name for c in (owner_model.columns or [])} if owner_model else set()
+    return [t for t in _IDENT_RE.findall(sql) if t in names]
+
+
+def _resolve_aggregation_params(
+    *, agg: AggregateKey, owner_model: Optional[SlayerModel],
+    owner_path: Tuple[str, ...],
+) -> List[_ParamSpec]:
+    """Every aggregation parameter that references data — explicit non-scalar
+    args/kwargs and non-overridden definition defaults (a bare-identifier default
+    → a ``ColumnKey``; an expression default → its SQL). Literal params are
+    omitted: they ride the existing kwarg/default machinery unchanged."""
+    explicit = {name for name, _ in agg.kwargs}
+    out: List[_ParamSpec] = [
+        _ParamSpec(name=name, key=v, expr_sql=None)
+        for name, v in agg.kwargs
+        if isinstance(v, (ColumnKey, ColumnSqlKey, AggregateKey))
+    ]
+    agg_def = next(
+        (a for a in (owner_model.aggregations or []) if a.name == agg.agg), None,
+    ) if owner_model is not None else None
+    if agg_def is not None:
+        for p in agg_def.params:
+            if p.name in explicit:
+                continue
+            vk = _default_param_value_key(sql=p.sql, owner_path=owner_path)
+            if vk is not None:
+                out.append(_ParamSpec(name=p.name, key=vk, expr_sql=None))
+            elif _expr_default_columns(sql=p.sql, owner_model=owner_model):
+                out.append(_ParamSpec(name=p.name, key=None, expr_sql=p.sql))
+    return out
+
+
+def _param_is_determined(
+    *, spec: _ParamSpec, owner_model: Optional[SlayerModel],
+    owner_path: Tuple[str, ...], grain: Grain, host_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel],
+) -> bool:
+    """A parameter is legal iff the dataset grain determines it — the bound key,
+    or (for an expression default) every owner column it references."""
+    if spec.key is not None:
+        return grain_determines(
+            key=spec.key, grain=grain, host_model=host_model,
+            models_by_name=models_by_name,
+        )
+    return all(
+        grain_determines(
+            key=ColumnKey(path=tuple(owner_path), leaf=c), grain=grain,
+            host_model=host_model, models_by_name=models_by_name,
+        )
+        for c in _expr_default_columns(sql=spec.expr_sql or "", owner_model=owner_model)
+    )
+
+
+def _grain_display(grain: Grain) -> str:
+    """A readable grain listing for a parameter-typing error."""
+    names = [_regroup_grain_name(g) for g in _regroup_partition_order(grain)]
+    return ", ".join(names) if names else "the grand total"
+
+
 def _synthesize_association_producer(  # NOSONAR(S3776) — one cohesive host-rooted association synthesis (eligibility / entity key / grain / filter-inheritance / recursive plan / attach).
     *,
     agg: AggregateKey,
@@ -1459,17 +1546,29 @@ def _synthesize_association_producer(  # NOSONAR(S3776) — one cohesive host-ro
         root_model=root_model, root_name=root_name, target_path=target_path,
         bundle=bundle, models_by_name=models_by_name,
     )
-    check_association_column_param(
-        alias=alias,
-        column_param=next(
-            (v for v in (*agg.args, *(val for _, val in agg.kwargs))
-             if isinstance(v, (ColumnKey, ColumnSqlKey))),
-            None,
-        ),
-    )
     entity_keys: List[ValueKey] = [
         ColumnKey(path=target_path, leaf=col) for col in key_sets[0]
     ]
+    # DEV-1892: type each parameter against the entity grain (requested dims ∪
+    # entity keys) and lift the legal ones — picked once per associated entity
+    # alongside the aggregate's own value. The residue is a typed error.
+    assoc_grain = Grain.of([*requested, *entity_keys])
+    picked_params: List[PickedParam] = []
+    for _ps in _resolve_aggregation_params(
+        agg=agg, owner_model=root_model, owner_path=target_path,
+    ):
+        check_parameter_determined(
+            alias=alias, param_name=_ps.name, grain_display=_grain_display(assoc_grain),
+            determined=_param_is_determined(
+                spec=_ps, owner_model=root_model, owner_path=target_path,
+                grain=assoc_grain, host_model=host_model,
+                models_by_name=models_by_name,
+            ),
+        )
+        picked_params.append(PickedParam(
+            name=_ps.name, key=_ps.key, sql=_ps.expr_sql,
+            anchor_path=tuple(target_path),
+        ))
 
     # A HOST-grain wrap of the aggregate compiles inline at the producer's full
     # grain (never re-routed as unattributable); the kernel's level-1 dedup
@@ -1549,7 +1648,9 @@ def _synthesize_association_producer(  # NOSONAR(S3776) — one cohesive host-ro
         producer_plan=producer_plan,
         alias_hint=canonical_aggregate_alias(agg, profile="stage_formula"),
         attach_phase=attach_phase,
-        kernel=AssociationProducerKernel(entity_keys=entity_keys),
+        kernel=AssociationProducerKernel(
+            entity_keys=entity_keys, picked_params=picked_params,
+        ),
         join_pairs=join_pairs,
         substitutions=[RegroupSubstitution(
             placeholder=placeholder, producer_slot_id=answer_slot,
@@ -1649,51 +1750,16 @@ def _grain_expression_determined(
     ))
 
 
-def _grain_seeds_chain(
-    *, key: ValueKey, union_grain: Grain, host_model: SlayerModel,
-    models_by_name: Dict[str, SlayerModel],
-) -> bool:
-    """The to-one chain to a joined outer dimension must be SEEDED by the grain:
-    its first hop's host-side join columns — or the host PK, which determines
-    them — are grain members. Bare to-one reachability from the host is NOT
-    determination by the operand's cells."""
-    grain_cols: set = set()
-    for g in union_grain:
-        if isinstance(g, ColumnKey) and not g.path:
-            grain_cols.add(g.leaf)
-        elif isinstance(g, ColumnSqlKey) and not g.path:
-            grain_cols.add(g.column_name)
-    if not grain_cols:
-        return False
-    pk_cols = {c.name for c in host_model.columns or [] if c.primary_key}
-    if pk_cols and pk_cols <= grain_cols:
-        return True
-    try:
-        edge = resolve_hop(
-            current=host_model, token=key_host_path(key)[0],
-            models_by_name=models_by_name,
-        )
-    except AmbiguousJoinPathError:
-        return False
-    return edge is not None and all(p[0] in grain_cols for p in edge.join_pairs)
-
-
 def _reaggregation_determined(
     *, key: ValueKey, union_grain: Grain, host_model: SlayerModel,
     models_by_name: Dict[str, SlayerModel],
 ) -> bool:
-    """Is an outer dimension determined by the operand dataset's union grain? A
-    bare host column is determined only when it is a grain member (handled by the
-    caller); a joined column is determined when an entity-key grain field seeds
-    its chain AND every hop is provably to-one."""
-    if not key_host_path(key):
-        return False  # a bare host column determines only itself (in-grain)
-    return _grain_seeds_chain(
-        key=key, union_grain=union_grain, host_model=host_model,
+    """Is an outer dimension determined by the operand dataset's union grain?
+    Delegates to the one determination rule (DEV-1892): a grain member, or a
+    column reached over provably to-one hops from a model the grain pins."""
+    return grain_determines(
+        key=key, grain=union_grain, host_model=host_model,
         models_by_name=models_by_name,
-    ) and grain_member_attributable(
-        key=key, target_path=(), root_model=host_model,
-        models_by_name=models_by_name, host_name=host_model.name,
     )
 
 
@@ -1741,14 +1807,23 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
 
     # Checked before TD resolution — name the combination, not a misleading TD error.
     check_reaggregation_no_window(alias=alias, window_val=window_kwarg_of(root))
-    check_reaggregation_no_column_param(
-        alias=alias,
-        column_param=next(
-            (v for v in (*root.args, *(val for _, val in root.kwargs))
-             if isinstance(v, (ColumnKey, ColumnSqlKey))),
-            None,
-        ),
+    # DEV-1892: type each outer parameter against the operand grain; a legal
+    # aggregate-valued parameter rides the carrier as an extra constituent, a
+    # legal column parameter is picked once per cell. The residue is a typed error.
+    reagg_param_specs = _resolve_aggregation_params(
+        agg=root, owner_model=host_model, owner_path=(),
     )
+    for _ps in reagg_param_specs:
+        check_parameter_determined(
+            alias=alias, param_name=_ps.name, grain_display=_grain_display(union_grain),
+            determined=_param_is_determined(
+                spec=_ps, owner_model=host_model, owner_path=(),
+                grain=union_grain, host_model=host_model,
+                models_by_name=models_by_name,
+            ),
+        )
+        if isinstance(_ps.key, AggregateKey) and _ps.key not in constituents:
+            constituents.append(_ps.key)
 
     # Requested outer grain: explicit partition_by= (combined-consumer rule: each
     # key must be a query dimension) else the query dimensions.
@@ -1844,9 +1919,21 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
     # grouped by the outer grain. Its body renders via the association kernel with
     # the carrier as the per-cell value; level 2 aggregates over the cells. An
     # attach-carrying grain key becomes an expression over carrier placeholders.
-    outer_agg = root.model_copy(update={
-        "source": substitute_value_keys(root.source, constituent_placeholders),
-    })
+    # DEV-1892: substitute the WHOLE root (source AND params) so an aggregate-valued
+    # parameter references its carrier placeholder like the source constituents do.
+    outer_agg = substitute_value_keys(root, constituent_placeholders)
+    # Each legal parameter is picked once per cell (DEV-1892): an aggregate-valued
+    # one from its carrier placeholder, a column/expression one from the operand
+    # scope; level 2 reads it as ``_base._p<i>``.
+    reagg_picked_params = [
+        PickedParam(
+            name=_ps.name,
+            key=(constituent_placeholders[_ps.key]
+                 if isinstance(_ps.key, AggregateKey) else _ps.key),
+            sql=_ps.expr_sql, anchor_path=(),
+        )
+        for _ps in reagg_param_specs
+    ]
     original_by_pk: Dict[ValueKey, ValueKey] = {}
     for g in outer_grain:
         sub = substitute_value_keys(g, constituent_placeholders)
@@ -1924,6 +2011,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         attach_phase=attach_phase,
         kernel=AssociationProducerKernel(
             entity_keys=entity_keys, null_safe=True,
+            picked_params=reagg_picked_params,
         ),
         join_pairs=join_pairs,
         substitutions=[RegroupSubstitution(

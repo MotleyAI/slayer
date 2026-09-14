@@ -289,6 +289,22 @@ def agg_kwarg_canonical_str(value: Any) -> str:
         if value.path:
             return ".".join(value.path) + "." + value.column_name
         return value.column_name
+    if isinstance(value, AggregateKey):
+        # DEV-1892: an aggregate-valued parameter — a canonical fragment for
+        # alias/identity; render-time reads the picked ``_p<i>`` column instead.
+        parts = [value.agg]
+        if isinstance(value.source, (ColumnKey, ColumnSqlKey)):
+            parts.append(agg_kwarg_canonical_str(value.source))
+        parts.extend(f"{k}_{agg_kwarg_canonical_str(v)}" for k, v in value.kwargs)
+        if value.partition_keys is not None:
+            pks = sorted(
+                agg_kwarg_canonical_str(p)
+                if isinstance(p, (ColumnKey, ColumnSqlKey)) else str(p)
+                for p in value.partition_keys
+            )
+            if pks:
+                parts.append("by_" + "_".join(pks))
+        return "_".join(parts)
     raise TypeError(
         f"AggregateKey kwarg value of type {type(value).__name__!r} "
         f"is not supported: {value!r}",

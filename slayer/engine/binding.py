@@ -1383,14 +1383,17 @@ def _bind_agg_arg(
     bundle: ResolvedSourceBundle,
 ):
     """Bind one aggregation arg: identifiers → ``ColumnKey`` / ``ColumnSqlKey``,
+    a nested aggregate → ``AggregateKey`` (DEV-1892 aggregate-valued parameter),
     literals → inline scalar via ``normalize_scalar`` (stored inline, not as LiteralKey)."""
     if isinstance(parsed, Literal):
         return normalize_scalar(parsed.value)
+    if isinstance(parsed, AggCall):
+        return _bind_agg(parsed, scope=scope, bundle=bundle)
     if isinstance(parsed, (Ref, DottedRef)):
         return _bind(parsed, scope=scope, bundle=bundle, in_filter=False)
     raise ValueError(
         f"Aggregation argument of kind {type(parsed).__name__} is not "
-        f"supported. Pass a column reference or a scalar."
+        f"supported. Pass a column reference, a scalar, or a partitioned aggregate."
     )
 
 

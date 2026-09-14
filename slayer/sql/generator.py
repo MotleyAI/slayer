@@ -3229,36 +3229,29 @@ class SQLGenerator:
             )
         return body.sql(dialect=self.dialect, pretty=True)
 
-    def _assert_association_no_column_default_params(
-        self, *, spec: AggRenderSpec, alias: str, query_param_names: Set[str],
-    ) -> None:
-        """Reject an association aggregate whose aggregation-definition default
-        parameters reference a column: the level-2 aggregate runs over ``_base``
-        (grain + entity key + the picked value ``_v``), so a defaulted column
-        param would render against a column ``_base`` lacks. Explicit column
-        params are rejected earlier at plan time; this catches the
-        definition-default path (DEV-1892 tracks lifting such parameters).
-        ``query_param_names`` are the query-supplied kwarg names — the only ones
-        the plan-time gate saw; ``spec.agg_kwargs`` also carries resolved defaults,
-        so it must not be used to decide which params are explicit."""
-        agg_def = spec.aggregation_def
-        if agg_def is None:
-            return
-        for p in agg_def.params:
-            if p.name in query_param_names:
-                continue
-            try:
-                default_ast = sqlglot.parse_one(p.sql, dialect=self.dialect)
-            except Exception:  # noqa: BLE001 — unparseable default is not a column ref
-                continue
-            if default_ast is not None and default_ast.find(exp.Column) is not None:
-                raise SlayerError(
-                    f"Aggregate {alias!r} needs distinct-entity association over "
-                    f"an unattributable dimension, which is unsupported with a "
-                    f"column-reference parameter (aggregation {agg_def.name!r} "
-                    f"parameter {p.name!r} defaults to column {p.sql!r}); the "
-                    f"per-entity pick carries only the aggregate's own value."
+    def _render_picked_param_value(
+        self, *, pp, ctx, source_model, source_relation: str, bundle,
+    ) -> exp.Expression:
+        """The level-1 SQL for a picked parameter (DEV-1892): an owner-anchored
+        Mode-A expression default, else the parameter's value key rendered through
+        the scope (a column / placeholder / composite; a derived ``Column.sql``
+        expands, a carrier placeholder resolves to its carrier column)."""
+        if pp.sql is not None:
+            owner_model, owner_relation = source_model, source_relation
+            if pp.anchor_path:
+                walked = self._walk_join_path_model(
+                    source_model=source_model, path=pp.anchor_path, bundle=bundle,
                 )
+                if walked is not None:
+                    owner_model = walked
+                    owner_relation = self._join_alias(
+                        root=source_relation, path=pp.anchor_path,
+                    )
+            return self._enter_mode_a_predicate(
+                sql=pp.sql, source_model=owner_model, source_relation=owner_relation,
+                bundle=bundle, location=f"parameter default {pp.name!r}",
+            )
+        return render_value_key(key=pp.key, ctx=ctx)
 
     def _render_association_producer_body(  # NOSONAR(S3776) — one cohesive two-level association body: level-1 dedup SELECT (grain × entity key, picked value) wrapped as ``_base``, level-2 aggregate over the picked rows. The two arms share the grain-alias / scope state.
         self, *, planned_query, bundle, kernel, source_model, source_relation,
@@ -3309,6 +3302,11 @@ class SQLGenerator:
         # value column — level 2 counts the entity rows.
         is_star = isinstance(agg_slot.key.source, StarKey)
         picked_alias = "_v"
+        # DEV-1892: parameters the grain determines are picked once per cell as
+        # _p<i> (below) and read by level 2 as _base._p<i>; the level-1 value pick
+        # is the aggregate's own source, stripped of those parameters.
+        picked_params = list(getattr(kernel, "picked_params", []) or [])
+        picked_names = {pp.name for pp in picked_params}
         spec: Optional[AggRenderSpec] = None
         if not is_star and getattr(kernel, "null_safe", False):
             # Re-aggregation (DEV-1847): the per-cell value is the carrier's
@@ -3324,34 +3322,57 @@ class SQLGenerator:
                 aggregation_def=agg_def,
                 agg_kwargs={
                     k: ResolvedAggKwarg(kind="str", value=agg_kwarg_canonical_str(v))
-                    for k, v in agg_slot.key.kwargs
+                    for k, v in agg_slot.key.kwargs if k not in picked_names
                 },
-            )
-            self._assert_association_no_column_default_params(
-                spec=spec, alias=agg_alias,
-                query_param_names={n for n, _ in agg_slot.key.kwargs},
             )
             inner_cols.append(exp.Alias(
                 this=exp.Max(this=value_expr.copy()),
                 alias=exp.to_identifier(picked_alias),
             ))
         elif not is_star:
+            # Discovery runs over the FULL key so a parameter's join path (e.g.
+            # weight=customers.regions.pop) is registered in the scope; the source
+            # spec is built from the parameter-stripped key so a parameter path
+            # that extends the source path is not rejected.
             resolved = self._resolve_agg_inputs_via_scope(
                 base_render_order=[agg_slot.id], slots_by_id={agg_slot.id: agg_slot},
                 scope=scope,
             )
+            source_key = agg_slot.key.model_copy(update={
+                "kwargs": tuple((k, v) for k, v in agg_slot.key.kwargs
+                                if k not in picked_names),
+            })
             spec = self._build_agg_render_spec_from_planned(
-                slot=agg_slot, key=agg_slot.key, source_model=source_model,
+                slot=agg_slot, key=source_key, source_model=source_model,
                 source_relation=source_relation, full_alias=picked_alias,
-                bundle=bundle, resolved_agg_kwargs=resolved.get(agg_slot.key),
+                bundle=bundle,
+                resolved_agg_kwargs={
+                    k: v for k, v in (resolved.get(agg_slot.key) or {}).items()
+                    if k not in picked_names
+                },
             )
-            self._assert_association_no_column_default_params(
-                spec=spec, alias=agg_alias,
-                query_param_names={n for n, _ in getattr(agg_slot.key, "kwargs", ())})
             value_sql = _wrap_filter(self._resolve_value_sql(spec), spec.filter_sql)
             inner_cols.append(
                 exp.Max(this=self._parse(value_sql)).as_(
                     exp.to_identifier(picked_alias),
+                ),
+            )
+
+        # Pick each legal parameter once per cell as _p<i> (DEV-1892).
+        picked_kwarg_exprs: Dict[str, ResolvedAggKwarg] = {}
+        for _i, _pp in enumerate(picked_params):
+            _p_alias = f"_p{_i}"
+            inner_cols.append(exp.Max(
+                this=self._render_picked_param_value(
+                    pp=_pp, ctx=ctx, source_model=source_model,
+                    source_relation=source_relation, bundle=bundle,
+                ),
+            ).as_(exp.to_identifier(_p_alias)))
+            picked_kwarg_exprs[_pp.name] = ResolvedAggKwarg(
+                kind="expr",
+                value=exp.Column(
+                    this=exp.to_identifier(_p_alias),
+                    table=exp.to_identifier("_base"),
                 ),
             )
 
@@ -3425,7 +3446,10 @@ class SQLGenerator:
                 sql=picked_alias if getattr(kernel, "null_safe", False) else None,
                 aggregation=agg_slot.key.agg,
                 alias=agg_alias, model_name="_base", type=agg_slot.type,
-                column_type=spec.column_type, agg_kwargs=spec.agg_kwargs,
+                column_type=spec.column_type,
+                # A picked parameter reads from _base._p<i>, overriding its
+                # explicit-kwarg / definition-default resolution (DEV-1892).
+                agg_kwargs={**spec.agg_kwargs, **picked_kwarg_exprs},
                 aggregation_def=spec.aggregation_def,
             )
         agg_expr, _ = self._build_agg(level2_spec)
