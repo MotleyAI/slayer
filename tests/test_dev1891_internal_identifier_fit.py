@@ -596,7 +596,8 @@ class TestMasking:
         """MySQL ordinary strings honour backslash escapes, so ``'..\\'..'`` masks
         its whole body — the trailing identifier must not be exposed to fitting."""
         d = get_dialect("mysql")
-        assert d.backslash_escapes_strings and d.max_identifier_bytes is not None
+        assert d.backslash_escapes_strings
+        assert d.max_identifier_bytes is not None
         quote = d.quote_identifier
         literal = f"'left \\' ref {quote(LONG)} right'"
         sql = f"SELECT t.x AS {quote(LONG)}, {literal} AS note FROM t"
