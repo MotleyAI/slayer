@@ -27,7 +27,7 @@ from pydantic import BaseModel, ConfigDict
 from slayer.core.enums import DataType, RANKED_AGGREGATIONS
 from slayer.core.errors import AmbiguousJoinPathError, UnreachableFilterDroppedWarning
 from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, regroup_root_grain, reroot_value_key, substitute_value_keys, walk_value_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_local_partitioned_agg, split_top_level_and, window_kwarg_of, is_reaggregation_key, operand_aggregates
-from slayer.core.models import SlayerModel
+from slayer.core.models import AggregationParam, SlayerModel
 from slayer.engine.aggregate_input_paths import compute_aggregate_input_join_paths
 from slayer.engine.column_filter_paths import (
     compute_column_filter_join_paths,
@@ -1595,27 +1595,36 @@ def _resolve_aggregation_params(
     agg_def = next(
         (a for a in (owner_model.aggregations or []) if a.name == agg.agg), None,
     ) if owner_model is not None else None
-    if agg_def is not None:
-        for p in agg_def.params:
-            if p.name in explicit:
-                continue
-            vk = _default_param_value_key(
-                sql=p.sql, owner_path=owner_path, owner_model=owner_model,
-                bundle=bundle,
-            )
-            if vk is not None:
-                out.append(_ParamSpec(name=p.name, key=vk, expr_sql=None))
-            else:
-                refs = _expr_default_ref_keys(
-                    sql=p.sql, owner_model=owner_model, owner_path=owner_path,
-                    bundle=bundle,
-                )
-                if refs:
-                    out.append(_ParamSpec(
-                        name=p.name, key=None, expr_sql=p.sql,
-                        expr_refs=tuple(refs),
-                    ))
+    if agg_def is not None and owner_model is not None:
+        out.extend(
+            spec for p in agg_def.params if p.name not in explicit
+            and (spec := _default_param_spec(
+                p=p, owner_model=owner_model, owner_path=owner_path, bundle=bundle,
+            )) is not None
+        )
     return out
+
+
+def _default_param_spec(
+    *, p: AggregationParam, owner_model: SlayerModel,
+    owner_path: Tuple[str, ...], bundle: Optional[ResolvedSourceBundle],
+) -> Optional[_ParamSpec]:
+    """A non-overridden definition default → its ``_ParamSpec`` (a bound key, or a
+    lifted expression with its referenced columns), or ``None`` when it rides the
+    plain kwarg/default machinery unchanged."""
+    vk = _default_param_value_key(
+        sql=p.sql, owner_path=owner_path, owner_model=owner_model, bundle=bundle,
+    )
+    if vk is not None:
+        return _ParamSpec(name=p.name, key=vk, expr_sql=None)
+    refs = _expr_default_ref_keys(
+        sql=p.sql, owner_model=owner_model, owner_path=owner_path, bundle=bundle,
+    )
+    if refs:
+        return _ParamSpec(
+            name=p.name, key=None, expr_sql=p.sql, expr_refs=tuple(refs),
+        )
+    return None
 
 
 def _param_is_determined(

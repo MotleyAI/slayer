@@ -135,7 +135,8 @@ class TestPickedParamInheritsSourceFilter:
             model=orders, extra_models=extra, dialect="sqlite", validate=False,
         )
         p0_line = next(line for line in sql.splitlines() if "AS _p0" in line)
-        assert "CASE WHEN" in p0_line and "'North'" in p0_line, sql
+        assert "CASE WHEN" in p0_line, sql
+        assert "'North'" in p0_line, sql
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -306,32 +307,35 @@ class TestExprDefaultLiteralsAndResidue:
     async def test_undetermined_qualified_expr_default_rejected(self, qual_reagg_engine):
         # An operand grain that pins nothing about customers -> the one-rule
         # typed error (was silent invalid SQL).
+        q = chain_q(measures=[ModelMeasure(
+            formula="cwavg(sum(amount, partition_by=amount))", name="w")])
         with pytest.raises(SlayerError) as ei:
-            await qual_reagg_engine.execute(chain_q(
-                measures=[ModelMeasure(
-                    formula="cwavg(sum(amount, partition_by=amount))", name="w")]))
+            await qual_reagg_engine.execute(q)
         assert_grain_residue(ei.value, param="weight")
 
     async def test_opaque_qualifier_fails_closed(self, opaque_expr_engine):
         # ``nosuch.col`` resolves no join walk -> typed refusal, never raw SQL.
+        q = assoc_q(
+            dimensions=["status"],
+            measures=[ModelMeasure(formula="customers.spend:wopq", name="w")])
         with pytest.raises(SlayerError) as ei:
-            await opaque_expr_engine.execute(assoc_q(
-                dimensions=["status"],
-                measures=[ModelMeasure(formula="customers.spend:wopq", name="w")]))
+            await opaque_expr_engine.execute(q)
         assert_grain_residue(ei.value, param="weight")
 
     async def test_unparseable_default_fails_closed(self, unparseable_engine):
         # No dialect parses ``)((( bad``: analysis failure is not "no refs" —
         # typed refusal, never a raw level-2 render.
+        q = assoc_q(
+            dimensions=["status"],
+            measures=[ModelMeasure(formula="customers.spend:wugly", name="w")])
         with pytest.raises(SlayerError) as ei:
-            await unparseable_engine.execute(assoc_q(
-                dimensions=["status"],
-                measures=[ModelMeasure(formula="customers.spend:wugly", name="w")]))
+            await unparseable_engine.execute(q)
         assert_grain_residue(ei.value, param="weight")
 
     async def test_fanning_expr_default_still_fails_closed(self, fanning_expr_engine):
         # Regression pin: input safety keeps rejecting the fanning fragment.
+        q = assoc_q(
+            dimensions=["status"],
+            measures=[ModelMeasure(formula="customers.spend:wbad", name="w")])
         with pytest.raises(ValueError, match="unproven join hop"):
-            await fanning_expr_engine.execute(assoc_q(
-                dimensions=["status"],
-                measures=[ModelMeasure(formula="customers.spend:wbad", name="w")]))
+            await fanning_expr_engine.execute(q)

@@ -551,11 +551,13 @@ class TestNestedAggregateParamDimAliasMap:
         assert isinstance(outer, AggregateKey)
         weight = dict(outer.kwargs)["weight"]
         assert isinstance(weight, AggregateKey)
-        assert weight.partition_keys is not None and computed in weight.partition_keys
+        assert weight.partition_keys is not None
+        assert computed in weight.partition_keys
 
     def test_nested_partition_by_without_thread_is_unresolved(self) -> None:
         # Guard: the bare computed-dim name only binds through dim_alias_map.
         parsed = parse_expr(
             "weighted_avg(amount, weight=count(id, partition_by=my_dim))")
+        scope, bundle = _scope(), _bundle()
         with pytest.raises(UnknownReferenceError):
-            bind_expr(parsed, scope=_scope(), bundle=_bundle())
+            bind_expr(parsed, scope=scope, bundle=bundle)
