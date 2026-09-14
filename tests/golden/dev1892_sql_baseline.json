@@ -1,0 +1,142 @@
+{
+  "assoc/wavg_by_status::bigquery": {
+    "error": "SlayerError",
+    "message": "Aggregate 'w' needs distinct-entity association over an unattributable dimension, which is unsupported with a column-reference parameter (e.g. weighted_avg(weight=\u2026)); the per-entity pick carries only the aggregate's own value. Attribute the dimension or drop the column parameter."
+  },
+  "assoc/wavg_by_status::duckdb": {
+    "error": "SlayerError",
+    "message": "Aggregate 'w' needs distinct-entity association over an unattributable dimension, which is unsupported with a column-reference parameter (e.g. weighted_avg(weight=\u2026)); the per-entity pick carries only the aggregate's own value. Attribute the dimension or drop the column parameter."
+  },
+  "assoc/wavg_by_status::mysql": {
+    "error": "SlayerError",
+    "message": "Aggregate 'w' needs distinct-entity association over an unattributable dimension, which is unsupported with a column-reference parameter (e.g. weighted_avg(weight=\u2026)); the per-entity pick carries only the aggregate's own value. Attribute the dimension or drop the column parameter."
+  },
+  "assoc/wavg_by_status::postgres": {
+    "error": "SlayerError",
+    "message": "Aggregate 'w' needs distinct-entity association over an unattributable dimension, which is unsupported with a column-reference parameter (e.g. weighted_avg(weight=\u2026)); the per-entity pick carries only the aggregate's own value. Attribute the dimension or drop the column parameter."
+  },
+  "assoc/wavg_by_status::snowflake": {
+    "error": "SlayerError",
+    "message": "Aggregate 'w' needs distinct-entity association over an unattributable dimension, which is unsupported with a column-reference parameter (e.g. weighted_avg(weight=\u2026)); the per-entity pick carries only the aggregate's own value. Attribute the dimension or drop the column parameter."
+  },
+  "assoc/wavg_by_status::sqlite": {
+    "error": "SlayerError",
+    "message": "Aggregate 'w' needs distinct-entity association over an unattributable dimension, which is unsupported with a column-reference parameter (e.g. weighted_avg(weight=\u2026)); the per-entity pick carries only the aggregate's own value. Attribute the dimension or drop the column parameter."
+  },
+  "assoc/wavg_by_status::tsql": {
+    "error": "SlayerError",
+    "message": "Aggregate 'w' needs distinct-entity association over an unattributable dimension, which is unsupported with a column-reference parameter (e.g. weighted_avg(weight=\u2026)); the per-entity pick carries only the aggregate's own value. Attribute the dimension or drop the column parameter."
+  },
+  "assoc/wsum_default::bigquery": {
+    "error": "SlayerError",
+    "message": "Aggregate 'orders.customers.spend_wsum_host' needs distinct-entity association over an unattributable dimension, which is unsupported with a column-reference parameter (aggregation 'wsum' parameter 'weight' defaults to column 'spend'); the per-entity pick carries only the aggregate's own value."
+  },
+  "assoc/wsum_default::duckdb": {
+    "error": "SlayerError",
+    "message": "Aggregate 'orders.customers.spend_wsum_host' needs distinct-entity association over an unattributable dimension, which is unsupported with a column-reference parameter (aggregation 'wsum' parameter 'weight' defaults to column 'spend'); the per-entity pick carries only the aggregate's own value."
+  },
+  "assoc/wsum_default::mysql": {
+    "error": "SlayerError",
+    "message": "Aggregate 'orders.customers.spend_wsum_host' needs distinct-entity association over an unattributable dimension, which is unsupported with a column-reference parameter (aggregation 'wsum' parameter 'weight' defaults to column 'spend'); the per-entity pick carries only the aggregate's own value."
+  },
+  "assoc/wsum_default::postgres": {
+    "error": "SlayerError",
+    "message": "Aggregate 'orders.customers.spend_wsum_host' needs distinct-entity association over an unattributable dimension, which is unsupported with a column-reference parameter (aggregation 'wsum' parameter 'weight' defaults to column 'spend'); the per-entity pick carries only the aggregate's own value."
+  },
+  "assoc/wsum_default::snowflake": {
+    "error": "SlayerError",
+    "message": "Aggregate 'orders.customers.spend_wsum_host' needs distinct-entity association over an unattributable dimension, which is unsupported with a column-reference parameter (aggregation 'wsum' parameter 'weight' defaults to column 'spend'); the per-entity pick carries only the aggregate's own value."
+  },
+  "assoc/wsum_default::sqlite": {
+    "error": "SlayerError",
+    "message": "Aggregate 'orders.customers.spend_wsum_host' needs distinct-entity association over an unattributable dimension, which is unsupported with a column-reference parameter (aggregation 'wsum' parameter 'weight' defaults to column 'spend'); the per-entity pick carries only the aggregate's own value."
+  },
+  "assoc/wsum_default::tsql": {
+    "error": "SlayerError",
+    "message": "Aggregate 'orders.customers.spend_wsum_host' needs distinct-entity association over an unattributable dimension, which is unsupported with a column-reference parameter (aggregation 'wsum' parameter 'weight' defaults to column 'spend'); the per-entity pick carries only the aggregate's own value."
+  },
+  "reagg/corders_toone::bigquery": {
+    "error": "SlayerError",
+    "message": "Re-aggregation 'w' carries a column-reference parameter on its outer aggregation (e.g. weighted_avg(weight=\u2026)), which is unsupported: the outer aggregate consumes only the operand's per-cell values. Drop the column parameter or use a numeric literal."
+  },
+  "reagg/corders_toone::duckdb": {
+    "error": "SlayerError",
+    "message": "Re-aggregation 'w' carries a column-reference parameter on its outer aggregation (e.g. weighted_avg(weight=\u2026)), which is unsupported: the outer aggregate consumes only the operand's per-cell values. Drop the column parameter or use a numeric literal."
+  },
+  "reagg/corders_toone::mysql": {
+    "error": "SlayerError",
+    "message": "Re-aggregation 'w' carries a column-reference parameter on its outer aggregation (e.g. weighted_avg(weight=\u2026)), which is unsupported: the outer aggregate consumes only the operand's per-cell values. Drop the column parameter or use a numeric literal."
+  },
+  "reagg/corders_toone::postgres": {
+    "error": "SlayerError",
+    "message": "Re-aggregation 'w' carries a column-reference parameter on its outer aggregation (e.g. weighted_avg(weight=\u2026)), which is unsupported: the outer aggregate consumes only the operand's per-cell values. Drop the column parameter or use a numeric literal."
+  },
+  "reagg/corders_toone::snowflake": {
+    "error": "SlayerError",
+    "message": "Re-aggregation 'w' carries a column-reference parameter on its outer aggregation (e.g. weighted_avg(weight=\u2026)), which is unsupported: the outer aggregate consumes only the operand's per-cell values. Drop the column parameter or use a numeric literal."
+  },
+  "reagg/corders_toone::sqlite": {
+    "error": "SlayerError",
+    "message": "Re-aggregation 'w' carries a column-reference parameter on its outer aggregation (e.g. weighted_avg(weight=\u2026)), which is unsupported: the outer aggregate consumes only the operand's per-cell values. Drop the column parameter or use a numeric literal."
+  },
+  "reagg/corders_toone::tsql": {
+    "error": "SlayerError",
+    "message": "Re-aggregation 'w' carries a column-reference parameter on its outer aggregation (e.g. weighted_avg(weight=\u2026)), which is unsupported: the outer aggregate consumes only the operand's per-cell values. Drop the column parameter or use a numeric literal."
+  },
+  "reagg/degenerate_wavg::bigquery": {
+    "error": "ValueError",
+    "message": "Aggregation argument of kind AggCall is not supported. Pass a column reference or a scalar."
+  },
+  "reagg/degenerate_wavg::duckdb": {
+    "error": "ValueError",
+    "message": "Aggregation argument of kind AggCall is not supported. Pass a column reference or a scalar."
+  },
+  "reagg/degenerate_wavg::mysql": {
+    "error": "ValueError",
+    "message": "Aggregation argument of kind AggCall is not supported. Pass a column reference or a scalar."
+  },
+  "reagg/degenerate_wavg::postgres": {
+    "error": "ValueError",
+    "message": "Aggregation argument of kind AggCall is not supported. Pass a column reference or a scalar."
+  },
+  "reagg/degenerate_wavg::snowflake": {
+    "error": "ValueError",
+    "message": "Aggregation argument of kind AggCall is not supported. Pass a column reference or a scalar."
+  },
+  "reagg/degenerate_wavg::sqlite": {
+    "error": "ValueError",
+    "message": "Aggregation argument of kind AggCall is not supported. Pass a column reference or a scalar."
+  },
+  "reagg/degenerate_wavg::tsql": {
+    "error": "ValueError",
+    "message": "Aggregation argument of kind AggCall is not supported. Pass a column reference or a scalar."
+  },
+  "reagg/wavg_by_region::bigquery": {
+    "error": "ValueError",
+    "message": "Aggregation argument of kind AggCall is not supported. Pass a column reference or a scalar."
+  },
+  "reagg/wavg_by_region::duckdb": {
+    "error": "ValueError",
+    "message": "Aggregation argument of kind AggCall is not supported. Pass a column reference or a scalar."
+  },
+  "reagg/wavg_by_region::mysql": {
+    "error": "ValueError",
+    "message": "Aggregation argument of kind AggCall is not supported. Pass a column reference or a scalar."
+  },
+  "reagg/wavg_by_region::postgres": {
+    "error": "ValueError",
+    "message": "Aggregation argument of kind AggCall is not supported. Pass a column reference or a scalar."
+  },
+  "reagg/wavg_by_region::snowflake": {
+    "error": "ValueError",
+    "message": "Aggregation argument of kind AggCall is not supported. Pass a column reference or a scalar."
+  },
+  "reagg/wavg_by_region::sqlite": {
+    "error": "ValueError",
+    "message": "Aggregation argument of kind AggCall is not supported. Pass a column reference or a scalar."
+  },
+  "reagg/wavg_by_region::tsql": {
+    "error": "ValueError",
+    "message": "Aggregation argument of kind AggCall is not supported. Pass a column reference or a scalar."
+  }
+}
