@@ -76,7 +76,11 @@ aggregations), subject to each dialect's existing aggregate capability — group
 mode (per the divergence ledger). Every input expression of the aggregation — arguments and
 aggregation-parameter fragments alike — is evaluated per associated entity (constant
 per entity under the established unsafe-aggregate-inputs rule, which keeps applying
-unchanged); `*:count` counts the distinct associated entities per cell. An
+unchanged); a column-reference or aggregate-valued parameter — explicit, positional, or
+supplied by the aggregation definition's default — is legal exactly when the entity grain
+determines it (per `queries/semantics` › Aggregation parameters are typed by the home
+dataset's grain) and is then picked once per associated entity alongside the aggregate's
+own value; `*:count` counts the distinct associated entities per cell. An
 aggregation's own column filter restricts the associated entities before per-cell
 aggregation. Combining associate-mode resolution with `window=` or `first`/`last` on
 the same aggregate SHALL fail with a clear typed error naming the combination and the
@@ -101,6 +105,16 @@ or unique key).
 - **WHEN** an associate-mode aggregate carries its own column filter
 - **THEN** each cell aggregates only the associated entities passing the filter, and
   result cardinality is unchanged
+
+#### Scenario: Weighted association by executed values
+- **WHEN** an associate-mode query rooted at `orders` selects
+  `customers.spend:weighted_avg(weight=customers.spend)`, the custom `customers.spend:wsum`
+  whose `weight` defaults to `spend`, and `customers.spend:weighted_avg(weight=customers.regions.pop)`
+  by the orders-level dimension `status`
+- **THEN** each executes with hand-computed per-cell values over the distinct associated
+  customers on SQLite and DuckDB — the explicit and defaulted spellings identical, a
+  customer with two orders in one cell weighted once — with unchanged result grain and
+  sibling values
 
 #### Scenario: Windowed or first/last combination fails closed
 - **WHEN** an associate-mode query needs association for an aggregate that also

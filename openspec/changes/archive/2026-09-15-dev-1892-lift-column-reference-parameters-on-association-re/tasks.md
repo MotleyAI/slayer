@@ -105,5 +105,5 @@
 - [x] 7.2 `architecture/semantics.arc42.md` axiom 2 `[review]` →
   `[enforced: test:tests/test_dev1892_parameter_typing.py]` — present the exact diff
   and wait for the OK before editing; verified by `tools/arch_check.py` green.
-- [ ] 7.3 Linear: append the post-merge function/line names to the DEV-1859 deferral
+- [x] 7.3 Linear: append the post-merge function/line names to the DEV-1859 deferral
   comment (spec-review stage); verified by the posted comment.
