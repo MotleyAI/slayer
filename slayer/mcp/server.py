@@ -500,7 +500,9 @@ To connect a new database: create_datasource → describe_datasource (verify + l
           is each city's share of its region's total.
         - Aggregations nest: "avg(sum(total, partition_by=[region, city]), partition_by=[region])"
           averages the per-city totals within each region. The top-level partition_by must be a
-          subset of the query's dimensions; inner aggregations' partition_by need not be.
+          subset of the query's dimensions; inner aggregations' partition_by need not be. An
+          outer aggregation's parameters must sit at the operand's grain, e.g.
+          "weighted_avg(sum(total, partition_by=[region, city]), weight=count(id, partition_by=[region, city]))".
         - Transforms wrap aggregated expressions: cumsum(x); change(x) / change_pct(x)
           (period-over-period delta / % change — calendar-aware and partition-safe, prefer these
           for growth); time_shift(x, -1[, 'year']) (the shifted value itself, for custom
@@ -508,9 +510,9 @@ To connect a new database: create_datasource → describe_datasource (verify + l
           last(x) (broadcast the earliest/latest bucket's value); consecutive_periods(predicate)
           (trailing run length); rank(x), dense_rank(x), percent_rank(x), ntile(x, n=N) (rank
           family — optional partition_by=, no time dimension needed). All other transforms require
-          a time_dimensions entry. Not supported: a transform as the input of
-          time_shift/change/change_pct, and mixing row-level columns with another aggregation's
-          value inside one aggregation source.
+          a time_dimensions entry. Transforms nest in either order (change(cumsum(x))). Not
+          supported: a row-level column inside a transform input, or mixed with another
+          aggregation's value inside one aggregation source.
         - Cross-model: reference any joined model's field as ``model_name.field_name`` (or a
           longer dotted path) and the engine figures out the join paths, avoiding fan-outs and
           chasm traps — each aggregation computes over its own model's rows exactly once;
