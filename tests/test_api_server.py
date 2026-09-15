@@ -11,9 +11,11 @@ from fastapi.testclient import TestClient
 from slayer.api.server import QueryRequest, create_app
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
+from slayer.core.errors import SchemaDriftError
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.sql.client import SlayerSQLClient
 from slayer.core.query import SlayerQuery
+from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -290,6 +292,23 @@ class TestQuery:
         ))
         resp = client.post("/query", json={"source_model": "orders", "measures": [{"formula": "revenue:sum"}]})
         assert resp.status_code == 400
+
+    def test_query_schema_drift_returns_422(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """SchemaDriftError subclasses SlayerError (a ValueError); the 422
+        drift contract must not be swallowed by the generic 400 handler."""
+        async def _raise_drift(self, *args, **kwargs):
+            raise SchemaDriftError(
+                models=["orders"], to_delete=[], original=RuntimeError("boom"),
+            )
+
+        monkeypatch.setattr(SlayerQueryEngine, "execute", _raise_drift)
+        resp = client.post("/query", json={
+            "source_model": "orders", "measures": [{"formula": "*:count"}],
+        })
+        assert resp.status_code == 422
+        assert resp.json()["detail"]["error"] == "schema_drift"
 
     def test_request_measures_payload_reaches_slayer_query(self) -> None:
         """v2 `measures` key must be declared on QueryRequest so FastAPI keeps it."""

@@ -828,6 +828,49 @@ def check_cross_model_inputs_safe(
         )
 
 
+def check_input_dependencies_analyzable(
+    *, alias: Optional[str], column: Optional[str],
+) -> None:
+    """An aggregate input whose derived-column definition no dialect can analyse
+    for join dependencies is unsafe, never 'crosses nothing' (DEV-1900);
+    ``column`` = the unanalysable column when one exists, else ``None``."""
+    if column is None:
+        return
+    raise ValueError(
+        f"Aggregate {alias!r} names derived column {column!r}, whose definition "
+        f"no supported dialect can analyse for join dependencies; an unanalyzable "
+        f"dependency is unsafe. Fix the column's SQL, or remove it from the "
+        f"aggregate."
+    )
+
+
+def check_population_filter_no_fanout(
+    *, filter_text: str, hop: Optional[str], host: str,
+    unanalyzable: bool = False,
+) -> None:
+    """Interim guard: a row-level filter conjunct reaching the
+    population root only across a fanning hop, with an aggregate inline over the
+    population rows, would multiply its rows. ``hop`` = the fanning hop when one
+    exists, else ``None``; ``unanalyzable`` = the conjunct's dependency closure
+    could not be analysed (fail closed) (DEV-1909 replaces this with association
+    semantics)."""
+    if unanalyzable:
+        raise ValueError(
+            f"Filter {filter_text!r} has a dependency no supported dialect can "
+            f"analyse for join dependencies; with an aggregate computed inline "
+            f"over the population, an unanalyzable dependency is unsafe. Fix the "
+            f"referenced column's SQL, or remove the filter."
+        )
+    if hop is None:
+        return
+    raise ValueError(
+        f"Filter {filter_text!r} reaches the population root only across a "
+        f"fanning join hop to {hop!r}; with an aggregate computed inline over the "
+        f"population, this would multiply its rows. Aggregate the filtered "
+        f"relation to the population grain, or select it only through a producer."
+    )
+
+
 def check_attached_inputs_attributable(
     *, alias: Optional[str], root_name: str, mode: str,
     unattributable: Sequence[Tuple[str, str, str]],

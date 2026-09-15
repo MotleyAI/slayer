@@ -409,7 +409,7 @@ def collect_root_scope_joined_paths(
     "crosses a join."
     """
     root_ids = root_scope_column_ids(parsed=parsed)
-    models_by_name = {m.name: m for m in bundle.referenced_models}
+    models_by_name = bundle.models_by_name
     seen: Set[Tuple[str, ...]] = set()
     ordered: List[Tuple[str, ...]] = []
     for _node, quals, _leaf in reference_sites(parsed, root_ids):
@@ -440,7 +440,7 @@ def collect_root_scope_reference_columns(
     ``None`` = an opaque or ambiguous qualifier (the caller decides its fate).
     Literals never contribute — only ``exp.Column`` sites are walked."""
     root_ids = root_scope_column_ids(parsed=parsed)
-    models_by_name = {m.name: m for m in bundle.referenced_models}
+    models_by_name = bundle.models_by_name
     return [
         (
             _lenient_path(

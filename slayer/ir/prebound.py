@@ -202,7 +202,7 @@ def walk_key_path(
     which is what re-rooting needs to decide reachability. Traversal is
     bidirectional (DEV-1853); an ambiguous hop reads as non-traversable here.
     """
-    models_by_name = {m.name: m for m in bundle.referenced_models}
+    models_by_name = bundle.models_by_name
     models_by_name.setdefault(model.name, model)
     current = model
     visited = {current.name}

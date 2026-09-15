@@ -118,6 +118,10 @@ ROWS: Tuple[LedgerRow, ...] = (
     _row(_EE, "check_cross_model_inputs_safe", "ValueError",
          "Cross-model aggregate … ranks/reads by …, which is not attributable from … (crosses a fanning join); ….",
          "checker", "cross-model", True, "checker"),
+    # An input whose derived-column definition cannot be analysed is unsafe, not empty.
+    _row(_EE, "check_input_dependencies_analyzable", "ValueError",
+         "Aggregate … names derived column …, whose definition no supported dialect can analyse for join dependencies; an unanalyzable dependency is unsafe. Fix the column's SQL, or remove it from the aggregate.",
+         "checker", "cross-model", True, "checker"),
     _row(_EE, "check_attached_inputs_attributable", "SlayerError",
          "Cross-model aggregate … runs over … rows under to_many_handling=…, but its attached input … reads …, which …; that input's producer cannot nest inside the …-rooted producer. Use to_many_handling='associate', or aggregate the input over columns attributable from ….",
          "checker", "cross-model", True, "checker"),
@@ -162,6 +166,14 @@ ROWS: Tuple[LedgerRow, ...] = (
     _row(_EE, "check_parameter_determined", "SlayerError",
          "Aggregation … parameter … is not determined by the operand grain (…); the aggregation reads one value per cell of that grain. Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=.",
          "checker", "parameter", True, "checker"),
+    # Interim population-filter guard: a fanning row filter over an inline aggregate.
+    _row(_EE, "check_population_filter_no_fanout", "ValueError",
+         "Filter … reaches the population root only across a fanning join hop to …; with an aggregate computed inline over the population, this would multiply its rows. Aggregate the filtered relation to the population grain, or select it only through a producer.",
+         "checker", "filters", True, "checker"),
+    # Its fail-closed arm: an unanalyzable filter dependency is unsafe, not local.
+    _row(_EE, "check_population_filter_no_fanout", "ValueError",
+         "Filter … has a dependency no supported dialect can analyse for join dependencies; with an aggregate computed inline over the population, an unanalyzable dependency is unsafe. Fix the referenced column's SQL, or remove the filter.",
+         "checker", "filters", True, "checker"),
     _row(_EE, "check_reaggregation_no_window", "SlayerError",
          "Re-aggregation … cannot carry window= on its outer aggregation; apply the window inside the operand or consume the re-aggregated value through a transform.",
          "checker", "reaggregation", True, "checker"),

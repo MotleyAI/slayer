@@ -307,7 +307,7 @@ class ScopeFrame(BaseModel):
 
     def _models_by_name(self) -> dict:
         """The bundle's model collection, for the shared bidirectional walker."""
-        return {m.name: m for m in self.bundle.referenced_models}
+        return self.bundle.models_by_name
 
     def _alias_resolver(self) -> Callable[[Tuple[str, ...]], str]:
         """The WP3 registry-backed alias resolver for this scope (DEV-1743):

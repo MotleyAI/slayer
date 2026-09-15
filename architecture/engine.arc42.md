@@ -153,6 +153,15 @@ elaborate→compile and `query_engine.py` orchestrates.
    type error raises in the checker.
    [enforced: arch_check:model-truth]
    [enforced: test:tests/test_dev1871_raise_parity.py]
+10. **Dependencies are closures**: every predicate that classifies a column
+    reference's row-level data dependencies — input safety, attributability,
+    grain determination, filter disposition — consumes the reference's
+    *dependency closure*: its own join path plus every path the definition of any
+    derived column it names crosses, recursively. A derived reference therefore
+    behaves as a structural one in every position; references local to a
+    definition's owner ride the source (the ownership-boundary exemption); a
+    definition that cannot be analysed is unsafe, never "crosses nothing".
+    [enforced: test:tests/test_dev1900_closure.py]
 
 ## 4. Rationale
 
