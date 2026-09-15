@@ -144,7 +144,7 @@ Full detail in the DEV-1800 spec-tests resume comment.
 
 - [x] 6.1 `docs/concepts/formulas.md` nesting paragraph: one sentence on composites mixing
   a transform with other aggregates; verified by grep.
-- [ ] 6.2 arc42 (target text in design D10 — supersedes the 2026-09-15 wording —
+- [x] 6.2 arc42 (approved 2026-09-15 in the concise form: terms defined in-doc, no D10 implementation detail; target text in design D10 — supersedes the 2026-09-15 wording —
   re-presented as the exact diff for an explicit OK before applying):
   `engine.arc42.md` P6 with `[enforced: test:tests/test_dev1800_materialisation_stage.py]`,
   `sql.arc42.md` P11 clause; verified by `poetry run python tools/arch_check.py`.
