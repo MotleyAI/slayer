@@ -38,32 +38,46 @@
 - [ ] 1.6 Transition parity test: stage-derived base column set equals
   `_collect_base_aux_slot_ids`-based `base_render_order` over the law-harness shapes
   (retires with the legacy collector in 3.2); verified by pytest.
+  **Carried into §2 commit 1** — needs both the new staging pass and the still-live
+  legacy collector to exist together.
 - [ ] 1.7 Retarget approved pins: `test_dev1827_value_key_traversal.py::TestCollectBaseAuxSlotIds`
   → staging traversal; `test_dev1777_emit_step_cte.py` post-slot fakes gain
   `stage`/`needs_column`; `test_dev1838_transform_predicate_scope.py`, `test_planned.py`
   (3 sites), `test_dev1733_order_only_transform_composite.py` (1), and
   `test_dev1746_projection_order.py` (2, if hand-built) hand-built slots gain `stage=`;
   assertions unchanged; verified by pytest.
+  **Carried into §2 commit 1** — needs the concrete `Stage` API and the deletion order;
+  doing it in the spec-tests stage would red 5+ green files on guessed `stage=` values.
+
+**Spec-tests stage status (2026-09-15):** §1.1–§1.5 landed and verified (20 measure-position
+cases red today with `RenderContextMissingFacilityError`; the structure suite red at
+collection until §2.1 defines `Stage`/`StageKind`/`MaterialisationStageError`). §1.6 and
+§1.7 are carried into §2 commit 1 as noted above. Three §1.3 items are deferred to §2 as
+white-box work rather than pinned here: the full `series` regime matrix (pinned instead by
+the §1.5 golden baseline — shifted-CTE vs window, byte-for-byte), the row-attach-placeholder
+BASE stage (no query in the dev1800/dev1750 datasets produces a row-phase attach), and the
+staging cycle-raises check (a slot-dep cycle is not representable via public ValueKeys).
+Full detail in the DEV-1800 spec-tests resume comment.
 
 ## 2. Stage model + staging pass (commit 1 — no consumer change)
 
-- [ ] 2.1 `slayer/ir/planned.py`: `StageKind`, frozen `Stage(kind, level)` with total order,
+- [x] 2.1 `slayer/ir/planned.py`: `StageKind`, frozen `Stage(kind, level)` with total order,
   `ValueSlot.stage: Optional[Stage]`, `needs_column: bool`, `series: Optional[bool]`;
   `PlannedQuery` validator (every slot staged, dep-ordered, strict for transforms,
   recursive into producer plans); `slayer/core/errors.py::MaterialisationStageError`;
   verified by 1.3 validator tests.
-- [ ] 2.2 `slayer/engine/compile/staging.py`: the one staging function (D3 rules, D4
+- [x] 2.2 `slayer/engine/compile/staging.py`: the one staging function (D3 rules, D4
   needs_column, D6 regime, cycle detection) over `_iter_slot_deps` shared from
   `compile/projection.py`; wired at the end of `compile_prebound` and into every producer
   body; delete `_toposort_slot_ids`'s straggler fallback; verified by 1.3 stage tests and
   the full suite green with goldens byte-identical.
-- [ ] 2.3 Generator belt in `generate_from_planned` (refuse unstaged plan) next to
+- [x] 2.3 Generator belt in `generate_from_planned` (refuse unstaged plan) next to
   `_validate_transform_input_shapes`; ledger row in `tests/_dev1871_raise_ledger.py`;
   verified by `tests/test_dev1871_raise_parity.py` + `tests/test_law_guard_ratchet.py`.
 
 ## 3. Base column set from stage (commit 2 — fixes the class)
 
-- [ ] 3.1 Both render paths derive `base_render_order` as BASE ∧ needs_column in plan order;
+- [x] 3.1 Both render paths derive `base_render_order` as BASE ∧ needs_column in plan order;
   `host_combined_ids`, hidden placeholder projection and the outer-trim / hidden-order
   refs read `needs_column`; verified by 1.2 green and 1.6 parity.
 - [ ] 3.2 Delete `_collect_base_aux_slot_ids`, `_composite_has_remote_operand`,

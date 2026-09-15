@@ -85,6 +85,12 @@ def _cases() -> dict:
         "pos/measure_mask": _orders(
             dimensions=["status"], filters=["amount:sum > 10"],
             measures=[{"formula": "amount:sum", "name": "a"}]),
+        # Windowed-value filter (a ranked cross-model value) — D5 places it at the
+        # combined outer WHERE; the "with transform" variant is pos/filter_composite.
+        "pos/windowed_value_filter": _orders(
+            dimensions=["status"],
+            filters=["customers.spend:last(customers.signup_at) > 50"],
+            measures=[{"formula": "amount:sum", "name": "a"}]),
     }
 
 

@@ -31,9 +31,13 @@ from slayer.ir.planned import (
     ModeAFilter,
     OrderEntry,
     PlannedQuery,
+    Stage,
+    StageKind,
     TransformLayer,
     ValueSlot,
 )
+
+_BASE = Stage(kind=StageKind.BASE)
 
 
 # ---------------------------------------------------------------------------
@@ -310,6 +314,7 @@ class TestPlannedQuery:
             public_name="_count",
             public_aliases=["_count"],
             phase=Phase.AGGREGATE,
+            stage=_BASE,
         )
         pq = PlannedQuery(
             source_relation="orders",
@@ -337,6 +342,7 @@ class TestPlannedQuery:
             public_name="status",
             public_aliases=["status"],
             phase=Phase.ROW,
+            stage=_BASE,
         )
         agg_key = AggregateKey(source=ColumnKey(path=(), leaf="rev"), agg="sum")
         agg_slot = ValueSlot(
@@ -346,6 +352,7 @@ class TestPlannedQuery:
             public_name="revenue_sum",
             public_aliases=["revenue_sum"],
             phase=Phase.AGGREGATE,
+            stage=_BASE,
         )
         mask_key = ArithmeticKey(op="!=", operands=(dim_key, dim_key))
         mask_slot = ValueSlot(
@@ -354,6 +361,7 @@ class TestPlannedQuery:
             declared_name="__slayer_mask_0",
             hidden=True,
             phase=Phase.ROW,
+            stage=_BASE,
         )
         mask = MaskEntry(slot_id="m1", typing=MaskTyping.FIELD, stratum=0)
         pq = PlannedQuery(
@@ -377,6 +385,7 @@ class TestPlannedQuery:
             key=arith,
             declared_name="aov",
             phase=Phase.AGGREGATE,
+            stage=_BASE,
         )
         pq = PlannedQuery(
             source_relation="orders",

@@ -118,6 +118,22 @@ class TestTransformPlusHiddenAggregate:
         """The inner crosses a join fragment (``amount:wscaled_sum``)."""
         await self._assert_sum_invariant(dev1750_engine, transform="change(amount:wscaled_sum)", operand="amount:sum")
 
+    async def test_transform_plus_transform(self, dev1750_engine) -> None:
+        """Both operands are transforms (renders today; pinned by invariance)."""
+        await self._assert_sum_invariant(dev1750_engine, transform="change(amount:sum)", operand=f"change({CM})")
+
+    async def test_transform_plus_literal(self, dev1750_engine) -> None:
+        comps = _by_month(await _orders(dev1750_engine, measures=[
+            ModelMeasure(formula=f"change({CM})", name="t"),
+        ]))
+        got = _by_month(await _orders(dev1750_engine, measures=[
+            ModelMeasure(formula=f"change({CM}) + 100", name="c"),
+        ]))
+        assert set(got) == set(comps)
+        for m, cr in comps.items():
+            t = cr["orders.t"]
+            _approx_or_none(got[m]["orders.c"], None if t is None else t + 100)
+
     async def test_composite_with_a_dimension(self, dev1750_engine) -> None:
         """The same failing class with a ``status`` dimension present (incl. the
         NULL-status group)."""
@@ -295,3 +311,29 @@ class TestCompositeInFilterAndOrder:
         # composite = [Feb 150, Mar -113, Jan None] → nulls last.
         assert months[:2] == ["2024-02", "2024-03"]
         assert set(months) == {"2024-01", "2024-02", "2024-03"}
+
+
+class TestMaskPlacementExecuted:
+    """A row-typed mask filters rows before aggregation (WHERE); a measure-typed
+    mask filters groups after aggregation (HAVING) — distinct results confirm the
+    placement is by mask typing, not text (executed on SQLite + DuckDB)."""
+
+    async def test_row_mask_filters_before_aggregation(self, attr_engine) -> None:
+        # amount > 10 drops order o5 (7.0, the Mar cohort's only order).
+        got = by_signup(await attr_engine.execute(SlayerQuery(
+            source_model="orders", time_dimensions=signup_td(),
+            measures=[ModelMeasure(formula="amount:sum", name="a")],
+            filters=["amount > 10"],
+        )))
+        assert set(got) == {"2024-01", "2024-02"}
+        _approx_or_none(got["2024-01"]["orders.a"], 35.0)
+        _approx_or_none(got["2024-02"]["orders.a"], 100.0)
+
+    async def test_measure_mask_filters_after_aggregation(self, attr_engine) -> None:
+        got = by_signup(await attr_engine.execute(SlayerQuery(
+            source_model="orders", time_dimensions=signup_td(),
+            measures=[ModelMeasure(formula="amount:sum", name="a")],
+            filters=["amount:sum > 50"],
+        )))
+        assert set(got) == {"2024-02"}
+        _approx_or_none(got["2024-02"]["orders.a"], 100.0)

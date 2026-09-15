@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
-from enum import Enum
+import functools
+from enum import Enum, IntEnum
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union, Hashable
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from slayer.core.enums import DataType, JoinType
+from slayer.core.errors import MaterialisationStageError
 from slayer.core.format import NumberFormat
-from slayer.core.keys import Phase, ValueKey
+from slayer.core.keys import Phase, ValueKey, walk_value_keys
 from slayer.core.models import SlayerModel
 from slayer.core.scope import StageSchema
 from slayer.ir.bound import BoundExpr
@@ -38,10 +40,53 @@ __all__ = [
     "SemiJoinFilter",
     "SemiJoinHop",
     "SlotId",
+    "Stage",
+    "StageKind",
     "TrailingWindowProducerKernel",
     "TransformLayer",
     "ValueSlot",
 ]
+
+
+class StageKind(IntEnum):
+    """The relation in the emitted pipeline a value materialises in (P6/P11).
+
+    Ordered: a value's inputs always materialise at an earlier stage. ``CHAIN``
+    carries a 1-based ``level`` (nested transforms); the other kinds ignore it.
+    """
+
+    BASE = 0
+    PRODUCER = 1
+    COMBINED = 2
+    CHAIN = 3
+    POST = 4
+
+
+@functools.total_ordering
+class Stage(BaseModel):
+    """One materialisation stage: ``kind`` plus a 1-based ``level`` for CHAIN."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: StageKind
+    level: int = 0
+
+    @model_validator(mode="after")
+    def _level_matches_kind(self) -> "Stage":
+        if self.kind is StageKind.CHAIN:
+            if self.level < 1:
+                raise ValueError("CHAIN stage requires a 1-based level >= 1")
+        elif self.level != 0:
+            raise ValueError(f"{self.kind.name} stage must not carry a level")
+        return self
+
+    def _order_key(self) -> Tuple[int, int]:
+        return (int(self.kind), self.level)
+
+    def __lt__(self, other: object) -> bool:
+        if not isinstance(other, Stage):
+            return NotImplemented
+        return self._order_key() < other._order_key()
 
 
 class ValueSlot(BaseModel):
@@ -56,6 +101,15 @@ class ValueSlot(BaseModel):
     public_aliases: List[str] = Field(default_factory=list)
     hidden: bool = False
     phase: Phase
+    #: Planner-assigned materialisation stage (P6); None only on a plan the
+    #: staging pass has not run over — the generator refuses to render one.
+    stage: Optional[Stage] = None
+    #: Whether this value must be projected as a column of its own relation for
+    #: a later stage / consumer (D4); a mask-only value renders as a predicate.
+    needs_column: bool = False
+    #: For a transform slot, whether it shifts its materialised series (True) or
+    #: re-aggregates (False); None for non-transform values (D6).
+    series: Optional[bool] = None
     label: Optional[str] = None
     type: Optional[DataType] = None
     type_is_explicit: bool = False
@@ -399,6 +453,53 @@ class PlannedQuery(BaseModel):
                     f"the extra occurrence would emit a duplicate column",
                 )
         return self
+
+    @model_validator(mode="after")
+    def _materialisation_stage_invariant(self) -> "PlannedQuery":
+        """Every value carries one stage, and no value references a value staged
+        later than itself (it would render before its inputs). Recurses into
+        every producer plan (D7)."""
+        _validate_stage_order(self)
+        return self
+
+
+def _own_slots(pq: "PlannedQuery") -> List[ValueSlot]:
+    return [*pq.row_slots, *pq.aggregate_slots, *pq.combined_expression_slots]
+
+
+def _validate_stage_order(pq: "PlannedQuery") -> None:
+    """Enforce the materialisation-stage invariant on one plan and, recursively,
+    every producer plan it attaches."""
+    slots = _own_slots(pq)
+    unstaged = [s.id for s in slots if s.stage is None]
+    if unstaged:
+        raise MaterialisationStageError(
+            f"plan on {pq.source_relation!r} leaves value(s) {sorted(unstaged)} "
+            f"unstaged; every value must carry one materialisation stage.",
+        )
+    by_key = {s.key: s for s in slots}
+    for slot in slots:
+        # A computed-dimension slot resolves by its grouped alias (BASE); its
+        # internals (a placeholder joined into _base) are dependency-terminal and
+        # impose no ordering (Codex F7).
+        if slot.is_dimension:
+            continue
+        for ref in walk_value_keys(slot.key):
+            if ref is slot.key:
+                continue
+            dep = by_key.get(ref)
+            if dep is None or dep is slot:
+                continue
+            assert slot.stage is not None and dep.stage is not None
+            if slot.stage < dep.stage:
+                raise MaterialisationStageError(
+                    f"value {slot.id!r} (stage {slot.stage.kind.name}) "
+                    f"references {dep.id!r} staged later "
+                    f"({dep.stage.kind.name}); it would render before its "
+                    f"inputs are materialised.",
+                )
+    for attach in pq.regroup_attach_plans:
+        _validate_stage_order(attach.producer_plan)
 
 
 # ``producer_plan`` forward-references ``PlannedQuery``.

@@ -78,7 +78,9 @@ def _composite_slots(pq: PlannedQuery) -> list:
     return [s for s in _all_slots(pq) if isinstance(s.key, ArithmeticKey)]
 
 
-# A spread of shapes the ordering/staging invariants must hold across.
+# A spread of shapes the ordering/staging invariants must hold across —
+# measures, filter predicates and ORDER-BY keys, since every value the plan
+# carries (mask and order slots included) must be staged.
 _INVARIANT_QUERIES = [
     dict(measures=[ModelMeasure(formula="amount:sum", name="a")]),
     dict(measures=[ModelMeasure(formula="change(amount:sum)", name="c")]),
@@ -87,6 +89,15 @@ _INVARIANT_QUERIES = [
     dict(measures=[ModelMeasure(formula=f"{CM} + amount:sum", name="c")]),
     dict(measures=[ModelMeasure(formula=f"change({CM}) + amount:sum", name="c")]),
     dict(measures=[ModelMeasure(formula="consecutive_periods(amount:sum > 0)", name="p")]),
+    # filter predicate over a transform composite (a mask slot must be staged)
+    dict(measures=[ModelMeasure(formula="amount:sum", name="a")],
+         filters=[f"change({CM}) + amount:sum > 0"]),
+    # a row-typed and a measure-typed mask together
+    dict(measures=[ModelMeasure(formula="amount:sum", name="a")],
+         filters=["amount > 5", "amount:sum > 50"]),
+    # ORDER-BY key over a transform composite (an order slot must be staged)
+    dict(measures=[ModelMeasure(formula="amount:sum", name="a")],
+         order=[{"column": f"change({CM}) + amount:sum", "direction": "desc"}]),
 ]
 
 
@@ -193,6 +204,19 @@ class TestConcreteStages:
         for ph in placeholders:
             assert ph.stage.kind == StageKind.PRODUCER
 
+    def test_composite_over_a_combined_placeholder_is_combined(self) -> None:
+        """No transform operand → the combined-SELECT expression is COMBINED,
+        strictly later than the PRODUCER placeholder it reads (D1 F5)."""
+        pq = _plan(measures=[ModelMeasure(formula=f"{CM} + amount:sum", name="c")])
+        [comp] = [s for s in pq.aggregate_slots if isinstance(s.key, ArithmeticKey)]
+        assert comp.stage.kind == StageKind.COMBINED
+
+    def test_computed_dimension_is_base(self) -> None:
+        pq = _plan(dimensions=[{"expression": "amount * 2", "name": "amt2"}],
+                   measures=[ModelMeasure(formula="amount:sum", name="a")], time_dimensions=[])
+        [dim] = [s for s in pq.row_slots if s.is_dimension and isinstance(s.key, ArithmeticKey)]
+        assert dim.stage.kind == StageKind.BASE
+
 
 # --------------------------------------------------------------------------- #
 # needs_column — operands needed later are materialised as columns (spec).
@@ -245,16 +269,20 @@ def _agg_key(col: str = "amount") -> AggregateKey:
 
 
 class TestValidatorRejects:
-    def test_later_stage_reference_is_rejected(self) -> None:
+    def test_later_stage_reference_is_rejected_naming_the_value(self) -> None:
         agg = _agg_key()
         arith = ArithmeticKey(op="+", operands=(agg, LiteralKey(value=1)))
-        agg_slot = ValueSlot(id="a", key=agg, declared_name="amount_sum", hidden=True,
+        agg_slot = ValueSlot(id="later_agg", key=agg, declared_name="amount_sum", hidden=True,
                              phase=Phase.AGGREGATE, stage=Stage(kind=StageKind.POST), needs_column=True)
-        arith_slot = ValueSlot(id="c", key=arith, declared_name="c", public_name="c",
+        arith_slot = ValueSlot(id="outer_composite", key=arith, declared_name="c", public_name="c",
                                public_aliases=["c"], phase=Phase.AGGREGATE, stage=Stage(kind=StageKind.BASE))
         with pytest.raises((MaterialisationStageError, ValidationError)) as ei:
-            PlannedQuery(source_relation="orders", aggregate_slots=[agg_slot, arith_slot], projection=["c"])
-        assert "MaterialisationStageError" in str(ei.value) or isinstance(ei.value, MaterialisationStageError)
+            PlannedQuery(source_relation="orders",
+                         aggregate_slots=[agg_slot, arith_slot], projection=["outer_composite"])
+        msg = str(ei.value)
+        assert "MaterialisationStageError" in msg or isinstance(ei.value, MaterialisationStageError)
+        # the typed error names the offending value (cross-model-aggregates spec)
+        assert "outer_composite" in msg
 
     def test_unstaged_slot_is_rejected(self) -> None:
         agg_slot = ValueSlot(id="a", key=_agg_key(), declared_name="amount_sum",
