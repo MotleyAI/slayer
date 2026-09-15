@@ -504,6 +504,11 @@ def aggregate_input_closure(
             bundle=bundle,
         )
         if c is None:
+            # A raw, unparseable template-fragment STRING contributes nothing (the
+            # pre-DEV-1900 defensive fallback; a malformed SQL fragment is the
+            # renderer's gate) — only a named DERIVED COLUMN fails closed.
+            if isinstance(ref, str):
+                continue
             return None
         _add(c)
 
