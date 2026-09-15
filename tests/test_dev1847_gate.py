@@ -3,6 +3,8 @@ expression-aggregation + queries/partitioned-aggregates fail-closed scenarios)."
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from slayer.core.errors import SlayerError
@@ -78,23 +80,35 @@ class TestRejections:
 
     async def test_column_parameter_on_outer_rejected(self):
         """Scenario: Column-reference outer parameter fails closed — explicit
-        ``weight=id`` on the outer custom aggregation is a typed plan-time
-        error, never invalid SQL over ``_base``."""
+        ``weight=id`` is undetermined at the operand grain; the one-rule error
+        (DEV-1892) names the parameter, the grain, and the partition_by remedy,
+        ref-free."""
         query = sales_q(
             dimensions=["region"],
             measures=[ModelMeasure(
                 formula=f"wavg({INNER_CR}, weight=id)", name="w")])
-        with pytest.raises(SlayerError, match="column-reference parameter"):
+        with pytest.raises(SlayerError) as ei:
             await gen(query)
+        msg = str(ei.value)
+        assert "weight" in msg
+        assert "grain" in msg.lower()
+        assert "partition_by" in msg
+        assert not re.search(r"DEV-\d+", msg)
 
     async def test_column_default_parameter_on_outer_rejected(self):
-        """Scenario: Column-reference outer parameter fails closed — the
-        aggregation definition's parameter DEFAULT is a column."""
+        """Scenario: Column-reference outer parameter fails closed — ``wavg``'s
+        weight default (the ``amount`` column) is undetermined at the operand
+        grain; same one-rule error."""
         query = sales_q(
             dimensions=["region"],
             measures=[ModelMeasure(formula=f"wavg({INNER_CR})", name="w")])
-        with pytest.raises(SlayerError, match="defaults to column"):
+        with pytest.raises(SlayerError) as ei:
             await gen(query)
+        msg = str(ei.value)
+        assert "weight" in msg
+        assert "grain" in msg.lower()
+        assert "partition_by" in msg
+        assert not re.search(r"DEV-\d+", msg)
 
     async def test_outer_window_fails_closed(self):
         """Scenario: Outer window and outer filter fail closed — window= over an

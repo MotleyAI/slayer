@@ -495,7 +495,10 @@ class TestLowerSugarTraversal:
             ),
         )
         out = lower_sugar_transforms(key)
-        lowered = out.args[0].column
+        assert isinstance(out, ScalarCallKey)
+        arg0 = out.args[0]
+        assert isinstance(arg0, InKey)
+        lowered = arg0.column
         assert isinstance(lowered, ArithmeticKey)
         assert lowered.op == "-"
         assert lowered.operands[0] is AGG

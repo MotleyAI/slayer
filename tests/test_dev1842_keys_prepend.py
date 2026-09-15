@@ -220,6 +220,8 @@ class TestPrependCompositeKinds:
         call, col = out.operands
         assert col == ColumnKey(path=("customers", "regions"), leaf="pop")
         in_key, between = call.args
+        assert isinstance(in_key, InKey)
+        assert isinstance(between, BetweenKey)
         assert in_key.column == ColumnKey(path=("customers",), leaf="tier")
         assert between.column == ColumnKey(path=("customers",), leaf="signup_at")
 

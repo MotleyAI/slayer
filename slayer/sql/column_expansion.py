@@ -428,6 +428,31 @@ def collect_root_scope_joined_paths(
     return ordered
 
 
+def collect_root_scope_reference_columns(
+    *,
+    parsed: exp.Expression,  # pyright: ignore[reportPrivateImportUsage] — sqlglot ships no __all__
+    source_model: SlayerModel,
+    source_relation: str,
+    bundle: ResolvedSourceBundle,
+) -> List[Tuple[Optional[Tuple[str, ...]], str]]:
+    """Every root-scope reference of a parsed fragment as ``(join path, leaf)``:
+    ``()`` = anchored on the host/owner, non-empty = a resolved join walk,
+    ``None`` = an opaque or ambiguous qualifier (the caller decides its fate).
+    Literals never contribute — only ``exp.Column`` sites are walked."""
+    root_ids = root_scope_column_ids(parsed=parsed)
+    models_by_name = {m.name: m for m in bundle.referenced_models}
+    return [
+        (
+            _lenient_path(
+                qualifiers=quals, source_model=source_model,
+                owner_alias=source_relation, models_by_name=models_by_name,
+            ),
+            leaf,
+        )
+        for _node, quals, leaf in reference_sites(parsed, root_ids)
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Synchronous expansion (DEV-1450 typed pipeline)
 # ---------------------------------------------------------------------------
