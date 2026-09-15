@@ -382,9 +382,13 @@ _AggregateSource = Union[
     ColumnKey, ColumnSqlKey, StarKey,
     "ArithmeticKey", "ScalarCallKey", "LiteralKey", "AggregateKey",
 ]
-# Positional and kwarg arg values share one union: both `last(created_at)` and
-# `weighted_avg(weight=qty)` bind identifier columns via `_bind_agg_arg`.
-_AggregateArgValue = Union[ColumnKey, ColumnSqlKey, Decimal, str, bool, None]
+# Positional and kwarg arg values share one union: `last(created_at)` binds an
+# identifier column, `weighted_avg(weight=qty)` a column, and
+# `weighted_avg(weight=count(id, partition_by=…))` an aggregate — all via
+# `_bind_agg_arg`.
+_AggregateArgValue = Union[
+    ColumnKey, ColumnSqlKey, "AggregateKey", Decimal, str, bool, None,
+]
 _AggregateKwargValue = _AggregateArgValue
 
 
@@ -1245,14 +1249,17 @@ def is_mixed_source_key(k: ValueKey) -> TypeGuard[AggregateKey]:
 
 def reaggregation_operand_keys(vks: Sequence[ValueKey]) -> FrozenSet[AggregateKey]:
     """Every aggregate nested inside a re-aggregation root (at any depth) — the
-    operands exempt from the combined-consumer partition-key rule."""
+    operands exempt from the combined-consumer partition-key rule. A root's
+    source AND its args/kwargs are scanned: an aggregate-valued parameter
+    is an operand of the same carrier and shares the exemption."""
     out: set = set()
 
     def _scan(k: ValueKey) -> None:
         if is_reaggregation_key(k):
-            out.update(
-                c for c in walk_value_keys(k.source) if isinstance(c, AggregateKey)
-            )
+            for r in (k.source, *k.args, *(v for _, v in k.kwargs)):
+                if isinstance(r, _FrozenKey):
+                    out.update(c for c in walk_value_keys(r)
+                               if isinstance(c, AggregateKey))
             return
         for c in k.children():
             _scan(c)

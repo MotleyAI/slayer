@@ -348,6 +348,9 @@ class TestCompositeKinds:
         assert transform.input.source == ColumnKey(path=("regions",), leaf="pop")
         assert transform.partition_keys == Grain.of({ColumnKey(path=(), leaf="tier")})
         in_key, between_key = call.args
+        assert isinstance(in_key, InKey)
+        assert isinstance(between_key, BetweenKey)
+        assert isinstance(between_key.column, TimeTruncKey)
         assert in_key.column == ColumnKey(path=(), leaf="tier")
         assert between_key.column.column == ColumnKey(path=(), leaf="signup_at")
 

@@ -30,7 +30,7 @@ from slayer.core.enums import (
 )
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from slayer.core.errors import AggregationNotAllowedError, SlayerError
+from slayer.core.errors import AggregationNotAllowedError
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, column_leaf, column_path, is_boolean_shaped, substitute_value_keys, walk_value_keys
 from slayer.core.join_walker import resolve_hop, terminal_model
@@ -2289,8 +2289,12 @@ class SQLGenerator:
             cfk = key.column_filter_key
             if cfk is None or not cfk.canonical_sql:
                 return
+            # The filter is anchored at the aggregated column's OWNER (source
+            # path), not the scope root; enter through its sub-scope so a to-one
+            # ref (regions.name) resolves and its join registers.
             self._enter_mode_a_predicate(
                 sql=cfk.canonical_sql, scope=scope,
+                owner_path=tuple(getattr(key.source, "path", ()) or ()),
                 location=f"Column.filter on model {scope.root_model.name!r}",
             )
 
@@ -2312,9 +2316,18 @@ class SQLGenerator:
 
         def _resolve_fragment_kwargs(key) -> None:
             # Template-fragment kwargs are substituted as qualified SQL, so their crossed joins must register like
-            # Column.filter; keep the resolved (alias-rewritten) fragment.
+            # Column.filter; keep the resolved (alias-rewritten) fragment. A host-locus source beyond the root carries
+            # its definition on the source model; enter its default fragments through that owner sub-scope.
+            frag_model, owner_path = scope.root_model, ()
+            src_path = tuple(getattr(key.source, "path", ()) or ())
+            if src_path and _is_host_grain(key):
+                walked = self._walk_join_path_model(
+                    source_model=scope.root_model, path=src_path, bundle=scope.bundle,
+                )
+                if walked is not None:
+                    frag_model, owner_path = walked, src_path
             frags = self._register_fragment_kwarg_joins(
-                key=key, scope=scope, model=scope.root_model,
+                key=key, scope=scope, model=frag_model, owner_path=owner_path,
             )
             if frags:
                 bucket = resolved.setdefault(key, {})
@@ -2597,6 +2610,7 @@ class SQLGenerator:
                             f"desugar should have isolated it into a producer "
                             f"CTE."
                         )
+                _hg = bool(agg_path) and _is_host_grain(key)
                 synth = self._build_agg_render_spec_from_planned(
                     slot=slot,
                     key=key,
@@ -2606,6 +2620,8 @@ class SQLGenerator:
                     bundle=bundle,
                     resolved_agg_kwargs=resolved_agg_kwargs.get(key),
                     attached_columns=regroup_env,
+                    scope=host_scope if _hg else None,
+                    owner_path=tuple(agg_path) if _hg else (),
                 )
                 agg_expr, is_agg = self._build_agg(synth)
                 if is_agg:
@@ -3235,36 +3251,18 @@ class SQLGenerator:
             )
         return body.sql(dialect=self.dialect, pretty=True)
 
-    def _assert_association_no_column_default_params(
-        self, *, spec: AggRenderSpec, alias: str, query_param_names: Set[str],
-    ) -> None:
-        """Reject an association aggregate whose aggregation-definition default
-        parameters reference a column: the level-2 aggregate runs over ``_base``
-        (grain + entity key + the picked value ``_v``), so a defaulted column
-        param would render against a column ``_base`` lacks. Explicit column
-        params are rejected earlier at plan time; this catches the
-        definition-default path (DEV-1892 tracks lifting such parameters).
-        ``query_param_names`` are the query-supplied kwarg names — the only ones
-        the plan-time gate saw; ``spec.agg_kwargs`` also carries resolved defaults,
-        so it must not be used to decide which params are explicit."""
-        agg_def = spec.aggregation_def
-        if agg_def is None:
-            return
-        for p in agg_def.params:
-            if p.name in query_param_names:
-                continue
-            try:
-                default_ast = sqlglot.parse_one(p.sql, dialect=self.dialect)
-            except Exception:  # noqa: BLE001 — unparseable default is not a column ref
-                continue
-            if default_ast is not None and default_ast.find(exp.Column) is not None:
-                raise SlayerError(
-                    f"Aggregate {alias!r} needs distinct-entity association over "
-                    f"an unattributable dimension, which is unsupported with a "
-                    f"column-reference parameter (aggregation {agg_def.name!r} "
-                    f"parameter {p.name!r} defaults to column {p.sql!r}); the "
-                    f"per-entity pick carries only the aggregate's own value."
-                )
+    def _render_picked_param_value(self, *, pp, ctx) -> exp.Expression:  # pyright: ignore[reportPrivateImportUsage]
+        """The level-1 SQL for a picked parameter: an owner-anchored Mode-A
+        expression default entered through the scope (its owner-relative joins
+        register), else the parameter's value key rendered through the scope (a
+        column / placeholder / composite; a derived ``Column.sql`` expands, a
+        carrier placeholder resolves to its carrier column)."""
+        if pp.sql is not None:
+            return ctx.scope.enter_expression(
+                pp.sql, owner_path=tuple(pp.anchor_path),
+                location=f"parameter default {pp.name!r}",
+            )
+        return render_value_key(key=pp.key, ctx=ctx)
 
     def _render_association_producer_body(  # NOSONAR(S3776) — one cohesive two-level association body: level-1 dedup SELECT (grain × entity key, picked value) wrapped as ``_base``, level-2 aggregate over the picked rows. The two arms share the grain-alias / scope state.
         self, *, planned_query, bundle, kernel, source_model, source_relation,
@@ -3315,6 +3313,11 @@ class SQLGenerator:
         # value column — level 2 counts the entity rows.
         is_star = isinstance(agg_slot.key.source, StarKey)
         picked_alias = "_v"
+        # Parameters the grain determines are picked once per cell as
+        # _p<i> (below) and read by level 2 as _base._p<i>; the level-1 value pick
+        # is the aggregate's own source, stripped of those parameters.
+        picked_params = list(getattr(kernel, "picked_params", []) or [])
+        picked_names = {pp.name for pp in picked_params}
         spec: Optional[AggRenderSpec] = None
         if not is_star and getattr(kernel, "null_safe", False):
             # Re-aggregation (DEV-1847): the per-cell value is the carrier's
@@ -3330,34 +3333,68 @@ class SQLGenerator:
                 aggregation_def=agg_def,
                 agg_kwargs={
                     k: ResolvedAggKwarg(kind="str", value=agg_kwarg_canonical_str(v))
-                    for k, v in agg_slot.key.kwargs
+                    for k, v in agg_slot.key.kwargs if k not in picked_names
                 },
-            )
-            self._assert_association_no_column_default_params(
-                spec=spec, alias=agg_alias,
-                query_param_names={n for n, _ in agg_slot.key.kwargs},
             )
             inner_cols.append(exp.Alias(
                 this=exp.Max(this=value_expr.copy()),
                 alias=exp.to_identifier(picked_alias),
             ))
         elif not is_star:
+            # Discovery runs over the FULL key so a parameter's join path (e.g.
+            # weight=customers.regions.pop) is registered in the scope; the source
+            # spec is built from the parameter-stripped key so a parameter path
+            # that extends the source path is not rejected.
             resolved = self._resolve_agg_inputs_via_scope(
                 base_render_order=[agg_slot.id], slots_by_id={agg_slot.id: agg_slot},
                 scope=scope,
             )
+            source_key = agg_slot.key.model_copy(update={
+                "kwargs": tuple((k, v) for k, v in agg_slot.key.kwargs
+                                if k not in picked_names),
+            })
             spec = self._build_agg_render_spec_from_planned(
-                slot=agg_slot, key=agg_slot.key, source_model=source_model,
+                slot=agg_slot, key=source_key, source_model=source_model,
                 source_relation=source_relation, full_alias=picked_alias,
-                bundle=bundle, resolved_agg_kwargs=resolved.get(agg_slot.key),
+                bundle=bundle,
+                resolved_agg_kwargs={
+                    k: v for k, v in (resolved.get(agg_slot.key) or {}).items()
+                    if k not in picked_names
+                },
+                scope=scope,
+                owner_path=tuple(getattr(agg_slot.key.source, "path", ()) or ()),
             )
-            self._assert_association_no_column_default_params(
-                spec=spec, alias=agg_alias,
-                query_param_names={n for n, _ in getattr(agg_slot.key, "kwargs", ())})
             value_sql = _wrap_filter(self._resolve_value_sql(spec), spec.filter_sql)
             inner_cols.append(
                 exp.Max(this=self._parse(value_sql)).as_(
                     exp.to_identifier(picked_alias),
+                ),
+            )
+
+        # Pick each legal parameter once per cell as _p<i>, under the SAME
+        # measure-local filter as the source value — else an excluded row still
+        # contributes its weight to a level-2 denominator (a weighted average
+        # over filtered rows). Literal defaults never carry a filter.
+        picked_kwarg_exprs: Dict[str, ResolvedAggKwarg] = {}
+        for _i, _pp in enumerate(picked_params):
+            _p_alias = f"_p{_i}"
+            _picked = self._render_picked_param_value(pp=_pp, ctx=ctx)
+            if (
+                spec is not None and spec.filter_sql
+                and not isinstance(_picked, exp.Literal)
+            ):
+                _picked = exp.Case(ifs=[exp.If(
+                    this=self._parse(spec.filter_sql), true=_picked,
+                )])
+            inner_cols.append(exp.Alias(
+                this=exp.Max(this=_picked),
+                alias=exp.to_identifier(_p_alias),
+            ))
+            picked_kwarg_exprs[_pp.name] = ResolvedAggKwarg(
+                kind="expr",
+                value=exp.Column(
+                    this=exp.to_identifier(_p_alias),
+                    table=exp.to_identifier("_base"),
                 ),
             )
 
@@ -3431,7 +3468,10 @@ class SQLGenerator:
                 sql=picked_alias if getattr(kernel, "null_safe", False) else None,
                 aggregation=agg_slot.key.agg,
                 alias=agg_alias, model_name="_base", type=agg_slot.type,
-                column_type=spec.column_type, agg_kwargs=spec.agg_kwargs,
+                column_type=spec.column_type,
+                # A picked parameter reads from _base._p<i>, overriding its
+                # explicit-kwarg / definition-default resolution.
+                agg_kwargs={**spec.agg_kwargs, **picked_kwarg_exprs},
                 aggregation_def=spec.aggregation_def,
             )
         agg_expr, _ = self._build_agg(level2_spec)
@@ -5769,6 +5809,7 @@ class SQLGenerator:
         source_relation: Optional[str] = None,
         bundle=None,
         location: Optional[str] = None,
+        owner_path: Tuple[str, ...] = (),
     ) -> exp.Expression:
         """Enter a Mode-A PREDICATE through the door and hand back its AST."""
         frame = scope or self._mode_a_scope(
@@ -5776,7 +5817,7 @@ class SQLGenerator:
             source_relation=source_relation,
             bundle=bundle,
         )
-        return frame.enter_predicate(sql, location=location)
+        return frame.enter_predicate(sql, location=location, owner_path=tuple(owner_path))
 
     def _enter_mode_a_expression(
         self,
@@ -5784,12 +5825,13 @@ class SQLGenerator:
         sql: str,
         scope: ScopeFrame,
         location: Optional[str] = None,
+        owner_path: Tuple[str, ...] = (),
     ) -> exp.Expression:
         """Enter a Mode-A scalar EXPRESSION (a ``Column.sql`` / aggregation"""
-        return scope.enter_expression(sql, location=location)
+        return scope.enter_expression(sql, location=location, owner_path=tuple(owner_path))
 
     def _register_fragment_kwarg_joins(
-        self, *, key, scope: ScopeFrame, model,
+        self, *, key, scope: ScopeFrame, model, owner_path: Tuple[str, ...] = (),
     ) -> "Dict[str, exp.Expression]":
         """Resolve an aggregation's template FRAGMENTS through the Mode-A door,"""
         agg_def = next(
@@ -5810,7 +5852,7 @@ class SQLGenerator:
         resolved: "Dict[str, exp.Expression]" = {}
         for name, frag in named_fragments:
             resolved[name] = self._enter_mode_a_expression(
-                sql=frag, scope=scope,
+                sql=frag, scope=scope, owner_path=tuple(owner_path),
                 location=(
                     f"aggregation {key.agg!r} template fragment on model "
                     f"{model.name!r}"
@@ -5904,10 +5946,19 @@ class SQLGenerator:
         source_relation: str,
         source_model,
         bundle=None,
+        scope: Optional[ScopeFrame] = None,
+        owner_path: Tuple[str, ...] = (),
     ) -> Optional[str]:
         """Render a ``Column.filter`` Mode-A predicate for the aggregation-time"""
         if not canonical_sql:
             return None
+        if scope is not None:
+            # Enter through the level-1 scope so the filter's owner-anchored
+            # to-one joins register on it (not a throwaway).
+            return scope.enter_predicate(
+                canonical_sql, owner_path=tuple(owner_path),
+                location=f"Column.filter on model {source_model.name!r}",
+            ).sql(dialect=self.dialect)
         if bundle is None:
             return self._qualify_column_filter_sql(
                 canonical_sql=canonical_sql,
@@ -6209,7 +6260,10 @@ class SQLGenerator:
     ) -> None:
         """Reject CROSS-MODEL aggregates' kwarg column refs whose join path"""
 
-        if not source.path:
+        # A host-locus aggregate's inputs are certified from the home by the
+        # compiler and the scope registers each kwarg's join; the gate keeps
+        # guarding target-rooted producers.
+        if not source.path or _is_host_grain(key):
             return
         for kname, kval in key.kwargs:
             if isinstance(kval, (ColumnKey, ColumnSqlKey)) and kval.path != source.path:
@@ -6244,6 +6298,8 @@ class SQLGenerator:
         bundle=None,
         resolved_agg_kwargs: "Optional[Dict[str, ResolvedAggKwarg]]" = None,
         attached_columns: Optional[Dict[Any, exp.Expression]] = None,
+        scope: Optional[ScopeFrame] = None,
+        owner_path: Tuple[str, ...] = (),
     ) -> AggRenderSpec:
         """Build an ``AggRenderSpec`` from a planned aggregate slot so"""
 
@@ -6351,6 +6407,8 @@ class SQLGenerator:
                 source_relation=source_relation,
                 source_model=source_model,
                 bundle=bundle,
+                scope=scope,
+                owner_path=owner_path,
             )
             return AggRenderSpec(
                 name=col.name,

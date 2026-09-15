@@ -21,7 +21,7 @@ is the coercion from coarser to finer.
    [enforced: test:tests/test_dev1836_producer_execution.py]
 2. **Home dataset**: a row-level expression mixing several datasets' fields is
    legal only when one dataset determines them all — its home dataset, the one
-   place it has exactly one value per row. [review]
+   place it has exactly one value per row. [enforced: test:tests/test_dev1892_parameter_typing.py]
 3. **Association**: any join path — to-one or not — defines which rows belong
    together; everything that crosses a non-determining path is defined in terms
    of it. [review] Association is derivable from forward join declarations

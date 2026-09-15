@@ -39,6 +39,7 @@ from slayer.core.models import Column, SlayerModel
 from slayer.sql.column_expansion import (
     is_trivial_base,
     collect_root_scope_joined_paths,
+    collect_root_scope_reference_columns,
     expand_derived_refs_sync,
 )
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -261,6 +262,34 @@ def compute_column_filter_join_paths(
         )
     except Exception:
         return ()
+
+
+def compute_expr_reference_columns(
+    *,
+    canonical_sql: Optional[str],
+    anchor_model: SlayerModel,
+    anchor_relation: str,
+    bundle: ResolvedSourceBundle,
+) -> Optional[Tuple[Tuple[Optional[Tuple[str, ...]], str], ...]]:
+    """Root-scope column refs of an expression fragment as ``(join path, leaf)``
+    pairs: ``()`` path = anchor-local, non-empty = a resolved join walk,
+    ``None`` path = an opaque qualifier. ``()`` overall = analyzed and
+    column-free (literals never contribute); ``None`` overall = the fragment
+    could not be analyzed — callers fail closed on both ``None`` shapes."""
+    if not canonical_sql:
+        return ()
+    parsed = _parse_filter_sql_any_dialect(canonical_sql)
+    if parsed is None:
+        return None
+    try:
+        return tuple(collect_root_scope_reference_columns(
+            parsed=parsed,
+            source_model=anchor_model,
+            source_relation=anchor_relation,
+            bundle=bundle,
+        ))
+    except Exception:  # scope analysis can raise on unusual payloads
+        return None
 
 
 def _walk_root_scope_paths(

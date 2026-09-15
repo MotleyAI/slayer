@@ -278,7 +278,8 @@ Wrapping a partitioned aggregate in another aggregation re-aggregates its
 row-weighted average would be wrong, and is exactly what this shape avoids).
 The operand may compose several attached aggregates (their grains union), and
 `partition_by=` may name a computed dimension — including one carrying an
-attached aggregate itself. An outer dimension not determined by the operand's
+attached aggregate itself. The outer aggregation's parameters (`weight=` and friends) are typed by the operand grain — a cell of the operand dataset (`weighted_avg(amount:sum(partition_by=[city, region]), weight=id:count(partition_by=[city, region]))`) or a column that grain determines; anything else is a typed error naming the `partition_by=` remedy.
+An outer dimension not determined by the operand's
 grain resolves per `to_many_handling` (broadcast + warning by default), and an
 operand grain equal to the outer grain is the identity plus a degenerate
 warning naming the `partition_by=` remedy.

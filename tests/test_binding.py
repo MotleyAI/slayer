@@ -1,30 +1,6 @@
-"""Stage 7a.5 (DEV-1450) — ExpressionBinder + FilterBinder tests.
-
-The binder consumes a ``ParsedExpr`` (from ``slayer/engine/syntax.py``)
-plus a scope (``ModelScope`` or ``StageSchema``) and produces a typed
-``BoundExpr`` whose leaves are resolved ``ValueKey``s.
-
-Two scope kinds (P5):
-- ``ModelScope``: joins exist; dotted refs walk the join graph rooted
-  at ``source_model``. ``__``-bearing refs raise
-  ``IllegalScopeReferenceError`` unless they exact-match a column on
-  the model.
-- ``StageSchema``: flat namespace; dotted refs raise
-  ``IllegalScopeReferenceError``; flat names with ``__`` are legal.
-
-C14 (DEV-1448 cushion): same-model self-prefix in Mode B is stripped
-before join resolution. ``orders.status`` over an ``orders`` query →
-``status`` (a local ColumnKey, not a dotted walk).
-
-Phase classification (P8):
-- Row slots → Phase.ROW.
-- Aggregates → Phase.AGGREGATE.
-- Transforms → Phase.POST.
-- ArithmeticKey / ScalarCallKey: phase = max(operand.phase).
-
-Dormant in 7a — no engine wiring. The planner (7a.6) is the first
-consumer.
-"""
+"""ExpressionBinder + FilterBinder tests: ``ParsedExpr`` + scope (``ModelScope``
+with joins / flat ``StageSchema``) → typed ``BoundExpr`` of resolved ``ValueKey``s.
+Covers self-prefix stripping (C14) and phase classification (P8)."""
 
 from __future__ import annotations
 
@@ -560,3 +536,28 @@ class TestWindowInFilter:
                 parse_expr("rolling_rank > 1"),
                 scope=scope, bundle=bundle,
             )
+
+
+class TestNestedAggregateParamDimAliasMap:
+    def test_nested_partition_by_resolves_computed_dim(self) -> None:
+        # dim_alias_map must thread into a nested aggregate param's partition_by.
+        parsed = parse_expr(
+            "weighted_avg(amount, weight=count(id, partition_by=my_dim))")
+        computed = ColumnKey(leaf="status")
+        outer = bind_expr(
+            parsed=parsed, scope=_scope(), bundle=_bundle(),
+            dimension_alias_map={"my_dim": computed},
+        ).value_key
+        assert isinstance(outer, AggregateKey)
+        weight = dict(outer.kwargs)["weight"]
+        assert isinstance(weight, AggregateKey)
+        assert weight.partition_keys is not None
+        assert computed in weight.partition_keys
+
+    def test_nested_partition_by_without_thread_is_unresolved(self) -> None:
+        # Guard: the bare computed-dim name only binds through dim_alias_map.
+        parsed = parse_expr(
+            "weighted_avg(amount, weight=count(id, partition_by=my_dim))")
+        scope, bundle = _scope(), _bundle()
+        with pytest.raises(UnknownReferenceError):
+            bind_expr(parsed=parsed, scope=scope, bundle=bundle)
