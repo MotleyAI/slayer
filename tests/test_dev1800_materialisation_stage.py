@@ -61,7 +61,7 @@ def _all_slots(pq: PlannedQuery, *, recurse: bool = True) -> list:
     slots = list(pq.row_slots) + list(pq.aggregate_slots) + list(pq.combined_expression_slots)
     if recurse:
         for ap in pq.regroup_attach_plans:
-            slots += _all_slots(ap.producer_plan, recurse=True)
+            slots += _all_slots(pq=ap.producer_plan, recurse=True)
     return slots
 
 
@@ -154,7 +154,8 @@ class TestStageType:
             assert not (hi < lo)
 
     def test_frozen_hashable(self) -> None:
-        assert Stage(kind=StageKind.BASE) == Stage(kind=StageKind.BASE)
+        first, second = Stage(kind=StageKind.BASE), Stage(kind=StageKind.BASE)
+        assert first == second
         assert len({Stage(kind=StageKind.DERIVED, level=1), Stage(kind=StageKind.DERIVED, level=1)}) == 1  # pyright: ignore[reportUnhashable] — frozen pydantic models hash at runtime
 
 
@@ -165,7 +166,7 @@ class TestEveryValueCarriesOneStage:
     @pytest.mark.parametrize("kw", _INVARIANT_QUERIES)
     def test_all_slots_staged_including_producers(self, kw) -> None:
         pq = _plan(**kw)
-        for slot in _all_slots(pq, recurse=True):
+        for slot in _all_slots(pq=pq, recurse=True):
             assert slot.stage is not None, f"{slot.id} ({type(slot.key).__name__}) is unstaged"
             assert isinstance(slot.stage, Stage)
 
@@ -179,7 +180,7 @@ class TestStageOrderingInvariants:
         pq = _plan(**kw)
         by_key = {s.key: s for s in _all_slots(pq)}
         for slot in _all_slots(pq):
-            for t in _transforms_read(slot.key, by_key):
+            for t in _transforms_read(key=slot.key, by_key=by_key):
                 assert t.stage < slot.stage, (
                     f"{slot.id} not strictly later than transform {t.id} it reads")
 
@@ -188,7 +189,7 @@ class TestStageOrderingInvariants:
         pq = _plan(**kw)
         by_key = {s.key: s for s in _all_slots(pq)}
         for slot in _all_slots(pq):
-            for dep in _dep_slots(slot, by_key):
+            for dep in _dep_slots(slot=slot, by_key=by_key):
                 assert not (slot.stage < dep.stage), (
                     f"{slot.id} earlier than its dependency {dep.id}")
 
@@ -197,10 +198,10 @@ class TestStageOrderingInvariants:
         the deepest transform it reads, never in a terminal stage of its own."""
         pq = _plan(measures=[ModelMeasure(formula=f"change({CM}) + amount:sum", name="c")])
         by_key = {s.key: s for s in _all_slots(pq)}
-        composites = [c for c in _composite_slots(pq) if _transforms_read(c.key, by_key)]
+        composites = [c for c in _composite_slots(pq) if _transforms_read(key=c.key, by_key=by_key)]
         assert composites
         for c in composites:
-            deepest = max(t.stage.level for t in _transforms_read(c.key, by_key))
+            deepest = max(t.stage.level for t in _transforms_read(key=c.key, by_key=by_key))
             assert c.stage == Stage(kind=StageKind.DERIVED, level=1 + deepest)
 
 
@@ -268,8 +269,9 @@ class TestTransparentCompositeLevels:
         assert last.stage == Stage(kind=StageKind.DERIVED, level=2)
         change_comps = [
             c for c in _composite_slots(pq)
-            if _transforms_read(c.key, by_key)
-            and all(t.key.op == "time_shift" for t in _transforms_read(c.key, by_key))
+            if _transforms_read(key=c.key, by_key=by_key)
+            and all(t.key.op == "time_shift"
+                    for t in _transforms_read(key=c.key, by_key=by_key))
         ]
         assert change_comps, "the projected change composite should be interned"
         for c in change_comps:
@@ -313,7 +315,7 @@ class TestTransparentCompositeLevels:
         assert by_op["time_shift"].stage == Stage(kind=StageKind.DERIVED, level=2)
         assert by_op["last"].stage == Stage(kind=StageKind.DERIVED, level=3)
         by_key = {s.key: s for s in _all_slots(pq)}
-        comps = [c for c in _composite_slots(pq) if _transforms_read(c.key, by_key)]
+        comps = [c for c in _composite_slots(pq) if _transforms_read(key=c.key, by_key=by_key)]
         assert comps, "the projected change composite should be interned"
         for c in comps:
             assert c.stage == Stage(kind=StageKind.DERIVED, level=3)
@@ -452,10 +454,13 @@ class TestValidatorRejects:
         host_agg = ValueSlot(id="a", key=_agg_key(), declared_name="amount_sum",
                              public_name="amount_sum", public_aliases=["amount_sum"],
                              phase=Phase.AGGREGATE, stage=Stage(kind=StageKind.BASE))
+        # model_construct: the attach's own field validation would already reject
+        # the producer; bypass it so the raise provably comes from the host plan.
+        attach = RegroupAttachPlan.model_construct(producer_plan=producer, alias_hint="p")
         with pytest.raises((MaterialisationStageError, ValidationError)):
             PlannedQuery(
                 source_relation="orders", aggregate_slots=[host_agg],
-                regroup_attach_plans=[RegroupAttachPlan(producer_plan=producer, alias_hint="p")],
+                regroup_attach_plans=[attach],
                 projection=["a"],
             )
 
@@ -467,8 +472,9 @@ class TestGeneratorBelt:
         bad = pq.model_copy(update={
             "aggregate_slots": [target.model_copy(update={"stage": None})]
         })
+        bundle = _bundle()
         with pytest.raises(MaterialisationStageError):
-            render_planned(bad, bundle=_bundle(), dialect="postgres")
+            render_planned(planned_query=bad, bundle=bundle, dialect="postgres")
 
 
 # --------------------------------------------------------------------------- #

@@ -490,6 +490,47 @@ def _transforms_read(key: ValueKey):
         yield from visit(child)
 
 
+def _check_no_later_reference(slot: "ValueSlot", *, by_key: Dict) -> None:
+    for ref in walk_value_keys(slot.key):
+        if ref is slot.key:
+            continue
+        dep = by_key.get(ref)
+        if dep is None or dep is slot:
+            continue
+        assert slot.stage is not None and dep.stage is not None
+        if slot.stage < dep.stage:
+            raise MaterialisationStageError(
+                f"value {slot.id!r} (stage {slot.stage.kind.name}) "
+                f"references {dep.id!r} staged later "
+                f"({dep.stage.kind.name}); it would render before its "
+                f"inputs are materialised.",
+            )
+
+
+def _check_transform_strictness(slot: "ValueSlot", *, by_key: Dict) -> None:
+    """D7 explicit strictness: a value is staged strictly later than every
+    transform it reads (a composite operand renders inline, so a consumer
+    may share a composite's level — never a transform's). A transform
+    read must resolve to a slot: nothing else can ever emit it."""
+    for t_key in _transforms_read(slot.key):
+        dep = by_key.get(t_key)
+        if dep is None:
+            raise MaterialisationStageError(
+                f"value {slot.id!r} reads a transform "
+                f"({t_key.op!r}) that no slot in this plan materialises.",
+            )
+        if dep is slot:
+            continue
+        assert slot.stage is not None and dep.stage is not None
+        if dep.stage >= slot.stage:
+            raise MaterialisationStageError(
+                f"value {slot.id!r} (stage {slot.stage.kind.name} level "
+                f"{slot.stage.level}) must be staged strictly later than "
+                f"the transform {dep.id!r} it reads (level "
+                f"{dep.stage.level}).",
+            )
+
+
 def _validate_stage_order(pq: "PlannedQuery") -> None:
     """Enforce the materialisation-stage invariant on one plan and, recursively,
     every producer plan it attaches."""
@@ -507,41 +548,8 @@ def _validate_stage_order(pq: "PlannedQuery") -> None:
         # impose no ordering (Codex F7).
         if slot.is_dimension:
             continue
-        for ref in walk_value_keys(slot.key):
-            if ref is slot.key:
-                continue
-            dep = by_key.get(ref)
-            if dep is None or dep is slot:
-                continue
-            assert slot.stage is not None and dep.stage is not None
-            if slot.stage < dep.stage:
-                raise MaterialisationStageError(
-                    f"value {slot.id!r} (stage {slot.stage.kind.name}) "
-                    f"references {dep.id!r} staged later "
-                    f"({dep.stage.kind.name}); it would render before its "
-                    f"inputs are materialised.",
-                )
-        # D7 explicit strictness: a value is staged strictly later than every
-        # transform it reads (a composite operand renders inline, so a consumer
-        # may share a composite's level — never a transform's). A transform
-        # read must resolve to a slot: nothing else can ever emit it.
-        for t_key in _transforms_read(slot.key):
-            dep = by_key.get(t_key)
-            if dep is None:
-                raise MaterialisationStageError(
-                    f"value {slot.id!r} reads a transform "
-                    f"({t_key.op!r}) that no slot in this plan materialises.",
-                )
-            if dep is slot:
-                continue
-            assert slot.stage is not None and dep.stage is not None
-            if not (dep.stage < slot.stage):
-                raise MaterialisationStageError(
-                    f"value {slot.id!r} (stage {slot.stage.kind.name} level "
-                    f"{slot.stage.level}) must be staged strictly later than "
-                    f"the transform {dep.id!r} it reads (level "
-                    f"{dep.stage.level}).",
-                )
+        _check_no_later_reference(slot, by_key=by_key)
+        _check_transform_strictness(slot, by_key=by_key)
     for attach in pq.regroup_attach_plans:
         _validate_stage_order(attach.producer_plan)
 

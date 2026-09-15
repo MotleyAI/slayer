@@ -448,6 +448,28 @@ def _lower_order_entries(
     return order
 
 
+def _composite_operand_in_isolated_cte(
+    slot: ValueSlot,
+    *,
+    slots_by_id: Dict[str, ValueSlot],
+    slot_by_key: Dict[Any, str],
+    combined_attached: Set[str],
+    ranked_slot_ids: "AbstractSet[str]",
+) -> bool:
+    for dep in walk_value_keys(slot.key):
+        dep_sid = slot_by_key.get(dep)
+        if dep_sid is None or dep_sid == slot.id:
+            continue
+        dep_stage = slots_by_id[dep_sid].stage
+        if (
+            dep_sid in ranked_slot_ids
+            or dep_sid in combined_attached
+            or (dep_stage is not None and dep_stage.kind is StageKind.PRODUCER)
+        ):
+            return True
+    return False
+
+
 def _classify_order_scope(
     *,
     slot: ValueSlot,
@@ -473,21 +495,48 @@ def _classify_order_scope(
         return OrderScope.CROSS_MODEL_CTE
     if isinstance(slot.key, TransformKey):
         return OrderScope.TRANSFORM_STEP
-    if isinstance(slot.key, (ArithmeticKey, ScalarCallKey)):
-        for dep in walk_value_keys(slot.key):
-            dep_sid = slot_by_key.get(dep)
-            if dep_sid is None or dep_sid == slot.id:
-                continue
-            dep_stage = slots_by_id[dep_sid].stage
-            if (
-                dep_sid in ranked_slot_ids
-                or dep_sid in combined_attached
-                or (dep_stage is not None and dep_stage.kind is StageKind.PRODUCER)
-            ):
-                return OrderScope.OUTER_COMPOSITE
+    if isinstance(slot.key, (ArithmeticKey, ScalarCallKey)) and _composite_operand_in_isolated_cte(
+        slot,
+        slots_by_id=slots_by_id,
+        slot_by_key=slot_by_key,
+        combined_attached=combined_attached,
+        ranked_slot_ids=ranked_slot_ids,
+    ):
+        return OrderScope.OUTER_COMPOSITE
     if slot.hidden or slot.id not in public_projection:
         return OrderScope.HOST_BASE_HIDDEN
     return OrderScope.HOST_BASE
+
+
+def _layer_batches_at_level(
+    planned_query,
+    *,
+    slots_by_id: Dict[str, Any],
+    level: int,
+) -> Tuple[list, list, list]:
+    """Restrict each transform layer to its slots staged at ``level``, split as
+    (window, time_shift, consecutive_periods) batches in transform_layers order."""
+    ready_window: list = []
+    ready_time_shift: list = []
+    ready_cp: list = []
+    for layer in planned_query.transform_layers:
+        slot_ids = [
+            sid for sid in layer.slot_ids
+            if slots_by_id[sid].stage.level == level
+        ]
+        if not slot_ids:
+            continue
+        batch = (
+            layer if len(slot_ids) == len(layer.slot_ids)
+            else layer.model_copy(update={"slot_ids": slot_ids})
+        )
+        if layer.op == "time_shift":
+            ready_time_shift.append(batch)
+        elif layer.op == "consecutive_periods":
+            ready_cp.append(batch)
+        else:
+            ready_window.append(batch)
+    return ready_window, ready_time_shift, ready_cp
 
 
 
@@ -1593,26 +1642,9 @@ class SQLGenerator:
         })
         step_num = 0
         for level in levels:
-            ready_window: list = []
-            ready_time_shift: list = []
-            ready_cp: list = []
-            for layer in planned_query.transform_layers:
-                slot_ids = [
-                    sid for sid in layer.slot_ids
-                    if chain.slots_by_id[sid].stage.level == level
-                ]
-                if not slot_ids:
-                    continue
-                batch = (
-                    layer if len(slot_ids) == len(layer.slot_ids)
-                    else layer.model_copy(update={"slot_ids": slot_ids})
-                )
-                if layer.op == "time_shift":
-                    ready_time_shift.append(batch)
-                elif layer.op == "consecutive_periods":
-                    ready_cp.append(batch)
-                else:
-                    ready_window.append(batch)
+            ready_window, ready_time_shift, ready_cp = _layer_batches_at_level(
+                planned_query, slots_by_id=chain.slots_by_id, level=level,
+            )
             if ready_window:
                 chain_tail, step_num = self._emit_window_batch_step(
                     ready_window=ready_window,

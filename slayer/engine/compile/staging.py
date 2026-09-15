@@ -115,6 +115,116 @@ def _series_mode(inner: ValueKey, *, to_original: Dict[ValueKey, ValueKey]) -> b
     return False
 
 
+class _SlotStager:
+    """Memoised, cycle-guarded stage assignment over one plan's own slots."""
+
+    def __init__(
+        self,
+        *,
+        by_key: Dict[ValueKey, ValueSlot],
+        row_placeholders: Set[ValueKey],
+        combined_placeholders: Set[ValueKey],
+    ) -> None:
+        self._by_key = by_key
+        self._row_ph = row_placeholders
+        self._combined_ph = combined_placeholders
+        self._cache: Dict[SlotId, Stage] = {}
+        self._in_progress: Set[SlotId] = set()
+
+    def stage_of(self, slot: ValueSlot) -> Stage:
+        cached = self._cache.get(slot.id)
+        if cached is not None:
+            return cached
+        if slot.id in self._in_progress:
+            raise MaterialisationStageError(
+                f"value {slot.id!r} participates in a materialisation-stage "
+                f"dependency cycle.",
+            )
+        self._in_progress.add(slot.id)
+        stage = self._compute(slot)
+        self._in_progress.discard(slot.id)
+        self._cache[slot.id] = stage
+        return stage
+
+    def _deps(self, slot: ValueSlot) -> List[ValueSlot]:
+        seen: Set[SlotId] = set()
+        out: List[ValueSlot] = []
+        for dep_key in _iter_slot_deps(slot.key):
+            if dep_key == slot.key:
+                continue
+            dep = self._by_key.get(dep_key)
+            if dep is not None and dep.id not in seen:
+                seen.add(dep.id)
+                out.append(dep)
+        return out
+
+    def _max_transform_level(self, key: ValueKey) -> int:
+        """Deepest level among the transforms ``key`` reads (0 = none): composites
+        are transparent whether or not interned, a transform or aggregate is
+        terminal (D3/D10) — so a value's stage is a function of its term alone."""
+        return max((self._transform_level_of(child) for child in key.children()), default=0)
+
+    def _transform_level_of(self, node: ValueKey) -> int:
+        if isinstance(node, TransformKey):
+            slot = self._by_key.get(node)
+            if slot is not None:
+                return self.stage_of(slot).level
+            return 1 + self._max_transform_level(node)
+        if isinstance(node, AggregateKey):
+            return 0
+        return max((self._transform_level_of(child) for child in node.children()), default=0)
+
+    def _compute(self, slot: ValueSlot) -> Stage:
+        key = slot.key
+        if isinstance(key, AggregateKey):
+            return self._aggregate_stage(key)
+        if _is_placeholder(key):
+            return self._placeholder_stage(key)
+        if isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+            return Stage(kind=StageKind.BASE)
+        if isinstance(key, TransformKey):
+            return Stage(kind=StageKind.DERIVED, level=1 + self._max_transform_level(key))
+        if isinstance(key, _COMPOSITE_KINDS):
+            return self._composite_stage(slot)
+        raise MaterialisationStageError(
+            f"value {slot.id!r} of kind {type(key).__name__} has no "
+            f"materialisation-stage rule.",
+        )
+
+    def _aggregate_stage(self, key: ValueKey) -> Stage:
+        # A windowed aggregate lives in its own windowed CTE; a host-grain
+        # wrap is answered by a combined attach (its value comes from a joined
+        # producer CTE) — both PRODUCER. A host-grain aggregate that is a
+        # producer body's own output is not substituted here, so it stays BASE.
+        if window_kwarg_of(key) is not None or key in self._combined_ph:
+            return Stage(kind=StageKind.PRODUCER)
+        return Stage(kind=StageKind.BASE)
+
+    def _placeholder_stage(self, key: ValueKey) -> Stage:
+        # A row-attached placeholder is joined inside _base (BASE), even when
+        # the same value is also combined-attached (dual role): _base is the
+        # earliest relation it materialises in. A combined-only placeholder is
+        # joined at the combined SELECT (PRODUCER). An externally-provided
+        # carrier column (answered by the enclosing producer, absent from
+        # this plan's own attaches) is likewise a base column (BASE).
+        if key in self._row_ph:
+            return Stage(kind=StageKind.BASE)
+        if key in self._combined_ph:
+            return Stage(kind=StageKind.PRODUCER)
+        return Stage(kind=StageKind.BASE)
+
+    def _composite_stage(self, slot: ValueSlot) -> Stage:
+        if slot.is_dimension:
+            return Stage(kind=StageKind.BASE)
+        transform_level = self._max_transform_level(slot.key)
+        if transform_level:
+            return Stage(kind=StageKind.DERIVED, level=1 + transform_level)
+        dep_kinds = {self.stage_of(d).kind for d in self._deps(slot)}
+        if dep_kinds & {StageKind.PRODUCER, StageKind.COMBINED}:
+            return Stage(kind=StageKind.COMBINED)
+        return Stage(kind=StageKind.BASE)
+
+
 def stage_slots(
     *,
     row_slots: List[ValueSlot],
@@ -135,95 +245,10 @@ def stage_slots(
     row_ph, combined_ph = _placeholder_phases(regroup_attach_plans)
     to_original = _placeholder_to_original(regroup_attach_plans)
 
-    stage_cache: Dict[SlotId, Stage] = {}
-    in_progress: Set[SlotId] = set()
-
-    def _deps(slot: ValueSlot) -> List[ValueSlot]:
-        seen: Set[SlotId] = set()
-        out: List[ValueSlot] = []
-        for dep_key in _iter_slot_deps(slot.key):
-            if dep_key == slot.key:
-                continue
-            dep = by_key.get(dep_key)
-            if dep is not None and dep.id not in seen:
-                seen.add(dep.id)
-                out.append(dep)
-        return out
-
-    def _stage_of(slot: ValueSlot) -> Stage:
-        cached = stage_cache.get(slot.id)
-        if cached is not None:
-            return cached
-        if slot.id in in_progress:
-            raise MaterialisationStageError(
-                f"value {slot.id!r} participates in a materialisation-stage "
-                f"dependency cycle.",
-            )
-        in_progress.add(slot.id)
-        stage = _compute_stage(slot)
-        in_progress.discard(slot.id)
-        stage_cache[slot.id] = stage
-        return stage
-
-    def _max_transform_level(key: ValueKey) -> int:
-        """Deepest level among the transforms ``key`` reads (0 = none): composites
-        are transparent whether or not interned, a transform or aggregate is
-        terminal (D3/D10) — so a value's stage is a function of its term alone."""
-
-        def level_of(node: ValueKey) -> int:
-            if isinstance(node, TransformKey):
-                slot = by_key.get(node)
-                if slot is not None:
-                    return _stage_of(slot).level
-                return 1 + _max_transform_level(node)
-            if isinstance(node, AggregateKey):
-                return 0
-            return max((level_of(child) for child in node.children()), default=0)
-
-        return max((level_of(child) for child in key.children()), default=0)
-
-    def _compute_stage(slot: ValueSlot) -> Stage:
-        key = slot.key
-        if isinstance(key, AggregateKey):
-            # A windowed aggregate lives in its own windowed CTE; a host-grain
-            # wrap is answered by a combined attach (its value comes from a joined
-            # producer CTE) — both PRODUCER. A host-grain aggregate that is a
-            # producer body's own output is not substituted here, so it stays BASE.
-            if window_kwarg_of(key) is not None or key in combined_ph:
-                return Stage(kind=StageKind.PRODUCER)
-            return Stage(kind=StageKind.BASE)
-        if _is_placeholder(key):
-            # A row-attached placeholder is joined inside _base (BASE), even when
-            # the same value is also combined-attached (dual role): _base is the
-            # earliest relation it materialises in. A combined-only placeholder is
-            # joined at the combined SELECT (PRODUCER). An externally-provided
-            # carrier column (answered by the enclosing producer, absent from
-            # this plan's own attaches) is likewise a base column (BASE).
-            if key in row_ph:
-                return Stage(kind=StageKind.BASE)
-            if key in combined_ph:
-                return Stage(kind=StageKind.PRODUCER)
-            return Stage(kind=StageKind.BASE)
-        if isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
-            return Stage(kind=StageKind.BASE)
-        if isinstance(key, TransformKey):
-            return Stage(kind=StageKind.DERIVED, level=1 + _max_transform_level(key))
-        if isinstance(key, _COMPOSITE_KINDS):
-            if slot.is_dimension:
-                return Stage(kind=StageKind.BASE)
-            transform_level = _max_transform_level(key)
-            if transform_level:
-                return Stage(kind=StageKind.DERIVED, level=1 + transform_level)
-            dep_kinds = {_stage_of(d).kind for d in _deps(slot)}
-            if dep_kinds & {StageKind.PRODUCER, StageKind.COMBINED}:
-                return Stage(kind=StageKind.COMBINED)
-            return Stage(kind=StageKind.BASE)
-        raise MaterialisationStageError(
-            f"value {slot.id!r} of kind {type(key).__name__} has no "
-            f"materialisation-stage rule.",
-        )
-
-    stages = {s.id: _stage_of(s) for s in all_slots}
+    stager = _SlotStager(
+        by_key=by_key, row_placeholders=row_ph, combined_placeholders=combined_ph,
+    )
+    stages = {s.id: stager.stage_of(s) for s in all_slots}
 
     needs_column = _compute_needs_column(
         all_slots=all_slots, by_key=by_key, by_id=by_id, stages=stages,
@@ -232,21 +257,126 @@ def stage_slots(
         distinct_dimension_values=distinct_dimension_values,
     )
 
-    def _rebuild(slots: List[ValueSlot]) -> List[ValueSlot]:
-        out: List[ValueSlot] = []
-        for s in slots:
-            series: Optional[bool] = (
-                _series_mode(s.key.input, to_original=to_original)
-                if isinstance(s.key, TransformKey) else None
-            )
-            out.append(s.model_copy(update={
-                "stage": stages[s.id],
-                "needs_column": s.id in needs_column,
-                "series": series,
-            }))
-        return out
+    return (
+        _assign(row_slots, stages=stages, needs_column=needs_column, to_original=to_original),
+        _assign(aggregate_slots, stages=stages, needs_column=needs_column, to_original=to_original),
+        _assign(combined_expression_slots, stages=stages, needs_column=needs_column,
+                to_original=to_original),
+    )
 
-    return _rebuild(row_slots), _rebuild(aggregate_slots), _rebuild(combined_expression_slots)
+
+def _assign(
+    slots: List[ValueSlot],
+    *,
+    stages: Dict[SlotId, Stage],
+    needs_column: Set[SlotId],
+    to_original: Dict[ValueKey, ValueKey],
+) -> List[ValueSlot]:
+    out: List[ValueSlot] = []
+    for s in slots:
+        series: Optional[bool] = (
+            _series_mode(s.key.input, to_original=to_original)
+            if isinstance(s.key, TransformKey) else None
+        )
+        out.append(s.model_copy(update={
+            "stage": stages[s.id],
+            "needs_column": s.id in needs_column,
+            "series": series,
+        }))
+    return out
+
+
+def _direct_deps(slot: ValueSlot, *, by_key: Dict[ValueKey, ValueSlot]) -> List[ValueSlot]:
+    """Slots ``slot`` directly references: descend through un-interned
+    composite / transform structure, stopping at any interned slot — a
+    materialised value is referenced as a whole, not through its internals
+    (F7: a computed dimension resolves by its grouped alias). An aggregate's
+    internals are its own business (like ``_iter_slot_deps``), so its source
+    columns are never consumer deps."""
+    if isinstance(slot.key, AggregateKey):
+        return []
+    out: List[ValueSlot] = []
+    seen: Set[SlotId] = set()
+    pending: List[ValueKey] = list(reversed(list(slot.key.children())))
+    while pending:
+        key = pending.pop()
+        dep = by_key.get(key)
+        if dep is not None:
+            if dep.id not in seen:
+                seen.add(dep.id)
+                out.append(dep)
+            continue
+        if isinstance(key, (TransformKey, *_COMPOSITE_KINDS)):
+            pending.extend(reversed(list(key.children())))
+    return out
+
+
+def _later_stage_reads(
+    all_slots: List[ValueSlot],
+    *,
+    by_key: Dict[ValueKey, ValueSlot],
+    stages: Dict[SlotId, Stage],
+) -> Set[SlotId]:
+    """A value read by a strictly-later stage must be a column of its own relation."""
+    needs: Set[SlotId] = set()
+    for slot in all_slots:
+        for dep in _direct_deps(slot, by_key=by_key):
+            if stages[dep.id] < stages[slot.id]:
+                needs.add(dep.id)
+    return needs
+
+
+def _measure_mask_deps(
+    masks: List[MaskEntry],
+    *,
+    by_id: Dict[SlotId, ValueSlot],
+    by_key: Dict[ValueKey, ValueSlot],
+) -> Set[SlotId]:
+    """A measure-typed mask renders in HAVING, which reads its aggregates by base
+    alias, so those deps need columns. A field-typed mask renders inline in
+    WHERE — its column deps are referenced directly, never projected."""
+    needs: Set[SlotId] = set()
+    for mask in masks:
+        if mask.typing is not MaskTyping.MEASURE:
+            continue
+        slot = by_id.get(mask.slot_id)
+        if slot is None:
+            continue
+        needs.update(dep.id for dep in _direct_deps(slot, by_key=by_key))
+    return needs
+
+
+def _attach_join_keys(
+    attach_plans: List[RegroupAttachPlan],
+    *,
+    by_key: Dict[ValueKey, ValueSlot],
+) -> Set[SlotId]:
+    """An attach joins back on host-side grain keys, which must be columns of
+    _base. join_pairs is (host_key, producer_slot_id): the host key is in this
+    plan's coordinates; the slot id belongs to the producer plan, not here."""
+    needs: Set[SlotId] = set()
+    for attach in attach_plans:
+        for host_key, _producer_slot_id in attach.join_pairs:
+            host_slot = by_key.get(host_key)
+            if host_slot is not None:
+                needs.add(host_slot.id)
+    return needs
+
+
+def _grouped_order_targets(
+    order: List[OrderEntry],
+    *,
+    stages: Dict[SlotId, Stage],
+) -> Set[SlotId]:
+    """Order targets in a grouped query resolve to a hidden column of the relation
+    their stage names (BASE / DERIVED); a PRODUCER / COMBINED value renders
+    inline in the ORDER BY."""
+    needs: Set[SlotId] = set()
+    for entry in order:
+        stage = stages.get(entry.slot_id)
+        if stage is not None and stage.kind in (StageKind.BASE, StageKind.DERIVED):
+            needs.add(entry.slot_id)
+    return needs
 
 
 def _compute_needs_column(
@@ -263,72 +393,12 @@ def _compute_needs_column(
 ) -> Set[SlotId]:
     """Slot ids that must be projected as a column of their own relation (D4)."""
     needs: Set[SlotId] = set(projection)
-
-    def _direct_deps(slot: ValueSlot) -> List[ValueSlot]:
-        """Slots ``slot`` directly references: descend through un-interned
-        composite / transform structure, stopping at any interned slot — a
-        materialised value is referenced as a whole, not through its internals
-        (F7: a computed dimension resolves by its grouped alias). An aggregate's
-        internals are its own business (like ``_iter_slot_deps``), so its source
-        columns are never consumer deps."""
-        out: List[ValueSlot] = []
-        seen: Set[SlotId] = set()
-
-        def visit(key: ValueKey) -> None:
-            dep = by_key.get(key)
-            if dep is not None:
-                if dep.id not in seen:
-                    seen.add(dep.id)
-                    out.append(dep)
-                return
-            if isinstance(key, (TransformKey, *_COMPOSITE_KINDS)):
-                for child in key.children():
-                    visit(child)
-
-        if isinstance(slot.key, AggregateKey):
-            return out
-        for child in slot.key.children():
-            visit(child)
-        return out
-
-    # A value read by a strictly-later stage must be a column of its own relation.
-    for slot in all_slots:
-        for dep in _direct_deps(slot):
-            if stages[dep.id] < stages[slot.id]:
-                needs.add(dep.id)
-
-    # A measure-typed mask renders in HAVING, which reads its aggregates by base
-    # alias, so those deps need columns. A field-typed mask renders inline in
-    # WHERE — its column deps are referenced directly, never projected.
-    for mask in masks:
-        if mask.typing is not MaskTyping.MEASURE:
-            continue
-        slot = by_id.get(mask.slot_id)
-        if slot is None:
-            continue
-        for dep in _direct_deps(slot):
-            needs.add(dep.id)
-
-    # An attach joins back on host-side grain keys, which must be columns of
-    # _base. join_pairs is (host_key, producer_slot_id): the host key is in this
-    # plan's coordinates; the slot id belongs to the producer plan, not here.
-    for attach in attach_plans:
-        for host_key, _producer_slot_id in attach.join_pairs:
-            host_slot = by_key.get(host_key)
-            if host_slot is not None:
-                needs.add(host_slot.id)
-
-    # Order targets in a grouped query resolve to a hidden column of the relation
-    # their stage names (BASE / DERIVED); a PRODUCER / COMBINED value renders
-    # inline in the ORDER BY. A raw-rows query (distinct_dimension_values=False)
-    # has no grouping, so its row-column order targets resolve inline via split
-    # emission, never as a hidden column.
+    needs |= _later_stage_reads(all_slots, by_key=by_key, stages=stages)
+    needs |= _measure_mask_deps(masks, by_id=by_id, by_key=by_key)
+    needs |= _attach_join_keys(attach_plans, by_key=by_key)
+    # A raw-rows query (distinct_dimension_values=False) has no grouping, so its
+    # row-column order targets resolve inline via split emission, never as a
+    # hidden column.
     if distinct_dimension_values:
-        for entry in order:
-            stage = stages.get(entry.slot_id)
-            if stage is None:
-                continue
-            if stage.kind in (StageKind.BASE, StageKind.DERIVED):
-                needs.add(entry.slot_id)
-
+        needs |= _grouped_order_targets(order, stages=stages)
     return needs
