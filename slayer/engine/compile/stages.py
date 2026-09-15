@@ -118,6 +118,7 @@ from slayer.engine.compile.projection import (
     _canonical_name,
     _iter_slot_deps,
 )
+from slayer.engine.compile.staging import stage_slots
 from slayer.engine.key_metadata import (
     dimension_key_metadata,
     measure_key_format_description,
@@ -3333,6 +3334,19 @@ def compile_prebound(  # NOSONAR(S3776) — compiler entry-point dispatcher. The
         mode_a_filters=mode_a_filters,
     )
 
+    # Assign every slot its materialisation stage / needs-column / series fact
+    # (DEV-1800 D3); producer bodies were staged by their own compile_prebound.
+    row_slots, agg_slots, combined_slots = stage_slots(
+        row_slots=row_slots,
+        aggregate_slots=agg_slots,
+        combined_expression_slots=combined_slots,
+        regroup_attach_plans=regroup_attach_plans,
+        masks=masks,
+        order=order_entries,
+        projection=projection.public_projection,
+        distinct_dimension_values=distinct_dimension_values,
+    )
+
     planned = PlannedQuery(
         source_relation=source_relation,
         row_slots=row_slots,
@@ -3571,11 +3585,8 @@ def _toposort_slot_ids(
             in_degree[child] -= 1
             if in_degree[child] == 0:
                 ready.append(child)
-    # Fallback: any remaining slots (shouldn't happen) appended in input order.
-    seen = set(ordered_ids)
-    for s in transform_slots:
-        if s.id not in seen:
-            ordered_ids.append(s.id)
+    # A dependency cycle would strand slots here; the staging pass detects and
+    # raises on one before this list is consumed, so no straggler fallback.
     return ordered_ids
 
 

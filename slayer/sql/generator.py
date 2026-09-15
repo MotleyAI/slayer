@@ -30,7 +30,7 @@ from slayer.core.enums import (
 )
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from slayer.core.errors import AggregationNotAllowedError
+from slayer.core.errors import AggregationNotAllowedError, MaterialisationStageError
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, column_leaf, column_path, is_boolean_shaped, substitute_value_keys, walk_value_keys
 from slayer.core.join_walker import resolve_hop, terminal_model
@@ -47,13 +47,14 @@ from slayer.sql.column_expansion import (
     collect_root_scope_joined_paths,
     expand_derived_refs_sync,
 )
-from slayer.ir.planned import MaskTyping, RankedGrainMember, ValueSlot, regroup_producer_identity
+from slayer.ir.planned import MaskTyping, RankedGrainMember, StageKind, ValueSlot, regroup_producer_identity
 from slayer.ir.source_bundle import (
     ResolvedSourceBundle,
     stage_bundle_with_siblings,
     synthetic_model_from_stage_schema,
 )
 from slayer.sql._identifier_fit import overlimit_tokens
+from slayer.sql import staged_plan
 from slayer.sql.dialects import SqlDialect, get_dialect
 from slayer.sql.naming import (
     FILTERED_ALIAS,
@@ -347,8 +348,11 @@ def _plan_slots(planned_query) -> List[ValueSlot]:
     ]
 
 
-def _combined_placeholder_slot_ids(planned_query, slot_id_by_key) -> Set[str]:
-    """Slot ids whose value lives in a combined-attach producer CTE."""
+def _combined_attached_slot_ids(planned_query, slot_id_by_key) -> Set[str]:
+    """Slot ids the combined SELECT reads from an attached producer CTE — an
+    attach-plan fact, not a key-shape walk. Includes a dual-role placeholder
+    (also row-attached, so BASE-staged: ``_base`` is the earliest relation it
+    materialises in, but combined-level consumers read the producer CTE)."""
     out: Set[str] = set()
     for attach in planned_query.regroup_attach_plans:
         if attach.attach_phase != "combined":
@@ -360,49 +364,36 @@ def _combined_placeholder_slot_ids(planned_query, slot_id_by_key) -> Set[str]:
     return out
 
 
-def _windowed_agg_slot_ids(planned_query) -> Set[str]:
-    """Aggregate slots carrying a ``window=`` kwarg (their value lives in a windowed CTE)."""
-    return {
-        s.id
-        for s in planned_query.aggregate_slots
-        if isinstance(s.key, AggregateKey)
-        and any(kw == "window" for kw, _ in s.key.kwargs)
-    }
-
-
 def _lower_positions(planned_query) -> _LoweredPositions:
-    """Reconstruct placements from the plan's typed masks: field → base WHERE;
-    measure → HAVING, or outer WHERE when it reads a combined placeholder, or the
-    post wrapper when it reads a windowed value / transform. Mode-A texts render
-    in the base WHERE between the date-range and user masks."""
+    """Placement from the planner stage (D5): field → base WHERE; measure →
+    HAVING at BASE, the combined outer WHERE at PRODUCER / COMBINED (or reading
+    a combined-attached dual-role value), the outer wrapper at DERIVED. Mode-A
+    texts render in the base WHERE between the date-range and user masks."""
     slots_by_id = {s.id: s for s in _plan_slots(planned_query)}
     slot_id_by_key = {s.key: s.id for s in slots_by_id.values()}
-    combined_ph_ids = _combined_placeholder_slot_ids(planned_query, slot_id_by_key)
-    windowed_ids = _windowed_agg_slot_ids(planned_query)
+    combined_attached = _combined_attached_slot_ids(planned_query, slot_id_by_key)
     outer_ids: List[str] = []
 
     def _lower_mask(mask) -> _LoweredFilter:
         slot = slots_by_id[mask.slot_id]
-        key = slot.key
+        stage_kind = slot.stage.kind if slot.stage is not None else None
         if mask.typing == MaskTyping.FIELD:
             phase = Phase.ROW
+        elif stage_kind is StageKind.DERIVED:
+            phase = Phase.POST
         else:
-            dep_ids = {
-                slot_id_by_key[k]
-                for k in walk_value_keys(key)
-                if k in slot_id_by_key
-            }
-            if key.phase == Phase.POST or (dep_ids & windowed_ids):
-                phase = Phase.POST
-            else:
-                phase = Phase.AGGREGATE
-                if (
-                    (dep_ids & combined_ph_ids) or _FORCE_MASK_FALLBACK
-                ) and mask.slot_id not in outer_ids:
-                    outer_ids.append(mask.slot_id)
+            phase = Phase.AGGREGATE
+            outer = stage_kind in (
+                StageKind.PRODUCER, StageKind.COMBINED,
+            ) or any(
+                slot_id_by_key.get(k) in combined_attached
+                for k in walk_value_keys(slot.key)
+            )
+            if (outer or _FORCE_MASK_FALLBACK) and mask.slot_id not in outer_ids:
+                outer_ids.append(mask.slot_id)
         return _LoweredFilter(
             id=mask.slot_id, phase=phase,
-            expression=BoundExpr(value_key=key),
+            expression=BoundExpr(value_key=slot.key),
         )
 
     n_date = planned_query.n_date_range_masks
@@ -419,8 +410,7 @@ def _lower_positions(planned_query) -> _LoweredPositions:
         planned_query=planned_query,
         slots_by_id=slots_by_id,
         slot_id_by_key=slot_id_by_key,
-        combined_ph_ids=combined_ph_ids,
-        windowed_ids=windowed_ids,
+        combined_attached=combined_attached,
     )
     return _LoweredPositions(
         filters=entries, outer_where_ids=outer_ids, order=order,
@@ -432,8 +422,7 @@ def _lower_order_entries(
     *,
     slots_by_id: Dict[str, ValueSlot],
     slot_id_by_key: Dict[Any, str],
-    combined_ph_ids: Set[str],
-    windowed_ids: Set[str],
+    combined_attached: Set[str],
 ) -> List[ScopedOrder]:
     order: List[ScopedOrder] = []
     for entry in planned_query.order:
@@ -449,28 +438,34 @@ def _lower_order_entries(
             direction=entry.direction,
             scope=_classify_order_scope(
                 slot=slot,
-                cross_model_slot_ids=combined_ph_ids,
-                windowed_slot_ids=windowed_ids,
-                public_projection=list(planned_query.projection),
+                slots_by_id=slots_by_id,
                 slot_by_key=slot_id_by_key,
+                combined_attached=combined_attached,
+                public_projection=list(planned_query.projection),
             ),
             nulls=entry.nulls,
         ))
     return order
 
 
-def _composite_reads_an_isolated_cte(
+def _composite_operand_in_isolated_cte(
+    slot: ValueSlot,
     *,
-    key,
+    slots_by_id: Dict[str, ValueSlot],
     slot_by_key: Dict[Any, str],
-    isolated_slot_ids: "AbstractSet[str]",
+    combined_attached: Set[str],
+    ranked_slot_ids: "AbstractSet[str]",
 ) -> bool:
-    for dep in walk_value_keys(key):
-        # A combined regroup placeholder lives in its producer like a cross-model aggregate → a composite reading one is also outer.
-        is_isolated_leaf = isinstance(dep, AggregateKey) or (
-            isinstance(dep, ColumnKey) and dep.leaf.startswith(REGROUP_LEAF_PREFIX)
-        )
-        if is_isolated_leaf and slot_by_key.get(dep) in isolated_slot_ids:
+    for dep in walk_value_keys(slot.key):
+        dep_sid = slot_by_key.get(dep)
+        if dep_sid is None or dep_sid == slot.id:
+            continue
+        dep_stage = slots_by_id[dep_sid].stage
+        if (
+            dep_sid in ranked_slot_ids
+            or dep_sid in combined_attached
+            or (dep_stage is not None and dep_stage.kind is StageKind.PRODUCER)
+        ):
             return True
     return False
 
@@ -478,32 +473,70 @@ def _composite_reads_an_isolated_cte(
 def _classify_order_scope(
     *,
     slot: ValueSlot,
-    cross_model_slot_ids: Set[str],
-    windowed_slot_ids: Set[str],
-    public_projection: List[str],
+    slots_by_id: Dict[str, ValueSlot],
     slot_by_key: Dict[Any, str],
+    combined_attached: Set[str],
+    public_projection: List[str],
     ranked_slot_ids: "AbstractSet[str]" = frozenset(),
 ) -> OrderScope:
-    """Name the scope that PRODUCES ``slot``'s value; isolated scopes are checked before the host base (a composite is OUTER_COMPOSITE when any operand lives in an isolated CTE)."""
-    if slot.id in cross_model_slot_ids:
-        return OrderScope.CROSS_MODEL_CTE
+    """Name the scope that PRODUCES ``slot``'s value, from its planner stage
+    plus the attach facts (ranked kernel, combined-attached dual-role values);
+    a composite is OUTER_COMPOSITE when any operand lives in an isolated CTE."""
     if slot.id in ranked_slot_ids:
         return OrderScope.RANKED_CTE
-    if slot.id in windowed_slot_ids:
-        return OrderScope.WINDOWED_CTE
+    if slot.id in combined_attached:
+        return OrderScope.CROSS_MODEL_CTE
+    stage_kind = slot.stage.kind if slot.stage is not None else None
+    if stage_kind is StageKind.PRODUCER:
+        if isinstance(slot.key, AggregateKey) and any(
+            kw == "window" for kw, _ in slot.key.kwargs
+        ):
+            return OrderScope.WINDOWED_CTE
+        return OrderScope.CROSS_MODEL_CTE
     if isinstance(slot.key, TransformKey):
         return OrderScope.TRANSFORM_STEP
-    if isinstance(slot.key, (ArithmeticKey, ScalarCallKey)) and _composite_reads_an_isolated_cte(
-        key=slot.key,
+    if isinstance(slot.key, (ArithmeticKey, ScalarCallKey)) and _composite_operand_in_isolated_cte(
+        slot,
+        slots_by_id=slots_by_id,
         slot_by_key=slot_by_key,
-        isolated_slot_ids=(
-            cross_model_slot_ids | windowed_slot_ids | set(ranked_slot_ids)
-        ),
+        combined_attached=combined_attached,
+        ranked_slot_ids=ranked_slot_ids,
     ):
         return OrderScope.OUTER_COMPOSITE
     if slot.hidden or slot.id not in public_projection:
         return OrderScope.HOST_BASE_HIDDEN
     return OrderScope.HOST_BASE
+
+
+def _layer_batches_at_level(
+    planned_query,
+    *,
+    slots_by_id: Dict[str, Any],
+    level: int,
+) -> Tuple[list, list, list]:
+    """Restrict each transform layer to its slots staged at ``level``, split as
+    (window, time_shift, consecutive_periods) batches in transform_layers order."""
+    ready_window: list = []
+    ready_time_shift: list = []
+    ready_cp: list = []
+    for layer in planned_query.transform_layers:
+        slot_ids = [
+            sid for sid in layer.slot_ids
+            if slots_by_id[sid].stage.level == level
+        ]
+        if not slot_ids:
+            continue
+        batch = (
+            layer if len(slot_ids) == len(layer.slot_ids)
+            else layer.model_copy(update={"slot_ids": slot_ids})
+        )
+        if layer.op == "time_shift":
+            ready_time_shift.append(batch)
+        elif layer.op == "consecutive_periods":
+            ready_cp.append(batch)
+        else:
+            ready_window.append(batch)
+    return ready_window, ready_time_shift, ready_cp
 
 
 
@@ -631,72 +664,6 @@ def _regroup_placeholder_map(planned_query):
             if slot is not None:
                 to_slot[sub.original_key] = slot
     return to_original, to_slot
-
-
-def _composite_operand_children(node) -> list:
-    """Sub-keys a composite / predicate node recurses into; ``[]`` for a leaf."""
-    if isinstance(node, ArithmeticKey):
-        return list(node.operands)
-    if isinstance(node, ScalarCallKey):
-        return list(node.args)
-    if isinstance(node, BetweenKey):
-        return [node.column, node.low, node.high]
-    if isinstance(node, InKey):
-        return [node.column]
-    return []
-
-
-def _classify_walk(node, *, flags, placeholder_to_original) -> None:
-    """One node of the composite walk; mutates ``flags`` (transform, row_leaf,
-    cross_model). AggregateKey nodes are opaque leaves; a regroup placeholder
-    resolves to its original aggregate (host-grain fine, cross-model not)."""
-    if isinstance(node, TransformKey):
-        flags[0] = True
-    elif isinstance(node, AggregateKey):
-        if getattr(node.source, "path", ()):
-            flags[2] = True
-    elif isinstance(node, ColumnKey) and node.leaf.startswith(REGROUP_LEAF_PREFIX):
-        original = placeholder_to_original.get(node)
-        if original is None:
-            flags[2] = True  # unknown placeholder — fail closed
-        else:
-            _classify_walk(
-                original, flags=flags,
-                placeholder_to_original=placeholder_to_original,
-            )
-    elif isinstance(node, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
-        flags[1] = True
-    else:
-        for child in _composite_operand_children(node):
-            _classify_walk(
-                child, flags=flags,
-                placeholder_to_original=placeholder_to_original,
-            )
-
-
-def _classify_time_shift_composite(key, *, placeholder_to_original) -> Tuple[bool, bool, bool]:
-    """Walk a composite ``time_shift`` input, returning
-    ``(has_transform, has_row_leaf, has_cross_model_agg)``."""
-    flags = [False, False, False]
-    _classify_walk(key, flags=flags, placeholder_to_original=placeholder_to_original)
-    return tuple(flags)  # type: ignore[return-value]
-
-
-def _time_shift_series_mode(inner, *, placeholder_to_original) -> bool:
-    """Whether a ``time_shift`` input shifts its materialised series (D4): a
-    nested transform, a predicate root, or a composite containing a transform
-    or a cross-model aggregate leaf. Bare leaves and all-local aggregate
-    composites keep the re-aggregation regime byte-identically."""
-    if isinstance(inner, TransformKey) or is_boolean_shaped(inner):
-        return True
-    if isinstance(inner, (ArithmeticKey, ScalarCallKey)):
-        has_transform, _has_row_leaf, has_cross_model = (
-            _classify_time_shift_composite(
-                inner, placeholder_to_original=placeholder_to_original,
-            )
-        )
-        return has_transform or has_cross_model
-    return False
 
 
 def _validate_consecutive_periods_input(*, op: str, inner) -> None:
@@ -1496,6 +1463,8 @@ class SQLGenerator:
         # One hoisted gate: above the kernel-body / combined-attaches early
         # returns so every render path raises the same shape error.
         self._validate_transform_input_shapes(planned_query=planned_query)
+        # Belt against a model_copy that bypassed the plan-time staging validator.
+        self._assert_stages_assigned(planned_query=planned_query)
 
         if (
             as_cte_body
@@ -1521,24 +1490,9 @@ class SQLGenerator:
             )
         }
 
-        slot_id_by_key: Dict[Any, str] = {
-            s.key: s.id for s in slots_by_id.values()
-        }
-
-        public_proj_set: Set[str] = set(planned_query.projection)
-        # aggregates_only pulls only AggregateKey leaves from order/filter walks; a hidden ROW order target would
-        # otherwise land in GROUP BY and change grain.
-        no_transform = not bool(planned_query.transform_layers)
-        extra_materialize_ids = self._collect_base_aux_slot_ids(
-            planned_query=planned_query,
-            slot_id_by_key=slot_id_by_key,
-            slots_by_id=slots_by_id,
-            include_order=True,
-            aggregates_only=no_transform,
-        )
-        base_render_order = list(planned_query.projection) + [
-            sid for sid in extra_materialize_ids if sid not in public_proj_set
-        ]
+        # _base projects every BASE ∧ needs_column value in plan order (DEV-1800);
+        # this path carries no combined attaches, so nothing is isolated.
+        base_render_order = staged_plan.base_render_order(planned_query)
 
         regroup_ctes, regroup_env, regroup_join_specs, _reused = (
             self._prepare_regroup_attaches(planned_query=planned_query, bundle=bundle)
@@ -1660,7 +1614,8 @@ class SQLGenerator:
         render: RenderState,
         chain_tail: str,
     ) -> str:
-        """The one Kahn driver for the transform-step phase (D7)."""
+        """The one driver for the transform-step phase: level-ascending batches,
+        then the fused trailing derived-composite step (D8)."""
         planned_query = render.planned_query
         if any(
             layer.op == "time_shift" for layer in planned_query.transform_layers
@@ -1677,23 +1632,19 @@ class SQLGenerator:
         else:
             shifted_where_parts, shifted_where_join_paths = [], []
 
-        pending_layers = list(planned_query.transform_layers)
+        # Batches by planner-assigned derived level, ascending (D8): within a
+        # level, window batch, then time_shift, then cp, in transform_layers
+        # order — the exact sequence the retired Kahn readiness rounds produced.
+        levels = sorted({
+            chain.slots_by_id[sid].stage.level
+            for layer in planned_query.transform_layers
+            for sid in layer.slot_ids
+        })
         step_num = 0
-        while pending_layers:
-            (ready_window, ready_time_shift, ready_cp, not_ready) = (
-                self._classify_ready_transform_layers(
-                    pending_layers=pending_layers,
-                    slots_by_id=chain.slots_by_id,
-                    slot_id_by_key=chain.slot_id_by_key,
-                    available_alias_by_slot_id=chain.available_alias_by_slot_id,
-                )
+        for level in levels:
+            ready_window, ready_time_shift, ready_cp = _layer_batches_at_level(
+                planned_query, slots_by_id=chain.slots_by_id, level=level,
             )
-            if not (ready_window or ready_time_shift or ready_cp):
-                pending_ops = [layer.op for layer in pending_layers]
-                raise RuntimeError(
-                    f"transform layer dependencies could not be resolved; "
-                    f"pending ops: {pending_ops!r}.",
-                )
             if ready_window:
                 chain_tail, step_num = self._emit_window_batch_step(
                     ready_window=ready_window,
@@ -1722,7 +1673,6 @@ class SQLGenerator:
                 render=render,
                 chain_tail=chain_tail,
             )
-            pending_layers = not_ready
 
         chain_tail, step_num = self._emit_unmaterialised_post_phase_step(
             ctes=chain.ctes,
@@ -1811,35 +1761,6 @@ class SQLGenerator:
             planned_query=planned_query,
         )
 
-    def _classify_ready_transform_layers(
-        self,
-        *,
-        pending_layers,
-        slots_by_id,
-        slot_id_by_key,
-        available_alias_by_slot_id,
-    ) -> tuple:
-        """Kahn split of ``pending_layers`` into"""
-        ready_window: list = []
-        ready_time_shift: list = []
-        ready_cp: list = []
-        not_ready: list = []
-        for layer in pending_layers:
-            if not self._transform_layer_deps_ready(
-                layer=layer,
-                slots_by_id=slots_by_id,
-                slot_id_by_key=slot_id_by_key,
-                available_alias_by_slot_id=available_alias_by_slot_id,
-            ):
-                not_ready.append(layer)
-            elif layer.op == "time_shift":
-                ready_time_shift.append(layer)
-            elif layer.op == "consecutive_periods":
-                ready_cp.append(layer)
-            else:
-                ready_window.append(layer)
-        return ready_window, ready_time_shift, ready_cp, not_ready
-
     def _emit_step_cte(
         self,
         *,
@@ -1881,24 +1802,18 @@ class SQLGenerator:
     def _unmaterialised_post_slots(
         planned_query, aliases_by_slot_id: Dict[str, List[str]],
     ) -> List[Any]:
-        """Projected POST-phase Arithmetic / ScalarCall slots no transform"""
-        # A lowered mask renders as a predicate, not a column — unless the slot
-        # is also projected or an order target.
-        order_ids = {e.slot_id for e in getattr(planned_query, "order", []) or []}
-        projected = set(getattr(planned_query, "projection", []) or [])
-        skip_mask_ids = {
-            m.slot_id for m in getattr(planned_query, "masks", []) or []
-            if m.slot_id not in projected and m.slot_id not in order_ids
-        }
-        unmaterialised: List[Any] = []
-        for cslot in planned_query.combined_expression_slots:
-            if isinstance(cslot.key, TransformKey):
-                continue
-            if cslot.id in aliases_by_slot_id or cslot.id in skip_mask_ids:
-                continue
-            if isinstance(cslot.key, (ArithmeticKey, ScalarCallKey)):
-                unmaterialised.append(cslot)
-        return unmaterialised
+        """DERIVED composite slots needing a column, not yet materialised —
+        every level fused into the one trailing step (D8, sql P11). A mask-only
+        value has ``needs_column=False`` and renders as a predicate."""
+        return [
+            cslot
+            for cslot in planned_query.combined_expression_slots
+            if isinstance(cslot.key, (ArithmeticKey, ScalarCallKey))
+            and cslot.id not in aliases_by_slot_id
+            and cslot.needs_column
+            and cslot.stage is not None
+            and cslot.stage.kind is StageKind.DERIVED
+        ]
 
     def _inner_select_from_final_cte(
         self, *, chain_tail: str, aliases_by_slot_id: Dict[str, List[str]],
@@ -2075,6 +1990,21 @@ class SQLGenerator:
 
 
     @staticmethod
+    def _assert_stages_assigned(*, planned_query) -> None:
+        """Refuse a plan any of whose values is unstaged (DEV-1800 D7 belt); the
+        plan-time validator already enforces this, but ``model_copy`` bypasses it."""
+        for slot in (
+            *planned_query.row_slots,
+            *planned_query.aggregate_slots,
+            *planned_query.combined_expression_slots,
+        ):
+            if slot.stage is None:
+                raise MaterialisationStageError(
+                    f"value {slot.id!r} reached SQL generation unstaged; the "
+                    f"generator refuses a plan the staging pass has not run over.",
+                )
+
+    @staticmethod
     def _validate_transform_input_shapes(*, planned_query) -> None:
         """Reject unsupported ``consecutive_periods`` input shapes before any
         render path branches (``time_shift`` inputs are checker-typed at plan
@@ -2097,166 +2027,6 @@ class SQLGenerator:
                 _validate_consecutive_periods_input(
                     op=layer.op, inner=slot.key.input,
                 )
-
-    @staticmethod
-    def _composite_has_remote_operand(
-        *,
-        key,
-        slots_by_id: Dict[str, Any],
-        slot_id_by_key: Dict[Any, str],
-        planned_query,
-    ) -> bool:
-        """Whether any operand of ``key`` is materialised OUTSIDE the base CTE."""
-
-        remote_slot_ids: Set[str] = set()
-        for node in walk_value_keys(key):
-            if not isinstance(node, AggregateKey):
-                continue
-            if getattr(node.source, "path", ()):
-                return True  # cross-model source, even without a plan yet
-            sid = slot_id_by_key.get(node)
-            if sid is not None and sid in remote_slot_ids:
-                return True
-        return False
-
-    @staticmethod
-    def _collect_base_aux_slot_ids(  # NOSONAR(S3776) — recursive ValueKey walker (nested ``_collect_from``) over the closed key union plus three top-level passes (transform layers / phase-gated filter deps / order deps). Each pass is one decision; extracting them would scatter the slot-dep contract.
-        *,
-        planned_query,
-        slot_id_by_key: Dict[Any, str],
-        slots_by_id: Dict[str, Any],
-        include_order: bool = True,
-        aggregates_only: bool = False,
-        lowered_filters: Optional[List["_LoweredFilter"]] = None,
-    ) -> List[str]:
-        """Return slot ids the base CTE must project beyond the public"""
-
-        if aggregates_only:
-            base_kinds: Tuple[type, ...] = (AggregateKey,)
-        else:
-            base_kinds = (ColumnKey, ColumnSqlKey, TimeTruncKey, AggregateKey)
-        # Insertion-ordered dedup, not a set: a set would surface same-grain inner aggregates in hash-seed order, making
-        # emitted SQL non-deterministic.
-        out: List[str] = []
-        seen: Set[str] = set()
-
-        def _add(sid: str) -> None:
-            if sid not in seen:
-                seen.add(sid)
-                out.append(sid)
-
-        # A composite DIMENSION subtree resolves by its grouped alias — its
-        # internals (e.g. a regroup placeholder) must not surface as extra base
-        # projections, which would refine the GROUP BY grain (DEV-1865).
-        dim_composite_ids = SQLGenerator._dimension_composite_slot_ids(
-            planned_query,
-        )
-
-        def _collect_from(key) -> None:
-            # Slot-worthy kinds are terminal (an aggregate's internals render
-            # inside it; a TimeTruncKey IS the slot, not its wrapped column);
-            # everything else descends via children().
-            if slot_id_by_key.get(key) in dim_composite_ids:
-                return
-            if isinstance(key, base_kinds):
-                sid = slot_id_by_key.get(key)
-                if sid is not None:
-                    _add(sid)
-                return
-            if aggregates_only and isinstance(
-                key, (ColumnKey, ColumnSqlKey, TimeTruncKey),
-            ):
-                return
-            for child in key.children():
-                _collect_from(child)
-
-        for layer in planned_query.transform_layers:
-            for slot_id in layer.slot_ids:
-                slot = slots_by_id.get(slot_id)
-                if slot is None:
-                    continue
-                key = slot.key
-                if isinstance(key, TransformKey):
-                    _collect_from(key.input)
-                    for p in key.partition_keys:
-                        _collect_from(p)
-                    if key.time_key is not None:
-                        _collect_from(key.time_key)
-
-        # Walk AGGREGATE (HAVING) and POST filter deps; POST is gated on transforms present, else its operands
-        # materialise without the filter applying.
-        has_transforms = bool(planned_query.transform_layers)
-        if lowered_filters is None:
-            lowered_filters = _lower_positions(planned_query).filters
-        for fp in lowered_filters:
-            if fp.phase == Phase.AGGREGATE:
-                pass  # walk
-            elif fp.phase == Phase.POST and has_transforms:
-                pass  # walk
-            else:
-                continue
-            if fp.expression is not None:
-                _collect_from(fp.expression.value_key)
-
-        if include_order:
-            for oe in planned_query.order:
-                slot = slots_by_id.get(oe.slot_id)
-                if slot is None:
-                    continue
-                _collect_from(slot.key)
-                # An order-only composite needs its own materialised column; cross-model/windowed composites are
-                # excluded (their operands live in _cm_/_wm_ CTEs).
-                if isinstance(slot.key, (ArithmeticKey, ScalarCallKey)):
-                    if not SQLGenerator._composite_has_remote_operand(
-                        key=slot.key, slots_by_id=slots_by_id,
-                        slot_id_by_key=slot_id_by_key,
-                        planned_query=planned_query,
-                    ):
-                        _add(oe.slot_id)
-
-        return out
-
-    @staticmethod
-    def _transform_layer_deps_ready(
-        *,
-        layer,
-        slots_by_id: Dict[str, Any],
-        slot_id_by_key: Dict[Any, str],
-        available_alias_by_slot_id: Dict[str, str],
-    ) -> bool:
-        """A layer is ready when every slot-worthy dep its TransformKeys"""
-
-        slotted_kinds = (
-            ColumnKey, ColumnSqlKey, TimeTruncKey, AggregateKey, TransformKey,
-        )
-
-        def _ready(key) -> bool:
-            # A materialised slot is terminal (e.g. a computed dimension a
-            # transform ranks over) — read it, don't descend.
-            sid = slot_id_by_key.get(key)
-            if sid is not None and sid in available_alias_by_slot_id:
-                return True
-            # A slotted-kind leaf resolves at the base when it owns no slot; an
-            # unmaterialised one (e.g. a not-yet-emitted transform) is not ready.
-            if isinstance(key, slotted_kinds):
-                return sid is None
-            # A composite whose own slot is not yet available descends: its
-            # children may resolve within the chain (e.g. last(change(x))).
-            return all(_ready(child) for child in key.children())
-
-        for slot_id in layer.slot_ids:
-            slot = slots_by_id.get(slot_id)
-            if slot is None or not isinstance(slot.key, TransformKey):
-                continue
-            tk = slot.key
-            if not _ready(tk.input):
-                return False
-            for p in tk.partition_keys:
-                if not _ready(p):
-                    return False
-            if tk.time_key is not None and not _ready(tk.time_key):
-                return False
-        return True
 
     def _resolve_agg_inputs_via_scope(  # NOSONAR(S3776) — one cohesive Law-1 discovery pass: three ordered sub-passes (Column.filter → source → kwargs) over the local aggregates via small closures sharing scope/resolved. Extracting them would scatter the ordered-registration contract that keeps the base FROM byte-identical.
         self, *, base_render_order, slots_by_id, scope: ScopeFrame,
@@ -2627,7 +2397,11 @@ class SQLGenerator:
                 select_columns.append(agg_expr.copy().as_(full_alias))
                 _record_alias(sid, full_alias)
             else:
-                continue
+                raise MaterialisationStageError(
+                    f"value {sid!r} (phase {slot.phase!r}) reached the base "
+                    f"SELECT; a BASE-staged value is ROW or AGGREGATE by "
+                    f"construction.",
+                )
 
         base_select = exp.Select()
         for col in select_columns:
@@ -3623,124 +3397,28 @@ class SQLGenerator:
             fp for fp in lowered.filters
             if fp.id in outer_where_filter_ids
         ]
-        # A composite whose tree walks an isolated cross-model aggregate must not render in _base (inline rendering
-        # pulls filter-target joins in and corrupts both aggregates); route it outward.
-        composite_kinds = _SLOT_COMPOSITE_KINDS
-        outer_composite_slot_ids: Set[str] = set()
-        # Route a composite outward when the projection OR an ORDER BY entry references it — a hidden ORDER BY composite
-        # would otherwise render inline in _base.
-        composite_candidate_ids: Set[str] = set(planned_query.projection)
-        for order_entry in planned_query.order:
-            composite_candidate_ids.add(order_entry.slot_id)
-        for slot in (
-            list(planned_query.combined_expression_slots)
-            + list(planned_query.aggregate_slots)
-            + list(planned_query.row_slots)
-        ):
-            if slot.id not in composite_candidate_ids:
-                continue
-            if not isinstance(slot.key, composite_kinds):
-                continue
-            # A computed dimension (composite over a regroup placeholder) is grouped in _base, never routed outward;
-            # only measure/order composites route out.
-            if slot.is_dimension:
-                continue
-            _keys = list(walk_value_keys(slot.key))
-            if (
-                planned_query.transform_layers
-                and any(isinstance(k, TransformKey) for k in _keys)
-                and any(
-                    isinstance(k, ColumnKey) and k in regroup_placeholder_to_cm
-                    for k in _keys
-                )
-            ):
-                continue
-            for k in walk_value_keys(slot.key):
-                if isinstance(k, ColumnKey) and k in regroup_placeholder_to_cm:
-                    outer_composite_slot_ids.add(slot.id)
-                    break
-                if isinstance(k, AggregateKey):
-                    s = slot_by_key.get(k)
-                    # A windowed operand routes the composite outward (its value lives in a _wm_ CTE); rendering inside
-                    # _base would substitute a plain aggregate for the rolling one.
-                    if s is not None and s.id in isolated_slot_ids:
-                        outer_composite_slot_ids.add(slot.id)
-                        break
+        # Placement is planner-owned (DEV-1800): a COMBINED composite renders at
+        # the combined SELECT; a DERIVED composite (transform-reading) renders in
+        # the transform chain; a computed dimension groups in _base. Only COMBINED
+        # composites route outward here.
+        outer_composite_slot_ids: Set[str] = staged_plan.combined_composite_slot_ids(
+            planned_query,
+        )
+        # _base projects every BASE ∧ needs_column value in plan order; a dual-role
+        # placeholder joined at the combined SELECT is read from its _cm_ CTE.
+        base_render_order = staged_plan.base_render_order(
+            planned_query, isolated_slot_ids=isolated_slot_ids,
+        )
+        base_id_set = set(base_render_order)
         base_projection = [
-            sid for sid in planned_query.projection
-            if sid not in isolated_slot_ids
-            and sid not in outer_composite_slot_ids
+            sid for sid in planned_query.projection if sid in base_id_set
         ]
-
-        # Hidden ORDER-BY-only local slots are materialised in _base but stay out of the combined public projection
-        # (trimmed).
-        seen_base_ids = set(base_projection)
-        order_only_local_ids: List[str] = []
-        for order_entry in planned_query.order:
-            sid = order_entry.slot_id
-            if (
-                sid in isolated_slot_ids
-                or sid in outer_composite_slot_ids
-                or sid in seen_base_ids
-            ):
-                continue
-            slot = slots_by_id.get(sid)
-            if slot is None:
-                continue
-            if getattr(getattr(slot.key, "source", None), "path", ()):
-                continue
-            order_only_local_ids.append(sid)
-            seen_base_ids.add(sid)
-        base_render_order = base_projection + order_only_local_ids
-
-        aux_slot_id_by_key = {s.key: s.id for s in slots_by_id.values()}
-
-        def _add_local_aux_slots(
-            *,
-            include_order: bool,
-            aggregates_only: bool,
-        ) -> None:
-            """Pull local (non-cross-model) aux slot ids into"""
-            for sid in self._collect_base_aux_slot_ids(
-                planned_query=planned_query,
-                slot_id_by_key=aux_slot_id_by_key,
-                slots_by_id=slots_by_id,
-                include_order=include_order,
-                aggregates_only=aggregates_only,
-            ):
-                if sid in isolated_slot_ids or sid in seen_base_ids:
-                    continue
-                slot = slots_by_id.get(sid)
-                if slot is None:
-                    continue
-                if getattr(getattr(slot.key, "source", None), "path", ()):
-                    continue  # cross-model leaf dep → owned by a _cm_* CTE
-                base_render_order.append(sid)
-                seen_base_ids.add(sid)
-
-        # Non-isolated local aggregate operands of an outer-rendered composite must still materialise in _base so the
-        # outer SELECT can reference them via _base.<alias>.
-        if outer_composite_slot_ids:
-            for cid in outer_composite_slot_ids:
-                cslot = slots_by_id.get(cid)
-                if cslot is None:
-                    continue
-                for k in walk_value_keys(cslot.key):
-                    if not isinstance(k, AggregateKey):
-                        continue
-                    dep = slot_by_key.get(k)
-                    if dep is None:
-                        continue
-                    if dep.id in isolated_slot_ids or dep.id in seen_base_ids:
-                        continue
-                    base_render_order.append(dep.id)
-                    seen_base_ids.add(dep.id)
-
-        if planned_query.transform_layers:
-            _add_local_aux_slots(include_order=True, aggregates_only=False)
-        # A HAVING filter on a hidden local first/last must reach base_render_order so _base builds the ranked subquery,
-        # else HAVING references a dangling _last_rn.
-        _add_local_aux_slots(include_order=False, aggregates_only=True)
+        proj_set = set(planned_query.projection)
+        order_target_ids = {e.slot_id for e in planned_query.order}
+        order_only_local_ids = [
+            sid for sid in base_render_order
+            if sid not in proj_set and sid in order_target_ids
+        ]
 
         # With no host rows or local aggs, _base is a one-row placeholder emitted WITHOUT the host FROM — a host FROM
         # would make it N rows and the scalar-_cm_ CROSS JOIN would duplicate the result N times.
@@ -5173,9 +4851,8 @@ class SQLGenerator:
         placeholder_to_original, regroup_slot_by_key = _regroup_placeholder_map(
             planned_query,
         )
-        series_mode = _time_shift_series_mode(
-            inner_key, placeholder_to_original=placeholder_to_original,
-        )
+        # The regime is a planner fact (D6), computed at staging.
+        series_mode = bool(slot.series)
         is_composite = not series_mode and isinstance(
             inner_key, (ArithmeticKey, ScalarCallKey),
         )

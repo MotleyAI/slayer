@@ -391,6 +391,8 @@ The self-join matches on **every projected dimension as well as the shifted time
 
 `time_shift` (and `change` / `change_pct`) also accepts a composite input whose leaves are all aggregates (e.g. `time_shift(revenue:sum / qty:sum, -1)`), re-aggregating each leaf in the shifted period; an input containing a nested transform or a cross-model aggregate leaf instead shifts its materialised result series — NULL where the shifted bucket falls outside the series. A top-level predicate over aggregates (`time_shift(revenue:sum > 100, -1)`) also shifts as a series, but only under `time_shift` — `change` / `change_pct` reject boolean-shaped inputs (their desugared subtraction has no truth-value operands). A row-level column anywhere inside a composite or nested transform is rejected.
 
+A transform can also sit inside arithmetic or a scalar call beside other aggregates — local or cross-model, in any position (`change(customers.spend:sum) + revenue:sum`, `iif(change(customers.spend:sum) > 0, customers.spend:sum, revenue:sum)`).
+
 **Intent recipes:**
 
 - Month-over-month / period-over-period growth → `change_pct(revenue:sum)` with a `time_dimensions` entry at the desired granularity. Prefer this over hand-building the ratio from `time_shift`.
