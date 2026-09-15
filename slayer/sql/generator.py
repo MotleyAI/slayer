@@ -2512,7 +2512,11 @@ class SQLGenerator:
                 select_columns.append(agg_expr.copy().as_(full_alias))
                 _record_alias(sid, full_alias)
             else:
-                continue
+                raise MaterialisationStageError(
+                    f"value {sid!r} (phase {slot.phase!r}) reached the base "
+                    f"SELECT; a BASE-staged value is ROW or AGGREGATE by "
+                    f"construction.",
+                )
 
         base_select = exp.Select()
         for col in select_columns:
@@ -3509,9 +3513,9 @@ class SQLGenerator:
             if fp.id in outer_where_filter_ids
         ]
         # Placement is planner-owned (DEV-1800): a COMBINED composite renders at
-        # the combined SELECT; a POST composite (transform-bearing) renders at the
-        # post step; a computed dimension groups in _base. Only COMBINED composites
-        # route outward here.
+        # the combined SELECT; a DERIVED composite (transform-reading) renders in
+        # the transform chain; a computed dimension groups in _base. Only COMBINED
+        # composites route outward here.
         outer_composite_slot_ids: Set[str] = staged_plan.combined_composite_slot_ids(
             planned_query,
         )

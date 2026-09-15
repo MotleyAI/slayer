@@ -100,11 +100,14 @@ Full detail in the DEV-1800 spec-tests resume comment.
 - [x] 3.1 Both render paths derive `base_render_order` as BASE ∧ needs_column in plan order;
   `host_combined_ids`, hidden placeholder projection and the outer-trim / hidden-order
   refs read `needs_column`; verified by 1.2 green and 1.6 parity.
-- [ ] 3.2 Delete `_collect_base_aux_slot_ids`, `_composite_has_remote_operand`,
+- [x] 3.2 Delete `_collect_base_aux_slot_ids`, `_composite_has_remote_operand`,
   `_add_local_aux_slots`, the outer-composite walk + DEV-1838 `continue`,
   `order_only_local_ids`, the leaf loop; `_build_base_select_for_planned`'s foreign-phase
   `continue` → invariant; retire 1.6; verified by goldens byte-identical (divergences →
   individually approved with executed-value parity).
+  *Note:* the legacy `order_only_local_ids` key-walking derivation died in commit 1;
+  the surviving name is a two-line stage-derived filter over `base_render_order`
+  feeding bare-vs-qualified ORDER naming.
 
 ## 4. Derived levels, regime from stage (commit 3)
 
