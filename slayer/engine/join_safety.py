@@ -496,8 +496,15 @@ def grain_determines(
     if key in grain:
         return True
     if isinstance(key, AggregateKey):
+        # Recursive: each partition key must itself be determined — a member, a
+        # to-one column, or a nested aggregate whose grain is determined; an
+        # expression key only as an exact member (DEV-1859 decision 12).
         return key.partition_keys is not None and all(
-            pk in grain for pk in key.partition_keys)
+            grain_determines(
+                key=pk, grain=grain, host_model=host_model,
+                models_by_name=models_by_name,
+            )
+            for pk in key.partition_keys)
     if not isinstance(key, (ColumnKey, ColumnSqlKey)):
         return False
     return _column_grain_determined(

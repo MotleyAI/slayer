@@ -1,14 +1,13 @@
 """DEV-1892 task 1.2 — the ill-typed residue: a parameter the home dataset's
 grain does not determine fails at plan time with one ref-free typed error naming
-the parameter, the grain, and the remedy; an attached parameter on a row-level
-source is a named typed error; the REST surface maps the residue to 400. All
-assert the NEW one-rule contract, so they fail against today's three gates
-(whose messages name neither the grain nor partition_by).
+the parameter, the grain, and the remedy; the REST surface maps the residue to
+400. ``TestAttachedParameterOnRowLevelSource`` was re-pointed by DEV-1859 leg C
+(consented 2026-09-15): that shape is now legal.
 
 Spec: queries/semantics — "Parameter not determined by the grain fails closed";
 queries/partitioned-aggregates — "Column-reference outer parameter fails
 closed"; aggregations/expression-aggregation — "Attached parameter on a
-row-level source rejected".
+row-level source accepted".
 """
 
 from __future__ import annotations
@@ -37,7 +36,6 @@ from tests._dev1847_fixtures import (
 from tests._dev1892_fixtures import (
     ModelMeasure,
     assert_grain_residue,
-    assert_ref_free,
 )
 
 _ATTACHED_ON_ROW = (
@@ -96,20 +94,36 @@ class TestResidueFiresAtPlanTime:
 
 
 class TestAttachedParameterOnRowLevelSource:
-    """An aggregate-valued parameter on a row-level source is a typed error in
-    every mode — the parameter would need the attached value on the aggregation's
-    own input rows."""
+    """Re-point (consented 2026-09-15): an attached parameter on a row-level
+    source is legal — associate executes (the parameter's producer row-attaches
+    into the input relation); under broadcast the customers-rooted producer
+    cannot reach orders.amount, so a typed error names the root, the leaf and
+    the associate remedy (DEV-1906 re-roots it); error mode refuses the
+    unattributable dimension, never a parameter error. Executed oracles live in
+    ``test_dev1859_attached_param_exec.py``."""
 
-    @pytest.mark.parametrize("make_q", [assoc_q, bcast_q, error_q])
-    async def test_rejected_in_every_mode(self, assoc_engine, make_q):
-        query = make_q(dimensions=["status"],
-                       measures=[ModelMeasure(formula=_ATTACHED_ON_ROW, name="w")])
+    async def test_executes_in_associate(self, assoc_engine):
+        resp = await assoc_engine.execute(assoc_q(
+            dimensions=["status"],
+            measures=[ModelMeasure(formula=_ATTACHED_ON_ROW, name="w")]))
+        assert {r["orders.status"] for r in resp.data} == {"ok", "new"}
+
+    async def test_default_mode_refuses_the_host_rooted_parameter(self, assoc_engine):
+        q = bcast_q(dimensions=["status"],
+                    measures=[ModelMeasure(formula=_ATTACHED_ON_ROW, name="w")])
         with pytest.raises(SlayerError) as ei:
-            await assoc_engine.execute(query)
+            await assoc_engine.execute(q)
         msg = str(ei.value)
-        assert "weight" in msg  # names the parameter
-        assert "row" in msg.lower()  # the remedy: use a row-level parameter
-        assert_ref_free(msg)
+        assert "'customers'" in msg
+        assert "'amount'" in msg
+        assert "to_many_handling='associate'" in msg
+
+    async def test_error_mode_refuses_the_dimension(self, assoc_engine):
+        q = error_q(dimensions=["status"],
+                    measures=[ModelMeasure(formula=_ATTACHED_ON_ROW, name="w")])
+        with pytest.raises(SlayerError) as ei:
+            await assoc_engine.execute(q)
+        assert "status" in str(ei.value)
 
 
 class TestRestSurfaceResidue:

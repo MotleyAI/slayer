@@ -1211,21 +1211,67 @@ def operand_aggregates(source: ValueKey) -> List[AggregateKey]:
     return out
 
 
+def source_row_leaves(source: ValueKey) -> List[ValueKey]:
+    """The top-level ROW-level column leaves of an aggregation source (not
+    descending through a nested aggregate's own source, which is attached)."""
+    out: List[ValueKey] = []
+
+    def _walk(k: ValueKey) -> None:
+        if isinstance(k, AggregateKey):
+            return
+        if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey)):
+            out.append(k)
+            return
+        for c in k.children():
+            _walk(c)
+
+    _walk(source)
+    return out
+
+
+def attached_inputs(k: ValueKey) -> List[AggregateKey]:
+    """Deduped top-level aggregates across source, args and kwargs (source first)."""
+    if not isinstance(k, AggregateKey):
+        return []
+    out: List[AggregateKey] = []
+    for inp in (k.source, *k.args, *(v for _, v in k.kwargs)):
+        if isinstance(inp, _FrozenKey):
+            for agg in operand_aggregates(inp):
+                if agg not in out:
+                    out.append(agg)
+    return out
+
+
 def is_reaggregation_key(k: ValueKey) -> TypeGuard[AggregateKey]:
-    """``k`` is a re-aggregation: an aggregate whose source carries attached
-    (aggregate) values (axiom 6, DEV-1847)."""
-    return isinstance(k, AggregateKey) and bool(operand_aggregates(k.source))
+    """Aggregate over an attached source (attached values, no row leaf) — axiom 6.
+    A source mixing a row leaf with an attached value is row grain (DEV-1859)."""
+    return (
+        isinstance(k, AggregateKey)
+        and bool(operand_aggregates(k.source))
+        and not source_row_leaves(k.source)
+    )
 
 
-def reaggregation_operand_keys(vks: Sequence[ValueKey]) -> FrozenSet[AggregateKey]:
-    """Every aggregate nested inside a re-aggregation root (at any depth) — the
-    operands exempt from the combined-consumer partition-key rule. A root's
-    source AND its args/kwargs are scanned: an aggregate-valued parameter
-    is an operand of the same carrier and shares the exemption."""
+def is_row_attach_root(k: ValueKey) -> TypeGuard[AggregateKey]:
+    """Row-grain aggregate carrying attached inputs to broadcast per row: a mixed
+    / literal / plain-row source with an attached constituent or parameter
+    (DEV-1859). Not a re-aggregation, so it never reaches the carrier."""
+    return (
+        isinstance(k, AggregateKey)
+        and not is_reaggregation_key(k)
+        and bool(attached_inputs(k))
+    )
+
+
+def attached_operand_keys(vks: Sequence[ValueKey]) -> FrozenSet[AggregateKey]:
+    """Aggregates nested (any depth) in the inputs of any root with attached
+    inputs — re-aggregation or row-attach. The lenient partition-key set the bind
+    pass needs so row-attached constituents and parameters are not mis-flagged as
+    combined consumers."""
     out: set = set()
 
     def _scan(k: ValueKey) -> None:
-        if is_reaggregation_key(k):
+        if isinstance(k, AggregateKey) and attached_inputs(k):
             for r in (k.source, *k.args, *(v for _, v in k.kwargs)):
                 if isinstance(r, _FrozenKey):
                     out.update(c for c in walk_value_keys(r)
@@ -1237,3 +1283,17 @@ def reaggregation_operand_keys(vks: Sequence[ValueKey]) -> FrozenSet[AggregateKe
     for vk in vks:
         _scan(vk)
     return frozenset(out)
+
+
+def walk_consumer_keys(key: ValueKey):
+    """Reachable keys for root discovery: opaque below a root's inputs (they
+    belong to the root's own attach), still walking its partition keys — an
+    attach-carrying computed dimension in ``partition_by=`` needs the outer attach
+    the grain join is built on (DEV-1859 decision 9)."""
+    yield key
+    if isinstance(key, AggregateKey) and attached_inputs(key):
+        for pk in (key.partition_keys or ()):
+            yield from walk_consumer_keys(pk)
+        return
+    for child in key.children():
+        yield from walk_consumer_keys(child)

@@ -42,7 +42,8 @@ is the coercion from coarser to finer.
    [enforced: test:tests/test_dev1824_partitioned_execution.py]; second-order
    aggregation over attached values
    [enforced: test:tests/test_dev1847_reaggregation_exec.py]; aggregation sources
-   mixing row-level columns with attached values [target: DEV-1859].
+   mixing row-level columns with attached values
+   [enforced: test:tests/test_dev1859_row_mixed_exec.py].
 7. **Attributability**: a dimension is attributable to an aggregation iff the
    home dataset determines it — the cells then partition the home rows and sum
    to the total (spec: `queries/semantics` › Attribution by determination).

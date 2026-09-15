@@ -6816,14 +6816,6 @@
             {
                 "code": "reportPrivateImportUsage",
                 "range": {
-                    "startColumn": 36,
-                    "endColumn": 46,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportPrivateImportUsage",
-                "range": {
                     "startColumn": 31,
                     "endColumn": 41,
                     "lineCount": 1

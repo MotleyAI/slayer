@@ -728,7 +728,7 @@ are not additive), or `error` (refuse) — where a stored query's retired
 and a semi-join-pushed filter is applied, never erroring, in every mode.
 Example: `{"source_model": "orders", "dimensions": ["status"], "measures": [{"formula": "customers.spend:sum"}], "to_many_handling": "associate"}`.
 
-`associate` resolves only *eligible* aggregates — a plain scalar aggregate whose root declares a unique key; an unsupported combination (`window=`/`first`/`last`, a root without a unique key, or an input crossing an unproven hop) returns a typed error rather than a value, so `associate` does not turn every broadcast case exact.
+`associate` resolves only *eligible* aggregates — a plain scalar aggregate whose root declares a unique key; an unsupported combination (`window=`/`first`/`last`, a root without a unique key, or an input crossing an unproven hop) returns a typed error rather than a value, so `associate` does not turn every broadcast case exact. An attached (aggregate-valued) parameter the entity grain determines (`customers.spend:weighted_avg(weight=sum(amount, partition_by=customers.regions.name))`) is lifted under `associate`; under `broadcast` an attached input must read only columns attributable from the aggregate's root, otherwise a typed error names the `associate` remedy.
 
 A filter **on** the cross-model value itself (`"customers.score:avg > 4"`)
 restricts the result rows, uniformly with local aggregate filters — groups that

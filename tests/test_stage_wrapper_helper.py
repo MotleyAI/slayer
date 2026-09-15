@@ -15,21 +15,23 @@ from __future__ import annotations
 
 import pytest
 import sqlglot
+from sqlglot import exp
 
+import slayer.sql._identifier_fit as fitmod
+from slayer.core.errors import IdentifierCollisionError
 from slayer.sql.dialects import get_dialect
-from slayer.sql.stage_wrapper import build_flat_rename_wrapper
+from slayer.sql.stage_wrapper import (
+    build_flat_rename_wrapper,
+    unmangle_dotted_table_refs,
+)
 
 
 def test_module_surface_exists() -> None:
-    from slayer.sql.stage_wrapper import build_flat_rename_wrapper  # noqa: F401
-
     assert callable(build_flat_rename_wrapper)
 
 
 def test_strips_source_relation_prefix_and_flattens_dots() -> None:
     """``orders.customers.region`` -> ``customers__region`` after strip + flatten."""
-    from slayer.sql.stage_wrapper import build_flat_rename_wrapper
-
     stage_sql = (
         'SELECT "orders.status" AS "orders.status", '
         '"orders.customers.region" AS "orders.customers.region" '
@@ -52,8 +54,6 @@ def test_mismatch_between_rendered_and_expected_raises() -> None:
     declared StageSchema, fail fast — silent divergence is the bug we're
     guarding against.
     """
-    from slayer.sql.stage_wrapper import build_flat_rename_wrapper
-
     stage_sql = (
         'SELECT "orders.status" AS "orders.status" FROM orders_t AS orders'
     )
@@ -71,8 +71,6 @@ def test_keeps_unprefixed_aliases_verbatim() -> None:
     prefix (legitimately possible for hoisted / synthetic columns) pass
     through ``__``-flatten only.
     """
-    from slayer.sql.stage_wrapper import build_flat_rename_wrapper
-
     stage_sql = (
         'SELECT "orders.amount_sum" AS "orders.amount_sum", '
         '"bare_synth" AS "bare_synth" '
@@ -215,10 +213,6 @@ def test_under_limit_projection_aliases_change_nothing() -> None:
 
 def test_fitted_output_alias_collision_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     """Two flats fitting to one identifier must raise, not silently collide."""
-    import slayer.sql._identifier_fit as fitmod
-
-    from slayer.core.errors import IdentifierCollisionError
-
     monkeypatch.setattr(fitmod, "_digest", lambda name: "deadbeef")
     twin_a = "SandboxAlpha__" * 3 + "111" + "__SandboxOmega" * 3
     twin_b = "SandboxAlpha__" * 3 + "222" + "__SandboxOmega" * 3
@@ -231,3 +225,19 @@ def test_fitted_output_alias_collision_raises(monkeypatch: pytest.MonkeyPatch) -
             dialect="postgres",
             projection_aliases=[twin_a, twin_b],
         )
+
+
+def test_unmangle_folds_four_segment_dotted_column() -> None:
+    """A quoted four-segment dotted column under a stage alias re-parses on
+    BigQuery with the overflow segments as a ``Dot`` in ``this``; the repair
+    folds every segment back into one column name."""
+    sql = (
+        "SELECT `_stage_inner`.`orders.customers.regions.name` AS x "
+        "FROM (SELECT 1 AS y) AS _stage_inner"
+    )
+    tree = sqlglot.parse_one(sql, dialect="bigquery")
+    unmangle_dotted_table_refs(tree)  # pyright: ignore[reportArgumentType] — parse_one Expr/Expression stub gap
+    col = next(tree.find_all(exp.Column))
+    assert col.table == "_stage_inner"
+    assert col.name == "orders.customers.regions.name"
+    assert "`_stage_inner`.`orders.customers.regions.name`" in tree.sql(dialect="bigquery")

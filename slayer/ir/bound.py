@@ -14,6 +14,8 @@ from slayer.core.keys import (
     TransformKey,
     ValueKey,
     grained_inner_aggregates,
+    is_row_attach_root,
+    walk_consumer_keys,
     walk_value_keys,
 )
 
@@ -89,7 +91,9 @@ def dimension_partitioned_aggregates(declared_measures) -> List[AggregateKey]:
     for dm in declared_measures:
         if not dm.is_dimension:
             continue
-        for k in walk_value_keys(dm.bound.value_key):
+        # Opaque below a row-attach root's inputs — its inners belong to its own
+        # producer, not a separate dimension attach (DEV-1859).
+        for k in walk_consumer_keys(dm.bound.value_key):
             if (
                 isinstance(k, AggregateKey)
                 and k.partition_keys is not None
@@ -109,7 +113,7 @@ def dimension_regroup_roots(declared_measures) -> List[ValueKey]:  # NOSONAR(S37
     for dm in declared_measures:
         if not dm.is_dimension:
             continue
-        all_keys = list(walk_value_keys(dm.bound.value_key))
+        all_keys = list(walk_consumer_keys(dm.bound.value_key))
         transform_roots = [
             k for k in all_keys
             if isinstance(k, TransformKey) and grained_inner_aggregates(k.input)
@@ -197,7 +201,8 @@ def combined_consumer_aggregates(  # NOSONAR(S3776) — one cohesive discovery w
 
     def _walk_excluding_row(vk: ValueKey) -> None:
         # ORDER-by-name and a filter over the dim's own aggregate are row-scope refs.
-        for k in walk_value_keys(vk):
+        # Opaque below a row-attach root's inputs (DEV-1859).
+        for k in walk_consumer_keys(vk):
             kind = _combined_consumer_kind(k)
             if kind in ("local_partitioned", "cross_model_partitioned") and k in row_agg_set:
                 continue
@@ -207,6 +212,10 @@ def combined_consumer_aggregates(  # NOSONAR(S3776) — one cohesive discovery w
         # A partition-key subtree references the GROUPED dimension value; its
         # inner aggregates keep their ROW role (DEV-1847 shape B).
         _add(k)
+        # A row-attach root's inputs belong to its own attach, never a combined
+        # consumer here (DEV-1859).
+        if is_row_attach_root(k):
+            return
         embedded_pks = frozenset(getattr(k, "partition_keys", None) or ())
         for c in k.children():
             if c not in embedded_pks:
@@ -239,6 +248,11 @@ def combined_consumer_aggregates(  # NOSONAR(S3776) — one cohesive discovery w
         if k in dim_keys:
             return
         _add(k)
+        # Opaque below a row-attach root's inputs; partition keys stay visible.
+        if is_row_attach_root(k):
+            for pk in (k.partition_keys or ()):
+                _walk_grain_aware(pk)
+            return
         for c in k.children():
             _walk_grain_aware(c)
 

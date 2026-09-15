@@ -72,11 +72,13 @@ class TestRejections:
         with pytest.raises(ValueError, match="(?i)nest|transform"):
             parse_expr("sum(cumsum(amount) - 1)")
 
-    def test_mixed_row_and_attached_rejected(self):
-        """Scenario: Nested aggregation rejected — a source mixing a row-level
-        reference with an attached value is rejected (DEV-1859's boundary)."""
-        with pytest.raises(ValueError, match="(?i)mix|row|attach|nest"):
-            parse_expr("sum(amount * avg(amount, partition_by=city))")
+    def test_mixed_row_and_attached_accepted(self):
+        """A source mixing a row-level reference with an attached value is now a
+        row-grain aggregation and parses (DEV-1859); only nested transforms in a
+        source stay rejected."""
+        parsed = parse_expr("sum(amount * avg(amount, partition_by=city))")
+        assert isinstance(parsed, AggCall)
+        assert parsed.agg == "sum"
 
     async def test_column_parameter_on_outer_rejected(self):
         """Scenario: Column-reference outer parameter fails closed — explicit
