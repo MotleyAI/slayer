@@ -128,12 +128,13 @@ class TestDefaultAndErrorModeTwins:
         customers and the parameter reads orders.amount, which customers cannot
         reach: a plan-time typed error names the root, the leaf and the
         associate remedy (decision 14 residue; DEV-1906 re-roots it)."""
+        q = orders_q(dimensions=["status"],
+                     measures=[ModelMeasure(formula=_HEADLINE, name="w")])
         with pytest.raises(SlayerError) as ei:
-            await orders_engine.execute(orders_q(
-                dimensions=["status"],
-                measures=[ModelMeasure(formula=_HEADLINE, name="w")]))
+            await orders_engine.execute(q)
         msg = str(ei.value)
-        assert "'customers'" in msg and "'amount'" in msg
+        assert "'customers'" in msg
+        assert "'amount'" in msg
         assert "to_many_handling='associate'" in msg
 
     @pytest.mark.xfail(strict=True, reason="host-rooted parameter re-rooting (DEV-1906)")
@@ -165,10 +166,10 @@ class TestDefaultAndErrorModeTwins:
     async def test_error_mode_refuses_the_dimension(self, orders_engine):
         """Scenario: Default-mode twin — error mode refuses the unattributable
         dimension, never a parameter/determination error."""
+        q = error_q(dimensions=["status"],
+                    measures=[ModelMeasure(formula=_HEADLINE, name="w")])
         with pytest.raises(SlayerError) as ei:
-            await orders_engine.execute(error_q(
-                dimensions=["status"],
-                measures=[ModelMeasure(formula=_HEADLINE, name="w")]))
+            await orders_engine.execute(q)
         msg = str(ei.value)
         assert "status" in msg
         assert "row-level value" not in msg  # not the deleted parameter remedy
@@ -272,13 +273,14 @@ class TestCrossModelParameterOnLocalRoot:
         partition key across the unproven customers→plans hop fails with the
         typed input-safety error, never the deleted attached-parameter remedy
         and never wrong values."""
+        q = orders_q(
+            dimensions=["status"],
+            measures=[ModelMeasure(
+                formula=("amount:weighted_avg(weight="
+                         "sum(customers.spend, partition_by=customers.plans.level))"),
+                name="w")])
         with pytest.raises((SlayerError, ValueError)) as ei:
-            await weak_plans_engine.execute(orders_q(
-                dimensions=["status"],
-                measures=[ModelMeasure(
-                    formula=("amount:weighted_avg(weight="
-                             "sum(customers.spend, partition_by=customers.plans.level))"),
-                    name="w")]))
+            await weak_plans_engine.execute(q)
         msg = str(ei.value)
         assert "DEV-" not in msg
         assert "plans" in msg or "level" in msg or "attribut" in msg.lower()
@@ -290,13 +292,14 @@ class TestUndeterminedParameterRejected:
         parameter grained by ``status`` (an order attribute the customer entity
         does not determine) fails with the typed determination error, never wrong
         values. Distinct from the cross-model input-safety residue above."""
+        q = assoc_q(
+            dimensions=["status"],
+            measures=[ModelMeasure(
+                formula=("customers.spend:weighted_avg("
+                         "weight=sum(amount, partition_by=status))"),
+                name="w")])
         with pytest.raises(SlayerError) as ei:
-            await orders_engine.execute(assoc_q(
-                dimensions=["status"],
-                measures=[ModelMeasure(
-                    formula=("customers.spend:weighted_avg("
-                             "weight=sum(amount, partition_by=status))"),
-                    name="w")]))
+            await orders_engine.execute(q)
         msg = str(ei.value)
         assert "DEV-" not in msg
         assert "determine" in msg.lower()

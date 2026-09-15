@@ -632,9 +632,9 @@ def _first_row_leaf(key: ValueKey, *, exempt: frozenset) -> Optional[ValueKey]:
     if isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
         return key
     if isinstance(key, TransformKey):
-        return _first_row_leaf(key.input, exempt=exempt)
+        return _first_row_leaf(key=key.input, exempt=exempt)
     for c in key.children():
-        found = _first_row_leaf(c, exempt=exempt)
+        found = _first_row_leaf(key=c, exempt=exempt)
         if found is not None:
             return found
     return None
@@ -655,7 +655,7 @@ def _check_shift_family_key(k: TransformKey) -> None:
         )
     if isinstance(inner, (AggregateKey, ColumnKey, ColumnSqlKey)):
         return  # bare-leaf regimes
-    if _first_row_leaf(inner, exempt=frozenset()) is not None:
+    if _first_row_leaf(key=inner, exempt=frozenset()) is not None:
         raise ValueError(
             f"'{k.op}' does not support a row-level (non-aggregate) "
             f"leaf inside a composite or nested-transform input; every "
@@ -694,7 +694,7 @@ def check_non_shift_transform_row_leaf(
                 continue
             if k.op in _SHIFT_FAMILY_OPS or k.op in _FIRST_LAST_OPS:
                 continue
-            leaf = _first_row_leaf(k.input, exempt=projected_grain_keys)
+            leaf = _first_row_leaf(key=k.input, exempt=projected_grain_keys)
             if leaf is None:
                 continue
             disp = dotted_key_display(leaf)

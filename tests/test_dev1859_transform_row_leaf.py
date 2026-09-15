@@ -97,58 +97,59 @@ class TestGrainRefiningLeafRejected:
                                         name="t")]}
         if shape == "mixed":  # the constituent's partition key is projected
             kw["dimensions"] = ["store"]
+        query, bundle = _q(**kw), _bundle()
         with pytest.raises(ValueError) as ei:
-            plan_query(query=_q(**kw), bundle=_bundle())
+            plan_query(query=query, bundle=bundle)
         _assert_leg_b_message(str(ei.value), op)
 
     async def test_bare_leaf_measure_via_engine(self, exec_engine):
         """Scenario: Bare grain-refining leaf rejected — never SQL whose base
         grain is one row per (bucket, weight-value)."""
+        q = _q(time_dimensions=month_td(),
+               measures=[ModelMeasure(formula="cumsum(weight)", name="t")])
         with pytest.raises(ValueError) as ei:
-            await exec_engine.execute(_q(
-                time_dimensions=month_td(),
-                measures=[ModelMeasure(formula="cumsum(weight)", name="t")]))
+            await exec_engine.execute(q)
         _assert_leg_b_message(str(ei.value), "cumsum")
 
     async def test_rank_family_covered(self, exec_engine):
         """Scenario: Rank family is covered."""
+        q = _q(dimensions=["store"], time_dimensions=month_td(),
+               measures=[ModelMeasure(formula="rank(qty)", name="t")])
         with pytest.raises(ValueError) as ei:
-            await exec_engine.execute(_q(
-                dimensions=["store"], time_dimensions=month_td(),
-                measures=[ModelMeasure(formula="rank(qty)", name="t")]))
+            await exec_engine.execute(q)
         _assert_leg_b_message(str(ei.value), "rank")
 
     async def test_predicate_over_unprojected_column(self, exec_engine):
         """Scenario: Predicate over an unprojected row column rejected."""
-        with pytest.raises(ValueError) as ei:
-            await exec_engine.execute(_q(
-                time_dimensions=month_td(),
+        q = _q(time_dimensions=month_td(),
                 measures=[ModelMeasure(formula="consecutive_periods(weight > 0)",
-                                       name="t")]))
+                                       name="t")])
+        with pytest.raises(ValueError) as ei:
+            await exec_engine.execute(q)
         _assert_leg_b_message(str(ei.value), "consecutive_periods")
 
     async def test_raw_time_source_column_refines_the_bucket(self, exec_engine):
         """The bucketed TD's raw source column is not a projected grain key."""
+        q = _q(time_dimensions=month_td(),
+               measures=[ModelMeasure(formula="rank(ordered_at)", name="t")])
         with pytest.raises(ValueError) as ei:
-            await exec_engine.execute(_q(
-                time_dimensions=month_td(),
-                measures=[ModelMeasure(formula="rank(ordered_at)", name="t")]))
+            await exec_engine.execute(q)
         _assert_leg_b_message(str(ei.value), "rank")
 
     async def test_filter_position(self, exec_engine):
+        q = _q(time_dimensions=month_td(),
+               filters=["cumsum(weight) > 0"],
+               measures=[ModelMeasure(formula="revenue:sum", name="r")])
         with pytest.raises(ValueError) as ei:
-            await exec_engine.execute(_q(
-                time_dimensions=month_td(),
-                filters=["cumsum(weight) > 0"],
-                measures=[ModelMeasure(formula="revenue:sum", name="r")]))
+            await exec_engine.execute(q)
         _assert_leg_b_message(str(ei.value), "cumsum")
 
     async def test_order_position(self, exec_engine):
+        q = _q(time_dimensions=month_td(),
+               order=[{"column": "rank(qty)", "direction": "desc"}],
+               measures=[ModelMeasure(formula="revenue:sum", name="r")])
         with pytest.raises(ValueError) as ei:
-            await exec_engine.execute(_q(
-                time_dimensions=month_td(),
-                order=[{"column": "rank(qty)", "direction": "desc"}],
-                measures=[ModelMeasure(formula="revenue:sum", name="r")]))
+            await exec_engine.execute(q)
         _assert_leg_b_message(str(ei.value), "rank")
 
 
@@ -244,3 +245,35 @@ class TestShiftFamilyRegimeUnchanged:
             ("2024-02", -0.5): 1, ("2024-02", 0.0): 2, ("2024-02", 1.0): 1,
             ("2024-03", -0.5): 1, ("2024-03", 0.0): 1,
         })
+
+
+class TestLastOverShiftComposition:
+    """A window transform whose input is a shift-derived composite (``change`` →
+    ``x - time_shift(x)``) materialises only in the POST phase, yet must resolve
+    within the transform chain by descending to its children — regression for
+    the ``last(change(x))`` layer-readiness stall."""
+
+    async def test_last_over_change_broadcasts_latest_period(self, exec_engine):
+        resp = await exec_engine.execute(_q(
+            time_dimensions=month_td(),
+            measures=[ModelMeasure(formula="last(change(revenue:sum))", name="t")]))
+        # revenue:sum 60/100/60 → change NULL/+40/-40; last() = -40 broadcast.
+        got = {month_key(r["sales.ordered_at"]): r["sales.t"] for r in resp.data}
+        assert got == {"2024-01": -40.0, "2024-02": -40.0, "2024-03": -40.0}
+
+    async def test_last_over_change_in_filter_selects_declining_partition(self, exec_engine):
+        # Notebook CELL 12: change(x) projected AND last(change(x)) < 0 filtered,
+        # partitioned by a projected dimension. The projected change gives the
+        # composite the POST-phase slot the `last` layer depends on — the exact
+        # shape that stalled. Store B revenue 30/60/10 → latest change -50 (kept);
+        # store A 30/40/50 → +10 (dropped). Pin the survivors and their change.
+        resp = await exec_engine.execute(_q(
+            time_dimensions=month_td(), dimensions=["store"],
+            measures=["revenue:sum",
+                      ModelMeasure(formula="change(revenue:sum)", name="ch")],
+            filters=["last(change(revenue:sum)) < 0"]))
+        rows = [(r["sales.store"], month_key(r["sales.ordered_at"]), r["sales.ch"])
+                for r in resp.data]
+        assert len(rows) == 3  # no duplicate broadcast rows
+        assert set(rows) == {
+            ("B", "2024-01", None), ("B", "2024-02", 30.0), ("B", "2024-03", -50.0)}
