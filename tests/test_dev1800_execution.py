@@ -307,7 +307,7 @@ class TestCompositeInFilterAndOrder:
         resp = await attr_engine.execute(SlayerQuery(
             source_model="orders", time_dimensions=signup_td(),
             measures=[ModelMeasure(formula="amount:sum", name="a")],
-            order=[{"column": f"change({CM}) + amount:sum", "direction": "desc"}],
+            order=[{"column": f"change({CM}) + amount:sum", "direction": "desc"}],  # pyright: ignore[reportArgumentType] — expression order targets enter via the shorthand coercion
         ))
         signup_col = next(k for k in resp.data[0] if k.endswith("signup_at"))
         months = [month_key(r[signup_col]) for r in resp.data]
@@ -334,12 +334,12 @@ class TestTermAloneExecutionParity:
                     for r in resp.data}
 
         without = keyed(await attr_engine.execute(SlayerQuery(
-            source_model="orders", dimensions=["customer_id"],
+            source_model="orders", dimensions=[ColumnRef(name="customer_id")],
             time_dimensions=self._month_orders_td(),
             measures=[ModelMeasure(formula="amount:sum", name="a")],
             filters=[self._FILTER])))
         with_proj = keyed(await attr_engine.execute(SlayerQuery(
-            source_model="orders", dimensions=["customer_id"],
+            source_model="orders", dimensions=[ColumnRef(name="customer_id")],
             time_dimensions=self._month_orders_td(),
             measures=[ModelMeasure(formula="amount:sum", name="a"),
                       ModelMeasure(formula="change(amount:sum)", name="ch")],

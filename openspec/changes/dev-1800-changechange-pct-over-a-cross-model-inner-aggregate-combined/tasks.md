@@ -142,14 +142,14 @@ Full detail in the DEV-1800 spec-tests resume comment.
 
 ## 6. Docs, architecture, hygiene (commit 5)
 
-- [ ] 6.1 `docs/concepts/formulas.md` nesting paragraph: one sentence on composites mixing
+- [x] 6.1 `docs/concepts/formulas.md` nesting paragraph: one sentence on composites mixing
   a transform with other aggregates; verified by grep.
 - [ ] 6.2 arc42 (target text in design D10 — supersedes the 2026-09-15 wording —
   re-presented as the exact diff for an explicit OK before applying):
   `engine.arc42.md` P6 with `[enforced: test:tests/test_dev1800_materialisation_stage.py]`,
   `sql.arc42.md` P11 clause; verified by `poetry run python tools/arch_check.py`.
-- [ ] 6.3 `poetry run pytest -m "not integration" -n auto`, `poetry run ruff check slayer/
+- [x] 6.3 `poetry run pytest -m "not integration" -n auto`, `poetry run ruff check slayer/
   tests/`, `poetry run basedpyright` (baseline not grown), `npx -y likec4@1.47.0 validate
   architecture`; verified green.
-- [ ] 6.4 Merge `origin/main` forward once DEV-1859 lands; re-run 6.3 and `openspec
+- [x] 6.4 Merge `origin/main` forward once DEV-1859 lands; re-run 6.3 and `openspec
   validate --strict`; verified green.

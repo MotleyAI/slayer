@@ -17,6 +17,8 @@ here ``series`` is checked only for the two anchor shapes.
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pytest
 from pydantic import ValidationError
 
@@ -33,7 +35,7 @@ from slayer.core.keys import (
 )
 from slayer.engine.compile.projection import _iter_slot_deps
 from slayer.engine.plan import plan_query
-from slayer.ir.planned import PlannedQuery, Stage, StageKind, ValueSlot
+from slayer.ir.planned import PlannedQuery, RegroupAttachPlan, Stage, StageKind, ValueSlot
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.generator import generate_from_planned as render_planned
 
@@ -153,7 +155,7 @@ class TestStageType:
 
     def test_frozen_hashable(self) -> None:
         assert Stage(kind=StageKind.BASE) == Stage(kind=StageKind.BASE)
-        assert len({Stage(kind=StageKind.DERIVED, level=1), Stage(kind=StageKind.DERIVED, level=1)}) == 1
+        assert len({Stage(kind=StageKind.DERIVED, level=1), Stage(kind=StageKind.DERIVED, level=1)}) == 1  # pyright: ignore[reportUnhashable] — frozen pydantic models hash at runtime
 
 
 # --------------------------------------------------------------------------- #
@@ -209,7 +211,7 @@ class TestConcreteStages:
     def test_local_aggregate_is_base(self) -> None:
         pq = _plan(measures=[ModelMeasure(formula="amount:sum", name="a")], time_dimensions=[])
         [agg] = [s for s in pq.aggregate_slots if isinstance(s.key, AggregateKey)]
-        assert agg.stage.kind == StageKind.BASE
+        assert agg.stage == Stage(kind=StageKind.BASE)
 
     def test_time_shift_inner_is_derived_level_one(self) -> None:
         pq = _plan(measures=[ModelMeasure(formula="change(amount:sum)", name="c")])
@@ -238,19 +240,19 @@ class TestConcreteStages:
         strictly later than the PRODUCER placeholder it reads (D1 F5)."""
         pq = _plan(measures=[ModelMeasure(formula=f"{CM} + amount:sum", name="c")])
         [comp] = [s for s in pq.aggregate_slots if isinstance(s.key, ArithmeticKey)]
-        assert comp.stage.kind == StageKind.COMBINED
+        assert comp.stage == Stage(kind=StageKind.COMBINED)
 
     def test_computed_dimension_is_base(self) -> None:
         pq = _plan(dimensions=[{"expression": "amount * 2", "name": "amt2"}],
                    measures=[ModelMeasure(formula="amount:sum", name="a")], time_dimensions=[])
         [dim] = [s for s in pq.row_slots if s.is_dimension and isinstance(s.key, ArithmeticKey)]
-        assert dim.stage.kind == StageKind.BASE
+        assert dim.stage == Stage(kind=StageKind.BASE)
 
 
 # --------------------------------------------------------------------------- #
 # Transparent-composite levels (D10/D11) — only transforms stratify.
 # --------------------------------------------------------------------------- #
-_LOCAL_STALL = dict(
+_LOCAL_STALL: dict = dict(
     measures=[ModelMeasure(formula="change(amount:sum)", name="ch")],
     filters=["last(change(amount:sum)) < 0"],
 )
@@ -389,7 +391,7 @@ def _agg_key(col: str = "amount") -> AggregateKey:
 class TestValidatorRejects:
     def test_later_stage_reference_is_rejected_naming_the_value(self) -> None:
         agg = _agg_key()
-        arith = ArithmeticKey(op="+", operands=(agg, LiteralKey(value=1)))
+        arith = ArithmeticKey(op="+", operands=(agg, LiteralKey(value=Decimal(1))))
         agg_slot = ValueSlot(id="later_agg", key=agg, declared_name="amount_sum", hidden=True,
                              phase=Phase.AGGREGATE, stage=Stage(kind=StageKind.DERIVED, level=1),
                              needs_column=True)
@@ -426,8 +428,6 @@ class TestValidatorRejects:
             PlannedQuery(source_relation="orders", aggregate_slots=[agg_slot], projection=["a"])
 
     def test_unstaged_nested_producer_is_rejected(self) -> None:
-        from slayer.ir.planned import RegroupAttachPlan
-
         unstaged = ValueSlot(id="p1", key=_agg_key("spend"), declared_name="spend_sum",
                              public_name="spend_sum", public_aliases=["spend_sum"],
                              phase=Phase.AGGREGATE, stage=None)
@@ -464,7 +464,7 @@ class TestGeneratorBelt:
 class TestTraversalContract:
     def test_opaque_kind_raises(self) -> None:
         with pytest.raises(TypeError):
-            list(_iter_slot_deps(object()))
+            list(_iter_slot_deps(object()))  # pyright: ignore[reportArgumentType] — the opaque-kind rejection under test
 
     def test_aggregate_is_terminal(self) -> None:
         agg = _agg_key()
@@ -472,11 +472,11 @@ class TestTraversalContract:
 
     def test_star_and_literal_yield_no_slot(self) -> None:
         assert list(_iter_slot_deps(StarKey())) == []
-        assert list(_iter_slot_deps(LiteralKey(value=1))) == []
+        assert list(_iter_slot_deps(LiteralKey(value=Decimal(1)))) == []
 
     def test_arithmetic_recurses_into_operands(self) -> None:
         agg = _agg_key()
-        arith = ArithmeticKey(op="+", operands=(agg, LiteralKey(value=1)))
+        arith = ArithmeticKey(op="+", operands=(agg, LiteralKey(value=Decimal(1))))
         assert list(_iter_slot_deps(arith)) == [agg]
 
     def test_time_trunc_is_the_slot_not_its_column(self) -> None:

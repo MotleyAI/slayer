@@ -24,8 +24,9 @@ from slayer.ir.planned import (
     ValueSlot,
 )
 
-_PRODUCER = Stage(kind=StageKind.PRODUCER)
 from slayer.sql.generator import _lower_positions
+
+_PRODUCER = Stage(kind=StageKind.PRODUCER)
 
 _SPEND = AggregateKey(source=ColumnKey(path=("customers",), leaf="spend"), agg="sum")
 _GT0 = LiteralKey(value=Decimal(0))
