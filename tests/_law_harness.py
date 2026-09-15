@@ -10,8 +10,10 @@ ids are stable across collections.
 Execution-count arithmetic (SQLite runs all shapes, DuckDB the ``[::5]`` slice
 of 8): split-invariance ≤ (1 + 4)×(40 + 8) = 240 engine runs; grain-union
 2×(40 + 8) = 96; broadcast coherence 2 runs × (24 + 6 slice) pairs per grain
-× 2 grains = 120, plus the named chain/refusal cases; lowering soundness ~12.
-≈ 480 total, all on tmpfile-backed engines.
+× 3 grains = 180, plus the named chain/refusal cases; lowering soundness ~12.
+≈ 540 total, all on tmpfile-backed engines. DEV-1868 grows the pools with the
+cross-model partitioned operands (``cm_part`` / ``cm_last``, family
+``cmgrain``, pair grain ``rn``).
 """
 
 from __future__ import annotations
@@ -49,8 +51,27 @@ N_DUCKDB = 8
 N_PAIRS = 24
 DUCKDB_PAIR_STRIDE = 4
 
-#: The full measure pool: every attach family + every transform op.
-MEASURE_POOL = {**ATTACH_MEASURES, **TRANSFORM_FORMULAS}
+#: DEV-1868 cross-model partitioned operands. A combined consumer needs its
+#: partition key among the query dimensions, so these pin to ``cmgrain``.
+CM_PARTITIONED_MEASURES = {
+    "cm_part": "customers.spend:sum(partition_by=customers.regions.name)",
+    "cm_last": "customers.spend:last(partition_by=customers.regions.name)",
+}
+CM_PARTITIONED_OPERANDS = frozenset(CM_PARTITIONED_MEASURES)
+MEASURE_REQUIRED_FAMILY = {k: "cmgrain" for k in CM_PARTITIONED_MEASURES}
+
+#: The full measure pool: every attach family + every transform op + the
+#: cross-model partitioned operands.
+MEASURE_POOL = {
+    **ATTACH_MEASURES, **TRANSFORM_FORMULAS, **CM_PARTITIONED_MEASURES,
+}
+
+#: Law-local dimension families: the DEV-1837 set plus the grain carrying the
+#: cross-model partition key.
+LAW_DIM_FAMILY_DIMS = {
+    **DIM_FAMILY_DIMS,
+    "cmgrain": ["region", "customers.regions.name"],
+}
 
 #: Row-level filter pool (tag → predicate; ``f0`` = unfiltered).
 FILTERS = {
@@ -64,7 +85,8 @@ _MEASURE_ABBREV = {
     "plain": "pl", "part": "pt", "win_part": "wp", "last_part": "lp",
     "wm": "wm", "rk": "rk", "cm": "cm", "time_shift": "ts", "lag": "lg",
     "lead": "ld", "change": "ch", "change_pct": "cp", "cumsum": "cs",
-    "consecutive_periods": "sp", "rank": "rn",
+    "consecutive_periods": "sp", "rank": "rn", "cm_part": "cmp",
+    "cm_last": "cml",
 }
 
 #: Explicit semantic grain of the broadcast-attach operands (grain-union law):
@@ -75,6 +97,8 @@ OPERAND_GRAIN = {
     "last_part": ("region",),
     "win_part": ("region", "month"),
     "cm": (),
+    "cm_part": ("cmregion",),
+    "cm_last": ("cmregion",),
 }
 
 #: Broadcast-coherence operand families (design D4) × arithmetic ops.
@@ -85,6 +109,8 @@ OPERANDS = {
     "last_part": "amount:last(partition_by=region)",
     "win_part": "amount:sum(window='90d', partition_by=region)",
     "cm": "customers.spend:sum",
+    "cm_part": CM_PARTITIONED_MEASURES["cm_part"],
+    "cm_last": CM_PARTITIONED_MEASURES["cm_last"],
 }
 OPS = ("+", "-", "*")
 
@@ -104,18 +130,6 @@ class DeferralSite(BaseModel):
 #: (tests/test_law_guard_ratchet.py) pins this to ``guards.baseline`` in
 #: architecture/index.yaml — the list may only ever shrink.
 DEFERRAL_SITES: Tuple[DeferralSite, ...] = (
-    DeferralSite(
-        fragment="partition_by on a cross-model first/last aggregation is not yet supported",
-        issue="DEV-1868"),
-    DeferralSite(
-        fragment="A cross-model partition_by aggregate nested inside a transform is not yet supported",
-        issue="DEV-1868"),
-    DeferralSite(
-        fragment="cross-model aggregate operand inside an AGGREGATE-phase composite",
-        issue="DEV-1868"),
-    DeferralSite(
-        fragment="must wrap an explicitly-grained aggregate",
-        issue="DEV-1868"),
     DeferralSite(
         fragment="query-backed models (source_queries) deferred",
         issue="DEV-1878"),
@@ -157,33 +171,51 @@ def _shape(idx: int, family: str, keys: Sequence[str], ftag: str) -> LawShape:
     )
 
 
+def _forced_family(keys: Sequence[str]) -> Optional[str]:
+    """The family a constrained measure pins its shape to, else None."""
+    for k in keys:
+        family = MEASURE_REQUIRED_FAMILY.get(k)
+        if family is not None:
+            return family
+    return None
+
+
 def sample_shapes() -> Tuple[LawShape, ...]:
     """Deterministic covering core (every family, measure, and filter; ≥1
-    cross-model, ≥1 windowed), then seeded random fill to ``N_SHAPES``."""
+    cross-model, ≥1 windowed), then seeded random fill to ``N_SHAPES``. A
+    measure with a required family (cm_part / cm_last) forces its shape there."""
     rng = random.Random(LAW_SEED)
-    families = tuple(DIM_FAMILY_DIMS)
+    families = tuple(LAW_DIM_FAMILY_DIMS)
     measures = tuple(MEASURE_POOL)
     ftags = tuple(FILTERS)
-    cores: list[tuple[str, Sequence[str], str]] = [
-        (families[i % len(families)], measures[i * 3:i * 3 + 3], ftags[i % len(ftags)])
-        for i in range(len(measures) // 3)
-    ]
-    for j in range(len(cores), len(families)):
-        cores.append((families[j], ("plain", "cm"), ftags[j % len(ftags)]))
+    cores: list[tuple[str, Sequence[str], str]] = []
+    for idx, start in enumerate(range(0, len(measures), 3)):
+        keys = measures[start:start + 3]
+        family = _forced_family(keys) or families[idx % len(families)]
+        cores.append((family, keys, ftags[idx % len(ftags)]))
+    covered = {family for family, _, _ in cores}
+    for j, family in enumerate(families):
+        if family not in covered:
+            cores.append((family, ("plain", "cm"), ftags[j % len(ftags)]))
     shapes = [_shape(i, *core) for i, core in enumerate(cores)]
     for i in range(len(shapes), N_SHAPES):
         keys = rng.sample(measures, rng.randint(2, 4))
-        shapes.append(_shape(i, rng.choice(families), keys, rng.choice(ftags)))
+        family = _forced_family(keys) or rng.choice(families)
+        shapes.append(_shape(i, family, keys, rng.choice(ftags)))
     _assert_covering(shapes)
     return tuple(shapes)
 
 
 def _assert_covering(shapes: Sequence[LawShape]) -> None:
-    assert {s.dim_family for s in shapes} == set(DIM_FAMILY_DIMS)
+    assert {s.dim_family for s in shapes} == set(LAW_DIM_FAMILY_DIMS)
     assert {k for s in shapes for k in s.measure_keys} == set(MEASURE_POOL)
     assert {s.filter for s in shapes} == set(FILTERS.values())
     assert any("cm" in s.measure_keys for s in shapes)
     assert any(set(s.measure_keys) & {"wm", "win_part"} for s in shapes)
+    assert all(
+        s.dim_family == MEASURE_REQUIRED_FAMILY[k]
+        for s in shapes for k in s.measure_keys if k in MEASURE_REQUIRED_FAMILY
+    )
 
 
 SHAPES = sample_shapes()
@@ -232,12 +264,15 @@ def sample_pairs(
     )
 
 
-#: Per-grain pair samples: ``rc`` = (region, city) takes the full operand pool;
-#: ``rm`` = (region, month) excludes part_city (city outside the query grain is
-#: the axiom-6 typed refusal, pinned by a named coherence test instead).
+#: Per-grain pair samples: ``rc`` = (region, city), ``rm`` = (region, month),
+#: ``rn`` = (region, customers.regions.name). Each grain excludes the operands
+#: ill-typed there (a partition key outside the query grain is the axiom-6
+#: typed refusal, pinned by a named coherence test instead): part_city outside
+#: ``rc``, and the cross-model partitioned operands outside ``rn``.
 PAIRS_BY_GRAIN = {
-    "rc": sample_pairs(),
-    "rm": sample_pairs(exclude=frozenset({"part_city"})),
+    "rc": sample_pairs(exclude=CM_PARTITIONED_OPERANDS),
+    "rm": sample_pairs(exclude=CM_PARTITIONED_OPERANDS | {"part_city"}),
+    "rn": sample_pairs(exclude=frozenset({"part_city"})),
 }
 DUCKDB_PAIR_IDS = {
     grain: frozenset(p.pair_id for p in pairs[::DUCKDB_PAIR_STRIDE])
@@ -299,7 +334,7 @@ def raw_rows(*, dialect: str, db_path: str, sql: str) -> list[tuple]:
 def build_query(
     shape: LawShape, *, drop: Optional[str] = None, dims_only: bool = False,
 ) -> SlayerQuery:
-    kwargs: dict[str, Any] = {"dimensions": DIM_FAMILY_DIMS[shape.dim_family]}
+    kwargs: dict[str, Any] = {"dimensions": LAW_DIM_FAMILY_DIMS[shape.dim_family]}
     if not dims_only:
         kwargs["measures"] = [
             ModelMeasure(formula=MEASURE_POOL[k], name=f"m_{k}")
@@ -340,11 +375,21 @@ async def execute_shape(
     return None
 
 
+def law_dim_key(row: dict, *, family: str, with_month: bool):
+    """``dim_key`` over the law-local families (adds ``cmgrain``)."""
+    if family != "cmgrain":
+        return dim_key(row, family=family, with_month=with_month)
+    key: tuple = (row["orders.region"], row["orders.customers.regions.name"])
+    if with_month:
+        key += (month_key(row["orders.ordered_at"]),)
+    return key
+
+
 def keyed_rows(resp, *, shape: LawShape) -> dict[tuple, dict]:
     """Rows keyed by the shape's group key; duplicate keys are themselves a
     grain violation, asserted before any value comparison."""
     out = {
-        dim_key(r, family=shape.dim_family, with_month=shape.with_month): r
+        law_dim_key(r, family=shape.dim_family, with_month=shape.with_month): r
         for r in resp.data
     }
     law_assert(
@@ -381,12 +426,15 @@ def law_assert(condition: bool, *, law: str, detail: str, shape) -> None:
 
 
 __all__ = [
-    "DEFERRAL_SITES", "DIMS_ONLY", "DUCKDB_PAIR_IDS", "DUCKDB_SHAPE_IDS",
-    "EXPECTED_RAISES", "FILTERS", "LAW_SEED", "MEASURE_POOL", "N_DUCKDB",
+    "CM_PARTITIONED_MEASURES", "CM_PARTITIONED_OPERANDS", "DEFERRAL_SITES",
+    "DIMS_ONLY", "DUCKDB_PAIR_IDS", "DUCKDB_SHAPE_IDS",
+    "EXPECTED_RAISES", "FILTERS", "LAW_DIM_FAMILY_DIMS", "LAW_SEED",
+    "MEASURE_POOL", "MEASURE_REQUIRED_FAMILY", "N_DUCKDB",
     "N_PAIRS", "N_SHAPES", "OPERANDS", "OPERAND_GRAIN", "OPS",
     "PAIRS_BY_GRAIN", "SHAPES", "CoherencePair", "DeferralSite", "LawShape",
     "ModelMeasure",
     "build_query", "canon", "execute_shape", "keyed_rows", "law_assert",
-    "law_params", "make_law_engine", "month_key", "month_td", "pair_params",
-    "q", "raw_rows", "sample_pairs", "sample_shapes", "values_equal",
+    "law_dim_key", "law_params", "make_law_engine", "month_key", "month_td",
+    "pair_params", "q", "raw_rows", "sample_pairs", "sample_shapes",
+    "values_equal",
 ]

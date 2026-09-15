@@ -29,10 +29,11 @@ from slayer.core.keys import (
     ValueKey,
     substitute_value_keys,
 )
+from slayer.core.keys import Grain
 
 CITY = ColumnKey(path=(), leaf="city")
 AMOUNT = ColumnKey(path=(), leaf="amount")
-AGG = AggregateKey(source=AMOUNT, agg="sum", partition_keys=frozenset({CITY}))
+AGG = AggregateKey(source=AMOUNT, agg="sum", partition_keys=Grain.of({CITY}))
 PLACEHOLDER = ColumnKey(path=(), leaf="__regroup__0__amount_sum")
 MAPPING = {AGG: PLACEHOLDER}
 
@@ -94,7 +95,7 @@ class TestAtomicity:
         # partition_keys, so a producer-side rewrite can retarget them.
         other = ColumnKey(path=(), leaf="city2")
         out = substitute_value_keys(AGG, {CITY: other})
-        assert out.partition_keys == frozenset({other})
+        assert out.partition_keys == Grain.of({other})
         assert out.source == AMOUNT
 
 

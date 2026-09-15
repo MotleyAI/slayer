@@ -5,15 +5,23 @@ from __future__ import annotations
 import hashlib
 import re
 from decimal import Decimal
-from typing import Any
+from operator import attrgetter
+from typing import Any, Callable
 
 from slayer.core.keys import (
+    AggregateKey,
     ArithmeticKey,
+    BetweenKey,
     ColumnKey,
     ColumnSqlKey,
+    InKey,
     LiteralKey,
     ScalarCallKey,
+    SqlExprKey,
+    StarKey,
     TimeTruncKey,
+    TransformKey,
+    ValueKey,
 )
 
 # Identifier shapes
@@ -23,10 +31,6 @@ IDENTIFIER_RE = re.compile(r"^[a-zA-Z_]\w*$")
 
 # An identifier or dotted path; used to scan formula text for reference candidates.
 IDENT_OR_PATH_RE = re.compile(r"[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*")
-
-# Exactly a chain of ``.``-joined identifiers — distinguishes a dotted ref from a
-# SQL fragment that merely contains a dot.
-DOTTED_IDENT_REF_RE = re.compile(r"^[A-Za-z_]\w*(\.[A-Za-z_]\w*)+$")
 
 # Aggregation colon syntax (``revenue:sum``, ``*:count``). Group 1 measure name,
 # group 2 aggregation name, group 3 optional ``(...)`` arglist.
@@ -62,6 +66,99 @@ def auto_name_from_expression(expression: str) -> str:
 EXPRESSION_SOURCE_KINDS = (ArithmeticKey, ScalarCallKey, LiteralKey)
 
 
+# The pinned legacy key spelling (DEV-1871 D6): the historical Pydantic
+# str/repr of every key kind, frozen as literals so emitted SQL aliases never
+# move when Python field/class names do. Goldens pin the exact tokens.
+_LegacyFields = tuple[tuple[str, Callable[[Any], Any]], ...]
+
+_LEGACY_KEY_SPELLINGS: dict[type, tuple[str, _LegacyFields]] = {
+    ColumnKey: ("ColumnKey", (
+        ("path", attrgetter("path")), ("leaf", attrgetter("leaf")),
+    )),
+    ColumnSqlKey: ("ColumnSqlKey", (
+        ("path", attrgetter("path")), ("model", attrgetter("model")),
+        ("column_name", attrgetter("column_name")),
+    )),
+    TimeTruncKey: ("TimeTruncKey", (
+        ("column", attrgetter("column")),
+        ("granularity", attrgetter("granularity")),
+    )),
+    StarKey: ("StarKey", (("path", attrgetter("path")),)),
+    LiteralKey: ("LiteralKey", (("value", attrgetter("value")),)),
+    SqlExprKey: ("SqlExprKey", (
+        ("canonical_sql", attrgetter("canonical_sql")),
+        ("referenced_join_paths", attrgetter("referenced_join_paths")),
+    )),
+    AggregateKey: ("AggregateKey", (
+        ("source", attrgetter("source")), ("agg", attrgetter("agg")),
+        ("args", attrgetter("args")), ("kwargs", attrgetter("kwargs")),
+        ("column_filter_key", attrgetter("column_filter_key")),
+        ("grain", attrgetter("locus")),
+        ("partition_keys", lambda k: (
+            None if k.partition_keys is None else k.partition_keys.keys
+        )),
+    )),
+    TransformKey: ("TransformKey", (
+        ("op", attrgetter("op")), ("input", attrgetter("input")),
+        ("args", attrgetter("args")), ("kwargs", attrgetter("kwargs")),
+        ("partition_keys", lambda k: k.partition_keys.keys),
+        ("time_key", attrgetter("time_key")),
+    )),
+    ArithmeticKey: ("ArithmeticKey", (
+        ("op", attrgetter("op")), ("operands", attrgetter("operands")),
+    )),
+    ScalarCallKey: ("ScalarCallKey", (
+        ("name", attrgetter("name")), ("args", attrgetter("args")),
+    )),
+    BetweenKey: ("BetweenKey", (
+        ("column", attrgetter("column")), ("low", attrgetter("low")),
+        ("high", attrgetter("high")),
+    )),
+    InKey: ("InKey", (
+        ("column", attrgetter("column")), ("values", attrgetter("values")),
+        ("negated", attrgetter("negated")),
+    )),
+}
+
+
+def _legacy_value_spelling(value: Any) -> str:
+    if type(value) in _LEGACY_KEY_SPELLINGS:
+        return legacy_key_repr(value)
+    if isinstance(value, tuple):
+        inner = [_legacy_value_spelling(x) for x in value]
+        if len(inner) == 1:
+            return f"({inner[0]},)"
+        return "(" + ", ".join(inner) + ")"
+    if isinstance(value, frozenset):
+        if not value:
+            return "frozenset()"
+        return (
+            "frozenset({"
+            + ", ".join(sorted(_legacy_value_spelling(x) for x in value))
+            + "})"
+        )
+    return repr(value)
+
+
+def _legacy_key_fields(key: Any) -> tuple[str, list[tuple[str, str]]]:
+    spelled_cls, fields = _LEGACY_KEY_SPELLINGS[type(key)]
+    return spelled_cls, [
+        (name, _legacy_value_spelling(get(key))) for name, get in fields
+    ]
+
+
+def legacy_key_repr(key: Any) -> str:
+    """``repr``-position spelling: ``ClassName(field=..., ...)``."""
+    spelled_cls, fields = _legacy_key_fields(key)
+    return spelled_cls + "(" + ", ".join(f"{n}={v}" for n, v in fields) + ")"
+
+
+def legacy_key_str(key: Any) -> str:
+    """``str``-position spelling: ``field=... field=...``."""
+    _, fields = _legacy_key_fields(key)
+    return " ".join(f"{n}={v}" for n, v in fields)
+
+
 def _value_key_display(key: Any) -> str:
     """Canonical text of a row-level bound expression, for name derivation.
 
@@ -90,7 +187,9 @@ def _value_key_display(key: Any) -> str:
     if isinstance(key, ScalarCallKey):
         args = ", ".join(_value_key_display(a) for a in key.args)
         return f"{key.name}({args})"
-    return str(key)
+    if type(key) not in _LEGACY_KEY_SPELLINGS:
+        return str(key)  # raw scalar arg (e.g. Decimal in nullif/round)
+    return legacy_key_str(key)
 
 
 def expression_source_leaf(source: Any) -> str:
@@ -131,8 +230,19 @@ def _partition_key_display(key: Any) -> str:
     elif isinstance(key, ColumnSqlKey):
         parts = [*key.path, key.column_name]
     else:
-        parts = [str(key)]
+        parts = [legacy_key_str(key)]
     return _NON_IDENT_RE.sub("_", "_".join(parts)).strip("_")
+
+
+def dotted_key_display(pk: ValueKey) -> str:
+    """Human-readable dotted path for a key in error messages."""
+    if isinstance(pk, ColumnKey):
+        return ".".join([*pk.path, pk.leaf])
+    if isinstance(pk, ColumnSqlKey):
+        return ".".join([*pk.path, pk.column_name])
+    if isinstance(pk, TimeTruncKey):
+        return dotted_key_display(pk.column)
+    return str(pk)
 
 
 def partition_by_suffix(partition_keys) -> str:
@@ -179,10 +289,35 @@ def agg_kwarg_canonical_str(value: Any) -> str:
         if value.path:
             return ".".join(value.path) + "." + value.column_name
         return value.column_name
+    if isinstance(value, AggregateKey):
+        return _agg_key_canonical_str(value)
     raise TypeError(
         f"AggregateKey kwarg value of type {type(value).__name__!r} "
         f"is not supported: {value!r}",
     )
+
+
+def _agg_key_canonical_str(value: AggregateKey) -> str:
+    """Canonical fragment for an aggregate-valued parameter (alias/identity only;
+    render-time reads the picked ``_p<i>`` column). Ordered positional args are
+    included so aggregates differing only in positionals (a ranked ``first``'s
+    ranking key) never collapse to the same fragment."""
+    parts = [value.agg]
+    if isinstance(value.source, (ColumnKey, ColumnSqlKey)):
+        parts.append(agg_kwarg_canonical_str(value.source))
+    parts.extend(
+        f"arg{i}_{agg_kwarg_canonical_str(a)}" for i, a in enumerate(value.args)
+    )
+    parts.extend(f"{k}_{agg_kwarg_canonical_str(v)}" for k, v in value.kwargs)
+    if value.partition_keys is not None:
+        pks = sorted(
+            agg_kwarg_canonical_str(p)
+            if isinstance(p, (ColumnKey, ColumnSqlKey)) else str(p)
+            for p in value.partition_keys
+        )
+        if pks:
+            parts.append("by_" + "_".join(pks))
+    return "_".join(parts)
 
 
 def canonical_agg_name(

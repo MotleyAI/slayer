@@ -21,7 +21,7 @@ is the coercion from coarser to finer.
    [enforced: test:tests/test_dev1836_producer_execution.py]
 2. **Home dataset**: a row-level expression mixing several datasets' fields is
    legal only when one dataset determines them all — its home dataset, the one
-   place it has exactly one value per row. [review]
+   place it has exactly one value per row. [enforced: test:tests/test_dev1892_parameter_typing.py]
 3. **Association**: any join path — to-one or not — defines which rows belong
    together; everything that crosses a non-determining path is defined in terms
    of it. [review] Association is derivable from forward join declarations
@@ -33,10 +33,12 @@ is the coercion from coarser to finer.
    counting). [enforced: test:tests/test_dev1836_producer_execution.py]
 5. **Grain and cells**: an aggregate is typed by its grain — its partition_by
    dimension set, defaulting to the query's dimensions; one combination of
-   grain values is a cell. [review]
-6. **An aggregate is a dataset**: it can be filtered, queried, and aggregated
-   again; a strictly coarser grain is reached only through an explicit
-   second-order aggregation — the implicit collapse is a typed error
+   grain values is a cell. [enforced: test:tests/test_dev1871_grain_retype.py]
+6. **An aggregate is a dataset**
+   [enforced: test:tests/test_dev1871_terms.py]: it can be filtered, queried,
+   and aggregated again; a strictly coarser grain is reached only through an
+   explicit second-order aggregation — the implicit collapse is a typed
+   error
    [enforced: test:tests/test_dev1824_partitioned_execution.py]; second-order
    aggregation over attached values
    [enforced: test:tests/test_dev1847_reaggregation_exec.py]; aggregation sources
@@ -58,12 +60,16 @@ is the coercion from coarser to finer.
 9. **Closure**: every operator consumes and produces aggregates and may
    inspect only its operands' types (grain, home dataset), never how they were
    constructed — any "not supported inside" refusal of a well-typed term is a
-   closure violation. [target: DEV-1868] Typed residue, by design and NOT a
-   closure violation: an aggregate in dimension position must declare its grain
-   explicitly — the ungrained default (the query's dimensions) would include
-   the dimension being defined, a self-referential grain, so the explicit
-   `partition_by=` requirement is a type rule.
-   [enforced: test:tests/test_dev1824_computed_dim_execution.py]
+   closure violation. [enforced: test:tests/test_law_guard_ratchet.py] Typed
+   residue, by design and NOT a closure violation: an aggregate in dimension
+   position must declare its grain explicitly — the ungrained default (the
+   query's dimensions) would include the dimension being defined, a
+   self-referential grain, so the explicit `partition_by=` requirement is a
+   type rule [enforced: test:tests/test_dev1824_computed_dim_execution.py];
+   a transform in dimension position must likewise wrap aggregates, each
+   declaring `partition_by=` — two distinct typed errors for the same
+   self-referential-grain reason.
+   [enforced: test:tests/test_dev1868_residue_split.py]
 10. **Grain-union broadcast**: combining aggregates unions their grains, each
     operand broadcast from its own grain to the union — coarser to finer only;
     the population supplies the row set, a cell an operand lacks contributes
@@ -71,7 +77,8 @@ is the coercion from coarser to finer.
     Grain-union broadcasting). [enforced: test:tests/test_dev1739_execution.py]
 11. **Transforms are typed**: transforms act on aggregates, preserving or
     dropping grain dimensions; a time-ordered transform requires the time axis
-    in its operand's grain and fails with the remedy otherwise. [review]
+    in its operand's grain and fails with the remedy otherwise.
+    [enforced: test:tests/test_dev1871_terms.py]
 12. **Population**: the population is the query's quantifier — exactly one
     result row per combination of dimension values among its row-filtered rows
     (raw-row mode is the one documented exception; spec: `queries/semantics` ›

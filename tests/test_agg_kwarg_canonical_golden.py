@@ -15,7 +15,7 @@ from decimal import Decimal
 
 import pytest
 
-from slayer.core.keys import ColumnKey, ColumnSqlKey
+from slayer.core.keys import AggregateKey, ColumnKey, ColumnSqlKey, Grain
 from slayer.core.refs import agg_kwarg_canonical_str
 
 
@@ -65,3 +65,25 @@ def test_bool_raises() -> None:
 def test_none_raises() -> None:
     with pytest.raises(TypeError):
         agg_kwarg_canonical_str(None)
+
+
+def test_aggregate_key_carries_source_kwargs_and_partition() -> None:
+    key = AggregateKey(
+        source=ColumnKey(leaf="w"), agg="sum",
+        partition_keys=Grain.of([ColumnKey(leaf="city")]),
+    )
+    frag = agg_kwarg_canonical_str(key)
+    assert frag.startswith("sum_w")
+    assert "by_city" in frag
+
+
+def test_aggregate_key_positional_args_disambiguate() -> None:
+    # Positional args must enter the fragment, else nested aggs alias-collide.
+    first_ts1 = AggregateKey(
+        source=ColumnKey(leaf="x"), agg="first", args=(ColumnKey(leaf="ts1"),),
+    )
+    first_ts2 = AggregateKey(
+        source=ColumnKey(leaf="x"), agg="first", args=(ColumnKey(leaf="ts2"),),
+    )
+    assert "ts1" in agg_kwarg_canonical_str(first_ts1)
+    assert agg_kwarg_canonical_str(first_ts1) != agg_kwarg_canonical_str(first_ts2)

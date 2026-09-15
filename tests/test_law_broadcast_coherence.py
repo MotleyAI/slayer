@@ -38,6 +38,10 @@ def _pair_kwargs(pair, grain: str) -> dict:
         kwargs: dict = {"dimensions": ["region", "city"]}
         if pair.with_month:
             kwargs["time_dimensions"] = month_td()
+    elif grain == "rn":
+        kwargs = {"dimensions": ["region", "customers.regions.name"]}
+        if pair.with_month:
+            kwargs["time_dimensions"] = month_td()
     else:
         kwargs = {"dimensions": ["region"], "time_dimensions": month_td()}
     return kwargs

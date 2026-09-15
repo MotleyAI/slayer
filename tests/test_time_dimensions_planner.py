@@ -33,15 +33,15 @@ from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.core.scope import ModelScope, StageColumn, StageSchema
 from slayer.engine.binding import bind_time_dimension
-from slayer.engine.planning import (
-    DeclaredMeasure,
+from slayer.engine.compile.projection import (
     ProjectionPlanner,
     ValueRegistry,
     _canonical_name,
     _iter_slot_deps,
 )
+from slayer.ir.bound import DeclaredMeasure
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.engine.stage_planner import plan_query
+from slayer.engine.plan import plan_query
 from slayer.core.keys import ColumnSqlKey
 
 

@@ -26,6 +26,11 @@ from tests._dev1841_fixtures import (
     error_q,
     keyless_root_models,
     make_exec_engine,
+    status_key,
+)
+from tests._dev1892_fixtures import (
+    ASSOC_WAVG_SPEND_BY_STATUS,
+    ASSOC_WSUM_BY_STATUS,
 )
 
 CM = ModelMeasure(formula="customers.spend:sum", name="cm")
@@ -119,22 +124,24 @@ class TestUnsafeInputInAssociate:
 
 
 class TestColumnReferenceParameter:
-    """A column-reference aggregate parameter can't ride the deduped ``_base``, so association rejects it loudly (explicit kwarg and definition default)."""
+    """DEV-1892 lifts a column-reference parameter onto the deduped ``_base``:
+    the explicit weight and the definition default now execute, each picked once
+    per distinct entity (re-pointed from the old rejection)."""
 
     WAVG = ModelMeasure(
         formula="customers.spend:weighted_avg(weight=customers.spend)", name="wavg")
     WSUM = ModelMeasure(formula="customers.spend:wsum", name="wsum")
 
-    async def test_column_param_rejected_in_associate(self, exec_backend):
+    async def test_explicit_column_param_executes(self, exec_backend):
         _, engine = exec_backend
-        query = assoc_q(dimensions=["status"], measures=[self.WAVG])
-        with pytest.raises(SlayerError) as ei:
-            await engine.execute(query)
-        assert "parameter" in str(ei.value).lower()
+        resp = await engine.execute(assoc_q(dimensions=["status"], measures=[self.WAVG]))
+        by = status_key(resp)
+        for status, expected in ASSOC_WAVG_SPEND_BY_STATUS.items():
+            assert float(by[(status,)]["orders.wavg"]) == pytest.approx(expected)
 
-    async def test_column_default_param_rejected_in_associate(self, exec_backend_coldef):
+    async def test_column_default_param_executes(self, exec_backend_coldef):
         _, engine = exec_backend_coldef
-        query = assoc_q(dimensions=["status"], measures=[self.WSUM])
-        with pytest.raises(SlayerError) as ei:
-            await engine.execute(query)
-        assert "parameter" in str(ei.value).lower()
+        resp = await engine.execute(assoc_q(dimensions=["status"], measures=[self.WSUM]))
+        by = status_key(resp)
+        for status, expected in ASSOC_WSUM_BY_STATUS.items():
+            assert float(by[(status,)]["orders.wsum"]) == pytest.approx(expected)

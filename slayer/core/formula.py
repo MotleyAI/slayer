@@ -23,7 +23,11 @@ from collections.abc import Mapping
 
 from pydantic import BaseModel, Field
 
-from slayer.core.enums import BUILTIN_AGGREGATIONS, normalize_aggregation_name
+from slayer.core.enums import (
+    BUILTIN_AGGREGATIONS,
+    RANK_FAMILY_TRANSFORMS,
+    normalize_aggregation_name,
+)
 from slayer.core.refs import (
     AGG_REF_RE as _AGG_REF_RE,
     IDENT_OR_PATH_RE as _IDENT_OR_PATH_RE,
@@ -44,11 +48,6 @@ TIME_TRANSFORMS = {
 
 # Transforms that don't need time ordering
 TIMELESS_TRANSFORMS = {"rank", "percent_rank", "dense_rank", "ntile"}
-
-# Transforms whose default partition is "no partition" (rank across the entire
-# result set) rather than the query's group-by dimensions. They accept an
-# explicit ``partition_by=`` kwarg to opt into per-partition ranking.
-RANK_FAMILY_TRANSFORMS = {"rank", "percent_rank", "dense_rank", "ntile"}
 
 ALL_TRANSFORMS = TIME_TRANSFORMS | TIMELESS_TRANSFORMS
 

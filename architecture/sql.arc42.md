@@ -4,42 +4,51 @@
 
 `slayer/sql` turns a `PlannedQuery` (built by `engine`) into dialect-correct SQL
 text. Children: `render` (AST assembly: value keys, order terms, joins, CTE
-assembly) and `dialects` (per-dialect emission strategies). It must not know how
-plans are made — it consumes the shared representation in `slayer/ir`, never
-`engine` internals.
+assembly) and `dialects` (per-dialect emission strategies), plus the leaf
+modules `sql_predicate` and `window_detect` that the grandfathered `core`
+`#legacy` doors land on. It must not know how plans are made — it consumes the
+shared representation in `slayer/ir`, never `engine` internals.
 
 ## 2. Building blocks
 
-The `query_pipeline` view ([views.c4](views.c4)):
+The `sql_focus` view ([views.c4](views.c4)):
 
-<!-- likec4:query_pipeline -->
+<!-- likec4:sql_focus -->
 ```mermaid
 flowchart TD
-  %% query_pipeline: Query pipeline
-  core["Core domain models"]
+  %% sql_focus: SQL generation in context
+  subgraph core["Core domain models"]
+    core__query["Query"]
+    core__models["Models"]
+  end
+  subgraph sql["SQL generation"]
+    sql__render["Render"]
+    sql__dialects["Dialects"]
+    sql__sql_predicate["SQL predicate"]
+    sql__window_detect["Window detect"]
+  end
   engine["Query engine"]
-  sql["SQL generation"]
   ir["Intermediate representation"]
   storage["Storage backends"]
-  core -.-> engine
-  core -.-> sql
-  core -.-> storage
-  engine --> core
-  engine --> ir
+  importers("Importers")
+  surfaces("User-facing surfaces")
+  core__models -.-> sql__dialects
+  core__models -.-> sql__sql_predicate
+  core__models -.-> sql__window_detect
+  core__query -.-> sql__window_detect
+  sql__render --> sql__dialects
+  sql__sql_predicate --> sql__window_detect
   engine --> sql
-  engine --> storage
-  ir --> core
+  importers --> sql
   sql --> core
   sql --> ir
-  storage --> core
-  storage --> engine
   storage --> sql
+  surfaces --> sql
+  classDef leaf fill:none;
+  class core__query,core__models,sql__render,sql__dialects,sql__sql_predicate,sql__window_detect,engine,ir,storage,importers,surfaces leaf;
 ```
 *Dashed arrows: legacy edges slated to die.*
-<!-- /likec4:query_pipeline -->
-
-Children: `render`
-(value keys, aggregates, order terms, joins, node assembly) and `dialects`.
+<!-- /likec4:sql_focus -->
 
 ## 3. Principles
 

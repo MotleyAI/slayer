@@ -41,7 +41,7 @@ from slayer.core.models import (
 )
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.stage_planner import plan_stages
+from slayer.engine.plan import plan_stages
 from slayer.sql.generator import generate_planned_stages
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
 from slayer.storage.yaml_storage import YAMLStorage

@@ -26,7 +26,7 @@ from slayer.core.keys import (
     StarKey,
     TransformKey,
 )
-from slayer.engine.planning import ValueRegistry
+from slayer.engine.compile.projection import ValueRegistry
 
 
 # ---------------------------------------------------------------------------

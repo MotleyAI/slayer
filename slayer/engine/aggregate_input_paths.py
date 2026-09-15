@@ -18,6 +18,7 @@ from slayer.core.keys import (
 )
 from slayer.core.models import SlayerModel
 from slayer.engine.column_filter_paths import compute_column_filter_join_paths
+from slayer.ir.prebound import walk_key_path
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 _PathList = List[Tuple[str, ...]]
@@ -110,9 +111,19 @@ def _collect_default_fragment_paths(
     bundle: ResolvedSourceBundle,
     out: _PathList,
 ) -> None:
-    """Scan ``key.agg``'s model-default ``AggregationParam.sql`` fragments, skipping kwarg-overridden params."""
+    """Scan ``key.agg``'s model-default ``AggregationParam.sql`` fragments, skipping
+    kwarg-overridden params. A host-locus source beyond the root carries its
+    definition on the source model; scan from there and prefix discovered paths
+    with the source path."""
+    src_path = tuple(getattr(key.source, "path", ()) or ())
+    def_model, prefix = anchor_model, ()
+    if src_path and getattr(key, "locus", None) == "host":
+        walked = walk_key_path(model=anchor_model, path=src_path, bundle=bundle)
+        if walked is None:
+            return
+        def_model, prefix = walked, src_path
     agg_def = next(
-        (a for a in (anchor_model.aggregations or []) if a.name == key.agg),
+        (a for a in (def_model.aggregations or []) if a.name == key.agg),
         None,
     )
     if agg_def is None:
@@ -122,13 +133,49 @@ def _collect_default_fragment_paths(
         param_sql: Optional[str] = getattr(param, "sql", None)
         if param.name in overridden or not param_sql:
             continue
+        local: _PathList = []
         _scan_sql_fragment(
             param_sql,
-            anchor_model=anchor_model,
+            anchor_model=def_model,
             anchor_relation=anchor_relation,
             bundle=bundle,
-            out=out,
+            out=local,
         )
+        for p in local:
+            _add_path_prefixes(prefix + p, out)
+
+
+def _collect_host_locus_source_paths(
+    key: AggregateKey,
+    *,
+    anchor_model: SlayerModel,
+    bundle: ResolvedSourceBundle,
+    out: _PathList,
+) -> None:
+    """A host-locus source that is a path-bearing derived column expands INLINE at
+    the home, so its ``Column.sql`` dependencies are this producer's concern; scan
+    them at the terminal (anchored on the terminal's own name so a hop is not read
+    as a self-ref) and prefix with the source path — else a fanning internal ref
+    slips past safety."""
+    src = key.source
+    if getattr(key, "locus", None) != "host" or not isinstance(src, ColumnSqlKey) \
+            or not src.path:
+        return
+    terminal = walk_key_path(model=anchor_model, path=tuple(src.path), bundle=bundle)
+    if terminal is None:
+        return
+    col = next(
+        (c for c in (terminal.columns or []) if c.name == src.column_name), None,
+    )
+    if col is None or not col.sql:
+        return
+    local: _PathList = []
+    _scan_sql_fragment(
+        col.sql, anchor_model=terminal, anchor_relation=terminal.name,
+        bundle=bundle, out=local,
+    )
+    for p in local:
+        _add_path_prefixes(tuple(src.path) + p, out)
 
 
 def compute_aggregate_input_join_paths(
@@ -158,6 +205,10 @@ def compute_aggregate_input_join_paths(
             anchor_relation=anchor_relation,
             bundle=bundle,
             out=out,
+        )
+    if include_source:
+        _collect_host_locus_source_paths(
+            key=key, anchor_model=anchor_model, bundle=bundle, out=out,
         )
     _collect_default_fragment_paths(
         key,

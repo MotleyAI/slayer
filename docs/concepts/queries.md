@@ -529,7 +529,7 @@ infers population `customers` (one row per region present among customers, order
 
 Inference fails closed with a `PopulationInferenceError` naming the candidates when no single model determines everything, several minimal candidates tie, a dimension's join path is ambiguous, or the referenced models don't scope to exactly one datasource. Name `source_model` explicitly (any model — including a bridge that owns none of the queried items) to override inference.
 
-Inference reads dimensions as literal join paths, so when you omit `source_model`, write cross-model dimensions as full dotted paths (`customers.regions.name`) — short-form auto-routing needs a declared root, so a bare `regions.name` will fail closed or pick the wrong population; name `source_model` if you want short forms.
+Inference is routing-aware: a short-form cross-model dimension (bare `regions.name`) is probed per candidate through the same auto-routing binding applies, so it infers the same population as its full dotted path (`customers.regions.name`) — or fails closed identically.
 
 ## Choosing a root model
 
@@ -728,7 +728,7 @@ are not additive), or `error` (refuse) — where a stored query's retired
 and a semi-join-pushed filter is applied, never erroring, in every mode.
 Example: `{"source_model": "orders", "dimensions": ["status"], "measures": [{"formula": "customers.spend:sum"}], "to_many_handling": "associate"}`.
 
-`associate` resolves only *eligible* aggregates — a plain scalar aggregate whose root declares a unique key; an unsupported combination (`window=`/`first`/`last`, a root without a unique key, a column-reference parameter, or an input crossing an unproven hop) returns a typed error rather than a value, so `associate` does not turn every broadcast case exact.
+`associate` resolves only *eligible* aggregates — a plain scalar aggregate whose root declares a unique key; an unsupported combination (`window=`/`first`/`last`, a root without a unique key, or an input crossing an unproven hop) returns a typed error rather than a value, so `associate` does not turn every broadcast case exact.
 
 A filter **on** the cross-model value itself (`"customers.score:avg > 4"`)
 restricts the result rows, uniformly with local aggregate filters — groups that

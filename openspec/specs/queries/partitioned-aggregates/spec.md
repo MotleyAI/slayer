@@ -290,11 +290,19 @@ its value behaves as a normal attached value in every consumer context —
 measure, arithmetic or transform input, ORDER BY target, filter-only reference,
 and computed dimension (with an explicit outer grain, per the dimension
 grain-self-containment rule). `first`/`last` over an aggregated first argument
-keep their transform dispatch. The outer aggregation SHALL reject, with typed
-errors naming the combination and the remedy: `window=` or ranked (`first`/
-`last`) aggregation over an attached operand, a measure-local `filter=` on
-the outer aggregation, and a column-reference parameter on the outer
-aggregation (explicit or via a parameter default).
+keep their transform dispatch. The outer aggregation's parameters — explicit,
+positional, or defaulted by the aggregation definition — follow
+`queries/semantics` › Aggregation parameters are typed by the home dataset's
+grain against the operand dataset's grain: an aggregate grained within the
+operand grain, or a column that grain determines, is picked once per cell and
+read by the outer aggregation, and its partition keys are exempt from the
+combined-consumer partition-key rule exactly as the source's constituents are;
+a population-row column against a coarser cell grain, a definition default
+naming such a column, or an aggregate grained outside the operand grain is a
+typed error naming the parameter and the remedy. The outer aggregation SHALL
+reject, with typed errors naming the combination and the remedy: `window=` or
+ranked (`first`/`last`) aggregation over an attached operand, and a
+measure-local `filter=` on the outer aggregation.
 
 #### Scenario: Count and parametric outer aggregations
 - **WHEN** a query over `[region]` selects
@@ -302,6 +310,22 @@ aggregation (explicit or via a parameter default).
   `percentile(sum(amount, partition_by=[city, region]), p=0.9)`
 - **THEN** each region row carries the number of its city cells with a non-null
   total and the 0.9-percentile of those totals, by executed values
+
+#### Scenario: Operand-grain parameter executes
+- **WHEN** a query over `[region]` selects
+  `weighted_avg(sum(amount, partition_by=[city, region]), weight=count(id, partition_by=[city, region]))`,
+  and separately the custom `wavg(sum(amount, partition_by=[city, region]), weight=count(id, partition_by=[city, region]))`
+  with the weight passed positionally
+- **THEN** each region row carries the row-count-weighted average of its city totals,
+  by hand-computed executed values on SQLite and DuckDB, the keyword and positional
+  spellings identical, and the emitted SQL carries the parameter as a column of the
+  operand carrier — one producer relation for the operand, no duplicate
+
+#### Scenario: Parameter partition keys need not be query dimensions
+- **WHEN** the outer aggregation's parameter is an aggregate grained at the operand grain
+  and that grain's keys are not query dimensions
+- **THEN** the query plans and executes without the combined-consumer partition-key
+  error, exactly as the source's constituents are exempt
 
 #### Scenario: Transform over a re-aggregated value
 - **WHEN** a query selects `rank(avg(sum(amount, partition_by=[city, region])))`
@@ -331,11 +355,11 @@ aggregation (explicit or via a parameter default).
   fabricate it — by executed values
 
 #### Scenario: Column-reference outer parameter fails closed
-- **WHEN** the outer aggregation carries a column-reference parameter, explicit
-  (`wavg(sum(amount, partition_by=[city, region]), weight=id)`) or defaulted by
-  its aggregation definition
-- **THEN** it fails with a typed error naming the parameter, never invalid SQL
-  or a silently wrong value
+- **WHEN** the outer aggregation carries a parameter the operand grain does not
+  determine — explicit (`wavg(sum(amount, partition_by=[city, region]), weight=id)`)
+  or defaulted by its aggregation definition to such a column
+- **THEN** it fails at plan time with a typed error naming the parameter, the grain,
+  and the remedy — never invalid SQL, a render-time failure, or a silently wrong value
 
 #### Scenario: Outer window and outer filter fail closed
 - **WHEN** a query selects `sum(sum(amount, partition_by=[city, region]), window='90d')`
@@ -409,3 +433,49 @@ finer-grain exemption.
 - **WHEN** a second computed dimension's expression contains an aggregate
   partitioned by `spend_band`
 - **THEN** the query plans and executes without the nested-attach error
+
+### Requirement: Cross-model ranked partitioned aggregates
+A `first`/`last` aggregation over another model's column with an explicit `partition_by=`
+SHALL compile and execute like its local twin: ranked inside a producer rooted at the
+aggregate's own model at the declared partition grain, attached back without changing
+cardinality. The shape SHALL be legal in every position — measure, filter, order target,
+and computed-dimension expression — with identical values in each (position parity).
+
+#### Scenario: Cross-model last with partition_by executes
+- **WHEN** a query rooted at `orders` selects `customers.spend:last(partition_by=region)`
+  alongside a plain measure
+- **THEN** each row carries its region's last customer-spend value, correct by
+  hand-computed executed values on SQLite and DuckDB, with row count and the sibling
+  measure's values unchanged — never the former not-yet-supported error
+
+#### Scenario: Cross-model ranked partitioned aggregate in filter and order positions
+- **WHEN** the same aggregate is referenced only in a filter, and separately only as an
+  ORDER BY target
+- **THEN** the filter masks by the same per-region value the measure form returns and the
+  order sorts by it, both by executed values
+
+### Requirement: Cross-model partitioned aggregates nest inside transforms
+A transform whose input contains a cross-model `partition_by=` aggregate SHALL compile:
+the inner aggregate is computed in its own producer exactly as when consumed directly, and
+the transform consumes the attached value like any local partitioned input. This includes
+ranked inners (`first`/`last`) and holds in measure, filter, and order positions.
+
+#### Scenario: Transform over a cross-model partitioned sum executes
+- **WHEN** a query selects `cumsum(customers.spend:sum(partition_by=region))` over a month
+  time dimension with `region` among the query dimensions
+- **THEN** the cumulative series accumulates the per-region cross-model totals, correct by
+  hand-computed executed values on SQLite and DuckDB — never the former
+  not-yet-supported error
+
+#### Scenario: Transform over a cross-model ranked partitioned aggregate executes
+- **WHEN** a query selects `change(customers.spend:last(partition_by=region))` over a month
+  time dimension with `region` among the query dimensions
+- **THEN** each row carries the period-over-period difference of its region's last value,
+  correct by executed values
+
+#### Scenario: Nested producer plan shape is pinned
+- **WHEN** two consumers (for example a measure and a filter) share one cross-model
+  partitioned inner aggregate under transforms
+- **THEN** the plan contains exactly one producer for that aggregate, attached in the
+  combined phase on its complete partition grain, and the emitted SQL contains one producer
+  relation for it — no duplicate producers and no incomplete attach key

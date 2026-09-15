@@ -30,9 +30,9 @@ from slayer.core.enums import (
     format_unknown_aggregation,
     normalize_aggregation_name,
 )
-from slayer.core.formula import RANK_FAMILY_TRANSFORMS
+from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS
-from slayer.core.keys import SCALAR_FUNCTIONS, check_scalar_arity, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, ScalarCallKey, SqlExprKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, column_path, normalize_scalar, prepend_value_key, walk_value_keys
+from slayer.core.keys import SCALAR_FUNCTIONS, check_scalar_arity, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, SqlExprKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, column_path, normalize_scalar, prepend_value_key, walk_value_keys
 from slayer.core.join_walker import resolve_hop, terminal_model
 from slayer.core.models import SlayerModel
 from slayer.engine import dimension_routing
@@ -898,8 +898,8 @@ def _bind_agg_partition_keys(
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
-) -> frozenset:
-    """Bind an aggregation ``partition_by`` value to a frozenset of column keys;
+) -> Grain:
+    """Bind an aggregation ``partition_by`` value to the partition ``Grain``;
     a name in ``dim_alias_map`` resolves to that computed dimension's bound key
     (DEV-1847 shape B)."""
     elements = value if isinstance(value, tuple) else (value,)
@@ -915,7 +915,7 @@ def _bind_agg_partition_keys(
                 f"got {type(bound).__name__}."
             )
         pks.append(bound)
-    return frozenset(pks)
+    return Grain.of(pks)
 
 
 def _bind_expression_agg_source(
@@ -1127,9 +1127,10 @@ def _bind_agg(
     # ``partition_by`` is lifted out of kwargs onto ``partition_keys``
     # (``None`` means no partition, ``[]`` means grand total).
     args = tuple(
-        _bind_agg_arg(a, scope=scope, bundle=bundle) for a in parsed.args
+        _bind_agg_arg(a, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map)
+        for a in parsed.args
     )
-    partition_keys: Optional[frozenset] = None
+    partition_keys: Optional[Grain] = None
     kwargs_list: List = []
     for k, v in parsed.kwargs:
         if k == "partition_by":
@@ -1137,7 +1138,9 @@ def _bind_agg(
                 value=v, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
             )
             continue
-        kwargs_list.append((k, _bind_agg_arg(v, scope=scope, bundle=bundle)))
+        kwargs_list.append((
+            k, _bind_agg_arg(v, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map),
+        ))
     kwargs = tuple(kwargs_list)
     # Propagate ``Column.filter`` into the AggregateKey's identity: two
     # aggregates over the same column with different filters differ at the key
@@ -1381,16 +1384,24 @@ def _bind_agg_arg(
     parsed: ParsedExpr, *,
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
+    dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ):
     """Bind one aggregation arg: identifiers → ``ColumnKey`` / ``ColumnSqlKey``,
-    literals → inline scalar via ``normalize_scalar`` (stored inline, not as LiteralKey)."""
+    a nested aggregate → ``AggregateKey`` (aggregate-valued parameter),
+    literals → inline scalar via ``normalize_scalar`` (stored inline, not as LiteralKey).
+    ``dim_alias_map`` rides into a nested aggregate so its ``partition_by=`` can
+    name a computed dimension (as the outer aggregate's can)."""
     if isinstance(parsed, Literal):
         return normalize_scalar(parsed.value)
+    if isinstance(parsed, AggCall):
+        return _bind_agg(
+            parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
+        )
     if isinstance(parsed, (Ref, DottedRef)):
         return _bind(parsed, scope=scope, bundle=bundle, in_filter=False)
     raise ValueError(
         f"Aggregation argument of kind {type(parsed).__name__} is not "
-        f"supported. Pass a column reference or a scalar."
+        f"supported. Pass a column reference, a scalar, or a partitioned aggregate."
     )
 
 
@@ -1532,7 +1543,7 @@ def _bind_transform(
         input=inp,
         args=tuple(args),
         kwargs=tuple(kwargs),
-        partition_keys=frozenset(partition_keys),
+        partition_keys=Grain.of(partition_keys),
     )
 
 

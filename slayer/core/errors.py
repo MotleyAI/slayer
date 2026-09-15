@@ -485,6 +485,32 @@ class IdentifierCollisionError(SlayerError, ValueError):
         )
 
 
+class IdentifierLengthError(SlayerError, ValueError):
+    """An emitted identifier exceeds the dialect's byte limit after fitting.
+
+    The always-on emission backstop: a non-exempt over-limit token means
+    unaccounted provenance, so generation fails rather than hand the database a
+    silently-truncatable name (sql principle 9)."""
+
+    def __init__(
+        self,
+        *,
+        tokens: Sequence[str],
+        dialect: str,
+        limit: int,
+    ) -> None:
+        self.tokens = sorted(tokens)
+        self.dialect = dialect
+        self.limit = limit
+        joined = ", ".join(repr(t) for t in self.tokens)
+        super().__init__(
+            f"emitted identifier(s) exceed max_identifier_bytes={limit} on "
+            f"dialect '{dialect}' and are neither fitted nor user-authored: "
+            f"{joined}. This is a fitting gap — report it rather than let the "
+            f"database truncate silently."
+        )
+
+
 class ForcedFilterError(SlayerError):
     """The session policy's ruleset can't be safely applied to a query; carries the offending ``table``/``column`` (either may be ``None``)."""
 

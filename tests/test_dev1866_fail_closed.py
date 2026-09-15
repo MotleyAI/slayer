@@ -159,21 +159,18 @@ class TestFailClosed:
         )
         assert choice.model_name == "customers"
 
-    async def test_short_form_cross_model_dim_not_routed_when_rootless(self, storage) -> None:
-        """DEV-1856×DEV-1866: rootless inference reads literal paths, never DEV-1856
-        short-forms (routing needs a root, which inference is still choosing). A bare
-        cross-model ``regions.name`` alongside ``orders.status`` fails closed; the
-        full path ``customers.regions.name`` resolves to orders. Route-aware rootless
-        inference is deferred to DEV-1871 (one binder)."""
-        query = SlayerQuery(dimensions=["orders.status", "regions.name"])
-        with pytest.raises(PopulationInferenceError) as ei:
-            await infer_population(query=query, storage=storage)
-        assert ei.value.reason is PopulationErrorReason.NO_VIABLE_CANDIDATE
-        choice = await infer_population(
+    async def test_short_form_cross_model_dim_routes_when_rootless(self, storage) -> None:
+        """DEV-1856×DEV-1871: rootless inference routes short forms per candidate,
+        so bare ``regions.name`` and the full path infer the same population."""
+        short = await infer_population(
+            query=SlayerQuery(dimensions=["orders.status", "regions.name"]),
+            storage=storage,
+        )
+        full = await infer_population(
             query=SlayerQuery(dimensions=["orders.status", "customers.regions.name"]),
             storage=storage,
         )
-        assert choice.model_name == "orders"
+        assert short.model_name == full.model_name == "orders"
 
     async def test_error_payload_exposes_all_three_fields(self, storage) -> None:
         """reason/candidates/datasources are always present on the typed error."""

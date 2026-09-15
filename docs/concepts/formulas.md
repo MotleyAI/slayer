@@ -274,7 +274,8 @@ Wrapping a partitioned aggregate in another aggregation re-aggregates its
 row-weighted average would be wrong, and is exactly what this shape avoids).
 The operand may compose several attached aggregates (their grains union), and
 `partition_by=` may name a computed dimension — including one carrying an
-attached aggregate itself. An outer dimension not determined by the operand's
+attached aggregate itself. The outer aggregation's parameters (`weight=` and friends) are typed by the operand grain — a cell of the operand dataset (`weighted_avg(amount:sum(partition_by=[city, region]), weight=id:count(partition_by=[city, region]))`) or a column that grain determines; anything else is a typed error naming the `partition_by=` remedy.
+An outer dimension not determined by the operand's
 grain resolves per `to_many_handling` (broadcast + warning by default), and an
 operand grain equal to the outer grain is the identity plus a degenerate
 warning naming the `partition_by=` remedy.
@@ -377,11 +378,11 @@ errors (their partition is fixed to the query's dimensions). To coarsen the
 
 **Self-join transforms vs window-function transforms:**
 
-`time_shift` uses a **self-join CTE** with an INTERVAL-shifted time column. `change` and `change_pct` are desugared into a hidden `time_shift` + arithmetic expression when the query is compiled. The shifted sub-query applies the time offset everywhere (WHERE, GROUP BY, SELECT), so it can reach outside the current result set — no edge NULLs when the database has the data, and correct handling of gaps in time series.
+`time_shift` uses a **self-join CTE** with an INTERVAL-shifted time column. `change` and `change_pct` are desugared into a hidden `time_shift` + arithmetic expression when the query is compiled. For a bare-leaf or all-local composite input, the shifted sub-query applies the time offset everywhere (WHERE, GROUP BY, SELECT), so it can reach outside the current result set — no edge NULLs when the database has the data, and correct handling of gaps in time series; series-regime inputs (below) instead read the materialised series and are NULL where the shifted bucket falls outside it.
 
 The self-join matches on **every projected dimension as well as the shifted time column** — plain columns, joined columns (`stores.name`), derived columns, and any secondary time dimension all take part in the join grain (e.g. `ON base.month IS NOT DISTINCT FROM shifted.month AND base.store IS NOT DISTINCT FROM shifted.store`). So these transforms are partition-safe: each group's series is compared only against itself, and per-group series reset cleanly. One store's first month is never diffed against another store's last month. The grain match is **null-safe** (`IS NOT DISTINCT FROM`, or the dialect equivalent), so a group with a NULL dimension value — for example rows with no matching row across a LEFT join — still lines up against its own prior period instead of dropping to a NULL shifted value.
 
-`time_shift` (and `change` / `change_pct`) also accepts a composite input whose leaves are all aggregates (e.g. `time_shift(revenue:sum / qty:sum, -1)`), re-aggregating each leaf in the shifted period, while a nested transform, a row-level column, or a cross-model leaf *inside the composite* is rejected (a bare cross-model input like `time_shift(customers.spend:sum, -1)` renders).
+`time_shift` (and `change` / `change_pct`) also accepts a composite input whose leaves are all aggregates (e.g. `time_shift(revenue:sum / qty:sum, -1)`), re-aggregating each leaf in the shifted period; an input containing a nested transform or a cross-model aggregate leaf instead shifts its materialised result series — NULL where the shifted bucket falls outside the series. A top-level predicate over aggregates (`time_shift(revenue:sum > 100, -1)`) also shifts as a series, but only under `time_shift` — `change` / `change_pct` reject boolean-shaped inputs (their desugared subtraction has no truth-value operands). A row-level column anywhere inside a composite or nested transform is rejected.
 
 **Intent recipes:**
 
@@ -415,7 +416,7 @@ comparisons:
 
 ### Nesting
 
-Field formulas support nesting — window transforms can wrap self-join transforms (but not vice versa, though `consecutive_periods` may nest a transform in its predicate):
+Field formulas support nesting — window transforms can wrap self-join transforms and vice versa (`change(cumsum(x))` shifts the cumulative series; `consecutive_periods` may also nest a transform in its predicate):
 
 ```json
 "measures": [

@@ -11,10 +11,8 @@ from __future__ import annotations
 
 import pytest
 
-import slayer.engine.regroup_planner as regroup_planner
-import slayer.engine.stage_planner as stage_planner
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.engine.stage_planner import plan_query
+from slayer.engine.plan import plan_query
 from slayer.sql.generator import SQLGenerator
 
 from tests._dev1836_fixtures import (
@@ -23,6 +21,8 @@ from tests._dev1836_fixtures import (
     make_exec_engine,
     q,
 )
+from slayer.engine.compile import stages
+from slayer.ir import bound as ir_bound
 
 LOCAL_BAND = {
     "expression": "CASE WHEN amount:sum(partition_by=channel) > 30 THEN 1 ELSE 0 END",
@@ -33,7 +33,7 @@ LOCAL_BAND = {
 def _blind_consumers(*_args, **_kwargs):
     """Blind the unified combined-consumer discovery (local + cross-model buckets) so
     an undisposed aggregate must be caught by ``_assert_total_routing``."""
-    return regroup_planner.CombinedConsumers([], [], [], {}, {})
+    return ir_bound.CombinedConsumers([], [], [], {}, {})
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -101,7 +101,7 @@ class TestTotalRoutingInvariant:
     def test_unrouted_aggregate_raises_explicit_planner_error(self, monkeypatch):
         """Blind the combined-producer discovery to every partitioned leaf: the
         post-discovery invariant must catch the now-undisposed aggregate."""
-        for mod in (regroup_planner, stage_planner):
+        for mod in (ir_bound, stages):
             if hasattr(mod, "combined_consumer_aggregates"):
                 monkeypatch.setattr(
                     mod, "combined_consumer_aggregates", _blind_consumers,
@@ -127,7 +127,7 @@ class TestTotalRoutingInvariant:
         must be caught by ``_assert_total_routing`` with the explicit
         no-disposition error, not fall through to the legacy dispatch."""
         monkeypatch.setattr(
-            stage_planner, "combined_consumer_aggregates", _blind_consumers,
+            stages, "combined_consumer_aggregates", _blind_consumers,
         )
         query = q(
             dimensions=["status"],
@@ -152,7 +152,7 @@ class TestTotalRoutingInvariant:
         """The invariant walks filters and orders too — a hidden cross-model
         leaf in either role must not survive blinded discovery."""
         monkeypatch.setattr(
-            stage_planner, "combined_consumer_aggregates", _blind_consumers,
+            stages, "combined_consumer_aggregates", _blind_consumers,
         )
         query = q(
             dimensions=["status"],

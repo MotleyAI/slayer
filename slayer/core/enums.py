@@ -178,6 +178,13 @@ BUILTIN_AGGREGATIONS: frozenset[str] = frozenset({
     "corr", "covar_samp", "covar_pop",
 })
 
+# Named once so classifier, planner and renderer agree.
+RANKED_AGGREGATIONS = ("first", "last")
+
+# Default partition is the whole result set, not the group-by dimensions;
+# ``partition_by=`` opts into per-partition ranking.
+RANK_FAMILY_TRANSFORMS = {"rank", "percent_rank", "dense_rank", "ntile"}
+
 # ``classify_aggregation`` buckets each aggregation by result-vs-source relation;
 # slot type and display format both read the bucket, so the axes cannot drift.
 

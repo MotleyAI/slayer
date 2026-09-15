@@ -15,14 +15,49 @@ The `query_pipeline` view ([views.c4](views.c4)):
 ```mermaid
 flowchart TD
   %% query_pipeline: Query pipeline
-  core["Core domain models"]
-  engine["Query engine"]
-  sql["SQL generation"]
+  subgraph core["Core domain models"]
+    core__query["Query"]
+    core__models["Models"]
+  end
+  subgraph sql["SQL generation"]
+    sql__render["Render"]
+    sql__dialects["Dialects"]
+    sql__sql_predicate["SQL predicate"]
+    sql__window_detect["Window detect"]
+  end
+  subgraph engine["Query engine"]
+    engine__syntax["Syntax"]
+    engine__binding["Binding"]
+    engine__bind_inputs["Bind inputs"]
+    engine__elaborate_env["Checker"]
+    engine__elaborate["Elaborate"]
+    engine__compile["Compile"]
+    engine__plan["Plan"]
+  end
   ir["Intermediate representation"]
-  storage["Storage backends"]
-  core -.-> engine
-  core -.-> sql
-  core -.-> storage
+  subgraph storage["Storage backends"]
+    storage__migrations["Migrations"]
+  end
+  core__query -.-> engine__syntax
+  core__models -.-> sql__dialects
+  core__models -.-> sql__sql_predicate
+  core__models -.-> sql__window_detect
+  core__query -.-> sql__window_detect
+  core__models -.-> storage__migrations
+  core__query -.-> storage__migrations
+  core__models -.-> core__query
+  core__query --> core__models
+  sql__render --> sql__dialects
+  sql__sql_predicate --> sql__window_detect
+  engine__binding --> engine__syntax
+  engine__bind_inputs --> engine__binding
+  engine__bind_inputs --> engine__elaborate_env
+  engine__bind_inputs --> engine__syntax
+  engine__compile --> engine__elaborate_env
+  engine__elaborate --> engine__bind_inputs
+  engine__elaborate --> engine__elaborate_env
+  engine__plan --> engine__compile
+  engine__plan --> engine__elaborate
   engine --> core
   engine --> ir
   engine --> sql
@@ -33,15 +68,48 @@ flowchart TD
   storage --> core
   storage --> engine
   storage --> sql
+  classDef leaf fill:none;
+  class core__query,core__models,sql__render,sql__dialects,sql__sql_predicate,sql__window_detect,engine__syntax,engine__binding,engine__bind_inputs,engine__elaborate_env,engine__elaborate,engine__compile,engine__plan,ir,storage__migrations leaf;
 ```
 *Dashed arrows: legacy edges slated to die.*
 <!-- /likec4:query_pipeline -->
 
+The `engine_focus` view — the term-interface seam's declared children and the
+only permitted arrows among them (DEV-1897 child-level model-truth):
+
+<!-- likec4:engine_focus -->
+```mermaid
+flowchart TD
+  %% engine_focus: Engine seam
+  subgraph engine["Query engine"]
+    engine__syntax["Syntax"]
+    engine__binding["Binding"]
+    engine__bind_inputs["Bind inputs"]
+    engine__elaborate_env["Checker"]
+    engine__elaborate["Elaborate"]
+    engine__compile["Compile"]
+    engine__plan["Plan"]
+  end
+  engine__binding --> engine__syntax
+  engine__bind_inputs --> engine__binding
+  engine__bind_inputs --> engine__elaborate_env
+  engine__bind_inputs --> engine__syntax
+  engine__compile --> engine__elaborate_env
+  engine__elaborate --> engine__bind_inputs
+  engine__elaborate --> engine__elaborate_env
+  engine__plan --> engine__compile
+  engine__plan --> engine__elaborate
+  classDef leaf fill:none;
+  class engine__syntax,engine__binding,engine__bind_inputs,engine__elaborate_env,engine__elaborate,engine__compile,engine__plan leaf;
+```
+<!-- /likec4:engine_focus -->
+
 Stages:
-`normalization.py` → `syntax.py` (parse) → `binding.py` → `planning.py` /
-`stage_planner.py` (plan) → `slayer/ir/planned.py` (the typed hand-off to
-`sql`), fed by `bundle_builder.py` (builds the `ir` source bundle);
-`query_engine.py` orchestrates.
+`normalization.py` → `syntax.py` (parse) → `binding.py` + `bind_inputs.py`
+(bind) → `elaborate.py` / `elaborate_env.py` (type) → `compile/` (plan) →
+`slayer/ir/planned.py` (the typed hand-off to `sql`), fed by
+`bundle_builder.py` (builds the `ir` source bundle); `plan.py` composes
+elaborate→compile and `query_engine.py` orchestrates.
 
 ## 3. Principles
 
@@ -74,6 +142,13 @@ Stages:
    grammar, never by accumulating rewrites. [review]
 8. **Models persist verbatim**: `save_model` stores the author's spelling
    unchanged; normalization applies to queries at execute time only. [review]
+9. **The term-interface boundary**: `syntax`, `binding`, `bind_inputs`,
+   `elaborate`, `elaborate_env` (THE checker), `compile` and `plan` are
+   declared children with only the modeled arrows among them — the compiler
+   consults the checker, never syntax or binding; every user-facing algebra
+   type error raises in the checker.
+   [enforced: arch_check:model-truth]
+   [enforced: test:tests/test_dev1871_raise_parity.py]
 
 ## 4. Rationale
 

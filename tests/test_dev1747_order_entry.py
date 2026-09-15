@@ -24,7 +24,7 @@ from pydantic import ValidationError
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.core.enums import TimeGranularity
 from slayer.ir.planned import OrderEntry
-from slayer.engine.stage_planner import plan_query
+from slayer.engine.plan import plan_query
 from slayer.sql.generator import _lower_positions
 from slayer.sql.render.order_terms import OrderScope, ScopedOrder
 from tests._dev1747_fixtures import dev1747_bundle
@@ -317,7 +317,7 @@ class TestHostGrainMarker:
             if isinstance(s.key, AggregateKey) and s.hidden
         ]
         assert wraps, "no hidden order wrap was planned"
-        assert wraps[0].grain == "host"
+        assert wraps[0].locus == "host"
         assert getattr(wraps[0].source, "path", None) == ("customers", "regions")
 
     def test_local_wrap_keeps_the_default_grain(self) -> None:
@@ -333,7 +333,7 @@ class TestHostGrainMarker:
             if isinstance(s.key, AggregateKey) and s.hidden
         ]
         assert wraps, "no hidden aggregate wrap was interned"
-        assert wraps[0].grain == "target"
+        assert wraps[0].locus == "target"
 
     def test_host_grain_and_target_grain_are_distinct_identities(self) -> None:
         """A user-declared ``customers.regions.name:max`` measure and the
@@ -342,7 +342,7 @@ class TestHostGrainMarker:
 
         source = ColumnKey(path=("customers", "regions"), leaf="name")
         target_rooted = AggregateKey(source=source, agg="max")
-        host_rooted = AggregateKey(source=source, agg="max", grain="host")
+        host_rooted = AggregateKey(source=source, agg="max", locus="host")
         assert target_rooted != host_rooted
         assert hash(target_rooted) != hash(host_rooted)
         assert len({target_rooted, host_rooted}) == 2
@@ -356,7 +356,7 @@ _GROUPED_HEAD = {
     "dimensions": [ColumnRef(name="status")],
 }
 
-#: ``grain="host"`` + non-empty ``source.path`` — the NEW branch. Today the
+#: ``locus="host"`` + non-empty ``source.path`` — the NEW branch. Today the
 #: trigger reads ``if not agg_path and not has_crossing_input: continue`` and
 #: then routes any path-bearing key to a TARGET-rooted CTE.
 _HOST_GRAIN_WITH_PATH = SlayerQuery(

@@ -38,6 +38,7 @@ from slayer.core.keys import (
     ValueKey,
     reroot_value_key,
 )
+from slayer.core.keys import Grain
 
 HOST = ("customers",)
 DEEP = ("customers", "regions")
@@ -170,14 +171,14 @@ class TestPrependCompositeKinds:
                 agg="last",
                 args=(ColumnKey(path=(), leaf="signup_at"),),
                 kwargs=(("weight", ColumnKey(path=("regions",), leaf="pop")),),
-                partition_keys=frozenset({ColumnKey(path=(), leaf="tier")}),
+                partition_keys=Grain.of({ColumnKey(path=(), leaf="tier")}),
             ),
             host_path=HOST,
         )
         assert out.source == ColumnKey(path=("customers",), leaf="spend")
         assert out.args == (ColumnKey(path=("customers",), leaf="signup_at"),)
         assert out.kwargs == (("weight", ColumnKey(path=("customers", "regions"), leaf="pop")),)
-        assert out.partition_keys == frozenset({ColumnKey(path=("customers",), leaf="tier")})
+        assert out.partition_keys == Grain.of({ColumnKey(path=("customers",), leaf="tier")})
 
     def test_scalar_kwarg_passes_through(self) -> None:
         out = K.prepend_value_key(
@@ -192,7 +193,7 @@ class TestPrependCompositeKinds:
             TransformKey(
                 op="cumsum",
                 input=AggregateKey(source=ColumnKey(path=(), leaf="spend"), agg="sum"),
-                partition_keys=frozenset({ColumnKey(path=(), leaf="tier")}),
+                partition_keys=Grain.of({ColumnKey(path=(), leaf="tier")}),
                 time_key=TimeTruncKey(
                     column=ColumnKey(path=(), leaf="signup_at"), granularity="month",
                 ),
@@ -200,7 +201,7 @@ class TestPrependCompositeKinds:
             host_path=HOST,
         )
         assert out.input.source == ColumnKey(path=("customers",), leaf="spend")
-        assert out.partition_keys == frozenset({ColumnKey(path=("customers",), leaf="tier")})
+        assert out.partition_keys == Grain.of({ColumnKey(path=("customers",), leaf="tier")})
         assert out.time_key.column == ColumnKey(path=("customers",), leaf="signup_at")
 
     def test_arithmetic_scalarcall_between_in(self) -> None:
@@ -219,6 +220,8 @@ class TestPrependCompositeKinds:
         call, col = out.operands
         assert col == ColumnKey(path=("customers", "regions"), leaf="pop")
         in_key, between = call.args
+        assert isinstance(in_key, InKey)
+        assert isinstance(between, BetweenKey)
         assert in_key.column == ColumnKey(path=("customers",), leaf="tier")
         assert between.column == ColumnKey(path=("customers",), leaf="signup_at")
 
@@ -262,9 +265,9 @@ class TestPrependTotalityAndFailClosed:
         absent = AggregateKey(source=ColumnKey(path=(), leaf="spend"), agg="sum",
                               partition_keys=None)
         grand = AggregateKey(source=ColumnKey(path=(), leaf="spend"), agg="sum",
-                             partition_keys=frozenset())
+                             partition_keys=Grain.EMPTY)
         assert K.prepend_value_key(absent, host_path=HOST).partition_keys is None
-        assert K.prepend_value_key(grand, host_path=HOST).partition_keys == frozenset()
+        assert K.prepend_value_key(grand, host_path=HOST).partition_keys == Grain.EMPTY
 
 
 class TestRoundTrip:
@@ -283,7 +286,7 @@ class TestRoundTrip:
     def test_strip_undoes_prepend_deep(self) -> None:
         key = AggregateKey(
             source=ColumnKey(path=("regions",), leaf="pop"), agg="sum",
-            partition_keys=frozenset({ColumnKey(path=(), leaf="tier")}),
+            partition_keys=Grain.of({ColumnKey(path=(), leaf="tier")}),
         )
         prepended = K.prepend_value_key(key, host_path=HOST)
         assert reroot_value_key(prepended, target_path=HOST) == key

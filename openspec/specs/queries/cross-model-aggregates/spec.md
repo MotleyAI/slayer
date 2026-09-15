@@ -129,11 +129,23 @@ from its root, else errors.
 - **THEN** the value is correct by executed values and result cardinality is unchanged
 
 ### Requirement: Cross-model aggregates compose in expressions and dimensions
-Cross-model aggregates SHALL be legal wherever local aggregates are: in arithmetic and scalar-call composites (including mixed with local aggregates and with aggregates from different joined models in one expression), inside transforms, in dimension expressions, in filters, and in ORDER BY. A computed dimension whose expression columns are all attributable from a metric's root participates in that metric's grain; otherwise the metric broadcasts across it. Consumption-position rules match local aggregates exactly: a combined-position consumer of a cross-model partitioned aggregate needs query-dimension partition keys (per the partitioned-aggregates combined-consumer requirement), while row-scope references to a computed dimension's own aggregate stay legal at any partition grain.
+Cross-model aggregates SHALL be legal wherever local aggregates are: in arithmetic and scalar-call composites (including mixed with local aggregates and with aggregates from different joined models in one expression), inside transforms, in dimension expressions, in filters, and in ORDER BY. Composite legality is uniform across the composite's own shape: a cross-model operand SHALL compile whether the composite combines it with local aggregates, with literals, with several cross-model operands, or wraps it in scalar calls — the compiled route never depends on which seam the composite would otherwise render through, and no composite shape reaches an internal not-supported seam error. A computed dimension whose expression columns are all attributable from a metric's root participates in that metric's grain; otherwise the metric broadcasts across it. Consumption-position rules match local aggregates exactly: a combined-position consumer of a cross-model partitioned aggregate needs query-dimension partition keys (per the partitioned-aggregates combined-consumer requirement), while row-scope references to a computed dimension's own aggregate stay legal at any partition grain.
 
 #### Scenario: Local and cross-model aggregates in one expression
 - WHEN a query selects the measure `orders.revenue:sum / customers.spend:sum`
 - THEN each cell's value is the ratio of the two correctly-computed aggregates, by executed values
+
+#### Scenario: Scalar call wrapping a cross-model operand executes
+- **WHEN** a query selects a scalar-call composite over a cross-model aggregate mixed with
+  a local aggregate and a literal (for example `round(customers.spend:sum / amount:sum, 2)`)
+- **THEN** the composite executes with correct hand-computed values on SQLite and DuckDB —
+  never the former AGGREGATE-phase-composite not-yet-supported error
+
+#### Scenario: Multiple cross-model operands in one composite execute
+- **WHEN** a composite combines two cross-model aggregates (same or different joined
+  models) with no local operand
+- **THEN** each operand is computed in its own producer and the composed value is correct
+  by executed values
 
 #### Scenario: Cross-model aggregate source inside a computed dimension
 - WHEN a query declares a dimension banding `customers.spend:sum(partition_by=<customer-level dimension>)`

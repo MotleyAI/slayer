@@ -85,6 +85,9 @@ jobs:
       - name: Lint with ruff
         run: poetry run ruff check slayer/ tests/
 
+      - name: Check living-architecture cross-walk
+        run: poetry run python tools/arch_check.py
+
       - name: Run unit tests
         timeout-minutes: 15
         # -n logical uses ALL the runner's vCPUs for ~16.5k CPU-bound tests

@@ -43,13 +43,14 @@ from slayer.core.keys import (
     TimeTruncKey,
     TransformKey,
 )
+from slayer.core.keys import Grain
 from slayer.core.models import Column, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.core.scope import ModelScope
 from slayer.engine.binding import bind_expr
-from slayer.engine.planning import _iter_slot_deps
+from slayer.engine.compile.projection import _iter_slot_deps
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.engine.stage_planner import plan_query
+from slayer.engine.plan import plan_query
 from slayer.engine.syntax import parse_expr
 
 
@@ -283,7 +284,7 @@ class TestIterSlotDepsTransformAux:
         tk = TransformKey(
             op="rank",
             input=inner,
-            partition_keys=frozenset({region}),
+            partition_keys=Grain.of({region}),
         )
         deps = list(_iter_slot_deps(tk))
         # The transform itself, the inner aggregate, AND the partition
@@ -322,7 +323,7 @@ class TestIterSlotDepsTransformAux:
         tk = TransformKey(
             op="rank",
             input=inner,
-            partition_keys=frozenset({region, customer}),
+            partition_keys=Grain.of({region, customer}),
         )
         deps = list(_iter_slot_deps(tk))
         assert region in deps
