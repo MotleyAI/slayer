@@ -285,6 +285,24 @@ def attributable_from_root(
     )
 
 
+def _effective_dependency_paths(
+    closure: Tuple[Tuple[str, ...], ...], own: Tuple[str, ...],
+) -> List[Tuple[str, ...]]:
+    """The paths a reference actually depends on, for attributability /
+    determination: the MAXIMAL closure paths (a full derived crossing, not the
+    intermediate join prefixes the join builder needs) plus the reference's OWN
+    path always (a host-declared derived column's ``()`` host-locality, which a
+    maximal filter would swallow as a prefix)."""
+    paths = set(closure)
+    maximal = [
+        p for p in paths
+        if not any(q != p and len(q) > len(p) and q[: len(p)] == p for q in paths)
+    ]
+    if own not in maximal:
+        maximal.append(own)
+    return maximal
+
+
 def key_attributable_from_root(
     *, key: ValueKey, target_path: Tuple[str, ...], root_model: SlayerModel,
     models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
@@ -305,7 +323,7 @@ def key_attributable_from_root(
             host_path=p, target_path=target_path, root_model=root_model,
             models_by_name=models_by_name, host_name=host_name,
         )
-        for p in (closure or (key_host_path(key),))
+        for p in _effective_dependency_paths(closure, key_host_path(key))
     )
 
 
@@ -321,7 +339,9 @@ def key_broadcast_reason(
         key=key, anchor_model=host_model, anchor_relation=host_model.name,
         bundle=bundle,
     )
-    for p in (closure or (key_host_path(key),)):
+    paths = (_effective_dependency_paths(closure, key_host_path(key))
+             if closure is not None else [key_host_path(key)])
+    for p in paths:
         if not attributable_from_root(
             host_path=p, target_path=target_path, root_model=root_model,
             models_by_name=models_by_name, host_name=host_name,
@@ -537,7 +557,8 @@ def _grain_leaf_name(key: ValueKey) -> Optional[str]:
 
 def grain_determines(
     *, key: ValueKey, grain: Grain, host_model: SlayerModel,
-    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+    models_by_name: Dict[str, SlayerModel],
+    bundle: Optional[ResolvedSourceBundle] = None,
 ) -> bool:
     """Does a dataset grain determine ``key`` (Axiom 1)? True iff ``key``
     is a grain member, an aggregate whose ``partition_by=`` grain ⊆ the grain (a
@@ -561,6 +582,11 @@ def grain_determines(
             for pk in key.partition_keys)
     if not isinstance(key, (ColumnKey, ColumnSqlKey)):
         return False
+    if bundle is None:
+        # Callers without a resolved bundle (direct unit tests over plain keys)
+        # get a throwaway one from the model map; production always threads the
+        # real bundle, which alone carries a derived column's owning model.
+        bundle = ResolvedSourceBundle(referenced_models=list(models_by_name.values()))
     closure = key_closure(
         key=key, anchor_model=host_model, anchor_relation=host_model.name,
         bundle=bundle,
@@ -568,18 +594,13 @@ def grain_determines(
     if closure is None:
         return False
     # Each dependency is pinned at its OWN depth (reseeded per hop), so check the
-    # maximal closure paths — a prefix is pinned implicitly by the deeper walk that
-    # passes through it, never independently.
-    paths = set(closure) | {key_host_path(key)}
-    maximal = [
-        p for p in paths
-        if not any(q != p and len(q) > len(p) and q[: len(p)] == p for q in paths)
-    ]
+    # effective (maximal + own) paths — a join prefix is pinned implicitly by the
+    # deeper walk that passes through it, never independently.
     return all(
         _path_grain_determined(
             path=p, grain=grain, host_model=host_model, models_by_name=models_by_name,
         )
-        for p in maximal
+        for p in _effective_dependency_paths(closure, key_host_path(key))
     )
 
 

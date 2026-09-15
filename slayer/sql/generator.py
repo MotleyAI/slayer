@@ -45,6 +45,7 @@ from slayer.core.window_duration import parse_window_duration as _parse_window_d
 from slayer.sql.column_expansion import (
     is_trivial_base,
     collect_root_scope_joined_paths,
+    collect_root_scope_reference_columns,
     expand_derived_refs_sync,
 )
 from slayer.ir.planned import MaskTyping, RankedGrainMember, ValueSlot, regroup_producer_identity
@@ -2319,17 +2320,21 @@ class SQLGenerator:
         def _resolve_fragment_kwargs(key) -> None:
             # Template-fragment kwargs are substituted as qualified SQL, so their crossed joins must register like
             # Column.filter; keep the resolved (alias-rewritten) fragment. A host-locus source beyond the root carries
-            # its definition on the source model; enter its default fragments through that owner sub-scope.
-            frag_model, owner_path = scope.root_model, ()
+            # its aggregation definition on the source model, so look the params up there.
+            # A definition default resolves per its reference frame (DEV-1900): the source
+            # owner for a source-relative default (regions.pop), the root for a home-frame
+            # default naming the widened home (customers.spend) — the reverse hop back to it.
+            frag_model, source_owner_path = scope.root_model, None
             src_path = tuple(getattr(key.source, "path", ()) or ())
             if src_path and _is_host_grain(key):
                 walked = self._walk_join_path_model(
                     source_model=scope.root_model, path=src_path, bundle=scope.bundle,
                 )
                 if walked is not None:
-                    frag_model, owner_path = walked, src_path
+                    frag_model, source_owner_path = walked, src_path
             frags = self._register_fragment_kwarg_joins(
-                key=key, scope=scope, model=frag_model, owner_path=owner_path,
+                key=key, scope=scope, model=frag_model,
+                source_owner_path=source_owner_path,
             )
             if frags:
                 bucket = resolved.setdefault(key, {})
@@ -5827,8 +5832,29 @@ class SQLGenerator:
         """Enter a Mode-A scalar EXPRESSION (a ``Column.sql`` / aggregation"""
         return scope.enter_expression(sql, location=location, owner_path=tuple(owner_path))
 
+    def _default_frag_owner_path(
+        self, *, frag: str, scope: ScopeFrame, source_owner_path: Tuple[str, ...],
+    ) -> Tuple[str, ...]:
+        """Owner path for a definition-default fragment on a host-locus aggregate:
+        the ROOT (``()``) when every reference resolves forward from the root — a
+        home-frame default like ``customers.spend`` after the home rule widens the
+        home — else the source owner (a source-relative default like ``regions.pop``).
+        Minimal reverse-hop handling (DEV-1900); DEV-1908 generalises it."""
+        if not source_owner_path:
+            return ()
+        try:
+            parsed = sqlglot.parse_one(frag, dialect=self.dialect)
+            refs = collect_root_scope_reference_columns(
+                parsed=parsed, source_model=scope.root_model,
+                source_relation=scope.root_model.name, bundle=scope.bundle,
+            )
+        except Exception:
+            return source_owner_path
+        return () if all(path is not None for path, _ in refs) else source_owner_path
+
     def _register_fragment_kwarg_joins(
         self, *, key, scope: ScopeFrame, model, owner_path: Tuple[str, ...] = (),
+        source_owner_path: Optional[Tuple[str, ...]] = None,
     ) -> "Dict[str, exp.Expression]":
         """Resolve an aggregation's template FRAGMENTS through the Mode-A door,"""
         agg_def = next(
@@ -5838,18 +5864,27 @@ class SQLGenerator:
             return {}
         formula = agg_def.formula or ""
         overridden = {name for name, _ in key.kwargs}
-        named_fragments: List[Tuple[str, str]] = [
-            (name, v) for name, v in key.kwargs
+        # (name, fragment, owner_path). Explicit string kwargs keep the caller's
+        # owner_path; a definition default on a host-locus aggregate resolves at
+        # the root or the source owner per its reference frame (DEV-1900).
+        named_fragments: List[Tuple[str, str, Tuple[str, ...]]] = [
+            (name, v, tuple(owner_path)) for name, v in key.kwargs
             if isinstance(v, str) and f"{{{name}}}" in formula
         ]
         named_fragments.extend(
-            (p.name, p.sql) for p in (agg_def.params or [])
+            (p.name, p.sql, (
+                self._default_frag_owner_path(
+                    frag=p.sql, scope=scope, source_owner_path=source_owner_path,
+                )
+                if source_owner_path is not None else tuple(owner_path)
+            ))
+            for p in (agg_def.params or [])
             if p.name not in overridden and p.sql
         )
         resolved: "Dict[str, exp.Expression]" = {}
-        for name, frag in named_fragments:
+        for name, frag, frag_owner_path in named_fragments:
             resolved[name] = self._enter_mode_a_expression(
-                sql=frag, scope=scope, owner_path=tuple(owner_path),
+                sql=frag, scope=scope, owner_path=frag_owner_path,
                 location=(
                     f"aggregation {key.agg!r} template fragment on model "
                     f"{model.name!r}"

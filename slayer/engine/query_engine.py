@@ -518,7 +518,7 @@ def _raise_on_error_events(
         w = broadcasts[0]
         dims = ", ".join(d.dimension for d in w.dimensions)
         reason = w.dimensions[0].reason if w.dimensions else ""
-        raise ValueError(
+        raise SlayerError(
             f"error mode: metric {w.measure!r} would broadcast across "
             f"unattributable dimension(s) {dims} ({reason}); {remedy}dimension."
         )

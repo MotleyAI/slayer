@@ -11,8 +11,12 @@ if TYPE_CHECKING:
     from slayer.engine.schema_drift import ToDeleteEntry  # noqa: F401
 
 
-class SlayerError(Exception):
-    """Base for SLayer-specific errors — catch to isolate intentional failures from driver/IO errors."""
+class SlayerError(ValueError):
+    """Base for SLayer-specific errors — catch to isolate intentional failures from
+    driver/IO errors. A ``ValueError`` subclass (DEV-1900) so every intentional
+    slayer failure is caught by ``except ValueError`` / REST-400 call sites and by
+    tests that pin a mode/typing refusal as a ``ValueError`` — the per-error
+    ``(SlayerError, ValueError)`` classes remain valid (redundant but harmless)."""
 
 
 class AmbiguousModelError(SlayerError):
