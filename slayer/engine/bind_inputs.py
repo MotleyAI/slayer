@@ -26,8 +26,7 @@ from slayer.core.keys import (
     ValueKey,
     lower_sugar_transforms,
     normalize_scalar,
-    operand_aggregates,
-    reaggregation_operand_keys,
+    attached_operand_keys,
     rewrite_rank_partition_keys,
     walk_value_keys,
     window_kwarg_of,
@@ -48,7 +47,6 @@ from slayer.core.scope import ModelScope, StageSchema, host_model_name
 from slayer.engine import dimension_routing
 from slayer.engine.binding import bind_expr, bind_filter, bind_time_dimension
 from slayer.engine.elaborate_env import (
-    check_attached_param_requires_attached_source,
     check_computed_dim_name_collision,
     check_computed_dimension,
     check_measure_dedupe_collision,
@@ -327,22 +325,6 @@ def _map_bound_keys(
     return new_measures, new_filters, new_specs
 
 
-def _attached_param_on_row_source(root: ValueKey) -> Optional[str]:
-    """First parameter name where an aggregate-valued arg/kwarg rides an
-    aggregation whose source is row-level (not a re-aggregation) — the
-    typed residue: such a parameter would need the attached value on the
-    aggregation's own input rows."""
-    for k in walk_value_keys(root):
-        if not isinstance(k, AggregateKey) or operand_aggregates(k.source):
-            continue
-        for name, v in k.kwargs:
-            if isinstance(v, AggregateKey):
-                return name
-        if any(isinstance(v, AggregateKey) for v in k.args):
-            return "(positional)"
-    return None
-
-
 def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages are strictly sequential and share the growing `declared_measures` / `bound_filters` / `order_specs` triple: parse+bind, time-key attachment, sugar lowering, rank-partition validation. Splitting them would thread the same three lists through four signatures without removing a branch.
     *,
     query: SlayerQuery,
@@ -556,20 +538,6 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         ),
     )
 
-    # An aggregate-valued parameter needs an attached source; on a
-    # row-level source it fails closed in every mode. Pre-lowering, like above.
-    for _dm in declared_measures:
-        check_attached_param_requires_attached_source(
-            alias=_dm.declared_name,
-            offending_param=_attached_param_on_row_source(_dm.bound.value_key),
-        )
-    for _root in (*(bf.value_key for bf in bound_filters),
-                  *(spec.bound.value_key for spec in order_specs)):
-        check_attached_param_requires_attached_source(
-            alias="filter/order",
-            offending_param=_attached_param_on_row_source(_root),
-        )
-
     # Sugar lowering runs AFTER patching so the desugared time_shift inherits the patched time_key.
     declared_measures, bound_filters, order_specs = _map_bound_keys(
         lower_sugar_transforms,
@@ -607,10 +575,11 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     _combined_consumer_keys = frozenset(
         [*_consumers.local_partitioned, *_consumers.cross_model_partitioned]
     )
-    # A re-aggregation operand (DEV-1847) declares an internal producer grain, so
-    # its partition keys need not be query dimensions — the outer aggregation is
-    # the combined consumer and carries the rule.
-    _reagg_operand_keys = reaggregation_operand_keys([
+    # An attached operand — a re-aggregation constituent (DEV-1847) or a
+    # row-attached input / parameter (DEV-1859) — declares an internal producer
+    # grain, so its partition keys need not be query dimensions; the enclosing
+    # root is the combined consumer and carries the rule.
+    _reagg_operand_keys = attached_operand_keys([
         *[dm.bound.value_key for dm in declared_measures],
         *[bf.value_key for bf in bound_filters],
         *[sp.bound.value_key for sp in order_specs],

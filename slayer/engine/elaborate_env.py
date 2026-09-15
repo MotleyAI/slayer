@@ -619,17 +619,25 @@ def check_windowed_key_supported(*, key: AggregateKey, window_val) -> None:
     parse_window_duration(window_val)  # raises on empty / malformed
 
 
-def _row_level_leaf_in(key: ValueKey) -> bool:
-    """A row-level (non-aggregate) leaf anywhere in a composite/predicate tree;
-    aggregates are opaque, a transform is checked through its input (its
-    time/partition keys are series parameters, not leaves)."""
+def _first_row_leaf(key: ValueKey, *, exempt: frozenset) -> Optional[ValueKey]:
+    """First row-level (non-aggregate) leaf in ``key`` not in ``exempt``, or None.
+    Aggregates are opaque; a transform is descended through its input ONLY (its
+    time / partition keys are series parameters, not leaves) — DEV-1859 D16.
+    The shift family passes an empty exempt set; the non-shift checker the
+    projected grain keys."""
+    if key in exempt:
+        return None
     if isinstance(key, AggregateKey):
-        return False
-    if isinstance(key, TransformKey):
-        return _row_level_leaf_in(key.input)
+        return None
     if isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
-        return True
-    return any(_row_level_leaf_in(c) for c in key.children())
+        return key
+    if isinstance(key, TransformKey):
+        return _first_row_leaf(key.input, exempt=exempt)
+    for c in key.children():
+        found = _first_row_leaf(c, exempt=exempt)
+        if found is not None:
+            return found
+    return None
 
 
 _SHIFT_FAMILY_OPS = frozenset({"time_shift", "change", "change_pct"})
@@ -647,7 +655,7 @@ def _check_shift_family_key(k: TransformKey) -> None:
         )
     if isinstance(inner, (AggregateKey, ColumnKey, ColumnSqlKey)):
         return  # bare-leaf regimes
-    if _row_level_leaf_in(inner):
+    if _first_row_leaf(inner, exempt=frozenset()) is not None:
         raise ValueError(
             f"'{k.op}' does not support a row-level (non-aggregate) "
             f"leaf inside a composite or nested-transform input; every "
@@ -671,27 +679,6 @@ def check_time_shift_input(*, roots) -> None:
 _FIRST_LAST_OPS = frozenset({"first", "last"})
 
 
-def _first_grain_refining_row_leaf(
-    key: ValueKey, *, projected_grain_keys: frozenset,
-) -> Optional[ValueKey]:
-    """First row-level (non-aggregate) leaf in ``key`` that is not a projected
-    grain key, or None. A projected grain key (plain or computed dimension) is
-    legal and not descended; an aggregate collapses grain and is opaque."""
-    if key in projected_grain_keys:
-        return None
-    if isinstance(key, AggregateKey):
-        return None
-    if isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
-        return key
-    for c in key.children():
-        found = _first_grain_refining_row_leaf(
-            c, projected_grain_keys=projected_grain_keys,
-        )
-        if found is not None:
-            return found
-    return None
-
-
 def check_non_shift_transform_row_leaf(
     *, roots, projected_grain_keys: frozenset,
 ) -> None:
@@ -707,9 +694,7 @@ def check_non_shift_transform_row_leaf(
                 continue
             if k.op in _SHIFT_FAMILY_OPS or k.op in _FIRST_LAST_OPS:
                 continue
-            leaf = _first_grain_refining_row_leaf(
-                k.input, projected_grain_keys=projected_grain_keys,
-            )
+            leaf = _first_row_leaf(k.input, exempt=projected_grain_keys)
             if leaf is None:
                 continue
             disp = dotted_key_display(leaf)
@@ -884,23 +869,6 @@ def check_parameter_determined(
     )
 
 
-def check_attached_param_requires_attached_source(
-    *, alias: str, offending_param: Optional[str],
-) -> None:
-    """An aggregate-valued parameter needs the aggregation's source to be attached
-    (a re-aggregation), so the parameter is a cell of the same operand dataset. On
-    a row-level source the parameter would need the attached value on the
-    aggregation's own input rows — a typed error naming the parameter and the
-    remedy. (The row-attach mechanism lands with DEV-1859.)"""
-    if offending_param is None:
-        return
-    raise SlayerError(
-        f"Aggregation {alias!r} parameter {offending_param!r} is a partitioned "
-        f"aggregate, but the aggregation's source is a row-level value; the "
-        f"parameter would need the attached value on the aggregation's own input "
-        f"rows. Aggregate the source to the parameter's grain, or use a row-level "
-        f"parameter."
-    )
 
 
 def check_reaggregation_no_window(*, alias: str, window_val) -> None:

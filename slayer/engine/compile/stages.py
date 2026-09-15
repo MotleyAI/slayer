@@ -12,6 +12,7 @@ from typing import (
     Dict,
     FrozenSet,
     Hashable,
+    Iterable,
     List,
     Literal,
     Mapping,
@@ -26,7 +27,7 @@ from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import DataType, RANKED_AGGREGATIONS
 from slayer.core.errors import AmbiguousJoinPathError, UnreachableFilterDroppedWarning
-from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, regroup_root_grain, reroot_value_key, substitute_value_keys, walk_value_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_local_partitioned_agg, split_top_level_and, window_kwarg_of, is_reaggregation_key, is_mixed_source_key, operand_aggregates
+from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, regroup_root_grain, reroot_value_key, substitute_value_keys, walk_value_keys, walk_consumer_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_local_partitioned_agg, split_top_level_and, window_kwarg_of, is_reaggregation_key, is_row_attach_root, attached_inputs, operand_aggregates
 from slayer.core.models import AggregationParam, SlayerModel
 from slayer.engine.aggregate_input_paths import compute_aggregate_input_join_paths
 from slayer.engine.column_filter_paths import (
@@ -383,23 +384,25 @@ def _bare_combined_roots(  # NOSONAR(S3776) — straight-line discovery walk ove
     seen: set = set()
     out: List[AggregateKey] = []
     alias: Dict[AggregateKey, str] = {}
+    # Opaque below a row-attach root's inputs — a windowed / first-last inner
+    # belongs to that root's own attach, not a bare combined root (DEV-1859).
     for dm in prebound.declared_measures:
         if dm.is_dimension:
             continue
         vk = dm.bound.value_key
-        for k in walk_value_keys(vk):
+        for k in walk_consumer_keys(vk):
             if _is_root(k) and k not in seen:
                 seen.add(k)
                 out.append(k)
         if _is_root(vk) and dm.public_name is not None:
             alias.setdefault(vk, dm.public_name)
     for sp in prebound.order_specs:
-        for k in walk_value_keys(sp.bound.value_key):
+        for k in walk_consumer_keys(sp.bound.value_key):
             if _is_root(k) and k not in seen:
                 seen.add(k)
                 out.append(k)
     for bf in prebound.bound_filters:
-        for k in walk_value_keys(bf.value_key):
+        for k in walk_consumer_keys(bf.value_key):
             if _is_root(k) and k not in seen:
                 seen.add(k)
                 out.append(k)
@@ -782,8 +785,9 @@ def _synthesize_wrap_attach(
         scope=scope,
         stage_schemas=stage_schemas,
         disable_host_rooted_isolation=True,
-        # A computed-dimension grain member nests its own producer inside the wrap.
-        enable_producer_regroups=any(
+        # A computed-dimension grain member — or an attach-owning wrapped answer
+        # (DEV-1859 decision 11) — nests its own producer inside the wrap.
+        enable_producer_regroups=_answers_need_nested_regroups([wrap_key]) or any(
             isinstance(pk, (ScalarCallKey, ArithmeticKey, TransformKey))
             or is_local_partitioned_agg(pk)
             for pk in projected
@@ -1632,8 +1636,12 @@ def _param_is_determined(
     models_by_name: Dict[str, SlayerModel],
 ) -> bool:
     """A parameter is legal iff the dataset grain determines it — the bound key,
-    or (for an expression default) every column it references."""
+    or (for an expression default) every column it references. An UNGRAINED
+    aggregate parameter types at the query grain, which the operand grain always
+    refines, so it is determined (DEV-1859 decision 12)."""
     if spec.key is not None:
+        if isinstance(spec.key, AggregateKey) and spec.key.partition_keys is None:
+            return True
         return grain_determines(
             key=spec.key, grain=grain, host_model=host_model,
             models_by_name=models_by_name,
@@ -1694,9 +1702,17 @@ def _synthesize_association_producer(  # NOSONAR(S3776) — one cohesive host-ro
     # certifies such inputs empirically).
     # locus="host" so default-fragment discovery looks the definition up on the
     # source model (not the home) when the source sits beyond the home.
+    # An attached input (a row-attached constituent or parameter) row-attaches as
+    # its own nested producer (decision 13); its inputs are that producer's
+    # concern, not direct inputs of this aggregate, so strip them from the hop
+    # check (kept in ``agg`` for param typing and the producer compile below).
+    _safety_rooted = agg
+    if attached_inputs(agg):
+        _safety_rooted = substitute_value_keys(
+            agg, {a: LiteralKey(value=1) for a in attached_inputs(agg)})
     _assert_cross_model_inputs_safe(
         agg=agg, agg_rooted=reroot_from_root(
-            agg, target_path=target_path, root_model=root_model,
+            _safety_rooted, target_path=target_path, root_model=root_model,
             models_by_name=models_by_name, host_name=host_model.name,
         ).model_copy(update={"locus": "host"}),
         root_model=root_model, root_name=root_name, target_path=target_path,
@@ -1705,24 +1721,28 @@ def _synthesize_association_producer(  # NOSONAR(S3776) — one cohesive host-ro
     entity_keys: List[ValueKey] = [
         ColumnKey(path=target_path, leaf=col) for col in key_sets[0]
     ]
-    # Type each parameter against the entity grain (requested dims ∪ entity keys)
-    # and lift the legal ones — picked once per associated entity alongside the
-    # aggregate's own value; the residue is a typed error. Definition defaults are
-    # declared on the source column's model, which equals the home only when the
-    # home is the source path.
+    # Type each GRAINED parameter against the ENTITY grain (the customer key): the
+    # aggregation reads it once per associated entity, so it must be a property of
+    # that entity, not of a requested dim the entity does not determine. An
+    # ungrained parameter types at the query grain and is always determined
+    # (decision 12). Lift the legal ones — picked once per entity alongside the
+    # aggregate's value; the residue is a typed error. Definition defaults are
+    # declared on the source column's model, the home only when it is the source
+    # path.
     source_path = key_host_path(agg.source)
     source_model = walk_key_path(
         model=host_model, path=source_path, bundle=bundle,
     ) or root_model
-    assoc_grain = Grain.of([*requested, *entity_keys])
+    entity_grain = Grain.of(entity_keys)
     picked_params: List[PickedParam] = []
     for _ps in _resolve_aggregation_params(
         agg=agg, owner_model=source_model, owner_path=source_path, bundle=bundle,
     ):
         check_parameter_determined(
-            alias=alias, param_name=_ps.name, grain_display=_grain_display(assoc_grain),
+            alias=alias, param_name=_ps.name,
+            grain_display=_grain_display(entity_grain),
             determined=_param_is_determined(
-                spec=_ps, grain=assoc_grain, host_model=host_model,
+                spec=_ps, grain=entity_grain, host_model=host_model,
                 models_by_name=models_by_name,
             ),
         )
@@ -1775,13 +1795,30 @@ def _synthesize_association_producer(  # NOSONAR(S3776) — one cohesive host-ro
             source_model=host_model.name, prebound=producer_prebound,
         ),
         bundle=bundle, scope=scope, stage_schemas=stage_schemas,
-        disable_host_rooted_isolation=True, enable_producer_regroups=False,
+        disable_host_rooted_isolation=True,
+        # An attached parameter row-attaches its producer inside the association
+        # producer (DEV-1859 decision 13); mapped through the sub-plan below.
+        enable_producer_regroups=_answers_need_nested_regroups([assoc_agg]),
         prebound=producer_prebound, producer_registry=producer_registry,
     )
     if semi_joins:
         producer_plan = producer_plan.model_copy(
             update={"semi_join_filters": semi_joins},
         )
+    # An attached parameter row-attached inside the producer: map each picked key
+    # through the sub-plan's substitutions so the level-1 pick references the
+    # producer's row-attach column, not the raw aggregate (decision 13).
+    _param_subst = {
+        sub.original_key: sub.placeholder
+        for a in producer_plan.regroup_attach_plans
+        for sub in a.substitutions
+    }
+    if _param_subst:
+        picked_params = [
+            pp.model_copy(
+                update={"key": substitute_value_keys(pp.key, _param_subst)})
+            for pp in picked_params
+        ]
     producer_answer_ids = list(producer_plan.projection)[len(ordered_pks):]
     answer_slot = _regroup_answer_slot_id(
         value_slots=[
@@ -1849,45 +1886,34 @@ def _substitute_prebound(
     })
 
 
-def _discover_reaggregation_roots(prebound: PreboundQuery) -> List[AggregateKey]:
-    """Re-aggregation roots reachable from any measure / order / filter, first-seen.
-    A mixed row/attached source is NOT a re-aggregation (its grain-union is row
-    grain, DEV-1859) — it never becomes the fully-attached carrier."""
+def _answers_need_nested_regroups(answers: Iterable[ValueKey]) -> bool:
+    """A producer re-runs regroup discovery when any answer is a transform or owns
+    attached inputs — a re-aggregation constituent or a row-attached input
+    (DEV-1859 decision 11). Each caller ORs its own grain-key / windowed clause."""
+    return any(
+        isinstance(a, TransformKey) or bool(attached_inputs(a)) for a in answers
+    )
+
+
+def _discover_roots(
+    prebound: PreboundQuery, *, predicate: Callable[[ValueKey], bool],
+) -> List[AggregateKey]:
+    """Roots satisfying ``predicate`` reachable from any measure / order / filter,
+    first-seen. Opaque below a matched root (its constituents belong to its own
+    producer) and below any attach-owning root's inputs, still descending
+    partition keys (walk_consumer_keys semantics, DEV-1859 decision 9)."""
     seen: set = set()
     out: List[AggregateKey] = []
 
     def _scan(vk: ValueKey) -> None:
-        # A re-aggregation root is opaque below itself — its constituents belong
-        # to its carrier, not to a separate main-query attach.
-        if is_reaggregation_key(vk) and not is_mixed_source_key(vk):
+        if predicate(vk):
             if vk not in seen:
                 seen.add(vk)
                 out.append(vk)
             return
-        for c in vk.children():
-            _scan(c)
-
-    for dm in prebound.declared_measures:
-        _scan(dm.bound.value_key)
-    for sp in prebound.order_specs:
-        _scan(sp.bound.value_key)
-    for bf in prebound.bound_filters:
-        _scan(bf.value_key)
-    return out
-
-
-def _discover_mixed_roots(prebound: PreboundQuery) -> List[AggregateKey]:
-    """Mixed row/attached aggregation roots reachable from any measure / order /
-    filter, first-seen. Opaque below itself — a nested mixed constituent is
-    handled by its own producer's recursion (DEV-1859)."""
-    seen: set = set()
-    out: List[AggregateKey] = []
-
-    def _scan(vk: ValueKey) -> None:
-        if is_mixed_source_key(vk):
-            if vk not in seen:
-                seen.add(vk)
-                out.append(vk)
+        if isinstance(vk, AggregateKey) and attached_inputs(vk):
+            for pk in (vk.partition_keys or ()):
+                _scan(pk)
             return
         for c in vk.children():
             _scan(c)
@@ -1995,23 +2021,6 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
 
     # Checked before TD resolution — name the combination, not a misleading TD error.
     check_reaggregation_no_window(alias=alias, window_val=window_kwarg_of(root))
-    # Type each outer parameter against the operand grain; a legal
-    # aggregate-valued parameter rides the carrier as an extra constituent, a
-    # legal column parameter is picked once per cell. The residue is a typed error.
-    reagg_param_specs = _resolve_aggregation_params(
-        agg=root, owner_model=host_model, owner_path=(), bundle=bundle,
-    )
-    for _ps in reagg_param_specs:
-        check_parameter_determined(
-            alias=alias, param_name=_ps.name, grain_display=_grain_display(union_grain),
-            determined=_param_is_determined(
-                spec=_ps, grain=union_grain, host_model=host_model,
-                models_by_name=models_by_name,
-            ),
-        )
-        if isinstance(_ps.key, AggregateKey) and _ps.key not in constituents:
-            constituents.append(_ps.key)
-
     # Requested outer grain: explicit partition_by= (combined-consumer rule: each
     # key must be a query dimension) else the query dimensions.
     if root.partition_keys is not None:
@@ -2024,6 +2033,33 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
             )
     else:
         requested = list(proj)
+
+    # Type each outer parameter against the operand grain; a legal aggregate-valued
+    # parameter rides the carrier as an extra constituent, a legal column parameter
+    # is picked once per cell. An UNGRAINED aggregate parameter types at the OUTER
+    # grain (decision 12) — normalise it there so the carrier broadcasts it per
+    # outer cell; the original key stays the outer pipeline identity, aliased to the
+    # normalised constituent's placeholder below.
+    reagg_param_specs = _resolve_aggregation_params(
+        agg=root, owner_model=host_model, owner_path=(), bundle=bundle,
+    )
+    param_constituent_of: Dict[ValueKey, ValueKey] = {}
+    for _ps in reagg_param_specs:
+        check_parameter_determined(
+            alias=alias, param_name=_ps.name, grain_display=_grain_display(union_grain),
+            determined=_param_is_determined(
+                spec=_ps, grain=union_grain, host_model=host_model,
+                models_by_name=models_by_name,
+            ),
+        )
+        if isinstance(_ps.key, AggregateKey):
+            ck = _ps.key
+            if ck.partition_keys is None:
+                ck = ck.model_copy(update={"partition_keys": Grain.of(requested)})
+            if ck not in constituents:
+                constituents.append(ck)
+            if ck != _ps.key:
+                param_constituent_of[_ps.key] = ck
 
     # Attributability to the operand dataset: a grain member, or determined from
     # an entity-key grain field over to-one hops. Unattributable dims resolve per
@@ -2094,6 +2130,11 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
     constituent_placeholders: Dict[ValueKey, ValueKey] = {
         c: registry.placeholder_for(c) for c in constituents
     }
+    # An ungrained parameter normalised to a distinct carrier constituent: the
+    # outer aggregate still references the original key, so alias it to the same
+    # placeholder (decision 12).
+    for orig, ck in param_constituent_of.items():
+        constituent_placeholders[orig] = constituent_placeholders[ck]
     carrier_attach = _build_carrier_attach(
         union_grain=union_grain, constituents=constituents,
         constituent_placeholders=constituent_placeholders, host_model=host_model,
@@ -2143,9 +2184,10 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         ),
         bundle=bundle, scope=scope, stage_schemas=stage_schemas,
         disable_host_rooted_isolation=True,
-        # An expression grain key (in-grain computed dim) desugars its own
-        # nested row attach inside the outer producer.
-        enable_producer_regroups=any(
+        # An expression grain key (in-grain computed dim) — or an attach-owning
+        # outer answer (DEV-1859 decision 11) — desugars its own nested row
+        # attach inside the outer producer.
+        enable_producer_regroups=_answers_need_nested_regroups([outer_agg]) or any(
             isinstance(pk, (ScalarCallKey, ArithmeticKey, TransformKey))
             or is_local_partitioned_agg(pk)
             for pk in ordered_outer
@@ -2251,11 +2293,10 @@ def _build_carrier_attach(
         # (nested broadcast), a constituent that is itself a re-aggregation, or
         # an expression grain key needing its own nested row attach.
         enable_producer_regroups=any(
-            (c.partition_keys is not None
-             and Grain.of(c.partition_keys) != union_grain)
-            or is_reaggregation_key(c)
+            c.partition_keys is not None
+            and Grain.of(c.partition_keys) != union_grain
             for c in constituents
-        ) or any(
+        ) or _answers_need_nested_regroups(constituents) or any(
             isinstance(pk, (ScalarCallKey, ArithmeticKey, TransformKey))
             or is_local_partitioned_agg(pk)
             for pk in union_grain
@@ -2411,7 +2452,30 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
     # discovery below treats it opaquely (its constituents belong to the carrier,
     # not a main-query attach); the producer-over-producer is synthesized later.
     registry = RegroupPlaceholderRegistry()
-    reagg_roots = _discover_reaggregation_roots(prebound) if local_discovery else []
+    # A LOCAL row-attach root whose partition_by is exactly the query grain is a
+    # redundant partition (== the GROUP BY): strip it so the root aggregates
+    # INLINE with its inputs row-attached, not through a redundant combined
+    # producer (DEV-1859 decision 10). Only the top consumer level needs this —
+    # a producer sub-plan renders partition_by==grain inline.
+    if local_discovery and not in_producer:
+        _dim_dms, _td_dms, _ = partition_declared_measures(
+            declared_measures=prebound.declared_measures,
+            n_dims=prebound.n_dims, n_time_dimensions=prebound.n_time_dimensions,
+        )
+        _query_grain = Grain.of(dm.bound.value_key for dm in (*_dim_dms, *_td_dms))
+        _strip = {
+            r: r.model_copy(update={"partition_keys": None})
+            for r in _discover_roots(prebound, predicate=is_row_attach_root)
+            if not is_cross_model_agg(r) and window_kwarg_of(r) is None
+            and r.partition_keys is not None
+            and Grain.of(r.partition_keys) == _query_grain
+        }
+        if _strip:
+            prebound = _substitute_prebound(prebound, _strip)
+    reagg_roots = (
+        _discover_roots(prebound, predicate=is_reaggregation_key)
+        if local_discovery else []
+    )
     reagg_mapping: Dict[ValueKey, ValueKey] = {
         root: registry.placeholder_for(root) for root in reagg_roots
     }
@@ -2550,7 +2614,8 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
         local_broadcast: List[ValueKey] = []
 
         def _scan_lb(vk: ValueKey) -> None:
-            for k in walk_value_keys(vk):
+            # Opaque below a row-attach root's inputs (DEV-1859).
+            for k in walk_consumer_keys(vk):
                 if k not in seen_lb and _local_broadcasts(k):
                     seen_lb.add(k)
                     local_broadcast.append(k)
@@ -2567,38 +2632,33 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
         for bf in prebound.bound_filters:
             _scan_lb(bf.value_key)
         cm_combined = [*cm_combined, *local_broadcast]
-    # DEV-1859: mixed row/attached sources. A mixed root aggregating INLINE at
-    # this grain row-attaches each inner constituent (the computed-dim
-    # mechanism) and stays an ordinary aggregate over the placeholder-rewritten
-    # source; a partitioned / windowed / cross-model mixed root routes through
-    # its producer, whose recursion row-attaches the inners the same way. Either
-    # way, a mixed root's constituents are never this level's COMBINED consumers.
+    # DEV-1859: a row-attach root (mixed source and/or attached parameter)
+    # broadcasts each attached input onto its rows. A root aggregating INLINE at
+    # this grain row-attaches its inputs (local → row_aggs, cross-model → cm_row)
+    # and stays an ordinary aggregate over the placeholder-rewritten
+    # source/parameter; a root routed through its own producer (partitioned /
+    # windowed / cross-model / broadcast) row-attaches them via that sub-plan's
+    # recursion. Discovery opacity keeps these inputs out of the combined sets,
+    # so no subtraction is needed.
     mixed_inline_inner: List[ValueKey] = []
-    mixed_roots = _discover_mixed_roots(prebound) if local_discovery else []
-    if mixed_roots:
+    row_attach_roots = (
+        _discover_roots(prebound, predicate=is_row_attach_root)
+        if local_discovery else []
+    )
+    if row_attach_roots:
         producer_bound = {*combined_aggs, *row_aggs, *cm_combined, *cm_row}
-        all_mixed_inner: set = set()
-        inline_local: List[ValueKey] = []
-        inline_cm: List[ValueKey] = []
         seen_inner: set = set()
-        for root in mixed_roots:
-            inners = operand_aggregates(root.source)
-            all_mixed_inner.update(inners)
-            if root in producer_bound:  # routed through its own producer
+        for root in row_attach_roots:
+            if root in producer_bound:  # own-producer: its sub-plan row-attaches
                 continue
-            for a in inners:  # aggregates inline at this grain
+            for a in attached_inputs(root):  # inline: broadcast each onto rows
                 if a in seen_inner:
                     continue
                 seen_inner.add(a)
                 mixed_inline_inner.append(a)
-                (inline_cm if is_cross_model_agg(a) else inline_local).append(a)
-        # A mixed root's constituents are never this level's COMBINED consumers.
-        combined_aggs = [k for k in combined_aggs if k not in all_mixed_inner]
-        cm_combined = [k for k in cm_combined if k not in all_mixed_inner]
-        _row_set = set(row_aggs)
-        row_aggs = [*row_aggs, *(a for a in inline_local if a not in _row_set)]
-        _cm_row_set = set(cm_row)
-        cm_row = [*cm_row, *(a for a in inline_cm if a not in _cm_row_set)]
+                target = cm_row if is_cross_model_agg(a) else row_aggs
+                if a not in target:
+                    target.append(a)
     cm_type = dict(consumers.declared_type)
     if (
         not row_aggs and not combined_aggs and not cm_combined and not cm_row
@@ -2709,15 +2769,15 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
                 # A producer re-runs regroup discovery for its strict-subset inner
                 # aggregates and for a computed / bare-partitioned dimension in its
                 # grain (which needs a nested row attach to group by its value).
+                # A transform or attach-owning answer (mixed source / attached
+                # parameter) row-attaches its inputs via the sub-plan's own
+                # regroup pass, even when windowed (DEV-1859 decision 11).
                 enable_producer_regroups=(
                     (not windowed) or any(
                         isinstance(pk, (ScalarCallKey, ArithmeticKey, TransformKey))
                         or is_local_partitioned_agg(pk)
                         for pk in pks
-                    ) or any(isinstance(a, TransformKey) for a in producer_aggs)
-                    # A mixed-source producer answer row-attaches its inners via
-                    # the sub-plan's own regroup pass, even when windowed (DEV-1859).
-                    or any(is_mixed_source_key(a) for a in producer_aggs)
+                    ) or _answers_need_nested_regroups(producer_aggs)
                 ),
                 prebound=producer_prebound,
                 producer_registry=producer_registry,
