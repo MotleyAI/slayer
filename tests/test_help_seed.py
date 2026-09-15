@@ -1,21 +1,6 @@
-"""DEV-1658: the help topics are seeded as predefined memories
-(``help.intro`` … ``help.workflow``) and retrieved via
-``inspect(entity_type="memory")`` / ``search`` — the standalone ``help()``
-tool/subcommand is gone.
-
-These tests pin:
-
-* the ``HELP_TOPICS`` content contract + the content rewrite
-  (no ``help(`` / ``inspect_model`` substrings; intro lists the new ids),
-* ``seed_help_memories`` idempotency (upsert-always, skip-if-unchanged,
-  ``created_at`` preserved, embedding fan-out on change only),
-* that seeded help never pollutes a model's Learnings section
-  (empty ``entities``),
-* retrieval via ``InspectService`` + surfacing via ``SearchService``,
-* the MCP wiring (no ``help`` tool; instructions point at
-  ``memory:help.intro``),
-* CLI seeding on ``inspect`` / ``search`` (query) only.
-"""
+"""Help topics seed as predefined memories and are read via inspect/search.
+Pins: content contract, seeding idempotency + retired-row deletion, Learnings
+isolation (empty entities), retrieval/surfacing, MCP wiring, CLI seeding."""
 
 from __future__ import annotations
 
@@ -45,22 +30,12 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 EXPECTED_HELP_IDS = (
     "help.intro",
-    "help.queries",
-    "help.formulas",
-    "help.aggregations",
-    "help.transforms",
-    "help.time",
-    "help.filters",
-    "help.joins",
     "help.models",
-    "help.extending",
     "help.workflow",
 )
 
 
-# ---------------------------------------------------------------------------
-# fixtures
-# ---------------------------------------------------------------------------
+# --- fixtures ---
 
 
 @pytest.fixture
@@ -85,9 +60,7 @@ async def storage() -> AsyncIterator[YAMLStorage]:
         yield s
 
 
-# ---------------------------------------------------------------------------
-# HELP_TOPICS content contract
-# ---------------------------------------------------------------------------
+# --- HELP_TOPICS content contract ---
 
 
 class TestHelpTopicsContent:
@@ -103,9 +76,7 @@ class TestHelpTopicsContent:
             assert len(t.description) <= 500, f"{t.id} description too long"
 
     def test_no_stale_help_or_inspect_model_references(self) -> None:
-        # Content rewrite (Codex #10): the migrated bodies must not tell an
-        # agent to call the removed help() tool or the deprecated
-        # inspect_model tool.
+        # Bodies must not point at the removed help() tool or deprecated inspect_model.
         for t in HELP_TOPICS:
             assert "help(" not in t.learning, f"{t.id} still references help("
             assert "inspect_model" not in t.learning, (
@@ -114,16 +85,25 @@ class TestHelpTopicsContent:
 
     def test_intro_lists_deepdive_ids(self) -> None:
         intro = next(t for t in HELP_TOPICS if t.id == "help.intro")
-        assert "memory:help.queries" in intro.learning
+        assert "memory:help.models" in intro.learning
         assert "memory:help.workflow" in intro.learning
 
 
-# ---------------------------------------------------------------------------
-# seeding
-# ---------------------------------------------------------------------------
+# --- seeding ---
 
 
 class TestSeeding:
+    async def test_seed_deletes_retired_topic_rows(self, storage: YAMLStorage) -> None:
+        # A warm store still carrying a retired built-in body loses it on seed;
+        # host-namespaced help ids are never touched.
+        await storage.save_memory(
+            id="help.joins", learning="stale retired body", entities=[],
+        )
+        await storage.save_memory(id="help.motley.x", learning="host", entities=[])
+        await seed_help_memories(storage)
+        assert await storage.get_memory_row("help.joins") is None
+        assert await storage.get_memory_row("help.motley.x") is not None
+
     async def test_fresh_seed_writes_all_topics(self, storage: YAMLStorage) -> None:
         written = await seed_help_memories(storage)
         assert written == len(EXPECTED_HELP_IDS)
@@ -189,9 +169,7 @@ class TestSeeding:
         assert calls == []
 
 
-# ---------------------------------------------------------------------------
-# no Learnings-section pollution
-# ---------------------------------------------------------------------------
+# --- no Learnings-section pollution ---
 
 
 class TestNoLearningsPollution:
@@ -209,9 +187,7 @@ class TestNoLearningsPollution:
         assert intro.learning[:40] not in out
 
 
-# ---------------------------------------------------------------------------
-# retrieval via inspect
-# ---------------------------------------------------------------------------
+# --- retrieval via inspect ---
 
 
 class TestInspectRetrieval:
@@ -221,27 +197,25 @@ class TestInspectRetrieval:
         await seed_help_memories(storage)
         svc = InspectService(storage=storage)
         out = await svc.inspect(
-            reference="memory:help.transforms", entity_type="memory",
+            reference="memory:help.models", entity_type="memory",
             compact=True,
         )
-        topic = next(t for t in HELP_TOPICS if t.id == "help.transforms")
+        topic = next(t for t in HELP_TOPICS if t.id == "help.models")
         assert topic.description in out
 
     async def test_full_returns_learning(self, storage: YAMLStorage) -> None:
         await seed_help_memories(storage)
         svc = InspectService(storage=storage)
         out = await svc.inspect(
-            reference="memory:help.transforms", entity_type="memory",
+            reference="memory:help.models", entity_type="memory",
             compact=False,
         )
-        topic = next(t for t in HELP_TOPICS if t.id == "help.transforms")
+        topic = next(t for t in HELP_TOPICS if t.id == "help.models")
         # A distinctive chunk of the learning body is present verbatim.
         assert topic.learning.strip()[:60] in out
 
 
-# ---------------------------------------------------------------------------
-# surfacing via search
-# ---------------------------------------------------------------------------
+# --- surfacing via search ---
 
 
 class TestSearchSurfacing:
@@ -253,11 +227,11 @@ class TestSearchSurfacing:
         # tantivy ranking / embedding availability.
         await seed_help_memories(storage)
         svc = SearchService(storage=storage)
-        resp = await svc.search(entities=["memory:help.transforms"],
+        resp = await svc.search(entities=["memory:help.models"],
                                 max_results=20)
         memory_hits = [h for h in resp.results if h.kind == "memory"]
-        assert any("help.transforms" in h.id for h in memory_hits), (
-            f"help.transforms not surfaced; got {[h.id for h in memory_hits]}"
+        assert any("help.models" in h.id for h in memory_hits), (
+            f"help.models not surfaced; got {[h.id for h in memory_hits]}"
         )
 
     async def test_concept_question_surfaces_help_memory(
@@ -267,17 +241,15 @@ class TestSearchSurfacing:
         # surfaces the relevant help topic (tantivy full-text over learning).
         await seed_help_memories(storage)
         svc = SearchService(storage=storage)
-        resp = await svc.search(question="cumsum time_shift transform",
+        resp = await svc.search(question="declare joins symmetric diamond",
                                 max_results=20)
         memory_hits = [h for h in resp.results if h.kind == "memory"]
-        assert any("help.transforms" in h.id for h in memory_hits), (
-            f"help.transforms not surfaced; got {[h.id for h in memory_hits]}"
+        assert any("help.models" in h.id for h in memory_hits), (
+            f"help.models not surfaced; got {[h.id for h in memory_hits]}"
         )
 
 
-# ---------------------------------------------------------------------------
-# MCP wiring
-# ---------------------------------------------------------------------------
+# --- MCP wiring ---
 
 
 class TestMcpWiring:
@@ -304,9 +276,7 @@ class TestMcpWiring:
         assert (await storage.get_memory("help.intro")).learning
 
 
-# ---------------------------------------------------------------------------
-# CLI seeding (inspect + search-query only)
-# ---------------------------------------------------------------------------
+# --- CLI seeding (inspect + search-query only) ---
 
 
 class TestCliSeeding:
@@ -378,9 +348,7 @@ class TestCliSeeding:
         assert calls == []  # seed never fired on the refresh-samples path
 
 
-# ---------------------------------------------------------------------------
-# CLI parser: help subcommand removed, epilog points to the replacement
-# ---------------------------------------------------------------------------
+# --- CLI parser: help subcommand removed, epilog points to the replacement ---
 
 
 class TestCliParser:
@@ -405,9 +373,7 @@ class TestHelpPackageRemoved:
         assert importlib.util.find_spec("slayer.help") is None
 
 
-# ---------------------------------------------------------------------------
-# REST wiring — create_app seeds exactly once
-# ---------------------------------------------------------------------------
+# --- REST wiring — create_app seeds exactly once ---
 
 
 class TestRestWiring:
@@ -462,9 +428,7 @@ async def base_dir_storage() -> AsyncIterator[YAMLStorage]:
         yield YAMLStorage(base_dir=os.path.join(tmpdir, "store"))
 
 
-# ---------------------------------------------------------------------------
-# docs no longer advertise the removed help() tool / subcommand
-# ---------------------------------------------------------------------------
+# --- docs no longer advertise the removed help() tool / subcommand ---
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -486,17 +450,7 @@ class TestDocsUpdated:
         assert "memory:help.intro" in doc
 
 
-# ---------------------------------------------------------------------------
-# DEV-1669: help-seeding must never crash server construction
-#
-# ``create_mcp_server`` used to run ``run_sync(seed_help_memories(storage))``
-# unconditionally at construction, crashing any metadata-only build over a
-# ``None`` / non-backend storage, and surfacing ``RuntimeError: no running
-# event loop`` from ``run_sync`` in nested async contexts. Seeding is now
-# guarded (skipped for ``None`` / non-``StorageBackend`` storage) and
-# best-effort (a genuine seed failure over a real backend logs a warning and
-# lets construction proceed).
-# ---------------------------------------------------------------------------
+# --- help-seeding must never crash server construction (guarded + best-effort) ---
 
 
 class TestSeedGuard:
@@ -664,11 +618,10 @@ class TestHostExtensibility:
         topics = load_help_topics(context={"product": "Motley"})
         blob = "".join(t.learning + t.description for t in topics)
         assert "{{" not in blob
-        # The host's product name reaches a templatized body. (The topics a host
-        # is expected to override are not templatized, so they keep saying SLayer.)
-        joins = next(t for t in topics if t.id == "help.joins")
-        assert "Motley" in joins.learning
-        assert "SLayer" not in joins.learning
+        # The host's product name reaches a templatized body.
+        models = next(t for t in topics if t.id == "help.models")
+        assert "Motley" in models.learning
+        assert "SLayer" not in models.learning
         # Code identifiers are never rewritten by the product token.
         assert "SlayerQuery" in blob
 
