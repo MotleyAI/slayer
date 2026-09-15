@@ -133,9 +133,13 @@ elaborate→compile and `query_engine.py` orchestrates.
    `StageSchema` downstream stages bind against; the two scope kinds
    (`ModelScope`: dots walk joins; `StageSchema`: flat names only) are distinct
    types, never a flag. [review]
-6. **Phase is a property of the value**: WHERE/HAVING/post routing derives from
-   the max phase of the slots a filter references, never from text analysis.
-   [review]
+6. **Phase and stage are properties of the value**: phase (ROW / AGGREGATE /
+   POST — when the value exists relative to aggregation) is intrinsic to the
+   term; stage (the relation of the emitted statement that computes the value)
+   is planner-assigned, exactly one per value, and a plan referencing a later
+   stage is rejected at plan time. Placement derives from stage and mask
+   typing, never from text or key shape at render time.
+   [enforced: test:tests/test_dev1800_materialisation_stage.py]
 7. **One slack pass, typed warnings**: slack-but-unambiguous query shapes are
    rewritten once at the pipeline entry; every rewrite surfaces as a structured
    warning on the response; a slack rule retires by promotion to first-class

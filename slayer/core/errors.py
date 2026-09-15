@@ -659,6 +659,15 @@ class PopulationInferenceError(SlayerError, ValueError):
         ))
 
 
+class MaterialisationStageError(SlayerError, ValueError):
+    """A ``PlannedQuery`` violates the materialisation-stage invariant: a value is unstaged, or references a value staged later than itself (it would render before its inputs are materialised). Raised at plan time before any SQL is generated."""
+
+    def __init__(self, summary: str) -> None:
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__, summary=summary,
+        ))
+
+
 class LegacyDunderAliasError(SlayerError, ValueError):
     """A ``__``-delimited Mode-A join qualifier that is no longer accepted (``.`` is now the only chain separator) — the legacy split-alias spelling."""
 

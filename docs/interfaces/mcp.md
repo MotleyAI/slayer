@@ -164,15 +164,8 @@ Available topics and what they cover (content lives in `slayer/memories/help_con
 
 | Topic id | Covers |
 |----------|--------|
-| `memory:help.queries` | Anatomy of a [query](../concepts/queries.md); evaluation order; dimensions vs [time dimensions](../concepts/queries.md#timedimension) on the same column; `main_time_dimension` disambiguation |
-| `memory:help.formulas` | The [formula mini-language](../concepts/formulas.md) shared by `measures` and `filters`; colon syntax; arithmetic; nesting |
-| `memory:help.aggregations` | Built-in and [custom aggregations](../examples/07_aggregations/aggregations.md); `first`/`last` time-column resolution; `allowed_aggregations` |
-| `memory:help.transforms` | `cumsum`, `time_shift`, `change`, `lag`, the rank family (`rank`/`percent_rank`/`dense_rank`/`ntile`, optional `partition_by=`), `last()` — trade-offs and nesting ([time post](../examples/04_time/time.md)) |
-| `memory:help.time` | Granularities, `date_range`, `whole_periods_only`, the three meanings of "last" |
-| `memory:help.filters` | Operators; auto-routing to HAVING / post-filter; filtered measures; [model-level filters](../concepts/models.md#model-filters) |
-| `memory:help.joins` | Dot syntax and the `__` alias convention; cross-model measures and diamond joins ([joins post](../examples/05_joins/joins.md), [joined measures](../examples/05_joined_measures/joined_measures.md)) |
-| `memory:help.models` | Source modes (`sql_table`, `sql`, `source_queries`); query-backed models, `query_variables`, cached `backing_query_sql`; result column naming; `default_time_dimension`; hidden models ([models ref](../concepts/models.md)) |
-| `memory:help.extending` | `ModelExtension`, query lists, `create_model_from_query` (with `variables=`), run-by-name via `query` tool ([multistage post](../examples/06_multistage_queries/multistage_queries.md)) |
+| `memory:help.intro` | What SLayer is, the judgment calls queries require, and the deep-dive topics (the query language itself is documented on the `query` tool and its schema) |
+| `memory:help.models` | Authoring [models](../concepts/models.md): columns, saved measures, custom aggregations, joins, model filters, `default_time_dimension`, hidden models, result column naming, query-backed models |
 | `memory:help.workflow` | Tool-chaining playbook, query-iteration tips, common-error decoder |
 
 ## Typical Agent Workflows

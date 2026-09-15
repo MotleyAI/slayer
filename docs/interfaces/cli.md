@@ -278,18 +278,14 @@ SLayer's conceptual help ships as a predefined set of **help memories**
 find the relevant one with `search`:
 
 ```bash
-slayer inspect memory:help.intro --type memory        # overview + the query shape
-slayer inspect memory:help.transforms --type memory   # cumsum, time_shift, lag/lead trade-offs
-slayer search --question "how do transforms work"     # surface the relevant topic
+slayer inspect memory:help.intro --type memory        # overview + judgment calls
+slayer inspect memory:help.models --type memory       # authoring models, joins, result keys
+slayer search --question "how do joins resolve"       # surface the relevant topic
 ```
 
-`memory:help.intro` lists the deep-dive topics (`memory:help.queries`,
-`memory:help.formulas`, `memory:help.aggregations`, `memory:help.transforms`,
-`memory:help.time`, `memory:help.filters`, `memory:help.joins`,
-`memory:help.models`, `memory:help.extending`, `memory:help.workflow`). The
-topics complement the schema/reference pages: they cover how concepts compose
-(query evaluation order, transform trade-offs, cross-model measures, the three
-meanings of "last") rather than restating field-by-field schemas. See the
-corresponding concept docs for full treatments:
+`memory:help.intro` lists the deep-dive topics (`memory:help.models`,
+`memory:help.workflow`); the query language itself is documented on the MCP
+`query` tool and its schema. See the corresponding concept docs for full
+treatments:
 [queries](../concepts/queries.md), [formulas](../concepts/formulas.md),
 [models](../concepts/models.md), [ingestion](../concepts/ingestion.md).

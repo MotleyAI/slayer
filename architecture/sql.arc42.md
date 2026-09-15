@@ -81,11 +81,11 @@ flowchart TD
     as a producer (a plan-shaped CTE rooted where its rows live), attached
     back by a null-safe LEFT JOIN on its complete grain and substituted into
     expressions by structural identity, never text. [review]
-11. **One flat WITH**: every statement renders through one pipeline
-    (base → aggregate → combined → steps → post) with one allocator; a
-    producer's internal WITH hoists to the top level — a WITH never nests
-    inside a CTE definition; fusion of adjacent phases is an emission
-    decision, never semantic. [review]
+11. **One flat WITH, partitioned by stage**: every statement renders through
+    one pipeline with one allocator, each value materialising in the relation
+    its planner-assigned stage names; a producer's internal WITH hoists to the
+    top level — a WITH never nests inside a CTE definition; fusion of adjacent
+    phases is an emission decision, never semantic. [review]
 12. **Attach is cardinality-neutral**: attaching a producer never changes the
     host row count or any other column's value.
     [enforced: test:tests/test_dev1837_dimension_measure_matrix.py]

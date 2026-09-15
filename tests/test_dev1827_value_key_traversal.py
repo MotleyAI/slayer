@@ -10,7 +10,6 @@ reports one clear collection error while they do not exist yet.
 from __future__ import annotations
 
 from decimal import Decimal
-from types import SimpleNamespace
 from typing import get_args
 
 import pytest
@@ -28,8 +27,7 @@ from slayer.engine.compile.projection import (
 )
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects import get_dialect
-from slayer.sql.generator import SQLGenerator, _LoweredFilter
-from slayer.ir.bound import BoundExpr
+from slayer.sql.generator import SQLGenerator
 from slayer.sql.render.value_expr import (
     RenderContext,
     contains_aggregate,
@@ -446,38 +444,10 @@ class TestKindDispatchVisitorsRaise:
         assert "'x'" in sql
 
 
-# ---------------------------------------------------------------------------
-# Aux-slot collection routes through children() (task 4.1)
-# ---------------------------------------------------------------------------
-def _aux_slot_ids(tree, *, slot_id_by_key=None):
-    fp = _LoweredFilter.model_construct(
-        id="f1", phase=Phase.AGGREGATE,
-        expression=BoundExpr.model_construct(value_key=tree),
-    )
-    planned = SimpleNamespace(transform_layers=[], order=[])
-    return SQLGenerator._collect_base_aux_slot_ids(
-        planned_query=planned,
-        slot_id_by_key=slot_id_by_key or {AGG: "s1"},
-        slots_by_id={},
-        lowered_filters=[fp],
-    )
-
-
-class TestCollectBaseAuxSlotIds:
-    def test_dummy_wrapped_aggregate_is_collected(self) -> None:
-        assert _aux_slot_ids(DummyKey(child=AGG)) == ["s1"]
-
-    def test_opaque_dummy_raises(self) -> None:
-        key = DummyOpaqueKey()
-        with pytest.raises(NotImplementedError):
-            _aux_slot_ids(key)
-
-    def test_time_trunc_is_the_slot_not_its_column(self) -> None:
-        # B1: the widened traversal must not surface the wrapped raw column
-        # as an extra base projection.
-        tree = ArithmeticKey(op=">", operands=(TT, LiteralKey(value="a")))
-        ids = _aux_slot_ids(tree, slot_id_by_key={TT: "t1", TS: "c1"})
-        assert ids == ["t1"]
+# Base-aux slot collection retired in DEV-1800: the slot-dep traversal contract
+# it exercised (aggregate terminal, TimeTruncKey is the slot, opaque kind raises)
+# is now owned by ``_iter_slot_deps`` and pinned in
+# ``tests/test_dev1800_materialisation_stage.py::TestTraversalContract``.
 
 
 # ---------------------------------------------------------------------------
