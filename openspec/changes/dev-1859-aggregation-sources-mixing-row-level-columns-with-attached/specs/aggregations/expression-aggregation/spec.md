@@ -11,7 +11,14 @@ attached values is a re-aggregation and SHALL be accepted (per
 `queries/partitioned-aggregates` › Re-aggregation consumes attached operands as
 datasets). An aggregation source mixing row-level references with attached
 values is a row-grain aggregation and SHALL be accepted (per
-`queries/semantics` › Row-grain aggregation sources).
+`queries/semantics` › Row-grain aggregation sources). An attached
+(aggregate-valued) parameter on an aggregation whose source is row-level SHALL
+be accepted when the aggregation's operating grain determines it (per
+`queries/partitioned-aggregates` › Attached parameters on row-level sources).
+Whether an aggregation runs over rows or over an operand dataset's cells is
+decided by its source alone; every attached input, in the source or in a
+parameter, is then attached by one mechanism — into the input relation for a
+row-level source, as a constituent of the operand dataset for an attached one.
 
 #### Scenario: Cross-model expression rejected
 - **WHEN** a measure is written `sum(amount - customers.discount)`
@@ -36,3 +43,11 @@ values is a row-grain aggregation and SHALL be accepted (per
   `sum(quantity * avg(unit_price, partition_by=product))`
 - **THEN** it is accepted and compiles at row grain — the attached value
   broadcast per base row — not rejected by the expression gate
+
+#### Scenario: Attached parameter on a row-level source accepted
+- **WHEN** a measure is written
+  `customers.spend:weighted_avg(weight=sum(amount, partition_by=customers.regions.name))`
+  rooted at `orders` under `to_many_handling: "associate"`
+- **THEN** it is accepted and compiles with the parameter's value attached into
+  the aggregation's input relation — never the attached-parameter rejection —
+  and the same aggregation with a row-level parameter is unaffected

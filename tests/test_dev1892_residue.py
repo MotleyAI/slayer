@@ -1,14 +1,13 @@
 """DEV-1892 task 1.2 — the ill-typed residue: a parameter the home dataset's
 grain does not determine fails at plan time with one ref-free typed error naming
-the parameter, the grain, and the remedy; an attached parameter on a row-level
-source is a named typed error; the REST surface maps the residue to 400. All
-assert the NEW one-rule contract, so they fail against today's three gates
-(whose messages name neither the grain nor partition_by).
+the parameter, the grain, and the remedy; the REST surface maps the residue to
+400. ``TestAttachedParameterOnRowLevelSource`` was re-pointed by DEV-1859 leg C
+(consented 2026-09-15): that shape is now legal.
 
 Spec: queries/semantics — "Parameter not determined by the grain fails closed";
 queries/partitioned-aggregates — "Column-reference outer parameter fails
 closed"; aggregations/expression-aggregation — "Attached parameter on a
-row-level source rejected".
+row-level source accepted".
 """
 
 from __future__ import annotations
@@ -37,7 +36,6 @@ from tests._dev1847_fixtures import (
 from tests._dev1892_fixtures import (
     ModelMeasure,
     assert_grain_residue,
-    assert_ref_free,
 )
 
 _ATTACHED_ON_ROW = (
@@ -96,20 +94,25 @@ class TestResidueFiresAtPlanTime:
 
 
 class TestAttachedParameterOnRowLevelSource:
-    """An aggregate-valued parameter on a row-level source is a typed error in
-    every mode — the parameter would need the attached value on the aggregation's
-    own input rows."""
+    """DEV-1859 re-point (consented 2026-09-15): leg C legalizes an attached
+    parameter on a row-level source — associate and default modes execute (the
+    parameter's producer row-attaches into the input relation), error mode
+    refuses the unattributable dimension, never a parameter error. Executed
+    oracles live in ``test_dev1859_attached_param_exec.py``."""
 
-    @pytest.mark.parametrize("make_q", [assoc_q, bcast_q, error_q])
-    async def test_rejected_in_every_mode(self, assoc_engine, make_q):
-        query = make_q(dimensions=["status"],
-                       measures=[ModelMeasure(formula=_ATTACHED_ON_ROW, name="w")])
+    @pytest.mark.parametrize("make_q", [assoc_q, bcast_q])
+    async def test_executes_in_associate_and_default(self, assoc_engine, make_q):
+        resp = await assoc_engine.execute(make_q(
+            dimensions=["status"],
+            measures=[ModelMeasure(formula=_ATTACHED_ON_ROW, name="w")]))
+        assert {r["orders.status"] for r in resp.data} == {"ok", "new"}
+
+    async def test_error_mode_refuses_the_dimension(self, assoc_engine):
         with pytest.raises(SlayerError) as ei:
-            await assoc_engine.execute(query)
-        msg = str(ei.value)
-        assert "weight" in msg  # names the parameter
-        assert "row" in msg.lower()  # the remedy: use a row-level parameter
-        assert_ref_free(msg)
+            await assoc_engine.execute(error_q(
+                dimensions=["status"],
+                measures=[ModelMeasure(formula=_ATTACHED_ON_ROW, name="w")]))
+        assert "status" in str(ei.value)
 
 
 class TestRestSurfaceResidue:

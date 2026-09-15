@@ -1,0 +1,156 @@
+{
+  "mixed/headline::bigquery": "WITH _cm_unit_price_avg_partition_by_product AS (\n  SELECT\n    _stage_inner.`sales___product` AS `product`,\n    _stage_inner.`sales___unit_price_avg_partition_by_product` AS `unit_price_avg_partition_by_product`\n  FROM (\n    SELECT\n      sales.product AS `sales___product`,\n      CAST(AVG(sales.unit_price) AS FLOAT64) AS `sales___unit_price_avg_partition_by_product`\n    FROM sales AS sales\n    GROUP BY\n      sales.product\n  ) AS _stage_inner\n)\nSELECT\n  sales.region AS `sales___region`,\n  SUM(\n    sales.quantity * _cm_unit_price_avg_partition_by_product.`unit_price_avg_partition_by_product`\n  ) AS `sales___m`\nFROM sales AS sales\nLEFT JOIN _cm_unit_price_avg_partition_by_product\n  ON sales.product IS NOT DISTINCT FROM _cm_unit_price_avg_partition_by_product.`product`\nGROUP BY\n  sales.region",
+  "mixed/headline::duckdb": "WITH _cm_unit_price_avg_partition_by_product AS (\n  SELECT\n    _stage_inner.\"sales.product\" AS \"product\",\n    _stage_inner.\"sales.unit_price_avg_partition_by_product\" AS \"unit_price_avg_partition_by_product\"\n  FROM (\n    SELECT\n      sales.product AS \"sales.product\",\n      CAST(AVG(sales.unit_price) AS DOUBLE) AS \"sales.unit_price_avg_partition_by_product\"\n    FROM sales AS sales\n    GROUP BY\n      sales.product\n  ) AS _stage_inner\n)\nSELECT\n  sales.region AS \"sales.region\",\n  SUM(\n    sales.quantity * _cm_unit_price_avg_partition_by_product.\"unit_price_avg_partition_by_product\"\n  ) AS \"sales.m\"\nFROM sales AS sales\nLEFT JOIN _cm_unit_price_avg_partition_by_product\n  ON sales.product IS NOT DISTINCT FROM _cm_unit_price_avg_partition_by_product.\"product\"\nGROUP BY\n  sales.region",
+  "mixed/headline::mysql": "WITH _cm_unit_price_avg_partition_by_product AS (\n  SELECT\n    _stage_inner.`sales.product` AS `product`,\n    _stage_inner.`sales.unit_price_avg_partition_by_product` AS `unit_price_avg_partition_by_product`\n  FROM (\n    SELECT\n      sales.product AS `sales.product`,\n      CAST(AVG(sales.unit_price) AS DOUBLE) AS `sales.unit_price_avg_partition_by_product`\n    FROM sales AS sales\n    GROUP BY\n      sales.product\n  ) AS _stage_inner\n)\nSELECT\n  sales.region AS `sales.region`,\n  SUM(\n    sales.quantity * _cm_unit_price_avg_partition_by_product.`unit_price_avg_partition_by_product`\n  ) AS `sales.m`\nFROM sales AS sales\nLEFT JOIN _cm_unit_price_avg_partition_by_product\n  ON sales.product <=> _cm_unit_price_avg_partition_by_product.`product`\nGROUP BY\n  sales.region",
+  "mixed/headline::postgres": "WITH _cm_unit_price_avg_partition_by_product AS (\n  SELECT\n    _stage_inner.\"sales.product\" AS \"product\",\n    _stage_inner.\"sales.unit_price_avg_partition_by_product\" AS \"unit_price_avg_partition_by_product\"\n  FROM (\n    SELECT\n      sales.product AS \"sales.product\",\n      CAST(AVG(sales.unit_price) AS DOUBLE PRECISION) AS \"sales.unit_price_avg_partition_by_product\"\n    FROM sales AS sales\n    GROUP BY\n      sales.product\n  ) AS _stage_inner\n)\nSELECT\n  sales.region AS \"sales.region\",\n  SUM(\n    sales.quantity * _cm_unit_price_avg_partition_by_product.\"unit_price_avg_partition_by_product\"\n  ) AS \"sales.m\"\nFROM sales AS sales\nLEFT JOIN _cm_unit_price_avg_partition_by_product\n  ON sales.product IS NOT DISTINCT FROM _cm_unit_price_avg_partition_by_product.\"product\"\nGROUP BY\n  sales.region",
+  "mixed/headline::snowflake": "WITH _cm_unit_price_avg_partition_by_product AS (\n  SELECT\n    _stage_inner.\"sales.product\" AS \"product\",\n    _stage_inner.\"sales.unit_price_avg_partition_by_product\" AS \"unit_price_avg_partition_by_product\"\n  FROM (\n    SELECT\n      sales.product AS \"sales.product\",\n      CAST(AVG(sales.unit_price) AS DOUBLE) AS \"sales.unit_price_avg_partition_by_product\"\n    FROM sales AS sales\n    GROUP BY\n      sales.product\n  ) AS _stage_inner\n)\nSELECT\n  sales.region AS \"sales.region\",\n  SUM(\n    sales.quantity * _cm_unit_price_avg_partition_by_product.\"unit_price_avg_partition_by_product\"\n  ) AS \"sales.m\"\nFROM sales AS sales\nLEFT JOIN _cm_unit_price_avg_partition_by_product\n  ON sales.product IS NOT DISTINCT FROM _cm_unit_price_avg_partition_by_product.\"product\"\nGROUP BY\n  sales.region",
+  "mixed/headline::sqlite": "WITH _cm_unit_price_avg_partition_by_product AS (\n  SELECT\n    _stage_inner.\"sales.product\" AS \"product\",\n    _stage_inner.\"sales.unit_price_avg_partition_by_product\" AS \"unit_price_avg_partition_by_product\"\n  FROM (\n    SELECT\n      sales.product AS \"sales.product\",\n      CAST(AVG(sales.unit_price) AS REAL) AS \"sales.unit_price_avg_partition_by_product\"\n    FROM sales AS sales\n    GROUP BY\n      sales.product\n  ) AS _stage_inner\n)\nSELECT\n  sales.region AS \"sales.region\",\n  SUM(\n    sales.quantity * _cm_unit_price_avg_partition_by_product.\"unit_price_avg_partition_by_product\"\n  ) AS \"sales.m\"\nFROM sales AS sales\nLEFT JOIN _cm_unit_price_avg_partition_by_product\n  ON sales.product IS _cm_unit_price_avg_partition_by_product.\"product\"\nGROUP BY\n  sales.region",
+  "mixed/headline::tsql": "WITH _cm_unit_price_avg_partition_by_product AS (\n  SELECT\n    _stage_inner.[sales___product] AS [product],\n    _stage_inner.[sales___unit_price_avg_partition_by_product] AS [unit_price_avg_partition_by_product]\n  FROM (\n    SELECT\n      sales.product AS [sales___product],\n      CAST(AVG(sales.unit_price) AS FLOAT) AS [sales___unit_price_avg_partition_by_product]\n    FROM sales AS sales\n    GROUP BY\n      sales.product\n  ) AS _stage_inner\n)\nSELECT\n  sales.region AS [sales___region],\n  SUM(\n    sales.quantity * _cm_unit_price_avg_partition_by_product.[unit_price_avg_partition_by_product]\n  ) AS [sales___m]\nFROM sales AS sales\nLEFT JOIN _cm_unit_price_avg_partition_by_product\n  ON (\n    sales.product = _cm_unit_price_avg_partition_by_product.[product]\n    OR (\n      sales.product IS NULL\n      AND _cm_unit_price_avg_partition_by_product.[product] IS NULL\n    )\n  )\nGROUP BY\n  sales.region",
+  "mixed/outer_partition::bigquery": "WITH _base AS (\n  SELECT\n    sales.region AS `sales___region`,\n    sales.product AS `sales___product`\n  FROM sales AS sales\n  GROUP BY\n    sales.region,\n    sales.product\n), _cm_unit_price_avg_partition_by_product AS (\n  SELECT\n    `_stage_inner`.`sales___product` AS `product`,\n    `_stage_inner`.`sales___unit_price_avg_partition_by_product` AS `unit_price_avg_partition_by_product`\n  FROM (\n    SELECT\n      sales.product AS `sales___product`,\n      CAST(AVG(sales.unit_price) AS FLOAT64) AS `sales___unit_price_avg_partition_by_product`\n    FROM sales AS sales\n    GROUP BY\n      sales.product\n  ) AS _stage_inner\n), _cm_sales__quantity_source_columnkey_pa_fbabe4fe_product_sum_partition_by_region AS (\n  SELECT\n    sales.region AS `sales___region`,\n    SUM(\n      sales.quantity * _cm_unit_price_avg_partition_by_product.`unit_price_avg_partition_by_product`\n    ) AS `sales___m`\n  FROM sales AS sales\n  LEFT JOIN _cm_unit_price_avg_partition_by_product\n    ON sales.product IS NOT DISTINCT FROM _cm_unit_price_avg_partition_by_product.`product`\n  GROUP BY\n    sales.region\n)\nSELECT\n  _base.`sales___region`,\n  _base.`sales___product`,\n  _cm_sales__quantity_source_columnkey_pa_fbabe4fe_product_sum_partition_by_region.`sales___m`\nFROM _base\nLEFT JOIN _cm_sales__quantity_source_columnkey_pa_fbabe4fe_product_sum_partition_by_region\n  ON _base.`sales___region` IS NOT DISTINCT FROM _cm_sales__quantity_source_columnkey_pa_fbabe4fe_product_sum_partition_by_region.`sales___region`",
+  "mixed/outer_partition::duckdb": "WITH _base AS (\n  SELECT\n    sales.region AS \"sales.region\",\n    sales.product AS \"sales.product\"\n  FROM sales AS sales\n  GROUP BY\n    sales.region,\n    sales.product\n), _cm_unit_price_avg_partition_by_product AS (\n  SELECT\n    _stage_inner.\"sales.product\" AS \"product\",\n    _stage_inner.\"sales.unit_price_avg_partition_by_product\" AS \"unit_price_avg_partition_by_product\"\n  FROM (\n    SELECT\n      sales.product AS \"sales.product\",\n      CAST(AVG(sales.unit_price) AS DOUBLE) AS \"sales.unit_price_avg_partition_by_product\"\n    FROM sales AS sales\n    GROUP BY\n      sales.product\n  ) AS _stage_inner\n), _cm_sales__quantity_source_columnkey_pa_fbabe4fe_product_sum_partition_by_region AS (\n  SELECT\n    sales.region AS \"sales.region\",\n    SUM(\n      sales.quantity * _cm_unit_price_avg_partition_by_product.\"unit_price_avg_partition_by_product\"\n    ) AS \"sales.m\"\n  FROM sales AS sales\n  LEFT JOIN _cm_unit_price_avg_partition_by_product\n    ON sales.product IS NOT DISTINCT FROM _cm_unit_price_avg_partition_by_product.\"product\"\n  GROUP BY\n    sales.region\n)\nSELECT\n  _base.\"sales.region\",\n  _base.\"sales.product\",\n  _cm_sales__quantity_source_columnkey_pa_fbabe4fe_product_sum_partition_by_region.\"sales.m\"\nFROM _base\nLEFT JOIN _cm_sales__quantity_source_columnkey_pa_fbabe4fe_product_sum_partition_by_region\n  ON _base.\"sales.region\" IS NOT DISTINCT FROM _cm_sales__quantity_source_columnkey_pa_fbabe4fe_product_sum_partition_by_region.\"sales.region\"",
+  "mixed/outer_partition::mysql": "WITH _base AS (\n  SELECT\n    sales.region AS `sales.region`,\n    sales.product AS `sales.product`\n  FROM sales AS sales\n  GROUP BY\n    sales.region,\n    sales.product\n), _cm_unit_price_avg_partition_by_product AS (\n  SELECT\n    _stage_inner.`sales.product` AS `product`,\n    _stage_inner.`sales.unit_price_avg_partition_by_product` AS `unit_price_avg_partition_by_product`\n  FROM (\n    SELECT\n      sales.product AS `sales.product`,\n      CAST(AVG(sales.unit_price) AS DOUBLE) AS `sales.unit_price_avg_partition_by_product`\n    FROM sales AS sales\n    GROUP BY\n      sales.product\n  ) AS _stage_inner\n), _cm_sales__quantity_source_d17fcbdd_uct_sum_partition_by_region AS (\n  SELECT\n    sales.region AS `sales.region`,\n    SUM(\n      sales.quantity * _cm_unit_price_avg_partition_by_product.`unit_price_avg_partition_by_product`\n    ) AS `sales.m`\n  FROM sales AS sales\n  LEFT JOIN _cm_unit_price_avg_partition_by_product\n    ON sales.product <=> _cm_unit_price_avg_partition_by_product.`product`\n  GROUP BY\n    sales.region\n)\nSELECT\n  _base.`sales.region`,\n  _base.`sales.product`,\n  _cm_sales__quantity_source_d17fcbdd_uct_sum_partition_by_region.`sales.m`\nFROM _base\nLEFT JOIN _cm_sales__quantity_source_d17fcbdd_uct_sum_partition_by_region\n  ON _base.`sales.region` <=> _cm_sales__quantity_source_d17fcbdd_uct_sum_partition_by_region.`sales.region`",
+  "mixed/outer_partition::postgres": "WITH _base AS (\n  SELECT\n    sales.region AS \"sales.region\",\n    sales.product AS \"sales.product\"\n  FROM sales AS sales\n  GROUP BY\n    sales.region,\n    sales.product\n), _cm_unit_price_avg_partition_by_product AS (\n  SELECT\n    _stage_inner.\"sales.product\" AS \"product\",\n    _stage_inner.\"sales.unit_price_avg_partition_by_product\" AS \"unit_price_avg_partition_by_product\"\n  FROM (\n    SELECT\n      sales.product AS \"sales.product\",\n      CAST(AVG(sales.unit_price) AS DOUBLE PRECISION) AS \"sales.unit_price_avg_partition_by_product\"\n    FROM sales AS sales\n    GROUP BY\n      sales.product\n  ) AS _stage_inner\n), _cm_sales__quantity_source_d17fcbdd_ct_sum_partition_by_region AS (\n  SELECT\n    sales.region AS \"sales.region\",\n    SUM(\n      sales.quantity * _cm_unit_price_avg_partition_by_product.\"unit_price_avg_partition_by_product\"\n    ) AS \"sales.m\"\n  FROM sales AS sales\n  LEFT JOIN _cm_unit_price_avg_partition_by_product\n    ON sales.product IS NOT DISTINCT FROM _cm_unit_price_avg_partition_by_product.\"product\"\n  GROUP BY\n    sales.region\n)\nSELECT\n  _base.\"sales.region\",\n  _base.\"sales.product\",\n  _cm_sales__quantity_source_d17fcbdd_ct_sum_partition_by_region.\"sales.m\"\nFROM _base\nLEFT JOIN _cm_sales__quantity_source_d17fcbdd_ct_sum_partition_by_region\n  ON _base.\"sales.region\" IS NOT DISTINCT FROM _cm_sales__quantity_source_d17fcbdd_ct_sum_partition_by_region.\"sales.region\"",
+  "mixed/outer_partition::snowflake": "WITH _base AS (\n  SELECT\n    sales.region AS \"sales.region\",\n    sales.product AS \"sales.product\"\n  FROM sales AS sales\n  GROUP BY\n    sales.region,\n    sales.product\n), _cm_unit_price_avg_partition_by_product AS (\n  SELECT\n    _stage_inner.\"sales.product\" AS \"product\",\n    _stage_inner.\"sales.unit_price_avg_partition_by_product\" AS \"unit_price_avg_partition_by_product\"\n  FROM (\n    SELECT\n      sales.product AS \"sales.product\",\n      CAST(AVG(sales.unit_price) AS DOUBLE) AS \"sales.unit_price_avg_partition_by_product\"\n    FROM sales AS sales\n    GROUP BY\n      sales.product\n  ) AS _stage_inner\n), _cm_sales__quantity_source_columnkey_pa_fbabe4fe_product_sum_partition_by_region AS (\n  SELECT\n    sales.region AS \"sales.region\",\n    SUM(\n      sales.quantity * _cm_unit_price_avg_partition_by_product.\"unit_price_avg_partition_by_product\"\n    ) AS \"sales.m\"\n  FROM sales AS sales\n  LEFT JOIN _cm_unit_price_avg_partition_by_product\n    ON sales.product IS NOT DISTINCT FROM _cm_unit_price_avg_partition_by_product.\"product\"\n  GROUP BY\n    sales.region\n)\nSELECT\n  _base.\"sales.region\",\n  _base.\"sales.product\",\n  _cm_sales__quantity_source_columnkey_pa_fbabe4fe_product_sum_partition_by_region.\"sales.m\"\nFROM _base\nLEFT JOIN _cm_sales__quantity_source_columnkey_pa_fbabe4fe_product_sum_partition_by_region\n  ON _base.\"sales.region\" IS NOT DISTINCT FROM _cm_sales__quantity_source_columnkey_pa_fbabe4fe_product_sum_partition_by_region.\"sales.region\"",
+  "mixed/outer_partition::sqlite": "WITH _base AS (\n  SELECT\n    sales.region AS \"sales.region\",\n    sales.product AS \"sales.product\"\n  FROM sales AS sales\n  GROUP BY\n    sales.region,\n    sales.product\n), _cm_unit_price_avg_partition_by_product AS (\n  SELECT\n    _stage_inner.\"sales.product\" AS \"product\",\n    _stage_inner.\"sales.unit_price_avg_partition_by_product\" AS \"unit_price_avg_partition_by_product\"\n  FROM (\n    SELECT\n      sales.product AS \"sales.product\",\n      CAST(AVG(sales.unit_price) AS REAL) AS \"sales.unit_price_avg_partition_by_product\"\n    FROM sales AS sales\n    GROUP BY\n      sales.product\n  ) AS _stage_inner\n), _cm_sales__quantity_source_columnkey_pa_fbabe4fe_product_sum_partition_by_region AS (\n  SELECT\n    sales.region AS \"sales.region\",\n    SUM(\n      sales.quantity * _cm_unit_price_avg_partition_by_product.\"unit_price_avg_partition_by_product\"\n    ) AS \"sales.m\"\n  FROM sales AS sales\n  LEFT JOIN _cm_unit_price_avg_partition_by_product\n    ON sales.product IS _cm_unit_price_avg_partition_by_product.\"product\"\n  GROUP BY\n    sales.region\n)\nSELECT\n  _base.\"sales.region\",\n  _base.\"sales.product\",\n  _cm_sales__quantity_source_columnkey_pa_fbabe4fe_product_sum_partition_by_region.\"sales.m\"\nFROM _base\nLEFT JOIN _cm_sales__quantity_source_columnkey_pa_fbabe4fe_product_sum_partition_by_region\n  ON _base.\"sales.region\" IS _cm_sales__quantity_source_columnkey_pa_fbabe4fe_product_sum_partition_by_region.\"sales.region\"",
+  "mixed/outer_partition::tsql": "WITH _base AS (\n  SELECT\n    sales.region AS [sales___region],\n    sales.product AS [sales___product]\n  FROM sales AS sales\n  GROUP BY\n    sales.region,\n    sales.product\n), _cm_unit_price_avg_partition_by_product AS (\n  SELECT\n    _stage_inner.[sales___product] AS [product],\n    _stage_inner.[sales___unit_price_avg_partition_by_product] AS [unit_price_avg_partition_by_product]\n  FROM (\n    SELECT\n      sales.product AS [sales___product],\n      CAST(AVG(sales.unit_price) AS FLOAT) AS [sales___unit_price_avg_partition_by_product]\n    FROM sales AS sales\n    GROUP BY\n      sales.product\n  ) AS _stage_inner\n), _cm_sales__quantity_source_columnkey_pa_fbabe4fe_product_sum_partition_by_region AS (\n  SELECT\n    sales.region AS [sales___region],\n    SUM(\n      sales.quantity * _cm_unit_price_avg_partition_by_product.[unit_price_avg_partition_by_product]\n    ) AS [sales___m]\n  FROM sales AS sales\n  LEFT JOIN _cm_unit_price_avg_partition_by_product\n    ON (\n      sales.product = _cm_unit_price_avg_partition_by_product.[product]\n      OR (\n        sales.product IS NULL\n        AND _cm_unit_price_avg_partition_by_product.[product] IS NULL\n      )\n    )\n  GROUP BY\n    sales.region\n)\nSELECT\n  _base.[sales___region],\n  _base.[sales___product],\n  _cm_sales__quantity_source_columnkey_pa_fbabe4fe_product_sum_partition_by_region.[sales___m]\nFROM _base\nLEFT JOIN _cm_sales__quantity_source_columnkey_pa_fbabe4fe_product_sum_partition_by_region\n  ON (\n    _base.[sales___region] = _cm_sales__quantity_source_columnkey_pa_fbabe4fe_product_sum_partition_by_region.[sales___region]\n    OR (\n      _base.[sales___region] IS NULL\n      AND _cm_sales__quantity_source_columnkey_pa_fbabe4fe_product_sum_partition_by_region.[sales___region] IS NULL\n    )\n  )",
+  "param/associate::bigquery": {
+    "error": "SlayerError",
+    "message": "Aggregation 'w' parameter 'weight' is a partitioned aggregate, but the aggregation's source is a row-level value; the parameter would need the attached value on the aggregation's own input rows. Aggregate the source to the parameter's grain, or use a row-level parameter."
+  },
+  "param/associate::duckdb": {
+    "error": "SlayerError",
+    "message": "Aggregation 'w' parameter 'weight' is a partitioned aggregate, but the aggregation's source is a row-level value; the parameter would need the attached value on the aggregation's own input rows. Aggregate the source to the parameter's grain, or use a row-level parameter."
+  },
+  "param/associate::mysql": {
+    "error": "SlayerError",
+    "message": "Aggregation 'w' parameter 'weight' is a partitioned aggregate, but the aggregation's source is a row-level value; the parameter would need the attached value on the aggregation's own input rows. Aggregate the source to the parameter's grain, or use a row-level parameter."
+  },
+  "param/associate::postgres": {
+    "error": "SlayerError",
+    "message": "Aggregation 'w' parameter 'weight' is a partitioned aggregate, but the aggregation's source is a row-level value; the parameter would need the attached value on the aggregation's own input rows. Aggregate the source to the parameter's grain, or use a row-level parameter."
+  },
+  "param/associate::snowflake": {
+    "error": "SlayerError",
+    "message": "Aggregation 'w' parameter 'weight' is a partitioned aggregate, but the aggregation's source is a row-level value; the parameter would need the attached value on the aggregation's own input rows. Aggregate the source to the parameter's grain, or use a row-level parameter."
+  },
+  "param/associate::sqlite": {
+    "error": "SlayerError",
+    "message": "Aggregation 'w' parameter 'weight' is a partitioned aggregate, but the aggregation's source is a row-level value; the parameter would need the attached value on the aggregation's own input rows. Aggregate the source to the parameter's grain, or use a row-level parameter."
+  },
+  "param/associate::tsql": {
+    "error": "SlayerError",
+    "message": "Aggregation 'w' parameter 'weight' is a partitioned aggregate, but the aggregation's source is a row-level value; the parameter would need the attached value on the aggregation's own input rows. Aggregate the source to the parameter's grain, or use a row-level parameter."
+  },
+  "param/literal::bigquery": {
+    "error": "SlayerError",
+    "message": "Aggregation 'w' parameter 'weight' is a partitioned aggregate, but the aggregation's source is a row-level value; the parameter would need the attached value on the aggregation's own input rows. Aggregate the source to the parameter's grain, or use a row-level parameter."
+  },
+  "param/literal::duckdb": {
+    "error": "SlayerError",
+    "message": "Aggregation 'w' parameter 'weight' is a partitioned aggregate, but the aggregation's source is a row-level value; the parameter would need the attached value on the aggregation's own input rows. Aggregate the source to the parameter's grain, or use a row-level parameter."
+  },
+  "param/literal::mysql": {
+    "error": "SlayerError",
+    "message": "Aggregation 'w' parameter 'weight' is a partitioned aggregate, but the aggregation's source is a row-level value; the parameter would need the attached value on the aggregation's own input rows. Aggregate the source to the parameter's grain, or use a row-level parameter."
+  },
+  "param/literal::postgres": {
+    "error": "SlayerError",
+    "message": "Aggregation 'w' parameter 'weight' is a partitioned aggregate, but the aggregation's source is a row-level value; the parameter would need the attached value on the aggregation's own input rows. Aggregate the source to the parameter's grain, or use a row-level parameter."
+  },
+  "param/literal::snowflake": {
+    "error": "SlayerError",
+    "message": "Aggregation 'w' parameter 'weight' is a partitioned aggregate, but the aggregation's source is a row-level value; the parameter would need the attached value on the aggregation's own input rows. Aggregate the source to the parameter's grain, or use a row-level parameter."
+  },
+  "param/literal::sqlite": {
+    "error": "SlayerError",
+    "message": "Aggregation 'w' parameter 'weight' is a partitioned aggregate, but the aggregation's source is a row-level value; the parameter would need the attached value on the aggregation's own input rows. Aggregate the source to the parameter's grain, or use a row-level parameter."
+  },
+  "param/literal::tsql": {
+    "error": "SlayerError",
+    "message": "Aggregation 'w' parameter 'weight' is a partitioned aggregate, but the aggregation's source is a row-level value; the parameter would need the attached value on the aggregation's own input rows. Aggregate the source to the parameter's grain, or use a row-level parameter."
+  },
+  "param/mixed_plus::bigquery": {
+    "error": "ValueError",
+    "message": "Regroup placeholder '__regroup__1__amount_sum_partition_by_region' has no attached producer column in this scope. A __regroup__ leaf must resolve through the attach registry; reaching column anchoring means the placeholder escaped its producer's join scope."
+  },
+  "param/mixed_plus::duckdb": {
+    "error": "ValueError",
+    "message": "Regroup placeholder '__regroup__1__amount_sum_partition_by_region' has no attached producer column in this scope. A __regroup__ leaf must resolve through the attach registry; reaching column anchoring means the placeholder escaped its producer's join scope."
+  },
+  "param/mixed_plus::mysql": {
+    "error": "ValueError",
+    "message": "Regroup placeholder '__regroup__1__amount_sum_partition_by_region' has no attached producer column in this scope. A __regroup__ leaf must resolve through the attach registry; reaching column anchoring means the placeholder escaped its producer's join scope."
+  },
+  "param/mixed_plus::postgres": {
+    "error": "ValueError",
+    "message": "Regroup placeholder '__regroup__1__amount_sum_partition_by_region' has no attached producer column in this scope. A __regroup__ leaf must resolve through the attach registry; reaching column anchoring means the placeholder escaped its producer's join scope."
+  },
+  "param/mixed_plus::snowflake": {
+    "error": "ValueError",
+    "message": "Regroup placeholder '__regroup__1__amount_sum_partition_by_region' has no attached producer column in this scope. A __regroup__ leaf must resolve through the attach registry; reaching column anchoring means the placeholder escaped its producer's join scope."
+  },
+  "param/mixed_plus::sqlite": {
+    "error": "ValueError",
+    "message": "Regroup placeholder '__regroup__1__amount_sum_partition_by_region' has no attached producer column in this scope. A __regroup__ leaf must resolve through the attach registry; reaching column anchoring means the placeholder escaped its producer's join scope."
+  },
+  "param/mixed_plus::tsql": {
+    "error": "ValueError",
+    "message": "Regroup placeholder '__regroup__1__amount_sum_partition_by_region' has no attached producer column in this scope. A __regroup__ leaf must resolve through the attach registry; reaching column anchoring means the placeholder escaped its producer's join scope."
+  },
+  "param/ordinary::bigquery": {
+    "error": "SlayerError",
+    "message": "Aggregation 'w' parameter 'weight' is a partitioned aggregate, but the aggregation's source is a row-level value; the parameter would need the attached value on the aggregation's own input rows. Aggregate the source to the parameter's grain, or use a row-level parameter."
+  },
+  "param/ordinary::duckdb": {
+    "error": "SlayerError",
+    "message": "Aggregation 'w' parameter 'weight' is a partitioned aggregate, but the aggregation's source is a row-level value; the parameter would need the attached value on the aggregation's own input rows. Aggregate the source to the parameter's grain, or use a row-level parameter."
+  },
+  "param/ordinary::mysql": {
+    "error": "SlayerError",
+    "message": "Aggregation 'w' parameter 'weight' is a partitioned aggregate, but the aggregation's source is a row-level value; the parameter would need the attached value on the aggregation's own input rows. Aggregate the source to the parameter's grain, or use a row-level parameter."
+  },
+  "param/ordinary::postgres": {
+    "error": "SlayerError",
+    "message": "Aggregation 'w' parameter 'weight' is a partitioned aggregate, but the aggregation's source is a row-level value; the parameter would need the attached value on the aggregation's own input rows. Aggregate the source to the parameter's grain, or use a row-level parameter."
+  },
+  "param/ordinary::snowflake": {
+    "error": "SlayerError",
+    "message": "Aggregation 'w' parameter 'weight' is a partitioned aggregate, but the aggregation's source is a row-level value; the parameter would need the attached value on the aggregation's own input rows. Aggregate the source to the parameter's grain, or use a row-level parameter."
+  },
+  "param/ordinary::sqlite": {
+    "error": "SlayerError",
+    "message": "Aggregation 'w' parameter 'weight' is a partitioned aggregate, but the aggregation's source is a row-level value; the parameter would need the attached value on the aggregation's own input rows. Aggregate the source to the parameter's grain, or use a row-level parameter."
+  },
+  "param/ordinary::tsql": {
+    "error": "SlayerError",
+    "message": "Aggregation 'w' parameter 'weight' is a partitioned aggregate, but the aggregation's source is a row-level value; the parameter would need the attached value on the aggregation's own input rows. Aggregate the source to the parameter's grain, or use a row-level parameter."
+  },
+  "param/ungrained_reagg::bigquery": {
+    "error": "SlayerError",
+    "message": "Aggregation 'w' parameter 'weight' is not determined by the operand grain (city, region); the aggregation reads one value per cell of that grain. Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
+  },
+  "param/ungrained_reagg::duckdb": {
+    "error": "SlayerError",
+    "message": "Aggregation 'w' parameter 'weight' is not determined by the operand grain (city, region); the aggregation reads one value per cell of that grain. Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
+  },
+  "param/ungrained_reagg::mysql": {
+    "error": "SlayerError",
+    "message": "Aggregation 'w' parameter 'weight' is not determined by the operand grain (city, region); the aggregation reads one value per cell of that grain. Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
+  },
+  "param/ungrained_reagg::postgres": {
+    "error": "SlayerError",
+    "message": "Aggregation 'w' parameter 'weight' is not determined by the operand grain (city, region); the aggregation reads one value per cell of that grain. Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
+  },
+  "param/ungrained_reagg::snowflake": {
+    "error": "SlayerError",
+    "message": "Aggregation 'w' parameter 'weight' is not determined by the operand grain (city, region); the aggregation reads one value per cell of that grain. Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
+  },
+  "param/ungrained_reagg::sqlite": {
+    "error": "SlayerError",
+    "message": "Aggregation 'w' parameter 'weight' is not determined by the operand grain (city, region); the aggregation reads one value per cell of that grain. Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
+  },
+  "param/ungrained_reagg::tsql": {
+    "error": "SlayerError",
+    "message": "Aggregation 'w' parameter 'weight' is not determined by the operand grain (city, region); the aggregation reads one value per cell of that grain. Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
+  }
+}

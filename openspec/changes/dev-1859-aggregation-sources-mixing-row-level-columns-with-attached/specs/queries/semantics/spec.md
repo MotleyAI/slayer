@@ -45,3 +45,34 @@ other column's values.
 - **WHEN** the query carries a row-level filter conjunct
 - **THEN** it restricts both the population rows the outer aggregation consumes
   and each attached constituent's producer, and the executed value reflects both
+
+### Requirement: Ungrained aggregate parameters type at the query grain
+An aggregate-valued parameter with no declared `partition_by=` SHALL be typed at
+the query's dimensions — exactly as an ungrained aggregation source constituent
+is — before the parameter determination rule is applied: it is legal iff the
+aggregation's operating grain determines the query's dimensions, and it is then
+evaluated once per query-grain cell and attached into the aggregation's input
+relation (a row-level source) or carried as a constituent of the operand dataset
+(a re-aggregation), broadcast onto that dataset's cells. The rule SHALL apply
+identically in every kernel and in every `to_many_handling` mode; rejecting the
+ungrained form on construction grounds is a closure violation.
+
+#### Scenario: Ungrained parameter on a row-level source
+- **WHEN** a locally-rooted query over `[region]` selects the model-defined
+  `wsum(amount, weight=sum(amount))` (`SUM({value} * {weight})`)
+- **THEN** each region row equals the region's row sum times the region total —
+  the query-grain value row-attached as the weight — by executed values
+
+#### Scenario: Ungrained parameter under association
+- **WHEN** an associate-mode query rooted at `orders` over `[status]` selects
+  `customers.spend:wsum(weight=sum(amount))`
+- **THEN** each status cell equals the sum of its distinct associated customers'
+  spend times that status cell's order total, by executed values
+
+#### Scenario: Ungrained parameter on a re-aggregation
+- **WHEN** a query over `[region]` selects
+  `wsum(sum(amount, partition_by=[city, region]), weight=count(id))`
+- **THEN** the parameter is typed at `[region]`, carried as a constituent of the
+  `[city, region]` operand dataset and broadcast onto its cells, and the
+  executed value equals the manual encoding with
+  `count(id, partition_by=region)` — never the not-determined rejection

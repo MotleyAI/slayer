@@ -192,6 +192,24 @@ class TestProjectedGrainKeyStaysLegal:
         assert int(by[(1,)]["sales.t"]) == 2
 
 
+class TestWalkerBehaviourUnchanged:
+    """Behaviour guards for the §5.5 unification (green before and after): an
+    aggregate input and an all-projected composite stay legal."""
+
+    async def test_pure_aggregate_input_is_legal(self, exec_engine):
+        resp = await exec_engine.execute(_q(
+            dimensions=["store"], time_dimensions=month_td(),
+            measures=[ModelMeasure(
+                formula="cumsum(weight:sum(partition_by=store))", name="t")]))
+        assert resp.data
+
+    async def test_all_projected_composite_is_legal(self, exec_engine):
+        resp = await exec_engine.execute(_q(
+            dimensions=["weight", "qty"],
+            measures=[ModelMeasure(formula="rank(weight * qty)", name="t")]))
+        assert resp.data
+
+
 class TestShiftFamilyRegimeUnchanged:
     """Scenario: Shift family keeps its bare-leaf regime — the established
     read-and-rebucket output, pinned as an exact row multiset."""

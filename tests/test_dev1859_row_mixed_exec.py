@@ -17,8 +17,12 @@ import pytest
 
 from slayer.sql.scope_check import assert_scope_closed
 
+from slayer.engine.plan import plan_query
+from slayer.ir.source_bundle import ResolvedSourceBundle
+
 from tests._dev1846_fixtures import (
     _SALES_ROWS as _ROWS_1846,
+    dev1846_models,
     make_exec_engine as make_1846_engine,
     month_key,
     month_td,
@@ -64,6 +68,10 @@ from tests._dev1847_fixtures import (
 #: sum(qty * sum(revenue, partition_by=store), window='90d') on the dev1846
 #: rows: per-month row-weighted sums 1100/1200/800, all gaps within 90 days.
 MIXED_W90_BY_MONTH = {"2024-01": 1100.0, "2024-02": 2300.0, "2024-03": 3100.0}
+#: sum(qty * sum(revenue, window='90d')) — the INNER-windowed constituent: the
+#: trailing-90d revenue (cumulative here: 60/160/220) times each month's qty sum
+#: (10/11/7). Independent raw-row oracle for the derivation cross-check.
+MIXED_INNER_W90_BY_MONTH = {"2024-01": 600.0, "2024-02": 1760.0, "2024-03": 1540.0}
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -433,6 +441,39 @@ class TestOuterModifiers:
         assert len(resp.data) == len(MIXED_W90_BY_MONTH)
         for month, expected in MIXED_W90_BY_MONTH.items():
             assert float(got[month]) == pytest.approx(expected)
+
+
+class TestWindowedConstituent:
+    _FORMULA = "sum(qty * sum(revenue, window='90d'))"
+
+    def test_windowed_inner_is_exactly_one_nested_producer(self):
+        """Scenario: the windowed inner is exactly one nested producer at the
+        bucket grain, row-attached — never an attach of the enclosing level."""
+        bundle = ResolvedSourceBundle(
+            source_model=dev1846_models()[0],
+            referenced_models=dev1846_models()[1:])
+        planned = plan_query(
+            query=SlayerQuery(source_model="sales", time_dimensions=month_td(),
+                              measures=[ModelMeasure(formula=self._FORMULA, name="m")]),
+            bundle=bundle)
+        [attach] = planned.regroup_attach_plans
+        assert attach.attach_phase == "row"
+
+    async def test_windowed_inner_executed_values(self, exec_engine_1846):
+        """Scenario: each bucket carries the hand-computed row-weighted value —
+        the raw-row oracle, cross-checked against the plain windowed measure."""
+        resp = await exec_engine_1846.execute(SlayerQuery(
+            source_model="sales", time_dimensions=month_td(),
+            measures=[ModelMeasure(formula=self._FORMULA, name="m"),
+                      ModelMeasure(formula="sum(revenue, window='90d')", name="w"),
+                      ModelMeasure(formula="qty:sum", name="q")]))
+        got = {month_key(r["sales.ordered_at"]):
+               (r["sales.m"], r["sales.w"], r["sales.q"]) for r in resp.data}
+        assert set(got) == set(MIXED_INNER_W90_BY_MONTH)
+        for month, expected in MIXED_INNER_W90_BY_MONTH.items():
+            m, w, q = got[month]
+            assert float(m) == pytest.approx(expected)          # raw oracle
+            assert float(m) == pytest.approx(float(w) * float(q))  # derivation
 
 
 class TestSqlHygiene:
