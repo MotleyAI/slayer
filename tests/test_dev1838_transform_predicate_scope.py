@@ -60,7 +60,7 @@ def test_transform_wrapped_cross_model_predicate_is_not_combined() -> None:
     # POST-phase: the transform owns the predicate, so it lowers to the post
     # wrapper instead of the combined outer WHERE (regressed before the fix).
     lowered = _lower_positions(_plan_with_mask(
-        cj, phase=Phase.POST, mask_stage=Stage(kind=StageKind.POST),
+        cj, phase=Phase.POST, mask_stage=Stage(kind=StageKind.DERIVED, level=2),
     ))
     (entry,) = [e for e in lowered.filters if e.id == "s1"]
     assert entry.phase == Phase.POST

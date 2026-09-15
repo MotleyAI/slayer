@@ -165,6 +165,23 @@ def stage_slots(
         stage_cache[slot.id] = stage
         return stage
 
+    def _max_transform_level(key: ValueKey) -> int:
+        """Deepest level among the transforms ``key`` reads (0 = none): composites
+        are transparent whether or not interned, a transform or aggregate is
+        terminal (D3/D10) — so a value's stage is a function of its term alone."""
+
+        def level_of(node: ValueKey) -> int:
+            if isinstance(node, TransformKey):
+                slot = by_key.get(node)
+                if slot is not None:
+                    return _stage_of(slot).level
+                return 1 + _max_transform_level(node)
+            if isinstance(node, AggregateKey):
+                return 0
+            return max((level_of(child) for child in node.children()), default=0)
+
+        return max((level_of(child) for child in key.children()), default=0)
+
     def _compute_stage(slot: ValueSlot) -> Stage:
         key = slot.key
         if isinstance(key, AggregateKey):
@@ -190,21 +207,14 @@ def stage_slots(
         if isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
             return Stage(kind=StageKind.BASE)
         if isinstance(key, TransformKey):
-            max_chain = max(
-                (
-                    _stage_of(d).level
-                    for d in _deps(slot)
-                    if _stage_of(d).kind is StageKind.CHAIN
-                ),
-                default=0,
-            )
-            return Stage(kind=StageKind.CHAIN, level=1 + max_chain)
+            return Stage(kind=StageKind.DERIVED, level=1 + _max_transform_level(key))
         if isinstance(key, _COMPOSITE_KINDS):
             if slot.is_dimension:
                 return Stage(kind=StageKind.BASE)
+            transform_level = _max_transform_level(key)
+            if transform_level:
+                return Stage(kind=StageKind.DERIVED, level=1 + transform_level)
             dep_kinds = {_stage_of(d).kind for d in _deps(slot)}
-            if StageKind.CHAIN in dep_kinds:
-                return Stage(kind=StageKind.POST)
             if dep_kinds & {StageKind.PRODUCER, StageKind.COMBINED}:
                 return Stage(kind=StageKind.COMBINED)
             return Stage(kind=StageKind.BASE)
@@ -309,7 +319,7 @@ def _compute_needs_column(
                 needs.add(host_slot.id)
 
     # Order targets in a grouped query resolve to a hidden column of the relation
-    # their stage names (BASE / CHAIN / POST); a PRODUCER / COMBINED value renders
+    # their stage names (BASE / DERIVED); a PRODUCER / COMBINED value renders
     # inline in the ORDER BY. A raw-rows query (distinct_dimension_values=False)
     # has no grouping, so its row-column order targets resolve inline via split
     # emission, never as a hidden column.
@@ -318,7 +328,7 @@ def _compute_needs_column(
             stage = stages.get(entry.slot_id)
             if stage is None:
                 continue
-            if stage.kind in (StageKind.BASE, StageKind.CHAIN, StageKind.POST):
+            if stage.kind in (StageKind.BASE, StageKind.DERIVED):
                 needs.add(entry.slot_id)
 
     return needs

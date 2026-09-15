@@ -71,8 +71,9 @@ def base_render_order(
 def combined_composite_slot_ids(planned_query: PlannedQuery) -> Set[str]:
     """Composite (arithmetic / scalar-call) measure or order slots the planner
     staged at COMBINED — they render at the combined SELECT reading producer
-    columns. A POST composite (one carrying a transform) renders at the post step
-    instead and is not returned here; a computed dimension groups in ``_base``."""
+    columns. A DERIVED composite (one reading a transform) renders in the
+    transform chain instead and is not returned here; a computed dimension
+    groups in ``_base``."""
     return {
         s.id
         for s in plan_slots(planned_query)

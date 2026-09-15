@@ -11,7 +11,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from slayer.core.enums import DataType, JoinType
 from slayer.core.errors import MaterialisationStageError
 from slayer.core.format import NumberFormat
-from slayer.core.keys import Phase, ValueKey, walk_value_keys
+from slayer.core.keys import (
+    AggregateKey,
+    Phase,
+    TransformKey,
+    ValueKey,
+    walk_value_keys,
+)
 from slayer.core.models import SlayerModel
 from slayer.core.scope import StageSchema
 from slayer.ir.bound import BoundExpr
@@ -51,20 +57,20 @@ __all__ = [
 class StageKind(IntEnum):
     """The relation in the emitted pipeline a value materialises in (P6/P11).
 
-    Ordered: a value's inputs always materialise at an earlier stage. ``CHAIN``
-    carries a 1-based ``level`` (nested transforms); the other kinds ignore it.
+    Ordered: a value's inputs always materialise at an earlier stage. ``DERIVED``
+    carries a 1-based ``level`` — only transforms stratify (D10): a value sits one
+    level above the deepest transform it reads, composites rendering inline.
     """
 
     BASE = 0
     PRODUCER = 1
     COMBINED = 2
-    CHAIN = 3
-    POST = 4
+    DERIVED = 3
 
 
 @functools.total_ordering
 class Stage(BaseModel):
-    """One materialisation stage: ``kind`` plus a 1-based ``level`` for CHAIN."""
+    """One materialisation stage: ``kind`` plus a 1-based ``level`` for DERIVED."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -73,9 +79,9 @@ class Stage(BaseModel):
 
     @model_validator(mode="after")
     def _level_matches_kind(self) -> "Stage":
-        if self.kind is StageKind.CHAIN:
+        if self.kind is StageKind.DERIVED:
             if self.level < 1:
-                raise ValueError("CHAIN stage requires a 1-based level >= 1")
+                raise ValueError("DERIVED stage requires a 1-based level >= 1")
         elif self.level != 0:
             raise ValueError(f"{self.kind.name} stage must not carry a level")
         return self
@@ -467,6 +473,23 @@ def _own_slots(pq: "PlannedQuery") -> List[ValueSlot]:
     return [*pq.row_slots, *pq.aggregate_slots, *pq.combined_expression_slots]
 
 
+def _transforms_read(key: ValueKey):
+    """Yield the ``TransformKey``s ``key`` reads: composites are transparent, a
+    transform or aggregate is terminal (D3/D10 traversal)."""
+
+    def visit(node: ValueKey):
+        if isinstance(node, TransformKey):
+            yield node
+            return
+        if isinstance(node, AggregateKey):
+            return
+        for child in node.children():
+            yield from visit(child)
+
+    for child in key.children():
+        yield from visit(child)
+
+
 def _validate_stage_order(pq: "PlannedQuery") -> None:
     """Enforce the materialisation-stage invariant on one plan and, recursively,
     every producer plan it attaches."""
@@ -497,6 +520,21 @@ def _validate_stage_order(pq: "PlannedQuery") -> None:
                     f"references {dep.id!r} staged later "
                     f"({dep.stage.kind.name}); it would render before its "
                     f"inputs are materialised.",
+                )
+        # D7 explicit strictness: a value is staged strictly later than every
+        # transform it reads (a composite operand renders inline, so a consumer
+        # may share a composite's level — never a transform's).
+        for t_key in _transforms_read(slot.key):
+            dep = by_key.get(t_key)
+            if dep is None or dep is slot:
+                continue
+            assert slot.stage is not None and dep.stage is not None
+            if not (dep.stage < slot.stage):
+                raise MaterialisationStageError(
+                    f"value {slot.id!r} (stage {slot.stage.kind.name} level "
+                    f"{slot.stage.level}) must be staged strictly later than "
+                    f"the transform {dep.id!r} it reads (level "
+                    f"{dep.stage.level}).",
                 )
     for attach in pq.regroup_attach_plans:
         _validate_stage_order(attach.producer_plan)

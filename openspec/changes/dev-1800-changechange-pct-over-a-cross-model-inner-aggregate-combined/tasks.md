@@ -76,7 +76,7 @@ Full detail in the DEV-1800 spec-tests resume comment.
 - [x] 2.3 Generator belt in `generate_from_planned` (refuse unstaged plan) next to
   `_validate_transform_input_shapes`; ledger row in `tests/_dev1871_raise_ledger.py`;
   verified by `tests/test_dev1871_raise_parity.py` + `tests/test_law_guard_ratchet.py`.
-- [ ] 2.4 Transparent-composite levels (design D10/D11): `StageKind` → `BASE < PRODUCER <
+- [x] 2.4 Transparent-composite levels (design D10/D11): `StageKind` → `BASE < PRODUCER <
   COMBINED < DERIVED(level)` (drop POST, rename CHAIN); staging rule: every transform, and
   every non-dimension composite / mask reading a transform, is `DERIVED(1 + max level of
   the transforms it reads)`, the traversal descending through composites whether or not
