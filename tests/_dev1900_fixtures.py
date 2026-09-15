@@ -149,9 +149,13 @@ def unparseable_derived_models() -> List[SlayerModel]:
         Column(name="unparseable", type=DataType.DOUBLE, sql=")((( bad"))
     regions.columns.append(
         Column(name="cyc", type=DataType.DOUBLE, sql="cyc + 1"))
-    _customers(models).aggregations.append(Aggregation(
+    customers = _customers(models)
+    customers.aggregations.append(Aggregation(
         name="wunparse", formula="SUM({value} * {weight})",
         params=[AggregationParam(name="weight", sql="regions.unparseable")]))
+    customers.columns.append(Column(
+        name="flagged_spend", type=DataType.DOUBLE, sql="spend",
+        filter="regions.unparseable > 0"))
     return models
 
 

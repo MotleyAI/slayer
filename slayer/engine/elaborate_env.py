@@ -846,11 +846,21 @@ def check_input_dependencies_analyzable(
 
 def check_population_filter_no_fanout(
     *, filter_text: str, hop: Optional[str], host: str,
+    unanalyzable: bool = False,
 ) -> None:
-    """Interim guard (DEV-1900): a row-level filter conjunct reaching the
+    """Interim guard: a row-level filter conjunct reaching the
     population root only across a fanning hop, with an aggregate inline over the
     population rows, would multiply its rows. ``hop`` = the fanning hop when one
-    exists, else ``None`` (DEV-1909 replaces this with association semantics)."""
+    exists, else ``None``; ``unanalyzable`` = the conjunct's dependency closure
+    could not be analysed (fail closed) (DEV-1909 replaces this with association
+    semantics)."""
+    if unanalyzable:
+        raise ValueError(
+            f"Filter {filter_text!r} has a dependency no supported dialect can "
+            f"analyse for join dependencies; with an aggregate computed inline "
+            f"over the population, an unanalyzable dependency is unsafe. Fix the "
+            f"referenced column's SQL, or remove the filter."
+        )
     if hop is None:
         return
     raise ValueError(

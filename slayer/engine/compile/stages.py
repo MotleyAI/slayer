@@ -35,6 +35,7 @@ from slayer.engine.reference_closure import (
     compute_column_filter_join_paths,
     default_param_value_key,
     first_unanalyzable_input_column,
+    key_closure,
     resolve_aggregation_params,
 )
 from slayer.core.join_walker import resolve_hop, walk
@@ -2957,18 +2958,19 @@ def _assert_population_filters_no_fanout(
             continue
         text = texts[i] if i < len(texts) else None
         for cj in split_top_level_and(bf.value_key):
-            hop = next(
-                (p[-1] for p in compute_key_join_paths(
-                    key=cj, anchor_model=host_model,
-                    anchor_relation=host_model.name, bundle=bundle,
-                ) if p and not safe_reachable(
+            closure = key_closure(
+                key=cj, anchor_model=host_model,
+                anchor_relation=host_model.name, bundle=bundle,
+            )
+            hop = None if closure is None else next(
+                (p[-1] for p in closure if p and not safe_reachable(
                     root=host_model, path=p, models_by_name=models_by_name,
                 )),
                 None,
             )
             check_population_filter_no_fanout(
                 filter_text=text or _canonical_name(cj), hop=hop,
-                host=host_model.name,
+                host=host_model.name, unanalyzable=closure is None,
             )
 
 

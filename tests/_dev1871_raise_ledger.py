@@ -170,6 +170,10 @@ ROWS: Tuple[LedgerRow, ...] = (
     _row(_EE, "check_population_filter_no_fanout", "ValueError",
          "Filter … reaches the population root only across a fanning join hop to …; with an aggregate computed inline over the population, this would multiply its rows. Aggregate the filtered relation to the population grain, or select it only through a producer.",
          "checker", "filters", True, "checker"),
+    # Its fail-closed arm: an unanalyzable filter dependency is unsafe, not local.
+    _row(_EE, "check_population_filter_no_fanout", "ValueError",
+         "Filter … has a dependency no supported dialect can analyse for join dependencies; with an aggregate computed inline over the population, an unanalyzable dependency is unsafe. Fix the referenced column's SQL, or remove the filter.",
+         "checker", "filters", True, "checker"),
     _row(_EE, "check_reaggregation_no_window", "SlayerError",
          "Re-aggregation … cannot carry window= on its outer aggregation; apply the window inside the operand or consume the re-aggregated value through a transform.",
          "checker", "reaggregation", True, "checker"),

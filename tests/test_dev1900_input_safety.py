@@ -134,6 +134,17 @@ class TestUnanalyzableDefinition:
         assert "dialect" in msg, f"error must name the analyzability failure: {msg!r}"
         assert_ref_free(msg)
 
+    async def test_unparseable_column_filter_typed_error(self, unparse_engine):
+        """A source column's ``filter=`` referencing an unanalyzable derived
+        column is an input dependency too — fail closed, never stamped ``()``."""
+        with pytest.raises(ValueError) as ei:
+            await unparse_engine.execute(orders_q(measures=[ModelMeasure(
+                formula="customers.flagged_spend:sum", name="fs")]))
+        msg = str(ei.value)
+        assert "flagged_spend" in msg, f"error must name the filtered column: {msg!r}"
+        assert "dialect" in msg, f"error must name the analyzability failure: {msg!r}"
+        assert_ref_free(msg)
+
 
 class TestReaggregationParameter:
     async def test_fanning_derived_parameter_fails_closed(self, engine):

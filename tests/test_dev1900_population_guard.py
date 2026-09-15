@@ -22,6 +22,7 @@ from tests._dev1900_fixtures import (
     cust_q,
     make_exec_engine,
     orders_q,
+    unparseable_derived_models,
 )
 
 MODES = ["broadcast", "associate", "error"]
@@ -35,6 +36,12 @@ PRODUCER_ONLY_AMOUNT = 82.0
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def engine(request):
     async for e in make_exec_engine(request):
+        yield e
+
+
+@pytest.fixture(params=["sqlite", "duckdb"])
+async def unparse_engine(request):
+    async for e in make_exec_engine(request, models=unparseable_derived_models()):
         yield e
 
 
@@ -61,6 +68,19 @@ class TestFanningPopulationFilterFailsClosed:
                 to_many_handling=mode))
         msg = str(ei.value)
         assert "region_events" in msg and "bad_pop" in msg, msg
+        assert_ref_free(msg)
+
+    @pytest.mark.parametrize("mode", MODES)
+    async def test_unanalyzable_filter_fails_closed(self, unparse_engine, mode):
+        """A filter on a derived column no dialect can analyse must fail closed
+        with the inline aggregate, never route as if it crossed nothing."""
+        with pytest.raises(ValueError) as ei:
+            await unparse_engine.execute(orders_q(
+                measures=[AMOUNT_SUM],
+                filters=["customers.regions.unparseable > 0"],
+                to_many_handling=mode))
+        msg = str(ei.value)
+        assert "analyse" in msg, msg
         assert_ref_free(msg)
 
 

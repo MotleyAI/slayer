@@ -460,6 +460,33 @@ def _default_param_spec(
 # ---------------------------------------------------------------------------
 
 
+def _column_filter_closure(
+    *, key: AggregateKey, anchor_model: SlayerModel, anchor_relation: str,
+    bundle: ResolvedSourceBundle,
+):
+    """Tri-state closure of the source column's ``filter=`` fragment (``None``
+    fails closed). A non-empty bind-time stamp proves the fragment analysed
+    cleanly (a ``None`` closure always stamps ``()``), and a rerooted key's
+    canonicalized ``__`` aliases defeat re-analysis — so re-derive only when the
+    stamp is empty. ``()`` when there is no filter or its owner is unresolvable
+    (broken paths belong to the path validator)."""
+    cfk = key.column_filter_key
+    if cfk is None or cfk.referenced_join_paths:
+        return ()
+    source_path = tuple(getattr(key.source, "path", ()) or ())
+    owner = (
+        walk_key_path(model=anchor_model, path=source_path, bundle=bundle)
+        if source_path else anchor_model
+    )
+    if owner is None:
+        return ()
+    return fragment_closure(
+        sql=cfk.canonical_sql, model=owner, owner_path=source_path,
+        anchor_relation="__".join(source_path) if source_path else anchor_relation,
+        bundle=bundle,
+    )
+
+
 def aggregate_input_closure(
     *, key: AggregateKey, anchor_model: Optional[SlayerModel],
     anchor_relation: str, bundle: ResolvedSourceBundle,
@@ -482,10 +509,14 @@ def aggregate_input_closure(
                 seen.setdefault(tuple(p), None)
 
     if key.column_filter_key is not None:
-        # The filter's crossed paths are stamped OWNER-relative on the key at bind
-        # time (already derived-expanded via compute_column_filter_join_paths, and
-        # tolerant of internal ``__`` aliases the strict expander would reject);
-        # re-anchor by prefixing the source path, as filter_reachability does.
+        # Crossed paths are stamped OWNER-relative at bind time (best-effort
+        # ``()``); re-derive the tri-state here — an unanalyzable filter
+        # dependency fails closed, never "crosses nothing".
+        if _column_filter_closure(
+            key=key, anchor_model=anchor_model, anchor_relation=anchor_relation,
+            bundle=bundle,
+        ) is None:
+            return None
         source_path = tuple(getattr(key.source, "path", ()) or ())
         for p in key.column_filter_key.referenced_join_paths:
             _add(_prefixes(source_path + tuple(p)))
@@ -568,6 +599,15 @@ def first_unanalyzable_input_column(
             bundle=bundle,
         ) is None:
             return ref.column_name
+    if _column_filter_closure(
+        key=key, anchor_model=anchor_model, anchor_relation=anchor_relation,
+        bundle=bundle,
+    ) is None:
+        # The filter is part of the source column's definition; name that column.
+        return (
+            getattr(key.source, "leaf", None)
+            or getattr(key.source, "column_name", None)
+        )
     return None
 
 
