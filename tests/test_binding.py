@@ -545,7 +545,7 @@ class TestNestedAggregateParamDimAliasMap:
             "weighted_avg(amount, weight=count(id, partition_by=my_dim))")
         computed = ColumnKey(leaf="status")
         outer = bind_expr(
-            parsed, scope=_scope(), bundle=_bundle(),
+            parsed=parsed, scope=_scope(), bundle=_bundle(),
             dimension_alias_map={"my_dim": computed},
         ).value_key
         assert isinstance(outer, AggregateKey)
@@ -560,4 +560,4 @@ class TestNestedAggregateParamDimAliasMap:
             "weighted_avg(amount, weight=count(id, partition_by=my_dim))")
         scope, bundle = _scope(), _bundle()
         with pytest.raises(UnknownReferenceError):
-            bind_expr(parsed, scope=scope, bundle=bundle)
+            bind_expr(parsed=parsed, scope=scope, bundle=bundle)
