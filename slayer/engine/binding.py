@@ -38,7 +38,7 @@ from slayer.core.models import SlayerModel
 from slayer.engine import dimension_routing
 from slayer.core.query import TimeDimension
 from slayer.core.scope import ModelScope, StageSchema
-from slayer.engine.column_filter_paths import compute_column_filter_join_paths
+from slayer.engine.reference_closure import compute_column_filter_join_paths
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.syntax import (
     AggCall,

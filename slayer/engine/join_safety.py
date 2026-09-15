@@ -29,7 +29,7 @@ from slayer.core.keys import (
 )
 from slayer.core.models import ModelJoin, SlayerModel
 from slayer.core.scope import ModelScope, StageSchema
-from slayer.engine.aggregate_input_paths import compute_aggregate_input_join_paths
+from slayer.engine.reference_closure import aggregate_input_closure, key_closure
 from slayer.engine.elaborate_env import check_partition_key_attributable
 from slayer.ir.prebound import walk_key_path
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -285,6 +285,54 @@ def attributable_from_root(
     )
 
 
+def key_attributable_from_root(
+    *, key: ValueKey, target_path: Tuple[str, ...], root_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+    host_model: SlayerModel, host_name: Optional[str] = None,
+) -> bool:
+    """Is every path in ``key``'s dependency closure attributable from the
+    aggregate's root (DEV-1900)? A derived reference is unattributable exactly
+    when its definition crosses a fanning hop; an unanalysable closure is
+    unattributable (fail closed)."""
+    closure = key_closure(
+        key=key, anchor_model=host_model, anchor_relation=host_model.name,
+        bundle=bundle,
+    )
+    if closure is None:
+        return False
+    return all(
+        attributable_from_root(
+            host_path=p, target_path=target_path, root_model=root_model,
+            models_by_name=models_by_name, host_name=host_name,
+        )
+        for p in (closure or (key_host_path(key),))
+    )
+
+
+def key_broadcast_reason(
+    *, key: ValueKey, target_path: Tuple[str, ...], root_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+    host_model: SlayerModel, host_name: Optional[str] = None,
+) -> str:
+    """Why ``key`` broadcasts: the first path in its dependency closure not
+    attributable from the root names the fanning hop (DEV-1900) — so a derived
+    fanning dimension's warning names ``region_events``, not 'unreachable'."""
+    closure = key_closure(
+        key=key, anchor_model=host_model, anchor_relation=host_model.name,
+        bundle=bundle,
+    )
+    for p in (closure or (key_host_path(key),)):
+        if not attributable_from_root(
+            host_path=p, target_path=target_path, root_model=root_model,
+            models_by_name=models_by_name, host_name=host_name,
+        ):
+            return broadcast_reason(
+                host_path=p, target_path=target_path, root_model=root_model,
+                models_by_name=models_by_name, host_name=host_name,
+            )
+    return UNREACHABLE_NO_PATH
+
+
 def _reroot_leaf_via_host(
     r: ValueKey, *, target_path: Tuple[str, ...], root_model: SlayerModel,
     models_by_name: Dict[str, SlayerModel], host_name: str,
@@ -414,9 +462,10 @@ def assert_partition_key_attributable(
     models_by_name = bundle.models_by_name
     root = walk_key_path(model=host_m, path=agg_target, bundle=bundle) or host_m
     host_name = host_m.name if agg_target else None
-    attributable = attributable_from_root(
-        host_path=hp, target_path=agg_target, root_model=root,
-        models_by_name=models_by_name, host_name=host_name,
+    attributable = key_attributable_from_root(
+        key=pk, target_path=agg_target, root_model=root,
+        models_by_name=models_by_name, bundle=bundle, host_model=host_m,
+        host_name=host_name,
     )
     reason = None if attributable else broadcast_reason(
         host_path=hp, target_path=agg_target, root_model=root,
@@ -451,9 +500,12 @@ def shared_join_key_reroot(
 
 def grain_member_attributable(
     *, key: ValueKey, target_path: Tuple[str, ...], root_model: SlayerModel,
-    models_by_name: Dict[str, SlayerModel], host_name: Optional[str] = None,
+    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+    host_model: SlayerModel, host_name: Optional[str] = None,
 ) -> bool:
-    """Is a grain member attributable from the aggregate's root? (Every column/aggregate it references must be.)"""
+    """Is a grain member attributable from the aggregate's root? Every column it
+    references must be — judged on its dependency closure (DEV-1900) so a derived
+    fanning reference is unattributable; every nested aggregate must be too."""
     saw = False
     for r in walk_value_keys(key):
         if isinstance(r, AggregateKey):
@@ -465,10 +517,10 @@ def grain_member_attributable(
                 return False
         elif isinstance(r, (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey)):
             saw = True
-            if not attributable_from_root(
-                host_path=key_host_path(r), target_path=target_path,
-                root_model=root_model, models_by_name=models_by_name,
-                host_name=host_name,
+            if not key_attributable_from_root(
+                key=r, target_path=target_path, root_model=root_model,
+                models_by_name=models_by_name, bundle=bundle,
+                host_model=host_model, host_name=host_name,
             ):
                 return False
     return saw
@@ -485,14 +537,16 @@ def _grain_leaf_name(key: ValueKey) -> Optional[str]:
 
 def grain_determines(
     *, key: ValueKey, grain: Grain, host_model: SlayerModel,
-    models_by_name: Dict[str, SlayerModel],
+    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
 ) -> bool:
     """Does a dataset grain determine ``key`` (Axiom 1)? True iff ``key``
     is a grain member, an aggregate whose ``partition_by=`` grain ⊆ the grain (a
-    cell of the same dataset), or a column reached over provably to-one hops from
-    a model the grain pins — pinned by that model's unique key lying in the grain
-    at its path (an entity-key seed) or by the host-side join columns of the hop
-    into it (a foreign-key seed: the fixed key pins the to-one target row)."""
+    cell of the same dataset), or a column every path of whose dependency closure
+    (DEV-1900 — its own path plus every path its derived definition crosses) is
+    reached over provably to-one hops from a model the grain pins. A derived
+    column crossing a fanning hop the grain does not pin is not determined,
+    however its own path is reached; an unanalysable definition is not
+    determined."""
     if key in grain:
         return True
     if isinstance(key, AggregateKey):
@@ -502,13 +556,30 @@ def grain_determines(
         return key.partition_keys is not None and all(
             grain_determines(
                 key=pk, grain=grain, host_model=host_model,
-                models_by_name=models_by_name,
+                models_by_name=models_by_name, bundle=bundle,
             )
             for pk in key.partition_keys)
     if not isinstance(key, (ColumnKey, ColumnSqlKey)):
         return False
-    return _column_grain_determined(
-        key=key, grain=grain, host_model=host_model, models_by_name=models_by_name,
+    closure = key_closure(
+        key=key, anchor_model=host_model, anchor_relation=host_model.name,
+        bundle=bundle,
+    )
+    if closure is None:
+        return False
+    # Each dependency is pinned at its OWN depth (reseeded per hop), so check the
+    # maximal closure paths — a prefix is pinned implicitly by the deeper walk that
+    # passes through it, never independently.
+    paths = set(closure) | {key_host_path(key)}
+    maximal = [
+        p for p in paths
+        if not any(q != p and len(q) > len(p) and q[: len(p)] == p for q in paths)
+    ]
+    return all(
+        _path_grain_determined(
+            path=p, grain=grain, host_model=host_model, models_by_name=models_by_name,
+        )
+        for p in maximal
     )
 
 
@@ -554,13 +625,12 @@ def _hop_pins(
     )
 
 
-def _column_grain_determined(
-    *, key: ValueKey, grain: Grain, host_model: SlayerModel,
+def _path_grain_determined(
+    *, path: Tuple[str, ...], grain: Grain, host_model: SlayerModel,
     models_by_name: Dict[str, SlayerModel],
 ) -> bool:
-    """The column arm of ``grain_determines``: pinned from the host over provably
+    """One closure path of ``grain_determines``: pinned from the host over provably
     to-one hops, each hop reseeded by an entity or FK key in the grain."""
-    path = key_host_path(key)
     try:
         chain = walk(root=host_model, path=path, models_by_name=models_by_name)
     except AmbiguousJoinPathError:
@@ -583,22 +653,15 @@ def _column_grain_determined(
 def local_crossing_input_paths(
     *, key: AggregateKey, bundle: ResolvedSourceBundle,
     host_model: SlayerModel, include_source: bool = True,
-) -> List[Tuple[str, ...]]:
-    out: List[Tuple[str, ...]] = []
-    if key.column_filter_key is not None:
-        for p in key.column_filter_key.referenced_join_paths:
-            if p not in out:
-                out.append(tuple(p))
-    for p in compute_aggregate_input_join_paths(
-        key=key,
-        anchor_model=host_model,
-        anchor_relation=host_model.name,
-        bundle=bundle,
-        include_source=include_source,
-    ):
-        if p not in out:
-            out.append(tuple(p))
-    return out
+) -> Optional[List[Tuple[str, ...]]]:
+    """The dependency closure of a local aggregate's inputs (discovery mode:
+    nested aggregates descend). ``None`` when a dependency cannot be analysed —
+    the caller routes it to a producer so input safety fails it closed."""
+    closure = aggregate_input_closure(
+        key=key, anchor_model=host_model, anchor_relation=host_model.name,
+        bundle=bundle, include_source=include_source, descend_aggregates=True,
+    )
+    return None if closure is None else list(closure)
 
 
 def crossing_local_root_predicate(
@@ -622,6 +685,8 @@ def crossing_local_root_predicate(
         crossed = local_crossing_input_paths(
             key=k, bundle=bundle, host_model=host,
         )
+        if crossed is None:
+            return True  # unanalysable input → own producer (fail closed downstream)
         return bool(crossed) and not may_inline_crossing_inputs(crossed)
 
     return _pred

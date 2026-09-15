@@ -31,62 +31,30 @@ Invariant: every summary is expressed in the coordinate system of the
 
 from __future__ import annotations
 
-from decimal import Decimal
 from typing import List, Optional, Tuple
 
 from sqlglot import exp
 
-from slayer.core.errors import SlayerError
-from slayer.core.keys import (
-    AggregateKey,
-    ArithmeticKey,
-    BetweenKey,
-    ColumnKey,
-    ColumnSqlKey,
-    InKey,
-    LiteralKey,
-    ScalarCallKey,
-    SqlExprKey,
-    StarKey,
-    TimeTruncKey,
-    TransformKey,
-)
-from slayer.sql.column_expansion import collect_root_scope_joined_paths
-from slayer.engine.column_filter_paths import (
+from slayer.core.keys import ColumnKey, ColumnSqlKey
+from slayer.engine.reference_closure import (
+    UnhandledValueKindError,  # re-exported: moved here in DEV-1900
+    _child_keys,
     _expand_derived_refs_any_dialect,
     _parse_filter_sql_any_dialect,
+    key_closure,
 )
+
+__all__ = [
+    "UnhandledValueKindError",
+    "compute_key_join_paths",
+    "filter_reachability_for",
+    "key_has_host_local_ref",
+    "path_is_reachable",
+    "recompute_filter_reachability",
+]
 from slayer.ir.planned import FilterReachability
 
 Path = Tuple[str, ...]
-
-
-class UnhandledValueKindError(SlayerError, TypeError):
-    """A ValueKey kind the reachability scan does not know how to walk.
-
-    Fails CLOSED, mirroring the total-visitor discipline the ValueKey renderer
-    uses: a new key kind that silently contributed no paths would read as
-    "crosses nothing", and a filter depending on it would propagate into a CTE
-    that cannot evaluate it.
-    """
-
-    def __init__(self, key: object) -> None:
-        self.key_type = type(key).__name__
-        super().__init__(
-            f"UnhandledValueKindError: reachability scan has no rule for key "
-            f"kind {self.key_type!r}. Add an explicit arm — a silent empty "
-            f"result would route the filter as if it crossed nothing."
-        )
-
-
-def _prefixes(path: Path) -> List[Path]:
-    """Every non-empty prefix of ``path``.
-
-    The FROM builder needs each intermediate join to reach the last one, and
-    reachability is judged per hop, so a two-hop reference contributes both
-    ``("a",)`` and ``("a", "b")``.
-    """
-    return [tuple(path[: i + 1]) for i in range(len(path))]
 
 
 def _expanded_derived_ast(
@@ -145,25 +113,6 @@ def _expanded_derived_ast_uncached(
     return _parse_filter_sql_any_dialect(expanded or col.sql)
 
 
-def _derived_sql_paths(
-    *, key: ColumnSqlKey, anchor_model, anchor_relation: str, bundle,
-    cache: "Optional[dict]" = None,
-) -> List[Path]:
-    """Join paths the expansion of a derived column's ``Column.sql`` crosses."""
-    parsed = _expanded_derived_ast(
-        key=key, anchor_model=anchor_model,
-        anchor_relation=anchor_relation, bundle=bundle, cache=cache,
-    )
-    if parsed is None:
-        return []
-    return list(collect_root_scope_joined_paths(
-        parsed=parsed,
-        source_model=anchor_model,
-        source_relation=anchor_relation,
-        bundle=bundle,
-    ))
-
-
 def _derived_sql_touches_anchor(
     *, key: ColumnSqlKey, anchor_model, anchor_relation: str, bundle,
     cache: "Optional[dict]" = None,
@@ -193,147 +142,21 @@ def _derived_sql_touches_anchor(
     return False
 
 
-# Values a key tree can carry INLINE — plain data, not references, so they
-# cannot cross a join. ``Decimal`` is load-bearing: ``AggregateKey.args`` /
-# ``kwargs`` and ``ScalarCallKey.args`` normalise numeric literals to it, so a
-# parametric aggregate like ``price:percentile(p=0.9)`` puts a Decimal in the
-# tree. Omitting it made the fail-closed visitor reject a legitimate key.
-_INLINE_SCALARS = (str, int, float, bool, Decimal)
-
-# Leaf kinds: they carry references but no child keys.
-_LEAF_KINDS = (LiteralKey, StarKey, SqlExprKey, ColumnKey, ColumnSqlKey)
-
-
-def _child_keys(node, *, descend_aggregates: bool = True) -> List:
-    """The child keys of a composite node, in a STABLE order.
-
-    A variable-length SEQUENCE, not a fixed record — hence a list.
-
-    One dispatch shared by both visitors, so a new key kind is handled — or
-    rejected — identically by each. Fails CLOSED on an unknown kind: a silent
-    empty result would read as "crosses nothing" and route a filter into a
-    scope that cannot evaluate it.
-
-    ``partition_keys`` is a frozenset, whose iteration order varies between
-    runs; sorted here because the discovered paths drive JOIN emission order,
-    and non-deterministic SQL is its own bug.
-
-    ``descend_aggregates=False`` stops at an aggregate: for host-locality, an
-    aggregate is routed by WHERE it is computed, not by its inputs.
-    """
-    if isinstance(node, _LEAF_KINDS) or isinstance(node, _INLINE_SCALARS):
-        return []
-    if isinstance(node, TimeTruncKey):
-        return [node.column]
-    if isinstance(node, AggregateKey):
-        if not descend_aggregates:
-            return []
-        # ``column_filter_key`` is deliberately NOT a plain child: its
-        # ``referenced_join_paths`` are OWNER-relative and must be re-anchored
-        # by prefixing ``source.path``, which ``compute_key_join_paths`` does
-        # explicitly (DEV-1783). Descending it here would record them
-        # anchor-rooted and mis-route the filter.
-        return [
-            node.source,
-            *node.args,
-            *(v for _name, v in node.kwargs),
-        ]
-    if isinstance(node, TransformKey):
-        return [
-            node.input,
-            *sorted(node.partition_keys, key=repr),
-            node.time_key,
-        ]
-    if isinstance(node, ArithmeticKey):
-        return list(node.operands)
-    if isinstance(node, ScalarCallKey):
-        return list(node.args)
-    if isinstance(node, InKey):
-        return [node.column, *node.values]
-    if isinstance(node, BetweenKey):
-        return [node.column, node.low, node.high]
-    raise UnhandledValueKindError(node)
-
-
-def _leaf_paths(
-    node, *, anchor_model, anchor_relation: str, bundle,
-    cache: "Optional[dict]" = None,
-) -> List[Path]:
-    """Join paths a key contributes ITSELF (not via its children).
-
-    Composites contribute nothing here — their dependencies arrive through
-    ``_child_keys`` — EXCEPT an ``AggregateKey``'s ``column_filter_key``, which
-    is not a plain child (its paths are OWNER-relative and re-anchored here).
-    Split out of the traversal so the walk stays a two-line "collect, then
-    descend".
-    """
-    if isinstance(node, AggregateKey) and node.column_filter_key is not None:
-        # ``column_filter_key.referenced_join_paths`` are OWNER-relative
-        # (anchored at the aggregated column's owner, reached via
-        # ``source.path``). Re-anchor to the query root by prefixing
-        # ``source.path`` (DEV-1783); the reroot visitor leaves the owner in
-        # place for the same reason (keys.py: cfk copied unchanged).
-        source_path = tuple(getattr(node.source, "path", ()) or ())
-        return [
-            pre
-            for p in node.column_filter_key.referenced_join_paths
-            for pre in _prefixes(source_path + tuple(p))
-        ]
-    if isinstance(node, ColumnSqlKey):
-        # Own anchored path first, then whatever its expansion reaches — the
-        # order the FROM builder consumes. Built as a NEW list rather than
-        # appending to ``_prefixes``' return, so this cannot corrupt that
-        # result if it ever becomes cached.
-        return [
-            *_prefixes(node.path),
-            *_derived_sql_paths(
-                key=node, anchor_model=anchor_model,
-                anchor_relation=anchor_relation, bundle=bundle, cache=cache,
-            ),
-        ]
-    if isinstance(node, ColumnKey):
-        return _prefixes(node.path)
-    if isinstance(node, SqlExprKey):
-        return [
-            pre
-            for p in node.referenced_join_paths
-            for pre in _prefixes(tuple(p))
-        ]
-    return []
-
-
 def compute_key_join_paths(
     *, key, anchor_model, anchor_relation: str, bundle,
     cache: "Optional[dict]" = None,
 ) -> Tuple[Path, ...]:
     """Every join path ``key``'s dependency tree crosses, anchored at
-    ``anchor_relation``.
+    ``anchor_relation`` — delegates to the one dependency closure (DEV-1900).
 
-    Recursive over the WHOLE key tree, not just the top node: a crossing
-    reference buried under arithmetic or inside an aggregate's kwargs is still
-    a dependency the destination scope has to satisfy. Returns an
-    insertion-ordered, de-duplicated tuple; empty means the key is evaluable
-    wherever the anchor is.
+    Best-effort for filter routing: an unanalysable derived dependency (closure
+    ``None``) coerces to ``()`` here; the population guard and input safety take
+    the tri-state closure directly and fail closed on ``None``.
     """
-    seen: "dict[Path, None]" = {}
-
-    def _add(path: Path) -> None:
-        if path:
-            seen.setdefault(tuple(path), None)
-
-    def _walk(node) -> None:
-        if node is None:
-            return
-        for path in _leaf_paths(
-            node, anchor_model=anchor_model,
-            anchor_relation=anchor_relation, bundle=bundle, cache=cache,
-        ):
-            _add(path)
-        for child in _child_keys(node):
-            _walk(child)
-
-    _walk(key)
-    return tuple(seen)
+    return key_closure(
+        key=key, anchor_model=anchor_model, anchor_relation=anchor_relation,
+        bundle=bundle, cache=cache,
+    ) or ()
 
 
 def key_has_host_local_ref(
