@@ -1379,11 +1379,17 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         ),
         to_many_handling=prebound.to_many_handling,
     )
-    # A computed-dimension grain member or windowed producer re-enables discovery.
-    enable_nested = window_td_key is not None or any(
-        isinstance(rr, (ScalarCallKey, ArithmeticKey, TransformKey))
-        or is_local_partitioned_agg(rr)
-        for rr in grain_keys
+    # A computed-dimension grain member, windowed producer, or attach-owning answer
+    # (mixed source / attached parameter, DEV-1859) re-enables discovery so the
+    # producer row-attaches those inputs.
+    enable_nested = (
+        window_td_key is not None
+        or _answers_need_nested_regroups([agg_rooted])
+        or any(
+            isinstance(rr, (ScalarCallKey, ArithmeticKey, TransformKey))
+            or is_local_partitioned_agg(rr)
+            for rr in grain_keys
+        )
     )
     producer_plan = compile_prebound(
         query=StrictQueryCarrier(source_model=root_name, prebound=producer_prebound),

@@ -2409,14 +2409,18 @@ class SQLGenerator:
 
     def _resolve_agg_kwargs_for_key(
         self, *, key, source_model, source_relation: str, bundle,
+        attached_columns: Optional[Dict[Any, exp.Expression]] = None,
     ) -> "Optional[Dict[str, ResolvedAggKwarg]]":
-        """Resolve a single LOCAL aggregate's column-ref kwargs"""
+        """Resolve a single LOCAL aggregate's column-ref kwargs — a row-attached
+        placeholder kwarg resolves to its producer join column via
+        ``attached_columns`` (DEV-1859)."""
 
         kwargs = getattr(key, "kwargs", None)
         if bundle is None or not kwargs:
             return None
         scope = self._throwaway_frame(
             model=source_model, relation=source_relation, bundle=bundle,
+            attached_columns=attached_columns,
         )
         resolved = {
             kname: ResolvedAggKwarg(kind="expr", value=scope.resolve(kval))
@@ -6690,6 +6694,7 @@ class SQLGenerator:
             having_kwargs = self._resolve_agg_kwargs_for_key(
                 key=agg_key, source_model=source_model,
                 source_relation=source_relation, bundle=bundle,
+                attached_columns=attached_columns,
             )
             synth = self._build_agg_render_spec_from_planned(
                 slot=slot, key=agg_key, source_model=source_model,
