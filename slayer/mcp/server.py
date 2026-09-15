@@ -531,8 +531,9 @@ To connect a new database: create_datasource → describe_datasource (verify + l
         none missing.
 
         Filter literals — build every ==/in/like predicate on a text column from that column's
-        sampled values (inspect it), never a guessed spelling; a literal absent from the samples
-        means don't write that predicate. Compare case/whitespace-insensitively in the FILTER
+        sampled values (inspect it), never a guessed spelling; samples are a top-N snapshot, so
+        when a needed literal is absent verify it (e.g. a distinct-values query) rather than
+        assume either way. Compare case/whitespace-insensitively in the FILTER
         position only, never on a projected, grouped, or join-key column; abbreviations that
         case-folding can't unify go in the IN-set. Apply only the transformations
         (TRIM/ROUND/CAST/dedup) the question or a governing definition requires.
@@ -759,9 +760,10 @@ To connect a new database: create_datasource → describe_datasource (verify + l
 
         Before using a column as a filter, projection, group-by, or join
         key, inspect it and read its ``Description:`` (the schema author's
-        intent) and ``Sample values:`` (the authoritative inventory of the
-        literal forms actually stored — build text predicates from these,
-        never a guessed spelling). Never pick a column from its name alone.
+        intent) and ``Sample values:`` (the stored literal forms — a top-N
+        sample, indicative rather than exhaustive; build text predicates
+        from these, never a guessed spelling). Never pick a column from its
+        name alone.
 
         Collection (DEV-1667): omit ``reference`` (or pass ``None`` / ``[]``)
         to list a whole kind. ``entity_type="model"`` lists all models grouped

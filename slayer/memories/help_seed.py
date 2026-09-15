@@ -1,21 +1,8 @@
-"""DEV-1658: SLayer's conceptual help, seeded as predefined memories.
-
-The old standalone ``help()`` tool/subcommand duplicated the memory system with
-a fixed content set. Instead, the topic bodies under ``help_content/*.md`` are
-seeded as real memories with fixed ids (``help.intro`` … ``help.workflow``) and
-retrieved through the ordinary ``inspect(entity_type="memory")`` / ``search``
-surfaces.
-
-``seed_help_memories(storage)`` is idempotent: upsert-always, but it skips the
-write (and the embedding fan-out) when the stored ``learning`` + ``description``
-already match the shipped content, so a warm store is a cheap no-op. Seeded
-memories carry **no entities**, so they never surface in a model's Learnings
-section (that section filters by entity overlap).
-
-Content lives in ``help_content/NN_name.md``; the ``NN_`` prefix fixes the
-teaching order and is stripped to form the topic key. ``00_intro`` is the entry
-point that lists the deep-dive topics.
-"""
+"""Conceptual help, seeded as predefined memories (``help.intro`` …) from
+``help_content/NN_name.md`` (``NN_`` fixes teaching order, stripped for the
+topic key) and read via ``inspect(entity_type="memory")`` / ``search``.
+Seeding is idempotent (upsert, skip-if-unchanged) and seeds no entities, so
+help never surfaces in a model's Learnings section."""
 
 from __future__ import annotations
 
@@ -71,11 +58,8 @@ def _strip_numeric_prefix(stem: str) -> str:
     return stem
 
 
-#: Host-substitutable tokens in the shipped content. An embedding host (e.g. a
-#: hosted SLayer that renames the query tool) overrides these instead of forking
-#: the markdown. Written ``{{name}}`` — deliberately NOT ``str.format`` /
-#: ``string.Template`` syntax, because the content is full of single-brace JSON
-#: examples (``{"source_model": "orders"}``) and ``'$'`` currency symbols.
+#: Host-substitutable tokens. ``{{name}}`` syntax — NOT str.format/Template,
+#: because the content is full of single-brace JSON examples.
 DEFAULT_HELP_CONTEXT: dict[str, str] = {
     "product": "SLayer",
 }
@@ -84,12 +68,8 @@ _PLACEHOLDER_RE = re.compile(r"\{\{(\w+)\}\}")
 
 
 def _render(text: str, context: Mapping[str, str]) -> str:
-    """Substitute ``{{name}}`` tokens from ``context``.
-
-    An unknown token raises rather than rendering literally — a typo in the
-    shipped content should fail loudly at load, not ship ``{{prodcut}}`` to an
-    agent.
-    """
+    """Substitute ``{{name}}`` tokens; an unknown token raises at load rather
+    than shipping a typo to an agent."""
     def _sub(match: re.Match[str]) -> str:
         key = match.group(1)
         if key not in context:
@@ -105,12 +85,8 @@ def _render(text: str, context: Mapping[str, str]) -> str:
 def load_help_topics(
     *, context: Mapping[str, str] | None = None,
 ) -> tuple[HelpTopic, ...]:
-    """SLayer's built-in help topics, in teaching (``NN_``) order.
-
-    ``context`` overrides :data:`DEFAULT_HELP_CONTEXT` so a host can rename the
-    product or the query tool without copying the markdown. Pair with
-    :func:`merge_help_topics` to replace or extend individual topics.
-    """
+    """Built-in help topics in teaching order; ``context`` overrides
+    :data:`DEFAULT_HELP_CONTEXT` (pair with :func:`merge_help_topics`)."""
     ctx = {**DEFAULT_HELP_CONTEXT, **(context or {})}
     content_dir = files(__package__) / _CONTENT_SUBDIR
     topics: list[HelpTopic] = []
@@ -138,16 +114,9 @@ def merge_help_topics(
     override: Mapping[str, HelpTopic] | None = None,
     extra: Sequence[HelpTopic] = (),
 ) -> tuple[HelpTopic, ...]:
-    """Compose a host's topic set from SLayer's.
-
-    ``override`` replaces topics by id, keeping ``base``'s teaching order, so a
-    host only ships the bodies that genuinely differ. ``extra`` appends
-    host-specific topics — give those a namespaced id (e.g. ``help.motley.x``)
-    so they can't collide with a future built-in.
-
-    Raises when an ``override`` id isn't in ``base``: that means the built-in was
-    renamed or removed upstream and the host's copy is silently dead.
-    """
+    """Compose a host's topic set: ``override`` replaces by id (teaching order
+    kept; unknown id raises — the built-in was renamed/removed upstream);
+    ``extra`` appends host topics (namespace them, e.g. ``help.motley.x``)."""
     override = dict(override or {})
     unknown = sorted(set(override) - {topic.id for topic in base})
     if unknown:
@@ -155,10 +124,7 @@ def merge_help_topics(
             f"override targets no built-in help topic: {', '.join(unknown)}. "
             f"Known ids: {', '.join(topic.id for topic in base)}."
         )
-    # A value whose own id differs from its key replaces the built-in with a
-    # topic seeded under that other id — so the topic it was meant to replace
-    # silently stops being served (e.g. keyed help.workflow, id help.workflows
-    # removes help.workflow from the set entirely).
+    # A key/id mismatch would silently drop the topic the override targets.
     mismatched = sorted(
         f"{key} -> {topic.id}" for key, topic in override.items() if topic.id != key
     )
@@ -168,8 +134,7 @@ def merge_help_topics(
         )
     merged = [override.get(topic.id, topic) for topic in base]
     merged.extend(extra)
-    # Two topics sharing an id would seed last-write-wins, so one body is lost
-    # with no error. Usually an ``extra`` that collides with a built-in.
+    # Duplicate ids seed last-write-wins, losing a body silently.
     duplicates = sorted(
         topic_id
         for topic_id, count in Counter(topic.id for topic in merged).items()
@@ -194,17 +159,10 @@ HELP_TOPICS: tuple[HelpTopic, ...] = load_help_topics()
 async def seed_help_memories(
     storage: StorageBackend, *, topics: Sequence[HelpTopic] | None = None,
 ) -> int:
-    """Idempotently seed the help topics as memories. Returns the number of
-    rows actually written (0 on a warm, unchanged store). Rows under
-    :data:`RETIRED_HELP_IDS` are deleted first.
-
-    Upsert-always with skip-if-unchanged: an existing ``help.*`` row whose
-    ``learning`` + ``description`` already match the shipped content is left
-    untouched (no write, no embedding refresh). Changed/absent rows are saved
-    with empty ``entities`` (so they never pollute Learnings sections), and the
-    embedding channel is refreshed via ``SearchService.upsert_memory`` — the
-    storage layer does not embed on its own.
-    """
+    """Idempotently seed the help topics; returns rows actually written (0 on
+    a warm, unchanged store). :data:`RETIRED_HELP_IDS` rows are deleted first;
+    unchanged rows are skipped (no write, no embedding refresh); written rows
+    fan out to ``SearchService.upsert_memory`` (storage never embeds)."""
     for stale_id in RETIRED_HELP_IDS:
         try:
             await storage.delete_memory(stale_id)
@@ -217,9 +175,7 @@ async def seed_help_memories(
             existing is not None
             and existing.learning == topic.learning
             and existing.description == topic.description
-            # Also require the invariant metadata to already hold — otherwise a
-            # help.* id someone tagged with entities / a query (but with matching
-            # text) would skip the rewrite and keep polluting Learnings / recall.
+            # Invariant metadata must hold too, else a tagged row keeps polluting Learnings.
             and existing.entities == []
             and existing.query is None
         ):
@@ -230,9 +186,7 @@ async def seed_help_memories(
             description=topic.description,
             entities=[],
         )
-        # Embedding/retriever fan-out (DEV-1658 / Codex): storage.save_memory
-        # only persists the row. Local import mirrors MemoryService.save_memory
-        # — keeps the search module off the critical-path import graph.
+        # Local import keeps search off the critical-path import graph.
         from slayer.search.service import SearchService
 
         await SearchService(storage=storage).upsert_memory(memory)

@@ -1,21 +1,6 @@
-"""DEV-1658: the help topics are seeded as predefined memories
-(``help.intro`` … ``help.workflow``) and retrieved via
-``inspect(entity_type="memory")`` / ``search`` — the standalone ``help()``
-tool/subcommand is gone.
-
-These tests pin:
-
-* the ``HELP_TOPICS`` content contract + the content rewrite
-  (no ``help(`` / ``inspect_model`` substrings; intro lists the new ids),
-* ``seed_help_memories`` idempotency (upsert-always, skip-if-unchanged,
-  ``created_at`` preserved, embedding fan-out on change only),
-* that seeded help never pollutes a model's Learnings section
-  (empty ``entities``),
-* retrieval via ``InspectService`` + surfacing via ``SearchService``,
-* the MCP wiring (no ``help`` tool; instructions point at
-  ``memory:help.intro``),
-* CLI seeding on ``inspect`` / ``search`` (query) only.
-"""
+"""Help topics seed as predefined memories and are read via inspect/search.
+Pins: content contract, seeding idempotency + retired-row deletion, Learnings
+isolation (empty entities), retrieval/surfacing, MCP wiring, CLI seeding."""
 
 from __future__ import annotations
 
@@ -50,9 +35,7 @@ EXPECTED_HELP_IDS = (
 )
 
 
-# ---------------------------------------------------------------------------
-# fixtures
-# ---------------------------------------------------------------------------
+# --- fixtures ---
 
 
 @pytest.fixture
@@ -77,9 +60,7 @@ async def storage() -> AsyncIterator[YAMLStorage]:
         yield s
 
 
-# ---------------------------------------------------------------------------
-# HELP_TOPICS content contract
-# ---------------------------------------------------------------------------
+# --- HELP_TOPICS content contract ---
 
 
 class TestHelpTopicsContent:
@@ -95,9 +76,7 @@ class TestHelpTopicsContent:
             assert len(t.description) <= 500, f"{t.id} description too long"
 
     def test_no_stale_help_or_inspect_model_references(self) -> None:
-        # Content rewrite (Codex #10): the migrated bodies must not tell an
-        # agent to call the removed help() tool or the deprecated
-        # inspect_model tool.
+        # Bodies must not point at the removed help() tool or deprecated inspect_model.
         for t in HELP_TOPICS:
             assert "help(" not in t.learning, f"{t.id} still references help("
             assert "inspect_model" not in t.learning, (
@@ -110,9 +89,7 @@ class TestHelpTopicsContent:
         assert "memory:help.workflow" in intro.learning
 
 
-# ---------------------------------------------------------------------------
-# seeding
-# ---------------------------------------------------------------------------
+# --- seeding ---
 
 
 class TestSeeding:
@@ -192,9 +169,7 @@ class TestSeeding:
         assert calls == []
 
 
-# ---------------------------------------------------------------------------
-# no Learnings-section pollution
-# ---------------------------------------------------------------------------
+# --- no Learnings-section pollution ---
 
 
 class TestNoLearningsPollution:
@@ -212,9 +187,7 @@ class TestNoLearningsPollution:
         assert intro.learning[:40] not in out
 
 
-# ---------------------------------------------------------------------------
-# retrieval via inspect
-# ---------------------------------------------------------------------------
+# --- retrieval via inspect ---
 
 
 class TestInspectRetrieval:
@@ -242,9 +215,7 @@ class TestInspectRetrieval:
         assert topic.learning.strip()[:60] in out
 
 
-# ---------------------------------------------------------------------------
-# surfacing via search
-# ---------------------------------------------------------------------------
+# --- surfacing via search ---
 
 
 class TestSearchSurfacing:
@@ -278,9 +249,7 @@ class TestSearchSurfacing:
         )
 
 
-# ---------------------------------------------------------------------------
-# MCP wiring
-# ---------------------------------------------------------------------------
+# --- MCP wiring ---
 
 
 class TestMcpWiring:
@@ -307,9 +276,7 @@ class TestMcpWiring:
         assert (await storage.get_memory("help.intro")).learning
 
 
-# ---------------------------------------------------------------------------
-# CLI seeding (inspect + search-query only)
-# ---------------------------------------------------------------------------
+# --- CLI seeding (inspect + search-query only) ---
 
 
 class TestCliSeeding:
@@ -381,9 +348,7 @@ class TestCliSeeding:
         assert calls == []  # seed never fired on the refresh-samples path
 
 
-# ---------------------------------------------------------------------------
-# CLI parser: help subcommand removed, epilog points to the replacement
-# ---------------------------------------------------------------------------
+# --- CLI parser: help subcommand removed, epilog points to the replacement ---
 
 
 class TestCliParser:
@@ -408,9 +373,7 @@ class TestHelpPackageRemoved:
         assert importlib.util.find_spec("slayer.help") is None
 
 
-# ---------------------------------------------------------------------------
-# REST wiring — create_app seeds exactly once
-# ---------------------------------------------------------------------------
+# --- REST wiring — create_app seeds exactly once ---
 
 
 class TestRestWiring:
@@ -465,9 +428,7 @@ async def base_dir_storage() -> AsyncIterator[YAMLStorage]:
         yield YAMLStorage(base_dir=os.path.join(tmpdir, "store"))
 
 
-# ---------------------------------------------------------------------------
-# docs no longer advertise the removed help() tool / subcommand
-# ---------------------------------------------------------------------------
+# --- docs no longer advertise the removed help() tool / subcommand ---
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -489,17 +450,7 @@ class TestDocsUpdated:
         assert "memory:help.intro" in doc
 
 
-# ---------------------------------------------------------------------------
-# DEV-1669: help-seeding must never crash server construction
-#
-# ``create_mcp_server`` used to run ``run_sync(seed_help_memories(storage))``
-# unconditionally at construction, crashing any metadata-only build over a
-# ``None`` / non-backend storage, and surfacing ``RuntimeError: no running
-# event loop`` from ``run_sync`` in nested async contexts. Seeding is now
-# guarded (skipped for ``None`` / non-``StorageBackend`` storage) and
-# best-effort (a genuine seed failure over a real backend logs a warning and
-# lets construction proceed).
-# ---------------------------------------------------------------------------
+# --- help-seeding must never crash server construction (guarded + best-effort) ---
 
 
 class TestSeedGuard:

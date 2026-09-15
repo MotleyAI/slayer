@@ -845,13 +845,17 @@ class SlayerQuery(BaseModel):
     )
     order: Annotated[list[OrderItem] | None, BeforeValidator(_coerce_order)] = Field(
         default=None,
-        description="Sort keys; column is a result column name or any expression string.",
+        description=(
+            "Sort keys; column is a result column name or an "
+            "aggregation-bearing expression string."
+        ),
     )
     limit: int | None = Field(
         default=None,
         description=(
             "Max rows to return. Use only for top-N / 'the single most X' "
-            "requests; a plain list returns every matching row."
+            "requests — never to trim a plain list (an uncapped MCP response "
+            "is truncated at 20 rows with an explicit notice)."
         ),
     )
     offset: int | None = Field(default=None, description="Rows to skip.")

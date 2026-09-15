@@ -12,12 +12,9 @@ class StrEnum(str, Enum):
 
 
 class DataType(StrEnum):
-    # No docstring on purpose — it would ship to agents inside the MCP query
-    # tool's JSON schema. Values match sqlglot exp.DataType.Type byte-for-byte
-    # (CAST needs no translation map). UNKNOWN = opaque: no equality operator
-    # class at the DB (json/xml/geometry/range...), so stored/displayed
-    # (raw type on Column.db_type) but never grouped/aggregated/CAST — check
-    # via is_opaque; classification source: engine.ingestion._OPAQUE_SA_TYPE_NAMES.
+    # No docstring on purpose — it would ship to agents in the MCP query schema.
+    # Values match sqlglot exp.DataType.Type byte-for-byte. UNKNOWN = opaque
+    # (no DB equality operator): stored/displayed, never grouped/aggregated/CAST — see is_opaque.
 
     TEXT = "TEXT"
     INT = "INT"
@@ -33,10 +30,7 @@ class DataType(StrEnum):
         return self is DataType.UNKNOWN
 
 
-# DEV-1361: lenient before-validator absorbs legacy lowercase type spellings
-# from older agent input (MCP/REST/CLI), pseudo-types (count/sum/...) drop to
-# None so the field falls through to its default. Used by both Column and
-# ModelMeasure validators in slayer/core/models.py.
+# Legacy lowercase type spellings; pseudo-types drop to None (field default fires).
 _LEGACY_DATATYPE_ALIASES: dict[str, str | None] = {
     # Pre-rename canonical values.
     "string": "TEXT",
@@ -58,13 +52,8 @@ _LEGACY_DATATYPE_ALIASES: dict[str, str | None] = {
 
 
 def _coerce_legacy_datatype(v: Any) -> Any:
-    """Map legacy lowercase ``DataType`` strings to current canonical values.
-
-    Pseudo-types resolve to ``None`` so the calling validator can drop them
-    and let the field default fire. Already-canonical values, enum instances,
-    and unknown strings pass through untouched (Pydantic's enum coercion will
-    raise on unknown).
-    """
+    """Map legacy lowercase ``DataType`` strings to canonical values; pseudo-types
+    -> None; everything else passes through (enum coercion raises on unknown)."""
     if isinstance(v, str):
         mapped = _LEGACY_DATATYPE_ALIASES.get(v)
         if v in _LEGACY_DATATYPE_ALIASES:
@@ -79,9 +68,7 @@ class TimeGranularity(StrEnum):
     HOUR = "hour"
     DAY = "day"
     WEEK = "week"
-    # DEV-1572: Sunday-anchored week (weeks start on Sunday, end on Saturday).
-    # WEEK is Monday-anchored (ISO-8601); WEEK_SUNDAY exists so Metabase week
-    # breakouts — which use Sunday weeks — bucket the way Metabase asked for.
+    # Sunday-anchored week (Metabase convention); WEEK is Monday-anchored ISO-8601.
     WEEK_SUNDAY = "week_sunday"
     MONTH = "month"
     QUARTER = "quarter"
@@ -191,13 +178,8 @@ BUILTIN_AGGREGATIONS: frozenset[str] = frozenset({
     "corr", "covar_samp", "covar_pop",
 })
 
-# Aggregation value classification (DEV-1788). One classifier,
-# ``classify_aggregation``, buckets every aggregation by how its result relates
-# to the source column. Both ``aggregated_type`` (slot DataType) and
-# ``_infer_aggregated_format`` (display NumberFormat) read the bucket and map it
-# to their own output, so the type and format axes cannot drift apart. The four
-# builtin sets partition ``BUILTIN_AGGREGATIONS`` (pinned by a drift-guard test);
-# custom/model-defined aggregations hit the PRESERVING fallback.
+# ``classify_aggregation`` buckets each aggregation by result-vs-source relation;
+# slot type and display format both read the bucket, so the axes cannot drift.
 
 # Result is always an integer count, independent of the source column.
 INTEGER_AGGREGATIONS: frozenset[str] = frozenset({
@@ -247,11 +229,8 @@ def classify_aggregation(
         return AggregationValueClass.FLOAT_PLAIN
     return AggregationValueClass.PRESERVING
 
-# DEV-1576: unambiguous aggregation-name aliases that LLM agents routinely
-# emit. ``normalize_aggregation_name`` lowercases the incoming token and maps
-# it through this table; the result is only adopted when it lands in
-# ``BUILTIN_AGGREGATIONS``. ``stddev``/``var``/``variance`` map to the *sample*
-# variants, matching Postgres' bare ``stddev``/``variance`` defaults.
+# Aliases agents routinely emit; ``stddev``/``var``/``variance`` map to the
+# sample variants, matching Postgres defaults.
 AGGREGATION_ALIASES: dict[str, str] = {
     "countd": "count_distinct",
     "countdistinct": "count_distinct",  # also matches "countDistinct" once lowercased
@@ -265,36 +244,17 @@ AGGREGATION_ALIASES: dict[str, str] = {
 
 
 def normalize_aggregation_name(name: str) -> str:
-    """Coerce an aggregation token to its canonical SLayer spelling.
-
-    Lowercases the token and applies :data:`AGGREGATION_ALIASES`. The
-    normalized form is only adopted when it is a real built-in aggregation;
-    otherwise the **original** string is returned unchanged so genuinely
-    unknown names still raise downstream (and custom aggregation names keep
-    their exact casing). Examples::
-
-        "countd"        -> "count_distinct"
-        "countDistinct" -> "count_distinct"
-        "stddev"        -> "stddev_samp"
-        "SUM"           -> "sum"
-        "myCustomAgg"   -> "myCustomAgg"  (unchanged — not a builtin)
-        "bogus"         -> "bogus"        (unchanged — still raises later)
-    """
+    """Lowercase + alias-map to the canonical spelling; adopted only when the
+    result is a builtin, else the original returns unchanged (custom names keep
+    casing, unknown names still raise downstream)."""
     lowered = name.lower()
     candidate = AGGREGATION_ALIASES.get(lowered, lowered)
     return candidate if candidate in BUILTIN_AGGREGATIONS else name
 
 
 def format_unknown_aggregation(name: str, known: "set[str] | frozenset[str]") -> str:
-    """DEV-1576: the shared 'Unknown aggregation' error message.
-
-    Used by both the binder's aggregation gate (``slayer/engine/binding.py``)
-    and the typed binding gate (``slayer/engine/binding.py``) so the wording
-    stays byte-identical: an unknown aggregation name is distinguished from a
-    known-but-disallowed one, with a close-match suggestion and the model-wide
-    known list. ``known`` = ``BUILTIN_AGGREGATIONS`` unioned with the owning
-    model's custom aggregation names.
-    """
+    """Shared 'Unknown aggregation' message (both binding gates): close-match
+    hint + known list (builtins ∪ the model's custom aggregations)."""
     suggestion = difflib.get_close_matches(word=name, possibilities=sorted(known), n=1)
     hint = f" Did you mean '{suggestion[0]}'?" if suggestion else ""
     return f"Unknown aggregation '{name}'.{hint} Known: {sorted(known)}."
@@ -325,11 +285,8 @@ BUILTIN_AGGREGATION_PARAM_ORDER: dict[str, list[str]] = {
     **BUILTIN_AGGREGATION_REQUIRED_PARAMS,
 }
 
-# Aggregations that only make sense on numeric-valued measures. Applying them
-# to a non-numeric measure (e.g. AVG on a VARCHAR column) is always invalid
-# and is rejected during query binding rather than at SQL execution time.
-# min, max, count, count_distinct, first, last work on any type and are NOT
-# in this set.
+# Rejected at binding on non-numeric measures; min/max/count*/first/last
+# work on any type and are deliberately absent.
 NUMERIC_ONLY_AGGREGATIONS: frozenset[str] = frozenset({
     "sum", "avg", "median", "weighted_avg", "percentile",
     "stddev_samp", "stddev_pop", "var_samp", "var_pop",
@@ -337,10 +294,8 @@ NUMERIC_ONLY_AGGREGATIONS: frozenset[str] = frozenset({
 })
 
 
-# Default aggregations applicable to a column based on its data type, when the
-# column has no explicit ``allowed_aggregations`` whitelist. Used by the engine
-# to gate ``column:agg`` expressions (e.g., ``revenue:sum`` requires ``sum`` to
-# be eligible for the ``revenue`` column's data type).
+# Per-type default whitelist, used when a column declares no explicit
+# ``allowed_aggregations``.
 _NUMERIC_AGGREGATIONS: frozenset[str] = frozenset({
     "sum", "avg", "min", "max", "count", "count_distinct", "count_distinct_approx",
     "median", "weighted_avg", "percentile", "first", "last",

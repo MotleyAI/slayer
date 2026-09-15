@@ -10,7 +10,8 @@
 ## Building a query
 
 Start with one measure and a tiny `limit`; add dimensions, then filters, then
-transforms (they need a time dimension), checking row counts at each step. Debug
+transforms (time-ordered ones need a time dimension), checking row counts at
+each step. Debug
 with `show_sql=true`; preview without executing via `dry_run=true`.
 
 When a one-off concept is missing, extend inline (`source_model` as a
