@@ -11,9 +11,10 @@ read those first.
 
 1. **Choose the population deliberately.** `source_model` decides which rows exist
    in the result. Omit it to let the engine infer the smallest model determining
-   your dimensions (the choice is reported back); name it explicitly when the
-   question implies a different row set. A query rooted at `orders` enriched from
-   `customers` omits customers with no orders; rooted at `customers` it keeps them.
+   your dimensions and row-level filter columns (the choice is reported back);
+   name it explicitly when the question implies a different row set. A query
+   rooted at `orders` enriched from `customers` omits customers with no orders;
+   rooted at `customers` it keeps them.
 2. **Check a column before trusting it.** `inspect` it and read `Description:` and
    `Sample values:` — if the sampled values are all NULL or not what the name
    suggests, it's the wrong column.

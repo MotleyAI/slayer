@@ -761,7 +761,8 @@ class SlayerQuery(BaseModel):
             "The query's population: a saved model name, an inline ModelExtension "
             '({"source_name": ..., plus optional "columns"/"measures"/"joins"/"filters"}), '
             "or a full inline model dict. Omit to infer the smallest model determining "
-            "every queried dimension (the choice is reported in response metadata)."
+            "every queried dimension, time dimension, and row-level filter column (the "
+            "choice is reported in response metadata)."
         ),
     )
     measures: Annotated[

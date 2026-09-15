@@ -501,8 +501,9 @@ To connect a new database: create_datasource → describe_datasource (verify + l
         - Aggregations nest: "avg(sum(total, partition_by=[region, city]), partition_by=[region])"
           averages the per-city totals within each region. The top-level partition_by must be a
           subset of the query's dimensions; inner aggregations' partition_by need not be. An
-          outer aggregation's parameters must sit at the operand's grain, e.g.
-          "weighted_avg(sum(total, partition_by=[region, city]), weight=count(id, partition_by=[region, city]))".
+          outer aggregation's parameters must be determined by the operand's grain — a cell
+          value at that grain, e.g. weight=count(id, partition_by=[region, city]), or a column
+          that grain fixes — never a raw row column.
         - Transforms wrap aggregated expressions: cumsum(x); change(x) / change_pct(x)
           (period-over-period delta / % change — calendar-aware and partition-safe, prefer these
           for growth); time_shift(x, -1[, 'year']) (the shifted value itself, for custom

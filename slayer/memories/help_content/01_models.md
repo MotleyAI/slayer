@@ -6,8 +6,9 @@ covers the semantics.
 
 ## Source
 
-Exactly one of `sql_table: "public.orders"` (a named table) or `sql: "SELECT ..."`
-(an inline subquery) — either becomes the FROM clause at query time.
+Exactly one of `sql_table: "public.orders"` (a named table), `sql: "SELECT ..."`
+(an inline subquery), or `source_queries` (a query-backed model, see below) — the
+first two become the FROM clause at query time.
 
 ## Columns
 
