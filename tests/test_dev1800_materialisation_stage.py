@@ -420,6 +420,19 @@ class TestValidatorRejects:
             PlannedQuery(source_relation="orders",
                          aggregate_slots=[inner_slot, outer_slot], projection=["t_outer"])
 
+    def test_unmaterialised_transform_read_is_rejected(self) -> None:
+        """A value reading a transform no slot materialises is malformed —
+        nothing can ever emit it (Codex fold on D7)."""
+        inner = TransformKey(op="cumsum", input=_agg_key())
+        outer = TransformKey(op="last", input=inner)
+        outer_slot = ValueSlot(id="t_outer", key=outer, declared_name="o", public_name="o",
+                               public_aliases=["o"], phase=Phase.POST,
+                               stage=Stage(kind=StageKind.DERIVED, level=2))
+        with pytest.raises((MaterialisationStageError, ValidationError)) as ei:
+            PlannedQuery(source_relation="orders",
+                         aggregate_slots=[outer_slot], projection=["t_outer"])
+        assert "t_outer" in str(ei.value)
+
     def test_unstaged_slot_is_rejected(self) -> None:
         agg_slot = ValueSlot(id="a", key=_agg_key(), declared_name="amount_sum",
                              public_name="amount_sum", public_aliases=["amount_sum"],

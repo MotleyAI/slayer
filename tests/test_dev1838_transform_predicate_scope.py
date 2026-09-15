@@ -35,6 +35,7 @@ _PLACEHOLDER = ColumnKey(path=(), leaf="__regroup__0__spend_sum")
 
 def _plan_with_mask(
     mask_key, *, phase: Phase, mask_stage: Stage, extra_row_slots=(),
+    extra_combined_slots=(),
 ) -> PlannedQuery:
     slot = ValueSlot(
         id="s1", key=mask_key, declared_name="__slayer_mask_0",
@@ -50,18 +51,25 @@ def _plan_with_mask(
     return PlannedQuery(
         source_relation="orders",
         row_slots=list(extra_row_slots),
-        combined_expression_slots=[slot],
+        combined_expression_slots=[*extra_combined_slots, slot],
         regroup_attach_plans=[attach],
         masks=[MaskEntry(slot_id="s1", typing=MaskTyping.MEASURE, stratum=1)],
     )
 
 
 def test_transform_wrapped_cross_model_predicate_is_not_combined() -> None:
-    cj = ArithmeticKey(op=">", operands=(TransformKey(op="cumsum", input=_SPEND), _GT0))
-    # POST-phase: the transform owns the predicate, so it lowers to the post
+    cumsum = TransformKey(op="cumsum", input=_SPEND)
+    cj = ArithmeticKey(op=">", operands=(cumsum, _GT0))
+    cumsum_slot = ValueSlot(
+        id="t1", key=cumsum, declared_name="_cumsum_inner", hidden=True,
+        phase=Phase.POST, stage=Stage(kind=StageKind.DERIVED, level=1),
+        needs_column=True,
+    )
+    # DERIVED-staged: the transform owns the predicate, so it lowers to the post
     # wrapper instead of the combined outer WHERE (regressed before the fix).
     lowered = _lower_positions(_plan_with_mask(
         cj, phase=Phase.POST, mask_stage=Stage(kind=StageKind.DERIVED, level=2),
+        extra_combined_slots=[cumsum_slot],
     ))
     (entry,) = [e for e in lowered.filters if e.id == "s1"]
     assert entry.phase == Phase.POST

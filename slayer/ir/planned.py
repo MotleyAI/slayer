@@ -523,10 +523,16 @@ def _validate_stage_order(pq: "PlannedQuery") -> None:
                 )
         # D7 explicit strictness: a value is staged strictly later than every
         # transform it reads (a composite operand renders inline, so a consumer
-        # may share a composite's level — never a transform's).
+        # may share a composite's level — never a transform's). A transform
+        # read must resolve to a slot: nothing else can ever emit it.
         for t_key in _transforms_read(slot.key):
             dep = by_key.get(t_key)
-            if dep is None or dep is slot:
+            if dep is None:
+                raise MaterialisationStageError(
+                    f"value {slot.id!r} reads a transform "
+                    f"({t_key.op!r}) that no slot in this plan materialises.",
+                )
+            if dep is slot:
                 continue
             assert slot.stage is not None and dep.stage is not None
             if not (dep.stage < slot.stage):
