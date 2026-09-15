@@ -111,13 +111,13 @@ Full detail in the DEV-1800 spec-tests resume comment.
 
 ## 4. Derived levels, regime from stage (commit 3)
 
-- [ ] 4.1 `_run_transform_chain` emits transform batches by slot level ascending (within a
+- [x] 4.1 `_run_transform_chain` emits transform batches by slot level ascending (within a
   level: window batch, then time_shift, then cp, in `transform_layers` order — the exact
   sequence today's Kahn rounds produce), then the one trailing derived-composite step;
   delete `_transform_layer_deps_ready`, `_classify_ready_transform_layers` and the
   deadlock RuntimeError; verified by transform goldens byte-identical and the dev1859
   last-over-change tests green without the descent readiness probe.
-- [ ] 4.2 `_unmaterialised_post_slots` = DERIVED composites ∧ needs_column, every level
+- [x] 4.2 `_unmaterialised_post_slots` = DERIVED composites ∧ needs_column, every level
   fused into the one trailing step; regime read from `slot.series`; delete
   `_classify_walk` / `_classify_time_shift_composite` / `_time_shift_series_mode`;
   verified by 1.3 regime tests + series-shift goldens.

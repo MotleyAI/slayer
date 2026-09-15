@@ -47,7 +47,7 @@ from slayer.sql.column_expansion import (
     collect_root_scope_joined_paths,
     expand_derived_refs_sync,
 )
-from slayer.ir.planned import MaskTyping, RankedGrainMember, ValueSlot, regroup_producer_identity
+from slayer.ir.planned import MaskTyping, RankedGrainMember, StageKind, ValueSlot, regroup_producer_identity
 from slayer.ir.source_bundle import (
     ResolvedSourceBundle,
     stage_bundle_with_siblings,
@@ -632,72 +632,6 @@ def _regroup_placeholder_map(planned_query):
             if slot is not None:
                 to_slot[sub.original_key] = slot
     return to_original, to_slot
-
-
-def _composite_operand_children(node) -> list:
-    """Sub-keys a composite / predicate node recurses into; ``[]`` for a leaf."""
-    if isinstance(node, ArithmeticKey):
-        return list(node.operands)
-    if isinstance(node, ScalarCallKey):
-        return list(node.args)
-    if isinstance(node, BetweenKey):
-        return [node.column, node.low, node.high]
-    if isinstance(node, InKey):
-        return [node.column]
-    return []
-
-
-def _classify_walk(node, *, flags, placeholder_to_original) -> None:
-    """One node of the composite walk; mutates ``flags`` (transform, row_leaf,
-    cross_model). AggregateKey nodes are opaque leaves; a regroup placeholder
-    resolves to its original aggregate (host-grain fine, cross-model not)."""
-    if isinstance(node, TransformKey):
-        flags[0] = True
-    elif isinstance(node, AggregateKey):
-        if getattr(node.source, "path", ()):
-            flags[2] = True
-    elif isinstance(node, ColumnKey) and node.leaf.startswith(REGROUP_LEAF_PREFIX):
-        original = placeholder_to_original.get(node)
-        if original is None:
-            flags[2] = True  # unknown placeholder — fail closed
-        else:
-            _classify_walk(
-                original, flags=flags,
-                placeholder_to_original=placeholder_to_original,
-            )
-    elif isinstance(node, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
-        flags[1] = True
-    else:
-        for child in _composite_operand_children(node):
-            _classify_walk(
-                child, flags=flags,
-                placeholder_to_original=placeholder_to_original,
-            )
-
-
-def _classify_time_shift_composite(key, *, placeholder_to_original) -> Tuple[bool, bool, bool]:
-    """Walk a composite ``time_shift`` input, returning
-    ``(has_transform, has_row_leaf, has_cross_model_agg)``."""
-    flags = [False, False, False]
-    _classify_walk(key, flags=flags, placeholder_to_original=placeholder_to_original)
-    return tuple(flags)  # type: ignore[return-value]
-
-
-def _time_shift_series_mode(inner, *, placeholder_to_original) -> bool:
-    """Whether a ``time_shift`` input shifts its materialised series (D4): a
-    nested transform, a predicate root, or a composite containing a transform
-    or a cross-model aggregate leaf. Bare leaves and all-local aggregate
-    composites keep the re-aggregation regime byte-identically."""
-    if isinstance(inner, TransformKey) or is_boolean_shaped(inner):
-        return True
-    if isinstance(inner, (ArithmeticKey, ScalarCallKey)):
-        has_transform, _has_row_leaf, has_cross_model = (
-            _classify_time_shift_composite(
-                inner, placeholder_to_original=placeholder_to_original,
-            )
-        )
-        return has_transform or has_cross_model
-    return False
 
 
 def _validate_consecutive_periods_input(*, op: str, inner) -> None:
@@ -1648,7 +1582,8 @@ class SQLGenerator:
         render: RenderState,
         chain_tail: str,
     ) -> str:
-        """The one Kahn driver for the transform-step phase (D7)."""
+        """The one driver for the transform-step phase: level-ascending batches,
+        then the fused trailing derived-composite step (D8)."""
         planned_query = render.planned_query
         if any(
             layer.op == "time_shift" for layer in planned_query.transform_layers
@@ -1665,23 +1600,36 @@ class SQLGenerator:
         else:
             shifted_where_parts, shifted_where_join_paths = [], []
 
-        pending_layers = list(planned_query.transform_layers)
+        # Batches by planner-assigned derived level, ascending (D8): within a
+        # level, window batch, then time_shift, then cp, in transform_layers
+        # order — the exact sequence the retired Kahn readiness rounds produced.
+        levels = sorted({
+            chain.slots_by_id[sid].stage.level
+            for layer in planned_query.transform_layers
+            for sid in layer.slot_ids
+        })
         step_num = 0
-        while pending_layers:
-            (ready_window, ready_time_shift, ready_cp, not_ready) = (
-                self._classify_ready_transform_layers(
-                    pending_layers=pending_layers,
-                    slots_by_id=chain.slots_by_id,
-                    slot_id_by_key=chain.slot_id_by_key,
-                    available_alias_by_slot_id=chain.available_alias_by_slot_id,
+        for level in levels:
+            ready_window: list = []
+            ready_time_shift: list = []
+            ready_cp: list = []
+            for layer in planned_query.transform_layers:
+                slot_ids = [
+                    sid for sid in layer.slot_ids
+                    if chain.slots_by_id[sid].stage.level == level
+                ]
+                if not slot_ids:
+                    continue
+                batch = (
+                    layer if len(slot_ids) == len(layer.slot_ids)
+                    else layer.model_copy(update={"slot_ids": slot_ids})
                 )
-            )
-            if not (ready_window or ready_time_shift or ready_cp):
-                pending_ops = [layer.op for layer in pending_layers]
-                raise RuntimeError(
-                    f"transform layer dependencies could not be resolved; "
-                    f"pending ops: {pending_ops!r}.",
-                )
+                if layer.op == "time_shift":
+                    ready_time_shift.append(batch)
+                elif layer.op == "consecutive_periods":
+                    ready_cp.append(batch)
+                else:
+                    ready_window.append(batch)
             if ready_window:
                 chain_tail, step_num = self._emit_window_batch_step(
                     ready_window=ready_window,
@@ -1710,7 +1658,6 @@ class SQLGenerator:
                 render=render,
                 chain_tail=chain_tail,
             )
-            pending_layers = not_ready
 
         chain_tail, step_num = self._emit_unmaterialised_post_phase_step(
             ctes=chain.ctes,
@@ -1799,35 +1746,6 @@ class SQLGenerator:
             planned_query=planned_query,
         )
 
-    def _classify_ready_transform_layers(
-        self,
-        *,
-        pending_layers,
-        slots_by_id,
-        slot_id_by_key,
-        available_alias_by_slot_id,
-    ) -> tuple:
-        """Kahn split of ``pending_layers`` into"""
-        ready_window: list = []
-        ready_time_shift: list = []
-        ready_cp: list = []
-        not_ready: list = []
-        for layer in pending_layers:
-            if not self._transform_layer_deps_ready(
-                layer=layer,
-                slots_by_id=slots_by_id,
-                slot_id_by_key=slot_id_by_key,
-                available_alias_by_slot_id=available_alias_by_slot_id,
-            ):
-                not_ready.append(layer)
-            elif layer.op == "time_shift":
-                ready_time_shift.append(layer)
-            elif layer.op == "consecutive_periods":
-                ready_cp.append(layer)
-            else:
-                ready_window.append(layer)
-        return ready_window, ready_time_shift, ready_cp, not_ready
-
     def _emit_step_cte(
         self,
         *,
@@ -1869,24 +1787,18 @@ class SQLGenerator:
     def _unmaterialised_post_slots(
         planned_query, aliases_by_slot_id: Dict[str, List[str]],
     ) -> List[Any]:
-        """Projected POST-phase Arithmetic / ScalarCall slots no transform"""
-        # A lowered mask renders as a predicate, not a column — unless the slot
-        # is also projected or an order target.
-        order_ids = {e.slot_id for e in getattr(planned_query, "order", []) or []}
-        projected = set(getattr(planned_query, "projection", []) or [])
-        skip_mask_ids = {
-            m.slot_id for m in getattr(planned_query, "masks", []) or []
-            if m.slot_id not in projected and m.slot_id not in order_ids
-        }
-        unmaterialised: List[Any] = []
-        for cslot in planned_query.combined_expression_slots:
-            if isinstance(cslot.key, TransformKey):
-                continue
-            if cslot.id in aliases_by_slot_id or cslot.id in skip_mask_ids:
-                continue
-            if isinstance(cslot.key, (ArithmeticKey, ScalarCallKey)):
-                unmaterialised.append(cslot)
-        return unmaterialised
+        """DERIVED composite slots needing a column, not yet materialised —
+        every level fused into the one trailing step (D8, sql P11). A mask-only
+        value has ``needs_column=False`` and renders as a predicate."""
+        return [
+            cslot
+            for cslot in planned_query.combined_expression_slots
+            if isinstance(cslot.key, (ArithmeticKey, ScalarCallKey))
+            and cslot.id not in aliases_by_slot_id
+            and cslot.needs_column
+            and cslot.stage is not None
+            and cslot.stage.kind is StageKind.DERIVED
+        ]
 
     def _inner_select_from_final_cte(
         self, *, chain_tail: str, aliases_by_slot_id: Dict[str, List[str]],
@@ -2100,48 +2012,6 @@ class SQLGenerator:
                 _validate_consecutive_periods_input(
                     op=layer.op, inner=slot.key.input,
                 )
-
-    @staticmethod
-    def _transform_layer_deps_ready(
-        *,
-        layer,
-        slots_by_id: Dict[str, Any],
-        slot_id_by_key: Dict[Any, str],
-        available_alias_by_slot_id: Dict[str, str],
-    ) -> bool:
-        """A layer is ready when every slot-worthy dep its TransformKeys"""
-
-        slotted_kinds = (
-            ColumnKey, ColumnSqlKey, TimeTruncKey, AggregateKey, TransformKey,
-        )
-
-        def _ready(key) -> bool:
-            # A materialised slot is terminal (e.g. a computed dimension a
-            # transform ranks over) — read it, don't descend.
-            sid = slot_id_by_key.get(key)
-            if sid is not None and sid in available_alias_by_slot_id:
-                return True
-            # A slotted-kind leaf resolves at the base when it owns no slot; an
-            # unmaterialised one (e.g. a not-yet-emitted transform) is not ready.
-            if isinstance(key, slotted_kinds):
-                return sid is None
-            # A composite whose own slot is not yet available descends: its
-            # children may resolve within the chain (e.g. last(change(x))).
-            return all(_ready(child) for child in key.children())
-
-        for slot_id in layer.slot_ids:
-            slot = slots_by_id.get(slot_id)
-            if slot is None or not isinstance(slot.key, TransformKey):
-                continue
-            tk = slot.key
-            if not _ready(tk.input):
-                return False
-            for p in tk.partition_keys:
-                if not _ready(p):
-                    return False
-            if tk.time_key is not None and not _ready(tk.time_key):
-                return False
-        return True
 
     def _resolve_agg_inputs_via_scope(  # NOSONAR(S3776) — one cohesive Law-1 discovery pass: three ordered sub-passes (Column.filter → source → kwargs) over the local aggregates via small closures sharing scope/resolved. Extracting them would scatter the ordered-registration contract that keeps the base FROM byte-identical.
         self, *, base_render_order, slots_by_id, scope: ScopeFrame,
@@ -4966,9 +4836,8 @@ class SQLGenerator:
         placeholder_to_original, regroup_slot_by_key = _regroup_placeholder_map(
             planned_query,
         )
-        series_mode = _time_shift_series_mode(
-            inner_key, placeholder_to_original=placeholder_to_original,
-        )
+        # The regime is a planner fact (D6), computed at staging.
+        series_mode = bool(slot.series)
         is_composite = not series_mode and isinstance(
             inner_key, (ArithmeticKey, ScalarCallKey),
         )
