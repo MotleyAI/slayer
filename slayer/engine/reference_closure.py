@@ -15,6 +15,7 @@ and the key-tree ``_child_keys`` dispatch that lived in ``filter_reachability``.
 
 from __future__ import annotations
 
+import re
 from decimal import Decimal
 from typing import List, NamedTuple, Optional, Tuple
 
@@ -49,8 +50,6 @@ from slayer.sql.column_expansion import (
 
 Path = Tuple[str, ...]
 
-import re
-
 _BARE_IDENT_RE = re.compile(r"^[A-Za-z_]\w*$")
 _DOTTED_PATH_RE = re.compile(r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+$")
 
@@ -63,11 +62,11 @@ _PLANNER_PARSE_DIALECT_CHAIN: Tuple[Optional[str], ...] = (
 )
 
 
-def _parse_filter_sql_any_dialect(sql: str) -> Optional[exp.Expression]:
+def _parse_filter_sql_any_dialect(sql: str) -> Optional[exp.Expression]:  # pyright: ignore[reportPrivateImportUsage] — sqlglot ships no __all__
     """First successful parse across the dialect chain, else ``None``."""
     for dialect in _PLANNER_PARSE_DIALECT_CHAIN:
         try:
-            return sqlglot.parse_one(sql, dialect=dialect)
+            return sqlglot.parse_one(sql, dialect=dialect)  # pyright: ignore[reportReturnType] — parse_one's Expr TypeVar
         except Exception:
             continue
     return None
@@ -210,7 +209,7 @@ def _column_key_closure(
         if terminal is None and node.model == anchor_model.name:
             terminal = anchor_model
         col = _derived_column(terminal, node.column_name)
-        if col is not None:
+        if terminal is not None and col is not None:
             frag = fragment_closure(
                 sql=col.sql, model=terminal, owner_path=path,
                 anchor_relation="__".join(path) if path else anchor_relation,
@@ -563,7 +562,7 @@ def first_unanalyzable_input_column(
         if terminal is None and ref.model == anchor_model.name:
             terminal = anchor_model
         col = _derived_column(terminal, ref.column_name)
-        if col is not None and fragment_closure(
+        if terminal is not None and col is not None and fragment_closure(
             sql=col.sql, model=terminal, owner_path=path,
             anchor_relation="__".join(path) if path else anchor_relation,
             bundle=bundle,

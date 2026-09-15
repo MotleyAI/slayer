@@ -518,48 +518,6 @@
                 }
             }
         ],
-        "./slayer/engine/column_filter_paths.py": [
-            {
-                "code": "reportPrivateImportUsage",
-                "range": {
-                    "startColumn": 60,
-                    "endColumn": 70,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportReturnType",
-                "range": {
-                    "startColumn": 19,
-                    "endColumn": 58,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportPrivateImportUsage",
-                "range": {
-                    "startColumn": 16,
-                    "endColumn": 26,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportPrivateImportUsage",
-                "range": {
-                    "startColumn": 18,
-                    "endColumn": 28,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportPrivateImportUsage",
-                "range": {
-                    "startColumn": 16,
-                    "endColumn": 26,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./slayer/engine/compile/stages.py": [
             {
                 "code": "reportArgumentType",
@@ -734,14 +692,6 @@
                 "range": {
                     "startColumn": 19,
                     "endColumn": 79,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 19,
-                    "endColumn": 35,
                     "lineCount": 1
                 }
             },
@@ -14704,16 +14654,6 @@
                 "range": {
                     "startColumn": 29,
                     "endColumn": 34,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./tests/test_aggregate_input_paths.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 17,
-                    "endColumn": 53,
                     "lineCount": 1
                 }
             }

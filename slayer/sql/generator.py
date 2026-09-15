@@ -5515,7 +5515,8 @@ class SQLGenerator:
         try:
             parsed = sqlglot.parse_one(frag, dialect=self.dialect)
             refs = collect_root_scope_reference_columns(
-                parsed=parsed, source_model=scope.root_model,
+                parsed=parsed,  # pyright: ignore[reportArgumentType] — parse_one's Expr TypeVar
+                source_model=scope.root_model,
                 source_relation=scope.root_model.name, bundle=scope.bundle,
             )
         except Exception:

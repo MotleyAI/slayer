@@ -3,7 +3,6 @@ Binding lives in ``bind_inputs``; typing and the checker in ``elaborate_env``.""
 
 from __future__ import annotations
 
-import re
 from decimal import Decimal
 from typing import (
     AbstractSet,
@@ -29,15 +28,12 @@ from pydantic import BaseModel, ConfigDict
 from slayer.core.enums import DataType, RANKED_AGGREGATIONS
 from slayer.core.errors import AmbiguousJoinPathError, UnreachableFilterDroppedWarning
 from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, regroup_root_grain, reroot_value_key, substitute_value_keys, walk_value_keys, walk_consumer_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_local_partitioned_agg, split_top_level_and, window_kwarg_of, is_reaggregation_key, is_row_attach_root, attached_inputs, operand_aggregates
-from slayer.core.models import AggregationParam, SlayerModel
+from slayer.core.models import SlayerModel
 from slayer.engine.reference_closure import (
     ParamSpec,
     aggregate_input_closure,
-    column_default_key,
     compute_column_filter_join_paths,
-    compute_expr_reference_columns,
     default_param_value_key,
-    expr_default_ref_keys,
     first_unanalyzable_input_column,
     resolve_aggregation_params,
 )
@@ -1321,7 +1317,6 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     safe_pairs: List[Tuple[ValueKey, ValueKey]] = []  # (host_key, rerooted_key)
     unattributable: List[_UnattributableDim] = []
     for g in requested:
-        hp = key_host_path(g)
         shared = shared_join_key_reroot(
             key=g, target_path=target_path, host_model=host_model,
             models_by_name=models_by_name,

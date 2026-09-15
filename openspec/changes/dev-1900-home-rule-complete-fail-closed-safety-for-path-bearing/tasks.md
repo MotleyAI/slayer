@@ -32,7 +32,7 @@
 
 ## 6. Docs, architecture, gates
 
-- [ ] 6.1 One sentence each in `docs/concepts/queries.md` (inputs, filters) and `docs/concepts/models.md` (derived columns). Verify: `zensical.toml` nav unchanged (existing pages).
+- [x] 6.1 One sentence each in `docs/concepts/queries.md` (inputs, filters) and `docs/concepts/models.md` (derived columns). Verify: `zensical.toml` nav unchanged (existing pages).
 - [x] 6.2 `architecture/engine.arc42.md` §3 principle 10 — show the verbatim diff, apply on OK. Verify: `tools/arch_check.py` green (status tag validated).
-- [ ] 6.3 Full non-integration suite, ruff, conventions gate, basedpyright baseline not grown, LikeC4 validate; any shifting existing test → stop and ask. Verify: all green.
-- [ ] 6.4 DEV-1903 comment (discovery-opacity unification) posted; DEV-1908 / DEV-1909 pointers current.
+- [x] 6.3 Full non-integration suite, ruff, conventions gate, basedpyright baseline not grown, LikeC4 validate; any shifting existing test → stop and ask. Verify: all green.
+- [x] 6.4 DEV-1903 comment (discovery-opacity unification) posted; DEV-1908 / DEV-1909 pointers current.

@@ -70,7 +70,7 @@ class TestFragmentClosure:
     def test_owner_path_prefixes_the_crossing(self):
         got = self._frag("region_events.value", owner_path=("customers", "regions"),
                          anchor_relation="customers__regions")
-        assert ("customers", "regions", "region_events") in got
+        assert got is not None and ("customers", "regions", "region_events") in got
 
 
 class TestKeyClosure:
@@ -86,10 +86,11 @@ class TestKeyClosure:
 
     def test_derived_key_descends_into_crossing(self):
         got = self._key(_regions_sqlkey("bad_pop"))
-        assert ("regions",) in got and CROSS in got
+        assert got is not None and ("regions",) in got and CROSS in got
 
     def test_chain_derived_key_descends(self):
-        assert CROSS in self._key(_regions_sqlkey("bad_pop2"))
+        got = self._key(_regions_sqlkey("bad_pop2"))
+        assert got is not None and CROSS in got
 
     def test_local_derived_key_no_crossing(self):
         assert self._key(_regions_sqlkey("derived_pop")) == (("regions",),)
@@ -99,13 +100,13 @@ class TestKeyClosure:
 
     def test_star_key_does_not_descend(self):
         got = self._key(StarKey(path=("regions",)))
-        assert CROSS not in got
+        assert got is not None and CROSS not in got
         assert all(len(p) <= 1 for p in got), f"StarKey must not descend: {got}"
 
     def test_sql_expr_key_returns_its_stamped_paths(self):
         key = SqlExprKey(canonical_sql="1", referenced_join_paths=(CROSS,))
         got = self._key(key)
-        assert ("regions",) in got and CROSS in got
+        assert got is not None and ("regions",) in got and CROSS in got
 
     def test_string_fragment_key_takes_fragment_closure(self):
         by, bundle = _bundle(dev1900_models())
@@ -115,7 +116,8 @@ class TestKeyClosure:
 
     def test_time_trunc_delegates_to_its_column(self):
         key = TimeTruncKey(column=_regions_sqlkey("bad_pop"), granularity="month")
-        assert CROSS in self._key(key)
+        got = self._key(key)
+        assert got is not None and CROSS in got
 
 
 class TestKeyClosurePathologies:

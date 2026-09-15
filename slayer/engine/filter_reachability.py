@@ -37,12 +37,13 @@ from sqlglot import exp
 
 from slayer.core.keys import ColumnKey, ColumnSqlKey
 from slayer.engine.reference_closure import (
-    UnhandledValueKindError,  # re-exported: moved here in DEV-1900
+    UnhandledValueKindError,  # re-exported
     _child_keys,
     _expand_derived_refs_any_dialect,
     _parse_filter_sql_any_dialect,
     key_closure,
 )
+from slayer.ir.planned import FilterReachability
 
 __all__ = [
     "UnhandledValueKindError",
@@ -52,7 +53,6 @@ __all__ = [
     "path_is_reachable",
     "recompute_filter_reachability",
 ]
-from slayer.ir.planned import FilterReachability
 
 Path = Tuple[str, ...]
 

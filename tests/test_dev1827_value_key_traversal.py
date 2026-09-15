@@ -629,9 +629,11 @@ def _paths_for(key: AggregateKey):
     bundle = ResolvedSourceBundle(
         source_model=orders, referenced_models=[orders, _customers_model()],
     )
-    return aggregate_input_closure(
+    paths = aggregate_input_closure(
         key=key, anchor_model=orders, anchor_relation="orders", bundle=bundle,
     )
+    assert paths is not None
+    return paths
 
 
 class TestJoinDiscoveryExpressionSources:

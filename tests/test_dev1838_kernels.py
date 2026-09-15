@@ -389,6 +389,7 @@ class TestCrossingInputPathsUnionFilterAndStructural:
         paths = join_safety.local_crossing_input_paths(
             key=key, bundle=bundle, host_model=bundle.source_model,
         )
+        assert paths is not None
         assert ("customers", "regions") in paths, paths  # column_filter_key
         assert ("customers",) in paths, paths            # kwarg — dropped pre-fix
         # Order-stable + de-duplicated: closure order, prefixes first.

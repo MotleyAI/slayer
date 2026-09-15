@@ -386,8 +386,6 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             if dry_run or explain:
                 response.sql = result.sql
             return response
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
         except SchemaDriftError as drift:
             raise HTTPException(
                 status_code=422,
@@ -400,7 +398,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                     "original": str(drift.__cause__) if drift.__cause__ else None,
                 },
             )
-        except SlayerError as e:
+        except ValueError as e:
+            # SlayerError subclasses ValueError; both map to 400.
             raise HTTPException(status_code=400, detail=str(e))
 
     @app.get("/models")
