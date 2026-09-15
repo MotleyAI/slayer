@@ -14,6 +14,8 @@ the full expression-source surface" (discovery opacity clause).
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
@@ -50,7 +52,7 @@ ROW_PARAM = AggregateKey(source=AMOUNT, agg="weighted_avg",
 #: the same, parameter passed POSITIONALLY — attached inputs span args too.
 POS_PARAM = AggregateKey(source=AMOUNT, agg="weighted_avg", args=(REGION_SUM,))
 #: wsum(1, weight=sum(amount, partition_by=region)) — literal + param.
-LIT_PARAM = AggregateKey(source=LiteralKey(value=1), agg="wsum",
+LIT_PARAM = AggregateKey(source=LiteralKey(value=Decimal(1)), agg="wsum",
                          kwargs=(("weight", REGION_SUM),))
 #: mixed source AND an attached parameter — both attached by one mechanism.
 MIXED_PARAM = AggregateKey(source=MIXED_SRC, agg="weighted_avg",
@@ -148,7 +150,7 @@ class TestWalkConsumerKeys:
         input — it stays visible so its own attach is still planned."""
         pb_inner = AggregateKey(source=AMOUNT, agg="sum",
                                 partition_keys=Grain.of([CITY]))
-        band = ArithmeticKey(op=">", operands=(pb_inner, LiteralKey(value=100)))
+        band = ArithmeticKey(op=">", operands=(pb_inner, LiteralKey(value=Decimal(100))))
         root = AggregateKey(source=MIXED_SRC, agg="sum",
                             partition_keys=Grain.of([band]))
         seen = set(walk_consumer_keys(root))

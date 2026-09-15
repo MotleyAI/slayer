@@ -169,6 +169,16 @@ def broadcast_wavg_global() -> Optional[float]:
                   for _cid, (rid, spend) in _CUST.items()])
 
 
+def broadcast_wavg_target_side() -> Optional[float]:
+    """``customers.spend:weighted_avg(weight=sum(customers.spend,
+    partition_by=customers.regions.name))`` under broadcast — the
+    customers-rooted global value, each customer weighted by its region's spend
+    total (c4 takes the NULL-region cell)."""
+    st = region_spend_totals()
+    return _wavg([(spend, st.get(_REGION_NAME.get(rid)))
+                  for _cid, (rid, spend) in _CUST.items()])
+
+
 def ordinary_wavg_global() -> Optional[float]:
     """``weighted_avg(amount, weight=sum(amount, partition_by=region))`` with no
     dimensions — each row weighted by its region total, so weights vary."""
@@ -178,7 +188,6 @@ def ordinary_wavg_global() -> Optional[float]:
 
 def ordinary_avg_amount_global() -> float:
     """Plain ``avg(amount)`` globally — the distinguishable unweighted value."""
-    from statistics import mean
     return mean(r[4] for r in _SALES_ROWS_WIDE if r[4] is not None)
 
 
@@ -265,7 +274,7 @@ __all__ = [
     "distinct_customers_by_status", "amount_totals_by_status",
     "sales_region_amount_totals", "sales_region_row_counts",
     "assoc_wavg_region_weight", "assoc_wavg_new_without_c4",
-    "broadcast_wavg_global",
+    "broadcast_wavg_global", "broadcast_wavg_target_side",
     "ordinary_wavg_global", "ordinary_wavg_by_region",
     "ordinary_avg_amount_global", "mixed_plus_param_by_region",
     "ungrained_wsum_row_by_region", "ungrained_wsum_assoc_by_status",

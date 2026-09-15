@@ -78,6 +78,9 @@ A source mixing row-level columns with attached values
 — the attached value broadcasts onto each base row, weighted per row — while a
 fully-attached source is a
 [re-aggregation](#re-aggregation-aggregate-over-an-attached-value).
+An attached value may also arrive as a *parameter* of a row-level aggregation
+(`weighted_avg(amount, weight=sum(amount, partition_by=region))`): it is
+attached into the input relation, so each row is weighted by its cell's value.
 
 **Gates.** Per-column `allowed_aggregations` / primary-key / type-default
 gates apply to *columns*, not expressions — `sum(price * quantity)` succeeds

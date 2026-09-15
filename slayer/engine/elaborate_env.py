@@ -828,6 +828,24 @@ def check_cross_model_inputs_safe(
         )
 
 
+def check_attached_inputs_attributable(
+    *, alias: Optional[str], root_name: str, mode: str,
+    unattributable: Sequence[Tuple[str, str, str]],
+) -> None:
+    """An attached input nests as a producer rooted at the target, so every row leaf it reads must be attributable from there; ``unattributable`` = (input alias, leaf, reason) of the first violation."""
+    if not unattributable:
+        return
+    input_alias, leaf, reason = unattributable[0]
+    raise SlayerError(
+        f"Cross-model aggregate {alias!r} runs over {root_name!r} rows under "
+        f"to_many_handling={mode!r}, but its attached input {input_alias!r} "
+        f"reads {leaf!r}, which {reason}; that input's producer cannot nest "
+        f"inside the {root_name!r}-rooted producer. Use "
+        f"to_many_handling='associate', or aggregate the input over columns "
+        f"attributable from {root_name!r}."
+    )
+
+
 def check_association_windowed_ranked(*, alias: str, windowed_or_ranked: bool) -> None:
     """window=/first/last cannot associate — the pick per entity is undefined (DEV-1871 G13)."""
     if windowed_or_ranked:

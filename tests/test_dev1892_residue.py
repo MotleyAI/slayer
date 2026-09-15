@@ -94,18 +94,28 @@ class TestResidueFiresAtPlanTime:
 
 
 class TestAttachedParameterOnRowLevelSource:
-    """DEV-1859 re-point (consented 2026-09-15): leg C legalizes an attached
-    parameter on a row-level source — associate and default modes execute (the
-    parameter's producer row-attaches into the input relation), error mode
-    refuses the unattributable dimension, never a parameter error. Executed
-    oracles live in ``test_dev1859_attached_param_exec.py``."""
+    """Re-point (consented 2026-09-15): an attached parameter on a row-level
+    source is legal — associate executes (the parameter's producer row-attaches
+    into the input relation); under broadcast the customers-rooted producer
+    cannot reach orders.amount, so a typed error names the root, the leaf and
+    the associate remedy (DEV-1906 re-roots it); error mode refuses the
+    unattributable dimension, never a parameter error. Executed oracles live in
+    ``test_dev1859_attached_param_exec.py``."""
 
-    @pytest.mark.parametrize("make_q", [assoc_q, bcast_q])
-    async def test_executes_in_associate_and_default(self, assoc_engine, make_q):
-        resp = await assoc_engine.execute(make_q(
+    async def test_executes_in_associate(self, assoc_engine):
+        resp = await assoc_engine.execute(assoc_q(
             dimensions=["status"],
             measures=[ModelMeasure(formula=_ATTACHED_ON_ROW, name="w")]))
         assert {r["orders.status"] for r in resp.data} == {"ok", "new"}
+
+    async def test_default_mode_refuses_the_host_rooted_parameter(self, assoc_engine):
+        with pytest.raises(SlayerError) as ei:
+            await assoc_engine.execute(bcast_q(
+                dimensions=["status"],
+                measures=[ModelMeasure(formula=_ATTACHED_ON_ROW, name="w")]))
+        msg = str(ei.value)
+        assert "'customers'" in msg and "'amount'" in msg
+        assert "to_many_handling='associate'" in msg
 
     async def test_error_mode_refuses_the_dimension(self, assoc_engine):
         with pytest.raises(SlayerError) as ei:

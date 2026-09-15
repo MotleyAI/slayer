@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from typing import List
 
+from decimal import Decimal
+
 from slayer.core.keys import AggregateKey, ArithmeticKey, ColumnKey, Grain, LiteralKey
 from slayer.core.models import SlayerModel
 from slayer.engine.join_safety import grain_determines
@@ -67,7 +69,7 @@ class TestRecursiveAggregateArm:
             op=">",
             operands=(AggregateKey(source=ColumnKey(leaf="amount"), agg="sum",
                                    partition_keys=Grain.of([ColumnKey(leaf="city")])),
-                      LiteralKey(value=100)))
+                      LiteralKey(value=Decimal(100))))
         models = dev1847_models()
         mbn = _mbn(models)
         key = AggregateKey(source=ColumnKey(leaf="amount"), agg="sum",
@@ -108,7 +110,7 @@ class TestUndeterminedStaysConservative:
             op=">",
             operands=(AggregateKey(source=ColumnKey(leaf="amount"), agg="sum",
                                    partition_keys=Grain.of([ColumnKey(leaf="city")])),
-                      LiteralKey(value=100)))
+                      LiteralKey(value=Decimal(100))))
         models = dev1847_models()
         mbn = _mbn(models)
         key = AggregateKey(source=ColumnKey(leaf="amount"), agg="sum",

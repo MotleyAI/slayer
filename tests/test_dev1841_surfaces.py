@@ -65,16 +65,17 @@ class TestRestSurface:
         assert "to_many_handling" in resp.text
 
     async def test_association_slayer_error_maps_to_400(self, storage) -> None:
-        """An association-eligibility ``SlayerError`` (here the DEV-1892 residue:
-        an attached parameter on a row-level source) is a client error (400), not
-        a 500. The column-reference parameter itself now executes."""
+        """An association-eligibility ``SlayerError`` (a status-grained attached
+        parameter the customer entity does not determine) is a client error
+        (400), not a 500."""
         client = TestClient(create_app(storage=storage))
         body = {"source_model": "orders", "dimensions": ["status"],
                 "measures": [{"formula": "customers.spend:weighted_avg("
-                              "weight=sum(amount, partition_by=customers.regions.name))"}],
+                              "weight=sum(amount, partition_by=status))"}],
                 "to_many_handling": "associate"}
         resp = client.post("/query", json=body)
         assert resp.status_code == 400, resp.text
+        assert "not determined" in resp.text
 
 
 class TestMcpSurface:

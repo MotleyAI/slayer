@@ -14,7 +14,7 @@ same flatten contract:
 """
 from __future__ import annotations
 
-from typing import List, Sequence
+from typing import List, Optional, Sequence
 
 import sqlglot
 from sqlglot import exp
@@ -58,6 +58,16 @@ def _visible_source_names(select: exp.Select) -> set:
         node = parent
 
 
+def _dot_segments(node: exp.Expression) -> Optional[List[str]]:  # pyright: ignore[reportPrivateImportUsage] — sqlglot re-export, pervasive in this file
+    """Identifier names along a (nested) ``Dot`` chain; ``None`` for anything else."""
+    if isinstance(node, exp.Identifier):
+        return [node.name]
+    if isinstance(node, exp.Dot):
+        left, right = _dot_segments(node.this), _dot_segments(node.expression)
+        return None if left is None or right is None else left + right
+    return None
+
+
 def unmangle_dotted_table_refs(node: exp.Expression) -> None:
     """Undo a BigQuery / T-SQL round-trip mis-parse (DEV-1824 hoist).
 
@@ -81,17 +91,19 @@ def unmangle_dotted_table_refs(node: exp.Expression) -> None:
             p for p in (col.args.get(k) for k in ("catalog", "db", "table"))
             if isinstance(p, exp.Identifier)
         ]
-        if not prefix or not isinstance(col.this, exp.Identifier):
+        # Four-plus segments overflow the qualifier slots into a Dot in ``this``.
+        this_segments = _dot_segments(col.this)
+        if not prefix or this_segments is None:
             continue
         select = col.parent_select
         sources = _visible_source_names(select) if select is not None else set()
         if prefix[0].name in sources:
-            segments = [p.name for p in prefix[1:]] + [col.this.name]
+            segments = [p.name for p in prefix[1:]] + this_segments
             if len(segments) == 1:
                 continue  # a plain <source>.<col> — nothing was split
             real_table: exp.Identifier | None = prefix[0]
         else:
-            segments = [p.name for p in prefix] + [col.this.name]
+            segments = [p.name for p in prefix] + this_segments
             real_table = None
         # Replace the node wholesale: clearing an existing column's ``table`` slot
         # leaves a dangling empty qualifier (`` ``.col ``) in this sqlglot.
