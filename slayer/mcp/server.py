@@ -442,7 +442,7 @@ Before assuming you can't express certain logic (like aggregations of aggregatio
 MAKE SURE to inspect(reference='memory:help.intro', entity_type='memory') for an overview of what it can do.
 DO NOT fall back on manipulating the raw data yourself unless you've read the help and are SURE SLayer can't do it.
 Use search(question='...') to find relevant concepts, models, and saved learnings.
-Typical workflow: inspect(memory:help.intro) → search → inspect → query.
+Typical workflow: inspect(reference='memory:help.intro', entity_type='memory') → search → inspect → query.
 To connect a new database: create_datasource → describe_datasource (verify + list tables) → ingest_datasource_models → models_summary."""
         ),
     )
@@ -503,17 +503,18 @@ To connect a new database: create_datasource → describe_datasource (verify + l
           subset of the query's dimensions; inner aggregations' partition_by need not be. An
           outer aggregation's parameters must be determined by the operand's grain — a cell
           value at that grain, e.g. weight=count(id, partition_by=[region, city]), or a column
-          that grain fixes — never a raw row column.
+          that grain fixes; any other row column is a typed error.
         - Transforms wrap aggregated expressions: cumsum(x); change(x) / change_pct(x)
           (period-over-period delta / % change — calendar-aware and partition-safe, prefer these
           for growth); time_shift(x, -1[, 'year']) (the shifted value itself, for custom
           arithmetic); lag(x, n) / lead(x, n) (row-position shift, NULL at edges); first(x) /
           last(x) (broadcast the earliest/latest bucket's value); consecutive_periods(predicate)
-          (trailing run length); rank(x), dense_rank(x), percent_rank(x), ntile(x, n=N) (rank
-          family — optional partition_by=, no time dimension needed). All other transforms require
-          a time_dimensions entry. Transforms nest in either order (change(cumsum(x))). Not
-          supported: a row-level column inside a transform input, or mixed with another
-          aggregation's value inside one aggregation source.
+          (trailing run length; the predicate may be row-level, e.g. status = 'paid'); rank(x),
+          dense_rank(x), percent_rank(x), ntile(x, n=N) (rank family — optional partition_by=, no
+          time dimension needed). All other transforms require a time_dimensions entry.
+          Transforms nest in either order (change(cumsum(x))). Not supported: a row-level column
+          mixed into a composite or nested input of time_shift / change / change_pct, or mixed
+          with another aggregation's value inside one aggregation source.
         - Cross-model: reference any joined model's field as ``model_name.field_name`` (or a
           longer dotted path) and the engine figures out the join paths, avoiding fan-outs and
           chasm traps — each aggregation computes over its own model's rows exactly once;
