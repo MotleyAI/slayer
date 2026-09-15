@@ -328,7 +328,7 @@ class TestFilterAndOrderPositions:
             order=[{"column": "w", "direction": "desc"}]))
         order = [r["sales.region"] for r in resp.data if r["sales.w"] is not None]
         by_val = ordinary_wavg_by_region()
-        assert order == sorted(order, key=lambda reg: by_val[reg], reverse=True)
+        assert order == sorted(order, key=lambda reg: by_val[reg] or 0.0, reverse=True)
 
     async def test_order_by_raw_formula(self, sales_engine):
         """Scenario: appears only as a raw ORDER BY formula (no projection)."""
@@ -339,7 +339,7 @@ class TestFilterAndOrderPositions:
         by_val = ordinary_wavg_by_region()
         present = [r["sales.region"] for r in resp.data
                    if by_val[r["sales.region"]] is not None]
-        assert present == sorted(present, key=lambda reg: by_val[reg], reverse=True)
+        assert present == sorted(present, key=lambda reg: by_val[reg] or 0.0, reverse=True)
 
 
 #: the SAME attached aggregate as source constituent AND parameter — one producer.

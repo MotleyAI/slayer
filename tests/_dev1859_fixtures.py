@@ -188,7 +188,6 @@ def ordinary_wavg_global() -> Optional[float]:
 
 def ordinary_avg_amount_global() -> float:
     """Plain ``avg(amount)`` globally — the distinguishable unweighted value."""
-    from statistics import mean
     return mean(r[4] for r in _SALES_ROWS_WIDE if r[4] is not None)
 
 

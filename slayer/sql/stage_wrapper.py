@@ -58,7 +58,7 @@ def _visible_source_names(select: exp.Select) -> set:
         node = parent
 
 
-def _dot_segments(node: exp.Expression) -> Optional[List[str]]:
+def _dot_segments(node: exp.Expression) -> Optional[List[str]]:  # pyright: ignore[reportPrivateImportUsage] — sqlglot re-export, pervasive in this file
     """Identifier names along a (nested) ``Dot`` chain; ``None`` for anything else."""
     if isinstance(node, exp.Identifier):
         return [node.name]

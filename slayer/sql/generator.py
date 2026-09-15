@@ -108,7 +108,6 @@ from slayer.sql.render.value_expr import (
     render_value_key,
     rewrite_log_alias,
 )
-from slayer.sql.render.row_expr import render_row_expression
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 from slayer.sql.scope import ScopeFrame
 from slayer.sql.scope_check import maybe_validate_scopes
@@ -2408,20 +2407,12 @@ class SQLGenerator:
         return out
 
     def _resolve_agg_kwargs_for_key(
-        self, *, key, source_model, source_relation: str, bundle,
-        attached_columns: Optional[Dict[Any, exp.Expression]] = None,
+        self, *, key, scope: ScopeFrame,
     ) -> "Optional[Dict[str, ResolvedAggKwarg]]":
-        """Resolve a single LOCAL aggregate's column-ref kwargs — a row-attached
-        placeholder kwarg resolves to its producer join column via
-        ``attached_columns`` (DEV-1859)."""
-
+        """Resolve a single LOCAL aggregate's column-ref kwargs through ``scope`` (a row-attached placeholder resolves to its producer join column)."""
         kwargs = getattr(key, "kwargs", None)
-        if bundle is None or not kwargs:
+        if not kwargs:
             return None
-        scope = self._throwaway_frame(
-            model=source_model, relation=source_relation, bundle=bundle,
-            attached_columns=attached_columns,
-        )
         resolved = {
             kname: ResolvedAggKwarg(kind="expr", value=scope.resolve(kval))
             for kname, kval in kwargs
@@ -2592,7 +2583,7 @@ class SQLGenerator:
                                     source_relation=source_relation,
                                     bundle=bundle,
                                     resolved_agg_kwargs=resolved_agg_kwargs,
-                                    attached_columns=regroup_env,
+                                    scope=host_scope,
                                 ),
                             ),
                         ),
@@ -2623,8 +2614,7 @@ class SQLGenerator:
                     full_alias=full_alias,
                     bundle=bundle,
                     resolved_agg_kwargs=resolved_agg_kwargs.get(key),
-                    attached_columns=regroup_env,
-                    scope=host_scope if _hg else None,
+                    scope=host_scope,
                     owner_path=tuple(agg_path) if _hg else (),
                 )
                 agg_expr, is_agg = self._build_agg(synth)
@@ -2668,8 +2658,7 @@ class SQLGenerator:
 
     def _composite_agg_builder(
         self, *, slot, source_model, source_relation: str, bundle,
-        resolved_agg_kwargs,
-        attached_columns: Optional[Dict[Any, exp.Expression]] = None,
+        resolved_agg_kwargs, scope: ScopeFrame,
     ):
         """The AGGREGATE-phase composite seam (DEV-1763 P-G): render one"""
 
@@ -2688,7 +2677,7 @@ class SQLGenerator:
                 source_relation=source_relation, full_alias="__op__",
                 bundle=bundle,
                 resolved_agg_kwargs=(resolved_agg_kwargs or {}).get(agg_key),
-                attached_columns=attached_columns,
+                scope=scope,
             )
             agg_expr, _is_agg = self._build_agg(synth)
             return agg_expr
@@ -5360,6 +5349,7 @@ class SQLGenerator:
                 source_relation=source_relation,
                 full_alias=input_alias or "__op__", bundle=bundle,
                 resolved_agg_kwargs=leaf_frag_kwargs or None,
+                scope=shifted_scope,
             )
             agg_expr, _ = self._build_agg(synth)
             return _wrap_cast_for_type(expr=agg_expr, dt=self._slot_cast_type(leaf_slot))
@@ -6089,45 +6079,9 @@ class SQLGenerator:
         )
         return expanded if expanded is not None else col.sql
 
-    def _render_expression_source_sql(
-        self, *, source, source_model, source_relation: str, bundle,
-        attached_columns: Optional[Dict[Any, exp.Expression]] = None,
-    ) -> str:
-        """Render an aggregate's row-level expression source (DEV-1826) to
-        qualified SQL text: plain columns anchor at ``source_relation``,
-        derived columns expand through ``_expand_derived_column_sql``. A mixed
-        source's attached constituent renders through its row-attach join column
-        (DEV-1859)."""
-        def _column_ast(ref) -> exp.Expression:
-            # A row-attached regroup placeholder resolves to its producer join
-            # column (DEV-1859), not a column on the host relation.
-            if attached_columns is not None:
-                attached = attached_columns.get(ref)
-                if attached is not None:
-                    return attached.copy()
-            # Fail closed for a joined operand before any dispatch, so a pathed
-            # ColumnSqlKey can't expand against the host relation (DEV-1832).
-            if getattr(ref, "path", ()):
-                raise NotImplementedError(
-                    f"Cross-model operand {ref!r} inside an aggregated "
-                    f"expression is not supported."
-                )
-            if isinstance(ref, ColumnSqlKey):
-                return self._parse(self._expand_derived_column_sql(
-                    source_model=source_model,
-                    source_relation=source_relation,
-                    column_name=ref.column_name,
-                    bundle=bundle,
-                ))
-            return exp.Column(
-                this=self._to_ident(ref.leaf),
-                table=exp.to_identifier(source_relation),
-            )
-
-        node = render_row_expression(
-            key=source, dialect=self._dialect, resolve_column=_column_ast,
-        )
-        return node.sql(dialect=self.dialect)
+    def _render_expression_source_sql(self, *, source, scope: ScopeFrame) -> str:
+        """Render an aggregate's row-level expression source through ``scope`` — one resolver for leaves, attached placeholders, derived columns and join registration."""
+        return scope.resolve(source).sql(dialect=self.dialect)
 
     def _joined_paths_in_sql(
         self, *, sql_expr: exp.Expression, source_relation: str, source_model,
@@ -6301,7 +6255,6 @@ class SQLGenerator:
         full_alias: str,
         bundle=None,
         resolved_agg_kwargs: "Optional[Dict[str, ResolvedAggKwarg]]" = None,
-        attached_columns: Optional[Dict[Any, exp.Expression]] = None,
         scope: Optional[ScopeFrame] = None,
         owner_path: Tuple[str, ...] = (),
     ) -> AggRenderSpec:
@@ -6436,13 +6389,11 @@ class SQLGenerator:
             agg_def = self._resolve_aggregation_def(
                 key=key, source_model=source_model, src_leaf=expr_leaf,
             )
-            sql_text = self._render_expression_source_sql(
-                source=source,
-                source_model=source_model,
-                source_relation=source_relation,
-                bundle=bundle,
-                attached_columns=attached_columns,
-            )
+            if scope is None:
+                scope = self._throwaway_frame(
+                    model=source_model, relation=source_relation, bundle=bundle,
+                )
+            sql_text = self._render_expression_source_sql(source=source, scope=scope)
             resolved_kw = resolved_agg_kwargs or {}
             agg_kwargs_str = {
                 k: (resolved_kw[k] if k in resolved_kw else agg_kwarg_canonical_str(v))
@@ -6679,8 +6630,7 @@ class SQLGenerator:
         )
 
     def _filter_agg_builder(
-        self, *, source_model, source_relation: str, bundle,
-        attached_columns: Optional[Dict[Any, exp.Expression]] = None,
+        self, *, source_model, source_relation: str, bundle, scope: ScopeFrame,
     ):
         """The WHERE/HAVING aggregate seam (DEV-1763 P-G): render a local"""
 
@@ -6691,16 +6641,11 @@ class SQLGenerator:
                     f"filter (path={agg_key.source.path!r}) routes via the "
                     f"per-plan CTE, not inline HAVING."
                 )
-            having_kwargs = self._resolve_agg_kwargs_for_key(
-                key=agg_key, source_model=source_model,
-                source_relation=source_relation, bundle=bundle,
-                attached_columns=attached_columns,
-            )
+            having_kwargs = self._resolve_agg_kwargs_for_key(key=agg_key, scope=scope)
             synth = self._build_agg_render_spec_from_planned(
                 slot=slot, key=agg_key, source_model=source_model,
                 source_relation=source_relation, full_alias=having_full_alias,
-                bundle=bundle, resolved_agg_kwargs=having_kwargs,
-                attached_columns=attached_columns,
+                bundle=bundle, resolved_agg_kwargs=having_kwargs, scope=scope,
             )
             agg_expr, _is_agg = self._build_agg(synth)
             return agg_expr
@@ -6726,7 +6671,7 @@ class SQLGenerator:
                     source_model=source_model,
                     source_relation=source_relation,
                     bundle=bundle,
-                    attached_columns=regroup_env,
+                    scope=scope,
                 ),
                 cast_column_sql=True,
                 paren_comparison_operands=True,

@@ -134,20 +134,22 @@
 
 ## 7. Specs, goldens, docs, harness, gates
 
-- [ ] 7.1 Spec deltas reconciled at plan time; after PR #394 archives on main:
-      merge origin/main, `openspec validate
-      dev-1859-aggregation-sources-mixing-row-level-columns-with-attached --strict`,
-      re-check the expression-aggregation MODIFIED text against the corpus.
-- [ ] 7.2 Bless `tests/golden/dev1859_sql_baseline.json`; existing baselines
-      byte-stable or each divergence approved per the ledger protocol.
+- [x] 7.1 Spec deltas reconciled: expression-aggregation MODIFIED carries the
+      broadcast-refusal clause + the "rejected" scenario; partitioned-aggregates
+      default-mode-twin scenario flipped to the typed error; `openspec validate
+      … --strict` valid. The MCP `server.py` "mixing row-level columns" clause is
+      already absent (removed pre-branch) — nothing to delete.
+- [x] 7.2 Blessed `tests/golden/dev1859_sql_baseline.json` (param cases generate;
+      manifest emptied); all 21 golden suites byte-stable.
 - [ ] 7.3 Flip `architecture/semantics.arc42.md` axiom-6 `[target: DEV-1859]` →
       `[enforced: test:tests/test_dev1859_row_mixed_exec.py]` — present the exact
       one-line diff for approval first; `poetry run python tools/arch_check.py`.
-- [ ] 7.4 Docs: one sentence in the `associate` paragraph of
-      `docs/concepts/queries.md` (attached parameters the entity grain determines);
-      one sentence in `docs/concepts/formulas.md` for the parameter form.
-- [ ] 7.5 Gates: full non-integration suite; SQLite/DuckDB integration files
-      touched; ruff; conventions gate; `tools/arch_check.py`; basedpyright baseline
-      not grown; `openspec validate … --strict`; Codex pass on the working tree.
+- [x] 7.4 Docs: `docs/concepts/queries.md` associate paragraph (attached
+      parameter the entity grain determines + the broadcast caveat);
+      `docs/concepts/formulas.md` parameter-form sentence.
+- [x] 7.5 Gates: full non-integration suite (18024 green); SQLite/DuckDB
+      integration green; ruff clean; conventions gate CLEAR; `tools/arch_check.py`
+      OK; basedpyright baseline shrank by 1 (not grown); `openspec validate …
+      --strict` valid; Codex pass on the working tree — no material findings.
 - [ ] 7.6 PR against main if #394 has merged, else against the 1892 branch and
       retarget when it lands; merge only, never rebase.

@@ -20,6 +20,7 @@ from typing import (
     Optional,
     Sequence,
     Tuple,
+    TypeGuard,
     Union,
 )
 
@@ -1758,7 +1759,7 @@ def _synthesize_association_producer(  # NOSONAR(S3776) — one cohesive host-ro
     _safety_rooted = agg
     if attached_inputs(agg):
         _safety_rooted = substitute_value_keys(
-            agg, {a: LiteralKey(value=1) for a in attached_inputs(agg)})
+            agg, {a: LiteralKey(value=Decimal(1)) for a in attached_inputs(agg)})
     _assert_cross_model_inputs_safe(
         agg=agg, agg_rooted=reroot_from_root(
             _safety_rooted, target_path=target_path, root_model=root_model,
@@ -1945,7 +1946,7 @@ def _answers_need_nested_regroups(answers: Iterable[ValueKey]) -> bool:
 
 
 def _discover_roots(
-    prebound: PreboundQuery, *, predicate: Callable[[ValueKey], bool],
+    prebound: PreboundQuery, *, predicate: Callable[[ValueKey], TypeGuard[AggregateKey]],
 ) -> List[AggregateKey]:
     """Roots satisfying ``predicate`` reachable from any measure / order / filter,
     first-seen. Opaque below a matched root (its constituents belong to its own
@@ -2512,7 +2513,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
             n_dims=prebound.n_dims, n_time_dimensions=prebound.n_time_dimensions,
         )
         _query_grain = Grain.of(dm.bound.value_key for dm in (*_dim_dms, *_td_dms))
-        _strip = {
+        _strip: Dict[ValueKey, ValueKey] = {
             r: r.model_copy(update={"partition_keys": None})
             for r in _discover_roots(prebound, predicate=is_row_attach_root)
             if not is_cross_model_agg(r) and window_kwarg_of(r) is None
