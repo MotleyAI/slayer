@@ -11,7 +11,7 @@
 
 ## 2. Model map
 
-- [ ] 2.1 `ResolvedSourceBundle.models_by_name` property (source first, referenced next, dedup by name) and the idiom sweep across engine / ir / sql; walkers keep `setdefault` for a caller-supplied root; delete `models_with_host` and the hand-patched bundle in `_ref_sql_dependency_paths`. Verify: 1.2 map tests green; full non-integration suite green.
+- [x] 2.1 `ResolvedSourceBundle.models_by_name` property (source first, referenced next, dedup by name) and the idiom sweep across engine / ir / sql; walkers keep `setdefault` for a caller-supplied root; delete `models_with_host` and the hand-patched bundle in `_ref_sql_dependency_paths`. Verify: 1.2 map tests green; full non-integration suite green.
 
 ## 3. Closure module
 

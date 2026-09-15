@@ -774,7 +774,7 @@ def _synthesize_wrap_attach(
 ) -> RegroupAttachPlan:
     """A host-grain ORDER-BY wrap as a HOST-rooted producer synthesized late: a combined attach at the full projected grain whose placeholder IS the wrap key."""
     producer_model = scope.source_model if isinstance(scope, ModelScope) else None
-    models_by_name = {m.name: m for m in bundle.referenced_models}
+    models_by_name = bundle.models_by_name
     if producer_model is not None:
         _assert_local_producer_inputs_safe(
             agg=wrap_key, host_model=producer_model, bundle=bundle,
@@ -2639,7 +2639,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
     # (broadcast / associate / error), never the naive fanned inline GROUP BY.
     host_for_local = scope.source_model if isinstance(scope, ModelScope) else None
     if host_for_local is not None:
-        lb_models = {m.name: m for m in bundle.referenced_models}
+        lb_models = bundle.models_by_name
         lb_grain = [*projected_dim_keys, *projected_td_keys]
 
         def _local_broadcasts(k: ValueKey) -> bool:
@@ -2912,7 +2912,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
     host_model_for_cm = (
         scope.source_model if isinstance(scope, ModelScope) else bundle.source_model
     )
-    models_by_name_cm = {m.name: m for m in bundle.referenced_models}
+    models_by_name_cm = bundle.models_by_name
     base_filters_with_text = list(zip(
         prebound.bound_filters,
         prebound.bound_filter_texts

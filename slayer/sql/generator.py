@@ -4614,7 +4614,7 @@ class SQLGenerator:
         the shared bidirectional walker — reverse hops and edge-name tokens
         included. Raises ``ValueError`` on a missing hop (its own message) and
         propagates ``AmbiguousJoinPathError`` on an ambiguous one."""
-        models_by_name = {m.name: m for m in bundle.referenced_models}
+        models_by_name = bundle.models_by_name
         models_by_name.setdefault(source_model.name, source_model)
         current = source_model
         chain = []
@@ -6074,7 +6074,7 @@ class SQLGenerator:
             sql=col.sql,
             model=source_model,
             alias_path=source_relation,
-            models_by_name={m.name: m for m in bundle.referenced_models},
+            models_by_name=bundle.models_by_name,
             dialect=self.dialect,
             owner_path=owner_path,
             alias_resolver=self._join_alias_resolver(resolver_root),
@@ -6245,7 +6245,7 @@ class SQLGenerator:
         via the shared walker (tokens may be edge names or reverse hops)."""
         return terminal_model(
             root=source_model, path=tuple(path),
-            models_by_name={m.name: m for m in bundle.referenced_models},
+            models_by_name=bundle.models_by_name,
         )
 
     def _build_agg_render_spec_from_planned(  # NOSONAR(S3776) — sequential isinstance dispatch over StarKey / ColumnKey / ColumnSqlKey with helper extractions for aggregation-def lookup, kwarg path validation, and explicit-time-arg resolution. Further splitting would scatter the per-source-kind contract.

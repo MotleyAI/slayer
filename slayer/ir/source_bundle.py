@@ -62,6 +62,20 @@ class ResolvedSourceBundle(BaseModel):
                 return m
         return None
 
+    @property
+    def models_by_name(self) -> Dict[str, SlayerModel]:
+        """The host-inclusive model map every walker and scanner consumes: the
+        source model first (so a source→host reverse hop resolves deterministically,
+        not incidentally), then the referenced models, de-duplicated by name with
+        the source winning. Production bundles already list the source among
+        ``referenced_models``; a hand-built bundle that omits it still exposes it."""
+        out: Dict[str, SlayerModel] = {}
+        if self.source_model is not None:
+            out[self.source_model.name] = self.source_model
+        for m in self.referenced_models:
+            out.setdefault(m.name, m)
+        return out
+
 
 # Anything accepted as ``SlayerQuery.source_model``.
 SourceSpec = Union[str, SlayerModel, ModelExtension, Dict[str, Any]]

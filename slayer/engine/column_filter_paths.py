@@ -109,7 +109,7 @@ def _expand_derived_refs_any_dialect(
                 sql=sql,
                 model=model,
                 alias_path=alias_path,
-                models_by_name={m.name: m for m in bundle.referenced_models},
+                models_by_name=bundle.models_by_name,
                 dialect=dialect,
             )
         except Exception:

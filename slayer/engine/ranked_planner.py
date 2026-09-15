@@ -88,7 +88,7 @@ def _temporal_row_dimension_key(
     source_model: SlayerModel,
     bundle: ResolvedSourceBundle,
 ) -> Optional[ValueKey]:
-    models_by_name = {m.name: m for m in bundle.referenced_models}
+    models_by_name = bundle.models_by_name
     for key in row_keys:
         if not isinstance(key, ColumnKey):
             continue
@@ -130,7 +130,7 @@ def resolve_ranking_time_key(
         rerooted = reroot_value_key(arg, target_path=target_path)
         if target_path and not _resolves_on(
             key=rerooted, model=root_model,
-            models_by_name={m.name: m for m in bundle.referenced_models},
+            models_by_name=bundle.models_by_name,
         ):
             # A host column can't rank a target-rooted CTE (the relation runs 1:N).
             raise ValueError(

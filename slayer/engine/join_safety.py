@@ -411,7 +411,7 @@ def assert_partition_key_attributable(
         tuple(getattr(key.source, "path", ()) or ())
         if isinstance(key, AggregateKey) else ()
     )
-    models_by_name = {m.name: m for m in bundle.referenced_models}
+    models_by_name = bundle.models_by_name
     root = walk_key_path(model=host_m, path=agg_target, bundle=bundle) or host_m
     host_name = host_m.name if agg_target else None
     attributable = attributable_from_root(
