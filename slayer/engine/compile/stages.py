@@ -1969,12 +1969,13 @@ def _discover_roots(
         for c in vk.children():
             _scan(c)
 
-    for dm in prebound.declared_measures:
-        _scan(dm.bound.value_key)
-    for sp in prebound.order_specs:
-        _scan(sp.bound.value_key)
-    for bf in prebound.bound_filters:
-        _scan(bf.value_key)
+    roots = [
+        *(dm.bound.value_key for dm in prebound.declared_measures),
+        *(sp.bound.value_key for sp in prebound.order_specs),
+        *(bf.value_key for bf in prebound.bound_filters),
+    ]
+    for vk in roots:
+        _scan(vk)
     return out
 
 

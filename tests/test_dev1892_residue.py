@@ -109,19 +109,20 @@ class TestAttachedParameterOnRowLevelSource:
         assert {r["orders.status"] for r in resp.data} == {"ok", "new"}
 
     async def test_default_mode_refuses_the_host_rooted_parameter(self, assoc_engine):
+        q = bcast_q(dimensions=["status"],
+                    measures=[ModelMeasure(formula=_ATTACHED_ON_ROW, name="w")])
         with pytest.raises(SlayerError) as ei:
-            await assoc_engine.execute(bcast_q(
-                dimensions=["status"],
-                measures=[ModelMeasure(formula=_ATTACHED_ON_ROW, name="w")]))
+            await assoc_engine.execute(q)
         msg = str(ei.value)
-        assert "'customers'" in msg and "'amount'" in msg
+        assert "'customers'" in msg
+        assert "'amount'" in msg
         assert "to_many_handling='associate'" in msg
 
     async def test_error_mode_refuses_the_dimension(self, assoc_engine):
+        q = error_q(dimensions=["status"],
+                    measures=[ModelMeasure(formula=_ATTACHED_ON_ROW, name="w")])
         with pytest.raises(SlayerError) as ei:
-            await assoc_engine.execute(error_q(
-                dimensions=["status"],
-                measures=[ModelMeasure(formula=_ATTACHED_ON_ROW, name="w")]))
+            await assoc_engine.execute(q)
         assert "status" in str(ei.value)
 
 

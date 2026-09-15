@@ -2116,14 +2116,17 @@ class SQLGenerator:
         )
 
         def _ready(key) -> bool:
-            # A key that is itself a projected slot (e.g. a computed dimension a
-            # transform ranks over) is terminal — read its slot, not its children.
+            # A materialised slot is terminal (e.g. a computed dimension a
+            # transform ranks over) — read it, don't descend.
             sid = slot_id_by_key.get(key)
-            if sid is not None:
-                return sid in available_alias_by_slot_id
-            # An unslotted slotted-kind leaf resolves at the base; composites descend.
-            if isinstance(key, slotted_kinds):
+            if sid is not None and sid in available_alias_by_slot_id:
                 return True
+            # A slotted-kind leaf resolves at the base when it owns no slot; an
+            # unmaterialised one (e.g. a not-yet-emitted transform) is not ready.
+            if isinstance(key, slotted_kinds):
+                return sid is None
+            # A composite whose own slot is not yet available descends: its
+            # children may resolve within the chain (e.g. last(change(x))).
             return all(_ready(child) for child in key.children())
 
         for slot_id in layer.slot_ids:
