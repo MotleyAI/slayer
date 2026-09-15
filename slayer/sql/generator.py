@@ -348,8 +348,11 @@ def _plan_slots(planned_query) -> List[ValueSlot]:
     ]
 
 
-def _combined_placeholder_slot_ids(planned_query, slot_id_by_key) -> Set[str]:
-    """Slot ids whose value lives in a combined-attach producer CTE."""
+def _combined_attached_slot_ids(planned_query, slot_id_by_key) -> Set[str]:
+    """Slot ids the combined SELECT reads from an attached producer CTE — an
+    attach-plan fact, not a key-shape walk. Includes a dual-role placeholder
+    (also row-attached, so BASE-staged: ``_base`` is the earliest relation it
+    materialises in, but combined-level consumers read the producer CTE)."""
     out: Set[str] = set()
     for attach in planned_query.regroup_attach_plans:
         if attach.attach_phase != "combined":
@@ -361,49 +364,36 @@ def _combined_placeholder_slot_ids(planned_query, slot_id_by_key) -> Set[str]:
     return out
 
 
-def _windowed_agg_slot_ids(planned_query) -> Set[str]:
-    """Aggregate slots carrying a ``window=`` kwarg (their value lives in a windowed CTE)."""
-    return {
-        s.id
-        for s in planned_query.aggregate_slots
-        if isinstance(s.key, AggregateKey)
-        and any(kw == "window" for kw, _ in s.key.kwargs)
-    }
-
-
 def _lower_positions(planned_query) -> _LoweredPositions:
-    """Reconstruct placements from the plan's typed masks: field → base WHERE;
-    measure → HAVING, or outer WHERE when it reads a combined placeholder, or the
-    post wrapper when it reads a windowed value / transform. Mode-A texts render
-    in the base WHERE between the date-range and user masks."""
+    """Placement from the planner stage (D5): field → base WHERE; measure →
+    HAVING at BASE, the combined outer WHERE at PRODUCER / COMBINED (or reading
+    a combined-attached dual-role value), the outer wrapper at DERIVED. Mode-A
+    texts render in the base WHERE between the date-range and user masks."""
     slots_by_id = {s.id: s for s in _plan_slots(planned_query)}
     slot_id_by_key = {s.key: s.id for s in slots_by_id.values()}
-    combined_ph_ids = _combined_placeholder_slot_ids(planned_query, slot_id_by_key)
-    windowed_ids = _windowed_agg_slot_ids(planned_query)
+    combined_attached = _combined_attached_slot_ids(planned_query, slot_id_by_key)
     outer_ids: List[str] = []
 
     def _lower_mask(mask) -> _LoweredFilter:
         slot = slots_by_id[mask.slot_id]
-        key = slot.key
+        stage_kind = slot.stage.kind if slot.stage is not None else None
         if mask.typing == MaskTyping.FIELD:
             phase = Phase.ROW
+        elif stage_kind is StageKind.DERIVED:
+            phase = Phase.POST
         else:
-            dep_ids = {
-                slot_id_by_key[k]
-                for k in walk_value_keys(key)
-                if k in slot_id_by_key
-            }
-            if key.phase == Phase.POST or (dep_ids & windowed_ids):
-                phase = Phase.POST
-            else:
-                phase = Phase.AGGREGATE
-                if (
-                    (dep_ids & combined_ph_ids) or _FORCE_MASK_FALLBACK
-                ) and mask.slot_id not in outer_ids:
-                    outer_ids.append(mask.slot_id)
+            phase = Phase.AGGREGATE
+            outer = stage_kind in (
+                StageKind.PRODUCER, StageKind.COMBINED,
+            ) or any(
+                slot_id_by_key.get(k) in combined_attached
+                for k in walk_value_keys(slot.key)
+            )
+            if (outer or _FORCE_MASK_FALLBACK) and mask.slot_id not in outer_ids:
+                outer_ids.append(mask.slot_id)
         return _LoweredFilter(
             id=mask.slot_id, phase=phase,
-            expression=BoundExpr(value_key=key),
+            expression=BoundExpr(value_key=slot.key),
         )
 
     n_date = planned_query.n_date_range_masks
@@ -420,8 +410,7 @@ def _lower_positions(planned_query) -> _LoweredPositions:
         planned_query=planned_query,
         slots_by_id=slots_by_id,
         slot_id_by_key=slot_id_by_key,
-        combined_ph_ids=combined_ph_ids,
-        windowed_ids=windowed_ids,
+        combined_attached=combined_attached,
     )
     return _LoweredPositions(
         filters=entries, outer_where_ids=outer_ids, order=order,
@@ -433,8 +422,7 @@ def _lower_order_entries(
     *,
     slots_by_id: Dict[str, ValueSlot],
     slot_id_by_key: Dict[Any, str],
-    combined_ph_ids: Set[str],
-    windowed_ids: Set[str],
+    combined_attached: Set[str],
 ) -> List[ScopedOrder]:
     order: List[ScopedOrder] = []
     for entry in planned_query.order:
@@ -450,58 +438,53 @@ def _lower_order_entries(
             direction=entry.direction,
             scope=_classify_order_scope(
                 slot=slot,
-                cross_model_slot_ids=combined_ph_ids,
-                windowed_slot_ids=windowed_ids,
-                public_projection=list(planned_query.projection),
+                slots_by_id=slots_by_id,
                 slot_by_key=slot_id_by_key,
+                combined_attached=combined_attached,
+                public_projection=list(planned_query.projection),
             ),
             nulls=entry.nulls,
         ))
     return order
 
 
-def _composite_reads_an_isolated_cte(
-    *,
-    key,
-    slot_by_key: Dict[Any, str],
-    isolated_slot_ids: "AbstractSet[str]",
-) -> bool:
-    for dep in walk_value_keys(key):
-        # A combined regroup placeholder lives in its producer like a cross-model aggregate → a composite reading one is also outer.
-        is_isolated_leaf = isinstance(dep, AggregateKey) or (
-            isinstance(dep, ColumnKey) and dep.leaf.startswith(REGROUP_LEAF_PREFIX)
-        )
-        if is_isolated_leaf and slot_by_key.get(dep) in isolated_slot_ids:
-            return True
-    return False
-
-
 def _classify_order_scope(
     *,
     slot: ValueSlot,
-    cross_model_slot_ids: Set[str],
-    windowed_slot_ids: Set[str],
-    public_projection: List[str],
+    slots_by_id: Dict[str, ValueSlot],
     slot_by_key: Dict[Any, str],
+    combined_attached: Set[str],
+    public_projection: List[str],
     ranked_slot_ids: "AbstractSet[str]" = frozenset(),
 ) -> OrderScope:
-    """Name the scope that PRODUCES ``slot``'s value; isolated scopes are checked before the host base (a composite is OUTER_COMPOSITE when any operand lives in an isolated CTE)."""
-    if slot.id in cross_model_slot_ids:
-        return OrderScope.CROSS_MODEL_CTE
+    """Name the scope that PRODUCES ``slot``'s value, from its planner stage
+    plus the attach facts (ranked kernel, combined-attached dual-role values);
+    a composite is OUTER_COMPOSITE when any operand lives in an isolated CTE."""
     if slot.id in ranked_slot_ids:
         return OrderScope.RANKED_CTE
-    if slot.id in windowed_slot_ids:
-        return OrderScope.WINDOWED_CTE
+    if slot.id in combined_attached:
+        return OrderScope.CROSS_MODEL_CTE
+    stage_kind = slot.stage.kind if slot.stage is not None else None
+    if stage_kind is StageKind.PRODUCER:
+        if isinstance(slot.key, AggregateKey) and any(
+            kw == "window" for kw, _ in slot.key.kwargs
+        ):
+            return OrderScope.WINDOWED_CTE
+        return OrderScope.CROSS_MODEL_CTE
     if isinstance(slot.key, TransformKey):
         return OrderScope.TRANSFORM_STEP
-    if isinstance(slot.key, (ArithmeticKey, ScalarCallKey)) and _composite_reads_an_isolated_cte(
-        key=slot.key,
-        slot_by_key=slot_by_key,
-        isolated_slot_ids=(
-            cross_model_slot_ids | windowed_slot_ids | set(ranked_slot_ids)
-        ),
-    ):
-        return OrderScope.OUTER_COMPOSITE
+    if isinstance(slot.key, (ArithmeticKey, ScalarCallKey)):
+        for dep in walk_value_keys(slot.key):
+            dep_sid = slot_by_key.get(dep)
+            if dep_sid is None or dep_sid == slot.id:
+                continue
+            dep_stage = slots_by_id[dep_sid].stage
+            if (
+                dep_sid in ranked_slot_ids
+                or dep_sid in combined_attached
+                or (dep_stage is not None and dep_stage.kind is StageKind.PRODUCER)
+            ):
+                return OrderScope.OUTER_COMPOSITE
     if slot.hidden or slot.id not in public_projection:
         return OrderScope.HOST_BASE_HIDDEN
     return OrderScope.HOST_BASE

@@ -124,13 +124,21 @@ Full detail in the DEV-1800 spec-tests resume comment.
 
 ## 5. Filters, order, isolated sets from stage (commit 4)
 
-- [ ] 5.1 `_lower_positions` placement = f(stage, mask typing); `_classify_order_scope`
+- [x] 5.1 `_lower_positions` placement = f(stage, mask typing); `_classify_order_scope`
   derived from stage + attach kernel + hidden; delete `_combined_placeholder_slot_ids`,
   `_windowed_agg_slot_ids`, `_composite_reads_an_isolated_cte`; verified by 1.4 and the
   DEV-1747 / DEV-1745 suites.
-- [ ] 5.2 Divergence ledger: list every golden diff the rule produced with executed-value
+- [x] 5.2 Divergence ledger: list every golden diff the rule produced with executed-value
   parity evidence in the PR description; each approved before re-bless; verified by the
   ledger matching the re-blessed baselines.
+  *Ledger:* one entry — `alt/last_over_change_filtered` × 5 dialects flipped raise→SQL
+  (the pre-approved D10 alternation flip; values pinned by `TestTermAloneExecutionParity`
+  + dev1859 `TestLastOverShiftComposition`). The D5 windowed-value-filter divergence did
+  not materialise: a windowed measure's mask dep is its substitution placeholder, which
+  already routed to the combined outer WHERE — verified byte-identical by probe and the
+  full golden corpus. Dual-role placeholders (BASE-staged, read from the producer CTE at
+  the combined SELECT) keep an attach-plan-derived set (`_combined_attached_slot_ids`)
+  consulted by mask/order lowering beside stage — an attach fact, not a key-shape walk.
 
 ## 6. Docs, architecture, hygiene (commit 5)
 
