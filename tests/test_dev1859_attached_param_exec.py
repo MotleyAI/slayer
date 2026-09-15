@@ -1,8 +1,9 @@
 """DEV-1859 task 4.4 — leg C executed values (SQLite + DuckDB): an attached
 (aggregate-valued) parameter on a row-level / literal / mixed source compiles by
 row-attaching the parameter's producer into the aggregation's input relation.
-Every oracle is a raw-row reduction in ``tests/_dev1859_fixtures``. All fail
-until leg C lands (today the shape raises the attached-parameter rejection).
+Every oracle is a raw-row reduction in ``tests/_dev1859_fixtures``. The one
+residue: under broadcast a parameter reading host columns inside a
+target-rooted producer is a typed error (DEV-1906 re-roots it).
 
 Spec: openspec …/specs/queries/partitioned-aggregates — "Attached parameters on
 row-level sources"; queries/semantics — "Ungrained aggregate parameters type at
@@ -19,6 +20,7 @@ from slayer.sql.scope_check import assert_scope_closed
 from tests._dev1841_fixtures import (
     ModelMeasure,
     assoc_q,
+    bcast_q,
     broadcast_warnings,
     dev1840_models,
     error_q,
@@ -35,6 +37,7 @@ from tests._dev1859_fixtures import (
     assoc_wavg_new_without_c4,
     assoc_wavg_region_weight,
     broadcast_wavg_global,
+    broadcast_wavg_target_side,
     cross_model_param_by_status,
     customers_wsum_models,
     literal_source_wsum_by_region,
@@ -55,6 +58,8 @@ _MIXED_PARAM = ("weighted_avg(quantity * avg(unit_price, partition_by=product), 
                 "weight=sum(amount, partition_by=region))")
 _CROSS = ("amount:weighted_avg("
           "weight=sum(customers.spend, partition_by=customers.regions.name))")
+_TARGET_SIDE = ("customers.spend:weighted_avg("
+                "weight=sum(customers.spend, partition_by=customers.regions.name))")
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -118,15 +123,41 @@ class TestAssociateHeadline:
 
 
 class TestDefaultAndErrorModeTwins:
+    async def test_default_mode_refuses_the_host_rooted_parameter(self, orders_engine):
+        """Scenario: Default-mode twin — the broadcast producer is rooted at
+        customers and the parameter reads orders.amount, which customers cannot
+        reach: a plan-time typed error names the root, the leaf and the
+        associate remedy (decision 14 residue; DEV-1906 re-roots it)."""
+        with pytest.raises(SlayerError) as ei:
+            await orders_engine.execute(orders_q(
+                dimensions=["status"],
+                measures=[ModelMeasure(formula=_HEADLINE, name="w")]))
+        msg = str(ei.value)
+        assert "'customers'" in msg and "'amount'" in msg
+        assert "to_many_handling='associate'" in msg
+
+    @pytest.mark.xfail(strict=True, reason="host-rooted parameter re-rooting (DEV-1906)")
     async def test_default_mode_broadcasts_the_global_value(self, orders_engine):
-        """Scenario: Default-mode twin — the OMITTED (default) to_many_handling
-        broadcasts the customers-rooted global weighted value identically to both
-        status cells, with the broadcast warning (decision 14 executed branch)."""
+        """DEV-1906 target: the OMITTED (default) to_many_handling broadcasts the
+        customers-rooted global weighted value identically to both status cells,
+        with the broadcast warning."""
         resp = await orders_engine.execute(orders_q(
             dimensions=["status"],
             measures=[ModelMeasure(formula=_HEADLINE, name="w")]))
         by = status_key(resp)
         expected = broadcast_wavg_global()
+        for status in ("ok", "new"):
+            assert float(by[(status,)]["orders.w"]) == pytest.approx(expected)
+        assert broadcast_warnings(resp)
+
+    async def test_broadcast_mode_target_side_parameter_executes(self, orders_engine):
+        """Control: a parameter reading only customers-side columns nests inside
+        the customers-rooted producer and broadcasts to both cells."""
+        resp = await orders_engine.execute(bcast_q(
+            dimensions=["status"],
+            measures=[ModelMeasure(formula=_TARGET_SIDE, name="w")]))
+        by = status_key(resp)
+        expected = broadcast_wavg_target_side()
         for status in ("ok", "new"):
             assert float(by[(status,)]["orders.w"]) == pytest.approx(expected)
         assert broadcast_warnings(resp)

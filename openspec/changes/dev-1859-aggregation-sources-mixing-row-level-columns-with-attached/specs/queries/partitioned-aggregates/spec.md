@@ -184,12 +184,14 @@ measure) and ORDER BY positions.
 #### Scenario: Default-mode twin of the associate shape
 - **WHEN** the associate-mode query above runs under the default
   `to_many_handling`
-- **THEN** the parameter's producer is computed at its own home dataset and
-  attached per customer into the aggregation's producer, the root resolves
-  `status` per the broadcast rules with the usual warning, and the executed
-  value is the hand-computed broadcast figure; under `to_many_handling: "error"`
-  the query fails with the mode's refusal naming the dimension, never a
-  parameter error
+- **THEN** it fails at plan time with a typed error naming the producer's root
+  `customers`, the leaf `amount` the root cannot reach, and the `associate`
+  remedy — the parameter's producer would have to be rooted at `orders` and
+  attached into the `customers`-rooted producer; the same aggregation with
+  `weight=sum(customers.spend, partition_by=customers.regions.name)` executes,
+  broadcast to every `status` cell with the usual warning; under
+  `to_many_handling: "error"` the query fails with the mode's refusal naming
+  the dimension, never a parameter error
 
 #### Scenario: Cross-model attached parameter on a local root
 - **WHEN** a query rooted at `orders` selects

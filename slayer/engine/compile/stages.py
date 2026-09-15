@@ -69,6 +69,7 @@ from slayer.engine.elaborate_env import (
     check_cross_model_source_resolves,
     check_local_producer_inputs_safe,
     check_order_target_has_slot,
+    check_attached_inputs_attributable,
     check_parameter_determined,
     check_raw_rows_no_aggregate_slots,
     check_reaggregation_dims_attributable,
@@ -560,6 +561,39 @@ def _first_unattributable_arg_leaf(
                 getattr(arg, "column", None), "leaf", None,
             ) or "input"
             return [leaf]
+    return []
+
+
+def _first_unattributable_attached_leaf(
+    *, agg: AggregateKey, target_path: Tuple[str, ...],
+    root_model: SlayerModel, models_by_name: Dict[str, SlayerModel],
+    host_name: str,
+) -> List[Tuple[str, str, str]]:
+    """(input alias, dotted leaf, reason) of the first row leaf inside an attached input that the root cannot reach."""
+    for inp in attached_inputs(agg):
+        for leaf in walk_value_keys(inp):
+            if not isinstance(leaf, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+                continue
+            hp = key_host_path(leaf)
+            if attributable_from_root(
+                host_path=hp, target_path=target_path, root_model=root_model,
+                models_by_name=models_by_name, host_name=host_name,
+            ):
+                continue
+            name = (
+                getattr(leaf, "leaf", None)
+                or getattr(leaf, "column_name", None)
+                or getattr(getattr(leaf, "column", None), "leaf", None)
+                or "input"
+            )
+            return [(
+                canonical_aggregate_alias(inp, profile="stage_formula") or "input",
+                ".".join([*hp, name]),
+                broadcast_reason(
+                    host_path=hp, target_path=target_path, root_model=root_model,
+                    models_by_name=models_by_name, host_name=host_name,
+                ),
+            )]
     return []
 
 
@@ -1316,6 +1350,15 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         unattributable=[(u.name, u.reason) for u in unattributable],
     )
     broadcast: List[Tuple[str, str]] = [(u.name, u.reason) for u in unattributable]
+    # Attached inputs nest as producers rooted here; error mode's dimension refusal wins.
+    if mode != "error" or not unattributable:
+        check_attached_inputs_attributable(
+            alias=alias, root_name=root_name, mode=mode,
+            unattributable=_first_unattributable_attached_leaf(
+                agg=agg, target_path=target_path, root_model=root_model,
+                models_by_name=models_by_name, host_name=host_model.name,
+            ),
+        )
 
     if target_path != key_host_path(agg.source):
         # The source sits beyond the home; re-anchor off-home inputs via the host

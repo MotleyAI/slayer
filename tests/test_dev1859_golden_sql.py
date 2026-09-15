@@ -1,9 +1,6 @@
 """DEV-1859 golden SQL (task 4.9) — the row-grain + attached-parameter shapes
-across the Tier-1 dialects. The mixed-source cases already generate (leg A); the
-attached-parameter cases record today's feature-missing raise and flip to real
-SQL when leg C lands (each flip enters ALLOWED_DELTAS, is re-blessed, and the
-manifest is emptied). ``test_lifted_cases_generate_not_raise`` is the
-feature-missing tripwire until then.
+across the Tier-1 dialects. ``test_param_cases_generate`` guards that no
+attached-parameter case regresses to recording a raise.
 """
 
 from __future__ import annotations
@@ -95,9 +92,8 @@ bind_golden_tests(
 )
 
 
-def test_lifted_cases_generate_not_raise(baseline) -> None:
-    """Feature-missing tripwire: every attached-parameter case must generate SQL
-    rather than record a raise. Fails until leg C lands."""
+def test_param_cases_generate(baseline) -> None:
+    """Every attached-parameter case generates SQL rather than recording a raise."""
     for key, value in baseline.items():
         if key.startswith("param/"):
             assert not isinstance(value, dict), f"{key} still raises: {value}"

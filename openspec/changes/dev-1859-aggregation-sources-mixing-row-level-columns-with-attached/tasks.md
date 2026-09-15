@@ -85,16 +85,17 @@
 
 ## 5. Structural re-cut (spec-implement)
 
-- [ ] 5.1 `core/keys.py`: `attached_inputs`, pure `is_reaggregation_key`,
+- [x] 5.1 `core/keys.py`: `attached_inputs`, pure `is_reaggregation_key`,
       `is_row_attach_root`, `attached_operand_keys` (rename), `walk_consumer_keys`;
       delete `is_mixed_source_key`; update every consumer (`bind_inputs.py`,
       `stages.py`).
-- [ ] 5.2 Opacity: `ir/bound.py` combined-consumer walk (+ order / filter
+- [x] 5.2 Opacity: `ir/bound.py` combined-consumer walk (+ order / filter
       variants), `dimension_regroup_roots`, `dimension_partitioned_aggregates`;
       `stages.py::_bare_combined_roots`, the `_local_broadcasts` scan; one
       `_discover_roots(prebound, predicate)`; the regroup block on an explicit
-      disposition, list-subtraction steps deleted.
-- [ ] 5.3 `_answers_need_nested_regroups` at the carrier, regroup producer,
+      disposition, list-subtraction steps deleted. Plus: a LOCAL row-attach root
+      whose `partition_by` equals the query grain aggregates inline.
+- [x] 5.3 `_answers_need_nested_regroups` at the carrier, regroup producer,
       re-aggregation outer producer, dimension wrap and association producer;
       grain-key and windowed clauses untouched.
 - [ ] 5.4 Generator: `_render_expression_source_sql(scope=…)` via
@@ -102,22 +103,34 @@
       removed from the five signatures; `scope` required and passed at every
       caller incl. `_composite_agg_builder`, `_filter_agg_builder`, the time-shift
       leaf path (`shifted_scope`).
-- [ ] 5.5 `_first_row_leaf(key, *, exempt)` shared by `_check_shift_family_key`
+- [x] 5.5 `_first_row_leaf(key, *, exempt)` shared by `_check_shift_family_key`
       and `check_non_shift_transform_row_leaf`.
 - [ ] 5.6 Verify: 4.1, 4.3, 4.5, 4.6, 4.7 green; full non-integration suite green.
 
 ## 6. Leg C (spec-implement)
 
-- [ ] 6.1 `join_safety.py::grain_determines`: recursive aggregate arm; the two
-      `check_parameter_determined` sites normalise an ungrained parameter to the
-      projected dimensions for the check only.
-- [ ] 6.2 `_synthesize_association_producer`: nested discovery per 5.3; after
-      compile, map each `PickedParam.key` through the plan's substitutions.
-- [ ] 6.3 Delete `check_attached_param_requires_attached_source`,
-      `_attached_param_on_row_source`, both call sites.
-- [ ] 6.4 Default-mode twin: probe; executed tests or pinned typed error +
-      deferral issue (decision 14).
-- [ ] 6.5 Verify: 4.2, 4.4, 4.8 green; DEV-1892 / DEV-1841 / DEV-1847 suites green.
+- [x] 6.1 `join_safety.py::grain_determines`: recursive aggregate arm; an
+      ungrained parameter is always determined (types at the query grain); the
+      association site types grained parameters against the ENTITY grain; the
+      re-aggregation site normalises an ungrained parameter to the outer grain.
+- [x] 6.2 `_synthesize_association_producer`: nested discovery per 5.3; attached
+      inputs stripped from the input-safety hop check; after compile, map each
+      `PickedParam.key` through the plan's substitutions.
+- [x] 6.3 Delete `check_attached_param_requires_attached_source`,
+      `_attached_param_on_row_source`, both call sites, the ledger row.
+- [x] 6.4 Default-mode twin (decision 14, B chosen 2026-09-15): the host-rooted
+      parameter inside a target-rooted broadcast producer is a typed error
+      (`check_attached_inputs_attributable`, raised before the producer compiles;
+      error mode's dimension refusal wins); the executed twin is a strict xfail
+      pointing at DEV-1906 (issue + worktree cut); a target-side parameter
+      executes as the control. Consented re-points: the two default-mode pins,
+      `test_dev1841_surfaces::test_association_slayer_error_maps_to_400`.
+- [x] 6.5 Verify: 4.2, 4.4, 4.8 green; DEV-1892 / DEV-1841 / DEV-1847 suites green.
+- [x] 6.6 Found on the way: a quoted four-segment dotted stage column re-parses on
+      BigQuery into a `Dot` under the qualifier slots, which
+      `unmangle_dotted_table_refs` skipped (pre-existing: DEV-1847 re-aggregation
+      over a cross-model partition key leaked the same way) — the repair now
+      flattens the `Dot` chain.
 
 ## 7. Specs, goldens, docs, harness, gates
 

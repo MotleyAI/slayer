@@ -15,6 +15,10 @@ values is a row-grain aggregation and SHALL be accepted (per
 (aggregate-valued) parameter on an aggregation whose source is row-level SHALL
 be accepted when the aggregation's operating grain determines it (per
 `queries/partitioned-aggregates` › Attached parameters on row-level sources).
+Under `broadcast`/`error` a cross-model aggregation's attached input SHALL read
+only columns attributable from the aggregation's root — a typed error names the
+root, the leaf and the `associate` remedy otherwise (per
+`queries/partitioned-aggregates` › Default-mode twin of the associate shape).
 Whether an aggregation runs over rows or over an operand dataset's cells is
 decided by its source alone; every attached input, in the source or in a
 parameter, is then attached by one mechanism — into the input relation for a
@@ -51,3 +55,12 @@ row-level source, as a constituent of the operand dataset for an attached one.
 - **THEN** it is accepted and compiles with the parameter's value attached into
   the aggregation's input relation — never the attached-parameter rejection —
   and the same aggregation with a row-level parameter is unaffected
+
+#### Scenario: Attached parameter on a row-level source rejected
+- **WHEN** a measure is written
+  `customers.spend:weighted_avg(weight=sum(amount, partition_by=customers.regions.name))`
+  rooted at `orders` under the default `broadcast` `to_many_handling`
+- **THEN** it fails at plan time with a typed error naming the producer's root
+  `customers`, the unreachable leaf `amount` and the `associate` remedy,
+  containing no issue reference; the same aggregation with a parameter reading
+  only `customers`-side columns executes

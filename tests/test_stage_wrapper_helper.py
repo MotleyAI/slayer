@@ -231,3 +231,21 @@ def test_fitted_output_alias_collision_raises(monkeypatch: pytest.MonkeyPatch) -
             dialect="postgres",
             projection_aliases=[twin_a, twin_b],
         )
+
+
+def test_unmangle_folds_four_segment_dotted_column() -> None:
+    """A quoted four-segment dotted column under a stage alias re-parses on
+    BigQuery with the overflow segments as a ``Dot`` in ``this``; the repair
+    folds every segment back into one column name."""
+    from slayer.sql.stage_wrapper import unmangle_dotted_table_refs
+
+    sql = (
+        "SELECT `_stage_inner`.`orders.customers.regions.name` AS x "
+        "FROM (SELECT 1 AS y) AS _stage_inner"
+    )
+    tree = sqlglot.parse_one(sql, dialect="bigquery")
+    unmangle_dotted_table_refs(tree)
+    col = next(tree.find_all(sqlglot.exp.Column))
+    assert col.table == "_stage_inner"
+    assert col.name == "orders.customers.regions.name"
+    assert "`_stage_inner`.`orders.customers.regions.name`" in tree.sql(dialect="bigquery")
