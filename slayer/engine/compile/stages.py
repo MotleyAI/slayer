@@ -1422,7 +1422,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         host_name=host_model.name, host_model=host_model, bundle=bundle,
     )
 
-    root_bundle = bundle.model_copy(update={"source_model": root_model})
+    root_bundle = bundle.rerooted(root_model)
     root_scope = (
         ModelScope(source_model=root_model)
         if isinstance(scope, ModelScope) else scope

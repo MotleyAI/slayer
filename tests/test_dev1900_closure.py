@@ -166,3 +166,19 @@ class TestModelsByName:
         bundle = ResolvedSourceBundle(
             source_model=by["regions"], referenced_models=[by["region_events"]])
         assert "regions" in bundle.models_by_name
+
+    def test_rerooted_keeps_the_former_source_in_the_universe(self):
+        """Re-rooting at a producer root must not shrink the map: the former
+        source stays visible so a root→ex-host reverse hop remains provable."""
+        by = {m.name: m for m in dev1900_models()}
+        bundle = ResolvedSourceBundle(
+            source_model=by["orders"], referenced_models=[by["customers"]])
+        rerooted = bundle.rerooted(by["customers"])
+        assert rerooted.source_model is by["customers"]
+        assert set(rerooted.models_by_name) == {"orders", "customers"}
+        # Already-listed source: no duplicate entry.
+        listed = ResolvedSourceBundle(
+            source_model=by["orders"],
+            referenced_models=[by["orders"], by["customers"]])
+        assert [m.name for m in listed.rerooted(by["customers"]).referenced_models] == [
+            "orders", "customers"]

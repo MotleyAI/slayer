@@ -302,6 +302,10 @@ def test_reroot_cases_actually_reroot(baseline) -> None:
     for key, value in baseline.items():
         if not key.startswith("reroot/"):
             continue
+        # Population guard fail-closes the fanning-filter shape until DEV-1909.
+        if key.startswith("reroot/unreachable_filter::"):
+            assert isinstance(value, dict), f"{key} must stay fail-closed: {value}"
+            continue
         assert isinstance(value, str), f"{key} records an error, not SQL: {value}"
         assert "_cm_" in value, (
             f"{key} is a re-rooting case with no ``_cm_`` alias — it stopped "

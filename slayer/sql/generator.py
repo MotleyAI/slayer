@@ -3867,7 +3867,7 @@ class SQLGenerator:
 
     @staticmethod
     def _producer_render_bundle(attach, bundle):
-        """The bundle a producer renders against. DEV-1836 — a target-rooted"""
+        """The bundle a target-rooted producer renders against."""
         root_name = getattr(attach, "producer_root_model", None)
         if not root_name:
             return bundle
@@ -3877,14 +3877,7 @@ class SQLGenerator:
                 f"Target-rooted regroup producer names root model {root_name!r}, "
                 f"absent from the bundle's referenced models."
             )
-        referenced = list(bundle.referenced_models)
-        host = bundle.source_model
-        if host is not None and bundle.get_referenced_model(host.name) is None:
-            # A semi-join reverse hop can target the host (DEV-1840).
-            referenced.append(host)
-        return bundle.model_copy(
-            update={"source_model": root, "referenced_models": referenced},
-        )
+        return bundle.rerooted(root)
 
     def _render_producer_split(
         self, *, producer, bundle, kernel=None,

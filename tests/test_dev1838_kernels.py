@@ -391,5 +391,5 @@ class TestCrossingInputPathsUnionFilterAndStructural:
         )
         assert ("customers", "regions") in paths, paths  # column_filter_key
         assert ("customers",) in paths, paths            # kwarg — dropped pre-fix
-        # Order-stable + de-duplicated: filter paths first, then structural.
-        assert paths == [("customers", "regions"), ("customers",)], paths
+        # Order-stable + de-duplicated: closure order, prefixes first.
+        assert paths == [("customers",), ("customers", "regions")], paths

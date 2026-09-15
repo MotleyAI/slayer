@@ -62,6 +62,17 @@ class ResolvedSourceBundle(BaseModel):
                 return m
         return None
 
+    def rerooted(self, new_source: SlayerModel) -> "ResolvedSourceBundle":
+        """Re-root at ``new_source``, keeping the former source in the universe
+        (a reverse hop can target it — the map must not shrink)."""
+        refs = self.referenced_models
+        old = self.source_model
+        if old is not None and self.get_referenced_model(old.name) is None:
+            refs = [*refs, old]
+        return self.model_copy(
+            update={"source_model": new_source, "referenced_models": refs},
+        )
+
     @property
     def models_by_name(self) -> Dict[str, SlayerModel]:
         """The host-inclusive model map every walker and scanner consumes: the

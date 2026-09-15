@@ -19,7 +19,7 @@ from slayer.core.keys import Grain
 from slayer.core.keys import KIND_POLICY, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, KindPolicy, LiteralKey, Phase, ScalarCallKey, SqlExprKey, StarKey, TimeTruncKey, TransformKey, ValueKey, _FrozenKey, reroot_value_key, substitute_value_keys, walk_value_keys
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
-from slayer.engine.aggregate_input_paths import compute_aggregate_input_join_paths
+from slayer.engine.reference_closure import UnhandledValueKindError, aggregate_input_closure
 from slayer.core.keys import lower_sugar_transforms, rewrite_rank_partition_keys
 from slayer.engine.compile.projection import (
     _SLOTTABLE_KIND,
@@ -598,7 +598,7 @@ class TestTimeTruncWidening:
 
 
 # ---------------------------------------------------------------------------
-# Join-path discovery descends expression sources via children() (task 3.5)
+# Join-path discovery descends expression sources (task 3.5)
 # ---------------------------------------------------------------------------
 def _orders_model() -> SlayerModel:
     return SlayerModel(
@@ -629,7 +629,7 @@ def _paths_for(key: AggregateKey):
     bundle = ResolvedSourceBundle(
         source_model=orders, referenced_models=[orders, _customers_model()],
     )
-    return compute_aggregate_input_join_paths(
+    return aggregate_input_closure(
         key=key, anchor_model=orders, anchor_relation="orders", bundle=bundle,
     )
 
@@ -670,16 +670,19 @@ class TestJoinDiscoveryExpressionSources:
         assert ("customers",) in _paths_for(key)
 
     # model_construct bypasses the source-union validation on purpose:
-    # totality over out-of-union kinds is a runtime property.
-    def test_dummy_source_flows_via_children(self) -> None:
+    # totality over out-of-union kinds is a runtime property. The closure
+    # dispatches per kind explicitly: any out-of-union kind fails closed,
+    # children() protocol or not.
+    def test_dummy_source_fails_closed(self) -> None:
         key = AggregateKey.model_construct(
             source=DummyKey(child=JOINED), agg="sum",
         )
-        assert ("customers",) in _paths_for(key)
+        with pytest.raises(UnhandledValueKindError):
+            _paths_for(key)
 
     def test_opaque_source_fails_closed(self) -> None:
         key = AggregateKey.model_construct(source=DummyOpaqueKey(), agg="sum")
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(UnhandledValueKindError):
             _paths_for(key)
 
 
