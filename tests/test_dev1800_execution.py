@@ -37,6 +37,9 @@ from tests._dev1800_fixtures import (
     CHANGE_SPEND_BY_SIGNUP,
     RATIO_BY_SIGNUP,
     SPEND_BY_SIGNUP,
+    ColumnRef,
+    TimeDimension,
+    TimeGranularity,
     by_signup,
     make_exec_engine as make_attr_engine,
     signup_td,
@@ -311,6 +314,49 @@ class TestCompositeInFilterAndOrder:
         # composite = [Feb 150, Mar -113, Jan None] → nulls last.
         assert months[:2] == ["2024-02", "2024-03"]
         assert set(months) == {"2024-01", "2024-02", "2024-03"}
+
+
+class TestTermAloneExecutionParity:
+    """Filtering on ``last(change(x))`` keeps the same rows with and without the
+    composite projected (staging is a function of the term alone). The projected
+    variant is the dev1859 stall shape and raises before the change."""
+
+    _FILTER = "last(change(amount:sum)) < 0"
+
+    @staticmethod
+    def _month_orders_td():
+        return [TimeDimension(dimension=ColumnRef(name="ordered_at"),
+                              granularity=TimeGranularity.MONTH)]
+
+    async def test_surviving_rows_identical_with_and_without_projection(self, attr_engine) -> None:
+        def keyed(resp) -> dict:
+            return {(r["orders.customer_id"], month_key(r["orders.ordered_at"])): r
+                    for r in resp.data}
+
+        without = keyed(await attr_engine.execute(SlayerQuery(
+            source_model="orders", dimensions=["customer_id"],
+            time_dimensions=self._month_orders_td(),
+            measures=[ModelMeasure(formula="amount:sum", name="a")],
+            filters=[self._FILTER])))
+        with_proj = keyed(await attr_engine.execute(SlayerQuery(
+            source_model="orders", dimensions=["customer_id"],
+            time_dimensions=self._month_orders_td(),
+            measures=[ModelMeasure(formula="amount:sum", name="a"),
+                      ModelMeasure(formula="change(amount:sum)", name="ch")],
+            filters=[self._FILTER])))
+        # per customer over order months: c1 last change −5, c2 −20 (both kept
+        # whole); c3 has one month, change NULL → dropped.
+        expected_amounts = {(1, "2024-01"): 20.0, (1, "2024-02"): 15.0,
+                            (2, "2024-02"): 60.0, (2, "2024-03"): 40.0}
+        assert set(without) == set(expected_amounts)
+        assert set(with_proj) == set(without)
+        for k, want in expected_amounts.items():
+            _approx_or_none(without[k]["orders.a"], want)
+            _approx_or_none(with_proj[k]["orders.a"], want)
+        expected_change = {(1, "2024-01"): None, (1, "2024-02"): -5.0,
+                           (2, "2024-02"): None, (2, "2024-03"): -20.0}
+        for k, want in expected_change.items():
+            _approx_or_none(with_proj[k]["orders.ch"], want)
 
 
 class TestMaskPlacementExecuted:

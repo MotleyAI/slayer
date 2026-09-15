@@ -7,7 +7,9 @@ today and become SQL after the change (each such flip is an ALLOWED_DELTAS entry
 approved with executed-value parity during implementation, per tasks.md §5.2).
 The ``named/*`` and ``pos/*`` cases already render and are pinned byte-for-byte
 against regression (the "already-legal shapes keep their SQL" scenario); any
-placement divergence the stage rule produces is an approved delta.
+placement divergence the stage rule produces is an approved delta. The ``alt/*``
+cases are the D10 alternation class (a transform over a composite over a
+transform), pinned the same way — raises where they stall today.
 """
 
 from __future__ import annotations
@@ -91,6 +93,20 @@ def _cases() -> dict:
             dimensions=["status"],
             filters=["customers.spend:last(customers.signup_at) > 50"],
             measures=[{"formula": "amount:sum", "name": "a"}]),
+        # Transform over a composite over a transform (D10 alternation class).
+        "alt/last_over_change": _orders(
+            measures=[{"formula": "last(change(amount:sum))", "name": "t"}]),
+        "alt/last_over_change_filtered": _orders(
+            dimensions=["status"],
+            measures=[{"formula": "change(amount:sum)", "name": "ch"}],
+            filters=["last(change(amount:sum)) < 0"]),
+        "alt/last_over_change_cumsum": _orders(
+            measures=[{"formula": "last(change(cumsum(amount:sum)))", "name": "t"}]),
+        # Derived composites at two different levels — pins the one fused
+        # trailing composite step (D8/D10) byte-for-byte.
+        "alt/two_level_composites": _orders(
+            measures=[{"formula": "change(amount:sum)", "name": "ch1"},
+                      {"formula": "change(cumsum(amount:sum))", "name": "ch2"}]),
     }
 
 

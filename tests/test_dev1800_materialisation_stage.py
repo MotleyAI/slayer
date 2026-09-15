@@ -1,8 +1,12 @@
 """DEV-1800 plan structure — the planner assigns every value one materialisation
-stage (``BASE < PRODUCER < COMBINED < CHAIN(level) < POST``) and a needs-column
+stage (``BASE < PRODUCER < COMBINED < DERIVED(level)``) and a needs-column
 flag, and rejects a plan that references a later stage or leaves a value
 unstaged. This is the harness for engine.arc42 P6 (phase/stage is a property of
 the value, not re-derived from text at render time).
+
+Only transforms stratify (design D10/D11): a value reading a transform sits one
+level above the deepest transform it reads, composites rendering inline — so a
+value's stage is a function of its term alone.
 
 Stages are inspected off the ``PlannedQuery`` that ``plan_query`` produces, so
 the assertions bind the planner's *output*, not any internal function name. The
@@ -78,6 +82,27 @@ def _composite_slots(pq: PlannedQuery) -> list:
     return [s for s in _all_slots(pq) if isinstance(s.key, ArithmeticKey)]
 
 
+def _transforms_read(key, by_key: dict) -> list:
+    """Transform slots ``key`` reads, descending through composites whether or
+    not interned; a transform or aggregate is terminal (D3 traversal)."""
+    out: list = []
+
+    def visit(k) -> None:
+        if isinstance(k, TransformKey):
+            slot = by_key.get(k)
+            if slot is not None:
+                out.append(slot)
+            return
+        if isinstance(k, AggregateKey):
+            return
+        for child in k.children():
+            visit(child)
+
+    for child in key.children():
+        visit(child)
+    return out
+
+
 # A spread of shapes the ordering/staging invariants must hold across —
 # measures, filter predicates and ORDER-BY keys, since every value the plan
 # carries (mask and order slots included) must be staged.
@@ -98,6 +123,11 @@ _INVARIANT_QUERIES = [
     # ORDER-BY key over a transform composite (an order slot must be staged)
     dict(measures=[ModelMeasure(formula="amount:sum", name="a")],
          order=[{"column": f"change({CM}) + amount:sum", "direction": "desc"}]),
+    # the alternation class (D10): a transform over a composite over a transform,
+    # beside the projected composite — the dev1859 stall shape
+    dict(measures=[ModelMeasure(formula="change(amount:sum)", name="ch")],
+         filters=["last(change(amount:sum)) < 0"]),
+    dict(measures=[ModelMeasure(formula="last(change(cumsum(amount:sum)))", name="t")]),
 ]
 
 
@@ -106,16 +136,16 @@ _INVARIANT_QUERIES = [
 # --------------------------------------------------------------------------- #
 class TestStageType:
     def test_kinds_exist(self) -> None:
-        assert {k.name for k in StageKind} >= {"BASE", "PRODUCER", "COMBINED", "CHAIN", "POST"}
+        # exact: CHAIN and POST are gone (D10 — one leveled derived stage)
+        assert {k.name for k in StageKind} == {"BASE", "PRODUCER", "COMBINED", "DERIVED"}
 
     def test_total_order(self) -> None:
         ascending = [
             Stage(kind=StageKind.BASE),
             Stage(kind=StageKind.PRODUCER),
             Stage(kind=StageKind.COMBINED),
-            Stage(kind=StageKind.CHAIN, level=1),
-            Stage(kind=StageKind.CHAIN, level=2),
-            Stage(kind=StageKind.POST),
+            Stage(kind=StageKind.DERIVED, level=1),
+            Stage(kind=StageKind.DERIVED, level=2),
         ]
         for lo, hi in zip(ascending, ascending[1:]):
             assert lo < hi
@@ -123,7 +153,7 @@ class TestStageType:
 
     def test_frozen_hashable(self) -> None:
         assert Stage(kind=StageKind.BASE) == Stage(kind=StageKind.BASE)
-        assert len({Stage(kind=StageKind.CHAIN, level=1), Stage(kind=StageKind.CHAIN, level=1)}) == 1
+        assert len({Stage(kind=StageKind.DERIVED, level=1), Stage(kind=StageKind.DERIVED, level=1)}) == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -143,33 +173,33 @@ class TestEveryValueCarriesOneStage:
 # --------------------------------------------------------------------------- #
 class TestStageOrderingInvariants:
     @pytest.mark.parametrize("kw", _INVARIANT_QUERIES)
-    def test_transform_strictly_later_than_its_inputs(self, kw) -> None:
+    def test_value_strictly_later_than_every_transform_it_reads(self, kw) -> None:
         pq = _plan(**kw)
         by_key = {s.key: s for s in _all_slots(pq)}
-        for tslot in _transform_slots(pq):
-            for dep in _dep_slots(tslot, by_key):
-                assert dep.stage < tslot.stage, (
-                    f"transform {tslot.id} not strictly later than input {dep.id}")
+        for slot in _all_slots(pq):
+            for t in _transforms_read(slot.key, by_key):
+                assert t.stage < slot.stage, (
+                    f"{slot.id} not strictly later than transform {t.id} it reads")
 
     @pytest.mark.parametrize("kw", _INVARIANT_QUERIES)
-    def test_composite_never_earlier_than_an_operand(self, kw) -> None:
+    def test_no_value_earlier_than_any_dependency(self, kw) -> None:
         pq = _plan(**kw)
         by_key = {s.key: s for s in _all_slots(pq)}
-        for cslot in _composite_slots(pq):
-            for dep in _dep_slots(cslot, by_key):
-                assert not (cslot.stage < dep.stage), (
-                    f"composite {cslot.id} earlier than operand {dep.id}")
+        for slot in _all_slots(pq):
+            for dep in _dep_slots(slot, by_key):
+                assert not (slot.stage < dep.stage), (
+                    f"{slot.id} earlier than its dependency {dep.id}")
 
-    def test_composite_over_a_transform_is_post(self) -> None:
+    def test_composite_over_a_transform_is_one_level_above_it(self) -> None:
+        """A composite is not a relation boundary (D10): it sits one level above
+        the deepest transform it reads, never in a terminal stage of its own."""
         pq = _plan(measures=[ModelMeasure(formula=f"change({CM}) + amount:sum", name="c")])
         by_key = {s.key: s for s in _all_slots(pq)}
-        composites_with_chain_dep = [
-            c for c in _composite_slots(pq)
-            if any(d.stage.kind == StageKind.CHAIN for d in _dep_slots(c, by_key))
-        ]
-        assert composites_with_chain_dep
-        for c in composites_with_chain_dep:
-            assert c.stage.kind == StageKind.POST
+        composites = [c for c in _composite_slots(pq) if _transforms_read(c.key, by_key)]
+        assert composites
+        for c in composites:
+            deepest = max(t.stage.level for t in _transforms_read(c.key, by_key))
+            assert c.stage == Stage(kind=StageKind.DERIVED, level=1 + deepest)
 
 
 # --------------------------------------------------------------------------- #
@@ -181,16 +211,15 @@ class TestConcreteStages:
         [agg] = [s for s in pq.aggregate_slots if isinstance(s.key, AggregateKey)]
         assert agg.stage.kind == StageKind.BASE
 
-    def test_time_shift_inner_is_chain_level_one(self) -> None:
+    def test_time_shift_inner_is_derived_level_one(self) -> None:
         pq = _plan(measures=[ModelMeasure(formula="change(amount:sum)", name="c")])
         [ts] = [s for s in _transform_slots(pq) if s.key.op == "time_shift"]
-        assert ts.stage.kind == StageKind.CHAIN
-        assert ts.stage.level == 1
+        assert ts.stage == Stage(kind=StageKind.DERIVED, level=1)
 
-    def test_nested_transform_reaches_chain_level_two(self) -> None:
+    def test_nested_transform_reaches_derived_level_two(self) -> None:
         pq = _plan(measures=[ModelMeasure(formula="change(cumsum(amount:sum))", name="n")])
-        levels = {s.stage.level for s in _transform_slots(pq)}
-        assert levels == {1, 2}
+        assert {s.stage.kind for s in _transform_slots(pq)} == {StageKind.DERIVED}
+        assert {s.stage.level for s in _transform_slots(pq)} == {1, 2}
 
     def test_combined_attach_placeholder_is_producer(self) -> None:
         pq = _plan(measures=[ModelMeasure(formula=f"{CM} + amount:sum", name="c")])
@@ -219,6 +248,76 @@ class TestConcreteStages:
 
 
 # --------------------------------------------------------------------------- #
+# Transparent-composite levels (D10/D11) — only transforms stratify.
+# --------------------------------------------------------------------------- #
+_LOCAL_STALL = dict(
+    measures=[ModelMeasure(formula="change(amount:sum)", name="ch")],
+    filters=["last(change(amount:sum)) < 0"],
+)
+
+
+class TestTransparentCompositeLevels:
+    def test_last_over_change_shares_the_composites_level(self) -> None:
+        pq = _plan(**_LOCAL_STALL)
+        by_key = {s.key: s for s in _all_slots(pq)}
+        [ts] = [s for s in _transform_slots(pq) if s.key.op == "time_shift"]
+        [last] = [s for s in _transform_slots(pq) if s.key.op == "last"]
+        assert ts.stage == Stage(kind=StageKind.DERIVED, level=1)
+        assert last.stage == Stage(kind=StageKind.DERIVED, level=2)
+        change_comps = [
+            c for c in _composite_slots(pq)
+            if _transforms_read(c.key, by_key)
+            and all(t.key.op == "time_shift" for t in _transforms_read(c.key, by_key))
+        ]
+        assert change_comps, "the projected change composite should be interned"
+        for c in change_comps:
+            assert c.stage == Stage(kind=StageKind.DERIVED, level=2)
+
+    def test_mask_level_is_one_above_the_last_transform(self) -> None:
+        """A mask's level is a validation / column-necessity fact only (D5);
+        its placement stays the global wrapper, pinned by execution tests."""
+        pq = _plan(**_LOCAL_STALL)
+        by_id = {s.id: s for s in _all_slots(pq)}
+        [mask] = pq.masks
+        assert by_id[mask.slot_id].stage == Stage(kind=StageKind.DERIVED, level=3)
+
+    def test_measure_only_last_over_change_is_level_two(self) -> None:
+        pq = _plan(measures=[ModelMeasure(formula="last(change(amount:sum))", name="t")])
+        [last] = [s for s in _transform_slots(pq) if s.key.op == "last"]
+        assert last.stage == Stage(kind=StageKind.DERIVED, level=2)
+
+    def test_staging_is_a_function_of_the_term_alone(self) -> None:
+        """The same term carries the same stage with and without ``change(x)``
+        projected (interning parity)."""
+        without = _plan(measures=[ModelMeasure(formula="amount:sum", name="a")],
+                        filters=["last(change(amount:sum)) < 0"])
+        with_proj = _plan(measures=[ModelMeasure(formula="amount:sum", name="a"),
+                                    ModelMeasure(formula="change(amount:sum)", name="ch")],
+                          filters=["last(change(amount:sum)) < 0"])
+        a = {s.key: s.stage for s in _all_slots(without)}
+        b = {s.key: s.stage for s in _all_slots(with_proj)}
+        shared = set(a) & set(b)
+        assert shared
+        diffs = {k: (a[k], b[k]) for k in shared if a[k] != b[k]}
+        assert not diffs
+
+    def test_deeper_alternation_stages_one_level_per_transform(self) -> None:
+        pq = _plan(measures=[
+            ModelMeasure(formula="change(cumsum(amount:sum))", name="ch"),
+            ModelMeasure(formula="last(change(cumsum(amount:sum)))", name="t"),
+        ])
+        by_op = {s.key.op: s for s in _transform_slots(pq)}
+        assert by_op["cumsum"].stage == Stage(kind=StageKind.DERIVED, level=1)
+        assert by_op["time_shift"].stage == Stage(kind=StageKind.DERIVED, level=2)
+        assert by_op["last"].stage == Stage(kind=StageKind.DERIVED, level=3)
+        by_key = {s.key: s for s in _all_slots(pq)}
+        comps = [c for c in _composite_slots(pq) if _transforms_read(c.key, by_key)]
+        assert comps, "the projected change composite should be interned"
+        for c in comps:
+            assert c.stage == Stage(kind=StageKind.DERIVED, level=3)
+
+
+# --------------------------------------------------------------------------- #
 # needs_column — operands needed later are materialised as columns (spec).
 # --------------------------------------------------------------------------- #
 class TestNeedsColumn:
@@ -242,6 +341,25 @@ class TestNeedsColumn:
         pq = _plan(measures=[ModelMeasure(formula="amount:sum", name="a")], time_dimensions=[])
         [agg] = [s for s in pq.aggregate_slots if isinstance(s.key, AggregateKey)]
         assert agg.needs_column is True
+
+    def test_measure_mask_over_hidden_last_marks_the_chain(self) -> None:
+        """A measure mask over a hidden ``last(change(x))`` marks ``last`` (mask
+        dep) and its ``time_shift`` (read by a later level) as columns."""
+        pq = _plan(measures=[ModelMeasure(formula="amount:sum", name="a")],
+                   filters=["last(change(amount:sum)) < 0"])
+        [last] = [s for s in _transform_slots(pq) if s.key.op == "last"]
+        [ts] = [s for s in _transform_slots(pq) if s.key.op == "time_shift"]
+        assert last.needs_column is True
+        assert ts.needs_column is True
+
+    def test_derived_order_target_materialises_as_a_column(self) -> None:
+        pq = _plan(measures=[ModelMeasure(formula="amount:sum", name="a")],
+                   order=[{"column": f"change({CM}) + amount:sum", "direction": "desc"}])
+        by_id = {s.id: s for s in _all_slots(pq)}
+        targets = [by_id[e.slot_id] for e in pq.order]
+        [comp] = [s for s in targets if isinstance(s.key, ArithmeticKey)]
+        assert comp.stage.kind == StageKind.DERIVED
+        assert comp.needs_column is True
 
 
 # --------------------------------------------------------------------------- #
@@ -273,7 +391,8 @@ class TestValidatorRejects:
         agg = _agg_key()
         arith = ArithmeticKey(op="+", operands=(agg, LiteralKey(value=1)))
         agg_slot = ValueSlot(id="later_agg", key=agg, declared_name="amount_sum", hidden=True,
-                             phase=Phase.AGGREGATE, stage=Stage(kind=StageKind.POST), needs_column=True)
+                             phase=Phase.AGGREGATE, stage=Stage(kind=StageKind.DERIVED, level=1),
+                             needs_column=True)
         arith_slot = ValueSlot(id="outer_composite", key=arith, declared_name="c", public_name="c",
                                public_aliases=["c"], phase=Phase.AGGREGATE, stage=Stage(kind=StageKind.BASE))
         with pytest.raises((MaterialisationStageError, ValidationError)) as ei:
@@ -283,6 +402,21 @@ class TestValidatorRejects:
         assert "MaterialisationStageError" in msg or isinstance(ei.value, MaterialisationStageError)
         # the typed error names the offending value (cross-model-aggregates spec)
         assert "outer_composite" in msg
+
+    def test_equal_level_transform_over_transform_is_rejected(self) -> None:
+        """D7 explicit strictness: a transform must be staged strictly later than
+        every transform it reads — a hand-built equal-level plan is rejected."""
+        inner = TransformKey(op="cumsum", input=_agg_key())
+        outer = TransformKey(op="last", input=inner)
+        inner_slot = ValueSlot(id="t_inner", key=inner, declared_name="i", hidden=True,
+                               phase=Phase.POST, needs_column=True,
+                               stage=Stage(kind=StageKind.DERIVED, level=1))
+        outer_slot = ValueSlot(id="t_outer", key=outer, declared_name="o", public_name="o",
+                               public_aliases=["o"], phase=Phase.POST,
+                               stage=Stage(kind=StageKind.DERIVED, level=1))
+        with pytest.raises((MaterialisationStageError, ValidationError)):
+            PlannedQuery(source_relation="orders",
+                         aggregate_slots=[inner_slot, outer_slot], projection=["t_outer"])
 
     def test_unstaged_slot_is_rejected(self) -> None:
         agg_slot = ValueSlot(id="a", key=_agg_key(), declared_name="amount_sum",

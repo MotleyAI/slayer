@@ -10,17 +10,24 @@ still fails at render time with an internal missing-facility error. The SQL gene
 re-derives which relation materialises each slot at 31 sites by inspecting key shapes or
 alias availability, and the `_base` column set is assembled from four independent sources
 that can disagree — engine P6 (phase is a property of the value) is only true for filters.
-Every fix so far has been one more special case; the class stays open.
+Every fix so far has been one more special case; the class stays open. The leveled
+derived stage (design D10/D11) is an architectural prerequisite this class surfaced; the
+issue's user-facing acceptance stays the change / change_pct executed-value matrix on
+SQLite + DuckDB, the deeper nesting shapes serving as closure guards.
 
 ## What Changes
 
 - The planner assigns every slot one materialisation stage (`BASE < PRODUCER < COMBINED
-  < CHAIN(level) < POST`) and a needs-column flag from one rule over its slot
-  dependencies; a `PlannedQuery` whose slot references a later stage is rejected at plan
-  time with a typed error; the generator refuses an unstaged plan.
+  < DERIVED(level)` — a value reading a transform sits one level above the deepest
+  transform it reads: a transform is one more relation, a composite renders inline, and a
+  transform's output is a dataset like any other) and a
+  needs-column flag from one rule over its slot dependencies; a `PlannedQuery` whose slot
+  references a later stage is rejected at plan time with a typed error; the generator
+  refuses an unstaged plan.
 - The generator becomes a stage partitioner: both render paths derive the `_base` column
-  set, the combined-SELECT expressions, the chain batches (levels replace alias-availability
-  Kahn readiness), the post step, and filter / order placement from the slot stage. The
+  set, the combined-SELECT expressions, the transform steps per level plus the one fused
+  derived-composite step (replacing alias-availability Kahn readiness), and filter / order
+  placement from the slot stage. The
   key-walking classifiers, isolated-set builders, aux-slot collectors and the chain deadlock
   error are deleted.
 - The `time_shift` regime (re-aggregation vs series) becomes a planner-owned fact on the
@@ -31,7 +38,8 @@ Every fix so far has been one more special case; the class stays open.
   rule surfaces (windowed-value filter placement, order-only composite materialisation) is
   listed for individual approval — no special cases are added to preserve an accident.
 - `architecture/engine.arc42.md` P6 and `architecture/sql.arc42.md` P11 strengthened
-  (text approved 2026-09-15), P6 tagged enforced by the new stage test.
+  (target text in design D10, superseding the 2026-09-15 wording; re-presented as the exact
+  diff for approval before applying), P6 tagged enforced by the new stage test.
 
 ## Capabilities
 

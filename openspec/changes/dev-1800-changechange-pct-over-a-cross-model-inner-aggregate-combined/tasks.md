@@ -2,11 +2,11 @@
 
 ## 1. Failing test suite (spec-tests stage)
 
-- [ ] 1.1 `tests/_dev1800_fixtures.py`: dataset where the cross-model inner varies along the
+- [x] 1.1 `tests/_dev1800_fixtures.py`: dataset where the cross-model inner varies along the
   time axis (customers with signup months Jan/Feb/Mar; orders per customer), SQLite +
   DuckDB seeding, hand-computed oracle table in the docstring; verified by importing it
   from the execution test.
-- [ ] 1.2 `tests/test_dev1800_execution.py` (SQLite + DuckDB): the failing class on the
+- [x] 1.2 `tests/test_dev1800_execution.py` (SQLite + DuckDB): the failing class on the
   DEV-1750 dataset (`change(cm) + amount:sum`, `+ *:count`, `+ amount:max`,
   `time_shift(cm,-1) + amount:sum`, `cumsum(cm) + amount:sum`, `change(wscaled) +
   amount:sum`, `iif(change(cm) > 0, cm, amount:sum)`, with a `status` dimension), the
@@ -16,11 +16,13 @@
   −93], `change_pct` = [None, 1.857, −0.93]; `change(customers.spend:sum)` by
   `customers.signup_at` = [None, 50, −120]; mixed-grain `change_pct(customers.spend:sum /
   amount:sum)`); cardinality invariant per shape; verified: fails before, passes after.
-- [ ] 1.3 `tests/test_dev1800_materialisation_stage.py` (plan structure): stage per slot
+- [x] 1.3 `tests/test_dev1800_materialisation_stage.py` (plan structure): stage per slot
   for local agg (BASE), combined placeholder (PRODUCER), row-attach placeholder (BASE),
-  transform (CHAIN 1), nested transform (CHAIN 2), transform whose partition key / time
-  key is a transform, composite over transform (POST), composite over placeholder
-  (COMBINED), computed dimension (BASE, dependency-terminal), masks by typing;
+  transform (DERIVED 1), nested transform (DERIVED 2), transform whose partition key / time
+  key is a transform, composite over transform (DERIVED, one level above its time_shift),
+  a transform over that composite (`last(change(x))`, at the composite's own level — only
+  transforms stratify), composite over
+  placeholder (COMBINED), computed dimension (BASE, dependency-terminal), masks by typing;
   `needs_column` for the failing shape's hidden leaf, join-back keys, HAVING deps incl.
   hidden local first/last, order-only per stage, mask-only vs mask+projection vs
   mask+order; `series` regime for local composite (False), cross-model composite (True),
@@ -29,18 +31,18 @@
   nested producer plan; generator belt refuses an unstaged plan; traversal contract
   (opaque key raises, TimeTrunc is the slot); cycle raises; verified: fails before, passes
   after.
-- [ ] 1.4 Filter-placement executed tests: row mask vs local-aggregate mask, windowed-value
+- [x] 1.4 Filter-placement executed tests: row mask vs local-aggregate mask, windowed-value
   filter with and without transforms, transform-composite filter; verified on SQLite +
   DuckDB.
-- [ ] 1.5 Golden SQL `tests/test_dev1800_golden_sql.py` + `tests/golden/dev1800_sql_baseline.json`
+- [x] 1.5 Golden SQL `tests/test_dev1800_golden_sql.py` + `tests/golden/dev1800_sql_baseline.json`
   for the new shapes on postgres, sqlite, duckdb, tsql, bigquery (same harness as
   `test_dev1747_golden_sql.py`); verified by the harness's record/compare loop.
-- [ ] 1.6 Transition parity test: stage-derived base column set equals
+- [x] 1.6 Transition parity test: stage-derived base column set equals
   `_collect_base_aux_slot_ids`-based `base_render_order` over the law-harness shapes
   (retires with the legacy collector in 3.2); verified by pytest.
-  **Carried into §2 commit 1** — needs both the new staging pass and the still-live
-  legacy collector to exist together.
-- [ ] 1.7 Retarget approved pins: `test_dev1827_value_key_traversal.py::TestCollectBaseAuxSlotIds`
+  **Retired unwritten (design D9 outcome):** the legacy collector was deleted with
+  byte-identical goldens across every baseline as the stronger proof.
+- [x] 1.7 Retarget approved pins: `test_dev1827_value_key_traversal.py::TestCollectBaseAuxSlotIds`
   → staging traversal; `test_dev1777_emit_step_cte.py` post-slot fakes gain
   `stage`/`needs_column`; `test_dev1838_transform_predicate_scope.py`, `test_planned.py`
   (3 sites), `test_dev1733_order_only_transform_composite.py` (1), and
@@ -74,6 +76,24 @@ Full detail in the DEV-1800 spec-tests resume comment.
 - [x] 2.3 Generator belt in `generate_from_planned` (refuse unstaged plan) next to
   `_validate_transform_input_shapes`; ledger row in `tests/_dev1871_raise_ledger.py`;
   verified by `tests/test_dev1871_raise_parity.py` + `tests/test_law_guard_ratchet.py`.
+- [ ] 2.4 Transparent-composite levels (design D10/D11): `StageKind` → `BASE < PRODUCER <
+  COMBINED < DERIVED(level)` (drop POST, rename CHAIN); staging rule: every transform, and
+  every non-dimension composite / mask reading a transform, is `DERIVED(1 + max level of
+  the transforms it reads)`, the traversal descending through composites whether or not
+  interned; validator: explicit strictness — a value is staged strictly later than every
+  transform it reads (reject a hand-built equal-level transform-over-transform plan).
+  Migration checklist — every `StageKind.CHAIN` / `StageKind.POST` reference (semantic
+  `Phase.POST` stays): `planned.py` docstrings + the `Stage` level validator, `staging.py`
+  composite and order-target rules, `staged_plan.py` docstrings,
+  `test_dev1800_materialisation_stage.py` (module docstring, `test_kinds_exist`,
+  `test_total_order`, CHAIN anchors, `test_composite_over_a_transform_is_post` → one
+  level above its `time_shift`, validator fixtures). New structure cases:
+  `last(change(x))` at its composite's level, staged identically with and without
+  `change(x)` projected; `last(change(cumsum(x)))` one level deeper; a measure mask over
+  a hidden `last(change(x))` marks `last` and its `time_shift` `needs_column`; a derived
+  ORDER BY target materialises as a column. Verified by 1.3 and the dev1859
+  last-over-change tests green (still via the legacy descent readiness — final emission
+  asserted in §4), full suite green, goldens byte-identical.
 
 ## 3. Base column set from stage (commit 2 — fixes the class)
 
@@ -86,15 +106,18 @@ Full detail in the DEV-1800 spec-tests resume comment.
   `continue` → invariant; retire 1.6; verified by goldens byte-identical (divergences →
   individually approved with executed-value parity).
 
-## 4. Chain, post step, regime from stage (commit 3)
+## 4. Derived levels, regime from stage (commit 3)
 
-- [ ] 4.1 `_run_transform_chain` groups layers by slot level (window batch, then
-  time_shift, then cp per level); delete `_transform_layer_deps_ready`,
-  `_classify_ready_transform_layers`, the deadlock RuntimeError; verified by transform
-  goldens byte-identical.
-- [ ] 4.2 `_unmaterialised_post_slots` = POST ∧ needs_column; regime read from
-  `slot.series`; delete `_classify_walk` / `_classify_time_shift_composite` /
-  `_time_shift_series_mode`; verified by 1.3 regime tests + series-shift goldens.
+- [ ] 4.1 `_run_transform_chain` emits transform batches by slot level ascending (within a
+  level: window batch, then time_shift, then cp, in `transform_layers` order — the exact
+  sequence today's Kahn rounds produce), then the one trailing derived-composite step;
+  delete `_transform_layer_deps_ready`, `_classify_ready_transform_layers` and the
+  deadlock RuntimeError; verified by transform goldens byte-identical and the dev1859
+  last-over-change tests green without the descent readiness probe.
+- [ ] 4.2 `_unmaterialised_post_slots` = DERIVED composites ∧ needs_column, every level
+  fused into the one trailing step; regime read from `slot.series`; delete
+  `_classify_walk` / `_classify_time_shift_composite` / `_time_shift_series_mode`;
+  verified by 1.3 regime tests + series-shift goldens.
 
 ## 5. Filters, order, isolated sets from stage (commit 4)
 
@@ -110,7 +133,8 @@ Full detail in the DEV-1800 spec-tests resume comment.
 
 - [ ] 6.1 `docs/concepts/formulas.md` nesting paragraph: one sentence on composites mixing
   a transform with other aggregates; verified by grep.
-- [ ] 6.2 arc42 (approved text, re-presented as the exact diff before applying):
+- [ ] 6.2 arc42 (target text in design D10 — supersedes the 2026-09-15 wording —
+  re-presented as the exact diff for an explicit OK before applying):
   `engine.arc42.md` P6 with `[enforced: test:tests/test_dev1800_materialisation_stage.py]`,
   `sql.arc42.md` P11 clause; verified by `poetry run python tools/arch_check.py`.
 - [ ] 6.3 `poetry run pytest -m "not integration" -n auto`, `poetry run ruff check slayer/
