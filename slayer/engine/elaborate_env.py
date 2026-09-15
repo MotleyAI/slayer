@@ -668,6 +668,60 @@ def check_time_shift_input(*, roots) -> None:
                 _check_shift_family_key(k)
 
 
+_FIRST_LAST_OPS = frozenset({"first", "last"})
+
+
+def _first_grain_refining_row_leaf(
+    key: ValueKey, *, projected_grain_keys: frozenset,
+) -> Optional[ValueKey]:
+    """First row-level (non-aggregate) leaf in ``key`` that is not a projected
+    grain key, or None. A projected grain key (plain or computed dimension) is
+    legal and not descended; an aggregate collapses grain and is opaque."""
+    if key in projected_grain_keys:
+        return None
+    if isinstance(key, AggregateKey):
+        return None
+    if isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+        return key
+    for c in key.children():
+        found = _first_grain_refining_row_leaf(
+            c, projected_grain_keys=projected_grain_keys,
+        )
+        if found is not None:
+            return found
+    return None
+
+
+def check_non_shift_transform_row_leaf(
+    *, roots, projected_grain_keys: frozenset,
+) -> None:
+    """A non-shift transform (every op but the shift family; first/last are
+    aggregation-dispatched) in measure/filter/order position rejects, at plan
+    time, any row-level leaf in its input that refines the consumer grain — a
+    leaf that is not a projected query dimension. Aggregating the leaf collapses
+    it to the outer grain; a projected grain key evaluates at the query grain
+    and stays legal (DEV-1859 leg B)."""
+    for root in roots:
+        for k in walk_value_keys(root):
+            if not isinstance(k, TransformKey):
+                continue
+            if k.op in _SHIFT_FAMILY_OPS or k.op in _FIRST_LAST_OPS:
+                continue
+            leaf = _first_grain_refining_row_leaf(
+                k.input, projected_grain_keys=projected_grain_keys,
+            )
+            if leaf is None:
+                continue
+            disp = dotted_key_display(leaf)
+            raise ValueError(
+                f"Transform '{k.op}' cannot consume the row-level "
+                f"(non-aggregate) leaf '{disp}', which refines the query "
+                f"grain: it would inflate the base grain to one row per "
+                f"(bucket, {disp}-value). Aggregate the leaf — e.g. "
+                f"{k.op}({disp}:sum) — or project '{disp}' as a query dimension."
+            )
+
+
 def check_partition_key_resolves(
     *, label: str, pk: ValueKey, is_query_dim: bool, ambiguous: bool,
     maps_to_bucket: bool, lenient: bool, available_dims: Sequence[str],

@@ -25,7 +25,7 @@ from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import DataType, RANKED_AGGREGATIONS
 from slayer.core.errors import AmbiguousJoinPathError, UnreachableFilterDroppedWarning
-from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, regroup_root_grain, reroot_value_key, substitute_value_keys, walk_value_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_local_partitioned_agg, split_top_level_and, window_kwarg_of, is_reaggregation_key, operand_aggregates
+from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, regroup_root_grain, reroot_value_key, substitute_value_keys, walk_value_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_local_partitioned_agg, split_top_level_and, window_kwarg_of, is_reaggregation_key, is_mixed_source_key, operand_aggregates
 from slayer.core.models import SlayerModel
 from slayer.engine.aggregate_input_paths import compute_aggregate_input_join_paths
 from slayer.engine.column_filter_paths import compute_column_filter_join_paths
@@ -1588,14 +1588,41 @@ def _substitute_prebound(
 
 
 def _discover_reaggregation_roots(prebound: PreboundQuery) -> List[AggregateKey]:
-    """Re-aggregation roots reachable from any measure / order / filter, first-seen."""
+    """Re-aggregation roots reachable from any measure / order / filter, first-seen.
+    A mixed row/attached source is NOT a re-aggregation (its grain-union is row
+    grain, DEV-1859) — it never becomes the fully-attached carrier."""
     seen: set = set()
     out: List[AggregateKey] = []
 
     def _scan(vk: ValueKey) -> None:
         # A re-aggregation root is opaque below itself — its constituents belong
         # to its carrier, not to a separate main-query attach.
-        if is_reaggregation_key(vk):
+        if is_reaggregation_key(vk) and not is_mixed_source_key(vk):
+            if vk not in seen:
+                seen.add(vk)
+                out.append(vk)
+            return
+        for c in vk.children():
+            _scan(c)
+
+    for dm in prebound.declared_measures:
+        _scan(dm.bound.value_key)
+    for sp in prebound.order_specs:
+        _scan(sp.bound.value_key)
+    for bf in prebound.bound_filters:
+        _scan(bf.value_key)
+    return out
+
+
+def _discover_mixed_roots(prebound: PreboundQuery) -> List[AggregateKey]:
+    """Mixed row/attached aggregation roots reachable from any measure / order /
+    filter, first-seen. Opaque below itself — a nested mixed constituent is
+    handled by its own producer's recursion (DEV-1859)."""
+    seen: set = set()
+    out: List[AggregateKey] = []
+
+    def _scan(vk: ValueKey) -> None:
+        if is_mixed_source_key(vk):
             if vk not in seen:
                 seen.add(vk)
                 out.append(vk)
@@ -2292,6 +2319,38 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
         for bf in prebound.bound_filters:
             _scan_lb(bf.value_key)
         cm_combined = [*cm_combined, *local_broadcast]
+    # DEV-1859: mixed row/attached sources. A mixed root aggregating INLINE at
+    # this grain row-attaches each inner constituent (the computed-dim
+    # mechanism) and stays an ordinary aggregate over the placeholder-rewritten
+    # source; a partitioned / windowed / cross-model mixed root routes through
+    # its producer, whose recursion row-attaches the inners the same way. Either
+    # way, a mixed root's constituents are never this level's COMBINED consumers.
+    mixed_inline_inner: List[ValueKey] = []
+    mixed_roots = _discover_mixed_roots(prebound) if local_discovery else []
+    if mixed_roots:
+        producer_bound = {*combined_aggs, *row_aggs, *cm_combined, *cm_row}
+        all_mixed_inner: set = set()
+        inline_local: List[ValueKey] = []
+        inline_cm: List[ValueKey] = []
+        seen_inner: set = set()
+        for root in mixed_roots:
+            inners = operand_aggregates(root.source)
+            all_mixed_inner.update(inners)
+            if root in producer_bound:  # routed through its own producer
+                continue
+            for a in inners:  # aggregates inline at this grain
+                if a in seen_inner:
+                    continue
+                seen_inner.add(a)
+                mixed_inline_inner.append(a)
+                (inline_cm if is_cross_model_agg(a) else inline_local).append(a)
+        # A mixed root's constituents are never this level's COMBINED consumers.
+        combined_aggs = [k for k in combined_aggs if k not in all_mixed_inner]
+        cm_combined = [k for k in cm_combined if k not in all_mixed_inner]
+        _row_set = set(row_aggs)
+        row_aggs = [*row_aggs, *(a for a in inline_local if a not in _row_set)]
+        _cm_row_set = set(cm_row)
+        cm_row = [*cm_row, *(a for a in inline_cm if a not in _cm_row_set)]
     cm_type = dict(consumers.declared_type)
     if (
         not row_aggs and not combined_aggs and not cm_combined and not cm_row
@@ -2408,6 +2467,9 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
                         or is_local_partitioned_agg(pk)
                         for pk in pks
                     ) or any(isinstance(a, TransformKey) for a in producer_aggs)
+                    # A mixed-source producer answer row-attaches its inners via
+                    # the sub-plan's own regroup pass, even when windowed (DEV-1859).
+                    or any(is_mixed_source_key(a) for a in producer_aggs)
                 ),
                 prebound=producer_prebound,
                 producer_registry=producer_registry,
@@ -2526,9 +2588,13 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
             inherited=inherited, n_date_range=n_inherited_date,
         ))
 
-    # The ROW substitution applies ONLY to computed DIMENSIONS; a non-dim measure keeps query-grain (its inners desugar to COMBINED placeholders).
+    # The ROW substitution applies ONLY to computed DIMENSIONS; a non-dim measure
+    # keeps query-grain (its inners desugar to COMBINED placeholders) — EXCEPT a
+    # mixed-source measure's inline inner constituents, which row-attach and so
+    # must reach the measure too (DEV-1859).
     combined_mapping: Dict[ValueKey, ValueKey] = {
-        agg: mapping[agg] for agg in (*combined_aggs, *cm_combined)
+        agg: mapping[agg]
+        for agg in (*combined_aggs, *cm_combined, *mixed_inline_inner)
     }
     rewritten = PreboundQuery(
         declared_measures=[

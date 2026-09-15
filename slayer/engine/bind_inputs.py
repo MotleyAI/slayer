@@ -53,6 +53,7 @@ from slayer.engine.elaborate_env import (
     check_stage_flatten_collision,
     check_dimension_temporal_axis,
     check_opaque_grouping_dim,
+    check_non_shift_transform_row_leaf,
     check_partition_key_resolves,
     check_raw_rows_filter_measure_ref,
     check_raw_rows_order_measure_ref,
@@ -518,11 +519,24 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
 
     # time_shift-family input typing runs pre-lowering, where change/change_pct
     # are still single nodes (their desugar duplicates the offending input).
-    check_time_shift_input(roots=[
+    _roots_for_transform_checks = [
         *(dm.bound.value_key for dm in declared_measures),
         *(bf.value_key for bf in bound_filters),
         *(spec.bound.value_key for spec in order_specs),
-    ])
+    ]
+    check_time_shift_input(roots=_roots_for_transform_checks)
+
+    # A non-shift transform over a row-level leaf that refines the query grain
+    # inflates the base GROUP BY; reject unless the leaf is a projected grain key.
+    _proj_dim_dms, _proj_td_dms, _ = partition_declared_measures(
+        declared_measures=declared_measures, n_dims=n_dims, n_time_dimensions=n_tds,
+    )
+    check_non_shift_transform_row_leaf(
+        roots=_roots_for_transform_checks,
+        projected_grain_keys=frozenset(
+            dm.bound.value_key for dm in (*_proj_dim_dms, *_proj_td_dms)
+        ),
+    )
 
     # Sugar lowering runs AFTER patching so the desugared time_shift inherits the patched time_key.
     declared_measures, bound_filters, order_specs = _map_bound_keys(

@@ -2232,12 +2232,14 @@ class SQLGenerator:
         )
 
         def _ready(key) -> bool:
-            # Slotted kinds are terminal; composites descend via children().
-            if isinstance(key, slotted_kinds):
-                sid = slot_id_by_key.get(key)
-                if sid is None:
-                    return True
+            # A key that is itself a projected slot (e.g. a computed dimension a
+            # transform ranks over) is terminal — read its slot, not its children.
+            sid = slot_id_by_key.get(key)
+            if sid is not None:
                 return sid in available_alias_by_slot_id
+            # An unslotted slotted-kind leaf resolves at the base; composites descend.
+            if isinstance(key, slotted_kinds):
+                return True
             return all(_ready(child) for child in key.children())
 
         for slot_id in layer.slot_ids:
@@ -2573,6 +2575,7 @@ class SQLGenerator:
                                     source_relation=source_relation,
                                     bundle=bundle,
                                     resolved_agg_kwargs=resolved_agg_kwargs,
+                                    attached_columns=regroup_env,
                                 ),
                             ),
                         ),
@@ -2602,6 +2605,7 @@ class SQLGenerator:
                     full_alias=full_alias,
                     bundle=bundle,
                     resolved_agg_kwargs=resolved_agg_kwargs.get(key),
+                    attached_columns=regroup_env,
                 )
                 agg_expr, is_agg = self._build_agg(synth)
                 if is_agg:
@@ -2645,6 +2649,7 @@ class SQLGenerator:
     def _composite_agg_builder(
         self, *, slot, source_model, source_relation: str, bundle,
         resolved_agg_kwargs,
+        attached_columns: Optional[Dict[Any, exp.Expression]] = None,
     ):
         """The AGGREGATE-phase composite seam (DEV-1763 P-G): render one"""
 
@@ -2663,6 +2668,7 @@ class SQLGenerator:
                 source_relation=source_relation, full_alias="__op__",
                 bundle=bundle,
                 resolved_agg_kwargs=(resolved_agg_kwargs or {}).get(agg_key),
+                attached_columns=attached_columns,
             )
             agg_expr, _is_agg = self._build_agg(synth)
             return agg_expr
@@ -4755,11 +4761,16 @@ class SQLGenerator:
         # check guarantees they're in a prior CTE.
 
         if isinstance(key.input, (ArithmeticKey, ScalarCallKey)):
+            # A composite input that IS a projected computed dimension reads its
+            # grouped alias, never re-renders the expression over base columns.
             measure = render_value_key(
                 key=key.input,
                 ctx=self._alias_render_ctx(
                     slot_id_by_key=slot_id_by_key,
                     available_alias_by_slot_id=available_alias_by_slot_id,
+                    composite_alias_slot_ids=(
+                        self._dimension_composite_slot_ids(planned_query)
+                    ),
                 ),
             )
         else:
@@ -6025,11 +6036,20 @@ class SQLGenerator:
 
     def _render_expression_source_sql(
         self, *, source, source_model, source_relation: str, bundle,
+        attached_columns: Optional[Dict[Any, exp.Expression]] = None,
     ) -> str:
         """Render an aggregate's row-level expression source (DEV-1826) to
         qualified SQL text: plain columns anchor at ``source_relation``,
-        derived columns expand through ``_expand_derived_column_sql``."""
+        derived columns expand through ``_expand_derived_column_sql``. A mixed
+        source's attached constituent renders through its row-attach join column
+        (DEV-1859)."""
         def _column_ast(ref) -> exp.Expression:
+            # A row-attached regroup placeholder resolves to its producer join
+            # column (DEV-1859), not a column on the host relation.
+            if attached_columns is not None:
+                attached = attached_columns.get(ref)
+                if attached is not None:
+                    return attached.copy()
             # Fail closed for a joined operand before any dispatch, so a pathed
             # ColumnSqlKey can't expand against the host relation (DEV-1832).
             if getattr(ref, "path", ()):
@@ -6223,6 +6243,7 @@ class SQLGenerator:
         full_alias: str,
         bundle=None,
         resolved_agg_kwargs: "Optional[Dict[str, ResolvedAggKwarg]]" = None,
+        attached_columns: Optional[Dict[Any, exp.Expression]] = None,
     ) -> AggRenderSpec:
         """Build an ``AggRenderSpec`` from a planned aggregate slot so"""
 
@@ -6358,6 +6379,7 @@ class SQLGenerator:
                 source_model=source_model,
                 source_relation=source_relation,
                 bundle=bundle,
+                attached_columns=attached_columns,
             )
             resolved_kw = resolved_agg_kwargs or {}
             agg_kwargs_str = {
@@ -6596,6 +6618,7 @@ class SQLGenerator:
 
     def _filter_agg_builder(
         self, *, source_model, source_relation: str, bundle,
+        attached_columns: Optional[Dict[Any, exp.Expression]] = None,
     ):
         """The WHERE/HAVING aggregate seam (DEV-1763 P-G): render a local"""
 
@@ -6614,6 +6637,7 @@ class SQLGenerator:
                 slot=slot, key=agg_key, source_model=source_model,
                 source_relation=source_relation, full_alias=having_full_alias,
                 bundle=bundle, resolved_agg_kwargs=having_kwargs,
+                attached_columns=attached_columns,
             )
             agg_expr, _is_agg = self._build_agg(synth)
             return agg_expr
@@ -6639,6 +6663,7 @@ class SQLGenerator:
                     source_model=source_model,
                     source_relation=source_relation,
                     bundle=bundle,
+                    attached_columns=regroup_env,
                 ),
                 cast_column_sql=True,
                 paren_comparison_operands=True,

@@ -1207,10 +1207,40 @@ def operand_aggregates(source: ValueKey) -> List[AggregateKey]:
     return out
 
 
+def source_row_leaves(source: ValueKey) -> List[ValueKey]:
+    """The top-level ROW-level column leaves of an aggregation source (not
+    descending through a nested aggregate's own source, which is attached)."""
+    out: List[ValueKey] = []
+
+    def _walk(k: ValueKey) -> None:
+        if isinstance(k, AggregateKey):
+            return
+        if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey)):
+            out.append(k)
+            return
+        for c in k.children():
+            _walk(c)
+
+    _walk(source)
+    return out
+
+
 def is_reaggregation_key(k: ValueKey) -> TypeGuard[AggregateKey]:
     """``k`` is a re-aggregation: an aggregate whose source carries attached
     (aggregate) values (axiom 6, DEV-1847)."""
     return isinstance(k, AggregateKey) and bool(operand_aggregates(k.source))
+
+
+def is_mixed_source_key(k: ValueKey) -> TypeGuard[AggregateKey]:
+    """``k`` is a mixed row/attached aggregation: an aggregate whose source
+    combines row-level leaves with attached values (DEV-1859). Its grain-union
+    is row grain, so it aggregates over base rows with the attached constituents
+    broadcast per row — never through the fully-attached re-aggregation carrier."""
+    return (
+        isinstance(k, AggregateKey)
+        and bool(operand_aggregates(k.source))
+        and bool(source_row_leaves(k.source))
+    )
 
 
 def reaggregation_operand_keys(vks: Sequence[ValueKey]) -> FrozenSet[AggregateKey]:
