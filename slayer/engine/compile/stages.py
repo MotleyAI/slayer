@@ -2929,9 +2929,12 @@ def _has_inline_population_aggregate(prebound: PreboundQuery) -> bool:
     """A plain host-rooted aggregate survives inline over the population rows —
     every producer-bound term is a placeholder by now, so any real ``AggregateKey``
     with a host-local source, no partition_by, no window and not first/last computes
-    directly over the (row-filtered) population."""
+    directly over the (row-filtered) population. Scans projected measures, ordering
+    keys AND filters — an aggregate in a HAVING/combined predicate is inline over
+    the population too, so a fanning row filter multiplies it just the same."""
     keys = [dm.bound.value_key for dm in prebound.declared_measures]
     keys += [sp.bound.value_key for sp in prebound.order_specs]
+    keys += [bf.value_key for bf in prebound.bound_filters]
     return any(
         isinstance(a, AggregateKey) and not is_cross_model_agg(a)
         and not key_host_path(a.source) and a.partition_keys is None

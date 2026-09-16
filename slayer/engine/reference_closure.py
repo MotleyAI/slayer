@@ -498,7 +498,7 @@ def _column_filter_closure(
     )
 
 
-def _explicit_input_refs(key: AggregateKey, *, include_source: bool) -> List[object]:
+def _explicit_input_refs(*, key: AggregateKey, include_source: bool) -> List[object]:
     """An aggregate's directly-named input refs: its source (when
     ``include_source``), positional args, and keyword-arg values."""
     return [
@@ -509,7 +509,7 @@ def _explicit_input_refs(key: AggregateKey, *, include_source: bool) -> List[obj
 
 
 def _default_param_specs(
-    key: AggregateKey, *, anchor_model: SlayerModel, bundle: ResolvedSourceBundle,
+    *, key: AggregateKey, anchor_model: SlayerModel, bundle: ResolvedSourceBundle,
 ) -> List[ParamSpec]:
     """Resolved default parameters NOT overridden by an explicit kwarg, resolved
     in the aggregate's ROOT frame so a default naming the root's own model stays
@@ -578,7 +578,7 @@ def _default_params_closure(
     """The combined closure of every non-overridden default parameter (``None``
     fails closed)."""
     out: List[Path] = []
-    for spec in _default_param_specs(key, anchor_model=anchor_model, bundle=bundle):
+    for spec in _default_param_specs(key=key, anchor_model=anchor_model, bundle=bundle):
         c = _param_spec_closure(
             spec, anchor_model=anchor_model, anchor_relation=anchor_relation,
             bundle=bundle,
@@ -589,7 +589,7 @@ def _default_params_closure(
     return out
 
 
-def _merge_paths(seen: "dict[Path, None]", part: Optional[List[Path]]) -> bool:
+def _merge_paths(*, seen: "dict[Path, None]", part: Optional[List[Path]]) -> bool:
     """Merge one component's paths into ``seen`` (deduped, non-empty only).
     ``False`` when the component is unanalysable (``None``) — the caller then
     fails closed WITHOUT evaluating the rest (preserving the short circuit)."""
@@ -617,18 +617,18 @@ def aggregate_input_closure(
     if anchor_model is None:
         return ()
     seen: "dict[Path, None]" = {}
-    if not _merge_paths(seen, _column_filter_paths(
+    if not _merge_paths(seen=seen, part=_column_filter_paths(
         key=key, anchor_model=anchor_model, anchor_relation=anchor_relation,
         bundle=bundle,
     )):
         return None
-    if not _merge_paths(seen, _refs_closure(
-        refs=_explicit_input_refs(key, include_source=include_source),
+    if not _merge_paths(seen=seen, part=_refs_closure(
+        refs=_explicit_input_refs(key=key, include_source=include_source),
         descend_aggregates=descend_aggregates, anchor_model=anchor_model,
         anchor_relation=anchor_relation, bundle=bundle,
     )):
         return None
-    if not _merge_paths(seen, _default_params_closure(
+    if not _merge_paths(seen=seen, part=_default_params_closure(
         key=key, anchor_model=anchor_model, anchor_relation=anchor_relation,
         bundle=bundle,
     )):
@@ -637,7 +637,7 @@ def aggregate_input_closure(
 
 
 def _unanalyzable_derived_name(
-    ref: object, *, anchor_model: SlayerModel, anchor_relation: str,
+    *, ref: object, anchor_model: SlayerModel, anchor_relation: str,
     bundle: ResolvedSourceBundle,
 ) -> Optional[str]:
     """``ref``'s column name when it names a derived column no dialect can
@@ -668,14 +668,14 @@ def first_unanalyzable_input_column(
     closure's tri-state), else ``None``."""
     if anchor_model is None:
         return None
-    refs: List[object] = _explicit_input_refs(key, include_source=include_source)
-    for spec in _default_param_specs(key, anchor_model=anchor_model, bundle=bundle):
+    refs: List[object] = _explicit_input_refs(key=key, include_source=include_source)
+    for spec in _default_param_specs(key=key, anchor_model=anchor_model, bundle=bundle):
         if spec.key is not None:
             refs.append(spec.key)
         refs.extend(r for r in spec.expr_refs if r is not None)
     for ref in refs:
         name = _unanalyzable_derived_name(
-            ref, anchor_model=anchor_model, anchor_relation=anchor_relation,
+            ref=ref, anchor_model=anchor_model, anchor_relation=anchor_relation,
             bundle=bundle,
         )
         if name is not None:
