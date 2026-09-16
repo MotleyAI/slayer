@@ -68,8 +68,6 @@ from slayer.engine.elaborate_env import (
     check_reserved_regroup_prefix,
     check_stage_flatten_collision,
     validate_model_filter,
-    type_and_split_filters,
-    type_order_positions,
     check_association_root_unique_key,
     check_association_windowed_ranked,
     check_cross_model_inputs_safe,
@@ -89,6 +87,7 @@ from slayer.engine.elaborate_env import (
     check_windowed_key_supported,
     check_windowed_time_dimension,
 )
+from slayer.engine.elaborate import elaborate_query
 from slayer.ir.bound import BoundExpr, BoundFilter, DeclaredMeasure, OrderSpec, bound_filter_from_key, combined_consumer_aggregates, dimension_partitioned_aggregates, dimension_regroup_roots
 from slayer.ir.elaborated import ConjunctTyping, ElaboratedQuery
 from slayer.ir.terms import Aggregate
@@ -832,14 +831,12 @@ def _synthesize_wrap_attach(
         grain_name_by_key=grain_name_by_key,
         to_many_handling=prebound.to_many_handling,
     )
-    producer_plan = compile_prebound(
-        query=StrictQueryCarrier(
-            source_model=producer_source_model, prebound=producer_prebound,
-        ),
+    producer_plan = compile_synthesized(
+        producer_prebound,
+        source_model=producer_source_model,
         bundle=bundle,
         scope=scope,
         stage_schemas=stage_schemas,
-        disable_host_rooted_isolation=True,
         # A computed-dimension grain member — or an attach-owning wrapped answer
         # (DEV-1859 decision 11) — nests its own producer inside the wrap.
         enable_producer_regroups=_answers_need_nested_regroups([wrap_key]) or any(
@@ -847,7 +844,6 @@ def _synthesize_wrap_attach(
             or is_local_partitioned_agg(pk)
             for pk in projected
         ),
-        prebound=producer_prebound,
         producer_registry=producer_registry,
     )
     producer_answer_ids = list(producer_plan.projection)[len(ordered_pks):]
@@ -1472,13 +1468,12 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
             for rr in grain_keys
         )
     )
-    producer_plan = compile_prebound(
-        query=StrictQueryCarrier(source_model=root_name, prebound=producer_prebound),
+    producer_plan = compile_synthesized(
+        producer_prebound,
+        source_model=root_name,
         bundle=root_bundle, scope=root_scope,
         stage_schemas=stage_schemas,
-        disable_host_rooted_isolation=True,
         enable_producer_regroups=enable_nested,
-        prebound=producer_prebound,
         producer_registry=producer_registry,
     )
     if semi_joins:
@@ -2112,12 +2107,10 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         explicit_types={outer_agg: declared_type} if declared_type is not None else None,
         to_many_handling=mode,
     )
-    outer_plan = compile_prebound(
-        query=StrictQueryCarrier(
-            source_model=host_model.name, prebound=outer_prebound,
-        ),
+    outer_plan = compile_synthesized(
+        outer_prebound,
+        source_model=host_model.name,
         bundle=bundle, scope=scope, stage_schemas=stage_schemas,
-        disable_host_rooted_isolation=True,
         # An expression grain key (in-grain computed dim) — or an attach-owning
         # outer answer (DEV-1859 decision 11) — desugars its own nested row
         # attach inside the outer producer.
@@ -2126,7 +2119,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
             or is_local_partitioned_agg(pk)
             for pk in ordered_outer
         ),
-        prebound=outer_prebound, producer_registry=producer_registry,
+        producer_registry=producer_registry,
     )
     # Keep any internal attach the outer plan desugared for an expression
     # grain key; the carrier rides alongside. Entity keys must render inside
@@ -2217,12 +2210,10 @@ def _build_carrier_attach(
         pks=union_grain, aggs=constituents, model=host_model, bundle=bundle,
         inherited=inherited, n_date_range=n_date_range,
     )
-    carrier_plan = compile_prebound(
-        query=StrictQueryCarrier(
-            source_model=producer_source_model, prebound=carrier_prebound,
-        ),
+    carrier_plan = compile_synthesized(
+        carrier_prebound,
+        source_model=producer_source_model,
         bundle=bundle, scope=scope, stage_schemas=stage_schemas,
-        disable_host_rooted_isolation=True,
         # Discovery must re-run inside the carrier for a coarser constituent
         # (nested broadcast), a constituent that is itself a re-aggregation, or
         # an expression grain key needing its own nested row attach.
@@ -2235,7 +2226,7 @@ def _build_carrier_attach(
             or is_local_partitioned_agg(pk)
             for pk in union_grain
         ),
-        prebound=carrier_prebound, producer_registry=producer_registry,
+        producer_registry=producer_registry,
     )
     value_slots = [
         *carrier_plan.aggregate_slots, *carrier_plan.combined_expression_slots,
@@ -2694,14 +2685,12 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
                 window_td_key=prebound.main_time_key if windowed else None,
                 to_many_handling=prebound.to_many_handling,
             )
-            producer_plan = compile_prebound(
-                query=StrictQueryCarrier(
-                    source_model=producer_source_model, prebound=producer_prebound,
-                ),
+            producer_plan = compile_synthesized(
+                producer_prebound,
+                source_model=producer_source_model,
                 bundle=bundle,
                 scope=scope,
                 stage_schemas=stage_schemas,
-                disable_host_rooted_isolation=True,
                 # A producer re-runs regroup discovery for its strict-subset inner
                 # aggregates and for a computed / bare-partitioned dimension in its
                 # grain (which needs a nested row attach to group by its value).
@@ -2715,7 +2704,6 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
                         for pk in pks
                     ) or _answers_need_nested_regroups(producer_aggs)
                 ),
-                prebound=producer_prebound,
                 producer_registry=producer_registry,
             )
             # A union-grain producer MAY carry nested attaches at any depth; the
@@ -2941,6 +2929,34 @@ def _assert_population_filters_no_fanout(
             )
 
 
+def compile_synthesized(
+    prebound: PreboundQuery,
+    *,
+    source_model: Optional[str],
+    bundle: ResolvedSourceBundle,
+    scope: Union[ModelScope, StageSchema],
+    stage_schemas: Dict[str, StageSchema],
+    enable_producer_regroups: bool = False,
+    producer_registry: Optional[Dict[Hashable, PlannedQuery]] = None,
+) -> PlannedQuery:
+    """Elaborate a compiler-synthesized sub-plan — resolving its aggregates' homes
+    relative to its OWN root (D3) — then compile it. The recursion guard disables
+    host-rooted isolation, so the sub-plan types without splitting."""
+    carrier = StrictQueryCarrier(source_model=source_model, prebound=prebound)
+    env = elaborate_query(
+        query=carrier, prebound=prebound, bundle=bundle, scope=scope,
+        stage_schemas=stage_schemas, disable_host_rooted_isolation=True,
+    )
+    assert env.prebound is not None  # elaborate_query always sets the typed prebound
+    return compile_prebound(
+        query=carrier, bundle=bundle, scope=scope, stage_schemas=stage_schemas,
+        prebound=env.prebound, filter_typings=list(env.filter_typings), env=env,
+        disable_host_rooted_isolation=True,
+        enable_producer_regroups=enable_producer_regroups,
+        producer_registry=producer_registry,
+    )
+
+
 def compile_prebound(  # NOSONAR(S3776) — compiler entry-point dispatcher. The pre-existing complexity is owned by the multi-stage scope / bundle / projection / filter-routing wiring it orchestrates and is tracked as a separate refactor.
     *,
     query: Union[SlayerQuery, StrictQueryCarrier],
@@ -2948,13 +2964,17 @@ def compile_prebound(  # NOSONAR(S3776) — compiler entry-point dispatcher. The
     scope: Union[ModelScope, StageSchema],
     stage_schemas: Optional[Dict[str, StageSchema]] = None,
     prebound: PreboundQuery,
-    filter_typings: Optional[List[ConjunctTyping]] = None,
-    env: Optional[ElaboratedQuery] = None,
+    filter_typings: List[ConjunctTyping],
+    env: ElaboratedQuery,
     disable_host_rooted_isolation: bool = False,
     enable_producer_regroups: bool = False,
     producer_registry: Optional[Dict[Hashable, PlannedQuery]] = None,
 ) -> PlannedQuery:
-    """Compile one typed prebound into a ``PlannedQuery``; ``disable_host_rooted_isolation`` suppresses the LOCAL half of the regroup desugar (recursion guard)."""
+    """Compile one typed prebound into a ``PlannedQuery``; ``disable_host_rooted_isolation`` suppresses the LOCAL half of the regroup desugar (recursion guard).
+
+    Every caller arrives typed with an environment: the top-level entry via
+    ``compile_query``, a synthesized sub-plan via ``compile_synthesized`` (D3), so
+    the aggregate homes always come from ``env.terms`` — there is no local typing."""
     stage_schemas = stage_schemas or {}
     # One interning registry per top-level plan; nested producer calls thread it down.
     if producer_registry is None:
@@ -2965,20 +2985,6 @@ def compile_prebound(  # NOSONAR(S3776) — compiler entry-point dispatcher. The
         scope.source_model if isinstance(scope, ModelScope) else None
     )
 
-    if filter_typings is None:
-        # A compiler-synthesized sub-plan arrives untyped: resolve-then-type
-        # every filter conjunct and order target at its original checkpoints
-        # (a disabled sub-plan types without splitting); the top-level entry
-        # arrives typed by ``elaborate_query`` with its environment attached.
-        prebound, filter_typings = type_and_split_filters(
-            prebound,
-            crossing_root=(
-                crossing_local_root_predicate(scope=scope, bundle=bundle)
-                if not disable_host_rooted_isolation else None
-            ),
-            split=not disable_host_rooted_isolation,
-        )
-        type_order_positions(prebound)
     declared_measures = list(prebound.declared_measures)
     bound_filters = list(prebound.bound_filters)
     n_date_range = prebound.n_date_range
@@ -2988,10 +2994,9 @@ def compile_prebound(  # NOSONAR(S3776) — compiler entry-point dispatcher. The
     n_tds = prebound.n_time_dimensions
     distinct_dimension_values = prebound.distinct_dimension_values
     # Pre-substitution measure roots, positionally aligned with env.measures.
-    _coh_measure_roots = (
-        [dm.bound.value_key for dm in declared_measures[n_dims + n_tds:]]
-        if env is not None else []
-    )
+    _coh_measure_roots = [
+        dm.bound.value_key for dm in declared_measures[n_dims + n_tds:]
+    ]
 
     # Desugar partitioned aggregates into producer stages + reserved-leaf placeholders.
     regroup_attach_plans: List[RegroupAttachPlan] = []
@@ -3005,7 +3010,7 @@ def compile_prebound(  # NOSONAR(S3776) — compiler entry-point dispatcher. The
     home_paths = {
         k: t.home_path for k, t in env.terms.items()
         if isinstance(t, Aggregate)
-    } if env is not None else {}
+    }
     regroup_result = _plan_regroups(
         prebound=prebound, filter_typings=filter_typings,
         scope=scope, bundle=bundle,
@@ -3034,11 +3039,10 @@ def compile_prebound(  # NOSONAR(S3776) — compiler entry-point dispatcher. The
         _assert_population_filters_no_fanout(
             prebound=prebound, scope=scope, bundle=bundle,
         )
-    if env is not None:
-        _assert_broadcast_coherence(
-            env=env, measure_roots=_coh_measure_roots,
-            attach_plans=regroup_attach_plans,
-        )
+    _assert_broadcast_coherence(
+        env=env, measure_roots=_coh_measure_roots,
+        attach_plans=regroup_attach_plans,
+    )
 
     # SlayerModel.filters — Mode-A SQL WHERE, scope-derived so a sub-plan gets its own.
     mode_a_filters: List[ModeAFilter] = []
