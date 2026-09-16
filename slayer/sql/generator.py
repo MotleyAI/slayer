@@ -3092,6 +3092,12 @@ class SQLGenerator:
             inner_cols.append(eexpr.copy().as_(exp.to_identifier(ek_alias)))
             group.append(eexpr.copy())
             entity_exprs.append(eexpr.copy())
+        # The reverse hop's host-side join columns — rendered here so their join
+        # path registers in the scope — are guarded NOT NULL below (DEV-1910).
+        present_exprs = [
+            render_value_key(key=pkey, ctx=ctx)
+            for pkey in getattr(kernel, "present_keys", None) or ()
+        ]
 
         # Level 1 picks each input once per entity (MAX is arbitrary-but-correct:
         # the input is root-determined, constant per entity); ``*:count`` keeps no
@@ -3218,6 +3224,13 @@ class SQLGenerator:
             for eexpr in entity_exprs:
                 inner = inner.where(
                     exp.Not(this=exp.Is(this=eexpr, expression=exp.Null())))
+        # A dimension reached only back through the population root associates an
+        # entity only when a population row carries it: guard every host-side
+        # join column of the reverse hop NOT NULL (all-components rule), so an
+        # entity absent from the population is in no such cell (DEV-1910).
+        for pexpr in present_exprs:
+            inner = inner.where(
+                exp.Not(this=exp.Is(this=pexpr, expression=exp.Null())))
         for cond in self._semi_join_exists_conditions(
             planned_query=planned_query, source_model=source_model,
             source_relation=source_relation, bundle=bundle,

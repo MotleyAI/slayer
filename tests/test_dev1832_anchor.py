@@ -115,6 +115,15 @@ def _is_getattr_source_path(node: ast.AST) -> bool:
             and isinstance(attr, ast.Constant) and attr.value == "path")
 
 
+def _is_key_host_path_source(node: ast.AST) -> bool:
+    """``key_host_path(<expr>.source)`` — a disguised source-path read: an
+    expression source has no ``.path``, so it silently answers the root."""
+    return (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "key_host_path" and len(node.args) >= 1
+            and isinstance(node.args[0], ast.Attribute)
+            and node.args[0].attr == "source")
+
+
 def _source_path_reads() -> list[str]:
     sites: list[str] = []
     scanned = 0
@@ -125,7 +134,8 @@ def _source_path_reads() -> list[str]:
             scanned += 1
             tree = ast.parse(path.read_text())
             for node in ast.walk(tree):
-                if _is_source_path_read(node) or _is_getattr_source_path(node):
+                if (_is_source_path_read(node) or _is_getattr_source_path(node)
+                        or _is_key_host_path_source(node)):
                     sites.append(f"{path}:{getattr(node, 'lineno', 0)}")
     assert scanned > 0, "no engine/sql modules scanned — guard is dead"
     return sites
@@ -135,5 +145,6 @@ class TestNoDirectSourcePathRead:
     def test_no_source_path_read_outside_the_accessor(self):
         sites = _source_path_reads()
         assert sites == [], (
-            "Direct `<expr>.source.path` reads must route through "
-            "`source_anchor_path` / `source_leaf_paths`:\n" + "\n".join(sites))
+            "Direct `<expr>.source.path` reads (incl. `key_host_path(<expr>.source)`) "
+            "must route through `source_anchor_path` / `source_leaf_paths`:\n"
+            + "\n".join(sites))

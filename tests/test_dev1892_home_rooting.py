@@ -127,13 +127,14 @@ class TestHostLocusSourceRendering:
 
 class TestHomeRootingPlanShape:
     def test_associate_entity_key_is_the_home_entity(self) -> None:
-        """C in associate mode deduplicates by the home (customers) entity."""
+        """C in associate mode deduplicates by the home (customers) entity — the
+        key in the home-rooted producer's own (root) coordinates (DEV-1910)."""
         planned = plan_query(
             query=assoc_q(dimensions=["status"],
                           measures=[ModelMeasure(formula=_C_BROADCAST, name="w")]),
             bundle=_orders_bundle())
         [attach] = _association_attaches(planned)
-        assert attach.kernel.entity_keys == [ColumnKey(path=("customers",), leaf="id")]
+        assert attach.kernel.entity_keys == [ColumnKey(path=(), leaf="id")]
 
     async def test_broadcast_producer_reads_from_customers(self) -> None:
         """The broadcast producer CTE reads FROM customers with a LEFT JOIN regions, never FROM regions."""

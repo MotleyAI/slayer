@@ -105,7 +105,8 @@ is the coercion from coarser to finer.
    `queries/semantics` › Loud degradation)
    [enforced: test:tests/test_dev1836_broadcast_strict.py]; associate (per-cell
    aggregation over the distinct associated home rows)
-   [enforced: test:tests/test_dev1841_association_exec.py]; and error (refuse)
+   [enforced: test:tests/test_dev1841_association_exec.py]
+   [enforced: test:tests/test_dev1910_home_rooted_association.py]; and error (refuse)
    [enforced: test:tests/test_dev1841_error_mode.py]; an explicit partition_by
    naming an unattributable dimension is an error outside associate mode.
    [enforced: test:tests/test_dev1841_association_errors.py]

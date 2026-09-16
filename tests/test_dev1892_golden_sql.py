@@ -21,7 +21,6 @@ from slayer.core.query import SlayerQuery
 
 GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1892_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
-ALLOWED_DELTAS: dict[str, str] = {}
 
 _MODEL_SETS = {
     "orders": dev1840_models,
@@ -86,6 +85,8 @@ async def _generate_one(case, dialect: str):
     except Exception as exc:  # noqa: BLE001 — the raise itself is the contract
         return record_raise(exc)
 
+
+ALLOWED_DELTAS: dict[str, str] = {}  # DEV-1910 associate deltas re-blessed
 
 bind_golden_tests(
     namespace=globals(),
