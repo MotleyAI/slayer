@@ -2,7 +2,7 @@
 
 Covers the new ``slayer/ir/grain.py`` value type (construction, set protocol,
 Grain-only equality, lattice predicates, operand contract) and the planner sites
-retyped to ``Grain``: ``regroup_root_grain``, ``_effective_root_grain``, and
+retyped to ``Grain``: ``regroup_root_grain``, ``effective_root_grain``, and
 ``_prune_functionally_determined_grain``. (The ``_validate_nested_producer_plan``
 admission guard was removed by DEV-1847 — nesting is admitted by the general
 complete-grain rule.)
@@ -20,9 +20,8 @@ from slayer.core.keys import (
     ColumnKey,
     TransformKey,
 )
-from slayer.core.keys import regroup_root_grain
+from slayer.core.keys import regroup_root_grain, effective_root_grain
 from slayer.engine.compile.stages import (
-    _effective_root_grain,
     _prune_functionally_determined_grain,
 )
 
@@ -195,7 +194,7 @@ class TestRegroupRootGrain:
 
 class TestEffectiveRootGrain:
     def test_bare_non_windowed_full_projected_grain(self) -> None:
-        grain, windowed = _effective_root_grain(
+        grain, windowed = effective_root_grain(
             BARE_SUM, projected_dim_keys=[REGION, CITY],
             projected_td_keys=[MONTH], active_bucket=None,
         )
@@ -204,7 +203,7 @@ class TestEffectiveRootGrain:
         assert windowed is False
 
     def test_bare_windowed_excludes_active_bucket(self) -> None:
-        grain, windowed = _effective_root_grain(
+        grain, windowed = effective_root_grain(
             WINDOW_SUM, projected_dim_keys=[REGION],
             projected_td_keys=[MONTH], active_bucket=MONTH,
         )

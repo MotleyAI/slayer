@@ -15,7 +15,10 @@ from slayer.core.keys import (
     AggregateKey,
     ColumnKey,
     ColumnSqlKey,
+    TransformKey,
     ValueKey,
+    effective_root_grain,
+    operand_aggregates,
     source_anchor_path,
     source_leaf_paths,
     walk_value_keys,
@@ -72,9 +75,46 @@ def _default_home_candidate_paths(
     return out
 
 
+def _grain_member_paths(
+    member: ValueKey, *, dim_keys: List[ValueKey], td_keys: List[ValueKey],
+    active_bucket: Optional[ValueKey],
+) -> List[Path]:
+    """Home-input paths a grain member contributes: a leaf's own join path; an
+    aggregate/transform member stands for its own grain members, recursively."""
+    if isinstance(member, (AggregateKey, TransformKey)):
+        return _constituent_grain_paths(
+            member, dim_keys=dim_keys, td_keys=td_keys, active_bucket=active_bucket,
+        )
+    return list(source_leaf_paths(member))
+
+
+def _constituent_grain_paths(
+    c: ValueKey, *, dim_keys: List[ValueKey], td_keys: List[ValueKey],
+    active_bucket: Optional[ValueKey],
+) -> List[Path]:
+    """Paths of an attached constituent's grain members (Axiom 2.3): its grain is
+    the explicit ``partition_by=`` else the query dimensions, and a windowed inner
+    always includes the query's time bucket."""
+    grain, windowed = effective_root_grain(
+        c, projected_dim_keys=dim_keys, projected_td_keys=td_keys,
+        active_bucket=active_bucket,
+    )
+    members = set(grain)
+    if windowed and active_bucket is not None:
+        members.add(active_bucket)
+    out: List[Path] = []
+    for m in members:
+        out.extend(_grain_member_paths(
+            m, dim_keys=dim_keys, td_keys=td_keys, active_bucket=active_bucket,
+        ))
+    return out
+
+
 def home_path_for(
     *, agg: AggregateKey, host_model: SlayerModel,
     models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+    dim_keys: List[ValueKey], td_keys: List[ValueKey],
+    active_bucket: Optional[ValueKey],
 ) -> Path:
     """The home dataset of an aggregate (Axiom 2): the deepest join path that
     determines every input — each source leaf, each column-valued arg/kwarg, and
@@ -93,6 +133,14 @@ def home_path_for(
     input_paths.extend(_default_home_candidate_paths(
         agg=agg, host_model=host_model, bundle=bundle,
     ))
+    # A constituent of the SOURCE combination broadcasts onto the home's rows, so
+    # the home must determine every one of its grain members (Axiom 2.3). An
+    # aggregate-valued parameter is not a source operand — a query dimension it does
+    # not share is associated / broadcast, never moved into the home (Axioms 2.4, 2.9).
+    for c in operand_aggregates(agg.source):
+        input_paths.extend(_constituent_grain_paths(
+            c, dim_keys=dim_keys, td_keys=td_keys, active_bucket=active_bucket,
+        ))
     candidates = sorted(
         {anchor, _longest_common_prefix(input_paths), *input_paths},
         key=lambda p: (-len(p), p != anchor, p),
@@ -115,9 +163,15 @@ def home_path_for(
 def resolve_aggregate_homes(
     *, roots: Iterable[ValueKey], host_model: Optional[SlayerModel],
     models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+    dim_keys: List[ValueKey], td_keys: List[ValueKey],
+    active_bucket: Optional[ValueKey],
 ) -> Dict[AggregateKey, Path]:
     """Home path of every aggregate reachable from ``roots``; empty when the
-    stage has no model host (a stage query's aggregates are all host-local)."""
+    stage has no model host (a stage query's aggregates are all host-local).
+
+    ``dim_keys`` / ``td_keys`` are the query's projected non-time / time
+    dimension keys and ``active_bucket`` its main time bucket — an ungrained
+    constituent's grain (Axiom 2.3)."""
     if host_model is None:
         return {}
     homes: Dict[AggregateKey, Path] = {}
@@ -127,5 +181,6 @@ def resolve_aggregate_homes(
                 homes[k] = home_path_for(
                     agg=k, host_model=host_model,
                     models_by_name=models_by_name, bundle=bundle,
+                    dim_keys=dim_keys, td_keys=td_keys, active_bucket=active_bucket,
                 )
     return homes

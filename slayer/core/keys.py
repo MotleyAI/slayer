@@ -950,6 +950,38 @@ def regroup_root_grain(root: ValueKey) -> Grain:
     return Grain.of(getattr(root, "partition_keys", None) or frozenset())
 
 
+def effective_root_grain(
+    agg: ValueKey,
+    *,
+    projected_dim_keys: List[ValueKey],
+    projected_td_keys: List[ValueKey],
+    active_bucket: Optional[ValueKey],
+) -> Tuple[Grain, bool]:
+    """A combined-root's producer grain and windowedness.
+
+    An explicitly-partitioned aggregate keeps ``regroup_root_grain``. A bare
+    windowed / first-last root takes the FULL projected grain (a windowed root's
+    bucket enters via ``window_td_key``, so it is excluded here)."""
+    windowed = window_kwarg_of(agg) is not None
+    if getattr(agg, "partition_keys", None) is not None:
+        grain = regroup_root_grain(agg)
+        # A transform over a window= inner gains the active bucket in its union grain.
+        if (
+            not windowed and active_bucket is not None
+            and any(window_kwarg_of(k) is not None for k in walk_value_keys(agg))
+        ):
+            return grain | {active_bucket}, True
+        return grain, windowed
+    if windowed:
+        grain = Grain.of(projected_dim_keys) | (
+            Grain.of(projected_td_keys)
+            - ({active_bucket} if active_bucket else frozenset())
+        )
+    else:
+        grain = Grain.of([*projected_dim_keys, *projected_td_keys])
+    return grain, windowed
+
+
 def reroot_value_key(
     key: _RerootableT, *, target_path: Tuple[str, ...],
 ) -> _RerootableT:

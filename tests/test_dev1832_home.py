@@ -26,14 +26,18 @@ from tests._dev1832_fixtures import (
 )
 
 
-def _home_path(formula: str) -> tuple:
-    """The ``home_path`` of the single aggregate in a measure over orders."""
+def _home_path(formula: str, *, dimensions: list[str] | None = None) -> tuple:
+    """The ``home_path`` of the outer aggregate in a measure over orders (the
+    measure's bound value key — robust to a nested constituent aggregate)."""
     elab = elaborate_query(
-        query=orders_q(measures=[ModelMeasure(formula=formula, name="m")]),
+        query=orders_q(
+            dimensions=dimensions or [],
+            measures=[ModelMeasure(formula=formula, name="m")]),
         bundle=bundle(dev1832_models()))
-    agg_keys = [k for k in elab.terms if isinstance(k, AggregateKey)]
-    assert len(agg_keys) == 1, agg_keys
-    return elab.terms[agg_keys[0]].home_path
+    assert elab.prebound is not None
+    root = elab.prebound.declared_measures[-1].bound.value_key
+    assert isinstance(root, AggregateKey), root
+    return elab.terms[root].home_path
 
 
 def _parallel_edge_models() -> list[SlayerModel]:
@@ -105,6 +109,29 @@ class TestHomeIsSpellingInvariant:
     ])
     def test_home_path_matrix(self, formula, expected):
         assert _home_path(formula) == expected
+
+
+class TestAttachedConstituentGrainWidensTheHome:
+    """A constituent broadcasts onto the home's rows, so its grain members are
+    home inputs (Axiom 2.3): a status-grained inner pulls the home to orders; a
+    customers.tier-grained inner keeps it at customers. Ungrained, the query's
+    dimensions are the grain, so the projected dimension decides (task 3.1b)."""
+
+    def test_explicit_status_partition_pulls_home_to_root(self):
+        assert _home_path(
+            "sum(customers.discount * avg(amount, partition_by=status))") == ()
+
+    def test_explicit_tier_partition_keeps_home_at_customers(self):
+        assert _home_path(
+            "sum(customers.discount * avg(amount, partition_by=customers.tier))"
+        ) == ("customers",)
+
+    def test_ungrained_constituent_takes_the_query_dimension(self):
+        assert _home_path(
+            "sum(customers.discount * avg(amount))", dimensions=["status"]) == ()
+        assert _home_path(
+            "sum(customers.discount * avg(amount))",
+            dimensions=["customers.tier"]) == ("customers",)
 
 
 class TestParallelNamedEdges:

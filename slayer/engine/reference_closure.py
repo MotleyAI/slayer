@@ -37,6 +37,7 @@ from slayer.core.keys import (
     TransformKey,
     ValueKey,
     source_anchor_path,
+    source_row_leaves,
 )
 from slayer.core.errors import SlayerError
 from slayer.core.models import AggregationParam, SlayerModel
@@ -690,6 +691,48 @@ def first_unanalyzable_input_column(
             getattr(key.source, "leaf", None)
             or getattr(key.source, "column_name", None)
         )
+    return None
+
+
+def source_row_leaf_closure(
+    *, key: AggregateKey, anchor_model: Optional[SlayerModel],
+    anchor_relation: str, bundle: ResolvedSourceBundle,
+) -> Optional[Tuple[Path, ...]]:
+    """The dependency closure of an aggregate SOURCE's own ROW-level leaves, with
+    attached constituents opaque (Axiom 2.3) — unlike ``aggregate_input_closure``,
+    which descends a nested aggregate inside an expression source. ``None`` when a
+    leaf's derived definition cannot be analysed (fail closed); ``()`` = local."""
+    if anchor_model is None:
+        return ()
+    seen: "dict[Path, None]" = {}
+    for leaf in source_row_leaves(key.source):
+        c = key_closure(
+            key=leaf, anchor_model=anchor_model,
+            anchor_relation=anchor_relation, bundle=bundle,
+        )
+        if c is None:
+            return None
+        for p in c:
+            if p:
+                seen.setdefault(tuple(p), None)
+    return tuple(seen)
+
+
+def first_unanalyzable_source_row_leaf(
+    *, key: AggregateKey, anchor_model: Optional[SlayerModel],
+    anchor_relation: str, bundle: ResolvedSourceBundle,
+) -> Optional[str]:
+    """Column name of the first source ROW leaf whose derived definition no dialect
+    can analyse (diagnostic for ``check_input_dependencies_analyzable``)."""
+    if anchor_model is None:
+        return None
+    for leaf in source_row_leaves(key.source):
+        name = _unanalyzable_derived_name(
+            ref=leaf, anchor_model=anchor_model, anchor_relation=anchor_relation,
+            bundle=bundle,
+        )
+        if name is not None:
+            return name
     return None
 
 

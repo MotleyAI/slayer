@@ -23,6 +23,7 @@ from slayer.ir.elaborated import ElaboratedQuery
 from slayer.ir.prebound import (
     PreboundQuery,
     StrictQueryCarrier,
+    partition_declared_measures,
     position_typing_context,
 )
 from slayer.ir.source_bundle import ResolvedSourceBundle, resolve_scope
@@ -68,9 +69,16 @@ def elaborate_query(
         *(bf.value_key for bf in prebound.bound_filters),
         *(spec.bound.value_key for spec in prebound.order_specs),
     ]
+    dim_dms, td_dms, _ = partition_declared_measures(
+        declared_measures=prebound.declared_measures,
+        n_dims=prebound.n_dims, n_time_dimensions=prebound.n_time_dimensions,
+    )
     home_paths = resolve_aggregate_homes(
         roots=home_roots, host_model=model,
         models_by_name=bundle.models_by_name, bundle=bundle,
+        dim_keys=[dm.bound.value_key for dm in dim_dms],
+        td_keys=[dm.bound.value_key for dm in td_dms],
+        active_bucket=prebound.main_time_key,
     )
     env = build_environment(
         prebound=prebound,

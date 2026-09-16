@@ -1308,7 +1308,7 @@ class SQLGenerator:
         # Filter-wrap column refs in CASE WHEN so non-matching rows go NULL, but leave literal-default params unwrapped
         # (wrapping a constant makes it a row expression).
         col_expr = _wrap_filter(self._resolve_value_sql(spec), spec.filter_sql)
-        substituted = formula.replace("{value}", col_expr)
+        substituted = formula.replace("{value}", self._paren_fragment(col_expr))
         for param_name, param_val in params.items():
             param_ast = self._agg_param_ast(
                 param_val, model_name=spec.model_name,
@@ -1316,9 +1316,19 @@ class SQLGenerator:
             param_expr = param_ast.sql(dialect=self.dialect)
             if spec.filter_sql and not isinstance(param_ast, exp.Literal):
                 param_expr = _wrap_filter(param_expr, spec.filter_sql)
-            substituted = substituted.replace(f"{{{param_name}}}", param_expr)
+            substituted = substituted.replace(
+                f"{{{param_name}}}", self._paren_fragment(param_expr))
 
         return self._parse(substituted)
+
+    def _paren_fragment(self, sql_text: str) -> str:
+        """Parenthesise a substituted formula fragment unless it is a bare column /
+        literal / identifier, so an expression fragment keeps its precedence in the
+        template (``SUM({value} * w)``); single-column fragments stay byte-identical."""
+        node = self._parse(sql_text)
+        if isinstance(node, (exp.Column, exp.Literal, exp.Identifier)):
+            return sql_text
+        return f"({sql_text})"
 
     def _build_median(self, inner: exp.Expression) -> exp.Expression:
         """Build a median aggregation expression. Dispatches to the dialect"""

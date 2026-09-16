@@ -27,15 +27,17 @@ from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import DataType, RANKED_AGGREGATIONS
 from slayer.core.errors import AmbiguousJoinPathError, UnreachableFilterDroppedWarning
-from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, regroup_root_grain, reroot_value_key, substitute_value_keys, walk_value_keys, walk_consumer_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_local_partitioned_agg, split_top_level_and, window_kwarg_of, is_reaggregation_key, is_row_attach_root, attached_inputs, operand_aggregates, source_anchor_path
+from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, regroup_root_grain, effective_root_grain, reroot_value_key, substitute_value_keys, walk_value_keys, walk_consumer_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_local_partitioned_agg, split_top_level_and, window_kwarg_of, is_reaggregation_key, is_row_attach_root, attached_inputs, operand_aggregates, source_anchor_path
 from slayer.core.models import SlayerModel
 from slayer.engine.reference_closure import (
     ParamSpec,
     aggregate_input_closure,
     compute_column_filter_join_paths,
     first_unanalyzable_input_column,
+    first_unanalyzable_source_row_leaf,
     key_closure,
     resolve_aggregation_params,
+    source_row_leaf_closure,
 )
 from slayer.core.join_walker import resolve_hop, walk
 from slayer.engine.join_safety import (
@@ -418,38 +420,6 @@ def _bare_combined_roots(  # NOSONAR(S3776) — straight-line discovery walk ove
     return out, alias
 
 
-def _effective_root_grain(
-    agg: ValueKey,
-    *,
-    projected_dim_keys: List[ValueKey],
-    projected_td_keys: List[ValueKey],
-    active_bucket: Optional[ValueKey],
-) -> Tuple[Grain, bool]:
-    """A combined-root's producer grain and windowedness.
-
-    An explicitly-partitioned aggregate keeps ``regroup_root_grain``. A bare
-    windowed / first-last root takes the FULL projected grain (a windowed root's
-    bucket enters via ``window_td_key``, so it is excluded here)."""
-    windowed = window_kwarg_of(agg) is not None
-    if getattr(agg, "partition_keys", None) is not None:
-        grain = regroup_root_grain(agg)
-        # A transform over a window= inner gains the active bucket in its union grain
-        # and renders windowed; first/last inners are timeless.
-        if (
-            not windowed and active_bucket is not None
-            and any(window_kwarg_of(k) is not None for k in walk_value_keys(agg))
-        ):
-            return grain | {active_bucket}, True
-        return grain, windowed
-    if windowed:
-        grain = Grain.of(projected_dim_keys) | (
-            Grain.of(projected_td_keys) - ({active_bucket} if active_bucket else frozenset())
-        )
-    else:
-        grain = Grain.of([*projected_dim_keys, *projected_td_keys])
-    return grain, windowed
-
-
 def _scalar_free_columns(node: ValueKey, out: set) -> None:
     # Asymmetric on purpose: aggregate subtrees are bound, not free.
     if isinstance(node, ColumnKey):
@@ -717,7 +687,7 @@ def _assert_local_producer_inputs_safe(
             ranked_crossings.append((leaf, path[-1]))
             break  # first violation wins; the checker raises it
 
-    # Crossed predicate + remaining crossed args; the SOURCE's own crossings are exempt.
+    # Crossed predicate + remaining crossed args; the SOURCE's own crossings are exempt here.
     gated_crossings: List[str] = []
     alias = canonical_aggregate_alias(agg, profile="stage_formula")
     if not ranked_crossings:
@@ -734,6 +704,25 @@ def _assert_local_producer_inputs_safe(
             )
             gated = []
         gated_crossings = [p[-1] for p in gated if p and not _safe(p)]
+        # An expression source's own ROW leaves cross from the host too (attached
+        # constituents opaque, Axiom 2.3); a to-one leaf is safe, a fanning / unproven
+        # or unanalysable one fails closed (Axiom 2.8). An explicit host-grain wrap
+        # (locus="host") is exempt: its crossing source is defined over the join result.
+        if agg.locus != "host":
+            src = source_row_leaf_closure(
+                key=agg, anchor_model=host_model,
+                anchor_relation=host_model.name, bundle=bundle,
+            )
+            if src is None:
+                check_input_dependencies_analyzable(
+                    alias=alias,
+                    column=first_unanalyzable_source_row_leaf(
+                        key=agg, anchor_model=host_model,
+                        anchor_relation=host_model.name, bundle=bundle,
+                    ),
+                )
+            else:
+                gated_crossings.extend(p[-1] for p in src if p and not _safe(p))
     check_local_producer_inputs_safe(
         alias=alias,
         host=host_model.name,
@@ -2440,7 +2429,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
             public_alias_by_agg.setdefault(agg, name)
 
     def _root_grain(agg: ValueKey) -> Grain:
-        grain, windowed = _effective_root_grain(
+        grain, windowed = effective_root_grain(
             agg, projected_dim_keys=projected_dim_keys,
             projected_td_keys=projected_td_keys, active_bucket=active_bucket,
         )
@@ -2595,7 +2584,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
         groups: Dict[Tuple, List[ValueKey]] = {}
         group_meta: Dict[Tuple, Tuple[Grain, bool]] = {}
         for agg in phase_aggs:
-            grain, windowed = _effective_root_grain(
+            grain, windowed = effective_root_grain(
                 agg, projected_dim_keys=projected_dim_keys,
                 projected_td_keys=projected_td_keys, active_bucket=active_bucket,
             )
