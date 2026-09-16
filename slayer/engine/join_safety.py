@@ -236,29 +236,25 @@ def key_host_path(key: ValueKey) -> Tuple[str, ...]:
     return tuple(getattr(key, "path", ()) or ())
 
 
-def _back_token(
-    *, root_model: SlayerModel, host_name: str, target_path: Tuple[str, ...],
+def _back_path(
+    *, host_name: str, target_path: Tuple[str, ...],
     models_by_name: Dict[str, SlayerModel],
-) -> str:
-    """The token that traverses from the aggregate's root back to the host.
-
-    An edge-name hop is direction-agnostic, so when the last target-path token
-    is a named edge it also names the reverse hop and resolves unambiguously
-    (the bare host model name can be ambiguous across parallel edges). Falls
-    back to the host model name otherwise (DEV-1853 D5)."""
-    if target_path:
-        last = target_path[-1]
-        if last != host_name:
-            try:
-                edge = resolve_hop(
-                    current=root_model, token=last,
-                    models_by_name=models_by_name,
-                )
-            except AmbiguousJoinPathError:
-                edge = None
-            if edge is not None and edge.target_model == host_name:
-                return last
-    return host_name
+) -> Tuple[str, ...]:
+    """The reverse path from the aggregate's root back to the host: walk the
+    target path forward from the host and, per hop, take the reverse token —
+    the edge name when declared (direction-agnostic, resolves unambiguously
+    across parallel edges) else the hop's source model — then reverse the
+    tokens. A home several hops from the population root thus reverses every hop
+    of its path. Falls back to ``(host_name,)`` when the forward walk finds no
+    path (today's single-token behaviour); an ambiguous reverse hop raises at
+    walk time (fail closed, DEV-1853 D5)."""
+    host_model = models_by_name.get(host_name)
+    if host_model is None or not target_path:
+        return (host_name,)
+    chain = walk(root=host_model, path=target_path, models_by_name=models_by_name)
+    if chain is None:
+        return (host_name,)
+    return tuple(reversed([edge.name or edge.source_model for edge in chain]))
 
 
 def attributable_from_root(
@@ -276,12 +272,11 @@ def attributable_from_root(
         return False
     if hp and safe_reachable(root=root_model, path=hp, models_by_name=models_by_name):
         return True
-    back = _back_token(
-        root_model=root_model, host_name=host_name, target_path=tp,
-        models_by_name=models_by_name,
+    back = _back_path(
+        host_name=host_name, target_path=tp, models_by_name=models_by_name,
     )
     return safe_reachable(
-        root=root_model, path=(back, *hp), models_by_name=models_by_name,
+        root=root_model, path=(*back, *hp), models_by_name=models_by_name,
     )
 
 
@@ -364,11 +359,10 @@ def _reroot_leaf_via_host(
         return None  # reroot_value_key strips the prefix
     if target_path and host_name == target_path[0]:
         return None
-    back = _back_token(
-        root_model=root_model, host_name=host_name, target_path=target_path,
-        models_by_name=models_by_name,
+    back = _back_path(
+        host_name=host_name, target_path=target_path, models_by_name=models_by_name,
     )
-    via_host = (back, *hp)
+    via_host = (*back, *hp)
     if not safe_reachable(
         root=root_model, path=via_host, models_by_name=models_by_name,
     ) and hp and safe_reachable(
@@ -452,12 +446,11 @@ def broadcast_reason(
         return reason or UNREACHABLE_NO_PATH
     # Off the forward path: reachable only back through the reverse (fanning) hop?
     if host_name is not None and not (tp and host_name == tp[0]):
-        back = _back_token(
-            root_model=root_model, host_name=host_name, target_path=tp,
-            models_by_name=models_by_name,
+        back = _back_path(
+            host_name=host_name, target_path=tp, models_by_name=models_by_name,
         )
         reason = _hop_walk_reason(
-            root_model=root_model, path=(back, *hp), models_by_name=models_by_name,
+            root_model=root_model, path=(*back, *hp), models_by_name=models_by_name,
         )
         if reason is not None:
             return reason
@@ -696,6 +689,10 @@ def crossing_local_root_predicate(
             isinstance(k, AggregateKey)
             and k.partition_keys is None
             and not getattr(k.source, "path", ())
+            # A host-locus wrap already compiles inline at the producer grain; its
+            # attached parameter's crossing closure must not re-route it onto a
+            # host-rooted producer (DEV-1910 D6, as ``_local_broadcasts`` excludes).
+            and k.locus != "host"
             and window_kwarg_of(k) is None
             and k.agg not in RANKED_AGGREGATIONS
             and host_model is not None

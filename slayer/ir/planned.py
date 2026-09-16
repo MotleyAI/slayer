@@ -353,6 +353,11 @@ class AssociationProducerKernel(BaseModel):
     entity_keys: List[ValueKey] = Field(default_factory=list)
     null_safe: bool = False
     picked_params: List[PickedParam] = Field(default_factory=list)
+    #: Host-side join columns of the reverse hop (in the home-rooted producer's
+    #: coordinates), guarded ``NOT (<col> IS NULL)`` in level 1 so a home entity
+    #: absent from the population is excluded from a cell it reaches only back
+    #: through the population root (DEV-1910); empty for a home-side dimension.
+    present_keys: List[ValueKey] = Field(default_factory=list)
 
 
 ProducerKernel = Union[
@@ -386,6 +391,11 @@ class RegroupAttachPlan(BaseModel):
     # are not additive across (empty for an explicit ``partition_by=`` grain).
     associated_measure: Optional[str] = None
     associated_dimensions: List[str] = Field(default_factory=list)
+    # Reachable-but-unsafe conjuncts inlined on a home-rooted association
+    # producer's joins (DEV-1910): carried here since ``semi_join_filters`` is
+    # empty for association producers, so the informational entry a semi-join
+    # push would raise is kept.
+    association_restricted_filter_texts: List[str] = Field(default_factory=list)
     # Degenerate second-order aggregation (DEV-1847): the re-aggregation whose
     # operand grain equals the outer grain (the identity), with both grains for
     # the warning.

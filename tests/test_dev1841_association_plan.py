@@ -36,15 +36,17 @@ class TestAssociationKernel:
             bundle=bundle())
         assert len(_association_attaches(planned)) == 1
 
-    def test_pushdown_reaches_the_association_producer(self) -> None:
-        """An unsafe-but-reachable conjunct pushes into the association
-        producer's plan as a semi-join."""
+    def test_reachable_conjunct_inlines_into_the_association_producer(self) -> None:
+        """DEV-1910: an unsafe-but-reachable conjunct inlines on the home-rooted
+        association joins (no semi-join); its text rides the attach so the
+        informational entry is kept."""
         planned = plan_query(
             query=assoc_q(dimensions=["status"], measures=[CM],
                           filters=["customers.plans.level = 'basic'"]),
             bundle=bundle(dev1840_models(strong_plans=False)))
         (att,) = _association_attaches(planned)
-        assert list(att.producer_plan.semi_join_filters)
+        assert list(att.producer_plan.semi_join_filters) == []
+        assert any("basic" in t for t in att.association_restricted_filter_texts)
 
 
 class TestModeThreadsIntoNestedProducer:

@@ -285,13 +285,19 @@ column's classification follows the models its definition actually reads, not ju
 declared location.
 
 Semi-join pushdown SHALL apply uniformly to every producer — plain, partitioned,
-ranked, windowed, nested computed-dimension, and association producers. For an
-association producer the same routing applies with the producer's root taken as the
-host: host-attributable conjuncts apply inline, unsafe-but-reachable conjuncts push by
-semi-join, and membership of the association is identical to the semi-join semantics
-above. Conjuncts pushed into the same producer that share their first reverse hop SHALL
-be satisfied by the same related row (combination); conjuncts on different branches are
-satisfied independently.
+ranked, windowed, and nested computed-dimension producers. An association producer is
+rooted at the aggregate's home dataset and applies every reachable conjunct inline on
+its own joins: attributable conjuncts inline as in every producer, and a conjunct
+reachable only across hops that are not provably many-to-one inlines on the fanning
+join, where the per-entity deduplication makes the fan-out harmless. Membership of the
+association is identical to the semi-join semantics above — entities with at least one
+related row passing the conjunct, conjuncts on one branch satisfied by the same related
+row, branches independent — and a conjunct sharing a hop with an association dimension
+is satisfied by the same related row that carries the dimension value. Each such
+conjunct is reported through the same informational entry as a semi-join-pushed
+conjunct. Conjuncts pushed into the same producer that share their first reverse hop
+SHALL be satisfied by the same related row (combination); conjuncts on different
+branches are satisfied independently.
 
 A conjunct SHALL remain excluded from the producer — reported through the established
 dropped-filter warning (and erroring under `to_many_handling: "error"`) while still
@@ -300,7 +306,8 @@ from the root), when its cross-path references span multiple distinct join branc
 within one conjunct, or when root-local and cross-path references mix under a
 disjunction or negation. The reverse path resolves through the same bidirectional
 traversal as every other hop: any declared edge, in either orientation, with oriented
-provability governing inline-vs-semi-join classification. A hop of the correlation path
+provability governing inline-vs-semi-join classification; a home several hops from the
+population root reverses every hop of its path. A hop of the correlation path
 connected by two or more parallel edges (candidate edges for that single hop) SHALL fail closed in all three modes with the ambiguous-hop
 error naming the candidate edges — never dropped, never guessed. AGGREGATE-phase
 predicates keep aggregate-filter semantics uniform with local aggregates: they restrict
@@ -372,13 +379,29 @@ only in the filter.
 - **WHEN** a query with an unsafe-but-reachable filter uses ranked, windowed, nested
   computed-dimension, or association producers
 - **THEN** each such producer's population is restricted by the same semi-join
-  semantics, by executed values
+  semantics, by executed values — the association producer by inlining the conjunct on
+  its home-rooted joins
 
 #### Scenario: Filter on a sibling fan-out branch restricts the association correctly
 - **WHEN** an associate-mode query's filter references a to-many branch different from
   the metric's association path, including a NULL-sensitive predicate
 - **THEN** the association's membership equals the semi-join semantics — entities of
   root rows with at least one related row passing the predicate — by executed values
+
+#### Scenario: Host filter and host dimension bind to the same population row
+- **WHEN** an associate-mode query rooted at `orders` filters `channel = 'app'` and
+  selects `customers.spend:sum` by `status`, or the same query rooted at `customers`
+  selects `spend:sum` by `orders.status` with the filter `orders.channel = 'app'`
+- **THEN** each status cell aggregates the distinct customers having an app order with
+  that status — never a customer whose app order and status order are different rows —
+  by executed values on SQLite and DuckDB
+
+#### Scenario: Association-restricted conjunct carries the informational entry
+- **WHEN** an association producer applies a reachable-but-unsafe conjunct inline on
+  its joins
+- **THEN** the response carries the same machine-readable entry as a semi-join-pushed
+  conjunct, naming the aggregate and the filter, with no Python-level warning and no
+  error in any mode
 
 #### Scenario: ClickHouse below 25.4 fails closed
 - **WHEN** a semi-join pushdown query targets a ClickHouse server older than 25.4 or of

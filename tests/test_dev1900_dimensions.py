@@ -68,11 +68,6 @@ class TestBroadcast:
 
 
 class TestAssociate:
-    @pytest.mark.xfail(strict=True, reason=(
-        "DEV-1910: a cross-model aggregate associated over an unattributable "
-        "dimension must home-root to count home entities absent from the query "
-        "population (the zero-order customer); the association producer is still "
-        "host-rooted. Remove this marker when DEV-1910 lands."))
     async def test_associates_over_distinct_entities_per_cell(self, engine):
         resp = await engine.execute(orders_q(
             dimensions=[BAD_POP], measures=[AMOUNT_SUM, SPEND_SUM],
