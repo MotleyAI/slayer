@@ -36,6 +36,7 @@ from slayer.core.keys import (
     TimeTruncKey,
     TransformKey,
     ValueKey,
+    source_anchor_path,
 )
 from slayer.core.errors import SlayerError
 from slayer.core.models import AggregationParam, SlayerModel
@@ -272,7 +273,7 @@ def _leaf_closure(
 ) -> Optional[List[Path]]:
     """Paths a node contributes ITSELF (not via children). ``None`` = unanalysable."""
     if isinstance(node, AggregateKey) and node.column_filter_key is not None:
-        source_path = tuple(getattr(node.source, "path", ()) or ())
+        source_path = source_anchor_path(node.source)
         return [
             pre
             for p in node.column_filter_key.referenced_join_paths
@@ -484,7 +485,7 @@ def _column_filter_closure(
     cfk = key.column_filter_key
     if cfk is None or cfk.referenced_join_paths:
         return ()
-    source_path = tuple(getattr(key.source, "path", ()) or ())
+    source_path = source_anchor_path(key.source)
     owner = (
         walk_key_path(model=anchor_model, path=source_path, bundle=bundle)
         if source_path else anchor_model
@@ -539,7 +540,7 @@ def _column_filter_paths(
         bundle=bundle,
     ) is None:
         return None
-    source_path = tuple(getattr(key.source, "path", ()) or ())
+    source_path = source_anchor_path(key.source)
     return [
         pre
         for p in key.column_filter_key.referenced_join_paths

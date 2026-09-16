@@ -32,7 +32,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 from slayer.core.errors import AggregationNotAllowedError, MaterialisationStageError
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
-from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, column_leaf, column_path, is_boolean_shaped, substitute_value_keys, walk_value_keys
+from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, column_leaf, column_path, is_boolean_shaped, source_anchor_path, substitute_value_keys, walk_value_keys
 from slayer.core.join_walker import resolve_hop, terminal_model
 from slayer.core.models import Aggregation
 from slayer.core.refs import (
@@ -2041,7 +2041,7 @@ class SQLGenerator:
             if isinstance(key, AggregateKey):
                 # A host-grain aggregate renders inline and must register its source join (Law 1) — but not when a _cm_
                 # CTE owns it (would add an unused, cardinality-changing join).
-                if not getattr(key.source, "path", ()) or (
+                if not source_anchor_path(key.source) or (
                     _is_host_grain(key) and not skip_cross_model_aggs
                 ):
                     fn(key)
@@ -2067,7 +2067,7 @@ class SQLGenerator:
             # ref (regions.name) resolves and its join registers.
             self._enter_mode_a_predicate(
                 sql=cfk.canonical_sql, scope=scope,
-                owner_path=tuple(getattr(key.source, "path", ()) or ()),
+                owner_path=source_anchor_path(key.source),
                 location=f"Column.filter on model {scope.root_model.name!r}",
             )
 
@@ -2076,7 +2076,7 @@ class SQLGenerator:
             # whose derived SQL crosses joins must register them (Law 1).
             if isinstance(
                 key.source, (ColumnSqlKey, *_EXPRESSION_SOURCE_KINDS),
-            ) or getattr(key.source, "path", ()):
+            ) or source_anchor_path(key.source):
                 scope.resolve(key.source)
 
         def _resolve_kwargs(key) -> None:
@@ -2095,7 +2095,7 @@ class SQLGenerator:
             # owner for a source-relative default (regions.pop), the root for a home-frame
             # default naming the widened home (customers.spend) — the reverse hop back to it.
             frag_model, source_owner_path = scope.root_model, None
-            src_path = tuple(getattr(key.source, "path", ()) or ())
+            src_path = source_anchor_path(key.source)
             if src_path and _is_host_grain(key):
                 walked = self._walk_join_path_model(
                     source_model=scope.root_model, path=src_path, bundle=scope.bundle,
@@ -2372,7 +2372,7 @@ class SQLGenerator:
                     select_columns.append(composite.copy().as_(full_alias))
                     _record_alias(sid, full_alias)
                     continue
-                agg_path = getattr(key.source, "path", ())
+                agg_path = source_anchor_path(key.source)
                 if agg_path:
                     if skip_cross_model_aggs:
                         continue
@@ -2445,7 +2445,7 @@ class SQLGenerator:
         """The AGGREGATE-phase composite seam (DEV-1763 P-G): render one"""
 
         def build(agg_key) -> exp.Expression:
-            if getattr(agg_key.source, "path", ()):
+            if source_anchor_path(agg_key.source):
                 # Internal invariant: cross-model operands desugar to regroup
                 # placeholders before phase classification, so none reaches
                 # this seam.
@@ -3137,7 +3137,7 @@ class SQLGenerator:
                     if k not in picked_names
                 },
                 scope=scope,
-                owner_path=tuple(getattr(agg_slot.key.source, "path", ()) or ()),
+                owner_path=source_anchor_path(agg_slot.key.source),
             )
             value_sql = _wrap_filter(self._resolve_value_sql(spec), spec.filter_sql)
             inner_cols.append(
@@ -6344,11 +6344,11 @@ class SQLGenerator:
         """The WHERE/HAVING aggregate seam (DEV-1763 P-G): render a local"""
 
         def build(agg_key, slot, having_full_alias) -> exp.Expression:
-            if getattr(agg_key.source, "path", ()):
+            anchor = source_anchor_path(agg_key.source)
+            if anchor:
                 raise NotImplementedError(
-                    f"DEV-1450 stage 7b.12: cross-model aggregate ref in "
-                    f"filter (path={agg_key.source.path!r}) routes via the "
-                    f"per-plan CTE, not inline HAVING."
+                    f"cross-model aggregate ref in filter (path={anchor!r}) "
+                    f"routes via the per-plan CTE, not inline HAVING."
                 )
             having_kwargs = self._resolve_agg_kwargs_for_key(key=agg_key, scope=scope)
             synth = self._build_agg_render_spec_from_planned(

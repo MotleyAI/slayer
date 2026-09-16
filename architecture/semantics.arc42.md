@@ -19,9 +19,60 @@ is the coercion from coarser to finer.
    fields, and a reference never leaves its join path ambiguous (spec:
    `models/join-cardinality` › Determination through to-one chains).
    [enforced: test:tests/test_dev1836_producer_execution.py]
-2. **Home dataset**: a row-level expression mixing several datasets' fields is
-   legal only when one dataset determines them all — its home dataset, the one
-   place it has exactly one value per row. [enforced: test:tests/test_dev1892_parameter_typing.py]
+2. **Home dataset**: every row-level expression, and every aggregation, has at most
+   one home dataset — the dataset over whose rows it is evaluated with exactly one
+   value per row (an aggregation is counted over it, Axiom 4). Datasets are the
+   environment's root and the join paths from it; "D determines X" is Axiom 1,
+   judged through dependency closures (engine P10). The home is resolved by:
+   - **2.1 Leaf.** A column or star reference is homed on the dataset it lives on —
+     the terminal of its join path. A derived column is homed there provided that
+     dataset determines every column its definition reads; a dependency reached only
+     across a fanning or unproven hop, or a definition that cannot be analysed, leaves
+     it without a home. A literal is determined by every dataset and constrains nothing.
+   - **2.2 Combination.** A combination of row-level expressions — arithmetic,
+     comparison, scalar function, conditional — is homed on the deepest dataset that
+     determines every operand's home over provably to-one hops. When no dataset
+     determines them all, the expression is illegal.
+   - **2.3 Attached constituent.** An aggregate or transform appearing as an operand
+     is a typed dataset (Axiom 6) and is opaque: only its type is consulted (Axiom 9)
+     — its grain: the explicit `partition_by=`, else the query's dimensions; for a
+     transform, the union of its inner aggregates' grains, where a windowed inner's
+     grain always includes the query's time bucket whether or not its `partition_by=`
+     names it. Its value is broadcast onto the home's rows (Axiom 10), which is
+     well-defined only when the home determines every grain member; so in 2.2 the
+     constituent stands for its grain members. It contributes no leaf, and its
+     interior is never inspected.
+   - **2.4 Aggregation.** An aggregation over a row-level source is homed on the
+     deepest dataset that determines the source's home (2.2) and every column-valued
+     parameter and non-overridden definition default — each a row-level expression
+     under 2.1, defaults resolved as references from the root. It is counted over that
+     dataset's rows. The ordering key of a ranked aggregation must be determined by the
+     home and never widens it; the aggregation's own `partition_by=` is not an input.
+     A source with no row-level leaf is a second-order aggregation: its home is the
+     operand dataset — the constituents' union-grain cells (Axiom 6) — not a model.
+   - **2.5 Recursion.** Nesting resolves bottom-up: each aggregation resolves its home
+     from its own source, parameters and constituent types; whatever encloses it sees
+     only a typed dataset (2.3). No sibling term and no spelling of the enclosing query
+     affects a node's home; the query's dimensions enter only as the type of an
+     ungrained constituent.
+   - **2.6 Anchor and candidates.** The source anchor is the longest common prefix of
+     the source leaves' paths — where the source lives: the aggregation's definition
+     (a custom aggregation and its parameter defaults) is resolved there. The home,
+     when it exists, is among the inputs' paths and their longest common prefix;
+     candidates are tried deepest-first, ties preferring the anchor.
+   - **2.7 Spelling-invariance.** The home depends only on the inputs' paths and
+     types: `customers.spend:sum`, `sum(customers.spend)` and `sum(customers.spend + 0)`
+     share one home. A single-column source is the one-leaf case of 2.2 — the model
+     its source names.
+   - **2.8 Fail closed.** When an input has no home, or no dataset determines every
+     input, the aggregation is illegal and the query fails with the input-safety error
+     naming the leaf and the hop — never a multiplied or silently re-rooted value.
+   - **2.9 Home is not population.** The home is per aggregation node (where it is
+     counted); the population (Axiom 12) is per query (which cells exist). A
+     population dimension the home does not determine is broadcast, associated or
+     refused (Axioms 7–8); it never moves the home.
+   [enforced: test:tests/test_dev1892_parameter_typing.py]
+   [enforced: test:tests/test_dev1832_home.py]
 3. **Association**: any join path — to-one or not — defines which rows belong
    together; everything that crosses a non-determining path is defined in terms
    of it. [review] Association is derivable from forward join declarations

@@ -32,7 +32,7 @@ from slayer.core.enums import (
 )
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS
-from slayer.core.keys import SCALAR_FUNCTIONS, check_scalar_arity, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, SqlExprKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, column_path, normalize_scalar, prepend_value_key, walk_value_keys
+from slayer.core.keys import SCALAR_FUNCTIONS, check_scalar_arity, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, SqlExprKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, column_path, normalize_scalar, prepend_value_key, source_anchor_path, walk_value_keys
 from slayer.core.join_walker import resolve_hop, terminal_model
 from slayer.core.models import SlayerModel
 from slayer.engine import dimension_routing
@@ -55,7 +55,6 @@ from slayer.engine.syntax import (
     TupleLit,
     UnaryOp,
     parse_expr,
-    walk_parsed_refs,
 )
 from slayer.sql.sql_expr import has_window_function
 from slayer.ir.bound import BoundExpr, BoundFilter
@@ -923,55 +922,19 @@ def _bind_expression_agg_source(
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
 ) -> ValueKey:
-    """Bind a same-model scalar-expression aggregate source (DEV-1826).
+    """Bind a scalar-expression aggregate source.
 
-    Boundaries with clear errors (cross-model semantics: DEV-1832): dotted
-    paths inside the expression are cross-model; operands carrying
-    ``Column.filter`` are rejected; nested aggregations / transforms were
-    already rejected at parse time.
-    """
-    for node in walk_parsed_refs(parsed_source):
-        if isinstance(node, DottedRef):
-            raise ValueError(
-                f"Cross-model expression aggregation is not supported: the "
-                f"aggregated expression references the dotted path "
-                f"{'.'.join(node.parts)!r}. Only bare same-model columns may "
-                f"appear inside an aggregated expression (DEV-1832)."
-            )
+    Dotted joined-model leaves and operands carrying ``Column.filter`` are both
+    admitted (DEV-1832): the home rule roots the aggregation and the filter
+    desugars to ``CASE WHEN``. The source must still resolve to a row-level
+    expression (a column, star, or arithmetic/scalar composite of them)."""
     bound = _bind(parsed_source, scope=scope, bundle=bundle, in_filter=False)
     if not isinstance(bound, EXPRESSION_SOURCE_KINDS):
         raise ValueError(
             f"Aggregation source must resolve to a column, star, or a "
             f"row-level expression; got {type(bound).__name__}."
         )
-    _reject_filtered_expression_operands(bound, scope=scope)
     return bound
-
-
-def _reject_filtered_expression_operands(
-    bound: ValueKey, *, scope: Union[ModelScope, StageSchema],
-) -> None:
-    """A ``Column.filter`` applies at aggregation time over ONE column; inside
-    a multi-operand expression its semantics are undefined until DEV-1832."""
-    if not isinstance(scope, ModelScope) or scope.source_model is None:
-        return  # StageSchema outputs carry no Column.filter
-    model = scope.source_model
-    for k in walk_value_keys(bound):
-        if isinstance(k, ColumnKey) and not k.path:
-            leaf = k.leaf
-        elif isinstance(k, ColumnSqlKey) and not k.path:
-            leaf = k.column_name
-        else:
-            continue
-        col = next((c for c in model.columns if c.name == leaf), None)
-        if col is not None and col.filter:
-            raise ValueError(
-                f"Column {leaf!r} carries a column-level filter "
-                f"({col.filter!r}) and cannot be used inside an aggregated "
-                f"expression. Define a derived model column for the "
-                f"expression and aggregate it with the colon form instead "
-                f"(DEV-1832)."
-            )
 
 
 # Scalar functions whose result is certainly text, for the best-effort
@@ -1242,7 +1205,7 @@ def _resolve_agg_owner(
         return None, None
     leaf = getattr(source, "leaf", None) or getattr(source, "column_name", None)
     current = _walk_tokens_best_effort(
-        host=host, path=tuple(getattr(source, "path", ())), bundle=bundle)
+        host=host, path=source_anchor_path(source), bundle=bundle)
     if current is None:
         return None, None
     return current, leaf

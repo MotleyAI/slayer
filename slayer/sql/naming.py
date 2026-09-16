@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, PrivateAttr
 from sqlglot import exp
 
 from slayer.core.errors import IdentifierCollisionError
-from slayer.core.keys import StarKey
+from slayer.core.keys import StarKey, source_anchor_path
 from slayer.core.refs import (
     EXPRESSION_SOURCE_KINDS,
     agg_kwarg_canonical_str,
@@ -265,8 +265,8 @@ def canonical_aggregate_alias(  # NOSONAR(S3776) — sequential dispatch over th
     if profile in ("cte_schema", "declared_name"):
         return canonical
 
-    # Every source kind carries its join path, so ``customers.*:count`` keeps the hop.
-    path: Tuple[str, ...] = tuple(getattr(key.source, "path", ()))
+    # A source's anchor carries its join path, so ``customers.*:count`` keeps the hop.
+    path: Tuple[str, ...] = source_anchor_path(key.source)
 
     if profile == "stage_formula":
         return (".".join(path) + "." if path else "") + canonical

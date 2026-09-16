@@ -1,0 +1,46 @@
+## 1. Fixtures and failing suites (spec-tests stage)
+
+- [ ] 1.1 `tests/_dev1832_fixtures.py`: DEV-1847 graph + DEV-1900 fanning hop, plus `customers.discount`, filtered `customers.north_spend`, a to-one `stores` branch with `rent`, `sales.q_amount` (existing), a `wsum` custom aggregation on `customers`; SQLite + DuckDB seeds and hand-computed oracles for every scenario; verify with a fixtures smoke test that re-derives each oracle from the raw rows
+- [ ] 1.2 `tests/test_dev1832_anchor.py`: unit tests for `source_anchor_path` / `source_leaf_paths` (column, star, literal-only, host-mixed, target-only, two-branch expressions) and the AST guard over `slayer/engine` + `slayer/sql` rejecting every direct `.source` path read outside the accessor; verify the guard is red on the current tree
+- [ ] 1.3 `tests/test_dev1832_home.py`: `Aggregate.home_path` per home scenario (target, host, two-branch, parameter-widened, default-widened, spelling equivalence, no-home fallback), parallel named edges yield distinct paths, a re-elaborated sub-plan yields root-relative paths, nested cross-model producer reads the term; verify they fail on the current tree
+- [ ] 1.4 `tests/test_dev1832_cross_model_exec.py`: executed values on SQLite + DuckDB for every scenario of *Row-level expressions can be aggregated* and *Expression source typing* (incl. fanning-leaf and unanalysable-leaf errors, `first` rejection, associate mode, cardinality invariant, `assert_scope_closed`, no placeholder leak); verify they fail on the current tree
+- [ ] 1.5 `tests/test_dev1832_column_filter.py`: every `models/column-filters` scenario, each of the three behaviour changes as a fail-without-fix test, single-column SQL identity, filtered leaf on a joined model incl. the fanning-filter error; verify they fail on the current tree
+- [ ] 1.6 `tests/test_dev1832_transform_source.py`: the running-total oracle, the ungrained degenerate warning, mixed transform constituent, joined-model row leaf in a mixed source, row-leaf rejection, projected-key legality, axis error, windowed-inner-under-transform probe, `first`/`last` dispatch unchanged, plan structure (one transform-root producer inside the carrier, one flat `WITH`); verify they fail on the current tree
+- [ ] 1.7 `tests/test_dev1832_golden_sql.py` + `tests/golden/dev1832_sql_baseline.json` over postgres/sqlite/duckdb/tsql/bigquery for the lifted shapes; verify the baseline is recorded once the implementation is green (initially recorded raises)
+- [ ] 1.8 Re-point pins with the agreed consent: `tests/test_dev1847_gate.py` (nested transform, cross-model, filtered operand → accepted; row-leaf variant still raises via the checker), `tests/test_dev1859_plan_structure.py::test_nested_transform_in_source_stays_rejected`; verify they fail on the current tree
+
+## 2. Source anchor (D1)
+
+- [x] 2.1 Add `source_anchor_path` / `source_leaf_paths` to `slayer/core/keys.py`; verify `test_dev1832_anchor.py` unit tests pass
+- [x] 2.2 Sweep every site enumerated by the AST guard onto the accessor (keys classifiers, `join_safety`, `compile/stages.py`, `compile/staging.py`, `binding`, `elaborate_env._key_display`, generator passes, `naming`, `render/value_expr`); verify the AST guard is green and the full unit suite is unchanged
+
+## 3. Home in the elaborator (D2, D3)
+
+- [x] 3.1 `slayer/ir/terms.py`: `Aggregate.home_path`; new `slayer/engine/home.py` with the S2 rule seeded from leaf paths, parameters and defaults (moved out of `compile/stages.py`); `elaborate.py` resolves homes and passes them to `build_environment`; verify `test_dev1832_home.py` elaborator cases pass and `arch_check` model-truth stays green (arch_check green 2026-09-16; Axiom 2 rewrite applied and approved; constituent-grain inputs are 3.1b)
+- [ ] 3.1b `home_path_for` adds every attached constituent's grain members as inputs (Axiom 2.3): `_effective_root_grain` moves from `compile/stages.py` to `core/keys.py` as `effective_root_grain`; `resolve_aggregate_homes` takes the query's dimension keys, time-dimension keys and active bucket from `elaborate.py`; pins in `tests/test_dev1832_home.py` (status grain → root, `customers.tier` grain → customers, ungrained → query dims); verify `test_joined_model_row_leaf_mixed_by_status` passes on SQLite and DuckDB
+- [ ] 3.2 `compile_synthesized` helper; every sub-plan call site uses it (five after the DEV-1910 merge); `compile_prebound` requires `env`, local typing branch deleted; verify the nested-producer home test passes and existing goldens are byte-identical
+- [x] 3.3 `_synthesize_cross_model_producer` reads `home_path` from the term; `_home_path` / `_default_home_candidate_paths` removed from the compiler; drop the binder's dotted-leaf rejection; verify `test_dev1832_cross_model_exec.py` passes on SQLite and DuckDB (structure done; the remaining reds are 3.3a, 3.3b and 3.5)
+- [ ] 3.3a `sql/generator.py` custom-formula substitution parenthesises every non-atomic `{value}` / parameter fragment (`SUM((spend - pop) * spend)`), and the `wsum` oracle in `test_dev1832_cross_model_exec.py` iterates every customer like `_spend_minus_pop_by_tier` (consented and applied 2026-09-16: gold −18475, silver −2100, bronze NULL); verify `test_custom_aggregation_resolves_on_the_anchor` on both backends and no golden moves except through `ALLOWED_DELTAS`
+- [ ] 3.3b `reference_closure._explicit_input_refs` yields `source_row_leaves(key.source)` instead of the whole source so the closure and the analysability diagnostic walk expression leaves; verify `test_fanning_leaf_fails_closed` and `test_unanalysable_leaf_fails_closed` raise the existing typed errors
+- [ ] 3.4 Merge DEV-1910 into this branch (origin/main once PR #399 lands, else its branch head — stacked, PR base follows) per the conflict recipe in the Linear mini-plan; extend the anchor guard to reject `key_host_path(<expr>.source)`; verify the guard, `test_dev1910_*`, `test_dev1841_*`, `test_dev1892_*`, `test_dev1900_*` green
+- [ ] 3.5 The association arm also triggers under `associate` when an attached input is unattributable from the home (no unattributable dimension → no associated warning); verify `test_attached_parameter_accepted_under_associate` on both backends and `test_attached_parameter_rejected_under_broadcast` still raises
+
+## 4. Column.filter desugar (D5)
+
+- [ ] 4.1 `Column.needs_expansion`; binder derived decision and `reference_closure._derived_column` read it; `column_dependency` adds filter-reference edges without a self-edge; verify the cycle-validation and dependency scenarios pass
+- [ ] 4.2 Apply the CASE wrapper at the three expansion seams (reference-site expander, scope anchor, generator aggregate-source expansion) with the filter expanded at the owner path; verify single-column SQL identity and the derived-over-filtered scenario
+- [ ] 4.3 Delete `AggregateKey.column_filter_key`, the binder resolver and filtered-operand rejection, closure filter arms, generator filter passes / `_wrap_filter` / `count(*)` CASE / ranked picked-value CASE, `AggRenderSpec.filter_sql`, compiler identity tuples, renderer guard; retire `SqlExprKey` and `parse_sql_expr`; verify `test_dev1832_column_filter.py` passes and re-bless moved goldens only through `ALLOWED_DELTAS` with executed values pinned
+
+## 5. Transform constituents (D4)
+
+- [ ] 5.1 Remove the transform arm of `_validated_agg_source`; constituent classifiers and `_source_is_reaggregation` / `_is_mixed_agg_source` treat transforms as constituents; verify the classifier and parse cases in `test_dev1832_transform_source.py` pass
+- [ ] 5.2 `constituent_grain` via `_effective_root_grain`; carrier union grain, time key, join pairs and degeneracy use it; transform constituents evaluate through the transform-root producer in carrier and row attach; verify the oracle, degenerate and mixed scenarios pass on SQLite and DuckDB
+- [ ] 5.3 Row-leaf checker and `check_dimension_temporal_axis` walk aggregation sources; axis message reworded, `tests/_dev1871_raise_ledger.py` row updated; verify `test_dev1871_raise_parity.py` and the rejection scenarios pass
+- [ ] 5.4 Windowed-inner-under-transform probe: executed test green, or typed error pinned and deferral comment posted on a fresh issue; verify by the test outcome recorded in the PR
+
+## 6. Accounting, docs, gates
+
+- [ ] 6.1 Remove the stale ratchet allowlist entry; verify `test_law_guard_ratchet.py` passes with `guards.baseline` unchanged
+- [ ] 6.2 Docs: one sentence each in `docs/concepts/formulas.md` (boundaries paragraph), `docs/concepts/models.md` (filter row + paragraph), `docs/concepts/queries.md` (cross-model measures); `Column.filter` field comment; verify by grep that no "not yet supported" wording for the three shapes remains
+- [ ] 6.3 Present the axiom 2 / axiom 6 `enforced:` tag diffs for approval and apply only on OK; verify `arch_check` passes
+- [ ] 6.4 Record the `dev1832` golden baseline; run `poetry run pytest -m "not integration" -n auto`, `ruff`, conventions gate, `basedpyright` (baseline shrinks or holds), `arch_check`; verify all green, then the Codex working-tree pass before push

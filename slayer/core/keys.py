@@ -1073,15 +1073,15 @@ def is_local_partitioned_agg(k: ValueKey) -> bool:
     return (
         isinstance(k, AggregateKey)
         and k.partition_keys is not None
-        and not getattr(k.source, "path", ())
+        and not source_anchor_path(k.source)
     )
 
 
 def is_cross_model_agg(k: ValueKey) -> bool:
-    """A cross-model AggregateKey (source names another model); a host-grain wrap (locus="host") is excluded."""
+    """A cross-model AggregateKey (source lives on another model); a host-grain wrap (locus="host") is excluded."""
     return (
         isinstance(k, AggregateKey)
-        and bool(getattr(k.source, "path", ()))
+        and bool(source_anchor_path(k.source))
         and k.locus != "host"
     )
 
@@ -1093,7 +1093,7 @@ def is_local_combined_regroup_ref(
     or a bare windowed/first/last measure); ``row_agg_set`` aggregates excluded."""
     return (
         isinstance(k, AggregateKey)
-        and not getattr(k.source, "path", ())
+        and not source_anchor_path(k.source)
         and k not in row_agg_set
         and (
             k.partition_keys is not None
@@ -1227,6 +1227,52 @@ def source_row_leaves(source: ValueKey) -> List[ValueKey]:
 
     _walk(source)
     return out
+
+
+def _leaf_join_path(k: ValueKey) -> Tuple[str, ...]:
+    """Join path of a row-level leaf key regardless of kind."""
+    if isinstance(k, TimeTruncKey):
+        return column_path(k.column)
+    return getattr(k, "path", ())
+
+
+def source_leaf_paths(source: ValueKey) -> List[Tuple[str, ...]]:
+    """Join paths of the row-level column/star leaves of an aggregation source.
+
+    Attached constituents — nested aggregates and grained transforms — are opaque
+    (they contribute their grain, not a source leaf); a literal-only source yields
+    no leaf. The one accessor every "where does this source live" site reads (D1)."""
+    out: List[Tuple[str, ...]] = []
+
+    def _walk(k: ValueKey) -> None:
+        if isinstance(k, (AggregateKey, TransformKey)):
+            return
+        if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey)):
+            out.append(_leaf_join_path(k))
+            return
+        for c in k.children():
+            _walk(c)
+
+    _walk(source)
+    return out
+
+
+def source_anchor_path(source: ValueKey) -> Tuple[str, ...]:
+    """Where an aggregation source lives: the longest common prefix of its
+    row-level leaves' paths. A bare column/star yields its own path; a
+    literal-only or fully-attached source yields ``()`` (the root)."""
+    paths = source_leaf_paths(source)
+    if not paths:
+        return ()
+    prefix = paths[0]
+    for path in paths[1:]:
+        i = 0
+        while i < len(prefix) and i < len(path) and prefix[i] == path[i]:
+            i += 1
+        prefix = prefix[:i]
+        if not prefix:
+            break
+    return prefix
 
 
 def attached_inputs(k: ValueKey) -> List[AggregateKey]:

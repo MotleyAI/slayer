@@ -60,14 +60,12 @@ def _references_quantity(key) -> bool:
 class TestParseAcceptance:
     def test_mixed_source_parses_as_aggregation(self):
         """Scenario: Mixed row and attached source accepted — the parse gate
-        no longer rejects the mixing."""
+        no longer rejects the mixing. (A nested transform in a source also parses
+        now, DEV-1832; the row-leaf-under-transform rejection moved to plan time —
+        see test_dev1832_transform_source.)"""
         parsed = parse_expr(MIXED_SUM)
         assert isinstance(parsed, AggCall)
         assert parsed.agg == "sum"
-
-    def test_nested_transform_in_source_stays_rejected(self):
-        with pytest.raises(ValueError, match="(?i)transform"):
-            parse_expr("sum(cumsum(quantity) - 1)")
 
 
 class TestRowGrainPlanShape:

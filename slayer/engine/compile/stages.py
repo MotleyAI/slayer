@@ -27,13 +27,12 @@ from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import DataType, RANKED_AGGREGATIONS
 from slayer.core.errors import AmbiguousJoinPathError, UnreachableFilterDroppedWarning
-from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, regroup_root_grain, reroot_value_key, substitute_value_keys, walk_value_keys, walk_consumer_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_local_partitioned_agg, split_top_level_and, window_kwarg_of, is_reaggregation_key, is_row_attach_root, attached_inputs, operand_aggregates
+from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, regroup_root_grain, reroot_value_key, substitute_value_keys, walk_value_keys, walk_consumer_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_local_partitioned_agg, split_top_level_and, window_kwarg_of, is_reaggregation_key, is_row_attach_root, attached_inputs, operand_aggregates, source_anchor_path
 from slayer.core.models import SlayerModel
 from slayer.engine.reference_closure import (
     ParamSpec,
     aggregate_input_closure,
     compute_column_filter_join_paths,
-    default_param_value_key,
     first_unanalyzable_input_column,
     key_closure,
     resolve_aggregation_params,
@@ -374,7 +373,7 @@ def _is_bare_local_regroup_root(k: ValueKey) -> bool:
     return (
         isinstance(k, AggregateKey)
         and k.partition_keys is None
-        and not getattr(k.source, "path", ())
+        and not source_anchor_path(k.source)
         and (window_kwarg_of(k) is not None or k.agg in RANKED_AGGREGATIONS)
     )
 
@@ -544,7 +543,7 @@ def _first_unattributable_arg_leaf(
     # Positional args and column-valued kwargs in HOST coordinates (a ranking
     # first/last time key, a weight column); a fail-closed backstop under the
     # home rule, judged on each input's dependency closure (DEV-1900). host_name
-    # lets an off-home input traverse a proven reverse hop, as _home_path judged.
+    # lets an off-home input traverse a proven reverse hop, as the home rule judged.
     for arg in (*agg.args, *(v for _, v in agg.kwargs)):
         if not isinstance(arg, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
             continue
@@ -1258,6 +1257,12 @@ class _ProducerSynthesisContext(BaseModel):
     base_filters_with_text: List[Tuple[BoundFilter, Optional[str]]]
     scope: Union[ModelScope, StageSchema]
     stage_schemas: Dict[str, StageSchema]
+    # Home path per aggregate (Axiom 2), resolved in the elaborator and read
+    # here; the source anchor is the fallback for keys with no term.
+    home_paths: Dict[AggregateKey, Tuple[str, ...]] = {}
+
+    def home_of(self, agg: AggregateKey) -> Tuple[str, ...]:
+        return self.home_paths.get(agg, source_anchor_path(agg.source))
 
 
 class _UnattributableDim(NamedTuple):
@@ -1288,10 +1293,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     projected_td_keys = context.projected_td_keys
     base_filters_with_text = context.base_filters_with_text
     scope, stage_schemas = context.scope, context.stage_schemas
-    target_path = _home_path(
-        agg=agg, host_model=host_model, models_by_name=models_by_name,
-        bundle=bundle,
-    )
+    target_path = context.home_of(agg)
     root_model = walk_key_path(model=host_model, path=target_path, bundle=bundle)
     if root_model is None:  # pragma: no cover — bind resolved the path already
         check_cross_model_source_resolves(
@@ -1375,7 +1377,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
             ),
         )
 
-    if target_path != key_host_path(agg.source):
+    if target_path != source_anchor_path(agg.source):
         # The source sits beyond the home; re-anchor off-home inputs via the host
         # and render it inline as a host-locus aggregate joining the to-one path
         # from the home, never a source-rooted producer.
@@ -1512,92 +1514,6 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     )
 
 
-def _longest_common_prefix(paths: List[Tuple[str, ...]]) -> Tuple[str, ...]:
-    if not paths:
-        return ()
-    common = paths[0]
-    for p in paths[1:]:
-        i = 0
-        while i < len(common) and i < len(p) and common[i] == p[i]:
-            i += 1
-        common = common[:i]
-    return common
-
-
-def _default_home_candidate_paths(
-    *, agg: AggregateKey, host_model: SlayerModel, bundle: ResolvedSourceBundle,
-) -> List[Tuple[str, ...]]:
-    """Home candidates contributed by non-overridden definition defaults (gap 4):
-    each default resolved as a reference FROM THE HOST, so a default naming a
-    shallower model (``customers.spend``) widens the home exactly as spelling it
-    explicitly would. Paths verbatim — reverse-hop cancellation is DEV-1908."""
-    owner = walk_key_path(model=host_model, path=key_host_path(agg.source), bundle=bundle)
-    agg_def = next(
-        (a for a in (owner.aggregations or []) if a.name == agg.agg), None,
-    ) if owner is not None else None
-    if agg_def is None:
-        return []
-    explicit = {name for name, _ in agg.kwargs}
-    out: List[Tuple[str, ...]] = []
-    for p in agg_def.params:
-        if p.name in explicit:
-            continue
-        vk = default_param_value_key(
-            sql=p.sql, owner_path=(), owner_model=host_model, bundle=bundle,
-        )
-        if not isinstance(vk, (ColumnKey, ColumnSqlKey)):
-            continue
-        path = key_host_path(vk)
-        # Only a default naming a model that actually walks forward from the host
-        # is a home candidate — a bare owner-local default rides the source, and a
-        # dotted default whose head is unreachable from the host is not a home.
-        if path and walk_key_path(model=host_model, path=path, bundle=bundle) is not None:
-            out.append(path)
-    return out
-
-
-def _home_path(
-    *, agg: AggregateKey, host_model: SlayerModel,
-    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
-) -> Tuple[str, ...]:
-    """The home dataset for a cross-model aggregate (Axiom 2): the deepest join
-    path that determines every input — the source column, each column-valued
-    arg/kwarg, and each definition default (DEV-1900 gap 4) — over provably
-    to-one hops. Candidates are the input paths and their longest common prefix,
-    deepest first (ties prefer the source path); the first one every input is
-    attributable from wins. Falls back to the source path (today's root), where
-    input safety then raises on an unproven hop."""
-    source_path = key_host_path(agg.source)
-    input_paths: List[Tuple[str, ...]] = [source_path]
-    # A ranked aggregate's positional args are its ranking keys, not value inputs;
-    # they must stay attributable from the source (checked downstream), never pull
-    # the home shallower.
-    arg_values = () if agg.agg in RANKED_AGGREGATIONS else agg.args
-    for v in (*arg_values, *(val for _, val in agg.kwargs)):
-        if isinstance(v, (ColumnKey, ColumnSqlKey)):
-            input_paths.append(key_host_path(v))
-    input_paths.extend(_default_home_candidate_paths(
-        agg=agg, host_model=host_model, bundle=bundle,
-    ))
-    candidates = sorted(
-        {source_path, _longest_common_prefix(input_paths), *input_paths},
-        key=lambda p: (-len(p), p != source_path, p),
-    )
-    for p in candidates:
-        model_at_p = walk_key_path(model=host_model, path=p, bundle=bundle)
-        if model_at_p is None:
-            continue
-        if all(
-            attributable_from_root(
-                host_path=q, target_path=p, root_model=model_at_p,
-                models_by_name=models_by_name, host_name=host_model.name,
-            )
-            for q in input_paths
-        ):
-            return p
-    return source_path
-
-
 def _param_is_determined(
     *, spec: ParamSpec, grain: Grain, host_model: SlayerModel,
     models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
@@ -1698,7 +1614,7 @@ def _synthesize_association_producer(  # NOSONAR(S3776) — one cohesive host-ro
     # aggregate's value; the residue is a typed error. Definition defaults are
     # declared on the source column's model, the home only when it is the source
     # path.
-    source_path = key_host_path(agg.source)
+    source_path = source_anchor_path(agg.source)
     source_model = walk_key_path(
         model=host_model, path=source_path, bundle=bundle,
     ) or root_model
@@ -2416,6 +2332,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
     in_producer: bool = False,
     producer_registry: Optional[Dict[Hashable, PlannedQuery]] = None,
     local_discovery: bool = True,
+    home_paths: Optional[Dict[AggregateKey, Tuple[str, ...]]] = None,
 ) -> Optional[Tuple[PreboundQuery, List[RegroupAttachPlan]]]:
     """Discover partitioned aggregates and desugar into producer stages + reserved-leaf placeholders (row attach at base FROM, combined at the combined SELECT)."""
     # DEV-1847: re-aggregation roots — an aggregate whose operand resolves to
@@ -2845,7 +2762,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
         projected_dim_keys=projected_dim_keys,
         projected_td_keys=projected_td_keys,
         base_filters_with_text=base_filters_with_text, scope=scope,
-        stage_schemas=stage_schemas,
+        stage_schemas=stage_schemas, home_paths=home_paths or {},
     )
     for phase, cm_aggs in (("combined", cm_combined), ("row", cm_row)):
         for agg in cm_aggs:
@@ -3038,6 +2955,10 @@ def compile_prebound(  # NOSONAR(S3776) — compiler entry-point dispatcher. The
     else:
         _producer_source_model = None
     # The desugar always runs; the LOCAL half is suppressed in a disabled sub-plan, cross-model roots always desugar.
+    home_paths = {
+        k: t.home_path for k, t in env.terms.items()
+        if isinstance(t, Aggregate)
+    } if env is not None else {}
     regroup_result = _plan_regroups(
         prebound=prebound, filter_typings=filter_typings,
         scope=scope, bundle=bundle,
@@ -3048,6 +2969,7 @@ def compile_prebound(  # NOSONAR(S3776) — compiler entry-point dispatcher. The
         local_discovery=(
             not disable_host_rooted_isolation or enable_producer_regroups
         ),
+        home_paths=home_paths,
     )
     if regroup_result is not None:
         prebound, regroup_attach_plans = regroup_result
@@ -3255,7 +3177,7 @@ def compile_prebound(  # NOSONAR(S3776) — compiler entry-point dispatcher. The
         key = slot.key
         assert not (
             isinstance(key, AggregateKey)
-            and getattr(key.source, "path", ())
+            and source_anchor_path(key.source)
             and key.locus != "host"
         ), (
             f"Cross-model aggregate slot {slot.id!r} survived the regroup "

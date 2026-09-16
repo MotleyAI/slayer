@@ -40,6 +40,7 @@ from slayer.core.keys import (
     TransformKey,
     ValueKey,
     regroup_root_grain,
+    source_anchor_path,
     walk_value_keys,
 )
 from slayer.core.models import SlayerModel
@@ -121,7 +122,7 @@ def _measure_blockers(cj: ValueKey, dim_keys: frozenset) -> List[ValueKey]:
 def _key_display(k: ValueKey) -> str:
     if isinstance(k, AggregateKey):
         leaf = getattr(k.source, "leaf", None) or getattr(k.source, "column_name", None) or "*"
-        path = getattr(k.source, "path", ())
+        path = source_anchor_path(k.source)
         name = f"{'.'.join((*path, leaf))}:{k.agg}"
         return f"{name} (partition_by)" if k.partition_keys is not None else name
     if isinstance(k, TransformKey):
@@ -355,8 +356,10 @@ def validate_model_filter(
 
 def _aggregate_terms(
     roots: List[ValueKey], *, home: DatasetT, query_grain: Grain,
+    home_paths: Dict[AggregateKey, Tuple[str, ...]],
 ) -> Tuple[Dict[ValueKey, Term], List[TransformKey]]:
-    """(aggregate terms, transform keys seen) across ``roots``."""
+    """(aggregate terms, transform keys seen) across ``roots``. Each aggregate's
+    home path comes from the elaborator's map (fallback: the source anchor)."""
     terms: Dict[ValueKey, Term] = {}
     transforms: List[TransformKey] = []
     for root in roots:
@@ -366,7 +369,10 @@ def _aggregate_terms(
                     k.partition_keys if k.partition_keys is not None
                     else query_grain
                 )
-                terms[k] = Aggregate(home=home, recipe=k, grain=grain)
+                terms[k] = Aggregate(
+                    home=home, recipe=k, grain=grain,
+                    home_path=home_paths.get(k, source_anchor_path(k.source)),
+                )
             elif isinstance(k, TransformKey):
                 transforms.append(k)
     return terms, transforms
@@ -387,6 +393,7 @@ def _add_transform_terms(
 
 def _terms_for(
     roots: List[ValueKey], *, home: Optional[DatasetT], query_grain: Grain,
+    home_paths: Dict[AggregateKey, Tuple[str, ...]],
 ) -> Dict[ValueKey, Term]:
     """One term per unique aggregate/transform key, memoized by key identity.
 
@@ -397,7 +404,7 @@ def _terms_for(
     if home is None:
         return {}
     terms, transforms = _aggregate_terms(
-        roots, home=home, query_grain=query_grain,
+        roots, home=home, query_grain=query_grain, home_paths=home_paths,
     )
     _add_transform_terms(terms=terms, transforms=transforms)
     return terms
@@ -1048,8 +1055,10 @@ def build_environment(
     dim_keys: frozenset,
     row_agg_set: frozenset,
     filter_typings: List[ConjunctTyping],
+    home_paths: Optional[Dict[AggregateKey, Tuple[str, ...]]] = None,
 ) -> ElaboratedQuery:
     """Assemble the typing environment for one typed, split prebound query."""
+    home_paths = home_paths or {}
     query_grain = Grain.of(dim_keys)
     n_leading = prebound.n_dims + prebound.n_time_dimensions
     dim_roots = [
@@ -1063,7 +1072,7 @@ def build_environment(
 
     terms = _terms_for(
         [*dim_roots, *measure_roots, *filter_roots, *order_roots],
-        home=home, query_grain=query_grain,
+        home=home, query_grain=query_grain, home_paths=home_paths,
     )
 
     def _typed_verdict(root: ValueKey) -> PositionVerdict:

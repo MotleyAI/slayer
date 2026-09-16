@@ -15,6 +15,7 @@ from slayer.core.keys import (
     ValueKey,
     grained_inner_aggregates,
     is_row_attach_root,
+    source_anchor_path,
     walk_consumer_keys,
     walk_value_keys,
 )
@@ -159,7 +160,7 @@ def _combined_consumer_kind(k: ValueKey) -> Optional[str]:
     if not isinstance(k, AggregateKey):
         return None
     partitioned = k.partition_keys is not None
-    if not getattr(k.source, "path", ()):
+    if not source_anchor_path(k.source):
         return "local_partitioned" if partitioned else None
     if k.locus == "host":
         return None

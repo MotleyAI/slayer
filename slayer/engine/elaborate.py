@@ -17,6 +17,7 @@ from slayer.engine.elaborate_env import (
     home_dataset,
     type_and_split_filters,
 )
+from slayer.engine.home import resolve_aggregate_homes
 from slayer.engine.join_safety import crossing_local_root_predicate
 from slayer.ir.elaborated import ElaboratedQuery
 from slayer.ir.prebound import (
@@ -62,12 +63,22 @@ def elaborate_query(
     )
     dim_keys, row_agg_set = position_typing_context(prebound)
     model = scope.source_model if isinstance(scope, ModelScope) else None
+    home_roots = [
+        *(dm.bound.value_key for dm in prebound.declared_measures),
+        *(bf.value_key for bf in prebound.bound_filters),
+        *(spec.bound.value_key for spec in prebound.order_specs),
+    ]
+    home_paths = resolve_aggregate_homes(
+        roots=home_roots, host_model=model,
+        models_by_name=bundle.models_by_name, bundle=bundle,
+    )
     env = build_environment(
         prebound=prebound,
         home=home_dataset(scope=scope, model=model),
         dim_keys=dim_keys,
         row_agg_set=row_agg_set,
         filter_typings=filter_typings,
+        home_paths=home_paths,
     )
     return env.model_copy(update={
         "query": query,

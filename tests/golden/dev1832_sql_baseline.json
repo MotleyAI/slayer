@@ -1,0 +1,247 @@
+{
+  "lifted/cross_model_partition::bigquery": {
+    "error": "ValueError",
+    "message": "Cross-model expression aggregation is not supported: the aggregated expression references the dotted path 'customers.discount'. Only bare same-model columns may appear inside an aggregated expression (DEV-1832)."
+  },
+  "lifted/cross_model_partition::duckdb": {
+    "error": "ValueError",
+    "message": "Cross-model expression aggregation is not supported: the aggregated expression references the dotted path 'customers.discount'. Only bare same-model columns may appear inside an aggregated expression (DEV-1832)."
+  },
+  "lifted/cross_model_partition::mysql": {
+    "error": "ValueError",
+    "message": "Cross-model expression aggregation is not supported: the aggregated expression references the dotted path 'customers.discount'. Only bare same-model columns may appear inside an aggregated expression (DEV-1832)."
+  },
+  "lifted/cross_model_partition::postgres": {
+    "error": "ValueError",
+    "message": "Cross-model expression aggregation is not supported: the aggregated expression references the dotted path 'customers.discount'. Only bare same-model columns may appear inside an aggregated expression (DEV-1832)."
+  },
+  "lifted/cross_model_partition::snowflake": {
+    "error": "ValueError",
+    "message": "Cross-model expression aggregation is not supported: the aggregated expression references the dotted path 'customers.discount'. Only bare same-model columns may appear inside an aggregated expression (DEV-1832)."
+  },
+  "lifted/cross_model_partition::sqlite": {
+    "error": "ValueError",
+    "message": "Cross-model expression aggregation is not supported: the aggregated expression references the dotted path 'customers.discount'. Only bare same-model columns may appear inside an aggregated expression (DEV-1832)."
+  },
+  "lifted/cross_model_partition::tsql": {
+    "error": "ValueError",
+    "message": "Cross-model expression aggregation is not supported: the aggregated expression references the dotted path 'customers.discount'. Only bare same-model columns may appear inside an aggregated expression (DEV-1832)."
+  },
+  "lifted/filtered_leaf_joined::bigquery": {
+    "error": "ValueError",
+    "message": "Cross-model expression aggregation is not supported: the aggregated expression references the dotted path 'customers.north_spend'. Only bare same-model columns may appear inside an aggregated expression (DEV-1832)."
+  },
+  "lifted/filtered_leaf_joined::duckdb": {
+    "error": "ValueError",
+    "message": "Cross-model expression aggregation is not supported: the aggregated expression references the dotted path 'customers.north_spend'. Only bare same-model columns may appear inside an aggregated expression (DEV-1832)."
+  },
+  "lifted/filtered_leaf_joined::mysql": {
+    "error": "ValueError",
+    "message": "Cross-model expression aggregation is not supported: the aggregated expression references the dotted path 'customers.north_spend'. Only bare same-model columns may appear inside an aggregated expression (DEV-1832)."
+  },
+  "lifted/filtered_leaf_joined::postgres": {
+    "error": "ValueError",
+    "message": "Cross-model expression aggregation is not supported: the aggregated expression references the dotted path 'customers.north_spend'. Only bare same-model columns may appear inside an aggregated expression (DEV-1832)."
+  },
+  "lifted/filtered_leaf_joined::snowflake": {
+    "error": "ValueError",
+    "message": "Cross-model expression aggregation is not supported: the aggregated expression references the dotted path 'customers.north_spend'. Only bare same-model columns may appear inside an aggregated expression (DEV-1832)."
+  },
+  "lifted/filtered_leaf_joined::sqlite": {
+    "error": "ValueError",
+    "message": "Cross-model expression aggregation is not supported: the aggregated expression references the dotted path 'customers.north_spend'. Only bare same-model columns may appear inside an aggregated expression (DEV-1832)."
+  },
+  "lifted/filtered_leaf_joined::tsql": {
+    "error": "ValueError",
+    "message": "Cross-model expression aggregation is not supported: the aggregated expression references the dotted path 'customers.north_spend'. Only bare same-model columns may appear inside an aggregated expression (DEV-1832)."
+  },
+  "lifted/filtered_operand::bigquery": {
+    "error": "ValueError",
+    "message": "Column 'q_amount' carries a column-level filter (\"product = 'Q'\") and cannot be used inside an aggregated expression. Define a derived model column for the expression and aggregate it with the colon form instead (DEV-1832)."
+  },
+  "lifted/filtered_operand::duckdb": {
+    "error": "ValueError",
+    "message": "Column 'q_amount' carries a column-level filter (\"product = 'Q'\") and cannot be used inside an aggregated expression. Define a derived model column for the expression and aggregate it with the colon form instead (DEV-1832)."
+  },
+  "lifted/filtered_operand::mysql": {
+    "error": "ValueError",
+    "message": "Column 'q_amount' carries a column-level filter (\"product = 'Q'\") and cannot be used inside an aggregated expression. Define a derived model column for the expression and aggregate it with the colon form instead (DEV-1832)."
+  },
+  "lifted/filtered_operand::postgres": {
+    "error": "ValueError",
+    "message": "Column 'q_amount' carries a column-level filter (\"product = 'Q'\") and cannot be used inside an aggregated expression. Define a derived model column for the expression and aggregate it with the colon form instead (DEV-1832)."
+  },
+  "lifted/filtered_operand::snowflake": {
+    "error": "ValueError",
+    "message": "Column 'q_amount' carries a column-level filter (\"product = 'Q'\") and cannot be used inside an aggregated expression. Define a derived model column for the expression and aggregate it with the colon form instead (DEV-1832)."
+  },
+  "lifted/filtered_operand::sqlite": {
+    "error": "ValueError",
+    "message": "Column 'q_amount' carries a column-level filter (\"product = 'Q'\") and cannot be used inside an aggregated expression. Define a derived model column for the expression and aggregate it with the colon form instead (DEV-1832)."
+  },
+  "lifted/filtered_operand::tsql": {
+    "error": "ValueError",
+    "message": "Column 'q_amount' carries a column-level filter (\"product = 'Q'\") and cannot be used inside an aggregated expression. Define a derived model column for the expression and aggregate it with the colon form instead (DEV-1832)."
+  },
+  "lifted/host_homed_arith::bigquery": {
+    "error": "ValueError",
+    "message": "Cross-model expression aggregation is not supported: the aggregated expression references the dotted path 'customers.discount'. Only bare same-model columns may appear inside an aggregated expression (DEV-1832)."
+  },
+  "lifted/host_homed_arith::duckdb": {
+    "error": "ValueError",
+    "message": "Cross-model expression aggregation is not supported: the aggregated expression references the dotted path 'customers.discount'. Only bare same-model columns may appear inside an aggregated expression (DEV-1832)."
+  },
+  "lifted/host_homed_arith::mysql": {
+    "error": "ValueError",
+    "message": "Cross-model expression aggregation is not supported: the aggregated expression references the dotted path 'customers.discount'. Only bare same-model columns may appear inside an aggregated expression (DEV-1832)."
+  },
+  "lifted/host_homed_arith::postgres": {
+    "error": "ValueError",
+    "message": "Cross-model expression aggregation is not supported: the aggregated expression references the dotted path 'customers.discount'. Only bare same-model columns may appear inside an aggregated expression (DEV-1832)."
+  },
+  "lifted/host_homed_arith::snowflake": {
+    "error": "ValueError",
+    "message": "Cross-model expression aggregation is not supported: the aggregated expression references the dotted path 'customers.discount'. Only bare same-model columns may appear inside an aggregated expression (DEV-1832)."
+  },
+  "lifted/host_homed_arith::sqlite": {
+    "error": "ValueError",
+    "message": "Cross-model expression aggregation is not supported: the aggregated expression references the dotted path 'customers.discount'. Only bare same-model columns may appear inside an aggregated expression (DEV-1832)."
+  },
+  "lifted/host_homed_arith::tsql": {
+    "error": "ValueError",
+    "message": "Cross-model expression aggregation is not supported: the aggregated expression references the dotted path 'customers.discount'. Only bare same-model columns may appear inside an aggregated expression (DEV-1832)."
+  },
+  "lifted/mixed_transform::bigquery": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'sum(quantity * rank(avg(unit_price, partition_by=product)))': transforms cannot be nested inside the expression aggregated by 'sum'."
+  },
+  "lifted/mixed_transform::duckdb": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'sum(quantity * rank(avg(unit_price, partition_by=product)))': transforms cannot be nested inside the expression aggregated by 'sum'."
+  },
+  "lifted/mixed_transform::mysql": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'sum(quantity * rank(avg(unit_price, partition_by=product)))': transforms cannot be nested inside the expression aggregated by 'sum'."
+  },
+  "lifted/mixed_transform::postgres": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'sum(quantity * rank(avg(unit_price, partition_by=product)))': transforms cannot be nested inside the expression aggregated by 'sum'."
+  },
+  "lifted/mixed_transform::snowflake": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'sum(quantity * rank(avg(unit_price, partition_by=product)))': transforms cannot be nested inside the expression aggregated by 'sum'."
+  },
+  "lifted/mixed_transform::sqlite": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'sum(quantity * rank(avg(unit_price, partition_by=product)))': transforms cannot be nested inside the expression aggregated by 'sum'."
+  },
+  "lifted/mixed_transform::tsql": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'sum(quantity * rank(avg(unit_price, partition_by=product)))': transforms cannot be nested inside the expression aggregated by 'sum'."
+  },
+  "lifted/target_homed::bigquery": {
+    "error": "ValueError",
+    "message": "Cross-model expression aggregation is not supported: the aggregated expression references the dotted path 'customers.spend'. Only bare same-model columns may appear inside an aggregated expression (DEV-1832)."
+  },
+  "lifted/target_homed::duckdb": {
+    "error": "ValueError",
+    "message": "Cross-model expression aggregation is not supported: the aggregated expression references the dotted path 'customers.spend'. Only bare same-model columns may appear inside an aggregated expression (DEV-1832)."
+  },
+  "lifted/target_homed::mysql": {
+    "error": "ValueError",
+    "message": "Cross-model expression aggregation is not supported: the aggregated expression references the dotted path 'customers.spend'. Only bare same-model columns may appear inside an aggregated expression (DEV-1832)."
+  },
+  "lifted/target_homed::postgres": {
+    "error": "ValueError",
+    "message": "Cross-model expression aggregation is not supported: the aggregated expression references the dotted path 'customers.spend'. Only bare same-model columns may appear inside an aggregated expression (DEV-1832)."
+  },
+  "lifted/target_homed::snowflake": {
+    "error": "ValueError",
+    "message": "Cross-model expression aggregation is not supported: the aggregated expression references the dotted path 'customers.spend'. Only bare same-model columns may appear inside an aggregated expression (DEV-1832)."
+  },
+  "lifted/target_homed::sqlite": {
+    "error": "ValueError",
+    "message": "Cross-model expression aggregation is not supported: the aggregated expression references the dotted path 'customers.spend'. Only bare same-model columns may appear inside an aggregated expression (DEV-1832)."
+  },
+  "lifted/target_homed::tsql": {
+    "error": "ValueError",
+    "message": "Cross-model expression aggregation is not supported: the aggregated expression references the dotted path 'customers.spend'. Only bare same-model columns may appear inside an aggregated expression (DEV-1832)."
+  },
+  "lifted/transform_constituent::bigquery": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'sum(cumsum(amount:sum, partition_by=[region, month(ordered_at)]) - 1)': transforms cannot be nested inside the expression aggregated by 'sum'."
+  },
+  "lifted/transform_constituent::duckdb": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'sum(cumsum(amount:sum, partition_by=[region, month(ordered_at)]) - 1)': transforms cannot be nested inside the expression aggregated by 'sum'."
+  },
+  "lifted/transform_constituent::mysql": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'sum(cumsum(amount:sum, partition_by=[region, month(ordered_at)]) - 1)': transforms cannot be nested inside the expression aggregated by 'sum'."
+  },
+  "lifted/transform_constituent::postgres": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'sum(cumsum(amount:sum, partition_by=[region, month(ordered_at)]) - 1)': transforms cannot be nested inside the expression aggregated by 'sum'."
+  },
+  "lifted/transform_constituent::snowflake": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'sum(cumsum(amount:sum, partition_by=[region, month(ordered_at)]) - 1)': transforms cannot be nested inside the expression aggregated by 'sum'."
+  },
+  "lifted/transform_constituent::sqlite": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'sum(cumsum(amount:sum, partition_by=[region, month(ordered_at)]) - 1)': transforms cannot be nested inside the expression aggregated by 'sum'."
+  },
+  "lifted/transform_constituent::tsql": {
+    "error": "ValueError",
+    "message": "Invalid Mode-B expression 'sum(cumsum(amount:sum, partition_by=[region, month(ordered_at)]) - 1)': transforms cannot be nested inside the expression aggregated by 'sum'."
+  },
+  "lifted/two_branch::bigquery": {
+    "error": "ValueError",
+    "message": "Cross-model expression aggregation is not supported: the aggregated expression references the dotted path 'customers.spend'. Only bare same-model columns may appear inside an aggregated expression (DEV-1832)."
+  },
+  "lifted/two_branch::duckdb": {
+    "error": "ValueError",
+    "message": "Cross-model expression aggregation is not supported: the aggregated expression references the dotted path 'customers.spend'. Only bare same-model columns may appear inside an aggregated expression (DEV-1832)."
+  },
+  "lifted/two_branch::mysql": {
+    "error": "ValueError",
+    "message": "Cross-model expression aggregation is not supported: the aggregated expression references the dotted path 'customers.spend'. Only bare same-model columns may appear inside an aggregated expression (DEV-1832)."
+  },
+  "lifted/two_branch::postgres": {
+    "error": "ValueError",
+    "message": "Cross-model expression aggregation is not supported: the aggregated expression references the dotted path 'customers.spend'. Only bare same-model columns may appear inside an aggregated expression (DEV-1832)."
+  },
+  "lifted/two_branch::snowflake": {
+    "error": "ValueError",
+    "message": "Cross-model expression aggregation is not supported: the aggregated expression references the dotted path 'customers.spend'. Only bare same-model columns may appear inside an aggregated expression (DEV-1832)."
+  },
+  "lifted/two_branch::sqlite": {
+    "error": "ValueError",
+    "message": "Cross-model expression aggregation is not supported: the aggregated expression references the dotted path 'customers.spend'. Only bare same-model columns may appear inside an aggregated expression (DEV-1832)."
+  },
+  "lifted/two_branch::tsql": {
+    "error": "ValueError",
+    "message": "Cross-model expression aggregation is not supported: the aggregated expression references the dotted path 'customers.spend'. Only bare same-model columns may appear inside an aggregated expression (DEV-1832)."
+  },
+  "positive/mixed_row_attached::bigquery": "WITH _cm_unit_price_avg_partition_by_product AS (\n  SELECT\n    _stage_inner.`sales___product` AS `product`,\n    _stage_inner.`sales___unit_price_avg_partition_by_product` AS `unit_price_avg_partition_by_product`\n  FROM (\n    SELECT\n      sales.product AS `sales___product`,\n      CAST(AVG(sales.unit_price) AS FLOAT64) AS `sales___unit_price_avg_partition_by_product`\n    FROM sales AS sales\n    GROUP BY\n      sales.product\n  ) AS _stage_inner\n)\nSELECT\n  sales.region AS `sales___region`,\n  SUM(\n    sales.quantity * _cm_unit_price_avg_partition_by_product.`unit_price_avg_partition_by_product`\n  ) AS `sales___m`\nFROM sales AS sales\nLEFT JOIN _cm_unit_price_avg_partition_by_product\n  ON sales.product IS NOT DISTINCT FROM _cm_unit_price_avg_partition_by_product.`product`\nGROUP BY\n  sales.region",
+  "positive/mixed_row_attached::duckdb": "WITH _cm_unit_price_avg_partition_by_product AS (\n  SELECT\n    _stage_inner.\"sales.product\" AS \"product\",\n    _stage_inner.\"sales.unit_price_avg_partition_by_product\" AS \"unit_price_avg_partition_by_product\"\n  FROM (\n    SELECT\n      sales.product AS \"sales.product\",\n      CAST(AVG(sales.unit_price) AS DOUBLE) AS \"sales.unit_price_avg_partition_by_product\"\n    FROM sales AS sales\n    GROUP BY\n      sales.product\n  ) AS _stage_inner\n)\nSELECT\n  sales.region AS \"sales.region\",\n  SUM(\n    sales.quantity * _cm_unit_price_avg_partition_by_product.\"unit_price_avg_partition_by_product\"\n  ) AS \"sales.m\"\nFROM sales AS sales\nLEFT JOIN _cm_unit_price_avg_partition_by_product\n  ON sales.product IS NOT DISTINCT FROM _cm_unit_price_avg_partition_by_product.\"product\"\nGROUP BY\n  sales.region",
+  "positive/mixed_row_attached::mysql": "WITH _cm_unit_price_avg_partition_by_product AS (\n  SELECT\n    _stage_inner.`sales.product` AS `product`,\n    _stage_inner.`sales.unit_price_avg_partition_by_product` AS `unit_price_avg_partition_by_product`\n  FROM (\n    SELECT\n      sales.product AS `sales.product`,\n      CAST(AVG(sales.unit_price) AS DOUBLE) AS `sales.unit_price_avg_partition_by_product`\n    FROM sales AS sales\n    GROUP BY\n      sales.product\n  ) AS _stage_inner\n)\nSELECT\n  sales.region AS `sales.region`,\n  SUM(\n    sales.quantity * _cm_unit_price_avg_partition_by_product.`unit_price_avg_partition_by_product`\n  ) AS `sales.m`\nFROM sales AS sales\nLEFT JOIN _cm_unit_price_avg_partition_by_product\n  ON sales.product <=> _cm_unit_price_avg_partition_by_product.`product`\nGROUP BY\n  sales.region",
+  "positive/mixed_row_attached::postgres": "WITH _cm_unit_price_avg_partition_by_product AS (\n  SELECT\n    _stage_inner.\"sales.product\" AS \"product\",\n    _stage_inner.\"sales.unit_price_avg_partition_by_product\" AS \"unit_price_avg_partition_by_product\"\n  FROM (\n    SELECT\n      sales.product AS \"sales.product\",\n      CAST(AVG(sales.unit_price) AS DOUBLE PRECISION) AS \"sales.unit_price_avg_partition_by_product\"\n    FROM sales AS sales\n    GROUP BY\n      sales.product\n  ) AS _stage_inner\n)\nSELECT\n  sales.region AS \"sales.region\",\n  SUM(\n    sales.quantity * _cm_unit_price_avg_partition_by_product.\"unit_price_avg_partition_by_product\"\n  ) AS \"sales.m\"\nFROM sales AS sales\nLEFT JOIN _cm_unit_price_avg_partition_by_product\n  ON sales.product IS NOT DISTINCT FROM _cm_unit_price_avg_partition_by_product.\"product\"\nGROUP BY\n  sales.region",
+  "positive/mixed_row_attached::snowflake": "WITH _cm_unit_price_avg_partition_by_product AS (\n  SELECT\n    _stage_inner.\"sales.product\" AS \"product\",\n    _stage_inner.\"sales.unit_price_avg_partition_by_product\" AS \"unit_price_avg_partition_by_product\"\n  FROM (\n    SELECT\n      sales.product AS \"sales.product\",\n      CAST(AVG(sales.unit_price) AS DOUBLE) AS \"sales.unit_price_avg_partition_by_product\"\n    FROM sales AS sales\n    GROUP BY\n      sales.product\n  ) AS _stage_inner\n)\nSELECT\n  sales.region AS \"sales.region\",\n  SUM(\n    sales.quantity * _cm_unit_price_avg_partition_by_product.\"unit_price_avg_partition_by_product\"\n  ) AS \"sales.m\"\nFROM sales AS sales\nLEFT JOIN _cm_unit_price_avg_partition_by_product\n  ON sales.product IS NOT DISTINCT FROM _cm_unit_price_avg_partition_by_product.\"product\"\nGROUP BY\n  sales.region",
+  "positive/mixed_row_attached::sqlite": "WITH _cm_unit_price_avg_partition_by_product AS (\n  SELECT\n    _stage_inner.\"sales.product\" AS \"product\",\n    _stage_inner.\"sales.unit_price_avg_partition_by_product\" AS \"unit_price_avg_partition_by_product\"\n  FROM (\n    SELECT\n      sales.product AS \"sales.product\",\n      CAST(AVG(sales.unit_price) AS REAL) AS \"sales.unit_price_avg_partition_by_product\"\n    FROM sales AS sales\n    GROUP BY\n      sales.product\n  ) AS _stage_inner\n)\nSELECT\n  sales.region AS \"sales.region\",\n  SUM(\n    sales.quantity * _cm_unit_price_avg_partition_by_product.\"unit_price_avg_partition_by_product\"\n  ) AS \"sales.m\"\nFROM sales AS sales\nLEFT JOIN _cm_unit_price_avg_partition_by_product\n  ON sales.product IS _cm_unit_price_avg_partition_by_product.\"product\"\nGROUP BY\n  sales.region",
+  "positive/mixed_row_attached::tsql": "WITH _cm_unit_price_avg_partition_by_product AS (\n  SELECT\n    _stage_inner.[sales___product] AS [product],\n    _stage_inner.[sales___unit_price_avg_partition_by_product] AS [unit_price_avg_partition_by_product]\n  FROM (\n    SELECT\n      sales.product AS [sales___product],\n      CAST(AVG(sales.unit_price) AS FLOAT) AS [sales___unit_price_avg_partition_by_product]\n    FROM sales AS sales\n    GROUP BY\n      sales.product\n  ) AS _stage_inner\n)\nSELECT\n  sales.region AS [sales___region],\n  SUM(\n    sales.quantity * _cm_unit_price_avg_partition_by_product.[unit_price_avg_partition_by_product]\n  ) AS [sales___m]\nFROM sales AS sales\nLEFT JOIN _cm_unit_price_avg_partition_by_product\n  ON (\n    sales.product = _cm_unit_price_avg_partition_by_product.[product]\n    OR (\n      sales.product IS NULL\n      AND _cm_unit_price_avg_partition_by_product.[product] IS NULL\n    )\n  )\nGROUP BY\n  sales.region",
+  "positive/reaggregation::bigquery": "WITH _base AS (\n  SELECT\n    sales.region AS `sales___region`\n  FROM sales AS sales\n  GROUP BY\n    sales.region\n), _cm_amount_sum_partition_by_city_region AS (\n  SELECT\n    `_stage_inner`.`sales___city` AS `city`,\n    `_stage_inner`.`sales___region` AS `region`,\n    `_stage_inner`.`sales___amount_sum_partition_by_city_region` AS `amount_sum_partition_by_city_region`\n  FROM (\n    SELECT\n      sales.city AS `sales___city`,\n      sales.region AS `sales___region`,\n      CAST(SUM(sales.amount) AS FLOAT64) AS `sales___amount_sum_partition_by_city_region`\n    FROM sales AS sales\n    GROUP BY\n      sales.city,\n      sales.region\n  ) AS _stage_inner\n), _cm_sales___avg AS (\n  SELECT\n    `_base`.`sales___region` AS `sales___region`,\n    CAST(AVG(_base._v) AS FLOAT64) AS `sales___m`\n  FROM (\n    SELECT\n      sales.region AS `sales___region`,\n      sales.city AS _ek0,\n      sales.region AS _ek1,\n      MAX(_cm_amount_sum_partition_by_city_region.`amount_sum_partition_by_city_region`) AS _v\n    FROM sales AS sales\n    LEFT JOIN _cm_amount_sum_partition_by_city_region\n      ON sales.city IS NOT DISTINCT FROM _cm_amount_sum_partition_by_city_region.`city`\n      AND sales.region IS NOT DISTINCT FROM _cm_amount_sum_partition_by_city_region.`region`\n    GROUP BY\n      sales.region,\n      sales.city,\n      sales.region\n  ) AS _base\n  GROUP BY\n    `_base`.`sales___region`\n)\nSELECT\n  _base.`sales___region`,\n  _cm_sales___avg.`sales___m`\nFROM _base\nLEFT JOIN _cm_sales___avg\n  ON _base.`sales___region` IS NOT DISTINCT FROM _cm_sales___avg.`sales___region`",
+  "positive/reaggregation::duckdb": "WITH _base AS (\n  SELECT\n    sales.region AS \"sales.region\"\n  FROM sales AS sales\n  GROUP BY\n    sales.region\n), _cm_amount_sum_partition_by_city_region AS (\n  SELECT\n    _stage_inner.\"sales.city\" AS \"city\",\n    _stage_inner.\"sales.region\" AS \"region\",\n    _stage_inner.\"sales.amount_sum_partition_by_city_region\" AS \"amount_sum_partition_by_city_region\"\n  FROM (\n    SELECT\n      sales.city AS \"sales.city\",\n      sales.region AS \"sales.region\",\n      CAST(SUM(sales.amount) AS DOUBLE) AS \"sales.amount_sum_partition_by_city_region\"\n    FROM sales AS sales\n    GROUP BY\n      sales.city,\n      sales.region\n  ) AS _stage_inner\n), _cm_sales___avg AS (\n  SELECT\n    _base.\"sales.region\" AS \"sales.region\",\n    CAST(AVG(_base._v) AS DOUBLE) AS \"sales.m\"\n  FROM (\n    SELECT\n      sales.region AS \"sales.region\",\n      sales.city AS _ek0,\n      sales.region AS _ek1,\n      MAX(_cm_amount_sum_partition_by_city_region.\"amount_sum_partition_by_city_region\") AS _v\n    FROM sales AS sales\n    LEFT JOIN _cm_amount_sum_partition_by_city_region\n      ON sales.city IS NOT DISTINCT FROM _cm_amount_sum_partition_by_city_region.\"city\"\n      AND sales.region IS NOT DISTINCT FROM _cm_amount_sum_partition_by_city_region.\"region\"\n    GROUP BY\n      sales.region,\n      sales.city,\n      sales.region\n  ) AS _base\n  GROUP BY\n    _base.\"sales.region\"\n)\nSELECT\n  _base.\"sales.region\",\n  _cm_sales___avg.\"sales.m\"\nFROM _base\nLEFT JOIN _cm_sales___avg\n  ON _base.\"sales.region\" IS NOT DISTINCT FROM _cm_sales___avg.\"sales.region\"",
+  "positive/reaggregation::mysql": "WITH _base AS (\n  SELECT\n    sales.region AS `sales.region`\n  FROM sales AS sales\n  GROUP BY\n    sales.region\n), _cm_amount_sum_partition_by_city_region AS (\n  SELECT\n    _stage_inner.`sales.city` AS `city`,\n    _stage_inner.`sales.region` AS `region`,\n    _stage_inner.`sales.amount_sum_partition_by_city_region` AS `amount_sum_partition_by_city_region`\n  FROM (\n    SELECT\n      sales.city AS `sales.city`,\n      sales.region AS `sales.region`,\n      CAST(SUM(sales.amount) AS DOUBLE) AS `sales.amount_sum_partition_by_city_region`\n    FROM sales AS sales\n    GROUP BY\n      sales.city,\n      sales.region\n  ) AS _stage_inner\n), _cm_sales___avg AS (\n  SELECT\n    _base.`sales.region` AS `sales.region`,\n    CAST(AVG(_base._v) AS DOUBLE) AS `sales.m`\n  FROM (\n    SELECT\n      sales.region AS `sales.region`,\n      sales.city AS _ek0,\n      sales.region AS _ek1,\n      MAX(_cm_amount_sum_partition_by_city_region.`amount_sum_partition_by_city_region`) AS _v\n    FROM sales AS sales\n    LEFT JOIN _cm_amount_sum_partition_by_city_region\n      ON sales.city <=> _cm_amount_sum_partition_by_city_region.`city`\n      AND sales.region <=> _cm_amount_sum_partition_by_city_region.`region`\n    GROUP BY\n      sales.region,\n      sales.city,\n      sales.region\n  ) AS _base\n  GROUP BY\n    _base.`sales.region`\n)\nSELECT\n  _base.`sales.region`,\n  _cm_sales___avg.`sales.m`\nFROM _base\nLEFT JOIN _cm_sales___avg\n  ON _base.`sales.region` <=> _cm_sales___avg.`sales.region`",
+  "positive/reaggregation::postgres": "WITH _base AS (\n  SELECT\n    sales.region AS \"sales.region\"\n  FROM sales AS sales\n  GROUP BY\n    sales.region\n), _cm_amount_sum_partition_by_city_region AS (\n  SELECT\n    _stage_inner.\"sales.city\" AS \"city\",\n    _stage_inner.\"sales.region\" AS \"region\",\n    _stage_inner.\"sales.amount_sum_partition_by_city_region\" AS \"amount_sum_partition_by_city_region\"\n  FROM (\n    SELECT\n      sales.city AS \"sales.city\",\n      sales.region AS \"sales.region\",\n      CAST(SUM(sales.amount) AS DOUBLE PRECISION) AS \"sales.amount_sum_partition_by_city_region\"\n    FROM sales AS sales\n    GROUP BY\n      sales.city,\n      sales.region\n  ) AS _stage_inner\n), _cm_sales___avg AS (\n  SELECT\n    _base.\"sales.region\" AS \"sales.region\",\n    CAST(AVG(_base._v) AS DOUBLE PRECISION) AS \"sales.m\"\n  FROM (\n    SELECT\n      sales.region AS \"sales.region\",\n      sales.city AS _ek0,\n      sales.region AS _ek1,\n      MAX(_cm_amount_sum_partition_by_city_region.\"amount_sum_partition_by_city_region\") AS _v\n    FROM sales AS sales\n    LEFT JOIN _cm_amount_sum_partition_by_city_region\n      ON sales.city IS NOT DISTINCT FROM _cm_amount_sum_partition_by_city_region.\"city\"\n      AND sales.region IS NOT DISTINCT FROM _cm_amount_sum_partition_by_city_region.\"region\"\n    GROUP BY\n      sales.region,\n      sales.city,\n      sales.region\n  ) AS _base\n  GROUP BY\n    _base.\"sales.region\"\n)\nSELECT\n  _base.\"sales.region\",\n  _cm_sales___avg.\"sales.m\"\nFROM _base\nLEFT JOIN _cm_sales___avg\n  ON _base.\"sales.region\" IS NOT DISTINCT FROM _cm_sales___avg.\"sales.region\"",
+  "positive/reaggregation::snowflake": "WITH _base AS (\n  SELECT\n    sales.region AS \"sales.region\"\n  FROM sales AS sales\n  GROUP BY\n    sales.region\n), _cm_amount_sum_partition_by_city_region AS (\n  SELECT\n    _stage_inner.\"sales.city\" AS \"city\",\n    _stage_inner.\"sales.region\" AS \"region\",\n    _stage_inner.\"sales.amount_sum_partition_by_city_region\" AS \"amount_sum_partition_by_city_region\"\n  FROM (\n    SELECT\n      sales.city AS \"sales.city\",\n      sales.region AS \"sales.region\",\n      CAST(SUM(sales.amount) AS DOUBLE) AS \"sales.amount_sum_partition_by_city_region\"\n    FROM sales AS sales\n    GROUP BY\n      sales.city,\n      sales.region\n  ) AS _stage_inner\n), _cm_sales___avg AS (\n  SELECT\n    _base.\"sales.region\" AS \"sales.region\",\n    CAST(AVG(_base._v) AS DOUBLE) AS \"sales.m\"\n  FROM (\n    SELECT\n      sales.region AS \"sales.region\",\n      sales.city AS _ek0,\n      sales.region AS _ek1,\n      MAX(_cm_amount_sum_partition_by_city_region.\"amount_sum_partition_by_city_region\") AS _v\n    FROM sales AS sales\n    LEFT JOIN _cm_amount_sum_partition_by_city_region\n      ON sales.city IS NOT DISTINCT FROM _cm_amount_sum_partition_by_city_region.\"city\"\n      AND sales.region IS NOT DISTINCT FROM _cm_amount_sum_partition_by_city_region.\"region\"\n    GROUP BY\n      sales.region,\n      sales.city,\n      sales.region\n  ) AS _base\n  GROUP BY\n    _base.\"sales.region\"\n)\nSELECT\n  _base.\"sales.region\",\n  _cm_sales___avg.\"sales.m\"\nFROM _base\nLEFT JOIN _cm_sales___avg\n  ON _base.\"sales.region\" IS NOT DISTINCT FROM _cm_sales___avg.\"sales.region\"",
+  "positive/reaggregation::sqlite": "WITH _base AS (\n  SELECT\n    sales.region AS \"sales.region\"\n  FROM sales AS sales\n  GROUP BY\n    sales.region\n), _cm_amount_sum_partition_by_city_region AS (\n  SELECT\n    _stage_inner.\"sales.city\" AS \"city\",\n    _stage_inner.\"sales.region\" AS \"region\",\n    _stage_inner.\"sales.amount_sum_partition_by_city_region\" AS \"amount_sum_partition_by_city_region\"\n  FROM (\n    SELECT\n      sales.city AS \"sales.city\",\n      sales.region AS \"sales.region\",\n      CAST(SUM(sales.amount) AS REAL) AS \"sales.amount_sum_partition_by_city_region\"\n    FROM sales AS sales\n    GROUP BY\n      sales.city,\n      sales.region\n  ) AS _stage_inner\n), _cm_sales___avg AS (\n  SELECT\n    _base.\"sales.region\" AS \"sales.region\",\n    CAST(AVG(_base._v) AS REAL) AS \"sales.m\"\n  FROM (\n    SELECT\n      sales.region AS \"sales.region\",\n      sales.city AS _ek0,\n      sales.region AS _ek1,\n      MAX(_cm_amount_sum_partition_by_city_region.\"amount_sum_partition_by_city_region\") AS _v\n    FROM sales AS sales\n    LEFT JOIN _cm_amount_sum_partition_by_city_region\n      ON sales.city IS _cm_amount_sum_partition_by_city_region.\"city\"\n      AND sales.region IS _cm_amount_sum_partition_by_city_region.\"region\"\n    GROUP BY\n      sales.region,\n      sales.city,\n      sales.region\n  ) AS _base\n  GROUP BY\n    _base.\"sales.region\"\n)\nSELECT\n  _base.\"sales.region\",\n  _cm_sales___avg.\"sales.m\"\nFROM _base\nLEFT JOIN _cm_sales___avg\n  ON _base.\"sales.region\" IS _cm_sales___avg.\"sales.region\"",
+  "positive/reaggregation::tsql": "WITH _base AS (\n  SELECT\n    sales.region AS [sales___region]\n  FROM sales AS sales\n  GROUP BY\n    sales.region\n), _cm_amount_sum_partition_by_city_region AS (\n  SELECT\n    _stage_inner.[sales___city] AS [city],\n    _stage_inner.[sales___region] AS [region],\n    _stage_inner.[sales___amount_sum_partition_by_city_region] AS [amount_sum_partition_by_city_region]\n  FROM (\n    SELECT\n      sales.city AS [sales___city],\n      sales.region AS [sales___region],\n      CAST(SUM(sales.amount) AS FLOAT) AS [sales___amount_sum_partition_by_city_region]\n    FROM sales AS sales\n    GROUP BY\n      sales.city,\n      sales.region\n  ) AS _stage_inner\n), _cm_sales___avg AS (\n  SELECT\n    _base.[sales___region] AS [sales___region],\n    CAST(AVG(_base._v) AS FLOAT) AS [sales___m]\n  FROM (\n    SELECT\n      sales.region AS [sales___region],\n      sales.city AS _ek0,\n      sales.region AS _ek1,\n      MAX(_cm_amount_sum_partition_by_city_region.[amount_sum_partition_by_city_region]) AS _v\n    FROM sales AS sales\n    LEFT JOIN _cm_amount_sum_partition_by_city_region\n      ON (\n        sales.city = _cm_amount_sum_partition_by_city_region.[city]\n        OR (\n          sales.city IS NULL AND _cm_amount_sum_partition_by_city_region.[city] IS NULL\n        )\n      )\n      AND (\n        sales.region = _cm_amount_sum_partition_by_city_region.[region]\n        OR (\n          sales.region IS NULL AND _cm_amount_sum_partition_by_city_region.[region] IS NULL\n        )\n      )\n    GROUP BY\n      sales.region,\n      sales.city,\n      sales.region\n  ) AS _base\n  GROUP BY\n    _base.[sales___region]\n)\nSELECT\n  _base.[sales___region],\n  _cm_sales___avg.[sales___m]\nFROM _base\nLEFT JOIN _cm_sales___avg\n  ON (\n    _base.[sales___region] = _cm_sales___avg.[sales___region]\n    OR (\n      _base.[sales___region] IS NULL AND _cm_sales___avg.[sales___region] IS NULL\n    )\n  )",
+  "positive/same_model_arith::bigquery": "SELECT\n  orders.status AS `orders___status`,\n  SUM(orders.amount - orders.cost) AS `orders___m`\nFROM orders AS orders\nGROUP BY\n  orders.status",
+  "positive/same_model_arith::duckdb": "SELECT\n  orders.status AS \"orders.status\",\n  SUM(orders.amount - orders.cost) AS \"orders.m\"\nFROM orders AS orders\nGROUP BY\n  orders.status",
+  "positive/same_model_arith::mysql": "SELECT\n  orders.status AS `orders.status`,\n  SUM(orders.amount - orders.cost) AS `orders.m`\nFROM orders AS orders\nGROUP BY\n  orders.status",
+  "positive/same_model_arith::postgres": "SELECT\n  orders.status AS \"orders.status\",\n  SUM(orders.amount - orders.cost) AS \"orders.m\"\nFROM orders AS orders\nGROUP BY\n  orders.status",
+  "positive/same_model_arith::snowflake": "SELECT\n  orders.status AS \"orders.status\",\n  SUM(orders.amount - orders.cost) AS \"orders.m\"\nFROM orders AS orders\nGROUP BY\n  orders.status",
+  "positive/same_model_arith::sqlite": "SELECT\n  orders.status AS \"orders.status\",\n  SUM(orders.amount - orders.cost) AS \"orders.m\"\nFROM orders AS orders\nGROUP BY\n  orders.status",
+  "positive/same_model_arith::tsql": "SELECT\n  orders.status AS [orders___status],\n  SUM(orders.amount - orders.cost) AS [orders___m]\nFROM orders AS orders\nGROUP BY\n  orders.status"
+}
