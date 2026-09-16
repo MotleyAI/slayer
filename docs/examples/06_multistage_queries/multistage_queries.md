@@ -30,19 +30,19 @@ For the first example above, all you need to do is use the (revenue by store and
   {
     "name": "monthly_store_revenue",
     "source_model": "orders",
-    "measures": ["order_total:sum"],
+    "measures": ["sum(order_total)"],
     "dimensions": ["stores.name"],
     "time_dimensions": [{"dimension": "ordered_at", "granularity": "month"}]
   },
   {
     "source_model": "monthly_store_revenue",
-    "measures": ["order_total_sum:avg"],
+    "measures": ["avg(order_total_sum)"],
     "dimensions": ["stores.name"]
   }
 ]
 ```
 
-The inner query produces (store, month, revenue) rows. The outer query uses the inner's name as `source_model` and requests `order_total_sum:avg` — aggregating the inner query's `order_total_sum` measure with `avg` at query time.
+The inner query produces (store, month, revenue) rows. The outer query uses the inner's name as `source_model` and requests `avg(order_total_sum)` — aggregating the inner query's `order_total_sum` measure with `avg` at query time.
 
 If you'd rather not type `order_total_sum` everywhere, give the inner measure an explicit `name` and reference that. The user-supplied `name` overrides the canonical `col_agg` naming for both simple aggregations and arithmetic/transform formulas, and downstream stages reference it directly:
 
@@ -51,19 +51,19 @@ If you'd rather not type `order_total_sum` everywhere, give the inner measure an
   {
     "name": "monthly_store_revenue",
     "source_model": "orders",
-    "measures": [{"formula": "order_total:sum", "name": "rev"}],
+    "measures": [{"formula": "sum(order_total)", "name": "rev"}],
     "dimensions": ["stores.name"],
     "time_dimensions": [{"dimension": "ordered_at", "granularity": "month"}]
   },
   {
     "source_model": "monthly_store_revenue",
-    "measures": [{"formula": "rev:avg"}],
+    "measures": [{"formula": "avg(rev)"}],
     "dimensions": ["stores.name"]
   }
 ]
 ```
 
-The inner stage emits a column called `rev`; the outer stage averages `rev:avg`. Renaming an inner-stage measure (or restructuring the stage shape) only requires editing the stage and re-saving — the cache is rebuilt from the updated stages on every save.
+The inner stage emits a column called `rev`; the outer stage averages `avg(rev)`. Renaming an inner-stage measure (or restructuring the stage shape) only requires editing the stage and re-saving — the cache is rebuilt from the updated stages on every save.
 
 The second example is more elaborate, as we have two logical steps: first, calculate the order count per customer; then, bucket it and use the bucketed value as a dimension in the parent query.
 
@@ -74,7 +74,7 @@ As we want to use a result of a child query as a dimension, we use a [dynamic jo
   {
     "name": "customer_activity",
     "source_model": "orders",
-    "measures": ["*:count"],
+    "measures": ["count(*)"],
     "dimensions": ["customer_id"]
   },
   {
@@ -83,7 +83,7 @@ As we want to use a result of a child query as a dimension, we use a [dynamic jo
       "joins": [{"target_model": "customer_activity", "join_pairs": [["customer_id", "customer_id"]]}],
       "columns": [{"name": "activity_bucket", "sql": "CASE WHEN customer_activity._count >= 500 THEN 'High' WHEN customer_activity._count >= 200 THEN 'Medium' ELSE 'Low' END", "type": "string"}]
     },
-    "measures": ["*:count", "order_total:sum"],
+    "measures": ["count(*)", "sum(order_total)"],
     "dimensions": ["activity_bucket"]
   }
 ]
@@ -101,7 +101,7 @@ Stages in a query list are not restricted to a linear pipeline. Any stage may us
     "name": "kpis",
     "source_model": "orders",
     "dimensions": ["customer_id"],
-    "measures": ["order_total:sum"]
+    "measures": ["sum(order_total)"]
   },
   {
     "name": "tagged",
@@ -113,7 +113,7 @@ Stages in a query list are not restricted to a linear pipeline. Any stage may us
   },
   {
     "source_model": "tagged",
-    "measures": ["kpis__order_total_sum:max"]
+    "measures": ["max(kpis__order_total_sum)"]
   }
 ]
 ```

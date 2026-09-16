@@ -101,7 +101,7 @@ host base on the query grain:
   joins preserving host grain; a forward plan renders FROM the bare target
   grouped at the forward dims. See [Cross-model aggregates](cross-model-aggregates.md).
 - **`_wm_*`** per `WindowedAggregatePlan` — a duration-windowed measure
-  (`revenue:sum(window='90d')`). Host-rooted: an inner `_src` subquery
+  (`sum(revenue, window='90d')`). Host-rooted: an inner `_src` subquery
   self-selects the host rows and `FROM _base LEFT JOIN _src` pairs the grain
   equalities with a trailing `INTERVAL` range predicate. `sum`/`avg` local
   measures only; other shapes raise at plan time (`_guard_windowed_measures`).
@@ -162,7 +162,7 @@ Rerooting and isolation operate on typed keys, never by round-tripping through
 formula text. A cross-model aggregate re-anchored from the host's coordinate
 system into the target's is `reroot_aggregate_key` / `reroot_value_key`
 (`slayer/core/keys.py`) producing typed keys directly — there is no
-serialize-to-`revenue:sum`-and-re-bind step. Sub-plan filters are classified
+serialize-to-`sum(revenue)`-and-re-bind step. Sub-plan filters are classified
 structurally against the CTE's own root rather than re-derived from
 `routing.text`.
 

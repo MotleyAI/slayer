@@ -1,7 +1,7 @@
 # Transforms
 
 Transforms are functions applied to aggregated measures, producing computed
-measures: `cumsum(revenue:sum)`, `change(revenue:sum)`, etc. Each transform
+measures: `cumsum(sum(revenue))`, `change(sum(revenue))`, etc. Each transform
 becomes an extra CTE in the generated SQL.
 
 ## The transform family
@@ -49,14 +49,14 @@ prefer `lag` / `lead`.
 
 **Intent recipes:**
 
-- Month-over-month / period-over-period growth → `change_pct(revenue:sum)`
+- Month-over-month / period-over-period growth → `change_pct(sum(revenue))`
   with a `time_dimensions` entry at the desired granularity. Prefer this over
   hand-building the ratio from `time_shift` — same partition-safe self-join,
   cleaner SQL.
-- Absolute period-over-period delta → `change(revenue:sum)`.
+- Absolute period-over-period delta → `change(sum(revenue))`.
 - Comparing against a *different* grain than the query's (e.g. year-over-year
   on a monthly series), or using the shifted value as a term in custom
-  arithmetic → `time_shift(revenue:sum, -1, 'year')`.
+  arithmetic → `time_shift(sum(revenue), -1, 'year')`.
 
 ## Time dimension requirement
 
@@ -69,7 +69,7 @@ transforms (`rank`, `percent_rank`, `dense_rank`, `ntile`) do **not** need a
 time dimension.
 
 Time-ordered window transforms partition by the query's non-time dimensions.
-A `cumsum(revenue:sum)` grouped by `status` computes one running total per
+A `cumsum(sum(revenue))` grouped by `status` computes one running total per
 status. The rank-family transforms default to **no `PARTITION BY`** — they
 rank across the entire result set unless `partition_by=` is passed.
 
@@ -83,8 +83,8 @@ False or NULL breaks the run and returns 0 for that row.
 {
   "source_model": "orders",
   "measures": [
-    {"formula": "consecutive_periods(revenue:sum > 0)", "name": "positive_run"},
-    {"formula": "consecutive_periods(revenue:sum > 0) >= 3", "name": "positive_3_periods"}
+    {"formula": "consecutive_periods(sum(revenue) > 0)", "name": "positive_run"},
+    {"formula": "consecutive_periods(sum(revenue) > 0) >= 3", "name": "positive_3_periods"}
   ],
   "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
 }
@@ -100,8 +100,8 @@ Self-join transforms cannot wrap other self-join or change transforms.
 {
   "source_model": "orders",
   "measures": [
-    "revenue:sum",
-    {"formula": "cumsum(change(revenue:sum))", "name": "cumsum_delta"}
+    "sum(revenue)",
+    {"formula": "cumsum(change(sum(revenue)))", "name": "cumsum_delta"}
   ],
   "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
 }
@@ -119,10 +119,10 @@ every other row in the result set:
   "source_model": "orders",
   "dimensions": ["customer_name"],
   "measures": [
-    "revenue:sum",
-    {"formula": "rank(revenue:sum)", "name": "rnk"}
+    "sum(revenue)",
+    {"formula": "rank(sum(revenue))", "name": "rnk"}
   ],
-  "filters": ["rank(revenue:sum) <= 10"]
+  "filters": ["rank(sum(revenue)) <= 10"]
 }
 ```
 
@@ -142,9 +142,9 @@ by a non-dimension column errors at enrichment time:
   "source_model": "orders",
   "dimensions": ["region", "customer_name"],
   "measures": [
-    "revenue:sum",
-    {"formula": "dense_rank(revenue:sum, partition_by=region)", "name": "rnk_in_region"},
-    {"formula": "ntile(revenue:sum, n=4, partition_by=region)", "name": "quartile_in_region"}
+    "sum(revenue)",
+    {"formula": "dense_rank(sum(revenue), partition_by=region)", "name": "rnk_in_region"},
+    {"formula": "ntile(sum(revenue), n=4, partition_by=region)", "name": "quartile_in_region"}
   ]
 }
 ```
@@ -170,15 +170,15 @@ transforms whenever they cover the need.
 {
   "source_model": "orders",
   "measures": [
-    "revenue:sum",
-    {"formula": "first(revenue:sum)", "name": "initial_revenue"},
-    {"formula": "last(revenue:sum)", "name": "latest_revenue"}
+    "sum(revenue)",
+    {"formula": "first(sum(revenue))", "name": "initial_revenue"},
+    {"formula": "last(sum(revenue))", "name": "latest_revenue"}
   ],
   "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
 }
 ```
 
-Useful for filtering on trend: `"filters": ["last(change(revenue:sum)) < 0"]`.
+Useful for filtering on trend: `"filters": ["last(change(sum(revenue))) < 0"]`.
 
 ## See also
 

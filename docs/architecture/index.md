@@ -119,11 +119,11 @@ The acceptance criterion was that DEV-1445/1446/1448/1449 stop being reachable,
 not that each gets a patch. How structural identity achieves that:
 
 - **DEV-1446** (transform-wrapped agg-ref of a renamed measure deduping):
-  `change(amount:sum)` and `amount:sum` share the same inner `AggregateKey`
+  `change(sum(amount))` and `sum(amount)` share the same inner `AggregateKey`
   instance, so the `ValueRegistry` interns one slot — `SUM(amount)` appears once.
   See [Planning](planning.md).
 - **DEV-1445** (cross-model renamed-measure filter by alias *or* dotted form):
-  `customers.revenue:sum` and the user alias `rev` both bind to one
+  `sum(customers.revenue)` and the user alias `rev` both bind to one
   `AggregateKey`; the filter's `rev` ref resolves through `alias_map` onto that
   same slot. See [Binding](binding.md), [Stage planning](stage-planning.md).
 - **DEV-1448** (user `name` on a join-traversed measure governs the stage column):
@@ -229,7 +229,7 @@ the kind of multi-path coupling the redesign set out to remove.
      and same-model `ModelMeasure`-ref rejects remain.
 
 5. **P10 is intentionally violated for cross-model parametric aggregates.**
-   Result keys for `customers.revenue:percentile(p=0.5)` now carry the kwarg
+   Result keys for `percentile(customers.revenue, p=0.5)` now carry the kwarg
    signature (`…revenue_percentile_p_0_5`) where legacy dropped it
    (`…revenue_percentile`). Legacy's drop was a collision bug (two parametric
    variants on one column produced the same alias); the new path fixes it but

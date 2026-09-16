@@ -8,8 +8,8 @@ exactly one question — *"are these two expression occurrences the same value?"
 position, hidden-ness) lives on `ValueSlot` (in `planned.py`), never on the key.
 
 This separation is principle **P2**: identity is structural, not textual.
-`revenue:sum`, the inner `revenue:sum` in `change(revenue:sum)`, and a filter
-occurrence of `revenue:sum` all build the same `AggregateKey`, so the
+`sum(revenue)`, the inner `sum(revenue)` in `change(sum(revenue))`, and a filter
+occurrence of `sum(revenue)` all build the same `AggregateKey`, so the
 `ValueRegistry` interns them to one slot. That is what makes the dedup bugs
 (DEV-1446) structurally impossible rather than patched.
 
@@ -38,7 +38,7 @@ classDiagram
 | `ColumnKey(path, leaf)` | ROW | a base column; `path` empty for local, non-empty for joined |
 | `ColumnSqlKey(path, model, column_name)` | ROW | a derived column (`Column.sql` set) |
 | `TimeTruncKey(column, granularity)` | ROW | a time-truncated column at one grain |
-| `StarKey(path)` | ROW | the `*` source for `*:count` (local or cross-model) |
+| `StarKey(path)` | ROW | the `*` source for `count(*)` (local or cross-model) |
 | `LiteralKey(value)` | ROW | a literal operand inside an expression tree |
 | `SqlExprKey(canonical_sql)` | ROW | a Mode-A SQL fragment (a `Column.filter`) |
 | `AggregateKey(source, agg, args, kwargs, column_filter_key, grain, partition_keys)` | AGGREGATE | one aggregation slot |
@@ -106,12 +106,12 @@ on their displayed decimal form, not their binary approximation); `bool` / `str`
 A column's `Column.filter` (a Mode-A CASE-WHEN applied at aggregation time)
 becomes part of the `AggregateKey` via `column_filter_key: Optional[SqlExprKey]`.
 Two aggregates over the same column with different attached filters are therefore
-different slots; same-filter ones intern. `*:count` (a `StarKey` source) has no
+different slots; same-filter ones intern. `count(*)` (a `StarKey` source) has no
 column, so `column_filter_key` stays `None`.
 
 ### `partition_keys` coarsens an aggregate's grain
 
-`partition_by=` on an aggregation (`revenue:sum(partition_by=region)`, DEV-1739)
+`partition_by=` on an aggregation (`sum(revenue, partition_by=region)`, DEV-1739)
 lands on `partition_keys: Optional[frozenset[ValueKey]]`, mirroring
 `TransformKey.partition_keys`. `None` = no partition; an explicit empty frozenset
 = the grand total (`partition_by=[]`) — the two are distinct identities, so every

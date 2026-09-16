@@ -20,7 +20,7 @@ If you just want to kick the tyres, spin up the bundled Jaffle Shop dataset in o
 
 ```bash
 slayer datasources create demo --ingest
-slayer query '{"source_model": "orders", "measures": ["*:count"]}'
+slayer query '{"source_model": "orders", "measures": ["count(*)"]}'
 ```
 
 This generates ~2 years of synthetic coffee-shop data into a local DuckDB file under your storage directory and ingests the models (`customers`, `orders`, `items`, `products`, `stores`, `supplies`, `tweets`). The demo models come pre-enriched with a curated semantic layer: column labels and descriptions, currency/percent formats, ready-made measures (`total_revenue`, `avg_order_value`, `effective_tax_rate`, `unique_customers`, …), and a custom-aggregation example (`weighted_avg` defaulting its weight to `subtotal`) — so `models_summary` / `inspect` output is informative out of the box and there are saved measures to query by name:
@@ -93,7 +93,7 @@ The same `--schema`, `--include`, and `--exclude` flags work on `datasources cre
 
 ```bash
 # Count orders by status
-slayer query '{"source_model": "orders", "measures": ["*:count"], "dimensions": ["status"]}'
+slayer query '{"source_model": "orders", "measures": ["count(*)"], "dimensions": ["status"]}'
 
 # From a file
 slayer query @query.json
@@ -121,7 +121,7 @@ slayer datasources list
 After install + ingest, this should return data:
 
 ```bash
-slayer query '{"source_model": "orders", "measures": ["*:count"]}'
+slayer query '{"source_model": "orders", "measures": ["count(*)"]}'
 ```
 
 Expected output:

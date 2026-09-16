@@ -10,7 +10,7 @@ Key terms used throughout SLayer documentation and code.
 
 **Dimension** — How a column is *used* in a query when it's a GROUP BY key. The column itself isn't a dimension or measure intrinsically — that role is decided per query. In SLayer's query DSL, the `dimensions` list names the columns to group/filter by.
 
-**Measure (in a query)** — A formula entry in `SlayerQuery.measures`. Examples: `"revenue:sum"`, `"*:count"`, `{"formula": "revenue:sum / *:count", "name": "aov"}`, `"cumsum(revenue:sum)"`. Each entry compiles to one output column.
+**Measure (in a query)** — A formula entry in `SlayerQuery.measures`. Examples: `"sum(revenue)"`, `"count(*)"`, `{"formula": "sum(revenue) / count(*)", "name": "aov"}`, `"cumsum(sum(revenue))"`. Each entry compiles to one output column.
 
 **Measure (named formula)** — A saved formula stored on a model (`SlayerModel.measures: List[ModelMeasure]`). Shape `{formula, name, label, description}` — same as a query's inline `measures` entry. Queries reference saved measures by bare name in any formula context (`{"formula": "aov"}`).
 
@@ -30,9 +30,9 @@ Key terms used throughout SLayer documentation and code.
 
 ## Queries
 
-**Measure entry** — A formula entry in `SlayerQuery.measures` (called *Field* in v1, before the v2 schema rename). Defined by a formula string. Examples: aggregated column reference (`"revenue:sum"`), `*`-count (`"*:count"`), arithmetic on aggregated measures (`"revenue:sum / *:count"`), transform function (`"cumsum(revenue:sum)"`), or bare named-formula reference (`{"formula": "aov"}`). Supports an optional `label` for human-readable display. See [Formulas](formulas.md).
+**Measure entry** — A formula entry in `SlayerQuery.measures` (called *Field* in v1, before the v2 schema rename). Defined by a formula string. Examples: aggregated column reference (`"sum(revenue)"`), `*`-count (`"count(*)"`), arithmetic on aggregated measures (`"sum(revenue) / count(*)"`), transform function (`"cumsum(sum(revenue))"`), or bare named-formula reference (`{"formula": "aov"}`). Supports an optional `label` for human-readable display. See [Formulas](formulas.md).
 
-**Label** — An optional human-readable display name for a measure entry, dimension, or time dimension. Separate from the technical `name`, which is used as the result column key. Example: `{"formula": "revenue:sum / *:count", "name": "aov", "label": "Average Order Value"}`.
+**Label** — An optional human-readable display name for a measure entry, dimension, or time dimension. Separate from the technical `name`, which is used as the result column key. Example: `{"formula": "sum(revenue) / count(*)", "name": "aov", "label": "Average Order Value"}`.
 
 **Filter** — A condition that restricts which rows are included. Defined as a formula string: `"status = 'completed'"`, `"amount > 100"`. See [Filter Formulas](formulas.md#filter-formulas).
 

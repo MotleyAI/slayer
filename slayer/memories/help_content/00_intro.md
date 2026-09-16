@@ -14,7 +14,7 @@ SLayer generates and executes the query against your database.
 - **aggregation** — how a column is rolled up: `sum`, `avg`, `count`, `weighted_avg`, …
   Applied via colon syntax: `revenue:sum`.
 - **measure** — one output value of a query. A formula over aggregated columns and arithmetic;
-  e.g. `"revenue:sum / *:count"`. Models can also store named measures for reuse —
+  e.g. `"sum(revenue) / count(*)"`. Models can also store named measures for reuse —
   queries reference them by bare name (`{"formula": "aov"}`).
   It's fine to have a query with just dimensions and no measures.
 - **filter** — a condition that restricts rows (WHERE or HAVING, routed automatically).
@@ -28,11 +28,11 @@ SLayer generates and executes the query against your database.
 ```json
 {
   "source_model": "orders",
-  "measures": ["*:count", "revenue:sum / amount:sum"],
+  "measures": ["count(*)", "sum(revenue) / sum(amount)"],
   "dimensions": ["status"],
   "filters": ["status <> 'cancelled'", "customers.regions.name='Asia'"],
   "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
-  "order": [{"column": "customers.revenue:sum", "direction": "desc"}],
+  "order": [{"column": "sum(customers.revenue)", "direction": "desc"}],
   "limit": 10
 }
 ```
@@ -57,17 +57,17 @@ in `measures`:
    Pick the aggregation at query time with colon syntax: `revenue:sum`,
    `revenue:avg`, `price:weighted_avg(weight=quantity)`.
 
-2. **Use `*:count` for counting rows.** `*:count` is `COUNT(*)` and is always
+2. **Use `count(*)` for counting rows.** `count(*)` is `COUNT(*)` and is always
    available without a measure definition. When you just need to count records,
-   use `*:count` — not a primary-key column. Only add that to queries when you actually need it.
-   You can also aggregate dimensions directly: `customer_id:count_distinct` for `COUNT(DISTINCT customer_id)`.
+   use `count(*)` — not a primary-key column. Only add that to queries when you actually need it.
+   You can also aggregate dimensions directly: `count_distinct(customer_id)` for `COUNT(DISTINCT customer_id)`.
 
 3. **Joined data is reached via DOTTED paths, not by JOINing manually.**
    `customers.regions.name` on a query of `orders` auto-walks the join graph
    (`orders → customers → regions`). Don't try to add SQL joins yourself.
 
 4. **Filters on measures or computed measures route themselves.** `"amount > 100"`
-   becomes WHERE; `"revenue:sum > 1000"` becomes HAVING; `"change(revenue:sum) > 0"`
+   becomes WHERE; `"sum(revenue) > 1000"` becomes HAVING; `"change(sum(revenue)) > 0"`
    becomes a post-filter on an outer wrapper query. Write the condition; SLayer
    decides where it lands.
 
@@ -78,7 +78,7 @@ in `measures`:
    NULL, maybe that's not the measure you want.
 
 7. **`time_shift`, `change`, `change_pct` can only wrap aggregated measures** —
-   e.g. `time_shift(revenue:sum, -1)`, `change(amount:avg)`. They cannot wrap
+   e.g. `time_shift(sum(revenue), -1)`, `change(avg(amount))`. They cannot wrap
    other transforms or arithmetic expressions (`change(cumsum(x))` won't work).
    The reverse direction is fine: `cumsum(change(x))` works because window
    transforms *can* wrap self-join transforms.

@@ -43,7 +43,7 @@ Any measure-legal expression is legal as a computed dimension provided it is
 target-rooted producer, below), and every transform wraps such a grained
 aggregate. A transform then evaluates at the grain of its *containing context*:
 
-- As a **measure**, `rank(revenue:sum(partition_by=region))` ranks the result
+- As a **measure**, `rank(sum(revenue, partition_by=region))` ranks the result
   rows at the query grain (over the attached, broadcast region total).
 - As a **dimension**, the same expression ranks the *regions* — the transform is
   compiled *inside the producer*, at the producer grain, because the query would
@@ -93,7 +93,7 @@ bucket.)
 ## Target-rooted producers (stage 3)
 
 A **cross-model aggregate** — one whose source names a joined model
-(`customers.revenue:sum` from `orders`) — compiles through the same primitive,
+(`sum(customers.revenue)` from `orders`) — compiles through the same primitive,
 with the producer's `FROM` **rooted at the aggregate's own model** (the join
 target), not the consumer's. Rooting at the target is what makes the value
 join-fan-proof: the aggregate runs over the target's rows once, never through a

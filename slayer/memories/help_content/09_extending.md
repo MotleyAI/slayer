@@ -20,7 +20,7 @@ a named model for the lifetime of this query:
     "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}],
     "filters": ["subtotal > tax_paid * 5"]
   },
-  "measures": ["*:count", "revenue:sum"],
+  "measures": ["count(*)", "sum(revenue)"],
   "dimensions": ["tier"]
 }
 ```
@@ -42,13 +42,13 @@ The **last** query is the main one whose results are returned.
   {
     "name": "monthly_store_revenue",
     "source_model": "orders",
-    "measures": ["revenue:sum"],
+    "measures": ["sum(revenue)"],
     "dimensions": ["stores.name"],
     "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
   },
   {
     "source_model": "monthly_store_revenue",
-    "measures": ["revenue_sum:avg"],
+    "measures": ["avg(revenue_sum)"],
     "dimensions": ["stores.name"]
   }
 ]

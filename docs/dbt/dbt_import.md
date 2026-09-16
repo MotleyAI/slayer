@@ -173,7 +173,7 @@ Constructs that cannot be expressed exactly are **failed cleanly** — never con
 | Derived input `offset_to_grain` | No truncate-to-grain shift transform | Use `cumsum(...)` + grain dimension |
 | `offset_window` on a ratio/derived input | Multi-aggregate offset isn't exactly expressible | Restructure as a multi-stage `source_queries` model |
 | Non-standard granularity (e.g. `fortnight`) | Not a SLayer granularity | Use day/week/month/quarter/year |
-| `non_additive_dimension` (semi-additive) | Not exactly expressible | `balance:last(<time>)` / `first(...)`, or a multi-stage query |
+| `non_additive_dimension` (semi-additive) | Not exactly expressible | `last(balance, <time>)` / `first(...)`, or a multi-stage query |
 | Discrete / approximate percentile flags | Only continuous-exact `PERCENTILE_CONT` is supported | Drop `use_discrete_percentile` / `use_approximate_percentile` |
 | Conversion metrics (funnel) | Sequential-event SQL unsupported | Express the funnel as a multi-stage query |
 | `join_to_timespine` / `fill_nulls_with` | No time-spine gap-filling | Remove the gap-fill request |
@@ -268,7 +268,7 @@ This lets you promote a silently imported table to first-class visibility once y
 
 ## Limitations
 
-- **Non-additive dimensions** (`non_additive_dimension`): not converted. Use `balance:last(time_col)` for snapshot measures, or multi-stage queries for complex patterns.
+- **Non-additive dimensions** (`non_additive_dimension`): not converted. Use `last(balance, time_col)` for snapshot measures, or multi-stage queries for complex patterns.
 - **Rolling-window cumulative**: SLayer's `cumsum()` is unbounded; trailing windows are not supported.
 - **Grain-to-date cumulative**: not supported.
 - **Conversion metrics**: not supported.

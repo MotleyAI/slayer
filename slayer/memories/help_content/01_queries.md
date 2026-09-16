@@ -60,9 +60,9 @@ have two or more time dimensions.
 {
   "source_model": "orders",
   "measures": [
-    "*:count",
-    "revenue:sum",
-    {"formula": "change_pct(revenue:sum)", "name": "mom_growth"}
+    "count(*)",
+    "sum(revenue)",
+    {"formula": "change_pct(sum(revenue))", "name": "mom_growth"}
   ],
   "dimensions": ["customers.regions.name"],
   "time_dimensions": [{

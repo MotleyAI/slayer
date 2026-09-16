@@ -38,9 +38,9 @@ default_time_dimension: created_at  # Optional: used by time-dependent formulas
 # Each entry has the same shape as inline `SlayerQuery.measures`.
 measures:
   - name: revenue
-    formula: "amount:sum"
+    formula: "sum(amount)"
   - name: aov
-    formula: "amount:sum / *:count"
+    formula: "sum(amount) / count(*)"
 ```
 
 Aggregation is specified at query time with **colon syntax** (`"amount:sum"`, `"amount:avg"`, `"*:count"`) or the exactly-equivalent **functional spelling** (`"sum(amount)"`, `"count(*)"`) — same SQL, same result keys, saved spelling preserved. The functional form additionally accepts a same-model expression: `"sum(amount - cost)"` (bare local columns, scalar functions, arithmetic, literals; no dotted paths / filtered columns / nested aggregations inside). A bare-name reference like `{"formula": "aov"}` resolves to the saved `ModelMeasure` formula on the model, and a dotted `{"formula": "customers.aov"}` reuses a saved measure from a joined model. Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `count_distinct_approx`, `first`, `last`, `weighted_avg`, `median`, `percentile`, `stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, `covar_pop`. `count_distinct_approx` is dialect-aware (native approximate-distinct where available, exact `COUNT(DISTINCT)` fallback otherwise). The two-column ones (`corr`, `covar_samp`, `covar_pop`) take the second column as a named param: `price:corr(other=quantity)`.
@@ -65,7 +65,7 @@ joins:
     cardinality: many_to_one   # optional; source→target arity
 ```
 
-Enables cross-model measures (`customers.score:avg`), multi-hop dimensions (`customers.regions.name`), and transforms on joined measures (`cumsum(customers.score:avg)`). Auto-ingestion creates one direct join per FK on the source table (composite FKs stay a single join with multiple `join_pairs`). `cardinality` (`one_to_one` / `one_to_many` / `many_to_one` / `many_to_many`, omit when undetermined) is descriptive metadata, orthogonal to the always-LEFT join type; auto-ingestion fills it structurally, and `slayer validate-models --cardinality [--persist-cardinality]` infers it from the data. See [models.md#join-cardinality](../../docs/concepts/models.md#join-cardinality). Multi-hop paths (e.g. `orders → customers → regions`) are resolved at query time by walking each intermediate model's own joins. Diamond joins (same table via different paths) are supported — each path gets a unique `__`-delimited alias in the generated SQL (e.g., `customers__regions` vs `warehouses__regions`).
+Enables cross-model measures (`avg(customers.score)`), multi-hop dimensions (`customers.regions.name`), and transforms on joined measures (`cumsum(avg(customers.score))`). Auto-ingestion creates one direct join per FK on the source table (composite FKs stay a single join with multiple `join_pairs`). `cardinality` (`one_to_one` / `one_to_many` / `many_to_one` / `many_to_many`, omit when undetermined) is descriptive metadata, orthogonal to the always-LEFT join type; auto-ingestion fills it structurally, and `slayer validate-models --cardinality [--persist-cardinality]` infers it from the data. See [models.md#join-cardinality](../../docs/concepts/models.md#join-cardinality). Multi-hop paths (e.g. `orders → customers → regions`) are resolved at query time by walking each intermediate model's own joins. Diamond joins (same table via different paths) are supported — each path gets a unique `__`-delimited alias in the generated SQL (e.g., `customers__regions` vs `warehouses__regions`).
 
 **Derived-on-derived chaining.** A `Column.sql` may reference another *derived* column — local same-model or via the join graph (single-dot `B.col` or multi-hop dotted `B.C.col` path). Same-model refs can be **bare** (`A.ratio = "bar / foo_normalized"`) or **qualified** (`A.ratio = "A.bar / A.foo_normalized"`) — both inline identically. The engine recursively inlines those references at query time, so you can write `A.ratio = "A.bar / B.foo_normalized"` even when `B.foo_normalized.sql = "foo_raw / 100.0"`. No need to inline derivations at every consumer site. Refs inside a nested scope (sub-query, `UNION` branch, CTE, `VALUES`) are left alone — they belong to the inner rowset. Cycles raise `ColumnCycleError` (a subclass of `ValueError`) at `save_model` time, so a cyclic model never reaches a query.
 
@@ -172,7 +172,7 @@ models = ingest_datasource(datasource=ds, schema="public")
 ```
 
 Generates:
-- One `Column` per non-joined database column (with `type` inferred). PK columns get `primary_key=True`; single-column `UNIQUE` constraints set `unique=True`. A column literally named `count` is renamed to `count_col` to avoid clashing with `*:count`.
+- One `Column` per non-joined database column (with `type` inferred). PK columns get `primary_key=True`; single-column `UNIQUE` constraints set `unique=True`. A column literally named `count` is renamed to `count_col` to avoid clashing with `count(*)`.
 - `*:count` is always available without an explicit definition; aggregation is picked per query via colon syntax (e.g., `amount:sum`).
 - **Dynamic joins**: detects FK relationships and emits explicit join metadata (LEFT JOINs built at query time).
 - FK columns are excluded from joinable models; ID-like columns (`*_id`, `*_key`) are usable as group-by columns only via the `primary_key` flag.

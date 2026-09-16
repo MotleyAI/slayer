@@ -43,7 +43,7 @@ changes:
 ```python
 resp = await engine.execute({
     "source_model": "orders",
-    "measures": [{"formula": "*:count"}],
+    "measures": [{"formula": "count(*)"}],
 })
 # -> count of THIS org's orders only; a join to customers/regions is
 #    org-scoped on every side too.
@@ -55,7 +55,7 @@ The same `policy=` argument works on the local-engine client:
 from slayer.client import SlayerClient
 
 client = SlayerClient(storage=storage, policy=policy)
-df = client.query_df({"source_model": "orders", "measures": [{"formula": "*:count"}]})
+df = client.query_df({"source_model": "orders", "measures": [{"formula": "count(*)"}]})
 ```
 
 `ruleset` is **required** — the "no filtering" case is simply `policy=None`

@@ -53,7 +53,7 @@ query's inline `measures` entries. Queries reference them by bare name.
 ```yaml
 measures:
   - name: aov
-    formula: "revenue:sum / *:count"
+    formula: "sum(revenue) / count(*)"
     label: "Average Order Value"
 ```
 
@@ -83,8 +83,8 @@ SLayer returns columns as `{model}.{col}`:
 
 | Query field | Result column |
 |-------------|--------------|
-| `*:count` on `orders` | `orders._count` |
-| `revenue:sum` on `orders` | `orders.revenue_sum` |
+| `count(*)` on `orders` | `orders._count` |
+| `sum(revenue)` on `orders` | `orders.revenue_sum` |
 | `customers.name` dimension | `orders.customers.name` |
 | `customers.regions.name` multi-hop | `orders.customers.regions.name` |
 
@@ -104,7 +104,7 @@ model use `__` to encode the original join path:
 |-------------------|------------------|
 | `stores.name` | `stores__name` |
 | `customers.regions.name` | `customers__regions__name` |
-| `revenue:sum` | `revenue_sum` |
+| `sum(revenue)` | `revenue_sum` |
 
 See `memory:help.extending` for multi-stage queries using this.
 

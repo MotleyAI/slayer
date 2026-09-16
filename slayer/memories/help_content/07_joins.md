@@ -26,8 +26,8 @@ In **queries**, use dots:
 
 - Dimension: `{"dimensions": ["customers.name"]}`
 - Multi-hop: `{"dimensions": ["customers.regions.name"]}`
-- Measure: `{"measures": ["customers.*:count"]}`
-- Cross-model transform: `{"measures": [{"formula": "cumsum(customers.score:avg)"}]}`
+- Measure: `{"measures": ["count(customers.*)"]}`
+- Cross-model transform: `{"measures": [{"formula": "cumsum(avg(customers.score))"}]}`
 
 {{product}} walks the join graph via BFS and inserts the LEFT JOINs.
 
@@ -57,7 +57,7 @@ Upshot:
 ```json
 {
   "source_model": "orders",
-  "measures": ["customers.*:count"],
+  "measures": ["count(customers.*)"],
   "dimensions": ["customers.name"]
 }
 ```
@@ -70,7 +70,7 @@ below includes them (with a zero count), so the row sets can differ:
 ```json
 {
   "source_model": "customers",
-  "measures": ["*:count"],
+  "measures": ["count(*)"],
   "dimensions": ["name"]
 }
 ```
@@ -87,7 +87,7 @@ produces a **separate** sub-query with its own alias:
 ```json
 {
   "source_model": "orders",
-  "measures": ["*:count"],
+  "measures": ["count(*)"],
   "dimensions": ["customers.regions.name", "warehouses.regions.name"]
 }
 ```

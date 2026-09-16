@@ -21,7 +21,7 @@ dbt supports measures like account balances where `SUM` across time is wrong —
 
 In SLayer, this is a two-stage query:
 
-- **Stage 1** — group by `window_groupings` plus the time bucket, and pick the latest (or earliest) value per group using the [`first` / `last` aggregations](../examples/07_aggregations/aggregations.md#first-and-last) with an explicit time column: `balance:last(snapshot_date)` for `window_choice: max`, `balance:first(snapshot_date)` for `window_choice: min`.
+- **Stage 1** — group by `window_groupings` plus the time bucket, and pick the latest (or earliest) value per group using the [`first` / `last` aggregations](../examples/07_aggregations/aggregations.md#first-and-last) with an explicit time column: `last(balance, snapshot_date)` for `window_choice: max`, `first(balance, snapshot_date)` for `window_choice: min`.
 - **Stage 2** — feed stage 1 into the next query via a [query list](../concepts/queries.md#query-lists); because [any SLayer query automatically becomes a model](../concepts/models.md#creating-models-from-queries), the outer query can aggregate additively (`sum`, `avg`, …) across the remaining dimensions.
 
 Example — account balances rolled up to customer-level monthly totals:
@@ -31,13 +31,13 @@ Example — account balances rolled up to customer-level monthly totals:
   {
     "name": "latest_balance_per_account",
     "source_model": "account_snapshots",
-    "measures": ["balance:last(snapshot_date)"],
+    "measures": ["last(balance, snapshot_date)"],
     "dimensions": ["account_id", "customer_id"],
     "time_dimensions": [{"dimension": "snapshot_date", "granularity": "month"}]
   },
   {
     "source_model": "latest_balance_per_account",
-    "measures": ["balance_last:sum"],
+    "measures": ["sum(balance_last)"],
     "dimensions": ["customer_id"],
     "time_dimensions": [{"dimension": "snapshot_date", "granularity": "month"}]
   }
@@ -48,7 +48,7 @@ If the source model does not already expose the grouping entities, pull them in 
 
 ### Per-Measure `agg_time_dimension`
 
-dbt allows each measure within a semantic model to have its own default time dimension. SLayer has one [`default_time_dimension`](../concepts/models.md) per model, and the user picks the time dimension at query time via [`time_dimensions`](../concepts/queries.md#timedimension) — same outcome, specified one layer later. For aggregations that inherently need a time column — notably [`first` / `last`](../examples/07_aggregations/aggregations.md#first-and-last) — you can pin the column directly on the field: `measure_name:last(time_col)`. This explicit argument overrides both the query's `time_dimensions` and the model's `default_time_dimension`.
+dbt allows each measure within a semantic model to have its own default time dimension. SLayer has one [`default_time_dimension`](../concepts/models.md) per model, and the user picks the time dimension at query time via [`time_dimensions`](../concepts/queries.md#timedimension) — same outcome, specified one layer later. For aggregations that inherently need a time column — notably [`first` / `last`](../examples/07_aggregations/aggregations.md#first-and-last) — you can pin the column directly on the field: `last(measure_name, time_col)`. This explicit argument overrides both the query's `time_dimensions` and the model's `default_time_dimension`.
 
 ---
 
@@ -80,7 +80,7 @@ Entity-based sequential event tracking (e.g., "users who visited then purchased 
 
 dbt: Want `revenue` summed AND averaged? Define two separate metrics. 20 columns x 3 aggregations = 60 metric definitions.
 
-SLayer: One measure `revenue`. Query `revenue:sum`, `revenue:avg`, `revenue:min` as needed. Zero duplication.
+SLayer: One measure `revenue`. Query `sum(revenue)`, `avg(revenue)`, `min(revenue)` as needed. Zero duplication.
 
 ### Composable Formula Syntax
 
@@ -93,10 +93,10 @@ dbt requires separate metric type definitions for each analytical pattern:
 SLayer handles all of these inline in a single query:
 ```json
 "measures": [
-  "revenue:sum",
-  {"formula": "revenue:sum / *:count", "name": "aov"},
-  {"formula": "cumsum(revenue:sum)", "name": "running"},
-  {"formula": "change_pct(revenue:sum)", "name": "growth"}
+  "sum(revenue)",
+  {"formula": "sum(revenue) / count(*)", "name": "aov"},
+  {"formula": "cumsum(sum(revenue))", "name": "running"},
+  {"formula": "change_pct(sum(revenue))", "name": "growth"}
 ]
 ```
 

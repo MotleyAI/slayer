@@ -33,13 +33,13 @@ The notebook covers each one in two or three cells.
 {
   "source_model": "orders",
   "measures": [
-    {"formula": "order_total:sum", "name": "revenue"},
-    {"formula": "change_pct(order_total:sum)", "name": "mom_growth"},
-    {"formula": "order_total:sum / time_shift(order_total:sum, -1, 'year') - 1", "name": "yoy_growth"}
+    {"formula": "sum(order_total)", "name": "revenue"},
+    {"formula": "change_pct(sum(order_total))", "name": "mom_growth"},
+    {"formula": "sum(order_total) / time_shift(sum(order_total), -1, 'year') - 1", "name": "yoy_growth"}
   ],
   "dimensions": ["stores.name"],
   "time_dimensions": [{"dimension": "ordered_at", "granularity": "month"}],
-  "filters": ["change_pct(order_total:sum) > 0"],
+  "filters": ["change_pct(sum(order_total)) > 0"],
   "order": [{"column": "mom_growth", "direction": "desc"}],
   "limit": 10
 }

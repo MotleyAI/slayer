@@ -13,10 +13,10 @@ columns:
   - {name: status, type: string}
   - {name: revenue, sql: amount, type: number}
 measures:
-  - {name: aov, formula: "revenue:sum / *:count"}
+  - {name: aov, formula: "sum(revenue) / count(*)"}
 ```
 
-A query then asks for `revenue:sum` (aggregate the `revenue` column), `aov` (the saved formula), or `status` (group by it). Same model, different roles per query.
+A query then asks for `sum(revenue)` (aggregate the `revenue` column), `aov` (the saved formula), or `status` (group by it). Same model, different roles per query.
 
 ## Fields at a glance
 
@@ -127,9 +127,9 @@ columns:
     filter: "status = 'completed'"
 ```
 
-`active_revenue:sum` then generates `SUM(CASE WHEN status = 'active' THEN amount END)`. The filter does nothing when the column is used as a group-by dimension — it fires only inside aggregations.
+`sum(active_revenue)` then generates `SUM(CASE WHEN status = 'active' THEN amount END)`. The filter does nothing when the column is used as a group-by dimension — it fires only inside aggregations.
 
-Filters can reference joined columns via dot syntax (`categories.type = 'electronics'`). Filtered and unfiltered columns coexist freely in the same query and combine cleanly in arithmetic formulas (e.g. `{"formula": "active_revenue:sum / total_revenue:sum"}`).
+Filters can reference joined columns via dot syntax (`categories.type = 'electronics'`). Filtered and unfiltered columns coexist freely in the same query and combine cleanly in arithmetic formulas (e.g. `{"formula": "sum(active_revenue) / sum(total_revenue)"}`).
 
 ### Derived Columns Referencing Other Derived Columns
 
@@ -193,7 +193,7 @@ If you specifically want SQLite's JSON-scalar operator, write `->>` (`exp.JSONEx
 
 SLayer has two list fields on a model that both relate to metrics, and the names don't make the difference obvious. The split is real and load-bearing:
 
-- **`measures`** is a library of named **formulas** — saved expressions like `aov = revenue:sum / *:count`. Queries reference them by bare name and the formula expands inline. Think *what to compute*, at the metric level.
+- **`measures`** is a library of named **formulas** — saved expressions like `aov = sum(revenue) / count(*)`. Queries reference them by bare name and the formula expands inline. Think *what to compute*, at the metric level.
 - **`aggregations`** is a registry of custom **operators** — definitions like `trimmed_mean(p)` or `weighted_avg(weight=…)`. Once defined, they become usable as colon suffixes inside any formula: `revenue:trimmed_mean(p=0.1)`. Think *how to aggregate*, at the operator level.
 
 A typical model uses zero or a few entries in each. They compose:
@@ -205,7 +205,7 @@ aggregations:
 
 measures:
   - name: clean_aov
-    formula: "revenue:trimmed_mean(low=0, high=1e6) / *:count"
+    formula: "trimmed_mean(revenue, low=0, high=1e6) / count(*)"
 ```
 
 ## Measures (named formulas)
@@ -214,7 +214,7 @@ A measure is a saved formula. Its shape is identical to an inline `SlayerQuery.m
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `formula` | string | Yes | e.g. `"revenue:sum / *:count"`, `"cumsum(revenue:sum)"` |
+| `formula` | string | Yes | e.g. `"sum(revenue) / count(*)"`, `"cumsum(sum(revenue))"` |
 | `name` | string | No | Queries reference this by bare name (auto-derived if omitted) |
 | `label` | string | No | Display name |
 | `description` | string | No | Explanatory text |
@@ -222,7 +222,7 @@ A measure is a saved formula. Its shape is identical to an inline `SlayerQuery.m
 | `meta` | dict | No | Arbitrary JSON metadata |
 
 An inferred integer measure type describes the result without narrowing the
-database's native integer range. For example, `"amount:sum"` can return a total
+database's native integer range. For example, `"sum(amount)"` can return a total
 larger than a 32-bit integer even when each source value fits in one. An explicit
 measure `"type": "INT"` still requests the database's INT cast and can reject
 out-of-range results. Other type casts, including declared derived-column types,
@@ -254,22 +254,22 @@ Aggregations are the operators that turn a column expression into a value: `:sum
 
 | Aggregation | Colon syntax | SQL |
 |-------------|--------------|-----|
-| `count` | `*:count` | `COUNT(*)` — counts all rows |
-| `count` | `col:count` | `COUNT(col)` — counts non-null values |
-| `count_distinct` | `col:count_distinct` | `COUNT(DISTINCT col)` |
-| `sum` | `revenue:sum` | `SUM(revenue)` |
-| `avg` | `revenue:avg` | `AVG(revenue)` |
-| `min` / `max` | `revenue:min` | `MIN(revenue)` / `MAX(revenue)` |
-| `first` / `last` | `col:first(time_col)` | Earliest / latest record's value, time-ordered |
-| `weighted_avg` | `price:weighted_avg(weight=quantity)` | `SUM(price * quantity) / SUM(quantity)` |
-| `median` | `revenue:median` | Median value |
-| `percentile` | `revenue:percentile(p=0.95)` | 95th percentile |
-| `stddev_samp` / `stddev_pop` | `latency:stddev_samp` | Sample / population standard deviation |
-| `var_samp` / `var_pop` | `latency:var_samp` | Sample / population variance |
-| `corr` | `price:corr(other=quantity)` | Pearson correlation between two columns |
-| `covar_samp` / `covar_pop` | `price:covar_samp(other=quantity)` | Sample / population covariance |
+| `count` | `count(*)` | `COUNT(*)` — counts all rows |
+| `count` | `count(col)` | `COUNT(col)` — counts non-null values |
+| `count_distinct` | `count_distinct(col)` | `COUNT(DISTINCT col)` |
+| `sum` | `sum(revenue)` | `SUM(revenue)` |
+| `avg` | `avg(revenue)` | `AVG(revenue)` |
+| `min` / `max` | `min(revenue)` | `MIN(revenue)` / `MAX(revenue)` |
+| `first` / `last` | `first(col, time_col)` | Earliest / latest record's value, time-ordered |
+| `weighted_avg` | `weighted_avg(price, weight=quantity)` | `SUM(price * quantity) / SUM(quantity)` |
+| `median` | `median(revenue)` | Median value |
+| `percentile` | `percentile(revenue, p=0.95)` | 95th percentile |
+| `stddev_samp` / `stddev_pop` | `stddev_samp(latency)` | Sample / population standard deviation |
+| `var_samp` / `var_pop` | `var_samp(latency)` | Sample / population variance |
+| `corr` | `corr(price, other=quantity)` | Pearson correlation between two columns |
+| `covar_samp` / `covar_pop` | `covar_samp(price, other=quantity)` | Sample / population covariance |
 
-`*:count` is always available with no measure definition. `*` means "all rows" and is **only** valid with `count` — `*:sum` and friends are rejected. Detailed NULL / N=1 semantics for the statistical aggregations are documented in [database-support.md](../database-support.md).
+`count(*)` is always available with no measure definition. `*` means "all rows" and is **only** valid with `count` — `sum(*)` and friends are rejected. Detailed NULL / N=1 semantics for the statistical aggregations are documented in [database-support.md](../database-support.md).
 
 ### The `first` and `last` aggregations
 
@@ -280,7 +280,7 @@ columns:
   - {name: balance, sql: balance, type: number}
 ```
 
-`balance:last(updated_at)` gives the most recent balance per group; `balance:first(updated_at)` the earliest. When grouped by month, each month returns the latest (or earliest) record's balance in that month. If no time column is specified, ordering resolves via: query's `main_time_dimension` → first time/date dimension in the query → first time dimension in filters → model's `default_time_dimension`.
+`last(balance, updated_at)` gives the most recent balance per group; `first(balance, updated_at)` the earliest. When grouped by month, each month returns the latest (or earliest) record's balance in that month. If no time column is specified, ordering resolves via: query's `main_time_dimension` → first time/date dimension in the query → first time dimension in filters → model's `default_time_dimension`.
 
 Not to be confused with the [`last()` formula function](formulas.md#last-function) — a window-function transform that broadcasts a value across all rows. Same name, different layer.
 
@@ -296,7 +296,7 @@ aggregations:
     formula: "avg(CASE WHEN {expr} BETWEEN {low} AND {high} THEN {expr} END)"
 ```
 
-Use at query time: `price:weighted_avg(weight=quantity)`, `revenue:trimmed_mean(low=10, high=1000)`. An aggregation entry can also override a built-in's default parameters without redefining the SQL. Like columns and measures, aggregations accept an optional `meta` dict for caller bookkeeping.
+Use at query time: `weighted_avg(price, weight=quantity)`, `trimmed_mean(revenue, low=10, high=1000)`. An aggregation entry can also override a built-in's default parameters without redefining the SQL. Like columns and measures, aggregations accept an optional `meta` dict for caller bookkeeping.
 
 ## Joins
 
@@ -373,7 +373,7 @@ A query-backed model is a queryable relation whose rows are the final-stage resu
 await engine.create_model_from_query(
     query={
         "source_model": "orders",
-        "measures": [{"formula": "amount:sum"}],
+        "measures": [{"formula": "sum(amount)"}],
         "dimensions": ["region"],
         "time_dimensions": [{"dimension": "ordered_at", "granularity": "month"}],
     },
@@ -400,7 +400,7 @@ Or use the saved result as a model in another query:
 ```json
 {
   "source_model": "monthly_revenue",
-  "measures": [{"formula": "amount_sum:avg"}],
+  "measures": [{"formula": "avg(amount_sum)"}],
   "dimensions": ["region"]
 }
 ```
@@ -488,9 +488,9 @@ A query result is a self-contained table — it no longer has the joins the sour
 | `stores.name` | `stores__name` |
 | `customers.regions.name` | `customers__regions__name` |
 | `customer_id` | `customer_id` |
-| `*:count` (measure) | `count` |
-| `revenue:sum` (measure) | `revenue_sum` |
-| `{"formula": "revenue:sum", "name": "rev"}` | `rev` |
+| `count(*)` (measure) | `count` |
+| `sum(revenue)` (measure) | `revenue_sum` |
+| `{"formula": "sum(revenue)", "name": "rev"}` | `rev` |
 
 This uses the same `__` convention as SQL-level join path aliases. When referencing these columns in an outer query, use the `__` name directly (e.g., `{"name": "stores__name"}`), not dot syntax — dots would imply a join to a model that doesn't exist on the virtual table.
 
@@ -503,11 +503,11 @@ An explicit `name` on a measure spec **overrides** the canonical naming above, f
       "name": "raw",
       "source_model": "orders",
       "dimensions": ["region"],
-      "measures": [{"formula": "amount:sum", "name": "rev"}]
+      "measures": [{"formula": "sum(amount)", "name": "rev"}]
     },
     {
       "source_model": "raw",
-      "measures": [{"formula": "rev:sum"}]
+      "measures": [{"formula": "sum(rev)"}]
     }
   ]
 }

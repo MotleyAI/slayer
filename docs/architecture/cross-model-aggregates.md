@@ -5,7 +5,7 @@
 `slayer/sql/generator.py` (`_render_with_cross_model_plans`,
 `_render_rerooted_cross_model_cte`)
 
-A cross-model aggregate is `customers.revenue:sum` on an `orders`-rooted query —
+A cross-model aggregate is `sum(customers.revenue)` on an `orders`-rooted query —
 an aggregate whose source carries a non-empty join path. Principle **P3** says it
 shares the `AggregateKey` shape with a local aggregate (only `source.path`
 differs), and that "base CTE vs cross-model CTE" is a *render strategy* decided
@@ -143,13 +143,13 @@ A LOCAL aggregate (empty `source.path`) isolates into a **host-rooted** CTE
 when **any** of its inputs crosses a join (Law 3, DEV-1703 D1/D2):
 
 - its `Column.filter` references a joined table — the original DEV-1503
-  case (`loss_payment_amt:sum` with `filter="loss_payment.has_flag = 1"`),
+  case (`sum(loss_payment_amt)` with `filter="loss_payment.has_flag = 1"`),
   read from the bind-time `column_filter_key.referenced_join_paths`;
 - its **source `Column.sql`** crosses a join (`region_pay` with
   `sql="customers.regions.payment_amount"` — dotted-canonical since DEV-1743 —
   and sibling derived chains);
 - a **positional arg** crosses — including the explicit first/last time arg
-  (`amount:last(customers.signup_at)` and derived variants);
+  (`last(amount, customers.signup_at)` and derived variants);
 - a **kwarg** crosses — a column ref (`weighted_avg(weight=customers.w)` or
   a crossing derived column), a user-supplied template-fragment string, or
   a non-overridden model-default `AggregationParam.sql` fragment.
@@ -203,7 +203,7 @@ scope. The flag never affects target-rooted isolation.
 
 ### Composite lowering (F3)
 
-In an AGGREGATE-phase composite (`a:sum + b:sum`, `coalesce(a:sum, 0)`),
+In an AGGREGATE-phase composite (`sum(a) + sum(b)`, `coalesce(sum(a), 0)`),
 each **crossing leaf** isolates individually (the leaves are hidden
 aggregate slots that traverse the same trigger loop); local leaves stay in
 `_base`; the composite expression renders only in the combined SELECT via
@@ -231,7 +231,7 @@ ranked plan belongs to its nested sub-plan.
 ### Outer combined-SELECT WHERE wrapper
 
 An AGGREGATE-phase host filter referencing an isolated aggregate
-(`loss_payment_amt:sum > 1000`) cannot route as HAVING inside the `_cm_*` CTE:
+(`sum(loss_payment_amt) > 1000`) cannot route as HAVING inside the `_cm_*` CTE:
 the LEFT JOIN back to `_base` would surface host rows whose filtered
 aggregate didn't meet the predicate with a NULL value instead of dropping
 them. The renderer (`_render_with_cross_model_plans`) classifies each
@@ -243,8 +243,8 @@ is non-aggregating — plain WHERE is legal). The renderer
 - isolated `AggregateKey` → `<cte_name>."<agg_col_alias>"` (the joined-back column),
 - any other slot → `_base."<first_alias>"` (the host base's projection).
 
-Non-isolated aggregate operands of a mixed filter (`loss_payment_amt:sum >
-1000 AND total_amount:sum > 10` where `total_amount:sum` isn't a public
+Non-isolated aggregate operands of a mixed filter (`sum(loss_payment_amt) >
+1000 AND sum(total_amount) > 10` where `sum(total_amount)` isn't a public
 measure) are promoted to hidden aux slots in `base_render_order` by the
 existing `_add_local_aux_slots(aggregates_only=True)` pass — `_base`
 materialises them so the outer WHERE can reference them, and the combined
@@ -268,7 +268,7 @@ target-model filters, and routed host WHERE/HAVING filters — through
 the joins it crosses into the CTE's single ordered `join_paths` set, from which
 the CTE `FROM` is built. Discovery can no longer be forgotten per carrier: a
 cross-model aggregate whose target column's `Column.sql` crosses a *further*
-join (`customers.deep_pop:sum` where `deep_pop` is `regions.population`) now
+join (`sum(customers.deep_pop)` where `deep_pop` is `regions.population`) now
 pulls that `LEFT JOIN regions` into the `_cm_*` CTE, and a parametric-agg
 column-ref kwarg naming a derived target column expands through the scope
 instead of emitting a bare, non-existent column. Routed WHERE/HAVING filters
@@ -293,7 +293,7 @@ column. The ranked (`_rk_`) route obeys the same law through the same
 ### Derived shared-grain rendering (DEV-1728)
 
 A cross-model aggregate can be grouped by a joined **derived** dimension
-(`{"dimensions": ["customers.rev_x2"], "measures": ["customers.revenue:sum"]}`,
+(`{"dimensions": ["customers.rev_x2"], "measures": ["sum(customers.revenue)"]}`,
 where `rev_x2` is a `Column.sql` on `customers`). The grain loop expands the
 derived column's `Column.sql` rooted at the target relation, adds it to the CTE
 `SELECT` + `GROUP BY` under the **dotted** host alias
@@ -327,7 +327,7 @@ null-safe form retains it.
   desugar to `time_shift`) **render** over a **local** or **host-rooted** inner
   aggregate that coexists with a cross-model aggregate (DEV-1750). The
   cross-model transform chain gained the same shifted / cp CTE emitters the local
-  chain uses, so a crossing template fragment (`amount:wscaled_sum` with a
+  chain uses, so a crossing template fragment (`wscaled_sum(amount)` with a
   default `w='customers.regions.weight'`) pulls its join into the shifted CTE.
   Two shapes stay guarded, loudly: a `time_shift` whose inner aggregate is
   **target-grain** cross-model (`cte_root_model is None` — host-rooted
@@ -337,13 +337,13 @@ null-safe form retains it.
   `change` / `change_pct` over a **cross-model** inner aggregate hits a separate
   combined-arithmetic-over-transform gap (DEV-1800), tracked independently.
 - Cross-model parametric-agg result keys diverge from legacy **by design**:
-  `customers.revenue:percentile(p=0.5)` → `…revenue_percentile_p_0_5` where
+  `percentile(customers.revenue, p=0.5)` → `…revenue_percentile_p_0_5` where
   legacy dropped the kwarg suffix (`…revenue_percentile`). Legacy's drop was a
   collision bug; the new path keeps the suffix. This violates **P10** for this
   one combination and is tested structurally, not by parity. See
   [the deviations list](index.md#deviations-from-the-plan).
 - A cross-model parametric-agg kwarg naming a **target** column
-  (`customers.revenue:weighted_avg(weight=customers.qty)`) is supported and
+  (`weighted_avg(customers.revenue, weight=customers.qty)`) is supported and
   expands through the CTE `ScopeFrame` (DEV-1708). The kwarg must be
   **relation-qualified** — a bare `weight=qty` resolves against the host by DSL
   rule and raises at bind time. A *host-local* weight column evaluated inside

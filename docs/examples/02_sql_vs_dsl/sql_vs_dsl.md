@@ -20,7 +20,7 @@ What if you want to add to a query a filter that directly references the underly
     "source_name": "orders",
     "filters": ["subtotal > tax_paid * 5"]
   },
-  "measures": ["*:count", "order_total:sum"],
+  "measures": ["count(*)", "sum(order_total)"],
   "dimensions": ["stores.name"]
 }
 ```

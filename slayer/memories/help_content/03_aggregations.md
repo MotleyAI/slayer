@@ -11,24 +11,24 @@ not baked into the measure definition.
 
 | Aggregation | Example | SQL |
 |-------------|---------|-----|
-| `sum` | `revenue:sum` | `SUM(expr)` |
-| `avg` | `revenue:avg` | `AVG(expr)` |
-| `sum` / `avg` with `window` | `revenue:sum(window='90d')` | trailing range aggregate |
-| `min` / `max` | `revenue:min` | `MIN(expr)` / `MAX(expr)` |
-| `count` | `*:count` | `COUNT(*)` |
-| `count` (non-null) | `email:count` | `COUNT(email)` |
-| `count_distinct` | `customer_id:count_distinct` | `COUNT(DISTINCT customer_id)` |
-| `median` | `latency:median` | `PERCENTILE_CONT(0.5) …` |
-| `percentile` | `latency:percentile(p=0.95)` | `PERCENTILE_CONT(0.95) …` |
-| `weighted_avg` | `price:weighted_avg(weight=quantity)` | `SUM(price*qty)/SUM(qty)` |
-| `stddev_samp` | `latency:stddev_samp` | `STDDEV_SAMP(expr)` — NULL when N ≤ 1 |
-| `stddev_pop` | `latency:stddev_pop` | `STDDEV_POP(expr)` — 0 at N=1, NULL at N=0 |
-| `var_samp` | `latency:var_samp` | `VAR_SAMP(expr)` (or `VARIANCE` on SQLite/MySQL) |
-| `var_pop` | `latency:var_pop` | `VAR_POP(expr)` (or `VARIANCE_POP` on SQLite/MySQL) |
-| `corr` | `price:corr(other=quantity)` | `CORR(price, quantity)` — Pearson r |
-| `covar_samp` | `price:covar_samp(other=quantity)` | `COVAR_SAMP(price, quantity)` — sample covariance |
-| `covar_pop` | `price:covar_pop(other=quantity)` | `COVAR_POP(price, quantity)` — population covariance |
-| `first` / `last` | `balance:last(updated_at)` | earliest / latest record's value |
+| `sum` | `sum(revenue)` | `SUM(expr)` |
+| `avg` | `avg(revenue)` | `AVG(expr)` |
+| `sum` / `avg` with `window` | `sum(revenue, window='90d')` | trailing range aggregate |
+| `min` / `max` | `min(revenue)` | `MIN(expr)` / `MAX(expr)` |
+| `count` | `count(*)` | `COUNT(*)` |
+| `count` (non-null) | `count(email)` | `COUNT(email)` |
+| `count_distinct` | `count_distinct(customer_id)` | `COUNT(DISTINCT customer_id)` |
+| `median` | `median(latency)` | `PERCENTILE_CONT(0.5) …` |
+| `percentile` | `percentile(latency, p=0.95)` | `PERCENTILE_CONT(0.95) …` |
+| `weighted_avg` | `weighted_avg(price, weight=quantity)` | `SUM(price*qty)/SUM(qty)` |
+| `stddev_samp` | `stddev_samp(latency)` | `STDDEV_SAMP(expr)` — NULL when N ≤ 1 |
+| `stddev_pop` | `stddev_pop(latency)` | `STDDEV_POP(expr)` — 0 at N=1, NULL at N=0 |
+| `var_samp` | `var_samp(latency)` | `VAR_SAMP(expr)` (or `VARIANCE` on SQLite/MySQL) |
+| `var_pop` | `var_pop(latency)` | `VAR_POP(expr)` (or `VARIANCE_POP` on SQLite/MySQL) |
+| `corr` | `corr(price, other=quantity)` | `CORR(price, quantity)` — Pearson r |
+| `covar_samp` | `covar_samp(price, other=quantity)` | `COVAR_SAMP(price, quantity)` — sample covariance |
+| `covar_pop` | `covar_pop(price, other=quantity)` | `COVAR_POP(price, quantity)` — population covariance |
+| `first` / `last` | `last(balance, updated_at)` | earliest / latest record's value |
 
 ## first and last — per-group snapshots
 
@@ -36,7 +36,7 @@ not baked into the measure definition.
 each group, ordered by a time column. They need to know which time column.
 Resolution:
 
-1. Explicit argument: `balance:last(updated_at)` — highest priority.
+1. Explicit argument: `last(balance, updated_at)` — highest priority.
 2. Query's `main_time_dimension`.
 3. Single entry in `time_dimensions`.
 4. First time dim appearing in `filters`.
@@ -58,8 +58,8 @@ Don't confuse:
 {
   "source_model": "orders",
   "measures": [
-    {"formula": "revenue:sum(window='30d')", "name": "revenue_30d"},
-    {"formula": "revenue:avg(window='1y2m')", "name": "avg_14m"}
+    {"formula": "sum(revenue, window='30d')", "name": "revenue_30d"},
+    {"formula": "avg(revenue, window='1y2m')", "name": "avg_14m"}
   ],
   "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
 }
@@ -81,8 +81,8 @@ the query's dimensions, repeated across the finer rows (like `SUM(x) OVER
   "source_model": "orders",
   "dimensions": ["region", "city"],
   "measures": [
-    {"formula": "revenue:sum / revenue:sum(partition_by=region)", "name": "share_of_region"},
-    {"formula": "revenue:sum / revenue:sum(partition_by=[])", "name": "share_of_total"}
+    {"formula": "sum(revenue) / sum(revenue, partition_by=region)", "name": "share_of_region"},
+    {"formula": "sum(revenue) / sum(revenue, partition_by=[])", "name": "share_of_total"}
   ]
 }
 ```
@@ -105,13 +105,13 @@ columns:
     allowed_aggregations: [count, count_distinct]
 ```
 
-`customer_id:avg` would then error with a clear message listing the valid
+`avg(customer_id)` would then error with a clear message listing the valid
 options. Validated at both model creation and query time.
 
 ```json
 {
   "source_model": "orders",
-  "measures": ["customer_id:count_distinct"]
+  "measures": ["count_distinct(customer_id)"]
 }
 ```
 
@@ -134,13 +134,13 @@ Query time:
 ```json
 {
   "source_model": "orders",
-  "measures": [{"formula": "score:trimmed_mean(lo=10, hi=90)"}]
+  "measures": [{"formula": "trimmed_mean(score, lo=10, hi=90)"}]
 }
 ```
 
 You can also override built-in defaults. If you declare `weighted_avg` with a
-default `weight` of `quantity`, then `price:weighted_avg` uses it without the
-arg, and `price:weighted_avg(weight=revenue)` overrides.
+default `weight` of `quantity`, then `weighted_avg(price)` uses it without the
+arg, and `weighted_avg(price, weight=revenue)` overrides.
 
 ## See also
 

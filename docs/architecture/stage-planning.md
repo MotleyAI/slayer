@@ -37,7 +37,7 @@ a `ModelScope` only — downstream `StageSchema` stages don't expose saved
 measures), then get a canonical alias via `_canonical_alias_for_formula`.
 
 `_canonical_alias_for_formula` routes any aggregate-rooted formula (including
-parametric `revenue:percentile(p=0.5)`) through `canonical_agg_name` so kwargs are
+parametric `percentile(revenue, p=0.5)`) through `canonical_agg_name` so kwargs are
 sanitized consistently (`p=0.5` → `_p_0_5`); a cross-model star keeps its
 `customers.` prefix. (This is also where cross-model parametric aliases keep the
 kwarg suffix legacy dropped — the documented P10 divergence.)
@@ -72,7 +72,7 @@ names, because a time dimension's declared name is its raw column and a
 
 A user order column may name a declared measure by user `name`, declared name,
 canonical alias, the flattened dotted form (a joined dimension), or the `_count`
-form of `*:count`. `plan_query` checks `declared_alias_to_bound` in that order
+form of `count(*)`. `plan_query` checks `declared_alias_to_bound` in that order
 before falling back to `bind_expr` on the preserved `raw_formula` — so an
 aggregate alias like `amount_sum` (not a column on the model) interns onto the
 projection slot rather than raising.

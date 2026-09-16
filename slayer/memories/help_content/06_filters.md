@@ -22,7 +22,7 @@ Combine with `and`, `or`, `not` inside a **single** string:
 ```json
 {
   "source_model": "orders",
-  "measures": ["*:count"],
+  "measures": ["count(*)"],
   "filters": ["status = 'completed' or status = 'pending'"]
 }
 ```
@@ -32,7 +32,7 @@ Multiple entries in the `filters` list are AND-ed:
 ```json
 {
   "source_model": "orders",
-  "measures": ["*:count"],
+  "measures": ["count(*)"],
   "filters": ["status = 'completed'", "amount > 100"]
 }
 ```
@@ -40,10 +40,10 @@ Multiple entries in the `filters` list are AND-ed:
 ## Auto-routing (where does each filter land?)
 
 - Filter references only dimensions / raw columns → **WHERE** (inner query).
-- Filter references an aggregated measure (e.g. `revenue:sum > 1000`) →
+- Filter references an aggregated measure (e.g. `sum(revenue) > 1000`) →
   **HAVING**.
 - Filter references a transform or computed field (e.g.
-  `change(revenue:sum) > 0`) → **post-filter** on an outer wrapper.
+  `change(sum(revenue)) > 0`) → **post-filter** on an outer wrapper.
 
 Inner and outer filters can mix in one query — {{product}} splits them.
 
@@ -55,8 +55,8 @@ Reference a named measure from `measures` by its `name`:
 {
   "source_model": "orders",
   "measures": [
-    "revenue:sum",
-    {"formula": "change(revenue:sum)", "name": "rev_change"}
+    "sum(revenue)",
+    {"formula": "change(sum(revenue))", "name": "rev_change"}
   ],
   "filters": ["rev_change < 0"],
   "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
@@ -68,22 +68,22 @@ Or write the transform **inline** in the filter — no need to add it to `measur
 ```json
 {
   "source_model": "orders",
-  "measures": ["revenue:sum"],
-  "filters": ["last(change(revenue:sum)) < 0"],
+  "measures": ["sum(revenue)"],
+  "filters": ["last(change(sum(revenue))) < 0"],
   "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
 }
 ```
 
 Renamed measures may be filtered by EITHER the user alias OR the raw colon
 formula — both resolve to the user alias. With
-`{"formula": "*:count", "name": "n"}`, either `filters: ["n > 5"]` or
-`filters: ["*:count > 5"]` produces the same HAVING clause. Two
+`{"formula": "count(*)", "name": "n"}`, either `filters: ["n > 5"]` or
+`filters: ["count(*) > 5"]` produces the same HAVING clause. Two
 enrichment-time validations apply to renamed measures: a `name` that
 collides with a source column on the source model is rejected (alias-form
 filters would otherwise bind to the source column); a rename whose
 canonical alias literally shadows a source column on the same model is
 also rejected (the colon-form filter would otherwise be ambiguous).
-Cross-model agg-ref filters with rename (`customers.revenue:sum >= 100`)
+Cross-model agg-ref filters with rename (`sum(customers.revenue) >= 100`)
 are NOT yet auto-resolved in any form — neither the colon syntax nor the
 user alias resolves. As a workaround, restructure as a multi-stage
 `source_queries` model so the cross-model measure becomes local in the
@@ -103,8 +103,8 @@ columns:
     filter: "status = 'active'"
 ```
 
-`active_revenue:sum` → `SUM(CASE WHEN status = 'active' THEN amount END)`.
-Combine arithmetically: `{"formula": "active_revenue:sum / revenue:sum", "name": "active_share"}`.
+`sum(active_revenue)` → `SUM(CASE WHEN status = 'active' THEN amount END)`.
+Combine arithmetically: `{"formula": "sum(active_revenue) / sum(revenue)", "name": "active_share"}`.
 
 ## Model-level filters
 

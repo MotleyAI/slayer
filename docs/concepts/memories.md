@@ -36,11 +36,11 @@ Every persisted entity is exactly one of:
 
 Inputs that aren't already in this shape are normalised at save time:
 
-- **Aggregation suffixes are stripped.** `revenue:sum`,
-  `revenue:weighted_avg(weight=qty)`, and `revenue:corr(other=qty)` all
+- **Aggregation suffixes are stripped.** `sum(revenue)`,
+  `weighted_avg(revenue, weight=qty)`, and `corr(revenue, other=qty)` all
   canonicalise to `<ds>.<model>.revenue`. The aggregation itself is
   not an independent entity.
-- **`*:count` collapses to the source model.** It's "count of all rows
+- **`count(*)` collapses to the source model.** It's "count of all rows
   on this model," so the entity is the model.
 - **Multi-hop dotted paths keep only the leaf.** A query referencing
   `orders.customers.regions.name` produces `{mydb.orders,
@@ -51,7 +51,7 @@ Inputs that aren't already in this shape are normalised at save time:
   `aov` formula and tag every column it references.
 
 Equality is plain string equality on the canonical form, so two
-callers using `revenue:sum` and `mydb.orders.revenue` reach the same
+callers using `sum(revenue)` and `mydb.orders.revenue` reach the same
 record.
 
 ## The two write-side MCP tools
@@ -116,7 +116,7 @@ Query-bearing form:
   "learning": "Total paid revenue",
   "linked_entities": {
     "source_model": "orders",
-    "measures": [{"formula": "amount:sum"}],
+    "measures": [{"formula": "sum(amount)"}],
     "filters": ["status = 'paid'"]
   }
 }

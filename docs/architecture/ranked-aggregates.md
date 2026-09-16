@@ -58,7 +58,7 @@ The renderer emits a plan; it re-derives none of the above (P-D).
 Resolved at plan time, per scope, and it raises at the end rather than falling
 through:
 
-**Host-rooted** — an explicit positional time arg (`amount:last(shipped_at)`),
+**Host-rooted** — an explicit positional time arg (`last(amount, shipped_at)`),
 else the first `DATE`/`TIMESTAMP` row dimension, else the first time dimension's
 **raw** column (never the truncated bucket: ranking within a month by the month
 ties every row in it), else the model's `default_time_dimension`.
@@ -79,7 +79,7 @@ _rk_rn = 1`. The two agree on every non-empty grain and disagree on the empty
 one: over a source with no rows the aggregate form returns ONE row holding
 NULL and the filter form returns none. An empty grain is joined back with a
 `CROSS JOIN`, so a zero-row CTE erases the entire result rather than yielding a
-NULL measure — and one NULL row is what `amount:sum` returns over the same
+NULL measure — and one NULL row is what `sum(amount)` returns over the same
 empty source.
 
 ## Filtered variants are plan data

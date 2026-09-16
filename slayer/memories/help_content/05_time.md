@@ -25,7 +25,7 @@ A time dimension may carry a `date_range: [start, end]` (ISO dates):
 ```json
 {
   "source_model": "orders",
-  "measures": ["revenue:sum"],
+  "measures": ["sum(revenue)"],
   "time_dimensions": [{
     "dimension": "created_at",
     "granularity": "month",
@@ -46,7 +46,7 @@ show "this month is half-done, the bar looks tiny":
 ```json
 {
   "source_model": "orders",
-  "measures": ["revenue:sum"],
+  "measures": ["sum(revenue)"],
   "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
   "whole_periods_only": true
 }
@@ -75,7 +75,7 @@ Without any `time_dimensions` entry, transforms will error. Set
 2. `last(x)` — the **transform**. Broadcasts the aggregated value from the
    most recent time bucket to every row. See `memory:help.transforms`.
 
-3. `last(…)` inside a `filters` string (e.g. `"last(change(revenue:sum)) < 0"`)
+3. `last(…)` inside a `filters` string (e.g. `"last(change(sum(revenue))) < 0"`)
    — a post-filter on the transform output. See `memory:help.filters`.
 
 They all concern "latest something" but operate on different levels: record /
@@ -87,9 +87,9 @@ bucket / filter. Pick the one that matches your question.
 {
   "source_model": "orders",
   "measures": [
-    "revenue:sum",
-    {"formula": "time_shift(revenue:sum, -1, 'year')", "name": "prev_year"},
-    {"formula": "change_pct(revenue:sum, -1, 'year')", "name": "yoy_growth"}
+    "sum(revenue)",
+    {"formula": "time_shift(sum(revenue), -1, 'year')", "name": "prev_year"},
+    {"formula": "change_pct(sum(revenue), -1, 'year')", "name": "yoy_growth"}
   ],
   "time_dimensions": [{
     "dimension": "created_at", "granularity": "month",
@@ -98,10 +98,10 @@ bucket / filter. Pick the one that matches your question.
 }
 ```
 
-`change_pct(revenue:sum, -1, 'year')` is the safe way to express YoY % growth: it
+`change_pct(sum(revenue), -1, 'year')` is the safe way to express YoY % growth: it
 desugars to the same prior-year `time_shift` ratio but guards the denominator
 (it returns `NULL` when the prior-year value is `0` or missing, instead of erroring).
-Writing the ratio by hand as `revenue:sum / time_shift(revenue:sum, -1, 'year') - 1`
+Writing the ratio by hand as `sum(revenue) / time_shift(sum(revenue), -1, 'year') - 1`
 has no such guard.
 
 ## See also

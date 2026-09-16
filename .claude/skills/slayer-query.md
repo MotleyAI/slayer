@@ -11,7 +11,7 @@ A `SlayerQuery` is a JSON/dict object. The same shape works across the REST API,
 ```json
 {
   "source_model": "orders",
-  "measures": ["*:count", "revenue:sum"],
+  "measures": ["count(*)", "sum(revenue)"],
   "dimensions": ["status"],
   "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
   "filters": ["status = 'active'"],
@@ -22,7 +22,7 @@ A `SlayerQuery` is a JSON/dict object. The same shape works across the REST API,
 
 `order[].column` uses the short alias (`count`, `revenue_sum`) to order by a measure declared in the same query; undeclared order targets use formula (colon) syntax — see below.
 
-**Ordering by something you don't project.** `order` may name an undeclared column/aggregate/expression ("top-N by X, show only Y, Z"). Computed hidden, sorted on, and stripped from the result: an **aggregate** (`amount:sum`, `customers.revenue:sum`), an inline **transform** (`rank(amount:sum)`, `change(...)`, `cumsum`/`lag`/`lead`/`ntile`), an inline **composite** (`revenue:sum / cnt:sum`, `abs(amount:sum)`), and a **windowed** aggregate (`amount:sum(window='90d')`, alone or inside a composite). A **raw row column** sorts directly in a raw-rows query (`distinct_dimension_values: false`); in a grouped/dedup query there is no single value per group, so it sorts **per group** by the extreme the direction puts first — `asc` by each group's `min`, `desc` by each group's `max`. Write `{"column": "created_at:max", "direction": "asc"}` explicitly for the other one. A **joined** row column (`customers.regions.name`), and a derived column whose `sql` reaches through a join, behave the same way — the join is pulled in for the sort, and in a grouped query the wrap is computed per host row-group rather than globally. NULLs sort **last** in both directions on every database (SQL Server excepted: its native ordering is used, because the portable emulation makes the statement fail there). An order target SLayer cannot resolve is an error, never a silently unsorted result. Order expressions must use formula syntax for their operands, not the `name`s of measures declared in the same query: `{"column": "revenue:sum / cnt:sum"}` works, `{"column": "rev / cnt"}` is rejected.
+**Ordering by something you don't project.** `order` may name an undeclared column/aggregate/expression ("top-N by X, show only Y, Z"). Computed hidden, sorted on, and stripped from the result: an **aggregate** (`sum(amount)`, `sum(customers.revenue)`), an inline **transform** (`rank(sum(amount))`, `change(...)`, `cumsum`/`lag`/`lead`/`ntile`), an inline **composite** (`sum(revenue) / sum(cnt)`, `abs(sum(amount))`), and a **windowed** aggregate (`sum(amount, window='90d')`, alone or inside a composite). A **raw row column** sorts directly in a raw-rows query (`distinct_dimension_values: false`); in a grouped/dedup query there is no single value per group, so it sorts **per group** by the extreme the direction puts first — `asc` by each group's `min`, `desc` by each group's `max`. Write `{"column": "max(created_at)", "direction": "asc"}` explicitly for the other one. A **joined** row column (`customers.regions.name`), and a derived column whose `sql` reaches through a join, behave the same way — the join is pulled in for the sort, and in a grouped query the wrap is computed per host row-group rather than globally. NULLs sort **last** in both directions on every database (SQL Server excepted: its native ordering is used, because the portable emulation makes the statement fail there). An order target SLayer cannot resolve is an error, never a silently unsorted result. Order expressions must use formula syntax for their operands, not the `name`s of measures declared in the same query: `{"column": "sum(revenue) / sum(cnt)"}` works, `{"column": "rev / cnt"}` is rejected.
 
 **Dim-only queries deduplicate.** A query with no measures and at least one dimension or time-dimension auto-emits `GROUP BY <dim/td aliases>` and returns the distinct combinations. The `GROUP BY` is applied before `LIMIT`, so a row cap can't silently drop unique tuples. To opt out, set `"distinct_dimension_values": false` on the query — emits raw rows (no top-level `GROUP BY`), with WHERE / ORDER BY / LIMIT applied as usual. Any measure reference in `measures` / `filters` / `order` raises `DistinctDimensionValuesError` in this mode.
 
@@ -32,29 +32,29 @@ Each entry in `measures` is either a bare formula string or a `{"formula": ..., 
 
 ```json
 "measures": [
-  "*:count",
-  "revenue:sum",
-  "revenue:avg",
-  "price:weighted_avg(weight=quantity)",
-  {"formula": "revenue:sum / *:count", "name": "aov", "label": "Average Order Value"},
-  "cumsum(revenue:sum)",
-  "change_pct(revenue:sum)",
-  "last(revenue:sum)",
-  "time_shift(revenue:sum, -1, 'year')",
-  "lag(revenue:sum, 1)",
-  "rank(revenue:sum)",
-  "round(revenue:sum, 2)",
-  "abs(revenue:sum - cost:sum)"
+  "count(*)",
+  "sum(revenue)",
+  "avg(revenue)",
+  "weighted_avg(price, weight=quantity)",
+  {"formula": "sum(revenue) / count(*)", "name": "aov", "label": "Average Order Value"},
+  "cumsum(sum(revenue))",
+  "change_pct(sum(revenue))",
+  "last(sum(revenue))",
+  "time_shift(sum(revenue), -1, 'year')",
+  "lag(sum(revenue), 1)",
+  "rank(sum(revenue))",
+  "round(sum(revenue), 2)",
+  "abs(sum(revenue) - sum(cost))"
 ]
 ```
 
-Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `count_distinct_approx`, `first`, `last`, `weighted_avg`, `median`, `percentile`, `stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, `covar_pop`. `count_distinct_approx` is dialect-aware (native approximate-distinct where available, exact `COUNT(DISTINCT)` fallback otherwise). Two-column `corr`/`covar_samp`/`covar_pop` take the second column as a named param: `price:corr(other=quantity)`. `sum` and `avg` accept an optional trailing-window: `revenue:sum(window='30d')`. A time bound narrows which buckets come back, not which rows the window may reach — so `date_range` and an equivalent explicit filter (`created_at >= '2025-01-01'`) give identical windowed numbers. Only `<`/`<=`/`>`/`>=` against a time dimension's own column and a literal counts; other operators, non-time-dimension columns, bounds under `or`/`not`, and model-level `filters` all restrict the window's input as usual. Same rule for `time_shift`.
+Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `count_distinct_approx`, `first`, `last`, `weighted_avg`, `median`, `percentile`, `stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, `covar_pop`. `count_distinct_approx` is dialect-aware (native approximate-distinct where available, exact `COUNT(DISTINCT)` fallback otherwise). Two-column `corr`/`covar_samp`/`covar_pop` take the second column as a named param: `corr(price, other=quantity)`. `sum` and `avg` accept an optional trailing-window: `sum(revenue, window='30d')`. A time bound narrows which buckets come back, not which rows the window may reach — so `date_range` and an equivalent explicit filter (`created_at >= '2025-01-01'`) give identical windowed numbers. Only `<`/`<=`/`>`/`>=` against a time dimension's own column and a literal counts; other operators, non-time-dimension columns, bounds under `or`/`not`, and model-level `filters` all restrict the window's input as usual. Same rule for `time_shift`.
 
-For month-over-month / period-over-period growth use `change_pct(x)` (absolute delta: `change(x)`) — both are calendar-aware and partition-safe (the underlying self-join matches on all non-time dimensions, so per-group series reset cleanly). Reach for `time_shift` only when you need the shifted value itself as a term in custom arithmetic or at a different grain (`time_shift(revenue:sum, -1, 'year')` for year-over-year).
+For month-over-month / period-over-period growth use `change_pct(x)` (absolute delta: `change(x)`) — both are calendar-aware and partition-safe (the underlying self-join matches on all non-time dimensions, so per-group series reset cleanly). Reach for `time_shift` only when you need the shifted value itself as a term in custom arithmetic or at a different grain (`time_shift(sum(revenue), -1, 'year')` for year-over-year).
 
-Any aggregation accepts `partition_by=` to compute it over a subset of the query's dimensions, repeated across the finer rows — the share-of-parent shape. With `dimensions: [region, city]`, `revenue:sum(partition_by=region)` is the region total on every city row, so `revenue:sum / revenue:sum(partition_by=region)` sums to 1.0 per region; `partition_by=[]` is the grand total. Takes one dimension, a list (`partition_by=[region, channel]`), a dotted path, or `[]`. Computed over rows passing row-level filters (HAVING/pagination never change the parent total). As a MEASURE, `partition_by` takes a query dimension (finer grains are allowed only inside a computed dimension). A LOCAL `partition_by` aggregate composes with the rest of the query: combined with `window=` (a rolling total at the partition grain, per the query's active time bucket), on `first`/`last`, nested in a transform (`cumsum(revenue:sum(partition_by=region))`), and referenced in a filter (`revenue:sum(partition_by=region) > 5000`; a filter's top-level `AND` conjuncts route independently, and a predicate whose references share no scope raises a "split the filter" error). CROSS-MODEL aggregates compose the same way (`window=`, `first`/`last`, transforms, filters, dimension expressions — see the cross-model paragraph below); the remaining exclusions are `partition_by` on a cross-model `first`/`last` aggregate (still deferred) and aggregating over an attached aggregate value, e.g. `partition_by=` naming a computed dimension that itself contains an aggregate, which raises. On transforms, `partition_by=` is rank-family only.
+Any aggregation accepts `partition_by=` to compute it over a subset of the query's dimensions, repeated across the finer rows — the share-of-parent shape. With `dimensions: [region, city]`, `sum(revenue, partition_by=region)` is the region total on every city row, so `sum(revenue) / sum(revenue, partition_by=region)` sums to 1.0 per region; `partition_by=[]` is the grand total. Takes one dimension, a list (`partition_by=[region, channel]`), a dotted path, or `[]`. Computed over rows passing row-level filters (HAVING/pagination never change the parent total). As a MEASURE, `partition_by` takes a query dimension (finer grains are allowed only inside a computed dimension). A LOCAL `partition_by` aggregate composes with the rest of the query: combined with `window=` (a rolling total at the partition grain, per the query's active time bucket), on `first`/`last`, nested in a transform (`cumsum(sum(revenue, partition_by=region))`), and referenced in a filter (`sum(revenue, partition_by=region) > 5000`; a filter's top-level `AND` conjuncts route independently, and a predicate whose references share no scope raises a "split the filter" error). CROSS-MODEL aggregates compose the same way (`window=`, `first`/`last`, transforms, filters, dimension expressions — see the cross-model paragraph below); the remaining exclusions are `partition_by` on a cross-model `first`/`last` aggregate (still deferred) and aggregating over an attached aggregate value, e.g. `partition_by=` naming a computed dimension that itself contains an aggregate, which raises. On transforms, `partition_by=` is rank-family only.
 
-`*:count` is always available — no column definition needed. `col:count` counts non-nulls.
+`count(*)` is always available — no column definition needed. `count(col)` counts non-nulls.
 
 Saved named formulas (`SlayerModel.measures`) can be referenced by bare name (`{"formula": "aov"}`), or by dotted path for a joined model's saved measure (`{"formula": "customers.aov"}`).
 
@@ -76,13 +76,13 @@ Result column naming: `revenue:sum` → `orders.revenue_sum` (colon becomes unde
 
 **Mode-B scalars** (matched case-insensitively): string hygiene (`lower`, `upper`, `trim`, `ltrim`, `rtrim`, `replace`, `substr`, `substring`, `instr`, `length`, `concat`), null handling (`coalesce`, `nullif`, `ifnull`), math (`round`, `abs`, `ceil`, `floor`, `sign`, `trunc`, `mod`, `log10`, …), scalar min/max (`greatest`, `least` — NULL handling is backend-specific; `trunc` is 1-arg), and the conditional `iif(c, x, y)` (see below). Plus the SQL `||` operator (folded into `concat(...)`). Examples: `"lower(status) = 'active'"`, `"coalesce(nickname, name) = 'Ada'"`, `"length(replace(x, ',', '')) > 0"`, `"first || ' ' || last = 'jane doe'"`. Raw SQL functions outside the allowlist (`json_extract`, `date_trunc`, …) belong in `Column.sql` / `Column.filter` / `SlayerModel.filters` (Mode A SQL), not query filters.
 
-**Conditionals**: any formula / filter / expression can branch with SQL `CASE WHEN c THEN x [WHEN …] [ELSE y] END` (searched or simple `CASE col WHEN v THEN …`; missing `ELSE` → NULL) or `iif(c, x, y)` — e.g. `{"formula": "CASE WHEN revenue:sum >= 10000 THEN 1 ELSE 0 END", "name": "big"}`. Renders to portable SQL `CASE`; branch types must agree (a NULL branch — e.g. from a missing `ELSE` — is absorbed by the other branch's type, a numeric mix widens, any other mix is a plan-time error). The Python `x if c else y` is not supported.
+**Conditionals**: any formula / filter / expression can branch with SQL `CASE WHEN c THEN x [WHEN …] [ELSE y] END` (searched or simple `CASE col WHEN v THEN …`; missing `ELSE` → NULL) or `iif(c, x, y)` — e.g. `{"formula": "CASE WHEN sum(revenue) >= 10000 THEN 1 ELSE 0 END", "name": "big"}`. Renders to portable SQL `CASE`; branch types must agree (a NULL branch — e.g. from a missing `ELSE` — is absorbed by the other branch's type, a numeric mix widens, any other mix is a plan-time error). The Python `x if c else y` is not supported.
 
-**Expression dimensions**: group by a computed expression with a dict `{"expression": "lower(city)", "name": "city_lc"}` in `dimensions` (a bare non-identifier string like `"round(amount)"` is also parsed as one, auto-named). The expression is projected and grouped; its name is usable in `filters`/`order`. Grouping by an expression *over an aggregate* is supported when the aggregate carries `partition_by=` — e.g. `{"expression": "CASE WHEN amount:sum(partition_by=city) > 5000 THEN 1 ELSE 0 END", "name": "band"}` grouped by `region` bands cities by their total, then regroups by `(region, band)`. The `partition_by` grain may be any groupable key (finer than the query), including `[]` (grand total) and joined paths; measures still aggregate raw rows once. A dimension expression may also band a windowed partitioned aggregate (`amount:sum(window='90d', partition_by=region)`), a `first`/`last`, or a transform over a grained aggregate (`rank(revenue:sum(partition_by=region))` — as a DIMENSION the transform evaluates at the producer grain, so it ranks partitions, not rows). An aggregation-derived dimension combines with transform measures (`time_shift`/`change`/`change_pct`/`cumsum`/`lag`/`lead`/`consecutive_periods`/`rank(x)`), alongside plain, `partition_by=`, bare windowed (`window=`), and `first`/`last` measures — the computed dimension is an ordinary grouping dimension for every transform. A transform over aggregates at DIFFERENT partition grains broadcasts over their union grain (a windowed inner contributes the query's active time bucket; `first`/`last` is timeless). A cross-model aggregate source inside a dimension expression is legal (it compiles like a [cross-model measure](#cross-model-measures), same exact-vs-broadcast semantics), as is a computed dimension combined with a cross-model measure. Deferred (raises): a bare aggregate without `partition_by=`, and an aggregate partitioned by another computed dimension (a nested attach).
+**Expression dimensions**: group by a computed expression with a dict `{"expression": "lower(city)", "name": "city_lc"}` in `dimensions` (a bare non-identifier string like `"round(amount)"` is also parsed as one, auto-named). The expression is projected and grouped; its name is usable in `filters`/`order`. Grouping by an expression *over an aggregate* is supported when the aggregate carries `partition_by=` — e.g. `{"expression": "CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END", "name": "band"}` grouped by `region` bands cities by their total, then regroups by `(region, band)`. The `partition_by` grain may be any groupable key (finer than the query), including `[]` (grand total) and joined paths; measures still aggregate raw rows once. A dimension expression may also band a windowed partitioned aggregate (`sum(amount, window='90d', partition_by=region)`), a `first`/`last`, or a transform over a grained aggregate (`rank(sum(revenue, partition_by=region))` — as a DIMENSION the transform evaluates at the producer grain, so it ranks partitions, not rows). An aggregation-derived dimension combines with transform measures (`time_shift`/`change`/`change_pct`/`cumsum`/`lag`/`lead`/`consecutive_periods`/`rank(x)`), alongside plain, `partition_by=`, bare windowed (`window=`), and `first`/`last` measures — the computed dimension is an ordinary grouping dimension for every transform. A transform over aggregates at DIFFERENT partition grains broadcasts over their union grain (a windowed inner contributes the query's active time bucket; `first`/`last` is timeless). A cross-model aggregate source inside a dimension expression is legal (it compiles like a [cross-model measure](#cross-model-measures), same exact-vs-broadcast semantics), as is a computed dimension combined with a cross-model measure. Deferred (raises): a bare aggregate without `partition_by=`, and an aggregate partitioned by another computed dimension (a nested attach).
 
-**Filtering on computed measures**: `"change(revenue:sum) > 0"`, `"last(change(revenue:sum)) < 0"`. Applied as post-filters on the outer query.
+**Filtering on computed measures**: `"change(sum(revenue)) > 0"`, `"last(change(sum(revenue))) < 0"`. Applied as post-filters on the outer query.
 
-**Top-N filtering**: use `"rank(<measure>) <= N"` (e.g. `"rank(revenue:sum) <= 10"`) — dialect-portable and auto-promoted to a post-filter on the outer query. Raw `OVER (...)` SQL inside a filter or `ModelMeasure.formula` is rejected with an actionable error. Filtering on a `Column` whose `sql` contains a window function is also rejected (DEV-1369): use `rank()` / `dense_rank()` / `percent_rank()` / `ntile(n=<N>)` for top-N, or factor the windowed expression into an earlier stage of a multi-stage `source_queries` model.
+**Top-N filtering**: use `"rank(<measure>) <= N"` (e.g. `"rank(sum(revenue)) <= 10"`) — dialect-portable and auto-promoted to a post-filter on the outer query. Raw `OVER (...)` SQL inside a filter or `ModelMeasure.formula` is rejected with an actionable error. Filtering on a `Column` whose `sql` contains a window function is also rejected (DEV-1369): use `rank()` / `dense_rank()` / `percent_rank()` / `ntile(n=<N>)` for top-N, or factor the windowed expression into an earlier stage of a multi-stage `source_queries` model.
 
 **Variable substitution**: `{var}` placeholders in filter strings are substituted from the query's `variables` dict (or per-model defaults). Use `{{`/`}}` for literal braces. Write the surrounding quotes yourself (`status = '{status}'`); string values are auto-escaped so an embedded quote, backslash, or control char (newline/tab) stays inside the literal and parses cleanly (DEV-1727). Numbers (incl. bool) insert verbatim; non-finite floats are rejected; undefined vars raise. A **list** value renders an injection-safe `IN`-list for an `in`/`not in` filter (`region in ({regions})` with `{"regions": ["US","CA"]}` → `region IN ('US', 'CA')`) — write the parens, omit per-element quotes (auto-quoted); empty list raises. The same `{var}` mechanism also fills the raw-SQL (Mode A) surfaces of the query's direct source model — `SlayerModel.sql`, `SlayerModel.filters`, `Column.sql`, `Column.filter` (DEV-1625) — which additionally support optional blocks `{? pred ?}` that collapse to `(1=1)` when their vars are absent (Cube `FILTER_PARAMS` form, DEV-1730). See slayer-models skill for details.
 
@@ -123,16 +123,16 @@ Reference measures from joined models with dotted syntax + colon aggregation:
 
 ```json
 "measures": [
-  "*:count",
-  "customers.score:avg",
-  "cumsum(customers.score:avg)",
-  "customers.regions.population:sum"
+  "count(*)",
+  "avg(customers.score)",
+  "cumsum(avg(customers.score))",
+  "sum(customers.regions.population)"
 ]
 ```
 
-A cross-model measure is computed in a sub-query rooted at ITS OWN model and joined back, so a 1:N host join never multiplies it. It gets the exact per-group value for dimensions the engine can prove safe from that model (a primary key on the far side of each hop, or declared join `cardinality: many_to_one`/`one_to_one`); any other dimension gets the BROADCAST value (the safe-grain total repeated), reported in `.warnings` as `kind: "broadcast"` — declare the join cardinality to make it exact. A query filter the sub-query cannot evaluate from its root applies to local measures only and warns (`kind: "unreachable_filter_dropped"`). `"strict": true` on the query turns both into errors. A filter ON the cross-model value (`"customers.score:avg > 4"`) drops failing groups, uniformly with local aggregate filters. Cross-model aggregates also take `window=` (the query's active time dimension must be attributable from the measure's model), `partition_by=` (each explicit key must be attributable — else a hard error), `first`/`last`, and work inside dimension expressions.
+A cross-model measure is computed in a sub-query rooted at ITS OWN model and joined back, so a 1:N host join never multiplies it. It gets the exact per-group value for dimensions the engine can prove safe from that model (a primary key on the far side of each hop, or declared join `cardinality: many_to_one`/`one_to_one`); any other dimension gets the BROADCAST value (the safe-grain total repeated), reported in `.warnings` as `kind: "broadcast"` — declare the join cardinality to make it exact. A query filter the sub-query cannot evaluate from its root applies to local measures only and warns (`kind: "unreachable_filter_dropped"`). `"strict": true` on the query turns both into errors. A filter ON the cross-model value (`"avg(customers.score) > 4"`) drops failing groups, uniformly with local aggregate filters. Cross-model aggregates also take `window=` (the query's active time dimension must be attributable from the measure's model), `partition_by=` (each explicit key must be attributable — else a hard error), `first`/`last`, and work inside dimension expressions.
 
-A dotted reference may target a *derived* column on the joined model (a column whose own `sql` is itself an expression). The engine recursively inlines the chain at query time — `"B.foo_normalized:sum"` where `B.foo_normalized.sql = "foo_raw / 100.0"` emits `SUM(B.foo_raw / 100.0)`. The same chaining works inside `Column.sql`, `filters`, and `dimensions`. When a filter names a *bare* local derived column whose SQL crosses a join (e.g. `Column(name="is_eu", sql="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END")` referenced as `"filters": ["is_eu = 1"]`), the planner walks the column's chain and adds the joins the chain implies — no need to also list the column in `dimensions`.
+A dotted reference may target a *derived* column on the joined model (a column whose own `sql` is itself an expression). The engine recursively inlines the chain at query time — `"sum(B.foo_normalized)"` where `B.foo_normalized.sql = "foo_raw / 100.0"` emits `SUM(B.foo_raw / 100.0)`. The same chaining works inside `Column.sql`, `filters`, and `dimensions`. When a filter names a *bare* local derived column whose SQL crosses a join (e.g. `Column(name="is_eu", sql="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END")` referenced as `"filters": ["is_eu = 1"]`), the planner walks the column's chain and adds the joins the chain implies — no need to also list the column in `dimensions`.
 
 ## Picking the root model
 
@@ -161,7 +161,7 @@ Extend a model inline with extra columns, named-formula measures, joins, or filt
     ]
   },
   "dimensions": ["tier"],
-  "measures": ["*:count"]
+  "measures": ["count(*)"]
 }
 ```
 
@@ -176,12 +176,12 @@ Pass a list of queries — earlier queries are named sub-queries; the last is th
   {
     "name": "monthly",
     "source_model": "orders",
-    "measures": ["*:count", "revenue:sum"],
+    "measures": ["count(*)", "sum(revenue)"],
     "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
   },
   {
     "source_model": "monthly",
-    "measures": ["*:count"]
+    "measures": ["count(*)"]
   }
 ]
 ```
@@ -192,7 +192,7 @@ Surfaces: Python SDK `engine.execute(query=[...])`; CLI `slayer query @file.json
 
 ## Result format
 
-Column keys use `model_name.column_name` format: `"orders._count"`, `"orders.revenue_sum"`. For multi-hop joined dimensions, the full path is included: `"orders.customers.regions.name"`. Columns come back in the order you declare them in the query — dimensions, then time dimensions, then measures — regardless of measure kind (local, cross-model, or windowed); hidden order-only / filter-only targets never appear. An explicit `name` on a measure spec swaps the canonical leaf — local (`{"formula": "amount:sum", "name": "rev"}` → `"orders.rev"`) or cross-model (`{"formula": "customers.revenue:sum", "name": "cust_rev"}` → `"orders.customers.cust_rev"`, hop path preserved). In any downstream stage of a `query_nested` DAG the column is exposed under the bare `name` (e.g. `cust_rev`) — that's what you type in stage 2's `formula` to reference the value. The response also includes `attributes` — a `ResponseAttributes` object with `.dimensions` and `.measures` dicts, each mapping column alias → `FieldMetadata` (label, format).
+Column keys use `model_name.column_name` format: `"orders._count"`, `"orders.revenue_sum"`. For multi-hop joined dimensions, the full path is included: `"orders.customers.regions.name"`. Columns come back in the order you declare them in the query — dimensions, then time dimensions, then measures — regardless of measure kind (local, cross-model, or windowed); hidden order-only / filter-only targets never appear. An explicit `name` on a measure spec swaps the canonical leaf — local (`{"formula": "sum(amount)", "name": "rev"}` → `"orders.rev"`) or cross-model (`{"formula": "sum(customers.revenue)", "name": "cust_rev"}` → `"orders.customers.cust_rev"`, hop path preserved). In any downstream stage of a `query_nested` DAG the column is exposed under the bare `name` (e.g. `cust_rev`) — that's what you type in stage 2's `formula` to reference the value. The response also includes `attributes` — a `ResponseAttributes` object with `.dimensions` and `.measures` dicts, each mapping column alias → `FieldMetadata` (label, format).
 
 ## Strict validation (v3)
 

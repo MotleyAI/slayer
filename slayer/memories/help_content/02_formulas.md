@@ -10,15 +10,15 @@ precedence matches Python.
 
 | Form | Meaning |
 |------|---------|
-| `revenue:sum` | `SUM(revenue_measure_sql)` |
-| `*:count` | `COUNT(*)` — always available, no measure definition |
-| `col:count` | `COUNT(col)` — counts non-nulls |
-| `col:count_distinct` | `COUNT(DISTINCT col)` |
-| `price:weighted_avg(weight=quantity)` | custom-arg aggregation |
-| `customers.score:avg` | cross-model — measure from a joined model |
-| `customers.regions.population:sum` | multi-hop cross-model |
+| `sum(revenue)` | `SUM(revenue_measure_sql)` |
+| `count(*)` | `COUNT(*)` — always available, no measure definition |
+| `count(col)` | `COUNT(col)` — counts non-nulls |
+| `count_distinct(col)` | `COUNT(DISTINCT col)` |
+| `weighted_avg(price, weight=quantity)` | custom-arg aggregation |
+| `avg(customers.score)` | cross-model — measure from a joined model |
+| `sum(customers.regions.population)` | multi-hop cross-model |
 
-`*` can **only** combine with `count`. `*:sum`, `*:avg`, etc. are errors.
+`*` can **only** combine with `count`. `sum(*)`, `avg(*)`, etc. are errors.
 
 ## Arithmetic
 
@@ -26,8 +26,8 @@ Python-style arithmetic over aggregated measures and literals:
 
 | Operator | Example |
 |----------|---------|
-| `+` `-` `*` `/` `**` | `"revenue:sum / *:count"` |
-| parentheses | `"(revenue:sum - cost:sum) / *:count"` |
+| `+` `-` `*` `/` `**` | `"sum(revenue) / count(*)"` |
+| parentheses | `"(sum(revenue) - sum(cost)) / count(*)"` |
 
 Inside a field, use a dict to name the result:
 
@@ -35,8 +35,8 @@ Inside a field, use a dict to name the result:
 {
   "source_model": "orders",
   "measures": [
-    "*:count",
-    {"formula": "revenue:sum / *:count", "name": "aov", "label": "AOV"}
+    "count(*)",
+    {"formula": "sum(revenue) / count(*)", "name": "aov", "label": "AOV"}
   ]
 }
 ```
@@ -52,8 +52,8 @@ transforms such as `cumsum` can wrap those (the reverse is rejected):
 {
   "source_model": "orders",
   "measures": [
-    {"formula": "cumsum(change(revenue:sum))", "name": "cumulative_change"},
-    {"formula": "cumsum(revenue:sum / *:count)", "name": "running_aov"}
+    {"formula": "cumsum(change(sum(revenue)))", "name": "cumulative_change"},
+    {"formula": "cumsum(sum(revenue) / count(*))", "name": "running_aov"}
   ],
   "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
 }
@@ -71,7 +71,7 @@ inside arithmetic:
 ```yaml
 # model
 measures:
-  - {name: aov, formula: "revenue:sum / *:count"}
+  - {name: aov, formula: "sum(revenue) / count(*)"}
   - {name: aov_pct, formula: "change_pct(aov)"}
 ```
 
@@ -98,8 +98,8 @@ dimension, a measure with `:agg`, or a transform expression. See
 
 ## Gotchas
 
-- Bare measure renames (`{"formula": "*:count", "name": "n"}`) can be
-  referenced by either `n` or `*:count` in `filters`.
+- Bare measure renames (`{"formula": "count(*)", "name": "n"}`) can be
+  referenced by either `n` or `count(*)` in `filters`.
 - Formulas validate measure names against the source model at query time.
   If you get "measure not found", call `inspect(reference="<model>", entity_type="model")`
   and check the actual measure list.

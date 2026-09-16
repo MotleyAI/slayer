@@ -12,7 +12,7 @@ composes them.
 
 The registry maps `ValueKey → ValueSlot`. `intern(...)` either returns the
 existing slot for a structurally-equal key or allocates a fresh one. This is the
-mechanism behind **P2**: `change(amount:sum)` and a filter `amount:sum` build the
+mechanism behind **P2**: `change(sum(amount))` and a filter `sum(amount)` build the
 same inner `AggregateKey`, so they intern to one slot and `SUM(amount)` is
 emitted once (DEV-1446).
 
@@ -86,15 +86,15 @@ need a materialised slot versus which the generator inlines:
 | `BetweenKey` | no — inlined into WHERE; recurse into column/low/high |
 | `LiteralKey` / `StarKey` | never slottable alone |
 
-So `ORDER BY revenue:sum DESC LIMIT 10` with no declared `revenue:sum` measure
+So `ORDER BY sum(revenue) DESC LIMIT 10` with no declared `sum(revenue)` measure
 interns the aggregate as a `hidden=True` slot: the base CTE materializes it, the
 outer SELECT trims it from the public projection, and `StageSchema.columns`
 excludes it (downstream stages see no extra column). The same rule covers
 filter-only refs. The no-transform "plain" path follows the same pattern via a
 conditional outer-trim wrapper (DEV-1501): the wrap fires only when the base
 materialises a hidden slot, so simple flat queries stay flat. Hidden parametric
-aggregates (`revenue:last(created_at)` vs `revenue:last(updated_at)`,
-`revenue:percentile(p=0.5)` vs `…(p=0.95)`) route their declared name through
+aggregates (`last(revenue, created_at)` vs `last(revenue, updated_at)`,
+`percentile(revenue, p=0.5)` vs `…(p=0.95)`) route their declared name through
 `canonical_agg_name` so the args/kwargs surface in the materialised alias —
 two distinct hidden parametric aggregates get distinct base-CTE aliases instead
 of colliding on `revenue_last` / `revenue_percentile`.

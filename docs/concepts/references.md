@@ -28,7 +28,7 @@ SLayer has two distinct expression layers and the rules for what each one accept
 * A single-dot dotted path walks the join graph: `customers.regions.name` traverses `model → customers → regions` and resolves `name` on the regions model. Multi-hop is supported.
 * Aggregation colon syntax: `<col>:<agg>` (e.g. `revenue:sum`), `*:count`, `<col>:<agg>(<args>)` (e.g. `price:weighted_avg(weight=quantity)`), and `<dotted.path>:<agg>` for cross-model aggregations.
 * The **functional spelling** `<agg>(<col>, <args>)` is a first-class exact equivalent of the colon form in every position — see [Aggregation spelling equivalence](#aggregation-spelling-equivalence).
-* Transform calls wrap aggregated refs: `cumsum(revenue:sum)`, `rank(revenue:sum, partition_by=region)`, `change(customers.revenue:sum)`, etc.
+* Transform calls wrap aggregated refs: `cumsum(sum(revenue))`, `rank(sum(revenue), partition_by=region)`, `change(sum(customers.revenue))`, etc.
 * A `__` token in a name is matched by **exact name**, not split into a join walk — write a single-dot DSL path (`customers.region`) for a join. Only the reserved `__slayer_` prefix is rejected.
 
 ## Aggregation spelling equivalence
@@ -39,7 +39,7 @@ keys, same errors. This holds for **every** position that accepts
 aggregations (query measures, filters, order, model measures, model
 extensions, inline models, multi-stage formulas, computed-dimension
 expressions, transform and arithmetic operands) and for **every** aggregation
-— builtin, aliased (`countD(x)` ≡ `x:count_distinct`), and model-defined
+— builtin, aliased (`countD(x)` ≡ `count_distinct(x)`), and model-defined
 custom aggregations. Neither spelling is rewritten or warned about; a saved
 model keeps the author's spelling.
 
@@ -126,8 +126,8 @@ Rejected at `Column` construction:
 Accepted at `SlayerQuery` construction:
 
 ```json
-{"source_model": "orders", "filters": ["revenue:sum > 100"]}
-{"source_model": "orders", "filters": ["change(revenue:sum) > 0"]}
+{"source_model": "orders", "filters": ["sum(revenue) > 100"]}
+{"source_model": "orders", "filters": ["change(sum(revenue)) > 0"]}
 {"source_model": "orders", "filters": ["customers.region == 'EU'"]}
 {"source_model": "orders", "filters": ["status = '{val}'"], "variables": {"val": "active"}}
 ```
@@ -157,10 +157,10 @@ Rejected at enrichment:
 Accepted at construction:
 
 ```json
-{"name": "aov", "formula": "revenue:sum / *:count"}
-{"name": "cust_rev", "formula": "customers.revenue:sum"}     // cross-model dotted path
+{"name": "aov", "formula": "sum(revenue) / count(*)"}
+{"name": "cust_rev", "formula": "sum(customers.revenue)"}     // cross-model dotted path
 {"name": "resale", "formula": "customers.aov"}               // another model's SAVED measure
-{"name": "growth", "formula": "change(revenue:sum)"}         // transform on agg ref
+{"name": "growth", "formula": "change(sum(revenue))"}         // transform on agg ref
 ```
 
 Rejected at enrichment (when the formula is evaluated against a model):

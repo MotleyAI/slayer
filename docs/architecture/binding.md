@@ -60,7 +60,7 @@ preserving the legacy convenience of qualifying with your own model name.
 ## Binding aggregates
 
 `_bind_agg` builds an `AggregateKey`. The source is a `StarKey` for `*`, a
-path-carrying `StarKey` for a cross-model star (`customers.*:count`, via
+path-carrying `StarKey` for a cross-model star (`count(customers.*)`, via
 `_resolve_dotted_star`), or the bound column otherwise. Positional/kwarg
 arguments bind through `_bind_agg_arg` — identifier args become `ColumnKey`,
 literals normalize via `normalize_scalar`. Crucially, `_resolve_column_filter_key`
@@ -118,7 +118,7 @@ stage's declared-measure names (user `name`, declared name, canonical alias) to
 their bound `ValueKey`. A bare ref matching an alias interns onto that exact slot
 *before* any column lookup. This is what lets a filter reference a renamed measure
 by alias: `filters=["rev >= 100"]` for a measure declared
-`{"formula": "customers.revenue:sum", "name": "rev"}` binds `rev` onto the
+`{"formula": "sum(customers.revenue)", "name": "rev"}` binds `rev` onto the
 cross-model aggregate slot — and because the dotted/colon form interns
 structurally onto the *same* `AggregateKey`, both forms share one slot. Only
 *measure* aliases enter the map (never dimension / time-dimension names), because
