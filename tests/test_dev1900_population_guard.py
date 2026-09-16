@@ -75,6 +75,24 @@ class TestFanningPopulationFilterFailsClosed:
         assert_ref_free(msg)
 
     @pytest.mark.parametrize("mode", MODES)
+    async def test_inline_aggregate_only_in_filter_fails_closed(self, engine, mode):
+        """The inline population aggregate lives only in a HAVING/combined
+        predicate (``spend:sum > 1``), not a projected measure — a fanning row
+        filter multiplies it just the same, so the guard must fail closed
+        (Codex; the detector scans filters, not just measures/ordering). Without
+        the fix this silently emits ``SUM(spend)`` over the join-multiplied rows."""
+        q = cust_q(
+            dimensions=["tier"],
+            filters=["orders.status = 'ok'", "spend:sum > 1"],
+            to_many_handling=mode)
+        with pytest.raises(ValueError) as ei:
+            await engine.execute(q)
+        msg = str(ei.value)
+        assert "status" in msg, msg
+        assert "orders" in msg, msg
+        assert_ref_free(msg)
+
+    @pytest.mark.parametrize("mode", MODES)
     async def test_unanalyzable_filter_fails_closed(self, unparse_engine, mode):
         """A filter on a derived column no dialect can analyse must fail closed
         with the inline aggregate, never route as if it crossed nothing."""
