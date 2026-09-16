@@ -21,7 +21,6 @@ from slayer.core.query import SlayerQuery
 
 GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1892_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
-ALLOWED_DELTAS: dict[str, str] = {}
 
 _MODEL_SETS = {
     "orders": dev1840_models,
@@ -86,6 +85,14 @@ async def _generate_one(case, dialect: str):
     except Exception as exc:  # noqa: BLE001 — the raise itself is the contract
         return record_raise(exc)
 
+
+# DEV-1910 pending deltas: the home-rooted association re-homes every associate
+# case's SQL; re-blessed and emptied at implementation (task 4.2).
+ALLOWED_DELTAS: dict[str, str] = {
+    f"{cid}::{d}": "DEV-1910 home-rooted association"
+    for cid, case in _cases().items() if case["mode"] == "associate"
+    for d in DIALECTS
+}
 
 bind_golden_tests(
     namespace=globals(),
