@@ -8,28 +8,28 @@
 
 ## 2. Reverse path (join_safety)
 
-- [ ] 2.1 `_back_token` → `_back_path` (forward walk from the host, edge name else source model per hop, reversed, `(host_name,)` fallback); callers `attributable_from_root`, `_reroot_leaf_via_host`, `broadcast_reason` use `(*back, *hp)`. Verify: 1.3 green; DEV-1840/1841/1853 suites and every non-association golden byte-identical.
-- [ ] 2.2 `crossing_local_root_predicate` excludes `locus == "host"`. Verify: DEV-1859 plan-structure and exec suites green.
+- [x] 2.1 `_back_token` → `_back_path` (forward walk from the host, edge name else source model per hop, reversed, `(host_name,)` fallback); callers `attributable_from_root`, `_reroot_leaf_via_host`, `broadcast_reason` use `(*back, *hp)`. Verify: 1.3 green; DEV-1840/1841/1853 suites and every non-association golden byte-identical.
+- [x] 2.2 `crossing_local_root_predicate` excludes `locus == "host"`. Verify: DEV-1859 plan-structure and exec suites green.
 
 ## 3. IR and rendering
 
-- [ ] 3.1 `AssociationProducerKernel.present_keys: List[ValueKey]`; `RegroupAttachPlan.association_restricted_filter_texts: List[str]`. Verify: pydantic round-trip in 1.2 plan tests.
-- [ ] 3.2 `_render_association_producer_body`: `NOT (<col> IS NULL)` for every present key in level 1 next to the entity clause. Verify: 1.1 presence-guard cases green.
-- [ ] 3.3 `query_engine._attach_semi_join_texts` also yields the attach's restricted texts. Verify: 1.1 entry case green; DEV-1841 warnings suite green.
+- [x] 3.1 `AssociationProducerKernel.present_keys: List[ValueKey]`; `RegroupAttachPlan.association_restricted_filter_texts: List[str]`. Verify: pydantic round-trip in 1.2 plan tests.
+- [x] 3.2 `_render_association_producer_body`: `NOT (<col> IS NULL)` for every present key in level 1 next to the entity clause. Verify: 1.1 presence-guard cases green.
+- [x] 3.3 `query_engine._attach_semi_join_texts` also yields the attach's restricted texts. Verify: 1.1 entry case green; DEV-1841 warnings suite green.
 
 ## 4. Compiler fold
 
-- [ ] 4.1 Association arm inside `_synthesize_cross_model_producer` (design decisions 2–4, 8) and the shared tail; delete `_synthesize_association_producer`. Verify: 1.1 / 1.2 / 1.4 green; DEV-1841 / 1847 / 1859 / 1892 / 1900 suites green; DEV-1906 strict xfail still xfails; `tests/test_law_dice_slice.py` green.
-- [ ] 4.2 Re-bless goldens (`SLAYER_UPDATE_GOLDEN=1`), review each delta is an association case only, empty the manifests. Verify: golden modules green with empty `ALLOWED_DELTAS`.
+- [x] 4.1 Association arm inside `_synthesize_cross_model_producer` (design decisions 2–4, 8) and the shared tail; delete `_synthesize_association_producer`. Verify: 1.1 / 1.2 / 1.4 green; DEV-1841 / 1847 / 1859 / 1892 / 1900 suites green; DEV-1906 strict xfail still xfails; `tests/test_law_dice_slice.py` green.
+- [x] 4.2 Re-bless goldens (`SLAYER_UPDATE_GOLDEN=1`), review each delta is an association case only, empty the manifests. Verify: golden modules green with empty `ALLOWED_DELTAS`.
 
 ## 5. Docs and durable records
 
-- [ ] 5.1 One sentence in the associate paragraph of `docs/concepts/queries.md` (home-rooted; an entity with no population row still counts in the cells its own path reaches; filters bind to the same related row as the dimension). Verify: sentence present, page still linked in `zensical.toml`.
-- [ ] 5.2 `architecture/semantics.arc42.md` Axiom 8: add `[enforced: test:tests/test_dev1910_home_rooted_association.py]` to the associate clause (approved). Verify: `poetry run python tools/arch_check.py` green.
-- [ ] 5.3 Comment on DEV-1906 recording the host-root twin residue (customers-rooted local root with an attached parameter reading orders columns is refused by the crossing-local-root routing; repro query in the design Context). Verify: comment posted.
+- [x] 5.1 One sentence in the associate paragraph of `docs/concepts/queries.md` (home-rooted; an entity with no population row still counts in the cells its own path reaches; filters bind to the same related row as the dimension). Verify: sentence present, page still linked in `zensical.toml`.
+- [x] 5.2 `architecture/semantics.arc42.md` Axiom 8: add `[enforced: test:tests/test_dev1910_home_rooted_association.py]` to the associate clause (approved). Verify: `poetry run python tools/arch_check.py` green.
+- [x] 5.3 Comment on DEV-1906 recording the host-root twin residue (customers-rooted local root with an attached parameter reading orders columns is refused by the crossing-local-root routing; repro query in the design Context). Verify: comment posted.
 
 ## 6. Gates
 
-- [ ] 6.1 `poetry run pytest -m "not integration" -n auto`; `poetry run ruff check slayer/ tests/`; `poetry run python tools/arch_check.py`; `poetry run basedpyright` (no new errors vs baseline); `~/.claude/skills/process-reviews/scripts/check-conventions.sh`. Verify: all green.
+- [x] 6.1 `poetry run pytest -m "not integration" -n auto`; `poetry run ruff check slayer/ tests/`; `poetry run python tools/arch_check.py`; `poetry run basedpyright` (no new errors vs baseline); `~/.claude/skills/process-reviews/scripts/check-conventions.sh`. Verify: all green.
 - [ ] 6.2 Codex pass over the working tree before the push. Verify: no open findings.
 - [ ] 6.3 With go-ahead: commit, push, open the PR against the DEV-1900 branch while PR #398 is open (retarget to `main` once it merges). Verify: PR URL.

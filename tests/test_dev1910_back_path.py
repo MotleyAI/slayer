@@ -1,12 +1,8 @@
-"""DEV-1910 task 2.1 — the reverse hop generalizes to a reverse PATH. ``_back_token``
-becomes ``_back_path`` (a tuple), so a home several hops from the population root
-reroots population-side references through every reversed hop: the edge name when
-declared (direction-agnostic), else the hop's source model name. A chain of
-provably one-to-one reverse hops becomes attributable; an ambiguous reverse hop
-fails closed. Single-hop results stay byte-identical to today.
-
-Spec: queries/cross-model-aggregates — "Producer filter routing" (reverse path).
-"""
+"""DEV-1910 task 2.1 — the reverse hop generalizes to a reverse PATH
+(``_back_token`` → ``_back_path``, a tuple): each hop's reverse token is the
+edge name when declared else the source model; a one-to-one reverse chain
+becomes attributable, an ambiguous reverse hop fails closed, single-hop stays
+byte-identical. Spec: queries/cross-model-aggregates — "Producer filter routing"."""
 
 from __future__ import annotations
 

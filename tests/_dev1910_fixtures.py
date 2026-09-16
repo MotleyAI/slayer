@@ -1,19 +1,8 @@
-"""Shared fixtures for DEV-1910 — the association producer roots at the home,
-so a home entity absent from the query population still counts in the cells its
-own path reaches.
-
-Built on ``tests/_dev1900_fixtures.py`` (the ``orders → customers → regions →
-region_events`` graph, ``bad_pop`` the derived fanning dimension) and the
-DEV-1840 dataset. c7 is a South customer with ZERO orders; the seed here adds
-one extra NULL-status order for c1 so a NULL-status cell exists and the
-presence rule (a population-root-reached dimension needs a population row) is
-observable against c7.
-
-The standard engine (no extra order) comes from ``_dev1900_fixtures`` /
-``_dev1841_fixtures``; ``make_null_status_engine`` below is the null-status
-variant, seeded into SQLite AND DuckDB from the DEV-1840 dataset + the extra
-order. Every oracle traces to that dataset.
-"""
+"""DEV-1910 fixtures: the association producer roots at the home, so an entity
+absent from the population still counts in the cells its path reaches. Built on
+``_dev1900_fixtures`` + the DEV-1840 dataset; c7 is a South customer with ZERO
+orders, and ``make_null_status_engine`` adds a NULL-status order for c1 (SQLite
++ DuckDB) so the back-hop presence rule is observable against c7."""
 
 from __future__ import annotations
 
@@ -137,79 +126,56 @@ async def make_null_status_engine(
             models=models if models is not None else dev1900_models())
 
 
-# --------------------------------------------------------------------------- #
-# Measures.
-# --------------------------------------------------------------------------- #
 SPEND_SUM = ModelMeasure(formula="customers.spend:sum", name="csp")
 AMOUNT_SUM = ModelMeasure(formula="amount:sum", name="amt")
 LOCAL_SPEND_SUM = ModelMeasure(formula="spend:sum", name="sp")  # customers-rooted
 REGION_POP_SUM = ModelMeasure(formula="customers.regions.pop:sum", name="rp")
 STORE_RENT_SUM = ModelMeasure(formula="stores.rent:sum", name="rent")
-#: picked parameters: a home-determined weight (includes c7) vs a fanning host
-#: column picked across the reverse hop (c7's NULL weight drops it).
+# home-determined weight (includes c7) vs a fanning host column across the hop.
 SPEND_WAVG_HOME = ModelMeasure(
     formula="customers.spend:weighted_avg(weight=customers.spend)", name="wa")
 SPEND_WAVG_AMOUNT = ModelMeasure(
     formula="customers.spend:weighted_avg(weight=amount)", name="wa")
 
 
-# --------------------------------------------------------------------------- #
-# Cell helpers.
-# --------------------------------------------------------------------------- #
 def status_vals(resp, measure: str, *, root: str = "orders") -> dict:
-    """``{status: measure value}`` for a ``root``-rooted query."""
     col = "orders.status" if root == "orders" else "customers.orders.status"
     return {k[0]: v[measure] for k, v in rows_by(resp, col).items()}
 
 
 def bad_pop_status_cells(resp, measure: str) -> dict:
-    """``{(bad_pop, status): measure value}`` for an orders-rooted mixed query."""
     return {k: v[measure]
             for k, v in rows_by(resp, "orders." + BAD_POP, "orders.status").items()}
 
 
-# --------------------------------------------------------------------------- #
-# Oracles — every value traced to the DEV-1840 dataset (+ the extra order).
-# --------------------------------------------------------------------------- #
-#: Issue bar: cross-model spend by bad_pop, each customer once, incl. orderless
-#: c7 in South (the fix); local amount unchanged (orders home, c7 has none).
+# Oracles traced to the DEV-1840 dataset (+ the extra NULL-status order).
+# Issue bar: spend incl. orderless c7 in South (195); local amount unchanged.
 SPEND_BY_BAD_POP = {150.0: 280.0, 230.0: 195.0, None: 40.0}
 AMOUNT_BY_BAD_POP = {150.0: 100.0, 230.0: 20.0, None: 47.0}
-#: Host channel='app' filter, cross-model spend by bad_pop: only app customers
-#: (c1,c2 North; c3,c5 South); c7 has no app order so it is excluded.
+# channel='app' filter: only app customers; c7 has no app order.
 APP_SPEND_BY_BAD_POP = {150.0: 250.0, 230.0: 140.0}
-#: Mixed (bad_pop, status): the only South cell is (230, ok) = c3+c5; c7 (no
-#: order → no status) is in NO cell — 195 minus its 55.
+# Mixed (bad_pop, status): South = (230, ok) = c3+c5; c7 in NO cell.
 MIXED_SOUTH_OK = 140.0
 MIXED_SOUTH_WITH_C7_BUG = 195.0
-#: Presence guard, orders-rooted, NULL-status seed: the NULL cell holds exactly
-#: c1 (owner of the NULL-status order); never c7 (no population row).
+# Presence guard, orders-rooted: NULL cell = c1 (owner) only, never c7.
 PRESENCE_NULL_CELL = 100.0
 PRESENCE_NULL_CELL_C7_BUG = 155.0
 SPEND_BY_STATUS_NULLSEED = {"ok": 420.0, "new": 290.0, None: 100.0}
-#: Customers-rooted twin, NULL-status seed: home == host, so the population's
-#: own LEFT JOIN keeps the orderless c7 in the NULL cell alongside c1.
+# Customers-rooted twin (home == host): the LEFT JOIN keeps c7 in the NULL cell.
 CUST_NULL_CELL = 155.0
 LOCAL_SPEND_BY_STATUS_NULLSEED = {"ok": 420.0, "new": 290.0, None: 155.0}
-#: Two-hop home (regions), pop:sum by bad_pop — one region per bad_pop cell.
+# Two-hop home (regions); composite back hop (orders → stores).
 REGION_POP_BY_BAD_POP = {150.0: 100.0, 230.0: 200.0}
-#: Composite back hop (orders → stores), stores.rent:sum by status — distinct
-#: stores per status cell.
 RENT_BY_STATUS = {"ok": 1100.0, "new": 800.0}
-#: Local same-branch coupling (customers-rooted): channel='app' AND status must
-#: hold on ONE order; today decoupled to the app total.
+# Local same-branch coupling: channel='app' AND status on ONE order (140 vs 390).
 LOCAL_COUPLED_OK = 140.0
 LOCAL_DECOUPLED_OK = 390.0
-#: Picked home-determined weight: weighted_avg(spend, weight=spend) by bad_pop,
-#: each distinct customer once — South includes c7 (the fix).
+# weighted_avg(spend, weight=spend): each distinct customer once, South incl. c7.
 SPEND_WAVG_SOUTH = (60.0 ** 2 + 80.0 ** 2 + 55.0 ** 2) / (60.0 + 80.0 + 55.0)
 SPEND_WAVG_SOUTH_C7_DROPPED = (60.0 ** 2 + 80.0 ** 2) / (60.0 + 80.0)
-#: Picked fanning host column (weight=amount): amount is picked once per customer
-#: across the reverse hop; c7 has no order so its weight is NULL and it drops —
-#: South = 75 (only c3, c5 contribute), typing accepted (design decision 2).
+# weight=amount: picked once per customer across the hop; c7's NULL weight drops.
 SPEND_WAVG_AMOUNT_SOUTH = (60.0 * 5.0 + 80.0 * 15.0) / (5.0 + 15.0)
-#: Dice–slice: the 230 (South) slice equals filtering to bad_pop = 230.
-DICE_SLICE_SOUTH = 195.0
+DICE_SLICE_SOUTH = 195.0  # the 230 (South) slice equals filtering bad_pop = 230
 
 
 __all__ = [

@@ -476,9 +476,16 @@ def _collect_degenerate_warnings(
 
 
 def _attach_semi_join_texts(attach) -> Iterator[str]:
-    """Non-empty semi-join-pushed filter texts on an attach's producer plan."""
+    """Non-empty semi-join-pushed filter texts on an attach's producer plan, plus
+    an association producer's inlined reachable-but-unsafe conjunct texts — both
+    surface the same informational entry (DEV-1910)."""
     for group in getattr(attach.producer_plan, "semi_join_filters", None) or ():
         yield from (text for text in group.filter_texts if text)
+    yield from (
+        text
+        for text in getattr(attach, "association_restricted_filter_texts", None) or ()
+        if text
+    )
 
 
 def _collect_semi_join_pushed_warnings(

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from slayer.core.keys import ColumnKey
 from slayer.engine.plan import plan_query
-from slayer.ir.planned import RegroupAttachPlan
+from slayer.ir.planned import AssociationProducerKernel, RegroupAttachPlan
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._dev1840_fixtures import bundle, dev1840_models
@@ -36,13 +36,24 @@ def _assoc(planned):
     return att
 
 
+def _akernel(att) -> AssociationProducerKernel:
+    assert isinstance(att.kernel, AssociationProducerKernel)
+    return att.kernel
+
+
 def _present(att):
-    return {(k.path, k.leaf) for k in att.kernel.present_keys}
+    return {(getattr(k, "path", None), getattr(k, "leaf", None))
+            for k in _akernel(att).present_keys}
 
 
 def _rerooted_paths(att, leaf: str):
-    return [vk.path for vk, _ in att.join_pairs
-            if getattr(vk, "leaf", None) == leaf]
+    """The producer-side (home-rooted) grain key paths for ``leaf`` — the key of
+    the producer slot each join_pair points at (``join_pairs[0]`` is the consumer
+    join key, so the reroot shows on the producer side)."""
+    slots = {s.id: s for s in att.producer_plan.row_slots}
+    return [getattr(slots[sid].key, "path", None)
+            for _, sid in att.join_pairs
+            if sid in slots and getattr(slots[sid].key, "leaf", None) == leaf]
 
 
 class TestHomeRooting:
@@ -54,7 +65,7 @@ class TestHomeRooting:
     def test_entity_keys_are_in_root_coordinates(self):
         att = _assoc(plan_query(
             query=assoc_q(dimensions=["status"], measures=[CM]), bundle=bundle()))
-        assert att.kernel.entity_keys == [ColumnKey(path=(), leaf="id")]
+        assert _akernel(att).entity_keys == [ColumnKey(path=(), leaf="id")]
 
 
 class TestReachableConjunctIsInlined:
@@ -85,7 +96,7 @@ class TestPresenceKeys:
             query=orders_q(dimensions=[BAD_POP], measures=[CM],
                            to_many_handling="associate"),
             bundle=_bundle1900()))
-        assert att.kernel.present_keys == []
+        assert _akernel(att).present_keys == []
 
     def test_composite_back_hop_guards_every_column(self):
         """A composite reverse hop (orders → stores) guards BOTH host-side join
@@ -122,10 +133,10 @@ class TestSerialization:
                           filters=["customers.plans.level = 'basic'"]),
             bundle=bundle(dev1840_models(strong_plans=False))))
         restored = RegroupAttachPlan.model_validate(att.model_dump())
-        assert restored.kernel.present_keys == att.kernel.present_keys
+        assert _akernel(restored).present_keys == _akernel(att).present_keys
         assert (restored.association_restricted_filter_texts
                 == att.association_restricted_filter_texts)
-        assert restored.kernel.present_keys  # status guards the back hop
+        assert _akernel(restored).present_keys  # status guards the back hop
         assert restored.association_restricted_filter_texts  # the basic conjunct
 
 

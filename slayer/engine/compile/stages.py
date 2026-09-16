@@ -41,6 +41,7 @@ from slayer.engine.reference_closure import (
 from slayer.core.join_walker import resolve_hop, walk
 from slayer.engine.join_safety import (
     UNREACHABLE_NO_PATH,
+    _back_path,
     attributable_from_root,
     broadcast_reason,
     crossing_local_root_predicate,
@@ -1299,6 +1300,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         )
     root_name = root_model.name
     alias = public_alias or canonical_aggregate_alias(agg, profile="stage_formula")
+    assert alias is not None  # a projected cross-model aggregate always names one
 
     # Requested grain G: explicit partition_by else the query dimensions.
     if agg.partition_keys is not None:
@@ -1345,79 +1347,104 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
                 reachable=reason != UNREACHABLE_NO_PATH,
             ))
 
-    # Associate mode attributes unattributable dims per cell over the root's
-    # distinct entities (a host-rooted two-level producer that reaches every query
-    # dimension) rather than broadcasting; an explicit partition_by= at such a
-    # grain is legal here.
-    if mode == "associate" and unattributable:
-        return _synthesize_association_producer(
-            agg=agg, placeholder=placeholder, attach_phase=attach_phase,
-            alias=alias, root_model=root_model, root_name=root_name,
-            target_path=target_path, requested=requested, explicit=explicit,
-            unattributable=unattributable, context=context,
-            declared_type=declared_type, producer_registry=producer_registry,
-        )
-
-    # Broadcast / error path: an unattributable explicit key is a hard error.
-    check_cross_model_partition_keys_attributable(
-        alias=alias, root_name=root_name, explicit=explicit,
-        unattributable=[(u.name, u.reason) for u in unattributable],
-    )
-    broadcast: List[Tuple[str, str]] = [(u.name, u.reason) for u in unattributable]
-    # Attached inputs nest as producers rooted here; error mode's dimension refusal wins.
-    if mode != "error" or not unattributable:
-        check_attached_inputs_attributable(
-            alias=alias, root_name=root_name, mode=mode,
-            unattributable=_first_unattributable_attached_leaf(
-                agg=agg, target_path=target_path, root_model=root_model,
-                models_by_name=models_by_name, host_name=host_model.name,
-                bundle=bundle, host_model=host_model,
-            ),
-        )
-
-    if target_path != key_host_path(agg.source):
-        # The source sits beyond the home; re-anchor off-home inputs via the host
-        # and render it inline as a host-locus aggregate joining the to-one path
-        # from the home, never a source-rooted producer.
-        agg_rooted = reroot_from_root(
-            agg, target_path=target_path, root_model=root_model,
-            models_by_name=models_by_name, host_name=host_model.name,
-        ).model_copy(update={"locus": "host"})
-    else:
-        agg_rooted = reroot_value_key(agg, target_path=target_path)
-    _assert_cross_model_inputs_safe(
-        agg=agg, agg_rooted=agg_rooted, root_model=root_model, root_name=root_name,
-        target_path=target_path, bundle=bundle, models_by_name=models_by_name,
-        host_name=host_model.name, host_model=host_model,
-    )
-
-    # A windowed cross-model aggregate folds the active TD into its grain as the bucket (must be attributable from the root).
+    # Arm-specific state shared into the common tail.
+    associate = mode == "associate" and bool(unattributable)
     window_td_key: Optional[ValueKey] = None
-    if window_kwarg_of(agg) is not None:
-        active_td = prebound.main_time_key
-        check_windowed_cross_model_time_axis(
-            alias=alias, root_name=root_name,
-            active_td_name=(
-                None if active_td is None else _regroup_grain_name(active_td)
-            ),
-            attributable=active_td is not None and attributable_from_root(
-                host_path=key_host_path(active_td), target_path=target_path,
-                root_model=root_model, models_by_name=models_by_name,
-                host_name=host_model.name,
-            ),
+    semi_joins: List[SemiJoinFilter] = []
+    broadcast: List[Tuple[str, str]] = []
+    picked_params: List[PickedParam] = []
+    restricted_texts: List[str] = []
+    present_keys: List[ValueKey] = []
+    entity_keys_root: List[ValueKey] = []
+    associated_measure: Optional[str] = None
+    associated_dimensions: List[str] = []
+
+    if associate:
+        # ASSOCIATION ARM (D2-4, 8): root at the home, keep every unattributable
+        # dimension as a rerooted grain member joined back on the host key, and
+        # dedup per home entity via the association kernel — a home entity absent
+        # from the population still counts in the cells its own path reaches.
+        agg_rooted, picked_params, entity_keys_root, present_keys, assoc_pairs = (
+            _association_arm(
+                agg=agg, alias=alias, root_model=root_model,
+                target_path=target_path, unattributable=unattributable,
+                host_model=host_model, models_by_name=models_by_name,
+                bundle=bundle,
+            )
         )
-        assert active_td is not None  # the checker raised otherwise
-        window_td_key = reroot_from_root(
-            active_td, target_path=target_path, root_model=root_model,
-            models_by_name=models_by_name, host_name=host_model.name,
+        # The unattributable dims join back on the host key exactly like safe_pairs.
+        safe_pairs = [*safe_pairs, *assoc_pairs]
+        inherited, restricted_texts, dropped = _association_inline_filters(
+            base_filters=base_filters_with_text, target_path=target_path,
+            root_model=root_model, models_by_name=models_by_name,
+            host_model=host_model, bundle=bundle,
+        )
+        associated_measure = None if explicit else alias
+        associated_dimensions = (
+            [] if explicit else [u.name for u in unattributable]
+        )
+    else:
+        # BROADCAST / ERROR ARM: an unattributable explicit key is a hard error.
+        check_cross_model_partition_keys_attributable(
+            alias=alias, root_name=root_name, explicit=explicit,
+            unattributable=[(u.name, u.reason) for u in unattributable],
+        )
+        broadcast = [(u.name, u.reason) for u in unattributable]
+        # Attached inputs nest as producers rooted here; error mode's dimension refusal wins.
+        if mode != "error" or not unattributable:
+            check_attached_inputs_attributable(
+                alias=alias, root_name=root_name, mode=mode,
+                unattributable=_first_unattributable_attached_leaf(
+                    agg=agg, target_path=target_path, root_model=root_model,
+                    models_by_name=models_by_name, host_name=host_model.name,
+                    bundle=bundle, host_model=host_model,
+                ),
+            )
+
+        if target_path != key_host_path(agg.source):
+            # The source sits beyond the home; re-anchor off-home inputs via the host
+            # and render it inline as a host-locus aggregate joining the to-one path
+            # from the home, never a source-rooted producer.
+            agg_rooted = reroot_from_root(
+                agg, target_path=target_path, root_model=root_model,
+                models_by_name=models_by_name, host_name=host_model.name,
+            ).model_copy(update={"locus": "host"})
+        else:
+            agg_rooted = reroot_value_key(agg, target_path=target_path)
+        _assert_cross_model_inputs_safe(
+            agg=agg, agg_rooted=agg_rooted, root_model=root_model, root_name=root_name,
+            target_path=target_path, bundle=bundle, models_by_name=models_by_name,
+            host_name=host_model.name, host_model=host_model,
         )
 
-    inherited, semi_joins, dropped = _cross_model_inherited_filters(
-        base_filters=base_filters_with_text, target_path=target_path,
-        root_model=root_model, models_by_name=models_by_name,
-        host_name=host_model.name, host_model=host_model, bundle=bundle,
-    )
+        # A windowed cross-model aggregate folds the active TD into its grain as the bucket (must be attributable from the root).
+        if window_kwarg_of(agg) is not None:
+            active_td = prebound.main_time_key
+            check_windowed_cross_model_time_axis(
+                alias=alias, root_name=root_name,
+                active_td_name=(
+                    None if active_td is None else _regroup_grain_name(active_td)
+                ),
+                attributable=active_td is not None and attributable_from_root(
+                    host_path=key_host_path(active_td), target_path=target_path,
+                    root_model=root_model, models_by_name=models_by_name,
+                    host_name=host_model.name,
+                ),
+            )
+            assert active_td is not None  # the checker raised otherwise
+            window_td_key = reroot_from_root(
+                active_td, target_path=target_path, root_model=root_model,
+                models_by_name=models_by_name, host_name=host_model.name,
+            )
 
+        inherited, semi_joins, dropped = _cross_model_inherited_filters(
+            base_filters=base_filters_with_text, target_path=target_path,
+            root_model=root_model, models_by_name=models_by_name,
+            host_name=host_model.name, host_model=host_model, bundle=bundle,
+        )
+
+    # SHARED TAIL: root at the home, compile the producer, attach on the host key.
+    assert isinstance(agg_rooted, AggregateKey)  # both arms reroot an aggregate
     root_bundle = bundle.rerooted(root_model)
     root_scope = (
         ModelScope(source_model=root_model)
@@ -1462,6 +1489,22 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         producer_plan = producer_plan.model_copy(
             update={"semi_join_filters": semi_joins},
         )
+    # An attached parameter row-attached inside the producer: map each picked key
+    # through the sub-plan's substitutions so the level-1 pick references the
+    # producer's row-attach column, not the raw aggregate (DEV-1859 decision 13).
+    if picked_params:
+        _param_subst = {
+            sub.original_key: sub.placeholder
+            for a in producer_plan.regroup_attach_plans
+            for sub in a.substitutions
+        }
+        if _param_subst:
+            picked_params = [
+                pp.model_copy(update={
+                    "key": substitute_value_keys(pp.key, _param_subst),
+                }) if pp.key is not None else pp
+                for pp in picked_params
+            ]
     producer_answer_ids = list(producer_plan.projection)[len(ordered_pks):]
     answer_slot = _regroup_answer_slot_id(
         value_slots=[
@@ -1485,7 +1528,12 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         producer_grain_slot_ids=_producer_grain_slot_ids(producer_plan),
     )
     cm_attach_kwargs: Dict[str, Any] = {}
-    if window_td_key is not None:
+    if associate:
+        cm_attach_kwargs["kernel"] = AssociationProducerKernel(
+            entity_keys=entity_keys_root, picked_params=picked_params,
+            present_keys=present_keys,
+        )
+    elif window_td_key is not None:
         cm_attach_kwargs["kernel"] = _trailing_window_kernel(
             producer_plan=producer_plan, agg_key=agg_rooted,
         )
@@ -1508,6 +1556,9 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         dropped_filter_warnings=dropped,
         broadcast_measure=alias if broadcast else None,
         broadcast_dimensions=broadcast,
+        associated_measure=associated_measure,
+        associated_dimensions=associated_dimensions,
+        association_restricted_filter_texts=restricted_texts,
         **cm_attach_kwargs,
     )
 
@@ -1629,80 +1680,72 @@ def _grain_display(grain: Grain) -> str:
     return ", ".join(names) if names else "the grand total"
 
 
-def _synthesize_association_producer(  # NOSONAR(S3776) — one cohesive host-rooted association synthesis (eligibility / entity key / grain / filter-inheritance / recursive plan / attach).
-    *,
-    agg: AggregateKey,
-    placeholder: ValueKey,
-    attach_phase: str,
-    alias: str,
-    root_model: SlayerModel,
-    root_name: str,
-    target_path: Tuple[str, ...],
-    requested: List[ValueKey],
-    explicit: bool,
-    unattributable: List[_UnattributableDim],
-    context: _ProducerSynthesisContext,
-    declared_type: Optional[DataType] = None,
-    producer_registry: Optional[Dict[Hashable, PlannedQuery]] = None,
-) -> RegroupAttachPlan:
-    """Build a distinct-entity association producer: HOST-rooted at the full
-    requested grain, joining to the aggregate's root, deduped per root entity by
-    the ``association`` kernel (level 1 picks per entity, level 2 aggregates)."""
-    prebound, bundle = context.prebound, context.bundle
-    host_model, models_by_name = context.host_model, context.models_by_name
-    base_filters_with_text = context.base_filters_with_text
-    scope, stage_schemas = context.scope, context.stage_schemas
-
+def _association_arm(
+    *, agg: AggregateKey, alias: str, root_model: SlayerModel,
+    target_path: Tuple[str, ...], unattributable: List[_UnattributableDim],
+    host_model: SlayerModel, models_by_name: Dict[str, SlayerModel],
+    bundle: ResolvedSourceBundle,
+) -> Tuple[
+    ValueKey, List[PickedParam], List[ValueKey], List[ValueKey],
+    List[Tuple[ValueKey, ValueKey]],
+]:
+    """The home-rooted association arm (DEV-1910 D2-3): eligibility + mode-invariant
+    input safety; the rerooted host-locus aggregate (compiled inline at its fanning
+    grain, its level-1 dedup removing the fan-out); the kernel entity keys in ROOT
+    coordinates and the parameters the entity grain picks, rerooted into the home;
+    the reverse-hop presence guard; and each unattributable dimension rerooted to
+    join back on the host key exactly like ``safe_pairs``."""
     check_association_windowed_ranked(
         alias=alias,
         windowed_or_ranked=window_kwarg_of(agg) is not None or (
             isinstance(agg, AggregateKey) and agg.agg in RANKED_AGGREGATIONS
         ),
     )
-    # key_sets also feeds the entity keys below.
     key_sets = _unique_key_sets(root_model)
     check_association_root_unique_key(
-        alias=alias, root_name=root_name, has_unique_key=bool(key_sets),
+        alias=alias, root_name=root_model.name, has_unique_key=bool(key_sets),
     )
-    # An input crossing an unproven/fanning hop is not constant per root entity,
-    # so the level-1 per-entity pick would be arbitrary. Input safety is
-    # mode-invariant — reject exactly as the broadcast/error path does (DEV-1884
-    # certifies such inputs empirically).
-    # locus="host" so default-fragment discovery looks the definition up on the
-    # source model (not the home) when the source sits beyond the home.
-    # An attached input (a row-attached constituent or parameter) row-attaches as
-    # its own nested producer (decision 13); its inputs are that producer's
-    # concern, not direct inputs of this aggregate, so strip them from the hop
-    # check (kept in ``agg`` for param typing and the producer compile below).
+    # Input safety is mode-invariant — an input crossing an unproven/fanning hop is
+    # not constant per home entity. An attached input row-attaches its own nested
+    # producer (DEV-1859 decision 13), so strip it from the hop check while keeping
+    # it in ``agg`` for parameter typing and the producer compile.
     _safety_rooted = agg
     if attached_inputs(agg):
         _safety_rooted = substitute_value_keys(
             agg, {a: LiteralKey(value=Decimal(1)) for a in attached_inputs(agg)})
+    agg_rooted = reroot_from_root(
+        agg, target_path=target_path, root_model=root_model,
+        models_by_name=models_by_name, host_name=host_model.name,
+    ).model_copy(update={"locus": "host"})
     _assert_cross_model_inputs_safe(
         agg=agg, agg_rooted=reroot_from_root(
             _safety_rooted, target_path=target_path, root_model=root_model,
             models_by_name=models_by_name, host_name=host_model.name,
         ).model_copy(update={"locus": "host"}),
-        root_model=root_model, root_name=root_name, target_path=target_path,
+        root_model=root_model, root_name=root_model.name, target_path=target_path,
         bundle=bundle, models_by_name=models_by_name, host_name=host_model.name,
         host_model=host_model,
     )
-    entity_keys: List[ValueKey] = [
+    # Type each GRAINED parameter against the ENTITY grain in HOST coordinates (the
+    # aggregation reads it once per associated entity); an ungrained parameter types
+    # at the query grain and is always determined (DEV-1859 decision 12). Lift the
+    # legal ones, rerooted into the home so the level-1 pick reads them there; the
+    # kernel dedups by the entity key in ROOT coordinates.
+    host_entity_keys: List[ValueKey] = [
         ColumnKey(path=target_path, leaf=col) for col in key_sets[0]
     ]
-    # Type each GRAINED parameter against the ENTITY grain (the customer key): the
-    # aggregation reads it once per associated entity, so it must be a property of
-    # that entity, not of a requested dim the entity does not determine. An
-    # ungrained parameter types at the query grain and is always determined
-    # (decision 12). Lift the legal ones — picked once per entity alongside the
-    # aggregate's value; the residue is a typed error. Definition defaults are
-    # declared on the source column's model, the home only when it is the source
-    # path.
+    entity_keys_root: List[ValueKey] = [
+        ColumnKey(path=(), leaf=col) for col in key_sets[0]
+    ]
     source_path = key_host_path(agg.source)
     source_model = walk_key_path(
         model=host_model, path=source_path, bundle=bundle,
     ) or root_model
-    entity_grain = Grain.of(entity_keys)
+    rel_source = (
+        source_path[len(target_path):]
+        if source_path[: len(target_path)] == target_path else source_path
+    )
+    entity_grain = Grain.of(host_entity_keys)
     picked_params: List[PickedParam] = []
     for _ps in resolve_aggregation_params(
         agg=agg, owner_model=source_model, owner_path=source_path, bundle=bundle,
@@ -1716,120 +1759,106 @@ def _synthesize_association_producer(  # NOSONAR(S3776) — one cohesive host-ro
             ),
         )
         picked_params.append(PickedParam(
-            name=_ps.name, key=_ps.key, sql=_ps.expr_sql,
-            anchor_path=tuple(source_path),
+            name=_ps.name,
+            key=(reroot_from_root(
+                _ps.key, target_path=target_path, root_model=root_model,
+                models_by_name=models_by_name, host_name=host_model.name,
+            ) if _ps.key is not None else None),
+            sql=_ps.expr_sql, anchor_path=tuple(rel_source),
         ))
+    assoc_pairs = [
+        (u.key, reroot_from_root(
+            u.key, target_path=target_path, root_model=root_model,
+            models_by_name=models_by_name, host_name=host_model.name,
+        ))
+        for u in unattributable
+    ]
+    present_keys = _association_present_keys(
+        unattributable=unattributable, target_path=target_path,
+        root_model=root_model, host_model=host_model, models_by_name=models_by_name,
+    )
+    return agg_rooted, picked_params, entity_keys_root, present_keys, assoc_pairs
 
-    # A HOST-grain wrap of the aggregate compiles inline at the producer's full
-    # grain (never re-routed as unattributable); the kernel's level-1 dedup
-    # removes the reverse-hop fan-out.
-    assoc_agg = agg.model_copy(update={"locus": "host"})
-    grain_keys = Grain.of(requested)
-    # A conjunct the metric-root routing cannot handle (e.g. an OR mixing the
-    # entity's own column with a host predicate) would inline fan-dependently at
-    # host grain — drop it exactly as the cross-model producer would; every other
-    # conjunct routes via the host (inline / semi-join).
-    survivors: List[Tuple[BoundFilter, Optional[str]]] = []
-    root_dropped: List[UnreachableFilterDroppedWarning] = []
-    for bf, text in base_filters_with_text:
+
+def _association_inline_filters(
+    *, base_filters: List[Tuple[BoundFilter, Optional[str]]],
+    target_path: Tuple[str, ...], root_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel], host_model: SlayerModel,
+    bundle: ResolvedSourceBundle,
+) -> Tuple[List[BoundFilter], List[str], List[UnreachableFilterDroppedWarning]]:
+    """Route each ROW conjunct for a home-rooted association producer (DEV-1910
+    D4): attributable → inline re-rooted; reachable-but-unsafe → inline the
+    re-rooted conjunct too (the per-entity dedup makes the fanning join harmless)
+    with its text kept for the informational entry; out of scope → dropped and
+    warned. No semi-join is emitted, so membership equals the semi-join semantics
+    and a conjunct sharing a hop with an association dimension binds to the same
+    related row."""
+    inherited: List[BoundFilter] = []
+    restricted_texts: List[str] = []
+    dropped: List[UnreachableFilterDroppedWarning] = []
+    for bf, text in base_filters:
         if bf.phase != Phase.ROW:
-            survivors.append((bf, text))
             continue
         for cj in split_top_level_and(bf.value_key):
-            _, _, drop_w = _conjunct_disposition(
+            inh, pushed, drop_w = _conjunct_disposition(
                 cj, text=text, target_path=target_path, root_model=root_model,
                 models_by_name=models_by_name, host_name=host_model.name,
                 host_model=host_model, bundle=bundle,
             )
-            if drop_w is not None:
-                root_dropped.append(drop_w)
+            if inh is not None:
+                inherited.append(inh)
+            elif pushed is not None:
+                inherited.append(bound_filter_from_key(reroot_from_root(
+                    cj, target_path=target_path, root_model=root_model,
+                    models_by_name=models_by_name, host_name=host_model.name,
+                )))
+                if pushed[1] is not None:
+                    restricted_texts.append(pushed[1])
             else:
-                survivors.append((bound_filter_from_key(cj), text))
-    inherited, semi_joins, dropped = _cross_model_inherited_filters(
-        base_filters=survivors, target_path=(),
-        root_model=host_model, models_by_name=models_by_name,
-        host_name=host_model.name, host_model=host_model, bundle=bundle,
+                assert drop_w is not None  # the disposition's third arm
+                dropped.append(drop_w)
+    return inherited, restricted_texts, dropped
+
+
+def _association_present_keys(
+    *, unattributable: List[_UnattributableDim], target_path: Tuple[str, ...],
+    root_model: SlayerModel, host_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel],
+) -> List[ValueKey]:
+    """The reverse hop's host-side join columns in the home-rooted producer's
+    coordinates (path = the reverse path), guarded NOT NULL in level 1 so a
+    dimension the home reaches only back through the population root associates an
+    entity only when a population row carries it (DEV-1910 D3). Empty when home ==
+    host, or when no unattributable dimension reaches back through the reverse hop
+    (a home-side dimension keeps its own NULL cell, as the population computes it)."""
+    if not target_path:
+        return []
+    back = _back_path(
+        root_model=root_model, host_name=host_model.name,
+        target_path=target_path, models_by_name=models_by_name,
     )
-    dropped = [*root_dropped, *dropped]
-    producer_prebound, ordered_pks = _regroup_producer_prebound(
-        pks=grain_keys, aggs=[assoc_agg], model=host_model, bundle=bundle,
-        inherited=inherited, n_date_range=0,
-        explicit_types=(
-            {assoc_agg: declared_type} if declared_type is not None else None
-        ),
-        to_many_handling=prebound.to_many_handling,
-    )
-    producer_plan = compile_prebound(
-        query=StrictQueryCarrier(
-            source_model=host_model.name, prebound=producer_prebound,
-        ),
-        bundle=bundle, scope=scope, stage_schemas=stage_schemas,
-        disable_host_rooted_isolation=True,
-        # An attached parameter row-attaches its producer inside the association
-        # producer (DEV-1859 decision 13); mapped through the sub-plan below.
-        enable_producer_regroups=_answers_need_nested_regroups([assoc_agg]),
-        prebound=producer_prebound, producer_registry=producer_registry,
-    )
-    if semi_joins:
-        producer_plan = producer_plan.model_copy(
-            update={"semi_join_filters": semi_joins},
+    try:
+        first_hop = resolve_hop(
+            current=host_model, token=target_path[0], models_by_name=models_by_name,
         )
-    # An attached parameter row-attached inside the producer: map each picked key
-    # through the sub-plan's substitutions so the level-1 pick references the
-    # producer's row-attach column, not the raw aggregate (decision 13).
-    _param_subst = {
-        sub.original_key: sub.placeholder
-        for a in producer_plan.regroup_attach_plans
-        for sub in a.substitutions
-    }
-    if _param_subst:
-        picked_params = [
-            pp.model_copy(
-                update={"key": substitute_value_keys(pp.key, _param_subst)})
-            for pp in picked_params
-        ]
-    producer_answer_ids = list(producer_plan.projection)[len(ordered_pks):]
-    answer_slot = _regroup_answer_slot_id(
-        value_slots=[
-            *producer_plan.aggregate_slots,
-            *producer_plan.combined_expression_slots,
-        ],
-        key=assoc_agg,
-        fallback=producer_answer_ids[0] if producer_answer_ids else None,
-    )
-    producer_grain_ids = list(producer_plan.projection)[: len(ordered_pks)]
-    join_pairs: List[Tuple[ValueKey, SlotId]] = []
-    for i, rr in enumerate(ordered_pks):
-        slot_id = next(
-            (s.id for s in producer_plan.row_slots if s.key == rr), None,
+    except AmbiguousJoinPathError:
+        first_hop = None
+    if first_hop is None:
+        return []
+    reaches_back = any(
+        any(
+            isinstance(r, (ColumnKey, ColumnSqlKey, TimeTruncKey))
+            and key_host_path(r)[: len(back)] == back
+            for r in walk_value_keys(reroot_from_root(
+                u.key, target_path=target_path, root_model=root_model,
+                models_by_name=models_by_name, host_name=host_model.name,
+            ))
         )
-        if slot_id is None:
-            slot_id = producer_grain_ids[i]
-        join_pairs.append((rr, slot_id))
-    _assert_attach_covers_producer_grain(
-        joined_slot_ids={slot_id for _, slot_id in join_pairs},
-        producer_grain_slot_ids=_producer_grain_slot_ids(producer_plan),
+        for u in unattributable
     )
-    assoc_dims = [u.name for u in unattributable]
-    return RegroupAttachPlan(
-        producer_plan=producer_plan,
-        alias_hint=canonical_aggregate_alias(agg, profile="stage_formula"),
-        attach_phase=attach_phase,
-        kernel=AssociationProducerKernel(
-            entity_keys=entity_keys, picked_params=picked_params,
-        ),
-        join_pairs=join_pairs,
-        substitutions=[RegroupSubstitution(
-            placeholder=placeholder, producer_slot_id=answer_slot,
-            original_key=agg,
-        )],
-        partition_display=[_regroup_grain_name(rr) for rr in ordered_pks],
-        producer_root_model=host_model.name,
-        dropped_filter_warnings=dropped,
-        # Explicit partition_by= is a requested grain and does not warn.
-        associated_measure=None if explicit else alias,
-        associated_dimensions=[] if explicit else assoc_dims,
-    )
+    if not reaches_back:
+        return []
+    return [ColumnKey(path=back, leaf=src) for src, _ in first_hop.join_pairs]
 
 
 def _substitute_prebound(

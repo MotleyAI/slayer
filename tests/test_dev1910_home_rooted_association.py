@@ -123,9 +123,8 @@ class TestMixedHomeAndPopulationRootDimensions:
 
 class TestPresenceGuardOnTheBackHop:
     async def test_null_status_cell_holds_only_the_owner(self, null_engine):
-        """Orders-rooted, a NULL-status order for c1: the NULL cell aggregates
-        exactly the customers owning a NULL-status order (c1); c7 (no order) is
-        in no cell, never a manufactured NULL cell."""
+        """Orders-rooted: the NULL-status cell holds only c1 (owner); c7 (no
+        order) is in no cell, never a manufactured NULL cell."""
         resp = await null_engine.execute(orders_q(
             dimensions=["status"], measures=[SPEND_SUM],
             to_many_handling="associate"))
@@ -138,9 +137,8 @@ class TestPresenceGuardOnTheBackHop:
 
 class TestCustomersRootedTwinKeepsItsNullCell:
     async def test_orderless_entity_sits_in_the_null_cell(self, null_engine):
-        """Customers-rooted (home == host): the population's own LEFT JOIN keeps
-        the orderless c7 in the NULL-status cell alongside c1 — no presence
-        guard when home == host."""
+        """Customers-rooted (home == host): the LEFT JOIN keeps orderless c7 in
+        the NULL cell alongside c1 — no presence guard when home == host."""
         resp = await null_engine.execute(cust_q(
             dimensions=["orders.status"], measures=[LOCAL_SPEND_SUM],
             to_many_handling="associate"))
@@ -217,9 +215,8 @@ class TestParameterTyping:
         assert float(wa[230.0]) != pytest.approx(SPEND_WAVG_SOUTH_C7_DROPPED)
 
     async def test_fanning_host_column_weight_is_picked_across_the_reverse_hop(self, engine):
-        """A fanning host column as weight (orders.amount) is picked once per
-        distinct customer across the reverse hop — typing stays accepted (design
-        decision 2); c7 has no order so its NULL weight drops it, South = 75."""
+        """A fanning host column weight (orders.amount) is picked once per
+        customer across the hop; c7's NULL weight drops it, South = 75."""
         resp = await engine.execute(orders_q(
             dimensions=[BAD_POP], measures=[SPEND_WAVG_AMOUNT],
             to_many_handling="associate"))

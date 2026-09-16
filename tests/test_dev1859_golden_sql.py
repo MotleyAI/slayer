@@ -81,13 +81,7 @@ async def _generate_one(case, dialect: str):
         return record_raise(exc)
 
 
-# DEV-1910 pending deltas: the home-rooted association re-homes every associate
-# case's SQL; re-blessed and emptied at implementation (task 4.2).
-ALLOWED_DELTAS: dict[str, str] = {
-    f"{cid}::{d}": "DEV-1910 home-rooted association"
-    for cid, case in _cases().items() if case["mode"] == "associate"
-    for d in DIALECTS
-}
+ALLOWED_DELTAS: dict[str, str] = {}  # DEV-1910 associate deltas re-blessed
 
 bind_golden_tests(
     namespace=globals(),
