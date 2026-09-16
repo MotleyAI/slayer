@@ -108,14 +108,21 @@ class _OrderedSink:
 def fragment_closure(
     *, sql: Optional[str], model: SlayerModel, owner_path: Path,
     anchor_relation: str, bundle: ResolvedSourceBundle,
+    cache: "Optional[dict]" = None,
 ) -> Optional[Tuple[Path, ...]]:
     """The root-relative join-path prefixes a free-SQL fragment crosses, derived
     definitions expanded recursively. ``owner_path`` is the fragment owner's
     root-relative path (prefixed onto every crossing). ``()`` = analysed and
     local; ``None`` = no dialect could analyse it (fail closed). A cyclic
-    definition raises ``ColumnCycleError``."""
+    definition raises ``ColumnCycleError``. ``cache`` (optional, plan-scoped)
+    memoises the dialect parse + derived expansion, the loop's expensive part,
+    keyed by ``(model, sql, owner_path, anchor_relation)``."""
     if not sql:
         return ()
+    ck = ("fragment_closure", model.name, sql, tuple(owner_path), anchor_relation)
+    if cache is not None and ck in cache:
+        return cache[ck]
+    result: Optional[Tuple[Path, ...]] = None
     for dialect in _PLANNER_PARSE_DIALECT_CHAIN:
         if dialect is None:
             continue  # expand_derived_refs_sync requires a dialect string
@@ -131,8 +138,11 @@ def fragment_closure(
         except Exception:
             continue
         if expanded is not None:
-            return sink.paths
-    return None
+            result = sink.paths
+            break
+    if cache is not None:
+        cache[ck] = result
+    return result
 
 
 def _prefixes(path: Path) -> List[Path]:
@@ -197,7 +207,7 @@ def _derived_column(model: Optional[SlayerModel], leaf: str):
 
 def _column_key_closure(
     node, *, anchor_model: SlayerModel, anchor_relation: str,
-    bundle: ResolvedSourceBundle,
+    bundle: ResolvedSourceBundle, cache: "Optional[dict]" = None,
 ) -> Optional[List[Path]]:
     """Own path prefixes of a ``ColumnSqlKey``/``ColumnKey`` plus, when its
     terminal column is derived and non-trivial, the fragment closure of its
@@ -213,7 +223,7 @@ def _column_key_closure(
             frag = fragment_closure(
                 sql=col.sql, model=terminal, owner_path=path,
                 anchor_relation="__".join(path) if path else anchor_relation,
-                bundle=bundle,
+                bundle=bundle, cache=cache,
             )
             if frag is None:
                 return None
@@ -240,7 +250,8 @@ def key_closure(
         if node is None:
             return True
         leafs = _leaf_closure(node, anchor_model=anchor_model,
-                              anchor_relation=anchor_relation, bundle=bundle)
+                              anchor_relation=anchor_relation, bundle=bundle,
+                              cache=cache)
         if leafs is None:
             return False
         for path in leafs:
@@ -257,7 +268,7 @@ def key_closure(
 
 def _leaf_closure(
     node, *, anchor_model: SlayerModel, anchor_relation: str,
-    bundle: ResolvedSourceBundle,
+    bundle: ResolvedSourceBundle, cache: "Optional[dict]" = None,
 ) -> Optional[List[Path]]:
     """Paths a node contributes ITSELF (not via children). ``None`` = unanalysable."""
     if isinstance(node, AggregateKey) and node.column_filter_key is not None:
@@ -270,14 +281,14 @@ def _leaf_closure(
     if isinstance(node, ColumnSqlKey):
         return _column_key_closure(
             node, anchor_model=anchor_model, anchor_relation=anchor_relation,
-            bundle=bundle,
+            bundle=bundle, cache=cache,
         )
     if isinstance(node, ColumnKey):
         return _prefixes(tuple(node.path))
     if isinstance(node, str):
         frag = fragment_closure(
             sql=node, model=anchor_model, owner_path=(),
-            anchor_relation=anchor_relation, bundle=bundle,
+            anchor_relation=anchor_relation, bundle=bundle, cache=cache,
         )
         return None if frag is None else list(frag)
     if isinstance(node, SqlExprKey):
@@ -487,6 +498,109 @@ def _column_filter_closure(
     )
 
 
+def _explicit_input_refs(key: AggregateKey, *, include_source: bool) -> List[object]:
+    """An aggregate's directly-named input refs: its source (when
+    ``include_source``), positional args, and keyword-arg values."""
+    return [
+        *([key.source] if include_source else []),
+        *key.args,
+        *(v for _, v in key.kwargs),
+    ]
+
+
+def _default_param_specs(
+    key: AggregateKey, *, anchor_model: SlayerModel, bundle: ResolvedSourceBundle,
+) -> List[ParamSpec]:
+    """Resolved default parameters NOT overridden by an explicit kwarg, resolved
+    in the aggregate's ROOT frame so a default naming the root's own model stays
+    local after the home rule widens the home (rather than via a reverse hop)."""
+    explicit = {name for name, _ in key.kwargs}
+    return [
+        spec
+        for spec in resolve_aggregation_params(
+            agg=key, owner_model=anchor_model, owner_path=(), bundle=bundle,
+        )
+        if spec.name not in explicit
+    ]
+
+
+def _column_filter_paths(
+    *, key: AggregateKey, anchor_model: SlayerModel, anchor_relation: str,
+    bundle: ResolvedSourceBundle,
+) -> Optional[List[Path]]:
+    """The owner-prefixed prefixes a measure-level ``filter=`` crosses. ``[]`` = no
+    filter; ``None`` = unanalysable (fail closed). Crossed paths are stamped
+    OWNER-relative at bind time (best-effort ``()``); re-derive the tri-state so
+    an unanalyzable filter dependency never reads as 'crosses nothing'."""
+    if key.column_filter_key is None:
+        return []
+    if _column_filter_closure(
+        key=key, anchor_model=anchor_model, anchor_relation=anchor_relation,
+        bundle=bundle,
+    ) is None:
+        return None
+    source_path = tuple(getattr(key.source, "path", ()) or ())
+    return [
+        pre
+        for p in key.column_filter_key.referenced_join_paths
+        for pre in _prefixes(source_path + tuple(p))
+    ]
+
+
+def _refs_closure(
+    *, refs: List[object], descend_aggregates: bool, anchor_model: SlayerModel,
+    anchor_relation: str, bundle: ResolvedSourceBundle,
+) -> Optional[List[Path]]:
+    """The combined closure of a list of input refs. ``None`` when any non-string
+    ref is unanalysable. A raw, unparseable template-fragment STRING contributes
+    nothing (the pre-existing defensive fallback; a malformed SQL fragment is the
+    renderer's gate) — only a named DERIVED COLUMN fails closed."""
+    out: List[Path] = []
+    for ref in refs:
+        if isinstance(ref, AggregateKey) and not descend_aggregates:
+            continue  # opaque: its inputs belong to its own producer
+        c = key_closure(
+            key=ref, anchor_model=anchor_model, anchor_relation=anchor_relation,
+            bundle=bundle,
+        )
+        if c is None:
+            if isinstance(ref, str):
+                continue
+            return None
+        out.extend(c)
+    return out
+
+
+def _default_params_closure(
+    *, key: AggregateKey, anchor_model: SlayerModel, anchor_relation: str,
+    bundle: ResolvedSourceBundle,
+) -> Optional[List[Path]]:
+    """The combined closure of every non-overridden default parameter (``None``
+    fails closed)."""
+    out: List[Path] = []
+    for spec in _default_param_specs(key, anchor_model=anchor_model, bundle=bundle):
+        c = _param_spec_closure(
+            spec, anchor_model=anchor_model, anchor_relation=anchor_relation,
+            bundle=bundle,
+        )
+        if c is None:
+            return None
+        out.extend(c)
+    return out
+
+
+def _merge_paths(seen: "dict[Path, None]", part: Optional[List[Path]]) -> bool:
+    """Merge one component's paths into ``seen`` (deduped, non-empty only).
+    ``False`` when the component is unanalysable (``None``) — the caller then
+    fails closed WITHOUT evaluating the rest (preserving the short circuit)."""
+    if part is None:
+        return False
+    for p in part:
+        if p:
+            seen.setdefault(tuple(p), None)
+    return True
+
+
 def aggregate_input_closure(
     *, key: AggregateKey, anchor_model: Optional[SlayerModel],
     anchor_relation: str, bundle: ResolvedSourceBundle,
@@ -495,71 +609,53 @@ def aggregate_input_closure(
     """The dependency closure of an aggregate's inputs — its source (when
     ``include_source``), positional/keyword arguments, a measure-level column
     filter, and non-overridden definition defaults — recursively through derived
-    definitions. ``None`` when any dependency cannot be analysed (fail closed);
-    ``()`` when purely local. Safety mode (``descend_aggregates=False``) treats an
+    definitions. ``None`` when any dependency cannot be analysed (fail closed,
+    short-circuiting on the first unanalysable component); ``()`` when purely
+    local. Safety mode (``descend_aggregates=False``) treats an
     ``AggregateKey``-valued input as opaque — its inputs belong to its own
     producer; discovery mode descends into it."""
     if anchor_model is None:
         return ()
     seen: "dict[Path, None]" = {}
-
-    def _add(paths) -> None:
-        for p in paths:
-            if p:
-                seen.setdefault(tuple(p), None)
-
-    if key.column_filter_key is not None:
-        # Crossed paths are stamped OWNER-relative at bind time (best-effort
-        # ``()``); re-derive the tri-state here — an unanalyzable filter
-        # dependency fails closed, never "crosses nothing".
-        if _column_filter_closure(
-            key=key, anchor_model=anchor_model, anchor_relation=anchor_relation,
-            bundle=bundle,
-        ) is None:
-            return None
-        source_path = tuple(getattr(key.source, "path", ()) or ())
-        for p in key.column_filter_key.referenced_join_paths:
-            _add(_prefixes(source_path + tuple(p)))
-
-    refs: List[object] = [
-        *([key.source] if include_source else []),
-        *key.args,
-        *(v for _, v in key.kwargs),
-    ]
-    for ref in refs:
-        if isinstance(ref, AggregateKey) and not descend_aggregates:
-            continue
-        c = key_closure(
-            key=ref, anchor_model=anchor_model, anchor_relation=anchor_relation,
-            bundle=bundle,
-        )
-        if c is None:
-            # A raw, unparseable template-fragment STRING contributes nothing (the
-            # pre-DEV-1900 defensive fallback; a malformed SQL fragment is the
-            # renderer's gate) — only a named DERIVED COLUMN fails closed.
-            if isinstance(ref, str):
-                continue
-            return None
-        _add(c)
-
-    # Non-overridden definition defaults, resolved in the aggregate's ROOT frame
-    # (the anchor) so a default naming the root's own model resolves locally after
-    # the home rule widens the home, rather than via a reverse hop; explicit kwargs
-    # already rode the refs loop above.
-    explicit = {name for name, _ in key.kwargs}
-    for spec in resolve_aggregation_params(
-        agg=key, owner_model=anchor_model, owner_path=(), bundle=bundle,
-    ):
-        if spec.name in explicit:
-            continue
-        c = _param_spec_closure(
-            spec, anchor_model=anchor_model, anchor_relation=anchor_relation,
-            bundle=bundle,
-        )
-        if c is None:
-            return None
-        _add(c)
+    if not _merge_paths(seen, _column_filter_paths(
+        key=key, anchor_model=anchor_model, anchor_relation=anchor_relation,
+        bundle=bundle,
+    )):
+        return None
+    if not _merge_paths(seen, _refs_closure(
+        refs=_explicit_input_refs(key, include_source=include_source),
+        descend_aggregates=descend_aggregates, anchor_model=anchor_model,
+        anchor_relation=anchor_relation, bundle=bundle,
+    )):
+        return None
+    if not _merge_paths(seen, _default_params_closure(
+        key=key, anchor_model=anchor_model, anchor_relation=anchor_relation,
+        bundle=bundle,
+    )):
+        return None
     return tuple(seen)
+
+
+def _unanalyzable_derived_name(
+    ref: object, *, anchor_model: SlayerModel, anchor_relation: str,
+    bundle: ResolvedSourceBundle,
+) -> Optional[str]:
+    """``ref``'s column name when it names a derived column no dialect can
+    analyse, else ``None``."""
+    if not isinstance(ref, ColumnSqlKey):
+        return None
+    path = tuple(ref.path or ())
+    terminal = bundle.models_by_name.get(ref.model)
+    if terminal is None and ref.model == anchor_model.name:
+        terminal = anchor_model
+    col = _derived_column(terminal, ref.column_name)
+    if terminal is not None and col is not None and fragment_closure(
+        sql=col.sql, model=terminal, owner_path=path,
+        anchor_relation="__".join(path) if path else anchor_relation,
+        bundle=bundle,
+    ) is None:
+        return ref.column_name
+    return None
 
 
 def first_unanalyzable_input_column(
@@ -567,38 +663,23 @@ def first_unanalyzable_input_column(
     anchor_relation: str, bundle: ResolvedSourceBundle, include_source: bool = True,
 ) -> Optional[str]:
     """The column name of the first aggregate input whose derived definition no
-    dialect can analyse (names the ``check_input_dependencies_analyzable`` error),
-    else ``None``."""
+    dialect can analyse (best-effort diagnostic naming the
+    ``check_input_dependencies_analyzable`` error — the safety DECISION is the
+    closure's tri-state), else ``None``."""
     if anchor_model is None:
         return None
-    refs: List[object] = [
-        *([key.source] if include_source else []),
-        *key.args,
-        *(v for _, v in key.kwargs),
-    ]
-    explicit = {name for name, _ in key.kwargs}
-    for spec in resolve_aggregation_params(
-        agg=key, owner_model=anchor_model, owner_path=(), bundle=bundle,
-    ):
-        if spec.name in explicit:
-            continue
+    refs: List[object] = _explicit_input_refs(key, include_source=include_source)
+    for spec in _default_param_specs(key, anchor_model=anchor_model, bundle=bundle):
         if spec.key is not None:
             refs.append(spec.key)
         refs.extend(r for r in spec.expr_refs if r is not None)
     for ref in refs:
-        if not isinstance(ref, ColumnSqlKey):
-            continue
-        path = tuple(ref.path or ())
-        terminal = bundle.models_by_name.get(ref.model)
-        if terminal is None and ref.model == anchor_model.name:
-            terminal = anchor_model
-        col = _derived_column(terminal, ref.column_name)
-        if terminal is not None and col is not None and fragment_closure(
-            sql=col.sql, model=terminal, owner_path=path,
-            anchor_relation="__".join(path) if path else anchor_relation,
+        name = _unanalyzable_derived_name(
+            ref, anchor_model=anchor_model, anchor_relation=anchor_relation,
             bundle=bundle,
-        ) is None:
-            return ref.column_name
+        )
+        if name is not None:
+            return name
     if _column_filter_closure(
         key=key, anchor_model=anchor_model, anchor_relation=anchor_relation,
         bundle=bundle,

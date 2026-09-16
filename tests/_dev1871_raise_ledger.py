@@ -122,6 +122,10 @@ ROWS: Tuple[LedgerRow, ...] = (
     _row(_EE, "check_input_dependencies_analyzable", "ValueError",
          "Aggregate … names derived column …, whose definition no supported dialect can analyse for join dependencies; an unanalyzable dependency is unsafe. Fix the column's SQL, or remove it from the aggregate.",
          "checker", "cross-model", True, "checker"),
+    # Its unnameable arm: the closure is unanalysable but no single column can be named.
+    _row(_EE, "check_input_dependencies_analyzable", "ValueError",
+         "Aggregate … has an input dependency whose definition no supported dialect can analyse for join dependencies; an unanalyzable dependency is unsafe. Fix the input's SQL, or remove it from the aggregate.",
+         "checker", "cross-model", True, "checker"),
     _row(_EE, "check_attached_inputs_attributable", "SlayerError",
          "Cross-model aggregate … runs over … rows under to_many_handling=…, but its attached input … reads …, which …; that input's producer cannot nest inside the …-rooted producer. Use to_many_handling='associate', or aggregate the input over columns attributable from ….",
          "checker", "cross-model", True, "checker"),

@@ -2970,7 +2970,7 @@ def _assert_population_filters_no_fanout(
             )
             check_population_filter_no_fanout(
                 filter_text=text or _canonical_name(cj), hop=hop,
-                host=host_model.name, unanalyzable=closure is None,
+                unanalyzable=closure is None,
             )
 
 

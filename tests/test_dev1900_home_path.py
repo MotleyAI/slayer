@@ -51,7 +51,8 @@ class TestReverseHopDefaultFailsClosed:
     async def test_back_hop_default_stays_failing_closed(self, engine):
         """Rooted at regions there is no forward home for the customers.spend
         default; reverse-hop cancellation is DEV-1908, so it must fail closed."""
+        q = SlayerQuery(
+            source_model="regions",
+            measures=[ModelMeasure(formula="pop:wsum_cust_spend", name="w")])
         with pytest.raises(ValueError, match="unproven join hop"):
-            await engine.execute(SlayerQuery(
-                source_model="regions",
-                measures=[ModelMeasure(formula="pop:wsum_cust_spend", name="w")]))
+            await engine.execute(q)

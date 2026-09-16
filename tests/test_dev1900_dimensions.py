@@ -93,15 +93,15 @@ class TestErrorMode:
     stop at the first metric and never exercise the other."""
 
     async def test_local_metric_refuses(self, engine):
+        q = orders_q(dimensions=[BAD_POP], measures=[AMOUNT_SUM], to_many_handling="error")
         with pytest.raises(ValueError) as ei:
-            await engine.execute(orders_q(
-                dimensions=[BAD_POP], measures=[AMOUNT_SUM], to_many_handling="error"))
+            await engine.execute(q)
         assert "bad_pop" in str(ei.value), ei.value
 
     async def test_cross_model_metric_refuses(self, engine):
+        q = orders_q(dimensions=[BAD_POP], measures=[SPEND_SUM], to_many_handling="error")
         with pytest.raises(ValueError) as ei:
-            await engine.execute(orders_q(
-                dimensions=[BAD_POP], measures=[SPEND_SUM], to_many_handling="error"))
+            await engine.execute(q)
         assert "bad_pop" in str(ei.value), ei.value
 
 
@@ -112,8 +112,8 @@ class TestExplicitPartitionBy:
         error outside associate — every partition key must be attributable."""
         measure = ModelMeasure(
             formula="amount:sum(partition_by=customers.regions.bad_pop)", name="w")
+        q = orders_q(dimensions=[BAD_POP], measures=[measure], to_many_handling=mode)
         with pytest.raises(ValueError) as ei:
-            await engine.execute(orders_q(
-                dimensions=[BAD_POP], measures=[measure], to_many_handling=mode))
+            await engine.execute(q)
         msg = str(ei.value)
         assert HOP in msg or "attributable" in msg, msg

@@ -50,35 +50,39 @@ class TestFanningPopulationFilterFailsClosed:
     async def test_structural_fanning_filter(self, engine, mode):
         """Rooted at customers, filtered on orders.status across the 1:N
         customers→orders hop, with the local spend:sum inline."""
+        q = cust_q(
+            measures=[SPEND_SUM_LOCAL], filters=["orders.status = 'ok'"],
+            to_many_handling=mode)
         with pytest.raises(ValueError) as ei:
-            await engine.execute(cust_q(
-                measures=[SPEND_SUM_LOCAL], filters=["orders.status = 'ok'"],
-                to_many_handling=mode))
+            await engine.execute(q)
         msg = str(ei.value)
-        assert "status" in msg and "orders" in msg, msg
+        assert "status" in msg, msg
+        assert "orders" in msg, msg
         assert_ref_free(msg)
 
     @pytest.mark.parametrize("mode", MODES)
     async def test_derived_fanning_filter(self, engine, mode):
         """Rooted at orders, filtered on the derived regions.bad_pop across the
         1:N regions→region_events hop, with the local amount:sum inline."""
+        q = orders_q(
+            measures=[AMOUNT_SUM], filters=["customers.regions.bad_pop > 0"],
+            to_many_handling=mode)
         with pytest.raises(ValueError) as ei:
-            await engine.execute(orders_q(
-                measures=[AMOUNT_SUM], filters=["customers.regions.bad_pop > 0"],
-                to_many_handling=mode))
+            await engine.execute(q)
         msg = str(ei.value)
-        assert "region_events" in msg and "bad_pop" in msg, msg
+        assert "region_events" in msg, msg
+        assert "bad_pop" in msg, msg
         assert_ref_free(msg)
 
     @pytest.mark.parametrize("mode", MODES)
     async def test_unanalyzable_filter_fails_closed(self, unparse_engine, mode):
         """A filter on a derived column no dialect can analyse must fail closed
         with the inline aggregate, never route as if it crossed nothing."""
+        q = orders_q(
+            measures=[AMOUNT_SUM], filters=["customers.regions.unparseable > 0"],
+            to_many_handling=mode)
         with pytest.raises(ValueError) as ei:
-            await unparse_engine.execute(orders_q(
-                measures=[AMOUNT_SUM],
-                filters=["customers.regions.unparseable > 0"],
-                to_many_handling=mode))
+            await unparse_engine.execute(q)
         msg = str(ei.value)
         assert "analyse" in msg, msg
         assert_ref_free(msg)

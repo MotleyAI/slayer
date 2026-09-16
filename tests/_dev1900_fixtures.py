@@ -153,6 +153,12 @@ def unparseable_derived_models() -> List[SlayerModel]:
     customers.aggregations.append(Aggregation(
         name="wunparse", formula="SUM({value} * {weight})",
         params=[AggregationParam(name="weight", sql="regions.unparseable")]))
+    # An unparseable EXPRESSION default: expr_refs is (None,), so no single
+    # column can be named — the input closure is None but the diagnostic returns
+    # None (the check_input_dependencies_analyzable unnameable arm).
+    customers.aggregations.append(Aggregation(
+        name="wexpr_unparse", formula="SUM({value} * {weight})",
+        params=[AggregationParam(name="weight", sql=")((( bad")]))
     customers.columns.append(Column(
         name="flagged_spend", type=DataType.DOUBLE, sql="spend",
         filter="regions.unparseable > 0"))

@@ -17,6 +17,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.errors import SlayerError
+from slayer.engine.elaborate_env import check_input_dependencies_analyzable
 
 from tests._dev1892_fixtures import assert_grain_residue, assert_ref_free
 from tests._dev1900_fixtures import (
@@ -48,6 +49,7 @@ CM_DEFAULT_EXPR = ModelMeasure(formula="customers.spend:wsumy", name="w")  # exp
 CM_FILTER = ModelMeasure(formula="customers.bad_pop_spend:sum", name="w")  # measure-local regions.bad_pop > 0
 CM_GOOD = ModelMeasure(formula="customers.spend:wgood", name="w")          # default regions.derived_pop (to-one)
 CM_UNPARSE = ModelMeasure(formula="customers.spend:wunparse", name="w")
+CM_EXPR_UNPARSE = ModelMeasure(formula="customers.spend:wexpr_unparse", name="w")  # unparseable expr default → unnameable
 
 #: wgood (to-one derived default) executes today; behaviour-preserving pin.
 WGOOD_TOONE_DEFAULT = 134000.0
@@ -74,8 +76,9 @@ def _assert_unproven(exc: ValueError) -> None:
 
 async def _assert_fails_closed(engine, measure, *, mode=None):
     kw = {} if mode is None else {"to_many_handling": mode}
+    q = orders_q(measures=[measure], **kw)
     with pytest.raises(ValueError) as ei:
-        await engine.execute(orders_q(measures=[measure], **kw))
+        await engine.execute(q)
     _assert_unproven(ei.value)
 
 
@@ -127,8 +130,9 @@ class TestUnanalyzableDefinition:
         """No dialect parses regions.unparseable; the dependency is unsafe, not
         empty — the typed analyzability error names the column and the dialect
         failure, never the raw parser error."""
+        q = orders_q(measures=[CM_UNPARSE])
         with pytest.raises(ValueError) as ei:
-            await unparse_engine.execute(orders_q(measures=[CM_UNPARSE]))
+            await unparse_engine.execute(q)
         msg = str(ei.value)
         assert "unparseable" in msg, f"error must name the column: {msg!r}"
         assert "dialect" in msg, f"error must name the analyzability failure: {msg!r}"
@@ -137,19 +141,45 @@ class TestUnanalyzableDefinition:
     async def test_unparseable_column_filter_typed_error(self, unparse_engine):
         """A source column's ``filter=`` referencing an unanalyzable derived
         column is an input dependency too — fail closed, never stamped ``()``."""
+        q = orders_q(measures=[ModelMeasure(
+            formula="customers.flagged_spend:sum", name="fs")])
         with pytest.raises(ValueError) as ei:
-            await unparse_engine.execute(orders_q(measures=[ModelMeasure(
-                formula="customers.flagged_spend:sum", name="fs")]))
+            await unparse_engine.execute(q)
         msg = str(ei.value)
         assert "flagged_spend" in msg, f"error must name the filtered column: {msg!r}"
         assert "dialect" in msg, f"error must name the analyzability failure: {msg!r}"
         assert_ref_free(msg)
 
+    async def test_unnameable_unanalyzable_input_fails_closed(self, unparse_engine):
+        """An unparseable EXPRESSION default has no single nameable column
+        (expr_refs is (None,)): the closure is None while the diagnostic returns
+        None, so the guard must still fail closed rather than leak the failure to
+        the renderer (CodeRabbit; without the fix the guard is a no-op)."""
+        q = orders_q(measures=[CM_EXPR_UNPARSE])
+        with pytest.raises(ValueError, match="no supported dialect can analyse"):
+            await unparse_engine.execute(q)
+
+
+class TestInputDependencyCheckerAlwaysRaises:
+    """``check_input_dependencies_analyzable`` runs ONLY once the input closure
+    is None, so it always fails closed — a nameable column enriches the message,
+    a missing one still raises (CodeRabbit; the old ``column is None`` early
+    return silently passed an unanalysable dependency)."""
+
+    def test_named_column_raises_naming_it(self):
+        with pytest.raises(ValueError, match="derived column 'bad_pop'"):
+            check_input_dependencies_analyzable(alias="w", column="bad_pop")
+
+    def test_unnameable_dependency_still_raises(self):
+        with pytest.raises(ValueError, match="has an input dependency"):
+            check_input_dependencies_analyzable(alias="w", column=None)
+
 
 class TestReaggregationParameter:
     async def test_fanning_derived_parameter_fails_closed(self, engine):
+        q = orders_q(measures=[REAGG_BAD])
         with pytest.raises(SlayerError) as ei:
-            await engine.execute(orders_q(measures=[REAGG_BAD]))
+            await engine.execute(q)
         assert_grain_residue(ei.value, param="weight")
 
 

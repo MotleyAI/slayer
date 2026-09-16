@@ -314,23 +314,24 @@ class TestExprDefaultLiteralsAndResidue:
         assert_grain_residue(ei.value, param="weight")
 
     async def test_opaque_qualifier_fails_closed(self, opaque_expr_engine):
-        # ``nosuch.col`` resolves no join walk -> typed refusal, never raw SQL.
+        # ``nosuch.col`` resolves no join walk -> the input closure is
+        # unanalysable with no nameable column, so the analyzability guard
+        # fails it closed (preempts the grain-residue diagnosis).
         q = assoc_q(
             dimensions=["status"],
             measures=[ModelMeasure(formula="customers.spend:wopq", name="w")])
-        with pytest.raises(SlayerError) as ei:
+        with pytest.raises(ValueError, match="no supported dialect can analyse"):
             await opaque_expr_engine.execute(q)
-        assert_grain_residue(ei.value, param="weight")
 
     async def test_unparseable_default_fails_closed(self, unparseable_engine):
-        # No dialect parses ``)((( bad``: analysis failure is not "no refs" —
-        # typed refusal, never a raw level-2 render.
+        # No dialect parses ``)((( bad``: an unanalysable input with no nameable
+        # column fails closed via the analyzability guard, never a raw
+        # level-2 render.
         q = assoc_q(
             dimensions=["status"],
             measures=[ModelMeasure(formula="customers.spend:wugly", name="w")])
-        with pytest.raises(SlayerError) as ei:
+        with pytest.raises(ValueError, match="no supported dialect can analyse"):
             await unparseable_engine.execute(q)
-        assert_grain_residue(ei.value, param="weight")
 
     async def test_fanning_expr_default_still_fails_closed(self, fanning_expr_engine):
         # Regression pin: input safety keeps rejecting the fanning fragment.

@@ -831,11 +831,19 @@ def check_cross_model_inputs_safe(
 def check_input_dependencies_analyzable(
     *, alias: Optional[str], column: Optional[str],
 ) -> None:
-    """An aggregate input whose derived-column definition no dialect can analyse
-    for join dependencies is unsafe, never 'crosses nothing' (DEV-1900);
-    ``column`` = the unanalysable column when one exists, else ``None``."""
+    """An aggregate input whose dependency no dialect can analyse for join
+    dependencies is unsafe, never 'crosses nothing'. Callers invoke
+    this ONLY once the input closure has come back unanalysable, so it always
+    raises; ``column`` names the offending derived column when one can be
+    identified (the common case), else ``None`` (e.g. an unresolvable
+    expression-default qualifier), which still fails closed."""
     if column is None:
-        return
+        raise ValueError(
+            f"Aggregate {alias!r} has an input dependency whose definition no "
+            f"supported dialect can analyse for join dependencies; an "
+            f"unanalyzable dependency is unsafe. Fix the input's SQL, or remove "
+            f"it from the aggregate."
+        )
     raise ValueError(
         f"Aggregate {alias!r} names derived column {column!r}, whose definition "
         f"no supported dialect can analyse for join dependencies; an unanalyzable "
@@ -845,8 +853,7 @@ def check_input_dependencies_analyzable(
 
 
 def check_population_filter_no_fanout(
-    *, filter_text: str, hop: Optional[str], host: str,
-    unanalyzable: bool = False,
+    *, filter_text: str, hop: Optional[str], unanalyzable: bool = False,
 ) -> None:
     """Interim guard: a row-level filter conjunct reaching the
     population root only across a fanning hop, with an aggregate inline over the
