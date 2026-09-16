@@ -64,6 +64,7 @@ def _slayer_warnings(caught) -> list:
 SPEND = ModelMeasure(formula="spend:sum", name="w")
 LOCAL_AMOUNT = ModelMeasure(formula="amount:sum", name="amt")
 PARTITIONED = ModelMeasure(formula="sum(spend, partition_by=tier)", name="w")
+PARTITIONED_AVG = ModelMeasure(formula="avg(spend, partition_by=tier)", name="v")
 WINDOWED = ModelMeasure(formula="sum(spend, window='1y')", name="w")
 NESTED = ModelMeasure(formula="avg(sum(spend, partition_by=tier))", name="w")
 NEST_HOST_TARGET = ModelMeasure(
@@ -102,10 +103,10 @@ async def _dry_sql(engine, dialect, query) -> str:
     return resp.sql
 
 
-def _assert_semi_join(sql: str, *, not_joined: str) -> None:
+def _assert_semi_join(sql: str, *, not_joined: str, dialect: str) -> None:
     """The base restricts by a correlated EXISTS, never a join on ``not_joined``."""
     assert "EXISTS" in sql.upper(), f"no semi-join in:\n{sql}"
-    assert not_joined not in _join_aliases(sql, dialect="sqlite"), (
+    assert not_joined not in _join_aliases(sql, dialect=dialect), (
         f"{not_joined!r} is joined into the base (fan), expected a semi-join:\n{sql}"
     )
 
@@ -130,7 +131,8 @@ class TestPopulationRestrictedByAssociation:
         assert info.measure is None
         assert "status" in info.filter_text
         assert _slayer_warnings(caught) == []
-        _assert_semi_join(await _dry_sql(engine, dialect, q), not_joined="orders")
+        _assert_semi_join(await _dry_sql(engine, dialect, q), not_joined="orders",
+                          dialect=dialect)
 
     @pytest.mark.parametrize("mode", MODES)
     async def test_derived_fanning_filter(self, backend, mode):
@@ -148,7 +150,7 @@ class TestPopulationRestrictedByAssociation:
         assert "bad_pop" in info.filter_text
         assert _slayer_warnings(caught) == []
         _assert_semi_join(await _dry_sql(engine, dialect, q),
-                          not_joined="region_events")
+                          not_joined="region_events", dialect=dialect)
 
 
 class TestProducersInheritDisposition:
@@ -162,7 +164,17 @@ class TestProducersInheritDisposition:
         assert {k: pytest.approx(v) for k, v in vals.items()} == {
             k: pytest.approx(v) for k, v in POP_FILTER_PARTITIONED_BY_TIER.items()}
         assert {i.measure for i in pushed_filter_infos(resp)} == {None, "w"}
-        _assert_semi_join(await _dry_sql(engine, dialect, q), not_joined="orders")
+        _assert_semi_join(await _dry_sql(engine, dialect, q), not_joined="orders",
+                          dialect=dialect)
+
+    async def test_shared_producer_reports_every_measure(self, backend):
+        """One producer computing two same-grain aggregates reports the semi-join
+        push for each, not only the first."""
+        _, engine = backend
+        q = cust_q(dimensions=["tier"], measures=[PARTITIONED, PARTITIONED_AVG],
+                   filters=[OK])
+        resp = await engine.execute(q)
+        assert {i.measure for i in pushed_filter_infos(resp)} == {None, "w", "v"}
 
     async def test_windowed_producer_april(self, backend):
         dialect, engine = backend
@@ -171,7 +183,8 @@ class TestProducersInheritDisposition:
         april = _cell(resp, "customers.signup_at", "customers.w")
         key = next(k for k in april if str(k).startswith("2024-04"))
         assert float(april[key]) == pytest.approx(POP_FILTER_WINDOWED_APRIL)
-        _assert_semi_join(await _dry_sql(engine, dialect, q), not_joined="orders")
+        _assert_semi_join(await _dry_sql(engine, dialect, q), not_joined="orders",
+                          dialect=dialect)
 
     async def test_first_last_producer_over_time_axis(self, backend):
         """spend:last is fan-insensitive; the push removes the fanning join from the producer body."""
@@ -182,7 +195,8 @@ class TestProducersInheritDisposition:
         # c4 (bronze, no ok order) and c7 (no orders) are excluded from March/April.
         march = next(v for k, v in picks.items() if str(k).startswith("2024-03"))
         assert float(march) == pytest.approx(60.0)
-        _assert_semi_join(await _dry_sql(engine, dialect, q), not_joined="orders")
+        _assert_semi_join(await _dry_sql(engine, dialect, q), not_joined="orders",
+                          dialect=dialect)
 
     async def test_nested_producer_inherits(self, backend):
         """avg(sum(spend, partition_by=tier)) — inner totals count each customer once."""
@@ -194,7 +208,8 @@ class TestProducersInheritDisposition:
             k: pytest.approx(v) for k, v in POP_FILTER_NESTED_BY_TIER.items()}
         assert statistics.mean(float(v) for v in vals.values()) == pytest.approx(
             POP_FILTER_NESTED_TIER_MEAN)
-        _assert_semi_join(await _dry_sql(engine, dialect, q), not_joined="orders")
+        _assert_semi_join(await _dry_sql(engine, dialect, q), not_joined="orders",
+                          dialect=dialect)
 
     async def test_host_target_nesting_body(self, backend):
         """A host-rooted producer nesting a target-rooted one carries the semi-join in its outer body."""
@@ -254,7 +269,8 @@ class TestSameRowBinding:
             POP_FILTER_MIXED_CONJUNCT_SPEND)
         (info,) = pushed_filter_infos(resp)
         assert info.measure is None
-        _assert_semi_join(await _dry_sql(engine, dialect, q), not_joined="orders")
+        _assert_semi_join(await _dry_sql(engine, dialect, q), not_joined="orders",
+                          dialect=dialect)
 
     async def test_two_branches_restrict_independently(self, backend):
         """S9 — an ok order AND a region event value>=50 (North only), each branch independent, each customer once."""
@@ -265,7 +281,8 @@ class TestSameRowBinding:
         assert float(resp.data[0]["customers.w"]) == pytest.approx(
             POP_FILTER_TWO_BRANCH_SPEND)
         assert len(pushed_filter_infos(resp)) == 2
-        _assert_semi_join(await _dry_sql(engine, dialect, q), not_joined="orders")
+        _assert_semi_join(await _dry_sql(engine, dialect, q), not_joined="orders",
+                          dialect=dialect)
 
 
 class TestRawRowsAndDimensionsOnly:
@@ -344,10 +361,10 @@ class TestFailClosed:
         """S10 — an unparseable derived dependency fails closed in every mode, naming the filter and column."""
         _, engine = unparse_backend
         for kw in ({"measures": [LOCAL_AMOUNT]}, {"dimensions": ["customers.tier"]}):
+            q = orders_q(filters=["customers.regions.unparseable > 0"],
+                         to_many_handling=mode, **kw)
             with pytest.raises(ValueError) as ei:
-                await engine.execute(orders_q(
-                    filters=["customers.regions.unparseable > 0"],
-                    to_many_handling=mode, **kw))
+                await engine.execute(q)
             msg = str(ei.value)
             assert "unparseable" in msg
             assert "analyse" in msg
@@ -357,22 +374,39 @@ class TestFailClosed:
     async def test_out_of_scope_conjunct_with_aggregate_fails_closed(self, backend, mode):
         """S11 — an OR-mixed conjunct with a plain aggregate inline fails closed, naming filter, reason and remedy."""
         _, engine = backend
+        q = cust_q(measures=[SPEND],
+                   filters=["tier = 'bronze' or orders.status = 'ok'"],
+                   to_many_handling=mode)
         with pytest.raises(ValueError) as ei:
-            await engine.execute(cust_q(
-                measures=[SPEND],
-                filters=["tier = 'bronze' or orders.status = 'ok'"],
-                to_many_handling=mode))
+            await engine.execute(q)
         msg = str(ei.value)
         assert "pushdown scope" in msg
         assert "Split" in msg or "restate" in msg
         assert_ref_free(msg)
 
     @pytest.mark.parametrize("mode", MODES)
+    async def test_out_of_scope_with_filter_only_aggregate_fails_closed(
+        self, backend, mode):
+        """S11 — the inline aggregate lives only in a HAVING predicate, never the
+        projection; the out-of-scope conjunct still fails closed (the inline-aggregate
+        scan reads filters, not just measures)."""
+        _, engine = backend
+        q = cust_q(dimensions=["tier"],
+                   filters=["tier = 'bronze' or orders.status = 'ok'",
+                            "spend:sum > 100"],
+                   to_many_handling=mode)
+        with pytest.raises(ValueError) as ei:
+            await engine.execute(q)
+        msg = str(ei.value)
+        assert "pushdown scope" in msg
+        assert_ref_free(msg)
+
+    @pytest.mark.parametrize("mode", MODES)
     async def test_ambiguous_host_correlation_fails_closed(self, parallel_backend, mode):
         """C8 — the population reaches the filtered model only across parallel edges; fail closed, never guess a hop."""
+        q = cust_q(measures=[SPEND], filters=[OK], to_many_handling=mode)
         with pytest.raises(AmbiguousJoinPathError) as ei:
-            await parallel_backend.execute(cust_q(
-                measures=[SPEND], filters=[OK], to_many_handling=mode))
+            await parallel_backend.execute(q)
         msg = str(ei.value)
         assert "orders" in msg
         assert "2 edges" in msg

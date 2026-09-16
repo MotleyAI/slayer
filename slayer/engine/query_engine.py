@@ -481,10 +481,39 @@ def _attach_semi_join_texts(attach) -> Iterator[str]:
         yield from (text for text in group.filter_texts if text)
 
 
+def _attach_semi_join_measures(attach) -> List[Optional[str]]:
+    """Measure label(s) for an attach's semi-join push: a shared producer names
+    every aggregate it computes (DEV-1909); a broadcast / associate producer keeps
+    its single label; ``alias_hint`` is the last resort."""
+    primary = attach.broadcast_measure or attach.associated_measure
+    if primary:
+        return [primary]
+    if attach.semi_join_measures:
+        return list(attach.semi_join_measures)
+    return [attach.alias_hint or "<aggregate>"]
+
+
+def _emit_semi_join_pushed(
+    *, out: List[SemiJoinPushedWarningPayload], seen: set,
+    location: str, measure: Optional[str], text: str,
+) -> None:
+    """Append one deduplicated ``(location, measure, filter text)`` entry."""
+    identity = (location, measure, text)
+    if identity in seen:
+        return
+    seen.add(identity)
+    out.append(SemiJoinPushedWarningPayload(
+        measure=measure, location=location, filter_text=text,
+    ))
+
+
 def _collect_semi_join_pushed_warnings(
     *, planned_list, stages,
 ) -> List[SemiJoinPushedWarningPayload]:
-    """Response-only informational entries for semi-join-pushed conjuncts (DEV-1841 amends DEV-1840's silence); one per ``(location, aggregate, filter text)``."""
+    """Response-only informational entries for semi-join-pushed conjuncts (DEV-1841
+    amends DEV-1840's silence); one per ``(location, aggregate, filter text)``. The
+    query population's own semi-join names no aggregate (DEV-1909); a shared producer
+    names every aggregate it computes."""
     seen: set = set()
     out: List[SemiJoinPushedWarningPayload] = []
     for index, planned in enumerate(planned_list):
@@ -493,26 +522,17 @@ def _collect_semi_join_pushed_warnings(
         # (DEV-1909); its groups live on the top-level plan, not an attach.
         for group in getattr(planned, "semi_join_filters", None) or ():
             for text in (t for t in group.filter_texts if t):
-                identity = (location, None, text)
-                if identity in seen:
-                    continue
-                seen.add(identity)
-                out.append(SemiJoinPushedWarningPayload(
-                    measure=None, location=location, filter_text=text,
-                ))
+                _emit_semi_join_pushed(
+                    out=out, seen=seen, location=location, measure=None, text=text,
+                )
         for attach in _walk_regroup_attaches(planned):
-            measure = (
-                attach.broadcast_measure or attach.associated_measure
-                or attach.semi_join_measure or attach.alias_hint or "<aggregate>"
-            )
+            measures = _attach_semi_join_measures(attach)
             for text in _attach_semi_join_texts(attach):
-                identity = (location, measure, text)
-                if identity in seen:
-                    continue
-                seen.add(identity)
-                out.append(SemiJoinPushedWarningPayload(
-                    measure=measure, location=location, filter_text=text,
-                ))
+                for measure in measures:
+                    _emit_semi_join_pushed(
+                        out=out, seen=seen, location=location,
+                        measure=measure, text=text,
+                    )
     return out
 
 

@@ -1,11 +1,8 @@
 """Golden SQL for the host-population pushdown shapes across seven Tier-1
-dialects. Blessed pre-implementation as today's feature-missing output (a
-recorded raise for the inline-aggregate shapes, a fanning join for the producer
-shapes). At implementation each ``pop_push/`` case flips to a correlated
-semi-join (``EXISTS``, no fanning join), enters ALLOWED_DELTAS, is re-blessed,
-and the manifest is emptied. ``test_population_pushes_carry_exists`` is this
-module's feature-missing tripwire until then. The ``inline/`` shapes cross a
-provably to-one hop and MUST stay byte-identical SQL through the change.
+dialects. Each ``pop_push/`` case pins a correlated semi-join (``EXISTS``, no
+fanning join), guarded by ``test_population_pushes_carry_exists``; the
+``inline/`` shapes cross a provably to-one hop and stay plain row restrictions.
+``ALLOWED_DELTAS`` is empty in the committed state.
 """
 
 from __future__ import annotations
@@ -26,8 +23,8 @@ _MODEL_SETS = {"dev1900": dev1900_models}
 
 def _cases() -> dict:
     return {
-        # pop_push/* — the population restricts by association; must carry EXISTS
-        # and drop the fanning join after the change (today: raise or fanning SQL).
+        # pop_push/* — the population restricts by association; carries EXISTS
+        # and drops the fanning join.
         "pop_push/structural": {
             "models": "dev1900", "source": "customers", "mode": None,
             "kw": {"measures": [{"formula": "spend:sum", "name": "w"}],
@@ -99,9 +96,8 @@ bind_golden_tests(
 
 
 def test_population_pushes_carry_exists(baseline) -> None:
-    """Feature-missing tripwire: every population-push shape must emit a
-    correlated semi-join (EXISTS) and no longer join the fanning relation. Red
-    until the pushdown lands (today: a recorded raise or a fanning join)."""
+    """Every population-push shape emits a correlated semi-join (EXISTS) and no
+    longer joins the fanning relation."""
     for key, value in baseline.items():
         case_id, dialect = key.rsplit("::", 1)
         if case_id not in PUSH_CASES:

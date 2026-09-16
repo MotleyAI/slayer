@@ -386,9 +386,10 @@ class RegroupAttachPlan(BaseModel):
     partition_display: List[str] = Field(default_factory=list)
     producer_root_model: Optional[str] = None
     dropped_filter_warnings: List[Any] = Field(default_factory=list)
-    # Public measure name to report for a semi-join pushed into this producer
-    # (the canonical ``alias_hint`` is the last resort otherwise).
-    semi_join_measure: Optional[str] = None
+    # Public measure names to report for a semi-join pushed into this producer —
+    # one per aggregate it computes (the canonical ``alias_hint`` is the last
+    # resort otherwise).
+    semi_join_measures: Tuple[str, ...] = ()
     broadcast_measure: Optional[str] = None
     broadcast_dimensions: List[Tuple[str, str]] = Field(default_factory=list)
     # Associate-mode counterparts (DEV-1841): the aggregate resolved by

@@ -1309,7 +1309,7 @@ class _PopulationConjunct(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     key: ValueKey
-    text: Optional[str]
+    text: Optional[str] = None
     is_date_bound: bool
     origin_index: int
     origin_bf: BoundFilter
@@ -1333,7 +1333,7 @@ class _PassthroughFilter(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     bound: BoundFilter
-    text: Optional[str]
+    text: Optional[str] = None
     typing: MaskTyping
     stratum: int
 
@@ -1473,6 +1473,42 @@ class PopulationFilters(BaseModel):
         return drop_keys, self._semi_joins(pushed), residue
 
 
+def _population_conjunct(
+    *, cj: ValueKey, text: Optional[str], conj_text: Optional[str],
+    is_date: bool, origin_index: int, origin_bf: BoundFilter,
+    host_model: SlayerModel, host_name: str,
+    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+) -> _PopulationConjunct:
+    """One split ROW conjunct classified at the host root: inline / semi-join /
+    excluded (D1/D2)."""
+    inherited_bf, pushed, dropped_w = _conjunct_disposition(
+        cj, text=text, target_path=(), root_model=host_model,
+        models_by_name=models_by_name, host_name=host_name,
+        host_model=host_model, bundle=bundle,
+    )
+    base: Dict[str, Any] = dict(
+        key=cj, text=conj_text, is_date_bound=is_date,
+        origin_index=origin_index, origin_bf=origin_bf,
+    )
+    if inherited_bf is not None:
+        return _PopulationConjunct(**base, disposition="inline")
+    if pushed is not None:
+        key_rewritten, display, nodes = pushed
+        first = next(h for p, h in nodes.items() if len(p) == 1)
+        return _PopulationConjunct(
+            **base, disposition="semi_join",
+            group_id=(first.target_model, first.join_pairs),
+            key_rewritten=key_rewritten, semi_join_text=display,
+            hops=tuple(sorted(nodes.values(), key=lambda h: len(h.node_path))),
+            fanning_paths=tuple(key_closure(
+                key=cj, anchor_model=host_model,
+                anchor_relation=host_name, bundle=bundle,
+            ) or ()),
+        )
+    assert dropped_w is not None
+    return _PopulationConjunct(**base, disposition="excluded", reason=dropped_w.reason)
+
+
 def dispose_population_filters(
     *, prebound: PreboundQuery, filter_typings: Sequence[ConjunctTyping],
     scope: Union[ModelScope, StageSchema], bundle: ResolvedSourceBundle,
@@ -1501,41 +1537,31 @@ def dispose_population_filters(
         split = split_top_level_and(bf.value_key)
         conj_text = text if len(split) == 1 else None
         for cj in split:
-            inherited_bf, pushed, dropped_w = _conjunct_disposition(
-                cj, text=text, target_path=(), root_model=host_model,
-                models_by_name=models_by_name, host_name=host_name,
-                host_model=host_model, bundle=bundle,
-            )
-            def _conj(**kw: Any) -> _PopulationConjunct:
-                return _PopulationConjunct(
-                    key=cj, text=conj_text, is_date_bound=is_date,
-                    origin_index=idx, origin_bf=bf, **kw,
-                )
-
-            if inherited_bf is not None:
-                conjuncts.append(_conj(disposition="inline"))
-            elif pushed is not None:
-                key_rewritten, display, nodes = pushed
-                first = next(h for p, h in nodes.items() if len(p) == 1)
-                gid = (first.target_model, first.join_pairs)
-                conjuncts.append(_conj(
-                    disposition="semi_join", group_id=gid,
-                    key_rewritten=key_rewritten, semi_join_text=display,
-                    hops=tuple(sorted(
-                        nodes.values(), key=lambda h: len(h.node_path))),
-                    fanning_paths=tuple(key_closure(
-                        key=cj, anchor_model=host_model,
-                        anchor_relation=host_name, bundle=bundle,
-                    ) or ()),
-                ))
-            else:
-                assert dropped_w is not None
-                conjuncts.append(_conj(
-                    disposition="excluded", reason=dropped_w.reason,
-                ))
+            conjuncts.append(_population_conjunct(
+                cj=cj, text=text, conj_text=conj_text, is_date=is_date,
+                origin_index=idx, origin_bf=bf, host_model=host_model,
+                host_name=host_name, models_by_name=models_by_name, bundle=bundle,
+            ))
     return PopulationFilters(
         host_model=host_model, conjuncts=conjuncts, passthrough=passthrough,
     )
+
+
+def _rebuild_masks_dropping(
+    *, bf: BoundFilter, ct: ConjunctTyping, is_date: bool,
+    drop_keys: FrozenSet[ValueKey],
+) -> List[Tuple[BoundFilter, ConjunctTyping, bool]]:
+    """The masks one filter contributes with pushed conjuncts removed: a stratum-0
+    FIELD filter carrying a dropped conjunct re-emits its kept conjuncts; every
+    other filter passes through unchanged."""
+    if not (bf.phase == Phase.ROW and ct.typing == MaskTyping.FIELD
+            and ct.stratum == 0):
+        return [(bf, ct, is_date)]
+    split = split_top_level_and(bf.value_key)
+    if not any(cj in drop_keys for cj in split):
+        return [(bf, ct, is_date)]
+    return [(bound_filter_from_key(cj), ct, is_date)
+            for cj in split if cj not in drop_keys]
 
 
 def _drop_pushed_population_conjuncts(
@@ -1550,20 +1576,12 @@ def _drop_pushed_population_conjuncts(
     new_typings: List[ConjunctTyping] = []
     new_n_date = 0
     for idx, (bf, ct) in enumerate(zip(bound_filters, filter_typings)):
-        is_date = idx < n_date_range
-        if bf.phase == Phase.ROW and ct.typing == MaskTyping.FIELD and ct.stratum == 0:
-            split = split_top_level_and(bf.value_key)
-            if any(cj in drop_keys for cj in split):
-                for cj in split:
-                    if cj in drop_keys:
-                        continue
-                    new_bf.append(bound_filter_from_key(cj))
-                    new_typings.append(ct)
-                    new_n_date += is_date
-                continue
-        new_bf.append(bf)
-        new_typings.append(ct)
-        new_n_date += is_date
+        for out_bf, out_ct, out_is_date in _rebuild_masks_dropping(
+            bf=bf, ct=ct, is_date=idx < n_date_range, drop_keys=drop_keys,
+        ):
+            new_bf.append(out_bf)
+            new_typings.append(out_ct)
+            new_n_date += out_is_date
     return new_bf, new_typings, new_n_date
 
 
@@ -3214,9 +3232,10 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
                 substitutions=substitutions,
                 partition_display=[_regroup_grain_name(pk) for pk in ordered_pks],
                 dropped_filter_warnings=p_dropped,
-                semi_join_measure=(
-                    alias_map.get(producer_aggs[0])
-                    if isinstance(producer_aggs[0], AggregateKey) else None
+                semi_join_measures=tuple(
+                    a_alias for a in producer_aggs
+                    if isinstance(a, AggregateKey)
+                    and (a_alias := alias_map.get(a)) is not None
                 ),
                 **attach_kwargs,
             ))
